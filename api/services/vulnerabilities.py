@@ -1171,6 +1171,11 @@ def register_findings_from_run(
                     v_row.last_verified_at = now
                     v_row.machine_verified = True
                     v_row.closure_reason = "verified_remediated"
+                    # The same erasure the operator's close does: a fixed
+                    # finding carries no risk to accept, and an acceptance left
+                    # on it stayed in the risk register and was still swept
+                    # into an "it lapsed" audit row weeks later.
+                    dropped_exception = _drop_exception(v_row)
                     v_row.updated_at = now
                     _record_event(
                         session,
@@ -1187,6 +1192,7 @@ def register_findings_from_run(
                             "job_id": v_row.verification_job_id,
                             "machine_verified": True,
                             "closure_reason": "verified_remediated",
+                            **dropped_exception,
                         },
                     )
                     verification_passed += 1
@@ -1275,6 +1281,10 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "exception_decided_by": row.exception_decided_by,
         "exception_decided_at": _iso(row.exception_decided_at),
         "exception_decision_note": row.exception_decision_note,
+        "exception_requested_reason": row.exception_requested_reason,
+        "exception_approved_at": _iso(row.exception_approved_at),
+        "exception_approved_requested_by": row.exception_approved_requested_by,
+        "exception_expired_at": _iso(row.exception_expired_at),
         "first_seen_at": _iso(row.first_seen_at),
         "last_seen_at": _iso(row.last_seen_at),
         "sla_started_at": _iso(row.sla_started_at),
@@ -1818,6 +1828,7 @@ def apply_ticket_status(
         # A ticket coming back is a re-open like any other, so the verdict on
         # the row has to go with it — see ``drop_fp_verdict_on_reopen``.
         dropped_fp = False
+        dropped_exception: dict[str, Any] = {}
         # Whether the tracker has said something new since the last read. A
         # never-polled finding counts as changed: the first read is the first
         # thing the tracker has ever told us.
@@ -1840,6 +1851,8 @@ def apply_ticket_status(
                 row.closed_at = now
                 row.machine_verified = False
                 row.closure_reason = "ticket_resolved"
+                # As in every other closing path — see ``_drop_exception``.
+                dropped_exception = _drop_exception(row)
             elif previous == vuln_states.CLOSED:
                 # Same reopen bookkeeping the operator path does, so a
                 # ticket-driven regression is not an SLA-free finding.
@@ -1887,6 +1900,7 @@ def apply_ticket_status(
                     "remote_status": raw_status,
                     "suggested_state": suggested_state,
                     "applied": applied,
+                    **dropped_exception,
                     **({"error": error} if error else {}),
                     **({"after_fp_suppression": True} if dropped_fp else {}),
                 },
@@ -1980,8 +1994,12 @@ _EXCEPTION_AUDIT_FIELDS = (
     "exception_by",
     "exception_requested_by",
     "exception_requested_until",
+    "exception_requested_reason",
     "exception_decided_by",
     "exception_decision_note",
+    "exception_approved_at",
+    "exception_approved_requested_by",
+    "exception_expired_at",
 )
 
 
@@ -1992,7 +2010,10 @@ def _exception_document(row: dict[str, Any]) -> dict[str, Any]:
 def _drop_exception(row: models.Vulnerability) -> dict[str, Any]:
     """Erase an acceptance, in force or merely asked for, and say what went.
 
-    Called from the two closing paths. A closed finding has no risk to accept
+    Called from every closing path — the operator's transition, the false
+    positive verdict, and the two the machine takes on its own (a verification
+    run that no longer sees the finding, a ticket the tracker resolved). A
+    closed finding has no risk to accept
     and no request worth answering, so the acceptance *and* the workflow state
     around it go together — leaving ``exception_state`` on a closed row would
     hand the approver a queue item for a finding nobody can act on, and would
@@ -2015,6 +2036,10 @@ def _drop_exception(row: models.Vulnerability) -> dict[str, Any]:
     row.exception_decided_by = None
     row.exception_decided_at = None
     row.exception_decision_note = None
+    row.exception_requested_reason = None
+    row.exception_approved_at = None
+    row.exception_approved_requested_by = None
+    row.exception_expired_at = None
     return detail
 
 
@@ -2067,8 +2092,15 @@ def request_exception(
         row.exception_requested_by = actor
         row.exception_requested_at = now
         row.exception_requested_until = until
-        row.exception_reason = reason[:2000]
-        # The previous decision belongs to the previous request.
+        # The ask goes to its own column. Writing it to ``exception_reason``
+        # let an unapproved justification replace the one somebody signed for,
+        # which is the text the risk register prints as the reason the risk is
+        # being carried.
+        row.exception_requested_reason = reason[:2000]
+        # The previous decision belongs to the previous request. The acceptance
+        # in force is untouched: ``exception_until``, ``exception_reason``,
+        # ``exception_by`` and the ``exception_approved_*`` pair keep saying
+        # what is granted until this request is answered.
         row.exception_decided_by = None
         row.exception_decided_at = None
         row.exception_decision_note = None
@@ -2147,6 +2179,11 @@ def approve_exception(
         row.exception_decision_note = (note or "").strip()[:2000] or None
         row.exception_until = until
         row.exception_by = actor
+        row.exception_reason = row.exception_requested_reason or row.exception_reason
+        row.exception_approved_at = now
+        row.exception_approved_requested_by = row.exception_requested_by
+        # A new window has not lapsed, whatever happened to the previous one.
+        row.exception_expired_at = None
         row.due_at = until
         row.sla_source = "exception"
         row.updated_at = now
@@ -2279,8 +2316,12 @@ def clear_exception(
         row.exception_decided_by = None
         row.exception_decided_at = None
         row.exception_decision_note = None
+        row.exception_requested_reason = None
         row.exception_reason = None
         row.exception_by = None
+        row.exception_approved_at = None
+        row.exception_approved_requested_by = None
+        row.exception_expired_at = None
         row.updated_at = now
         if was_until is not None:
             # Only an acceptance that was in force moved the deadline, so only
@@ -2348,14 +2389,30 @@ def expire_exceptions(
     leader-locked and already walks the tenants; the reminders it sends at
     30/14/7 days are the warning, this is the obituary. ``exception_until`` is
     deliberately *not* cleared: the register's expired half is read off it.
+
+    What is swept is "an approved window that has run out", not "a row whose
+    workflow state is ``exception_approved``". Asking to extend an acceptance
+    moves that state to ``exception_requested`` and a refusal leaves it at
+    ``exception_rejected`` — while the granted window is still there, still
+    suspending the clock and still due to lapse. Keyed on the state, the
+    obituary for exactly those findings was never written. ``exception_expired_at``
+    is the once-only marker instead, and the state is only advanced when it is
+    still the acceptance's own; a pending request is not overwritten by the
+    lapse of the window it wants to replace.
+
+    Closed findings are skipped. Their acceptance is dropped when they close,
+    and a lapse recorded against one would be an audit row about a risk nobody
+    is carrying any more.
     """
     now = _naive(now) or _now()
     expired = 0
     with get_session(settings.postgres_url) as session:
         query = select(models.Vulnerability).where(
-            models.Vulnerability.exception_state == vuln_states.EXCEPTION_APPROVED,
+            models.Vulnerability.state != vuln_states.CLOSED,
             models.Vulnerability.exception_until.is_not(None),
+            models.Vulnerability.exception_by.is_not(None),
             models.Vulnerability.exception_until <= now,
+            models.Vulnerability.exception_expired_at.is_(None),
         )
         if tenant_id is not None:
             query = query.where(models.Vulnerability.tenant_id == tenant_id)
@@ -2363,7 +2420,11 @@ def expire_exceptions(
             query.order_by(models.Vulnerability.exception_until.asc()).limit(limit)
         ).all()
         for row in rows:
-            row.exception_state = vuln_states.EXCEPTION_EXPIRED
+            row.exception_expired_at = now
+            if (row.exception_state or vuln_states.EXCEPTION_NONE) == (
+                vuln_states.EXCEPTION_APPROVED
+            ):
+                row.exception_state = vuln_states.EXCEPTION_EXPIRED
             row.updated_at = now
             _record_event(
                 session,
@@ -2377,7 +2438,9 @@ def expire_exceptions(
                 detail={
                     "exception_until": _iso(row.exception_until),
                     "approved_by": row.exception_by,
-                    "requested_by": row.exception_requested_by,
+                    "requested_by": (
+                        row.exception_approved_requested_by or row.exception_requested_by
+                    ),
                 },
             )
             audit_service.record(
@@ -2405,6 +2468,24 @@ RISK_REGISTER_DAYS = 365
 RISK_REGISTER_LIMIT = 5000
 
 
+def _approved_request(row: models.Vulnerability, value: Any) -> Any:
+    """``value`` if the request columns still describe the acceptance in force.
+
+    Two of the register's fields have no column of their own — when the ask was
+    made, and what the approver wrote — so they are read from the request and
+    decision columns, which the *next* request overwrites. Blank is the honest
+    answer for a row whose extension is pending or was refused; the alternative
+    is printing an unanswered request's timestamp as if the acceptance had been
+    asked for then.
+    """
+    if (row.exception_state or vuln_states.EXCEPTION_NONE) in (
+        vuln_states.EXCEPTION_APPROVED,
+        vuln_states.EXCEPTION_EXPIRED,
+    ):
+        return value
+    return None
+
+
 def risk_acceptance_register(
     settings: Settings,
     *,
@@ -2425,10 +2506,22 @@ def risk_acceptance_register(
     it would show an acceptance that lapsed an hour ago as still in force, and
     this document is the one somebody signs off on.
 
-    Pending requests are deliberately absent. This is the register of risk the
-    organisation *accepted*, and something nobody has approved yet is not that;
-    ``GET /api/vulnerabilities?exception_state=exception_requested`` is the
-    queue of what is waiting.
+    A row is here because it *has an approved window* — ``exception_until``
+    with an ``exception_by`` against it — and not because its workflow state
+    reads ``exception_approved``. Asking for an extension moves that state to
+    ``exception_requested``, and a refusal parks it at ``exception_rejected``,
+    neither of which takes away the window already signed for: keyed on the
+    state, the register lost exactly the acceptances somebody had just been
+    refused more time on, which is the case an auditor opens it for.
+
+    Closed findings are absent for the same reason the reminders skip them: the
+    acceptance goes when the finding closes, and a register entry for one would
+    invite a review of a risk that is no longer carried.
+
+    Pending requests are deliberately absent too. This is the register of risk
+    the organisation *accepted*, and something nobody has approved yet is not
+    that; ``GET /api/vulnerabilities?exception_state=exception_requested`` is
+    the queue of what is waiting.
     """
     now = _naive(now) or _now()
     since = _naive(since) or (now - timedelta(days=RISK_REGISTER_DAYS))
@@ -2438,10 +2531,9 @@ def risk_acceptance_register(
             .join(models.Asset, models.Asset.asset_id == models.Vulnerability.asset_id)
             .where(
                 models.Vulnerability.tenant_id == tenant_id,
-                models.Vulnerability.exception_state.in_(
-                    (vuln_states.EXCEPTION_APPROVED, vuln_states.EXCEPTION_EXPIRED)
-                ),
+                models.Vulnerability.state != vuln_states.CLOSED,
                 models.Vulnerability.exception_until.is_not(None),
+                models.Vulnerability.exception_by.is_not(None),
                 # In force, or lapsed inside the window asked for. An
                 # acceptance that ran out three years ago is history, not a
                 # register entry.
@@ -2469,11 +2561,18 @@ def risk_acceptance_register(
                     "status": "active" if active else "expired",
                     "exception_state": row.exception_state,
                     "reason": row.exception_reason,
-                    "requested_by": row.exception_requested_by,
-                    "requested_at": _iso(row.exception_requested_at),
-                    "approved_by": row.exception_decided_by or row.exception_by,
-                    "approved_at": _iso(row.exception_decided_at),
-                    "decision_note": row.exception_decision_note,
+                    # The acceptance in force, read off its own columns. The
+                    # request and decision columns describe whatever was asked
+                    # last, which may be an extension nobody has answered — or
+                    # one that was refused, in which case reading the approver
+                    # off ``exception_decided_by`` named the person who said no.
+                    "requested_by": (
+                        row.exception_approved_requested_by or row.exception_requested_by
+                    ),
+                    "requested_at": _iso(_approved_request(row, row.exception_requested_at)),
+                    "approved_by": row.exception_by,
+                    "approved_at": _iso(row.exception_approved_at),
+                    "decision_note": _approved_request(row, row.exception_decision_note),
                     "until": _iso(until),
                     "days_remaining": (until - now).days if active else None,
                     # Two owners, because they answer different questions: the
@@ -2488,7 +2587,8 @@ def risk_acceptance_register(
                     # auditor reading this register has to be able to see which
                     # entries never had a second person on them.
                     "self_approved": _same_person(
-                        row.exception_requested_by, row.exception_decided_by or row.exception_by
+                        row.exception_approved_requested_by or row.exception_requested_by,
+                        row.exception_by,
                     ),
                 }
             )
@@ -2828,6 +2928,7 @@ def list_vulnerabilities(
     assignee: str | None = None,
     unassigned: bool = False,
     sla: str | None = None,
+    exception_state: str | None = None,
     stale_days: int | None = None,
     in_kev: bool | None = None,
     offset: int = 0,
@@ -2842,9 +2943,20 @@ def list_vulnerabilities(
     and ``exception_until`` rather than a column — the same expression
     ``sla_state`` computes, pushed into SQL so a breach report does not have to
     page through every open finding to find the overdue ones.
+
+    ``exception_state`` filters on the acceptance workflow (#348), and
+    ``exception_requested`` is the approver's queue: nothing notifies whoever
+    holds ``vulnerability.exception.approve`` that a request is waiting, so
+    without this the only way to find one is to read every finding in the
+    tenant.
     """
     if state and state.upper() not in vuln_states.ALL:
         raise ValueError(f"unknown state {state!r}; expected one of {', '.join(vuln_states.ORDER)}")
+    if exception_state and exception_state not in vuln_states.EXCEPTION_STATES:
+        raise ValueError(
+            f"unknown exception_state {exception_state!r}; "
+            f"expected one of {', '.join(vuln_states.EXCEPTION_STATES)}"
+        )
     if sla and sla not in SLA_STATES:
         raise ValueError(f"unknown sla filter {sla!r}; expected one of {', '.join(SLA_STATES)}")
     if unassigned and assignee:
@@ -2892,6 +3004,8 @@ def list_vulnerabilities(
         filters.append(models.Vulnerability.assignee.is_(None))
     elif assignee:
         filters.append(models.Vulnerability.assignee == assignee)
+    if exception_state:
+        filters.append(models.Vulnerability.exception_state == exception_state)
     if stale_days is not None:
         filters.append(models.Vulnerability.last_seen_at < now - timedelta(days=stale_days))
     if in_kev is True:

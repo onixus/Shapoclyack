@@ -22,6 +22,22 @@ All notable changes to Shapoclyack are documented in this file.
   `risk_acceptance` section in the executive and compliance reports, both
   naming the acceptances nobody but their requester ever signed — including
   every one migration 0050 inherited from before this change.
+  The register and the expiry sweep select on *there being an approved window*
+  rather than on the workflow state, because asking for an extension moves that
+  state and being refused one parks it: keyed on the state, a finding whose
+  extension had just been rejected vanished from the register, stayed out of
+  the breach report, and would never have had its lapse recorded. The request
+  for an extension keeps its own justification (`exception_requested_reason`)
+  and leaves the acceptance in force untouched, so the register prints what was
+  signed and names the approver rather than whoever said no. Closing a finding
+  drops its acceptance on every path, including the two the machine takes on
+  its own (verification, ticket sync), and neither the register nor the sweep
+  takes a closed finding. The approver's queue is real:
+  `GET /api/vulnerabilities?exception_state=exception_requested`. In the
+  console, **Approve** / **Reject** are shown to whoever holds
+  `vulnerability.exception.approve` in the tenant instead of to the global
+  `admin` role — which showed them to the requester the API refuses and hid
+  them from the `risk-approver`, the one account that can answer.
 
 - **Named permissions, an auditor role, and a tenant admin that is not the
   platform admin** ([#318](https://github.com/onixus/Shapoclyack/issues/318)).

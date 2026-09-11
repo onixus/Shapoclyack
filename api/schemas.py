@@ -1679,6 +1679,11 @@ class VulnerabilityInfo(BaseModel):
     # is ``exception_state`` and the request/decision pair below (#348). A
     # pending request has ``exception_state == "exception_requested"`` and no
     # ``exception_until`` at all — nothing is suspended until it is approved.
+    # A request for an *extension* is the case worth reading twice: the
+    # acceptance in force keeps its own fields (``exception_until``,
+    # ``exception_reason``, ``exception_by``, ``exception_approved_*``) while
+    # ``exception_state`` says ``exception_requested`` and the request fields
+    # say what is being asked for now.
     exception_until: str | None = None
     exception_reason: str | None = None
     exception_by: str | None = None
@@ -1689,6 +1694,10 @@ class VulnerabilityInfo(BaseModel):
     exception_decided_by: str | None = None
     exception_decided_at: str | None = None
     exception_decision_note: str | None = None
+    exception_requested_reason: str | None = None
+    exception_approved_at: str | None = None
+    exception_approved_requested_by: str | None = None
+    exception_expired_at: str | None = None
     first_seen_at: str | None = None
     last_seen_at: str | None = None
     sla_started_at: str | None = None

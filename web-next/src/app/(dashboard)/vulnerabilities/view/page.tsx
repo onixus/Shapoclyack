@@ -40,7 +40,7 @@ import {
   useTriggerVulnVerification,
   useVulnerabilityEvents,
 } from "@/hooks/use-vulnerabilities";
-import { useAuthStore } from "@/lib/auth-store";
+import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type {
   TicketSystem,
   TrackedVulnerability,
@@ -131,6 +131,18 @@ function VulnerabilityDetailInner() {
   const tenantId = searchParams.get("tenantId") || "default";
   const { canOperate, user } = useAuthStore();
   const isAdmin = user?.role === "admin";
+  // Accepted risk is two permissions held by two different people (#348), and
+  // neither of them is the *global* role: `risk-approver` is a membership of
+  // this tenant and is a plain `viewer` globally, so gating the panel on
+  // `isAdmin` showed it to the one person the API refuses (the tenant admin
+  // who filed the request) and hid it from the only person who can answer.
+  // The fallbacks keep the old behaviour on an API that predates #318.
+  const canApproveException = holdsPermission(
+    user,
+    "vulnerability.exception.approve",
+    isAdmin,
+  );
+  const canRequestException = (user?.tenant_role ?? user?.role) === "admin";
 
   const detailQuery = useTrackedVulnerability(vulnId || null);
   const eventsQuery = useVulnerabilityEvents(vulnId || null, { limit: 50 });
@@ -232,9 +244,16 @@ function VulnerabilityDetailInner() {
           ) : null}
           {canOperate ? <CommentCard vulnId={vuln.vuln_id} /> : null}
           {canOperate ? <TicketCard vuln={vuln} /> : null}
-          {isAdmin ? <ExceptionCard vuln={vuln} /> : null}
+          {canRequestException || canApproveException ? (
+            <ExceptionCard
+              vuln={vuln}
+              canRequest={canRequestException}
+              canApprove={canApproveException}
+              username={user?.username ?? null}
+            />
+          ) : null}
           {isAdmin ? <FalsePositiveCard vuln={vuln} /> : null}
-          {!canOperate && !isAdmin ? (
+          {!canOperate && !isAdmin && !canApproveException ? (
             <p className="text-xs text-slate-500">
               Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.
             </p>
@@ -716,14 +735,44 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
  * asks, and whoever holds `vulnerability.exception.approve` answers. The panel
  * has to say which of the two states the finding is in — a request that looked
  * like an acceptance would tell an operator their SLA had stopped when it is
- * still running. */
-function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
+ * still running.
+ *
+ * `canRequest` and `canApprove` are separate props because the two halves are
+ * for different people and only rarely for the same one: the approver may not
+ * ask, the requester may not sign, and neither is told anything useful by a
+ * button the API will answer with 403. */
+function ExceptionCard({
+  vuln,
+  canRequest,
+  canApprove,
+  username,
+}: {
+  vuln: TrackedVulnerability;
+  canRequest: boolean;
+  canApprove: boolean;
+  username: string | null;
+}) {
   const setMutation = useSetVulnerabilityException(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityException(vuln.vuln_id);
   const decideMutation = useDecideVulnerabilityException(vuln.vuln_id);
   const [until, setUntil] = useState("");
-  const [reason, setReason] = useState(vuln.exception_reason ?? "");
+  const [reason, setReason] = useState(
+    vuln.exception_requested_reason ?? vuln.exception_reason ?? "",
+  );
   const pending = vuln.exception_state === "exception_requested";
+  // Whose request it is decides who may answer it, and the API compares the
+  // names case-insensitively — so does this, or the requester keeps a button
+  // that only ever returns "cannot approve".
+  const ownRequest =
+    !!username &&
+    (vuln.exception_requested_by ?? "").trim().toLowerCase() === username.trim().toLowerCase();
+  const canDecide = canApprove && pending && !ownRequest;
+  // The window against the clock, not against the workflow state: the sweep
+  // that writes `exception_expired` runs on the worker's tick, and until it
+  // does an acceptance that ran out an hour ago still reads `exception_approved`.
+  const lapsed =
+    !!vuln.exception_until && new Date(vuln.exception_until).getTime() <= Date.now();
+  const inForce = !!vuln.exception_until && !lapsed;
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -735,7 +784,7 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
   return (
     <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
       <h2 className="text-sm font-semibold text-slate-100">Accepted risk</h2>
-      {vuln.exception_until ? (
+      {inForce ? (
         <p className="mt-2 text-xs text-slate-400">
           In force until <span className="text-slate-200">{formatWhen(vuln.exception_until)}</span>
           {vuln.exception_by ? (
@@ -744,6 +793,11 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
               · by <span className="font-mono text-slate-300">{vuln.exception_by}</span>
             </>
           ) : null}
+        </p>
+      ) : lapsed ? (
+        <p className="mt-2 text-xs text-amber-300">
+          The acceptance lapsed on {formatWhen(vuln.exception_until)} and the finding is back
+          under its deadline.
         </p>
       ) : vuln.exception_state === "exception_rejected" ? (
         <p className="mt-2 text-xs text-amber-300">
@@ -755,11 +809,6 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
             </>
           ) : null}
           . The deadline never moved.
-        </p>
-      ) : vuln.exception_state === "exception_expired" ? (
-        <p className="mt-2 text-xs text-amber-300">
-          The acceptance lapsed on {formatWhen(vuln.exception_requested_until)} and the finding
-          is back under its deadline.
         </p>
       ) : (
         <p className="mt-2 text-xs text-slate-500">
@@ -776,7 +825,19 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
       {vuln.exception_reason ? (
         <p className="mt-2 text-xs text-slate-300">{vuln.exception_reason}</p>
       ) : null}
-      {pending ? (
+      {/* What is being asked for now, kept apart from the justification that
+          was approved — they are different texts while an extension waits. */}
+      {pending && vuln.exception_requested_reason ? (
+        <p className="mt-2 text-xs text-slate-400">{vuln.exception_requested_reason}</p>
+      ) : null}
+      {pending && !canDecide ? (
+        <p className="mt-2 text-xs text-slate-500">
+          {ownRequest
+            ? "Your own request: it needs a second pair of eyes, so somebody holding vulnerability.exception.approve has to answer it."
+            : "Waiting for somebody holding vulnerability.exception.approve."}
+        </p>
+      ) : null}
+      {canDecide ? (
         <div className="mt-3 flex flex-wrap gap-2">
           <Button
             type="button"
@@ -799,6 +860,7 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
           </Button>
         </div>
       ) : null}
+      {canRequest ? (
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
           <Label htmlFor="vuln-until" className="text-xs text-slate-400">
@@ -849,6 +911,7 @@ function ExceptionCard({ vuln }: { vuln: TrackedVulnerability }) {
           ) : null}
         </div>
       </form>
+      ) : null}
     </section>
   );
 }

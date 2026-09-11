@@ -211,7 +211,7 @@ def test_a_request_never_shortens_an_acceptance_already_in_force(tmp_path, monke
     """Asking for an extension is legal; being refused one must not take away
     the window somebody already signed for."""
     client = configured_client(tmp_path, monkeypatch)
-    _seed(tmp_path)
+    settings, tenant_id = _seed(tmp_path)
     admin = auth_headers(client, "admin")
     approver = _account(client, "risk-boss", _TENANT, "risk-approver")
     vuln_id = _vuln_id(client, admin)
@@ -230,6 +230,177 @@ def test_a_request_never_shortens_an_acceptance_already_in_force(tmp_path, monke
         f"/api/vulnerabilities/{vuln_id}/exception/reject", json={}, headers=approver
     ).json()
     assert refused["exception_until"] == granted["exception_until"]
+    # And the documents #348 exists to produce still show it. Keyed on
+    # ``exception_state``, both of them dropped the finding the moment the
+    # extension was asked for: the register stopped listing an acceptance that
+    # was in force, and the SLA reading stayed ``accepted`` — so the one case
+    # an auditor most wants ("they were refused more time") was in no document
+    # at all.
+    for stage in (pending, refused):
+        assert stage["sla_state"] == "accepted"
+    entries = vulns.risk_acceptance_register(settings, tenant_id=tenant_id)
+    assert [entry["vuln_id"] for entry in entries] == [vuln_id]
+    assert entries[0]["status"] == "active"
+
+
+def test_an_extension_request_never_rewrites_the_acceptance_it_wants_to_replace(
+    tmp_path, monkeypatch
+):
+    """The register prints what was signed, not what is being asked for.
+
+    The request wrote its justification over ``exception_reason`` and wiped the
+    decision columns, so while an extension waited the register showed an
+    unapproved argument, and once it was refused ``approved_by`` named the
+    person who had said no.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    vuln_id = _vuln_id(client, admin)
+
+    client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception",
+        json={"until": _until(30), "reason": "vendor patch lands in Q4"},
+        headers=admin,
+    )
+    client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/approve",
+        json={"note": "compensating control in place"},
+        headers=approver,
+    )
+    client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception",
+        json={"until": _until(200), "reason": "EXTENSION not yet approved"},
+        headers=admin,
+    )
+
+    while_pending = vulns.risk_acceptance_register(settings, tenant_id=tenant_id)[0]
+    assert while_pending["reason"] == "vendor patch lands in Q4"
+    assert while_pending["approved_by"] == "risk-boss"
+    assert while_pending["requested_by"] == "admin"
+    assert while_pending["self_approved"] is False
+
+    client.post(
+        f"/api/vulnerabilities/{vuln_id}/exception/reject",
+        json={"note": "six months is not a plan"},
+        headers=approver,
+    )
+    after = vulns.risk_acceptance_register(settings, tenant_id=tenant_id)[0]
+    assert after["reason"] == "vendor patch lands in Q4"
+    assert after["approved_by"] == "risk-boss"
+    # The row the finding carries says the same thing, so the console and the
+    # report cannot disagree with the register.
+    body = client.get(f"/api/vulnerabilities/{vuln_id}", headers=admin).json()
+    assert body["exception_reason"] == "vendor patch lands in Q4"
+    assert body["exception_requested_reason"] == "EXTENSION not yet approved"
+    assert body["exception_by"] == "risk-boss"
+    assert body["exception_decided_by"] == "risk-boss"
+
+
+def test_a_lapse_is_recorded_even_when_the_extension_was_refused(tmp_path, monkeypatch):
+    """The obituary is owed to the window, not to the workflow state.
+
+    Refusing an extension parks ``exception_state`` at ``exception_rejected``
+    for good, and a sweep that looked for ``exception_approved`` therefore
+    never wrote the expiry for the acceptance underneath it — no event, no
+    audit row, and an entry that would sit in the register as "in force" until
+    somebody noticed the date.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    vuln_id = _vuln_id(client, admin)
+
+    _request(client, admin, vuln_id, days=10)
+    client.post(f"/api/vulnerabilities/{vuln_id}/exception/approve", json={}, headers=approver)
+    _request(client, admin, vuln_id, days=200)
+    client.post(f"/api/vulnerabilities/{vuln_id}/exception/reject", json={}, headers=approver)
+
+    later = datetime.now(UTC) + timedelta(days=11)
+    assert vulns.expire_exceptions(settings, tenant_id=tenant_id, now=later) == 1
+    # Once, as for any other acceptance.
+    assert vulns.expire_exceptions(settings, tenant_id=tenant_id, now=later) == 0
+    kinds = [
+        event["kind"]
+        for event in client.get(
+            f"/api/vulnerabilities/{vuln_id}/events", headers=admin
+        ).json()["items"]
+    ]
+    assert "exception_expired" in kinds
+    assert audit_service.ACTION_VULN_EXCEPTION_EXPIRE in _actions(client, admin, vuln_id)
+    # The refusal is still on the row: the lapse of the granted window is not
+    # an answer to the request that was turned down.
+    row = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln_id)
+    assert row["exception_state"] == vuln_states.EXCEPTION_REJECTED
+    assert row["exception_expired_at"] is not None
+    entry = vulns.risk_acceptance_register(settings, tenant_id=tenant_id, now=later)[0]
+    assert entry["status"] == "expired"
+
+
+def test_a_closed_finding_is_neither_in_the_register_nor_swept(tmp_path, monkeypatch):
+    """What the machine closing paths left behind before they dropped the
+    acceptance, and what an installation upgraded from that state still has:
+    a CLOSED row with an acceptance on it. Neither document may take it."""
+    configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    vuln_id = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)[0][0]["vuln_id"]
+    accept_risk(
+        settings,
+        tenant_id=tenant_id,
+        vuln_id=vuln_id,
+        until=datetime.now(UTC) + timedelta(days=5),
+        reason="a week to migrate",
+    )
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln_id)
+        row.state = vuln_states.CLOSED
+        row.closure_reason = "verified_remediated"
+
+    assert vulns.risk_acceptance_register(settings, tenant_id=tenant_id) == []
+    later = datetime.now(UTC) + timedelta(days=6)
+    assert vulns.expire_exceptions(settings, tenant_id=tenant_id, now=later) == 0
+
+
+def test_the_pending_requests_are_a_queue_somebody_can_open(tmp_path, monkeypatch):
+    """``?exception_state=exception_requested`` — the filter the register's own
+    docstring points the approver at. Nothing notifies them, so a query
+    parameter FastAPI silently ignored handed them every finding in the tenant
+    and called it the queue."""
+    client = configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    admin = auth_headers(client, "admin")
+    approver = _account(client, "risk-boss", _TENANT, "risk-approver")
+    rows, total = vulns.list_vulnerabilities(settings, tenant_id=tenant_id)
+    assert total > 1
+    waiting, other = rows[0]["vuln_id"], rows[1]["vuln_id"]
+    _request(client, admin, waiting)
+
+    queue = client.get(
+        "/api/vulnerabilities",
+        params={"exception_state": vuln_states.EXCEPTION_REQUESTED},
+        headers=approver,
+    )
+    assert queue.status_code == 200
+    assert [item["vuln_id"] for item in queue.json()["items"]] == [waiting]
+    assert queue.json()["total"] == 1
+    assert other not in [item["vuln_id"] for item in queue.json()["items"]]
+
+    # And an answered request leaves the queue rather than sitting in it.
+    client.post(f"/api/vulnerabilities/{waiting}/exception/approve", json={}, headers=approver)
+    assert (
+        client.get(
+            "/api/vulnerabilities",
+            params={"exception_state": vuln_states.EXCEPTION_REQUESTED},
+            headers=approver,
+        ).json()["total"]
+        == 0
+    )
+    unknown = client.get(
+        "/api/vulnerabilities", params={"exception_state": "exception_maybe"}, headers=approver
+    )
+    assert unknown.status_code == 422
 
 
 # --------------------------------------------------------------------------

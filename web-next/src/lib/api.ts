@@ -2064,8 +2064,11 @@ export type TrackedVulnerability = {
   sla_days: number | null;
   sla_source: string | null;
   sla_state: SlaState;
-  /** The acceptance in force: its expiry, and who approved it. Null while a
-   * request is still waiting for its second signature (#348). */
+  /** The acceptance in force: its expiry, who approved it, when, and on whose
+   * request. Null while a *first* request waits for its second signature
+   * (#348) — but a request to extend an acceptance leaves all of these alone,
+   * so `exception_state === "exception_requested"` with an `exception_until`
+   * means "in force, and more time is being asked for". */
   exception_until: string | null;
   exception_reason: string | null;
   exception_by: string | null;
@@ -2076,6 +2079,14 @@ export type TrackedVulnerability = {
   exception_decided_by: string | null;
   exception_decided_at: string | null;
   exception_decision_note: string | null;
+  /** The justification of the request that is waiting, which is not the one
+   * that was approved until somebody approves it. */
+  exception_requested_reason: string | null;
+  exception_approved_at: string | null;
+  exception_approved_requested_by: string | null;
+  /** When the sweep recorded that the window ran out. The lapse itself is
+   * visible without it: `exception_until` in the past says so. */
+  exception_expired_at: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
   sla_started_at: string | null;

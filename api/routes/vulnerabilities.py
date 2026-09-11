@@ -524,6 +524,15 @@ def list_vulnerabilities(
     sla: Annotated[
         str | None, Query(description="on_track | due_soon | breached | accepted | none")
     ] = None,
+    exception_state: Annotated[
+        str | None,
+        Query(
+            description="none | exception_requested | exception_approved | "
+            "exception_rejected | exception_expired. "
+            "``exception_requested`` is the approval queue (#348): the requests "
+            "waiting for somebody holding vulnerability.exception.approve."
+        ),
+    ] = None,
     stale_days: Annotated[
         int | None,
         Query(
@@ -550,6 +559,7 @@ def list_vulnerabilities(
             assignee=assignee,
             unassigned=unassigned,
             sla=sla,
+            exception_state=exception_state,
             stale_days=stale_days,
             in_kev=True if in_kev else None,
             offset=page.offset,

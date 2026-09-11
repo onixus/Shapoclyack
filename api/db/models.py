@@ -1239,8 +1239,25 @@ class Vulnerability(Base):
     # through the decision, including a rejected or lapsed one: the risk
     # register has to be able to show what was argued, not only what was
     # granted.
+    # The justification *of the acceptance in force*. A later request for an
+    # extension writes its own text to ``exception_requested_reason`` instead:
+    # this column is what somebody signed, and an unapproved ask overwriting it
+    # would put unapproved words in the risk register.
     exception_reason: Mapped[str | None] = mapped_column(default=None)
     exception_by: Mapped[str | None] = mapped_column(default=None)
+    # The rest of the acceptance in force, written at approval and untouched by
+    # whatever the workflow does next. ``exception_decided_*`` below describe
+    # the *latest* decision, which after a refused extension is a rejection —
+    # reading the register off them named the person who said no as the
+    # approver.
+    exception_approved_at: Mapped[datetime | None] = mapped_column(default=None)
+    exception_approved_requested_by: Mapped[str | None] = mapped_column(default=None)
+    # When the sweep recorded that the window ran out. It is the once-only
+    # marker for that sweep, which is why it is a column and not an inference
+    # from ``exception_state``: a finding whose extension is pending (or was
+    # refused) still has an acceptance that lapses, and its workflow state has
+    # moved on from ``exception_approved``.
+    exception_expired_at: Mapped[datetime | None] = mapped_column(default=None)
     # The approval workflow around it (#348). ``exception_state`` is the
     # machine in api/services/vuln_states.py; the request fields are what was
     # asked for and by whom, the decision fields are the second person's
@@ -1254,6 +1271,9 @@ class Vulnerability(Base):
     # and left here afterwards, so a rejected or lapsed request still says what
     # window it wanted.
     exception_requested_until: Mapped[datetime | None] = mapped_column(default=None)
+    # The justification of the request that is waiting. Promoted to
+    # ``exception_reason`` when it is approved, kept here when it is refused.
+    exception_requested_reason: Mapped[str | None] = mapped_column(default=None)
     exception_decided_by: Mapped[str | None] = mapped_column(default=None)
     exception_decided_at: Mapped[datetime | None] = mapped_column(default=None)
     exception_decision_note: Mapped[str | None] = mapped_column(default=None)
