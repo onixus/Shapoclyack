@@ -50,6 +50,20 @@ REASON_NON_DISTRO_SOURCE = "non_distro_source"
 REASON_UNKNOWN_DISTRO = "unknown_distro"
 REASON_UNKNOWN_RELEASE = "unknown_release"
 REASON_UNSUPPORTED_DISTRO = "unsupported_distro"
+#: Windows (#358). The matcher assesses the *operating system build* against
+#: Microsoft's remediations, which is what a Microsoft advisory is written
+#: about; the products in the uninstall registry carry marketing version
+#: numbers no advisory refers to, so they are real inventory and not matchable.
+REASON_WINDOWS_PRODUCT = "windows_product"
+#: The host is Windows and its ``os_version`` is not a build number, so there
+#: is nothing to compare Microsoft's remediations against.
+REASON_UNPARSABLE_OS_VERSION = "unparsable_os_version"
+#: The MSRC dataset is not installed. Distinct from "no advisories apply":
+#: a matcher with no data must say so rather than render as a clean host.
+REASON_NO_MSRC_DATA = "no_msrc_data"
+#: The dataset has no statement about this build family at all — a Windows
+#: older than the feed covers, an Insider build, or a feed that never refreshed.
+REASON_UNKNOWN_WINDOWS_BUILD = "unknown_windows_build"
 
 #: Package-manager source (``EndpointSoftwareItem.source``) → version grammar.
 #: ``winreg``/``msi``/``brew``/``pip``/``npm``/``java``/``kb``/``other`` are

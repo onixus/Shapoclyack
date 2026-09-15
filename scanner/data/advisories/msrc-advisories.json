@@ -1,0 +1,89 @@
+{
+ "entries": [
+  {
+   "cve_id": "CVE-2016-9535",
+   "fixed_build": "10.0.19045.6456",
+   "kb": "KB5066791",
+   "product": "Windows 10 Version 22H2",
+   "severity": "critical",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5066791"
+  },
+  {
+   "cve_id": "CVE-2016-9535",
+   "fixed_build": "10.0.26200.6899",
+   "kb": "KB5066835",
+   "product": "Windows 11 Version 25H2",
+   "severity": "critical",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5066835"
+  },
+  {
+   "cve_id": "CVE-2023-31096",
+   "fixed_build": "10.0.26100.32230",
+   "kb": "KB5073379",
+   "product": "Windows Server 2025 (Server Core installation)",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5073379"
+  },
+  {
+   "cve_id": "CVE-2024-55414",
+   "fixed_build": "10.0.26100.32230",
+   "kb": "KB5073379",
+   "product": "Windows Server 2025 (Server Core installation)",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5073379"
+  },
+  {
+   "cve_id": "CVE-2025-24052",
+   "fixed_build": "10.0.19045.6456",
+   "kb": "KB5066791",
+   "product": "Windows 10 Version 22H2",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5066791"
+  },
+  {
+   "cve_id": "CVE-2025-24052",
+   "fixed_build": "10.0.26200.6899",
+   "kb": "KB5066835",
+   "product": "Windows 11 Version 25H2",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5066835"
+  },
+  {
+   "cve_id": "CVE-2025-59289",
+   "fixed_build": "10.0.20348.4106",
+   "kb": "KB5065306",
+   "product": "Windows Server 2022",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5065306"
+  },
+  {
+   "cve_id": "CVE-2025-59289",
+   "fixed_build": "10.0.22631.5909",
+   "kb": "KB5065431",
+   "product": "Windows 11 Version 22H2",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5065431"
+  },
+  {
+   "cve_id": "CVE-2025-59290",
+   "fixed_build": "10.0.20348.4106",
+   "kb": "KB5065306",
+   "product": "Windows Server 2022",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5065306"
+  },
+  {
+   "cve_id": "CVE-2025-59290",
+   "fixed_build": "10.0.22631.5909",
+   "kb": "KB5065431",
+   "product": "Windows 11 Version 22H2",
+   "severity": "high",
+   "url": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5065431"
+  }
+ ],
+ "note": "Committed seed, not a feed dump. A handful of real Security Update Guide remediations so an offline installation can exercise Windows matching and so GET /api/system reports a dataset rather than a hole. A seed cannot assess a real host: it covers five build families and a fraction of their statements, so a Windows endpoint matched against it reads as far cleaner than it is. Refresh with scripts/fetch-advisories.py msrc (opt-in, off by default); see docs/software-cve-matching.md.",
+ "origin_url": "https://api.msrc.microsoft.com/cvrf/v3.0/updates",
+ "source": "msrc-seed",
+ "updated": "2026-09-15",
+ "version": 1
+}

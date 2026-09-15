@@ -60,6 +60,11 @@ _JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
     "exploit": ("exploit/exploit-overlay.json", 1000, True),
     "advisories_debian": ("advisories/debian-advisories.json", 100_000, False),
     "advisories_ubuntu": ("advisories/ubuntu-advisories.json", 10_000, False),
+    # One Security Update Guide month is ~7000 statements once the non-Windows
+    # products are dropped, and the fetch merges twelve. A floor of 5000 is
+    # therefore below a single month: it catches a truncated document without
+    # refusing an installation that deliberately fetched one month.
+    "advisories_msrc": ("advisories/msrc-advisories.json", 5_000, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no

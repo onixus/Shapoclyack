@@ -611,6 +611,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Windows hosts are matched against Microsoft's advisories**
+  ([#358](https://github.com/onixus/Shapoclyack/issues/358)). Windows inventory
+  was collected and then reported as `unknown` in its entirety: 317 packages on
+  a real endpoint, zero assessed. The obstacle was never the data but the
+  question — every provider until now answers "what does this distribution say
+  about this source package in this release", and Windows cannot be asked that.
+  The uninstall registry lists products whose `DisplayVersion` no Microsoft
+  advisory refers to, and what an advisory *is* about is the operating system's
+  build.
+
+  So Windows is matched on the build. A host reports `10.0.<build>.<ubr>` and
+  Microsoft's remediations carry a `FixedBuild` in the same form: the build
+  identifies the product line, and the revision decides the verdict, because
+  Windows servicing is cumulative — the update that takes a host to a given
+  revision contains every fix shipped for that build before it. A `KB` the
+  agent reports is consulted as well, and can only move a verdict from
+  vulnerable to fixed: out-of-band updates raise no revision.
+
+  The unit of assessment is therefore the operating system, not the software
+  list, and the products are reported once, in aggregate, as what they are —
+  real inventory this matcher does not speak about. Not knowing comes in three
+  flavours and they stay distinct (`no_msrc_data`, `unknown_windows_build`,
+  `unparsable_os_version`), because they are three different things to fix and
+  one silence would render each as a clean host.
+
+  The feed is `scripts/fetch-advisories.py msrc`, merging twelve monthly
+  Security Update Guide documents, and the file shipped in the image is a seed
+  of ten statements that says so in its own `note`. A CVRF month covers
+  everything Microsoft ships, so only genuine NT builds are kept: Visual
+  Studio's `15.9.83.0` matches the shape of a Windows build exactly and is not
+  one.
+
 - **Endpoint agents can be managed from the console instead of from the
   machine** ([#358](https://github.com/onixus/Shapoclyack/issues/358)).
   Changing an endpoint agent's collection interval or log level, or putting a

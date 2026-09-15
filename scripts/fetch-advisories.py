@@ -54,7 +54,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-from api.services.advisories import fetch  # noqa: E402 - needs the path above
+from api.services.advisories import fetch, msrc  # noqa: E402 - needs the path above
 
 # The manifest module beside this one owns the per-dataset floors; see the
 # module docstring for why this script does not keep a second opinion.
@@ -64,8 +64,13 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_DISABLED = 3
 
+#: Datasets this script can refresh. ``msrc`` is not in ``fetch.SOURCES``
+#: because it is not the same shape -- an index followed by one document per
+#: month rather than a single URL -- so it is named here and dispatched below.
+DATASETS = (*sorted(fetch.SOURCES), "msrc")
+
 #: CLI dataset name → the key it is filed under in the manifest.
-_MANIFEST_KEYS = {name: f"advisories_{name}" for name in fetch.SOURCES}
+_MANIFEST_KEYS = {name: f"advisories_{name}" for name in DATASETS}
 
 
 def default_min_entries(dataset: str) -> int:
@@ -84,7 +89,7 @@ def default_min_entries(dataset: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("dataset", choices=sorted(fetch.SOURCES), help="Which vendor feed to refresh")
+    parser.add_argument("dataset", choices=DATASETS, help="Which vendor feed to refresh")
     parser.add_argument(
         "-o",
         "--output",
@@ -106,6 +111,16 @@ def main() -> int:
         f"(default {fetch.DEFAULT_MAX_BYTES})",
     )
     parser.add_argument(
+        "--months",
+        type=int,
+        default=fetch.MSRC_DEFAULT_MONTHS,
+        help="msrc only: how many monthly Security Update Guide documents to merge "
+        f"(default {fetch.MSRC_DEFAULT_MONTHS}). Windows servicing is cumulative, so "
+        "one month describes a fully patched host -- but only for the builds that "
+        "month shipped a fix for, and a host whose build was last fixed earlier would "
+        "have no statement at all",
+    )
+    parser.add_argument(
         "--min-entries",
         type=int,
         default=None,
@@ -116,7 +131,11 @@ def main() -> int:
     args = parser.parse_args()
     min_entries = args.min_entries if args.min_entries is not None else default_min_entries(args.dataset)
 
-    url, _, default_path, _ = fetch.SOURCES[args.dataset]
+    if args.dataset == "msrc":
+        url = fetch.MSRC_INDEX_URL
+        default_path = msrc.DEFAULT_DATASET
+    else:
+        url, _, default_path, _ = fetch.SOURCES[args.dataset]
     output = args.output or Path(default_path)
     # Staged beside the destination so the promotion below is a rename on the
     # same filesystem, and so a failed run leaves the live dataset untouched.
@@ -124,9 +143,17 @@ def main() -> int:
 
     print(f"==> {args.dataset}: {url}", flush=True)
     try:
-        written = fetch.refresh(
-            args.dataset, path=staging, timeout=args.timeout, max_bytes=args.max_bytes
-        )
+        if args.dataset == "msrc":
+            written = fetch.refresh_msrc(
+                path=staging,
+                months=args.months,
+                timeout=args.timeout,
+                max_bytes=max(args.max_bytes, fetch.MSRC_MAX_BYTES),
+            )
+        else:
+            written = fetch.refresh(
+                args.dataset, path=staging, timeout=args.timeout, max_bytes=args.max_bytes
+            )
     except fetch.FetchDisabledError as exc:
         print(f"skipped: {exc}", file=sys.stderr)
         return EXIT_DISABLED
