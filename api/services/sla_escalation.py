@@ -74,6 +74,7 @@ from sqlalchemy import select, tuple_
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import agents as agents_service
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services import workflow_events
@@ -529,6 +530,13 @@ class SlaEscalationWorker:
         query = select(models.Agent).where(
             models.Agent.lifecycle_status == "active",
             models.Agent.last_seen_at < cutoff,
+            # Scanning agents only (#358). An endpoint agent is a workstation
+            # or a laptop: it is *expected* to be unreachable overnight, and
+            # announcing that as a fleet incident every night would train
+            # whoever receives these to ignore them. Its liveness has its own
+            # measure and its own window -- endpoint-device staleness at
+            # ``OCTO_ENDPOINT_STALE_HOURS``, hours rather than minutes.
+            models.Agent.agent_kind == agents_service.KIND_SCANNER,
         )
         if self._agent_cursor is not None:
             query = query.where(

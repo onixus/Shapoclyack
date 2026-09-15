@@ -52,6 +52,7 @@ from api.services import rbac as rbac_service
 from api.services import auth_audit
 from api.services import ch_ingest_worker
 from api.services import endpoint_inventory as endpoint_inventory_service
+from api.services import endpoint_agent_mgmt
 from api.services import endpoint_retention
 from api.services import health as health_service
 from api.services import screenshot_retention
@@ -189,6 +190,7 @@ def create_app() -> FastAPI:
     rbac_service.configure(settings)
     service_tokens_service.configure(settings)
     endpoint_inventory_service.configure(settings)
+    endpoint_agent_mgmt.configure(settings)
     webhooks_service.configure(settings)
     channels_service.configure(settings)
     wordlists_service.configure(settings)
