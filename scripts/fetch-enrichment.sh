@@ -122,7 +122,8 @@ for pair in \
   "kev/kev-overlay.json" \
   "exploit/exploit-overlay.json" \
   "advisories/debian-advisories.json" \
-  "advisories/ubuntu-advisories.json"; do
+  "advisories/ubuntu-advisories.json" \
+  "advisories/msrc-advisories.json"; do
   src="$SEED_DIR/$pair"
   dst="$DEST/$pair"
   # Same file (source checkout with no volume mounted): nothing to floor.
@@ -187,6 +188,15 @@ if advisory_fetch_enabled; then
   run advisories_ubuntu "advisories (ubuntu usn)" \
     python3 "$ROOT/scripts/fetch-advisories.py" ubuntu \
     -o "$DEST/advisories/ubuntu-advisories.json"
+  # Microsoft's Security Update Guide, for Windows endpoints (#358). Twelve
+  # monthly documents, ~16 MB of JSON each and ~21000 statements once the
+  # non-Windows products are dropped, so this is the slowest of the three by a
+  # wide margin -- and the one whose absence is least visible, because a
+  # Windows host then matches as `unknown_windows_build` rather than as
+  # anything alarming.
+  run advisories_msrc "advisories (microsoft update guide)" \
+    python3 "$ROOT/scripts/fetch-advisories.py" msrc \
+    -o "$DEST/advisories/msrc-advisories.json"
 else
   echo "==> advisories: skipped (opt-in; set OCTO_ADVISORY_FETCH_ENABLED=true to refresh)"
 fi

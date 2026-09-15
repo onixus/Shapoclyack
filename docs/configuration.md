@@ -864,3 +864,58 @@ Also render deployment configuration before applying it:
 ```bash
 kubectl kustomize k8s/shapoclyack/overlays/dev >/dev/null
 ```
+
+## Serving the API over TLS
+
+The API terminates TLS itself when `OCTO_API_TLS_CERT` and `OCTO_API_TLS_KEY`
+both point at a PEM certificate and its key. An ingress in front of it is still
+the right answer for a cluster that has one; this is for the installations that
+do not — a lab stand, a single node, an appliance — and for the case where a
+client refuses to talk to plaintext at all.
+
+**Both or neither.** Setting one without the other refuses to start, and so
+does a path that does not exist. A listener that was meant to be encrypted and
+silently is not is worse than one that does not come up, because every client
+that trusted it would have been right to refuse and would not know to.
+
+```
+OCTO_API_TLS_CERT=/etc/shapoclyack/tls/tls.crt
+OCTO_API_TLS_KEY=/etc/shapoclyack/tls/tls.key
+```
+
+Kubernetes probes must move to `scheme: HTTPS` with it, or they speak plaintext
+to a TLS listener and the pod never becomes ready. `kubelet` does not verify
+the certificate for an `httpGet` probe, so a self-signed one is fine there.
+
+### The kind stand
+
+`scripts/dev-up.sh` calls `scripts/dev-tls-cert.sh`, which issues a
+development CA and a server certificate and puts them in the cluster as the
+`shapoclyack-api-tls` Secret. The stand then answers **https** on the same port
+as before — 8080 — because changing the port would mean editing
+`k8s/kind-config.yaml`, and that means recreating the cluster and discarding
+the Postgres volume with the inventory in it.
+
+The certificate covers `127.0.0.1`, `localhost`, the in-cluster service names
+and **the machine's LAN address**. That last one is the point: an agent on
+another machine connects by IP, and a certificate without it verifies perfectly
+from the host that issued it and fails everywhere else — the shape of bug that
+is found last. It is reissued when the address changes or the certificate is
+within a week of expiry, and left alone otherwise, so a rebuild does not hand
+every agent a new trust anchor.
+
+Hand `.dev-tls/ca.crt` to whatever connects:
+
+```bash
+curl --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
+```
+
+An endpoint agent takes it as `tls_ca_file` (`/ca <path>` for
+`install-lariska.cmd`). This is what a remotely offered agent upgrade needs:
+without TLS the agent refuses it, because the build and the sha256 that vouches
+for it travel on the same connection and whoever can rewrite one can rewrite
+both.
+
+`.dev-tls/` is git-ignored. It holds a private key and a CA whose only purpose
+is to be trusted by lab agents; nothing in it belongs in a repository or on a
+machine that matters.

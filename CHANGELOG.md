@@ -609,7 +609,109 @@ All notable changes to Shapoclyack are documented in this file.
   adds the server-side `tls {}` block and the cert-manager `Certificate` to
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
 
+### Added
+
+- **Windows hosts are matched against Microsoft's advisories**
+  ([#358](https://github.com/onixus/Shapoclyack/issues/358)). Windows inventory
+  was collected and then reported as `unknown` in its entirety: 317 packages on
+  a real endpoint, zero assessed. The obstacle was never the data but the
+  question — every provider until now answers "what does this distribution say
+  about this source package in this release", and Windows cannot be asked that.
+  The uninstall registry lists products whose `DisplayVersion` no Microsoft
+  advisory refers to, and what an advisory *is* about is the operating system's
+  build.
+
+  So Windows is matched on the build. A host reports `10.0.<build>.<ubr>` and
+  Microsoft's remediations carry a `FixedBuild` in the same form: the build
+  identifies the product line, and the revision decides the verdict, because
+  Windows servicing is cumulative — the update that takes a host to a given
+  revision contains every fix shipped for that build before it. A `KB` the
+  agent reports is consulted as well, and can only move a verdict from
+  vulnerable to fixed: out-of-band updates raise no revision.
+
+  The unit of assessment is therefore the operating system, not the software
+  list, and the products are reported once, in aggregate, as what they are —
+  real inventory this matcher does not speak about. Not knowing comes in three
+  flavours and they stay distinct (`no_msrc_data`, `unknown_windows_build`,
+  `unparsable_os_version`), because they are three different things to fix and
+  one silence would render each as a clean host.
+
+  The feed is `scripts/fetch-advisories.py msrc`, merging twelve monthly
+  Security Update Guide documents, and the image build now fetches it
+  (`ADVISORY_FETCH=1`) rather than shipping the committed seed: ten statements
+  cover five build families and a fraction of their history, so a real Windows
+  host matched against them reads as far cleaner than it is. The seed remains
+  in the repository for an offline checkout and says what it is in its own
+  `note`; `ADVISORY_FETCH=0` builds without the fetch, and the System page
+  then reports a seed rather than coverage. A CVRF month covers
+  everything Microsoft ships, so only genuine NT builds are kept: Visual
+  Studio's `15.9.83.0` matches the shape of a Windows build exactly and is not
+  one.
+
+- **Endpoint agents can be managed from the console instead of from the
+  machine** ([#358](https://github.com/onixus/Shapoclyack/issues/358)).
+  Changing an endpoint agent's collection interval or log level, or putting a
+  new build on it, previously meant visiting the host. Both now travel in the
+  heartbeat response — the only channel that reaches a running agent — under a
+  new `endpoint_agent.manage` permission held by the tenant admin.
+
+  A **policy** (migration `0057`) is a tenant-wide default plus per-agent
+  overrides, merged field by field. It carries the intervals, the request
+  timeout, the spool size and the log level, and deliberately **cannot** carry
+  `server_url`, the provisioning key or `allow_plain_http`: an agent that can
+  be told where to report is an agent that can be told to report somewhere
+  else, and this channel is exactly what an attacker who reached the API would
+  use to say it. An unknown key is refused rather than dropped, so nobody
+  believes they moved a fleet that did not move. Out-of-range values are
+  refused too — the agent would reject them and keep its previous
+  configuration, which is indistinguishable from the policy never arriving.
+
+  A **release** is the binary itself, stored in the database with the sha256
+  the API computes from the stored bytes rather than accepting from the
+  uploader: it is what an endpoint checks a download against before executing
+  it. An upgrade is remote code execution by construction, so the digest and
+  the bytes come from one authenticated channel — the heartbeat names the
+  digest, the download is the same API with the same agent token. An agent is
+  never told to move to a build that is not stored for its platform; the reason
+  travels instead, so it lands in the agent's own log rather than only in a
+  policy nobody is reading. The agent refuses the whole mechanism over plain
+  HTTP unless its local configuration opts in.
+
+  Nothing is on by default: an installation that sets no policy and uploads no
+  build answers every heartbeat exactly as before.
+
 ### Fixed
+
+- **An endpoint agent is no longer told it is an out-of-date scanner**
+  ([#358](https://github.com/onixus/Shapoclyack/issues/358)). Two different
+  programs register through `POST /api/agent/register` — the scanning agent
+  that claims jobs, and the Lariska endpoint agent that only submits inventory
+  — and the platform could not tell them apart. On a live stand that showed as
+  an endpoint agent sitting in the scan fleet with `is_outdated: true` and an
+  offer to upgrade it from its own `0.2.0` to the API's `0.44-0907`, a version
+  from a different release line for a different binary. It was also a candidate
+  for the `agent_offline` escalation, which for a laptop that sleeps is a fleet
+  incident every night, while its real liveness is already measured as
+  endpoint-device staleness in hours rather than minutes. `agents.agent_kind`
+  separates them, and an endpoint agent is refused on `jobs/claim` as well — it
+  would never ask, but a workstation agent that *could* claim a scan would be a
+  workstation scanning the customer's network on the platform's instruction.
+  The correction runs one way only: a row may be corrected from scanner to
+  endpoint, never back.
+
+- **One Node or Python install no longer makes an endpoint vanish from the
+  inventory** ([#358](https://github.com/onixus/Shapoclyack/issues/358)). The
+  Lariska agent's runtime collectors report packages with `source` `pip`, `npm`
+  and `java`; the inventory request model accepted only distro and OS package
+  managers, so the API answered **422 for the entire snapshot** — not for the
+  offending rows. A host with Node installed submitted nothing at all, on every
+  interval, and appeared as a device that had simply stopped reporting. The
+  three sources are now accepted and stored. They are still not *matchable*: no
+  advisory provider covers them, so they carry reason `non_distro_source`, the
+  same answer `winreg`, `msi` and `brew` already get. The column is plain text,
+  so there is no migration; `docs/software-cve-matching.md` and `Agent_plan.md`
+  claimed these ecosystems were not collected at all, which stopped being true
+  when the agent grew the collectors.
 
 - **`agent_offline` now means the agent is gone, not that it is busy or that a
   packet was lost** ([#349](https://github.com/onixus/Shapoclyack/issues/349)).

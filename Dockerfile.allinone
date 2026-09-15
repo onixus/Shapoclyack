@@ -244,7 +244,18 @@ COPY --from=web-build /web/out /app/web/dist
 #     is the one that outlives the operator's memory of this build log. A dev or
 #     branch build keeps warning, so nobody is blocked by a bad network.
 ARG ENRICHMENT_STRICT=0
+# Vendor advisories are the one enrichment source that is opt-in at runtime
+# (api/services/advisories/fetch.py refuses without it), and an image build is
+# exactly the place the opt-in belongs: the alternative is shipping the
+# committed seeds, and a seed cannot assess a real host. It covers a handful of
+# statements, so a Windows endpoint matched against it reads as far cleaner
+# than it is -- which is the worst way for a security tool to be wrong.
+#
+# ADVISORY_FETCH=0 turns it back off for a build with no route to the vendors'
+# feeds; the image then carries the seeds and says so on the System page.
+ARG ADVISORY_FETCH=1
 RUN set -eu; \
+    export OCTO_ADVISORY_FETCH_ENABLED="$( [ "${ADVISORY_FETCH}" = "1" ] && echo true || echo false )"; \
     status=0; bash scripts/fetch-enrichment.sh || status=$?; \
     if [ "$status" -ge 2 ]; then \
       if [ "${ENRICHMENT_STRICT}" = "1" ]; then \

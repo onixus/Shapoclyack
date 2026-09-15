@@ -24,3 +24,7 @@ node_modules/
 dist/
 .next/
 
+
+# Development TLS material for the kind stand (scripts/dev-tls-cert.sh).
+# A private key, and a CA whose only job is to be trusted by lab agents.
+.dev-tls/

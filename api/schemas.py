@@ -415,6 +415,17 @@ class AgentRegisterRequest(BaseModel):
     hostname: str = ""
     version: str = ""
     labels: dict[str, str] = Field(default_factory=dict)
+    #: ``scanner`` (the default, and what every agent predating #358 is) or
+    #: ``endpoint``. Two different programs register here — the scanning agent
+    #: that claims jobs, and the Lariska endpoint agent that only submits
+    #: inventory — and the platform used to compare an endpoint agent's version
+    #: against the scanner's and call it permanently outdated.
+    #:
+    #: The build's target triple is not here: it travels on the heartbeat,
+    #: which is where an upgrade decision is made, and as the ``agent.platform``
+    #: label, which is where the fleet view reads it. Storing a third copy
+    #: would be a third thing that can disagree.
+    agent_kind: Literal["scanner", "endpoint"] = "scanner"
     # What this build of the agent can honour (#362) — today only
     # ``scan_policy``, meaning it applies the rate ceilings and the port
     # avoid-list the claim response carries. Declared at registration as well
@@ -439,6 +450,15 @@ class AgentRegisterRequest(BaseModel):
 class AgentHeartbeatRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     status: Literal["idle", "busy", "error"] = "idle"
+    #: Target triple, as on registration. Repeated here so an agent that was
+    #: upgraded onto a different build is looked up correctly without having to
+    #: re-register first.
+    platform: str | None = Field(default=None, max_length=64)
+    #: The management revision this agent has already applied (#358). The API
+    #: answers with the current one either way; this is what lets the agent
+    #: tell "nothing has changed" from "I have not applied this yet" without
+    #: re-applying and re-logging a policy on every beat.
+    applied_config_revision: int | None = None
     current_job_id: str | None = None
     detail: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -451,6 +471,11 @@ class AgentInfo(BaseModel):
     agent_id: str
     hostname: str = ""
     version: str = ""
+    #: ``scanner`` or ``endpoint`` (#358). The fields below that talk about
+    #: versions and upgrades describe the scanning agent's release line, and
+    #: are left empty for an endpoint agent rather than filled with an answer
+    #: from the wrong program.
+    agent_kind: Literal["scanner", "endpoint"] = "scanner"
     labels: dict[str, str] = Field(default_factory=dict)
     status: Literal["idle", "busy", "error", "stale"] = "idle"
     current_job_id: str | None = None
@@ -541,6 +566,24 @@ class AgentHeartbeatResponse(AgentInfo):
     #: and upload whatever it produced with ``cancelled=true``. False for every
     #: other case, including a heartbeat naming a job this agent does not hold.
     cancel_requested: bool = False
+
+    #: Endpoint agents only (#358): the settings an operator has decided for
+    #: this agent, and the revision they are at. Absent for scanning agents and
+    #: for an installation that has set no policy, which is the difference
+    #: between "run these" and "nobody has said" — an empty object would read
+    #: as an instruction to reset every knob to its default.
+    managed_settings: dict[str, Any] | None = None
+    managed_revision: int | None = None
+    #: The build this agent should move to, if it is not already on it: the
+    #: version, its sha256, and the path to fetch it from. Absent unless an
+    #: operator named a version *and* a matching build is stored, so an agent
+    #: is never told to upgrade to something it cannot get.
+    managed_update: dict[str, Any] | None = None
+    #: Why a requested upgrade is not being offered — no build for this
+    #: platform, or an agent that reports no platform at all. Carried so the
+    #: condition is visible in the agent's own log rather than only to whoever
+    #: reads the policy.
+    managed_update_blocked: str | None = None
 
 
 class UpdateAgentStatusRequest(BaseModel):
@@ -1551,7 +1594,16 @@ class EndpointSoftwareItem(BaseModel):
     version: str | None = Field(default=None, max_length=128)
     publisher: str | None = Field(default=None, max_length=256)
     architecture: str | None = Field(default=None, max_length=32)
-    source: Literal["apt", "dpkg", "rpm", "winreg", "msi", "brew", "other"] = "other"
+    # Every source the Lariska collector can report. ``pip``/``npm``/``java``
+    # come from its runtime collectors (#358): the agent has emitted them since
+    # it grew those, and this literal refusing them rejected the *whole*
+    # snapshot with 422 — one Node install made a host invisible rather than
+    # partially inventoried. Widening is backward compatible (the column is
+    # plain text) and does not make them matchable: anything outside
+    # ``_SOURCE_FLAVORS`` matches as ``non_distro_source``.
+    source: Literal[
+        "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "kb", "other"
+    ] = "other"
     install_location: str | None = Field(default=None, max_length=1024)
 
 
@@ -2884,3 +2936,54 @@ class TenantQuotaRequest(BaseModel):
     max_assets: int | None = Field(default=None, ge=0, le=10_000_000)
     max_scans_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
     note: str = Field(default="", max_length=500)
+
+
+class EndpointAgentPolicyRequest(BaseModel):
+    """What an operator wants one endpoint agent, or all of them, to do (#358).
+
+    ``settings`` carries only the knobs that are safe to decide centrally —
+    collection intervals, request timeout, spool size and log level. It cannot
+    carry ``server_url``, the provisioning key or ``allow_plain_http``: an
+    agent that can be told where to report is an agent that can be told to
+    report somewhere else, and this is the channel an attacker who reached the
+    API would use to say it. The service refuses an unknown key rather than
+    dropping it, so an operator never believes they moved a fleet that did not
+    move.
+    """
+
+    settings: dict[str, Any] = Field(default_factory=dict)
+    #: The build the agent should be running. Acted on only when a matching
+    #: build has been uploaded for the platform the agent reports; otherwise
+    #: the agent is told nothing and the heartbeat says why.
+    desired_version: str | None = Field(default=None, max_length=64)
+
+
+class EndpointAgentPolicyInfo(BaseModel):
+    policy_id: str
+    tenant_id: str
+    #: ``None`` is the tenant-wide default that every agent inherits.
+    agent_id: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+    desired_version: str | None = None
+    #: Incremented on every write. The agent reports the revision it has
+    #: applied, which is what keeps a policy from being re-applied and
+    #: re-logged on every heartbeat.
+    revision: int = 1
+    updated_at: str | None = None
+    updated_by: str | None = None
+
+
+class EndpointAgentReleaseInfo(BaseModel):
+    """One stored build of the endpoint agent, without its bytes."""
+
+    version: str
+    #: Target triple, e.g. ``x86_64-pc-windows-msvc``.
+    platform: str
+    #: Computed by the API from the stored bytes, never accepted from the
+    #: uploader: this is what an endpoint verifies a download against before
+    #: executing it.
+    sha256: str
+    size_bytes: int
+    notes: str | None = None
+    uploaded_at: str | None = None
+    uploaded_by: str | None = None

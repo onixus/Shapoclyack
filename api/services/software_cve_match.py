@@ -47,6 +47,7 @@ from sqlalchemy import case, delete, insert, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import advisories, package_identity, version_compare
+from api.services.advisories import msrc
 from api.settings import Settings
 
 _log = logging.getLogger("shapoclyack.software-cve-match")
@@ -268,6 +269,13 @@ def match_software(
     vulnerable, unknown distros not reported as anything — is testable without
     Postgres.
     """
+    # Windows is matched on a different axis entirely and takes its own path
+    # (#358): a Microsoft advisory is about an operating system *build*, not
+    # about a package version, and there is no source package to ask a
+    # distribution about.
+    if (device.get("os_family") or "").strip().lower() == "windows":
+        return _match_windows(device=device, software=software)
+
     ctx = package_identity.resolve_distro(
         os_family=device.get("os_family"),
         os_name=device.get("os_name"),
@@ -328,6 +336,159 @@ def match_software(
         packages_total=len(software),
         packages_assessed=assessed,
         packages_unassessed=sum(len(names) for names in unassessed.values()),
+    )
+
+
+def _match_windows(
+    *,
+    device: dict[str, Any],
+    software: list[dict[str, Any]],
+    dataset_for: Any = None,
+) -> DeviceMatchResult:
+    """Match a Windows host against Microsoft's remediations.
+
+    The unit of assessment is the operating system, not the software list. A
+    Windows host reports hundreds of products whose `DisplayVersion` no advisory
+    refers to; what an advisory *does* refer to is the build, and whether the
+    host's revision is at or past the one that carries the fix. So
+    ``packages_assessed`` is 1 when the OS could be assessed and 0 when it could
+    not, and the products are reported once, in aggregate, as what they are:
+    real inventory that this matcher does not speak about.
+
+    Every way of not knowing is a distinct reason. "No dataset installed",
+    "this build is not in the feed" and "the host did not report a build" look
+    identical from the outside and are three different things to fix, and a
+    matcher that collapsed them into silence would render each as a clean host.
+    """
+    # Resolved here rather than as a default argument: a default binds the
+    # function object at import, so a caller (or a test) that replaces
+    # ``msrc.get_dataset`` afterwards would still get the original.
+    dataset = (dataset_for or msrc.get_dataset)()
+    installed = msrc.parse_build(device.get("os_version"))
+    kbs = [
+        str(item.get("name") or "")
+        for item in software
+        if str(item.get("source") or "").lower() == "kb"
+    ]
+    # The products, and the updates, are both inventory this matcher does not
+    # assess one by one -- the updates are evidence *for* the assessment.
+    products = [
+        str(item.get("name") or "")
+        for item in software
+        if str(item.get("source") or "").lower() != "kb"
+    ]
+
+    candidates: list[MatchCandidate] = []
+    release = installed.family if installed is not None else None
+
+    def unknown(reason: str, evidence: dict[str, Any]) -> MatchCandidate:
+        return MatchCandidate(
+            cve_id="",
+            status=UNKNOWN,
+            unknown_reason=reason,
+            distro="windows",
+            distro_release=release,
+            provider=msrc.PROVIDER_NAME if dataset.available() else "",
+            feed_date=dataset.feed_date(),
+            evidence=evidence,
+        )
+
+    assessed = 0
+    if installed is None:
+        candidates.append(
+            unknown(
+                package_identity.REASON_UNPARSABLE_OS_VERSION,
+                {
+                    "reason": package_identity.REASON_UNPARSABLE_OS_VERSION,
+                    "os_version": device.get("os_version") or "",
+                },
+            )
+        )
+    elif not dataset.available():
+        candidates.append(
+            unknown(
+                package_identity.REASON_NO_MSRC_DATA,
+                {
+                    "reason": package_identity.REASON_NO_MSRC_DATA,
+                    "os_version": str(installed),
+                },
+            )
+        )
+    elif not dataset.remediations_for(installed):
+        candidates.append(
+            unknown(
+                package_identity.REASON_UNKNOWN_WINDOWS_BUILD,
+                {
+                    "reason": package_identity.REASON_UNKNOWN_WINDOWS_BUILD,
+                    "os_version": str(installed),
+                    "build_families_in_feed": len(dataset.families()),
+                },
+            )
+        )
+    else:
+        assessed = 1
+        by_cve: dict[str, MatchCandidate] = {}
+        for verdict in msrc.evaluate(
+            installed=installed, installed_kbs=kbs, dataset=dataset
+        ):
+            candidate = MatchCandidate(
+                cve_id=verdict.cve_id,
+                status=VULNERABLE if verdict.status == "vulnerable" else FIXED,
+                source_package=verdict.remediation.product or "windows",
+                installed_package=str(device.get("os_name") or "Windows"),
+                installed_version=str(installed),
+                fixed_version=str(verdict.remediation.fixed_build),
+                advisory_id=verdict.remediation.kb or None,
+                advisory_url=verdict.remediation.url,
+                provider=msrc.PROVIDER_NAME,
+                severity=verdict.remediation.severity,
+                distro="windows",
+                distro_release=release,
+                feed_date=dataset.feed_date(),
+                evidence={
+                    "installed_build": str(installed),
+                    "fixed_build": str(verdict.remediation.fixed_build),
+                    "kb": verdict.remediation.kb,
+                    "product": verdict.remediation.product,
+                    # Says which of the two signals decided it, because the
+                    # answer to "why does this host count as patched" is
+                    # different for each.
+                    "fixed_by_installed_kb": verdict.fixed_by_installed_kb,
+                },
+            )
+            existing = by_cve.get(candidate.cve_id)
+            by_cve[candidate.cve_id] = (
+                candidate if existing is None else _worse(existing, candidate)
+            )
+        candidates.extend(by_cve.values())
+
+    if products:
+        candidates.append(
+            unknown(
+                package_identity.REASON_WINDOWS_PRODUCT,
+                {
+                    "reason": package_identity.REASON_WINDOWS_PRODUCT,
+                    "package_count": len(products),
+                    "packages": sorted(products)[:_MAX_UNKNOWN_SAMPLES],
+                    "truncated": len(products) > _MAX_UNKNOWN_SAMPLES,
+                },
+            )
+        )
+
+    return DeviceMatchResult(
+        device_id=str(device.get("device_id") or ""),
+        snapshot_id=device.get("latest_snapshot_id"),
+        distro="windows",
+        distro_release=release,
+        candidates=candidates,
+        # The operating system is counted here, and it is not one of the rows in
+        # the software list -- it is the thing that was assessed. Without it the
+        # three numbers do not add up, and a live host showed exactly that:
+        # "317 packages, 1 assessed, 317 unassessed". Updates are not counted:
+        # they are the evidence for the assessment, not a second subject of it.
+        packages_total=len(products) + 1,
+        packages_assessed=assessed,
+        packages_unassessed=len(products) + (1 - assessed),
     )
 
 

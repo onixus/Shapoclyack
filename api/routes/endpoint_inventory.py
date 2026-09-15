@@ -5,7 +5,17 @@ from __future__ import annotations
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 
 from api.auth import (
     AgentPrincipal,
@@ -13,9 +23,15 @@ from api.auth import (
     TenantPrincipal,
     get_settings,
     require_agent,
+    require_permission,
     require_tenant,
 )
+from api.core import permissions as permission_catalog
+from api.routes._audit import AuditDep
 from api.schemas import (
+    EndpointAgentPolicyInfo,
+    EndpointAgentPolicyRequest,
+    EndpointAgentReleaseInfo,
     EndpointDeviceInfo,
     EndpointInventoryResponse,
     EndpointInventorySnapshotRequest,
@@ -30,6 +46,8 @@ from api.schemas import (
     TenantPatchGap,
 )
 from api.services import agents as agents_service
+from api.services import audit as audit_service
+from api.services import endpoint_agent_mgmt
 from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import metrics as metrics_service
 from api.services import patch_gap as patch_gap_service
@@ -285,3 +303,212 @@ def device_patch_gap(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Remote management of the endpoint agents (#358)
+#
+# An operator could previously change an agent's configuration or its build
+# only by visiting the machine. These routes decide both centrally; the
+# heartbeat response in ``api/routes/agents.py`` is what carries the decision
+# to a running agent.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agent/policies", response_model=list[EndpointAgentPolicyInfo])
+def list_agent_policies(
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+) -> list[EndpointAgentPolicyInfo]:
+    """Every policy this tenant has set: the default first, then the overrides."""
+    return [
+        EndpointAgentPolicyInfo(**row)
+        for row in endpoint_agent_mgmt.list_policies(principal.tenant_id)
+    ]
+
+
+@router.put("/agent/policy", response_model=EndpointAgentPolicyInfo)
+def set_default_agent_policy(
+    body: EndpointAgentPolicyRequest,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+    audit: AuditDep,
+) -> EndpointAgentPolicyInfo:
+    """Set the tenant-wide default every endpoint agent inherits."""
+    return _write_agent_policy(body, principal, audit, agent_id=None)
+
+
+@router.put("/agent/policy/{agent_id}", response_model=EndpointAgentPolicyInfo)
+def set_agent_policy(
+    agent_id: str,
+    body: EndpointAgentPolicyRequest,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+    audit: AuditDep,
+) -> EndpointAgentPolicyInfo:
+    """Override the default for one agent, field by field."""
+    agent = agents_service.get_agent(agent_id)
+    if agent is None or agent.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent")
+    return _write_agent_policy(body, principal, audit, agent_id=agent_id)
+
+
+def _write_agent_policy(
+    body: EndpointAgentPolicyRequest,
+    principal: TenantPrincipal,
+    audit: AuditDep,
+    *,
+    agent_id: str | None,
+) -> EndpointAgentPolicyInfo:
+    try:
+        row = endpoint_agent_mgmt.set_policy(
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+            settings=body.settings,
+            desired_version=body.desired_version,
+            updated_by=principal.username,
+        )
+    except endpoint_agent_mgmt.PolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    # Audited because naming a version here is the authority to replace a
+    # binary on every endpoint in the tenant -- the record of who asked for
+    # that, and when, is the point.
+    audit_service.record_standalone(
+        audit,
+        action="endpoint_agent.policy.set",
+        resource_type="endpoint_agent_policy",
+        resource_id=agent_id or "(tenant default)",
+        tenant_id=principal.tenant_id,
+        after={"settings": row["settings"], "desired_version": row["desired_version"]},
+    )
+    return EndpointAgentPolicyInfo(**row)
+
+
+@router.delete("/agent/policy", status_code=status.HTTP_204_NO_CONTENT)
+def delete_default_agent_policy(
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+) -> Response:
+    endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=None)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/agent/policy/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_policy(
+    agent_id: str,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+) -> Response:
+    endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=agent_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/agent/releases", response_model=list[EndpointAgentReleaseInfo])
+def list_agent_releases(
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+) -> list[EndpointAgentReleaseInfo]:
+    """Builds this installation can hand out.
+
+    Installation-wide rather than per tenant: it is the same program, and a
+    build stored twice is a build that can be two different binaries.
+    """
+    return [EndpointAgentReleaseInfo(**row) for row in endpoint_agent_mgmt.list_releases()]
+
+
+@router.post(
+    "/agent/releases",
+    response_model=EndpointAgentReleaseInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_agent_release(
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+    audit: AuditDep,
+    version: Annotated[str, Form()],
+    platform: Annotated[str, Form()],
+    binary: Annotated[UploadFile, File()],
+    notes: Annotated[str | None, Form()] = None,
+) -> EndpointAgentReleaseInfo:
+    """Store one build of the endpoint agent.
+
+    The sha256 in the response is computed here, from the stored bytes. It is
+    not accepted from the uploader: it is what an endpoint checks a download
+    against before executing it, and a digest travelling beside the bytes it
+    describes attests to nothing.
+    """
+    content = await binary.read()
+    try:
+        row = endpoint_agent_mgmt.store_release(
+            version=version,
+            platform=platform,
+            content=content,
+            notes=notes,
+            uploaded_by=principal.username,
+        )
+    except endpoint_agent_mgmt.ReleaseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    audit_service.record_standalone(
+        audit,
+        action="endpoint_agent.release.upload",
+        resource_type="endpoint_agent_release",
+        resource_id=f"{row['version']}/{row['platform']}",
+        tenant_id=principal.tenant_id,
+        after={"sha256": row["sha256"], "size_bytes": row["size_bytes"]},
+    )
+    return EndpointAgentReleaseInfo(**row)
+
+
+@router.delete(
+    "/agent/releases/{version}/{platform}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_agent_release(
+    version: str,
+    platform: str,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    ],
+) -> Response:
+    endpoint_agent_mgmt.delete_release(version=version, platform=platform)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/agent/releases/{version}/{platform}/download")
+def download_agent_release(
+    version: str,
+    platform: str,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+) -> Response:
+    """Hand the build to an agent that has been told to move to it.
+
+    Authenticated as the agent, with the same token it heartbeats with, so the
+    digest and the bytes come from one channel rather than two: an attacker who
+    could substitute the download would have had to substitute the heartbeat
+    that named its digest.
+    """
+    agents_service.require_active(principal.agent_id or "")
+    found = endpoint_agent_mgmt.get_release_bytes(version=version, platform=platform)
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown build")
+    content, digest = found
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            # Repeated in the response so a download saved out of band can be
+            # checked against the same value the heartbeat carried.
+            "X-Content-SHA256": digest,
+            "Content-Disposition": f'attachment; filename="lariska-{version}-{platform}"',
+        },
+    )

@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     ForeignKey,
+    LargeBinary,
     ForeignKeyConstraint,
     Index,
     UniqueConstraint,
@@ -1528,6 +1529,13 @@ class Agent(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.tenant_id"), index=True)
     hostname: Mapped[str] = mapped_column(default="")
     version: Mapped[str] = mapped_column(default="")
+    # ``scanner`` or ``endpoint`` (#358). Two different programs register here:
+    # the scanning agent that claims jobs, and the Lariska endpoint agent that
+    # only submits inventory. Without the distinction the fleet view compared
+    # an endpoint agent's version against the *scanner's* and declared it
+    # permanently outdated, and the ``agent_offline`` escalation treated a
+    # sleeping laptop as a scanner that had gone missing.
+    agent_kind: Mapped[str] = mapped_column(default="scanner", server_default="scanner")
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(default="idle")
     # What an *operator* decided about this agent (active | disabled |
@@ -2356,4 +2364,81 @@ class IdempotencyRecord(Base):
         ),
         # The purge's only query.
         Index("ix_idempotency_created_at", "created_at"),
+    )
+
+
+class EndpointAgentRelease(Base):
+    """One build of the Lariska endpoint agent the platform can hand out (#358).
+
+    Identified by ``(version, platform)``, where platform is the target triple
+    the agent reports for itself (``x86_64-pc-windows-msvc``). Two builds of
+    one version for two platforms are two rows; a rebuilt binary for a version
+    that already exists replaces the row, because a version that means two
+    different binaries is a version that means nothing.
+
+    **The bytes are in the row.** The alternative is a file on a volume, and
+    the API already cannot run more than one replica because run artifacts sit
+    on an RWO PVC (#336) — putting a path an endpoint fleet polls behind the
+    same constraint would deepen exactly the problem that issue is about.
+    ``sha256`` is what the agent verifies the download against before it runs
+    anything, and it is computed here, from the stored bytes, rather than
+    accepted from whoever uploaded them.
+    """
+
+    __tablename__ = "endpoint_agent_releases"
+
+    version: Mapped[str] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(primary_key=True)
+    sha256: Mapped[str]
+    size_bytes: Mapped[int]
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    notes: Mapped[str | None] = mapped_column(default=None)
+    uploaded_at: Mapped[datetime]
+    uploaded_by: Mapped[str | None] = mapped_column(default=None)
+
+
+class EndpointAgentPolicy(Base):
+    """What an operator wants an endpoint agent doing, without visiting it (#358).
+
+    ``agent_id IS NULL`` is the tenant-wide default; a row naming an agent
+    overrides it, field by field. ``settings`` holds only the knobs that are
+    safe to decide centrally — intervals and log level — and deliberately not
+    ``server_url`` or the provisioning key: an agent that can be told where to
+    report is an agent that can be told to report somewhere else.
+
+    ``revision`` increments on every write. The agent echoes the revision it
+    has applied, so a heartbeat carries a decision only when there is a new
+    one to carry, and an agent that restarts does not re-apply and re-log a
+    policy it was already running.
+    """
+
+    __tablename__ = "endpoint_agent_policies"
+
+    policy_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    agent_id: Mapped[str | None] = mapped_column(default=None)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    desired_version: Mapped[str | None] = mapped_column(default=None)
+    revision: Mapped[int] = mapped_column(default=1, server_default="1")
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index(
+            "uq_endpoint_agent_policy_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+            sqlite_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_endpoint_agent_policy_agent",
+            "tenant_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+            sqlite_where=text("agent_id IS NOT NULL"),
+        ),
     )

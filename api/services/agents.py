@@ -234,6 +234,14 @@ class AgentVersionTooOld(RuntimeError):
 # what holds the two together -- it fails the moment they drift.
 LATEST_AGENT_VERSION = __version__
 
+#: The two programs that register through ``POST /api/agent/register``: the
+#: scanning agent that claims jobs, and the Lariska endpoint agent that only
+#: submits inventory (#358). Everything the platform says about versions,
+#: upgrades and going offline was written for the first and is wrong for the
+#: second, so the kind is stored and the answers branch on it.
+KIND_SCANNER = "scanner"
+KIND_ENDPOINT = "endpoint"
+
 
 def _min_version() -> str:
     return (_require_settings().agent_min_version or "").strip()
@@ -339,8 +347,16 @@ def _to_info(row: models.Agent) -> AgentInfo:
     lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
     human_detail, metrics, capabilities, upgrade_requested = _extract_detail(row.detail)
     version = row.version or ""
-    is_outdated = bool(version and version != LATEST_AGENT_VERSION)
-    upgrade_required = is_below_min_version(version)
+    kind = row.agent_kind or KIND_SCANNER
+    # Both of these compare against the *scanner's* version line, which an
+    # endpoint agent has no relation to: Lariska 0.2.0 against the API's
+    # 0.44-0907 made every endpoint permanently "outdated", with an offer to
+    # upgrade it to a build that is not its program (#358). An endpoint agent's
+    # version is governed by its own policy instead
+    # (``api/services/endpoint_agent_mgmt.py``).
+    is_scanner = kind == KIND_SCANNER
+    is_outdated = bool(is_scanner and version and version != LATEST_AGENT_VERSION)
+    upgrade_required = is_scanner and is_below_min_version(version)
     return AgentInfo(
         agent_id=row.agent_id,
         hostname=row.hostname or "",
@@ -355,8 +371,9 @@ def _to_info(row: models.Agent) -> AgentInfo:
         tenant_id=row.tenant_id or "default",
         metrics=metrics,
         capabilities=capabilities,
+        agent_kind=kind,  # type: ignore[arg-type]
         is_outdated=is_outdated,
-        latest_version=LATEST_AGENT_VERSION,
+        latest_version=LATEST_AGENT_VERSION if is_scanner else "",
         upgrade_requested=upgrade_requested,
         min_version=_min_version(),
         upgrade_required=upgrade_required,
@@ -610,6 +627,7 @@ def register_agent(
     metrics: dict[str, Any] | None = None,
     capabilities: list[str] | None = None,
     provisioning_key_id: str | None = None,
+    agent_kind: str = KIND_SCANNER,
     audit: "audit_service.AuditContext | None" = None,
 ) -> AgentInfo:
     settings = _require_settings()
@@ -620,6 +638,14 @@ def register_agent(
             if row.tenant_id and row.tenant_id != tenant_id:
                 raise PermissionError("agent_id belongs to a different tenant")
             previous_version = row.version or ""
+            # Re-registration may correct the kind -- an endpoint agent
+            # upgraded from a build that predates #358 registered as a scanner,
+            # because that is all it could say -- but never in the direction
+            # that grants authority: a row already recorded as an endpoint
+            # agent cannot talk its way back into the scanning fleet, where it
+            # would become eligible to claim another tenant's work.
+            if agent_kind == KIND_ENDPOINT:
+                row.agent_kind = KIND_ENDPOINT
             row.hostname = hostname or row.hostname or ""
             row.version = version or row.version or ""
             row.tenant_id = tenant_id
@@ -662,6 +688,7 @@ def register_agent(
             hostname=hostname or "",
             version=version or "",
             labels=dict(labels or {}),
+            agent_kind=agent_kind,
             status="idle",
             lifecycle_status=LIFECYCLE_ACTIVE,
             provisioning_key_id=provisioning_key_id,
@@ -689,6 +716,7 @@ def register_agent(
                 "agent_id": row.agent_id,
                 "hostname": row.hostname,
                 "version": row.version,
+                "agent_kind": row.agent_kind,
                 "labels": dict(row.labels or {}),
                 # Which key bought this place in the fleet is the first thing
                 # an operator asks after an unexpected agent appears (#308).

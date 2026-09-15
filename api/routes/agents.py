@@ -46,6 +46,7 @@ from api.schemas import (
 from api.services import agent_deployer
 from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
+from api.services import endpoint_agent_mgmt
 from api.services import audit as audit_service
 from api.services import jobs as jobs_service
 from api.services import scan_policy
@@ -135,6 +136,11 @@ def register_agent(
             # stored", and a list — empty included — when it did, which
             # replaces it. See ``AgentRegisterRequest.capabilities``.
             capabilities=body.capabilities,
+            # Which of the two programs this is (#358). The service accepts a
+            # scanner row being corrected to an endpoint one and refuses the
+            # reverse, so a host recorded as an endpoint cannot register its
+            # way into the scanning fleet.
+            agent_kind=body.agent_kind,
             tenant_id=principal.tenant_id,
             provisioning_key_id=principal.key_id,
             audit=audit,
@@ -179,7 +185,39 @@ def heartbeat(
     cancel_requested = bool(body.current_job_id) and jobs_service.mark_running(
         settings, str(body.current_job_id), agent_id=body.agent_id
     )
-    return AgentHeartbeatResponse(**info.model_dump(), cancel_requested=cancel_requested)
+
+    # Remote management, for endpoint agents only (#358). A scanning agent is
+    # configured by the file on its host and upgraded with the image it ships
+    # in; an endpoint agent is on a workstation nobody is going to visit, which
+    # is what this channel is for. Computed only for the kind that can act on
+    # it, so a fleet of scanners pays nothing for the feature.
+    managed_settings = None
+    managed_revision = None
+    managed_update = None
+    managed_update_blocked = None
+    if info.agent_kind == agents_service.KIND_ENDPOINT:
+        plan = endpoint_agent_mgmt.plan_for_agent(
+            tenant_id=info.tenant_id,
+            agent_id=body.agent_id,
+            current_version=info.version,
+            platform=body.platform,
+        )
+        # ``None`` rather than ``{}`` when nothing is set: an empty object
+        # would read to the agent as "reset every knob", and an installation
+        # that has never opened this page has not asked for anything.
+        managed_settings = plan.settings or None
+        managed_revision = plan.revision or None
+        managed_update = plan.update
+        managed_update_blocked = plan.update_blocked
+
+    return AgentHeartbeatResponse(
+        **info.model_dump(),
+        cancel_requested=cancel_requested,
+        managed_settings=managed_settings,
+        managed_revision=managed_revision,
+        managed_update=managed_update,
+        managed_update_blocked=managed_update_blocked,
+    )
 
 
 @router.post(
@@ -205,6 +243,16 @@ def claim_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id; register first")
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+    # An endpoint agent has no scanner in it: it collects the inventory of the
+    # host it runs on and submits it. It would never ask for a job, so this
+    # refusal is not about correcting behaviour but about not relying on that --
+    # a workstation agent that could claim a scan would be a workstation that
+    # scans the customer's network on the platform's instruction (#358).
+    if agent.agent_kind == agents_service.KIND_ENDPOINT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Endpoint agents do not run scan jobs",
+        )
     _require_active(agent_id)
     # The version floor is checked here rather than in require_agent: an agent
     # below it must still register and heartbeat, or the fleet view would lose
