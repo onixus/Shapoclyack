@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_tenant
+from api.routes import _artifact_download as artifact_download
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AliveHostItem,
@@ -187,36 +189,39 @@ def download_artifact(
     artifact_path: str,
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> FileResponse:
+) -> Response:
     """Binary-safe artifact download. Unlike the text endpoint above (which
     UTF-8-decodes and truncates to 1 MB — fine for previewing JSON/TXT but
-    corrupts binaries like ``summary.pdf``), this streams the raw file with an
-    attachment disposition and a content-type derived from its extension."""
+    corrupts binaries like ``summary.pdf``), this hands over the raw bytes with
+    an attachment disposition and a content-type derived from its extension.
+
+    Answered from the artifact store by key (#336), so downloading one
+    screenshot does not fetch the scan it belongs to. The path resolver below
+    is the fallback for the flat single-run layout, which has no keys."""
     if runs_service.is_restricted_artifact(artifact_path) and (
         ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
-    if runs_service.is_screenshot_path(artifact_path):
-        if ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
-        target = runs_service.resolve_artifact(
-            settings,
-            run_id,
-            artifact_path,
-            tenant_id=_run_tenant_filter(principal),
-            allow_screenshots=True,
+    screenshot = runs_service.is_screenshot_path(artifact_path)
+    if screenshot and ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    scoping = {
+        "tenant_id": _run_tenant_filter(principal),
+        "allow_screenshots": screenshot,
+        "allow_restricted": not screenshot,
+    }
+    filename = artifact_path.rsplit("/", 1)[-1]
+    media_type = _ARTIFACT_MEDIA_TYPES.get(
+        Path(filename).suffix.lower(), "application/octet-stream"
+    )
+    key = runs_service.artifact_key(settings, run_id, artifact_path, **scoping)
+    if key is not None:
+        return artifact_download.respond(
+            settings, key, media_type=media_type, filename=filename
         )
-    else:
-        target = runs_service.resolve_artifact(
-            settings,
-            run_id,
-            artifact_path,
-            tenant_id=_run_tenant_filter(principal),
-            allow_restricted=True,
-        )
+    target = runs_service.resolve_artifact(settings, run_id, artifact_path, **scoping)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
-    media_type = _ARTIFACT_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
     return FileResponse(target, media_type=media_type, filename=target.name)
 
 

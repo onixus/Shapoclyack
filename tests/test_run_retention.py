@@ -116,7 +116,14 @@ def test_sweep_deletes_orphaned_job_inputs(tmp_path: Path):
     settings = make_settings(tmp_path, run_retention_days=30)
     stale = _write_job_inputs(settings, "job-abandoned")
     fresh = _write_job_inputs(settings, "job-running")
+    # The files, not the directory. Since #336 the reaper asks the artifact
+    # store how old a subtree is, and object storage has no directories to
+    # carry a timestamp -- a subtree is as old as the newest thing in it. Which
+    # is the same answer in practice: a job's inputs are all written once, at
+    # the moment the scan is accepted, and never touched again.
     _age(stale, days=45)
+    for path in stale.iterdir():
+        _age(path, days=45)
 
     stats = sweep(settings, now=datetime.now(UTC))
 

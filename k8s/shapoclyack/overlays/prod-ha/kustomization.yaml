@@ -13,9 +13,15 @@
 #
 #   1. API: >= 2 replicas, spread across nodes, HPA to 6, and base's PDB
 #      finally has something to protect.
-#      Requires ReadWriteMany artifact storage — until #336 moves artifacts to
-#      object storage, two API pods on two nodes both mount `scanner-data`, and
-#      an RWO volume can only be attached to one node at a time.
+#      Requires somewhere two API pods can both reach the artifacts, because an
+#      RWO volume attaches to one node at a time. Since #336 there are two ways
+#      to have that, and exactly one of them must be enabled below:
+#        * artifacts-s3-patch.yaml — object storage, no shared filesystem at
+#          all. The better answer where S3 or MinIO is available.
+#        * pvc-rwx-patch.yaml — a ReadWriteMany storage class, named by you.
+#      Enabled by default: the RWX patch, because it is what this overlay has
+#      always carried and switching backends is not something an upgrade should
+#      do to an installation on its own.
 #   2. NATS: 3-node JetStream cluster with R3 streams.
 #   3. Postgres: external/managed; the in-cluster StatefulSet is removed.
 #   4. ClickHouse and NATS URLs switched on (base leaves both empty).
@@ -63,7 +69,10 @@ resources:
 # at six, because its meaning scales with the replica count.
 patches:
   - path: api-ha-patch.yaml
+  # Artifacts: pick ONE of the next two. They answer the same prerequisite and
+  # applying both would configure object storage *and* demand an RWX class.
   - path: pvc-rwx-patch.yaml
+  # - path: artifacts-s3-patch.yaml
   # Uncomment when the external database's certificate does not chain to a
   # public root — which is the usual case. Left off by default because it makes
   # the `shapoclyack-postgres-ca` Secret a hard prerequisite, and an

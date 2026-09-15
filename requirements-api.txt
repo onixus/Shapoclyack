@@ -12,6 +12,9 @@ SQLAlchemy==2.0.51
 alembic==1.18.5
 psycopg[binary]==3.3.4
 prometheus-client==0.26.0
+# Artifact object storage (#336). Only imported when
+# OCTO_ARTIFACT_BACKEND=s3; the filesystem backend never touches it.
+boto3==1.43.94
 opentelemetry-api==1.31.1
 opentelemetry-sdk==1.31.1
 opentelemetry-exporter-otlp-proto-http==1.31.1

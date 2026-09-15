@@ -25,7 +25,6 @@ import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
-from pathlib import Path
 from typing import Any
 
 from api.services import egress
@@ -224,19 +223,20 @@ def deliver(
     settings: Settings,
     *,
     report: dict[str, Any],
-    path: Path,
+    payload: bytes,
+    filename: str,
     recipients: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Send one rendered report to every recipient; never raises."""
+    """Send one rendered report to every recipient; never raises.
+
+    Takes the bytes rather than a path since #336: a report lives in the
+    artifact store, which on an object-storage installation is not a file this
+    process can open. The caller fetches once and every recipient is sent the
+    same copy -- which was already true, and is now the only thing that can be.
+    """
 
     if not recipients:
         return []
-    try:
-        payload = path.read_bytes()
-    except OSError as exc:
-        return [_entry(entry, "failed", f"report file unreadable: {exc}") for entry in recipients]
-
-    filename = path.name
     entries: list[dict[str, Any]] = []
     for recipient in recipients:
         transport = str(recipient.get("transport") or "")

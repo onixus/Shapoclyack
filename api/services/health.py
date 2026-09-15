@@ -22,6 +22,14 @@ control plane does — jobs, agents, runs — bought in exchange for a dashboard
 So ClickHouse is reported and degrades ``/api/health``, but does not fail
 ``/readyz``. Postgres and NATS do: without them a replica cannot serve a
 request or dispatch a job, and taking it out of the Service is the point.
+
+Object storage (#336) is checked on the same terms as ClickHouse, and for the
+same reason rather than a weaker one: every replica shares one bucket, so a
+bucket that is briefly unreachable would fail *all* of their probes at once and
+empty the Service. Reported and degrading, not blocking — an operator sees
+"artifacts: error" while the API goes on serving everything that is not a
+run artifact. The filesystem backend is not probed at all: it has no endpoint
+to be unreachable, and a full volume is not a question ``head_bucket`` asks.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from api.db import engine as db_engine
+from api.services import artifact_store
 from api.services import clickhouse_client
 from api.services import nats_bus
 from api.settings import Settings
@@ -79,6 +88,8 @@ def check_readiness(settings: Settings) -> Readiness:
         checks["clickhouse"] = (
             STATUS_OK if clickhouse_client.ping(settings.clickhouse_url) else STATUS_ERROR
         )
+    if artifact_store.is_remote(settings):
+        checks["artifacts"] = STATUS_OK if _artifacts_ok(settings) else STATUS_ERROR
     return Readiness(
         ready=all(
             status == STATUS_OK for name, status in checks.items() if name in BLOCKING_CHECKS
@@ -104,6 +115,23 @@ def _postgres_ok(settings: Settings) -> bool:
     except Exception:  # noqa: BLE001
         LOG.warning("readiness: Postgres check failed", exc_info=True)
         return False
+
+
+def _artifacts_ok(settings: Settings) -> bool:
+    """Whether this replica can reach the artifact bucket.
+
+    Fail-soft with a log, like the Postgres probe: the reason belongs in the
+    replica's own logs, and an exception here would be reported to the kubelet
+    as an unhealthy API rather than as unreachable storage.
+    """
+    try:
+        ok, detail = artifact_store.get_store(settings).healthy()
+    except Exception:  # noqa: BLE001
+        LOG.warning("readiness: artifact store check failed", exc_info=True)
+        return False
+    if not ok:
+        LOG.warning("readiness: artifact store is not usable: %s", detail)
+    return ok
 
 
 def _nats_ok(settings: Settings) -> bool:

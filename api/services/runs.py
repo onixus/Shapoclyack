@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary, VulnerabilityItem
+from api.services import artifact_store
 from api.services import pagination
 from api.services import promoted_domains as promoted_service
 from api.services import tenants as tenants_service
+from api.services.artifact_store import keys as artifact_keys
+from api.services.artifact_store import workspace
 from api.services.risk_scoring import FOOTHOLD, LOCAL, get_scorer, index_cdn_waf, path_role
 from scanner.pipeline.asset_identity import registrable_domain
 from api.settings import Settings
@@ -120,37 +123,39 @@ def _geo_map(run_dir: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _run_dirs(settings: Settings) -> list[Path]:
-    runs_root = settings.output_dir / "runs"
-    if runs_root.is_dir():
-        dirs = [path for path in runs_root.iterdir() if path.is_dir()]
-        return sorted(dirs, key=lambda path: path.name, reverse=True)
+def _run_ids(settings: Settings) -> list[str]:
+    """Every run this installation can see, newest first.
 
-    # Flat layout fallback (per_run_output=false)
-    if (settings.output_dir / "summary.json").exists() or (settings.output_dir / "alive_ips.txt").exists():
-        return [settings.output_dir]
+    Ids rather than directories since #336: on an object-storage backend a run
+    is not a directory until somebody asks for one, and enumerating the runs
+    must not fetch them. The ordering is unchanged — ids are timestamps, so the
+    name sorts the way the clock does.
+    """
+    ids = workspace.run_ids(settings)
+    if ids:
+        return ids
+    # Flat layout fallback (per_run_output=false), local backend only: there is
+    # no ``runs/`` subtree, the artifacts sit in output_dir itself.
+    if (settings.output_dir / "summary.json").exists() or (
+        settings.output_dir / "alive_ips.txt"
+    ).exists():
+        return [workspace.FLAT_RUN_ID]
     return []
 
 
-def _run_id_for(path: Path, settings: Settings) -> str:
-    if path == settings.output_dir:
-        return "default"
-    return path.name
-
-
 def read_run_tenant(run_dir: Path) -> str:
-    """Tenant that owns ``run_dir``.
+    """Tenant that owns the run materialised at ``run_dir``.
 
     Falls back to the default tenant when the marker is missing or unreadable —
     runs written before P0, and any run produced by the plain ``scanner.main``
     CLI outside the API, have no marker.
+
+    Takes a path rather than a run id because every caller already holds the
+    run's working copy: they went through :func:`get_run_dir`, which is what
+    materialised it. The listing, which has no working copy and must not make
+    one, uses :func:`run_tenant_of` instead.
     """
-    meta = _load_json(run_dir / RUN_TENANT_FILE)
-    if isinstance(meta, dict):
-        tenant_id = str(meta.get("tenant_id") or "").strip()
-        if tenant_id:
-            return tenant_id
-    return tenants_service.DEFAULT_TENANT_ID
+    return _tenant_from_marker(_load_json(run_dir / RUN_TENANT_FILE))
 
 
 def read_run_surface(run_dir: Path) -> str | None:
@@ -160,12 +165,37 @@ def read_run_surface(run_dir: Path) -> str | None:
     shipped carry no key, and neither does a scan of the server's default input
     files, which the classifier never sees (see api.services.scan_surface).
     """
-    meta = _load_json(run_dir / RUN_TENANT_FILE)
+    return _surface_from_marker(_load_json(run_dir / RUN_TENANT_FILE))
+
+
+def _tenant_from_marker(meta: Any) -> str:
+    if isinstance(meta, dict):
+        tenant_id = str(meta.get("tenant_id") or "").strip()
+        if tenant_id:
+            return tenant_id
+    return tenants_service.DEFAULT_TENANT_ID
+
+
+def _surface_from_marker(meta: Any) -> str | None:
     if isinstance(meta, dict):
         surface = str(meta.get("surface") or "").strip()
         if surface:
             return surface
     return None
+
+
+def run_tenant_of(settings: Settings, run_id: str) -> str:
+    """Owner of a run, without materialising it.
+
+    One small object read (cached), which is what makes the tenant filter in
+    the listing affordable on a remote backend: the alternative is fetching
+    every run in the installation to look at one file in each.
+    """
+    return _tenant_from_marker(workspace.read_run_marker(settings, run_id))
+
+
+def run_surface_of(settings: Settings, run_id: str) -> str | None:
+    return _surface_from_marker(workspace.read_run_marker(settings, run_id))
 
 
 def write_run_tenant(
@@ -185,7 +215,7 @@ def write_run_tenant(
     known at the same moment, written by the same two call sites, and a run
     listing already pays for this read.
     """
-    run_dir = settings.output_dir / "runs" / run_id if run_id != "default" else settings.output_dir
+    run_dir = workspace.scratch_run_dir(settings, run_id)
     if not run_dir.is_dir():
         return False
     payload: dict[str, Any] = {"tenant_id": tenant_id}
@@ -194,9 +224,20 @@ def write_run_tenant(
     if surface:
         payload["surface"] = surface
     try:
-        (run_dir / RUN_TENANT_FILE).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except OSError:
+        # Through the workspace, so the marker reaches the artifact store and
+        # not only this pod: a run whose owner is recorded on one replica's
+        # disk reads back as the default tenant everywhere else, which is the
+        # run list of every tenant on the installation (#336).
+        workspace.publish_run_file(
+            settings,
+            run_id,
+            RUN_TENANT_FILE,
+            (json.dumps(payload, indent=2) + "\n").encode("utf-8"),
+        )
+    except (OSError, artifact_store.ArtifactStoreError):
+        LOG.warning("Could not tag run %s with tenant %s", run_id, tenant_id, exc_info=True)
         return False
+    workspace.forget_run_marker(run_id)
     return True
 
 
@@ -228,28 +269,31 @@ def list_runs(
     marker) reads the same file and is the same cost class: one read per run
     before slicing, paid only when the filter is asked for.
     """
-    run_dirs = _run_dirs(settings)
+    ids = _run_ids(settings)
     if q:
         needle = q.strip().lower()
-        run_dirs = [d for d in run_dirs if needle in _run_id_for(d, settings).lower()]
+        ids = [run for run in ids if needle in run.lower()]
     if tenant_id:
-        run_dirs = [d for d in run_dirs if read_run_tenant(d) == tenant_id]
+        ids = [run for run in ids if run_tenant_of(settings, run) == tenant_id]
     if surface:
         wanted = None if surface == "unknown" else surface
-        run_dirs = [d for d in run_dirs if read_run_surface(d) == wanted]
+        ids = [run for run in ids if run_surface_of(settings, run) == wanted]
     if (order or "").lower() == "asc":
-        run_dirs = list(reversed(run_dirs))
-    page_dirs, total = pagination.slice_page(run_dirs, offset=offset, limit=limit)
+        ids = list(reversed(ids))
+    page_ids, total = pagination.slice_page(ids, offset=offset, limit=limit)
 
     results: list[RunSummary] = []
-    for run_dir in page_dirs:
-        run_id = _run_id_for(run_dir, settings)
+    for run_id in page_ids:
+        # Only the page is materialised — which is the same promise the
+        # docstring above always made about run_meta.json and summary.json,
+        # now enforced by the cost of fetching rather than by care.
+        run_dir = workspace.run_dir(settings, run_id)
         meta = _load_json(run_dir / "run_meta.json") or {}
         summary = _load_json(run_dir / "summary.json") or {}
         results.append(
             RunSummary(
                 run_id=run_id,
-                tenant_id=tenant_id or read_run_tenant(run_dir),
+                tenant_id=tenant_id or run_tenant_of(settings, run_id),
                 profile=meta.get("profile") if isinstance(meta, dict) else None,
                 started_at=meta.get("started_at") if isinstance(meta, dict) else None,
                 config=meta.get("config") if isinstance(meta, dict) else None,
@@ -262,7 +306,7 @@ def list_runs(
                     summary.get("unconfirmed_findings") if isinstance(summary, dict) else None
                 ),
                 vulnerable_hosts=summary.get("vulnerable_hosts") if isinstance(summary, dict) else None,
-                surface=read_run_surface(run_dir),
+                surface=run_surface_of(settings, run_id),
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),
                 path=str(run_dir),
@@ -280,15 +324,13 @@ def get_run_dir(settings: Settings, run_id: str, *, tenant_id: str | None = None
     (hosts/ports/vulns/diff/artifacts) goes through here, so scoping this one
     function scopes all of them.
     """
-    if run_id == "default":
-        candidate = settings.output_dir
-        if not candidate.is_dir():
-            return None
-    else:
-        candidate = settings.output_dir / "runs" / run_id
-        if not candidate.is_dir():
-            return None
-    if tenant_id and read_run_tenant(candidate) != tenant_id:
+    # Checked before the run is fetched: an id from another tenant must not
+    # cost a transfer, and on a remote backend materialising first would let an
+    # unauthorised caller fill this pod's cache with runs they cannot read.
+    if tenant_id and run_tenant_of(settings, run_id) != tenant_id:
+        return None
+    candidate = workspace.run_dir(settings, run_id)
+    if not candidate.is_dir():
         return None
     return candidate
 
@@ -667,12 +709,10 @@ def resolve_artifact(
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
-    rel = Path(relative)
-    if rel.is_absolute() or ".." in rel.parts:
-        return None
-    if is_screenshot_path(relative) and not allow_screenshots:
-        return None
-    if is_restricted_artifact(relative) and not allow_restricted:
+    rel = _safe_relative(
+        relative, allow_screenshots=allow_screenshots, allow_restricted=allow_restricted
+    )
+    if rel is None:
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -682,6 +722,59 @@ def resolve_artifact(
     if not target.is_file():
         return None
     return target
+
+
+def _safe_relative(
+    relative: str, *, allow_screenshots: bool, allow_restricted: bool
+) -> Path | None:
+    """The shared half of artifact resolution: is this path allowed at all?
+
+    Split out when artifacts moved to the store (#336) so the two resolvers --
+    one answering a filesystem path, one answering a storage key -- cannot
+    drift on which artifacts they refuse. A check that exists twice is a check
+    that will eventually exist once.
+    """
+    rel = Path(relative)
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+    if is_screenshot_path(relative) and not allow_screenshots:
+        return None
+    if is_restricted_artifact(relative) and not allow_restricted:
+        return None
+    return rel
+
+
+def artifact_key(
+    settings: Settings,
+    run_id: str,
+    relative: str,
+    *,
+    tenant_id: str | None = None,
+    allow_screenshots: bool = False,
+    allow_restricted: bool = False,
+) -> str | None:
+    """Storage key for one run artifact, or ``None``.
+
+    The same refusals as :func:`resolve_artifact`, without materialising the
+    run: a download of one screenshot should not pull down the scan it came
+    from. ``None`` also for the flat single-run layout
+    (``per_run_output=false``), whose artifacts have no ``runs/<id>`` subtree
+    to be keyed under — callers fall back to the path resolver, which is the
+    only thing that layout has ever had.
+    """
+    if run_id == workspace.FLAT_RUN_ID:
+        return None
+    rel = _safe_relative(
+        relative, allow_screenshots=allow_screenshots, allow_restricted=allow_restricted
+    )
+    if rel is None:
+        return None
+    if tenant_id and run_tenant_of(settings, run_id) != tenant_id:
+        return None
+    key = artifact_keys.run_artifact(run_id, rel.as_posix())
+    if not artifact_store.get_store(settings).exists(key):
+        return None
+    return key
 
 
 def read_artifact_text(
@@ -700,6 +793,11 @@ def read_artifact_text(
         return None
     data = target.read_bytes()[:max_bytes]
     return data.decode("utf-8", errors="replace")
+
+
+def artifact_size(settings: Settings, key: str) -> int | None:
+    """Bytes at a run-artifact key, or ``None`` when it is gone."""
+    return artifact_store.get_store(settings).size(key)
 
 
 def list_screenshots(

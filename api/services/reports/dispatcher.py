@@ -155,18 +155,27 @@ class ReportDispatcher:
             return
 
         self._stats["generated"] += 1
-        resolved = store.resolve_report_file(
+        resolved = store.resolve_report_object(
             self._settings, report["report_id"], tenant_id=schedule["tenant_id"]
         )
         if resolved is None:
             self._stats["failed"] += 1
-            LOG.warning("Report %s is ready but its file is missing", report["report_id"])
+            LOG.warning("Report %s is ready but its object is missing", report["report_id"])
             return
-        path, _media_type, _filename = resolved
+        key, _media_type, filename = resolved
+        payload = store.read_report_bytes(self._settings, key)
+        if payload is None:
+            # Between the existence check above and this read, retention or
+            # another operator removed it. Reported the same way as a missing
+            # object rather than raised: a schedule must keep running.
+            self._stats["failed"] += 1
+            LOG.warning("Report %s vanished before delivery", report["report_id"])
+            return
         entries = report_delivery.deliver(
             self._settings,
             report=report,
-            path=path,
+            payload=payload,
+            filename=filename,
             recipients=schedule.get("recipients") or [],
         )
         if entries:

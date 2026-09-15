@@ -537,7 +537,12 @@ kubectl -n network-scan logs -f job/network-scan
 kubectl apply -f k8s/shapoclyack/base/job-resume.yaml
 ```
 
-Artifacts: PVC `scanner-data` → `output/` and `state/` subPaths.
+Artifacts: PVC `scanner-data` → `output/` and `state/` subPaths — the default
+`OCTO_ARTIFACT_BACKEND=local`. An installation that wants more than one API
+replica puts them in object storage instead
+([#336](https://github.com/onixus/Shapoclyack/issues/336)): see
+`overlays/prod-ha/artifacts-s3-patch.yaml` and
+[docs/high-availability.md](../docs/high-availability.md).
 
 ## Optional: build images yourself
 

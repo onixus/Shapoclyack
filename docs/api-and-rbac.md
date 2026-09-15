@@ -1906,6 +1906,22 @@ downloads use a dedicated path so PDFs and other files are transferred without
 text decoding. Artifact paths must be treated as untrusted input and resolved
 only inside the selected run directory.
 
+**The bytes come from the artifact store**
+([#336](https://github.com/onixus/Shapoclyack/issues/336)), which may be this
+process's filesystem or object storage. Two consequences for a client:
+
+- The response is streamed rather than served from a path, so a download of a
+  large report no longer depends on the API holding it in memory. A `502` means
+  the store is unreachable — distinct from the `404` that means the artifact is
+  not there, which matters when an operator is deciding whether to look for a
+  run or for a bucket.
+- With `OCTO_ARTIFACT_PRESIGN_ENABLED=true` a download is answered with a
+  `307` to a short-lived signed URL instead of the bytes. It is off by default:
+  a client following the redirect from a browser needs CORS on the bucket, and
+  the signed URL is a bearer token for that one artifact for as long as it
+  lasts. A client that follows redirects (every HTTP library, `curl -L`) needs
+  no change either way.
+
 ### Restricted artifacts
 
 Two artifact classes are not covered by the viewer's blanket artifact access,

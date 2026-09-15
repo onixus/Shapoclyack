@@ -611,6 +611,56 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scan artifacts can live in object storage, which is what lets the API have
+  more than one replica** ([#336](https://github.com/onixus/Shapoclyack/issues/336)).
+  Run directories, screenshots, generated reports and the input files a job
+  hands its executor were files on the `scanner-data` PVC, requested
+  `ReadWriteOnce` — and an RWO volume attaches to one node at a time,
+  so a second API pod scheduled anywhere else never leaves
+  `ContainerCreating`. The shared filesystem, not the code, was what capped the
+  API at one instance and blocked `overlays/prod-ha`
+  ([#335](https://github.com/onixus/Shapoclyack/issues/335)). There is now an
+  `ArtifactStore` (`api/services/artifact_store/`) addressing bytes by key,
+  with two backends: `local`, which maps every key onto the path that same
+  artifact already occupied — so an installation that upgrades and sets nothing
+  sees no difference at all — and `s3`, which works against AWS, MinIO, Ceph
+  RGW or anything else that speaks the protocol, configured with the same
+  `endpoint_url`/`region`/`bucket` vocabulary the Postgres backup CronJob
+  already uses. Reports, job inputs and the run tenant marker are written and
+  read through it — a materialised wordlist is not, deliberately: it is a
+  scratch copy of a row the database already holds, read by a subprocess the
+  same process started, and a copy in the bucket would be storage nothing
+  fetches and retention then has to sweep; both retention workers sweep through it, so one
+  `OCTO_RUN_RETENTION_DAYS` bounds a volume and a bucket alike (and a bucket
+  lifecycle rule is therefore the wrong tool — it would expire runs the console
+  still lists). A run stays a *directory*, because thirty places in
+  `api/services/runs.py` open files out of one: on a remote backend each
+  replica keeps a node-local working copy under `OCTO_ARTIFACT_CACHE_DIR`,
+  materialised on demand, refreshed past `OCTO_ARTIFACT_CACHE_TTL_SECONDS` and
+  evicted oldest-first past `OCTO_ARTIFACT_CACHE_MAX_MB` — an `emptyDir` on any
+  node, which is the whole point. The run listing does not pay for that: run
+  ids come from one delimited listing and the tenant filter reads one small
+  cached marker per run, so a run belonging to another tenant is refused
+  *before* it is fetched — otherwise a guessed id would fill a pod's cache with
+  runs the caller cannot read. Downloads stream through the API by default;
+  `OCTO_ARTIFACT_PRESIGN_ENABLED=true` answers them with a redirect to a
+  short-lived signed URL instead, which is off because the console downloads
+  through XHR and that redirect is cross-origin — it needs CORS on the bucket,
+  and an in-cluster MinIO cannot serve it at all. `scripts/migrate-artifacts.py`
+  copies an existing volume into a bucket under the same keys, deleting
+  nothing. `/api/health` reports the bucket; `/readyz` does not fail on it, for
+  the reason ClickHouse does not either — every replica shares one bucket, so a
+  blocking check would empty the Service on a single blip. `overlays/prod-ha`
+  now has two ways to satisfy its prerequisite — `artifacts-s3-patch.yaml` or
+  the RWX class it has always carried — and enables the second, because
+  switching an installation's storage backend is a decision and not something
+  an upgrade does on its own. Not done: run keys are still flat
+  (`runs/<run_id>`), so a bucket policy cannot enforce per-tenant isolation —
+  that is [#311](https://github.com/onixus/Shapoclyack/issues/311), which moves
+  them to `runs/{tenant}/{run_id}`. The scanner still writes its run to a local
+  directory and it is published when the scan finishes, so a scan in progress
+  is readable only on the pod running it.
+
 - **Windows hosts are matched against Microsoft's advisories**
   ([#358](https://github.com/onixus/Shapoclyack/issues/358)). Windows inventory
   was collected and then reported as `unknown` in its entirety: 317 packages on
