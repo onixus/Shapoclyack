@@ -4,6 +4,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Compliance catalogues for the Russian regulators**
+  ([#356](https://github.com/onixus/Shapoclyack/issues/356), the catalogue
+  half). Four frameworks join PCI DSS, CIS and ISO 27001 on `/compliance`,
+  in the reports and on `GET /api/compliance/frameworks`, over the same
+  signals and with the same rules — `not_assessed` for what the platform
+  cannot see, a score that is the share of assessed controls and a scope note
+  that says so: **ФСТЭК № 117** (ГИС; in force since 1 March 2026 in place of
+  order 17, keyed to the measure codes of the methodological document of
+  12 April 2026), **ФСТЭК № 21** (ИСПДн, 152-ФЗ), **ФСТЭК № 239** (значимые
+  объекты КИИ, 187-ФЗ) and **ГОСТ Р 57580.1-2017** (financial organisations).
+  Measure codes and titles are the regulators' own, in Russian. What makes
+  them more than a retitled ISO is a new signal, `overdue_fstec_window`: an
+  open finding older than the remediation window FSTEC's vulnerability-
+  management guidance of 17 May 2023 sets for its level — 24 hours critical,
+  7 days high, 4 weeks medium, 4 months low, from identification — measured
+  on the regulator's clock rather than the tenant's SLA, so a tenant that
+  gave itself 30 days for a critical is inside its SLA and fails 117 КУ-сроки
+  (and 21 АНЗ.2, 239 ОПО.4, ГОСТ ЦЗИ.8) two days after discovery, which is
+  what an audit page for that regulator has to say. Accepted risk is not a
+  failure on that clock either — the guidance counts compensating measures as
+  remediation — and the risk register is where that is read. Not done, so the
+  issue stays open: no БДУ ФСТЭК feed (findings are still CVE-keyed), no
+  DB-backed or custom frameworks, no evidence bundle, and no per-template
+  choice of frameworks — an executive report now carries all seven scores;
+  the personal-data catalogue is keyed to order 21 and will be re-keyed when
+  the text of its announced successor is final. The PDF renderer now sets
+  text in DejaVu Sans when the host has it — the API and all-in-one images
+  install `fonts-dejavu-core`, and a host without the face logs a warning per
+  render — because fpdf2's core fonts
+  are Latin-1 only and a compliance report that printed «???.2» for every
+  measure code was not a report; a host without the face keeps the old
+  replacement-character behaviour rather than failing the render. See
+  [docs/reports-and-compliance.md](docs/reports-and-compliance.md).
+
 ### Security
 
 - **How hard a tenant is scanned is now the platform's decision, not the

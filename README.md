@@ -26,7 +26,7 @@ Traditional vulnerability scanners and legacy vulnerability management tools suf
 2. **Ephemeral Identity & IP Drift**: Cloud environments, Kubernetes ingresses, and DHCP lease rotations constantly shift IP addresses. Traditional scanners lose tracking history, duplicate assets, and reopen closed tickets whenever an IP changes.
 3. **Rubber-Stamping & Unverified Closures**: Security tickets are routinely marked "resolved" in Jira or ServiceNow based on human assertion or passive absence of detection, without mechanical proof that the fix actually worked.
 4. **Distro Package Backport False Positives**: Upstream CPE version matching against NVD flags thousands of phantom CVEs on long-term support distributions (Debian, Ubuntu, RHEL), because vendor security backports do not increment upstream version numbers.
-5. **Disconnected Compliance Evidence**: Compliance audits (PCI DSS, CIS Controls, ISO 27001) require manual spreadsheets and subjective questionnaires instead of continuous, defensible evidence tied directly to technical observations.
+5. **Disconnected Compliance Evidence**: Compliance audits (PCI DSS, CIS Controls, ISO 27001, FSTEC orders, GOST R 57580.1) require manual spreadsheets and subjective questionnaires instead of continuous, defensible evidence tied directly to technical observations.
 
 **Shapoclyack replaces scanner noise with mechanical proof, verifiable remediation workflows, distro-aware patch gaps, and defensible risk decisions.**
 
@@ -64,11 +64,12 @@ Debian, Ubuntu, and enterprise Linux distributions backport security fixes into 
 Shapoclyack matches installed packages against **official vendor security trackers** (Ubuntu USN, Debian Security Tracker) using native distribution Epoch-Version-Release (EVR) logic. Windows hosts are assessed on a different axis — the **operating system build** (`10.0.<build>.<ubr>`) against Microsoft's Security Update Guide remediations, because a Microsoft advisory is written about a build rather than a package version; third-party Windows products are reported as inventory and explicitly not matched. It aggregates vulnerabilities into **Patch Gaps** providing copy-paste remediation commands (`apt-get install --only-upgrade <pkg>=<version>`), saving hundreds of hours of manual triage.  
 *See [Software → CVE Matching](docs/software-cve-matching.md).*
 
-### 5. Auditor-Ready Compliance Signals (PCI DSS 4.0, CIS v8, ISO 27001)
+### 5. Auditor-Ready Compliance Signals (PCI DSS 4.0, CIS v8, ISO 27001, FSTEC, GOST R 57580.1)
 Technical findings and estate metadata are evaluated against a closed vocabulary of compliance signals (`unpatched_cve`, `overdue_remediation`, `known_exploited`, `exposed_admin_service`, `weak_cryptography`, `unowned_asset`, etc.). Controls use multi-signal conjunctions (e.g., administrative service *and* external network exposure) to eliminate bogus failures, providing auditor-defensible control evaluations for:
 * **PCI DSS 4.0** (Controls 1.2.1, 6.3.3, 11.3.1, 11.3.2, etc.)
 * **CIS Critical Security Controls v8** (Controls 4.1, 4.6, 7.1, 7.4, etc.)
-* **ISO/IEC 27001:2022** (Controls A.8.8, A.8.19, A.8.20, etc.)  
+* **ISO/IEC 27001:2022** (Controls A.8.8, A.8.19, A.8.20, etc.)
+* **FSTEC of Russia orders 117 (state systems), 21 (personal data) and 239 (critical infrastructure)** and **GOST R 57580.1-2017** (financial organisations), keyed to the regulators' own measure codes (АНЗ.1, АУД.2, ЦЗИ.8, …) and to FSTEC's remediation windows (24 h / 7 d / 4 w / 4 m) rather than the tenant's SLA  
 *See [Reports and Compliance Mapping](docs/reports-and-compliance.md).*
 
 ### 6. Distributed Remote Agents (NATS JetStream & Zero Inbound Ports)
@@ -191,7 +192,7 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 | **Mechanical Verification** | Automated re-scans via `POST /api/vulnerabilities/{id}/verify` validate that network flaws are remediated before closing. Prevents unverified ticket closures. |
 | **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker) and Windows hosts against Microsoft's Security Update Guide; generates actionable package upgrade commands. |
 | **Threat Intelligence** | Integrated feeds for CISA KEV (Known Exploited Vulnerabilities), EPSS (Exploit Prediction Scoring System), CVSS v4/v3.1, GeoIP, and autonomous system data. |
-| **Compliance Signals** | Continuous posture monitoring and audit-ready evidence for **PCI DSS 4.0**, **CIS Controls v8**, and **ISO/IEC 27001:2022**. |
+| **Compliance Signals** | Continuous posture monitoring and audit-ready evidence for **PCI DSS 4.0**, **CIS Controls v8**, **ISO/IEC 27001:2022**, **FSTEC orders 117 / 21 / 239** and **GOST R 57580.1-2017**. |
 | **Adoption & Outcome Metrics** | Telemetry on verified closures, SLA compliance, Mean Time to Remediation (MTTR), scan coverage, and false-positive suppression rates. |
 | **Branded Report Factory** | Automated generation of Executive, Technical, and Compliance reports in PDF, HTML, and JSON, with scheduled email and webhook delivery. |
 | **Distributed Fleet** | Scalable worker fleet managed over NATS JetStream; agents require zero inbound ports and operate securely across DMZs and private VPCs. |
@@ -252,7 +253,7 @@ The Next.js operations console provides specialized operational surfaces for ope
 | **Threat Center** | `/threats` | Real-time overview of actively exploited vulnerabilities in your estate (CISA KEV) | Viewer |
 | **Scan Operations** | `/scans` | External and internal scan launchers, scheduled profiles, active jobs, and execution logs | Operator |
 | **Report Factory** | `/reports` | Branded report generation (Executive, Technical, Compliance) in PDF/HTML and schedule management | Operator |
-| **Compliance Posture** | `/compliance` | Control pass/fail evidence mapping for PCI DSS 4.0, CIS Controls v8, and ISO 27001 | Viewer |
+| **Compliance Posture** | `/compliance` | Control pass/fail evidence mapping for PCI DSS 4.0, CIS Controls v8, ISO 27001, FSTEC orders 117 / 21 / 239 and GOST R 57580.1 | Viewer |
 | **Adoption & Noise** | `/adoption` | Verification rates, MTTR, SLA adherence, scanner noise analytics, detector suppression tracking | Viewer |
 | **Integrations** | `/integrations` | Outbound HMAC webhooks and two-way ticket synchronization — transitions pushed to the tracker, the tracker's status polled back onto findings (Jira, ServiceNow, DefectDojo) | Operator |
 | **Agent Fleet** | `/agents` | Health tiles and management for distributed remote scanner workers across VPCs and DMZs | Operator |

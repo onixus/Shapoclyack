@@ -147,7 +147,7 @@ RUN set -eux; \
     # openssh-client: the SSH push deployment (api/services/agent_deployer.py)
     # runs `ssh`/`ssh-keyscan` from this image; without it the feature fails
     # with HostKeyUnavailable before anything is sent to the target.
-    PKGS="ca-certificates curl fping git jq openssh-client"; \
+    PKGS="ca-certificates curl fping git jq openssh-client fonts-dejavu-core"; \
     if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     rm -rf /var/lib/apt/lists/*

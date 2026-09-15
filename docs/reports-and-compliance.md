@@ -19,12 +19,15 @@ Findings and estate facts are classified into a small closed vocabulary of
 **signals** (`api/services/compliance/signals.py`), and each framework's
 catalogue (`frameworks.py`) is written against that vocabulary rather than
 against CVEs. Adding a framework is a catalogue entry; fixing how a weak-TLS
-finding is recognised fixes it for every framework at once.
+finding is recognised fixes it for every framework at once. Seven catalogues
+ship: PCI DSS 4.0, CIS Controls v8, ISO/IEC 27001:2022, and the four Russian
+ones described [below](#the-russian-catalogues).
 
 | Signal | Raised by |
 |---|---|
 | `unpatched_cve` | An open finding carrying a CVE id |
 | `overdue_remediation` | An open finding past its SLA deadline |
+| `overdue_fstec_window` | An open finding older than the FSTEC remediation window for its severity (24 h critical, 7 d high, 4 w medium, 4 m low) — the regulator's clock, not the tenant's SLA |
 | `known_exploited` | A finding on the CISA KEV catalogue |
 | `internet_exposed_finding` | A finding whose service was observed as internet-facing (#171) |
 | `weak_cryptography` | TLS/certificate/cipher findings |
@@ -75,6 +78,67 @@ process is what covers it, and hiding the acceptance would be worse than either.
 | PCI DSS 4.0 | 1.2.1, 2.2.4, 2.2.7, 4.2.1, 6.3.3, 6.4.1, 8.3.1, 11.3.1, 11.3.2, 12.5.1 | Cardholder-data scoping, segmentation testing, policy and personnel requirements |
 | CIS Controls v8 | 1.1, 2.1, 3.10, 4.1, 4.6, 5.2, 7.1, 7.3, 7.7, 12.2, 13.1 | Data recovery, awareness, incident response, penetration testing |
 | ISO/IEC 27001:2022 | A.5.9, A.5.10, A.8.5, A.8.8, A.8.9, A.8.19, A.8.20, A.8.21, A.8.23, A.8.24 | Organizational, people and physical controls (A.5 beyond inventory, A.6, A.7) |
+| ФСТЭК № 117 (ГИС), 2025 + МД 12.04.2026 | КК, КУ, КУ-сроки, КО, ОД, ПК, ИАФ.3, МСЭ.3, МСЭ.4, ЗКС.1, ЗКУ.2 | Protection classes, threat modelling, documentation, ГосСОПКА, physical protection, organisational measures |
+| ФСТЭК № 21 (ИСПДн), 2013 | ИАФ.4, УПД.3, УПД.13, ОПС.3, АНЗ.1–АНЗ.5, ЗИС.3, ЗИС.17 | Protection level (УЗ-1…УЗ-4), base-set selection, the operator's 152-ФЗ duties (consent, localisation, Roskomnadzor), organisational measures |
+| ФСТЭК № 239 (КИИ), 2017 | АУД.1, АУД.2, ОПО.4, УКФ.3, ИАФ.4, ИАФ.7, УПД.13, ЗИС.2, ЗИС.8, ЗИС.19 | Significance category, base set by category, ГосСОПКА, incident response, organisational measures |
+| ГОСТ Р 57580.1-2017 | ИУ.1, СМЭ.3, ЗВС.1, ЦЗИ.2, ЦЗИ.4–ЦЗИ.9 | Protection level (1–3), security contours, organisational (О/Н) measures, conformity assessment under ГОСТ Р 57580.2 |
+
+### The Russian catalogues
+
+Four catalogues cover the Russian regulators over the *same* signals: FSTEC
+order 117 (state information systems; in force since 1 March 2026 in place of
+order 17, with the measure codes of the methodological document of
+12 April 2026), FSTEC order 21 (personal data under 152-ФЗ), FSTEC order 239
+(significant critical-information-infrastructure objects under 187-ФЗ) and
+ГОСТ Р 57580.1-2017 (financial organisations, applied through the Bank of
+Russia's regulations). Measure codes and titles are the regulators' own, in
+Russian — an auditor looks for «АНЗ.1», not for a translation of it — with two
+exceptions said out loud: the long ГОСТ measure texts are shortened to a title,
+and «КУ-сроки» is this platform's split of order 117's «КУ» into the open
+vulnerabilities and the missed windows, not a code in the document. Every
+scope note says what the catalogue leaves out, which is most of each document:
+protection classes and levels, threat modelling, ГосСОПКА, documentation and
+every organisational measure.
+
+What makes them Russian rather than a retitled ISO is the clock. FSTEC's
+vulnerability-management guidance of 17 May 2023 sets remediation windows by
+criticality level — **24 hours** for critical, **7 days** for high, **4 weeks**
+for medium, **4 months** for low, counted from identification — and the 2026
+methodological document under order 117 defers to the same. Those are the
+regulator's figures, not the tenant's, so the controls written about timely
+remediation (117 КУ-сроки, 21 АНЗ.2, 239 ОПО.4, ГОСТ ЦЗИ.8) use
+`overdue_fstec_window`, computed from `sla_started_at` against those figures.
+A tenant that gave itself 30 days for a critical finding is inside its SLA and
+outside the regulator's window two days after discovery, and an audit page for
+a Russian regulator has to say the second thing. Order 117 separates the two
+clocks by measure — КУ-сроки is the regulator's, КО (updates per the
+operator's internal regulation) is the tenant's SLA alone — while 21 АНЗ.2,
+239 ОПО.4 and ГОСТ ЦЗИ.8 are written about "оперативное" installation and
+fail on either clock. The "known vulnerabilities" half reads the same in all
+four (117 КУ, 21 АНЗ.1, 239 АУД.2, ГОСТ ЦЗИ.6): open critical and high CVEs
+and anything on CISA KEV, so an auditor opening the four pages in a row gets
+one answer to "do you remediate", not four.
+
+Accepted risk (a live `exception_until`) is treated on the regulator's clock
+exactly as on the tenant's: reported per control as `accepted_count`, not a
+failure. FSTEC's guidance names compensating measures as a remediation method
+beside patching, and a documented, expiring acceptance with an approver is the
+platform's record of one. The consequence is real and should be read with the
+risk register: a tenant can move a finding out of the regulator's window by
+accepting it, and the register says who approved that and whether they
+approved their own request.
+
+Two caveats travel with the window. The guidance grades vulnerabilities by
+FSTEC's own criticality method (28 October 2022), which weighs exploitability
+and exposure as well as CVSS; this platform's CVSS-derived severity stands in
+for it, and a finding with `unknown` severity has no window rather than a
+guessed one. And FSTEC's БДУ is not yet an enrichment source — a finding is
+recognised by its CVE, not by its BDU identifier — so a vulnerability that is
+in БДУ and not in NVD is not in the evidence base at all.
+
+The personal-data catalogue is keyed to order 21 as it stands. FSTEC has
+published a draft order to replace it from 1 September 2026; the catalogue is
+re-keyed when that text is final, not to a draft.
 
 `coverage_score` is the share of **assessed** controls that pass. It is not a
 percentage of the standard, and the API returns the framework's `scope_note`
@@ -142,6 +206,18 @@ two-page summary is how a report stops being read.
 Every number comes from the tracked-finding tables, the asset registry and the
 compliance engine — never from a run directory. A report about a quarter has to
 render after that quarter's runs were pruned by retention.
+
+### Fonts
+
+The PDF renderer sets text in DejaVu Sans when the host has it and in fpdf2's
+core fonts otherwise. The core fonts are Latin-1 only, and the Russian
+catalogues put Cyrillic measure codes on every line of a compliance report —
+«АУД.2» rendered as «???.2» is a report an auditor cannot use — so the API and
+all-in-one images install Debian's `fonts-dejavu-core`, and the renderer looks
+in the places that package (and its Fedora and Arch equivalents) puts the
+files. A host with none of them still renders, with a replacement character
+for every glyph the core fonts lack: the same behaviour as before, and the
+reason a missing font is not a failed report. HTML and JSON are unaffected.
 
 ### Branding
 
@@ -261,3 +337,6 @@ different senders for the two.
   owners; controls do not.
 * **No custom frameworks.** The catalogues are code — a per-tenant catalogue
   would let a tenant define the standard it passes.
+* **No БДУ ФСТЭК feed.** The Russian catalogues run on the same CVE-keyed
+  evidence as the others; BDU identifiers, and vulnerabilities that exist only
+  there, are not recognised ([#356](https://github.com/onixus/Shapoclyack/issues/356)).

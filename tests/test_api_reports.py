@@ -231,8 +231,18 @@ def test_compliance_report_carries_controls_and_executive_one_does_not(tmp_path,
         settings, executive["report_id"], tenant_id=tenant_id
     )
     exec_body = json.loads(store.read_report_bytes(settings, key).decode("utf-8"))
-    # Every framework's score, none of their control tables.
-    assert len(exec_body["compliance"]) == 3
+    # Every framework's score, none of their control tables. The list is
+    # frozen here rather than read off the catalogue so that a framework
+    # silently dropping out of the executive report is a red test.
+    assert {entry["framework_id"] for entry in exec_body["compliance"]} == {
+        "pci-dss-4.0",
+        "cis-controls-v8",
+        "iso-27001-2022",
+        "fstec-117",
+        "fstec-21",
+        "fstec-239",
+        "gost-r-57580.1-2017",
+    }
     assert all("controls" not in entry for entry in exec_body["compliance"])
 
 
@@ -769,3 +779,72 @@ def test_retention_prunes_old_reports_and_their_files(tmp_path, monkeypatch):
     assert result["deleted"] == 1
     assert store.read_report_bytes(settings, key) is None
     assert store.get_report(settings, report["report_id"]) is None
+
+
+def _cyrillic_compliance_body() -> dict:
+    """A compliance report body the Russian catalogues produce: Cyrillic on every line."""
+
+    return {
+        "title": "ООО «Пример» — Состояние соответствия (fstec-239)",
+        "generated_at": "2026-09-16T10:00:00Z",
+        "tenant_id": "default",
+        "period_days": 90,
+        "branding": {"org_name": "ООО «Пример»", "footer_text": "Конфиденциально"},
+        "sections": ["compliance"],
+        "compliance": [
+            {
+                "framework_id": "fstec-239",
+                "name": "ФСТЭК № 239 (КИИ)",
+                "version": "2017",
+                "scope_note": "Меры групп АУД, ОПО, УКФ, ИАФ, УПД и ЗИС.",
+                "coverage_score": 50.0,
+                "controls_passed": 1,
+                "controls_assessed": 2,
+                "controls_failed": 1,
+                "controls_not_assessed": 0,
+                "controls": [
+                    {
+                        "control_id": "АУД.2",
+                        "title": "Анализ уязвимостей и их устранение",
+                        "status": "failed",
+                        "failing_count": 1,
+                        "accepted_count": 0,
+                        "rationale": "Past the FSTEC window.",
+                        "evidence": [],
+                    },
+                    {
+                        "control_id": "ОПО.4",
+                        "title": "Установка обновлений программного обеспечения",
+                        "status": "passed",
+                        "failing_count": 0,
+                        "accepted_count": 0,
+                        "rationale": "Inside the operator's own window.",
+                        "evidence": [],
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_the_pdf_keeps_cyrillic_when_the_host_has_a_unicode_face():
+    """«АУД.2» has to reach the auditor as «АУД.2», not as «???.2».
+
+    The core fonts fpdf2 ships are Latin-1 only; the images install DejaVu
+    Sans and the renderer picks it up. Skipped rather than failed on a host
+    without it, because the fallback is the next test's subject.
+    """
+    if renderer.find_unicode_font() is None:
+        pytest.skip("no DejaVu Sans on this host (fonts-dejavu-core)")
+    out = renderer.render_pdf(_cyrillic_compliance_body())
+    assert out[:4] == b"%PDF"
+    # The face is embedded under its own name; the core fonts never are.
+    assert b"DejaVu" in out
+
+
+def test_the_pdf_degrades_to_core_fonts_without_a_unicode_face(monkeypatch):
+    """A host with no TrueType face still gets its report on the first of the month."""
+    monkeypatch.setattr(renderer, "_UNICODE_FONT_DIRS", ())
+    out = renderer.render_pdf(_cyrillic_compliance_body())
+    assert out[:4] == b"%PDF"
+    assert b"DejaVu" not in out

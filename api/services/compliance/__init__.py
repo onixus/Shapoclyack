@@ -1,4 +1,4 @@
-"""Compliance mapping: PCI DSS, CIS Controls and ISO 27001 over the tenant's evidence."""
+"""Compliance mapping: PCI DSS, CIS, ISO 27001 and the Russian regulators over the tenant's evidence."""
 
 from api.services.compliance.frameworks import (
     FRAMEWORKS,
