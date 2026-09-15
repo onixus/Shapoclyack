@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
@@ -49,6 +50,7 @@ function CandidateRow({
   isPromoting: boolean;
   canOperate: boolean;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const isConfirmed = candidate.status === "confirmed";
 
@@ -132,7 +134,7 @@ function CandidateRow({
               {isPromoted ? (
                 <>
                   <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
-                  Withdraw from Scope
+                  {t("prose.withdrawFromScope")}
                 </>
               ) : (
                 <>
@@ -168,6 +170,7 @@ function CandidateRow({
 }
 
 export function RelatedDomainsPanel({ runId }: { runId: string }) {
+  const t = useT();
   const user = useAuthStore((s) => s.user);
   // Promoting a related domain is a tenant-scoped write, so the rank that
   // decides is the one held in this tenant, not the account's (#318).
@@ -204,7 +207,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
     return (
       <Card className="border-border bg-card">
         <CardContent className="py-8 text-center text-muted-foreground text-xs">
-          Loading organization profile and related domains…
+          {t("prose.loadingOrganizationProfileAndRelated")}
         </CardContent>
       </Card>
     );
@@ -215,7 +218,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
       <Card className="border-border bg-card">
         <CardContent className="py-8 text-center text-muted-foreground text-xs">
           <HelpCircle className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-          Organization profile telemetry is not available for this run.
+          {t("prose.organizationProfileTelemetryIsNot")}
         </CardContent>
       </Card>
     );
@@ -293,7 +296,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
             Promoted Scope ({promoted.length})
           </CardTitle>
           <p className="text-[11px] text-muted-foreground mt-1">
-            Every ordinary scan of this tenant carries these domains in addition to its own targets.
+            {t("prose.everyOrdinaryScanOfThis")}
           </p>
         </CardHeader>
         <CardContent className="p-0">
@@ -311,7 +314,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
                       onClick={() => withdraw(domain)}
                     >
                       <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
-                      Withdraw from Scope
+                      {t("prose.withdrawFromScope")}
                     </Button>
                   )}
                 </li>
@@ -319,7 +322,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
             </ul>
           ) : (
             <div className="py-5 text-center text-muted-foreground text-xs">
-              Nothing promoted yet. Promote a discovered domain below to add it to every later scan.
+              {t("prose.nothingPromotedYetPromoteA")}
             </div>
           )}
         </CardContent>
@@ -364,7 +367,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </CardHeader>
 
         {/* Disclaimer banner */}
-        <div className="px-4 py-2 bg-amber-950/20 border-b border-amber-900/30 flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-300/80">
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-300/80">
           <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
           <span>
             {related?.disclaimer ||
@@ -376,7 +379,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           {actionError && (
             <div
               role="alert"
-              className="px-4 py-2 bg-rose-950/30 border-b border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300"
+              className="px-4 py-2 bg-rose-50 dark:bg-rose-950/30 border-b border-rose-300 dark:border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300"
             >
               <AlertCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
               <span>{actionError}</span>
@@ -398,7 +401,7 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
             </div>
           ) : (
             <div className="py-8 text-center text-muted-foreground text-xs">
-              No related domain candidates match the selected filter.
+              {t("prose.noRelatedDomainCandidatesMatch")}
             </div>
           )}
         </CardContent>

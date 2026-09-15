@@ -102,7 +102,7 @@ export function ReportFactoryPanel() {
       <Section title="Branding" icon={<Palette className="h-4 w-4 text-sky-500" />}>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
-            <Label htmlFor="org-name">Organisation name</Label>
+            <Label htmlFor="org-name">{t("ui.organisationName")}</Label>
             <Input
               id="org-name"
               value={orgName ?? brandingRow?.org_name ?? ""}
@@ -111,7 +111,7 @@ export function ReportFactoryPanel() {
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="primary-color">Primary colour</Label>
+            <Label htmlFor="primary-color">{t("ui.primaryColour")}</Label>
             <Input
               id="primary-color"
               value={primaryColor ?? brandingRow?.primary_color ?? ""}
@@ -120,7 +120,7 @@ export function ReportFactoryPanel() {
             />
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label htmlFor="footer-text">Footer</Label>
+            <Label htmlFor="footer-text">{t("ui.footer")}</Label>
             <Input
               id="footer-text"
               value={footerText ?? brandingRow?.footer_text ?? ""}
@@ -144,27 +144,27 @@ export function ReportFactoryPanel() {
           Save branding
         </Button>
         <p className="mt-2 text-xs text-muted-foreground">
-          Applied to every rendered report for this tenant. Admin only.
+          {t("prose.appliedToEveryRenderedReport")}
         </p>
       </Section>
 
       <Section title="Generate now" icon={<FileBarChart className="h-4 w-4 text-sky-500" />}>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
-            <Label>Report</Label>
+            <Label>{t("ui.report")}</Label>
             <Select value={generateKind} onValueChange={(value) => setGenerateKind(value as Kind)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="executive">Executive</SelectItem>
-                <SelectItem value="technical">Technical</SelectItem>
-                <SelectItem value="compliance">Compliance</SelectItem>
+                <SelectItem value="executive">{t("ui.executive")}</SelectItem>
+                <SelectItem value="technical">{t("ui.technical")}</SelectItem>
+                <SelectItem value="compliance">{t("ui.compliance")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>Format</Label>
+            <Label>{t("ui.format")}</Label>
             <Select
               value={generateFormat}
               onValueChange={(value) => setGenerateFormat(value as Format)}
@@ -181,7 +181,7 @@ export function ReportFactoryPanel() {
           </div>
           {generateKind === "compliance" ? (
             <div className="space-y-1">
-              <Label>Framework</Label>
+              <Label>{t("ui.framework")}</Label>
               <Select value={generateFramework} onValueChange={setGenerateFramework}>
                 <SelectTrigger>
                   <SelectValue placeholder={t("select.choose")} />
@@ -227,9 +227,9 @@ export function ReportFactoryPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="executive">Executive</SelectItem>
-              <SelectItem value="technical">Technical</SelectItem>
-              <SelectItem value="compliance">Compliance</SelectItem>
+              <SelectItem value="executive">{t("ui.executive")}</SelectItem>
+              <SelectItem value="technical">{t("ui.technical")}</SelectItem>
+              <SelectItem value="compliance">{t("ui.compliance")}</SelectItem>
             </SelectContent>
           </Select>
           {templateKind === "compliance" ? (
@@ -396,7 +396,7 @@ export function ReportFactoryPanel() {
       >
         <ul className="space-y-1 text-xs lg:col-span-2">
           {(reports.data ?? []).length === 0 ? (
-            <li className="text-muted-foreground">Nothing generated yet.</li>
+            <li className="text-muted-foreground">{t("ui.nothingGeneratedYet")}</li>
           ) : null}
           {(reports.data ?? []).map((report) => (
             <li

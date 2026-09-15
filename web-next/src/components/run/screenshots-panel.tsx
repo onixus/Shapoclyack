@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Camera, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -41,7 +42,7 @@ export function ScreenshotsPanel({ runId, enabled }: { runId: string; enabled: b
 
   if (query.error) {
     return (
-      <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+      <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
         <AlertDescription>
           {query.error instanceof Error ? query.error.message : "Failed to load screenshots"}
         </AlertDescription>
@@ -70,6 +71,7 @@ export function ScreenshotsGallery({
   runId: string;
   manifest: ScreenshotManifest;
 }) {
+  const t = useT();
   const skip = skipReasonCopy(manifest.skipped_reason);
   const retention =
     manifest.retention_days > 0
@@ -78,7 +80,7 @@ export function ScreenshotsGallery({
 
   return (
     <div className="space-y-4">
-      <Alert className="border-amber-500/30 bg-amber-950/30 text-amber-100">
+      <Alert className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-100">
         <AlertDescription className="text-xs leading-relaxed">
           Redaction paints a black overlay on obvious form fields (password, token, SSN,
           card, OTP) before capture. A name in a heading is not redacted. These images
@@ -88,8 +90,7 @@ export function ScreenshotsGallery({
 
       {manifest.truncated ? (
         <p className="text-xs text-amber-600 dark:text-amber-300">
-          Capture was capped at the configured maximum. Remaining web ports were not
-          visited.
+          {t("prose.captureWasCappedAtThe")}
         </p>
       ) : null}
 
@@ -97,7 +98,7 @@ export function ScreenshotsGallery({
 
       {manifest.items.length === 0 && !skip ? (
         <p className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground">
-          No screenshots were kept for this run.
+          {t("prose.noScreenshotsWereKeptFor")}
         </p>
       ) : null}
 
@@ -139,7 +140,7 @@ function ScreenshotCard({ runId, item }: { runId: string; item: ScreenshotItem }
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
             {item.redacted_fields > 0 ? (
-              <Badge variant="secondary" className="bg-amber-500/15 text-amber-200 border-amber-500/30 text-[10px]">
+              <Badge variant="secondary" className="bg-amber-500/15 text-amber-800 dark:text-amber-200 border-amber-500/30 text-[10px]">
                 {item.redacted_fields} field{item.redacted_fields === 1 ? "" : "s"} redacted
               </Badge>
             ) : (
@@ -148,7 +149,7 @@ function ScreenshotCard({ runId, item }: { runId: string; item: ScreenshotItem }
               </Badge>
             )}
             {!item.available ? (
-              <Badge variant="secondary" className="bg-rose-500/15 text-rose-200 border-rose-500/30 text-[10px]">
+              <Badge variant="secondary" className="bg-rose-500/15 text-rose-800 dark:text-rose-200 border-rose-500/30 text-[10px]">
                 deleted by retention
               </Badge>
             ) : null}

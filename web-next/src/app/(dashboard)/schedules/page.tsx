@@ -265,7 +265,7 @@ export default function SchedulesPage() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-7 w-7 border-rose-900/50 bg-muted p-0 text-rose-600 dark:text-rose-400 hover:bg-rose-950"
+                  className="h-7 w-7 border-rose-300 dark:border-rose-900/50 bg-muted p-0 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950"
                   onClick={() => setDeleteTarget(schedule)}
                   aria-label="Delete schedule"
                 >
@@ -327,7 +327,7 @@ export default function SchedulesPage() {
             <DialogHeader>
               <DialogTitle className="text-foreground">{editing ? "Edit Schedule" : "Create Schedule"}</DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                Recurring scans run through the existing job dispatcher on the configured cadence.
+                {t("prose.recurringScansRunThroughThe")}
               </DialogDescription>
             </DialogHeader>
 
@@ -345,7 +345,7 @@ export default function SchedulesPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">Cadence</Label>
+                  <Label className="text-xs font-semibold text-foreground">{t("ui.cadence")}</Label>
                   <Select
                     value={form.cadenceKind}
                     onValueChange={(value) => setForm((f) => ({ ...f, cadenceKind: value as CadenceKind }))}
@@ -354,15 +354,15 @@ export default function SchedulesPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="bg-card border-border text-foreground">
-                      <SelectItem value="cron">Cron expression</SelectItem>
-                      <SelectItem value="interval">Fixed interval</SelectItem>
+                      <SelectItem value="cron">{t("ui.cronExpression2")}</SelectItem>
+                      <SelectItem value="interval">{t("ui.fixedInterval")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 {form.cadenceKind === "cron" ? (
                   <div className="grid gap-2">
-                    <Label htmlFor="schedule-cron" className="text-xs font-semibold text-foreground">Cron Expression</Label>
+                    <Label htmlFor="schedule-cron" className="text-xs font-semibold text-foreground">{t("ui.cronExpression")}</Label>
                     <Input
                       id="schedule-cron"
                       value={form.cron}
@@ -373,7 +373,7 @@ export default function SchedulesPage() {
                   </div>
                 ) : (
                   <div className="grid gap-2">
-                    <Label htmlFor="schedule-interval" className="text-xs font-semibold text-foreground">Interval (seconds)</Label>
+                    <Label htmlFor="schedule-interval" className="text-xs font-semibold text-foreground">{t("ui.intervalSeconds")}</Label>
                     <Input
                       id="schedule-interval"
                       type="number"
@@ -406,7 +406,7 @@ export default function SchedulesPage() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">Scan Intent</Label>
+                  <Label className="text-xs font-semibold text-foreground">{t("ui.scanIntent")}</Label>
                   <Select
                     value={form.intent || "__none__"}
                     onValueChange={(value) =>
@@ -429,7 +429,7 @@ export default function SchedulesPage() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-foreground">Speed Profile</Label>
+                  <Label className="text-xs font-semibold text-foreground">{t("ui.speedProfile")}</Label>
                   <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))}>
                     <SelectTrigger className="bg-muted border-border text-foreground">
                       <SelectValue />
@@ -455,7 +455,7 @@ export default function SchedulesPage() {
                   {!form.intent ? (
                     <Label className="flex items-center gap-2 font-semibold cursor-pointer">
                       <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-border" />
-                      Ports only (no service/OS/CVE probe)
+                      {t("prose.portsOnlyNoServiceoscveProbe")}
                     </Label>
                   ) : null}
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
@@ -472,7 +472,7 @@ export default function SchedulesPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-ranges" className="text-xs font-semibold text-foreground">Target CIDR Ranges (Optional)</Label>
+                  <Label htmlFor="schedule-ranges" className="text-xs font-semibold text-foreground">{t("ui.targetCidrRangesOptional")}</Label>
                   <Textarea
                     id="schedule-ranges"
                     className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
@@ -483,7 +483,7 @@ export default function SchedulesPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-domains" className="text-xs font-semibold text-foreground">Target Domains (Optional)</Label>
+                  <Label htmlFor="schedule-domains" className="text-xs font-semibold text-foreground">{t("ui.targetDomainsOptional")}</Label>
                   <Textarea
                     id="schedule-domains"
                     className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
@@ -575,11 +575,11 @@ export default function SchedulesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle className="text-foreground">Delete schedule &quot;{deleteTarget?.name}&quot;?</AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground text-xs">
-              This stops future automatic runs. Past runs and reports are unaffected. This cannot be undone.
+              {t("prose.thisStopsFutureAutomaticRuns")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">Cancel</AlertDialogCancel>
+            <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">{t("ui.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-rose-600 text-foreground hover:bg-rose-500"
               onClick={() => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,6 +55,7 @@ export function AssetBulkContext({
   /** Given the ids that failed, so the page can leave them selected. */
   onApplied: (remaining: string[], report: BulkActionReport) => void;
 }) {
+  const t = useT();
   const bulk = useBulkAssetAction();
   const [open, setOpen] = useState(false);
   const [ownerEmail, setOwnerEmail] = useState("");
@@ -100,7 +102,7 @@ export function AssetBulkContext({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-card border-border text-foreground">
           <DialogHeader>
-            <DialogTitle className="text-foreground">Set asset context</DialogTitle>
+            <DialogTitle className="text-foreground">{t("ui.setAssetContext")}</DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
               {ids.length} asset{ids.length === 1 ? "" : "s"} selected. Blank fields are left
               untouched on every one of them.
@@ -144,7 +146,7 @@ export function AssetBulkContext({
               />
             </div>
             <div className="space-y-1.5">
-              <span className="text-xs text-foreground">Environment</span>
+              <span className="text-xs text-foreground">{t("ui.environment")}</span>
               <div className="flex flex-wrap gap-1.5">
                 {ENVIRONMENTS.map((value) => (
                   <Button
@@ -161,7 +163,7 @@ export function AssetBulkContext({
               </div>
             </div>
             <div className="space-y-1.5">
-              <span className="text-xs text-foreground">Exposure</span>
+              <span className="text-xs text-foreground">{t("ui.exposure")}</span>
               <div className="flex flex-wrap gap-1.5">
                 {EXPOSURES.map((value) => (
                   <Button
@@ -186,7 +188,7 @@ export function AssetBulkContext({
               onClick={() => setOpen(false)}
               disabled={bulk.isPending}
             >
-              Cancel
+              {t("ui.cancel")}
             </Button>
             <Button size="sm" disabled={bulk.isPending || !filled} onClick={apply}>
               {bulk.isPending ? "Applying…" : `Apply to ${ids.length}`}

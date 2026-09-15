@@ -115,11 +115,10 @@ export default function CompliancePage() {
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold text-foreground">
             <ClipboardCheck className="h-5 w-5 text-sky-500" />
-            Compliance posture
+            {t("prose.compliancePosture")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Controls assessed from this tenant&apos;s own findings, asset context and endpoint
-            inventory.
+            {t("prose.controlsAssessedFromThisTenants")}
           </p>
         </div>
         <Select value={frameworkId ?? ""} onValueChange={setFrameworkId}>
@@ -145,7 +144,7 @@ export default function CompliancePage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                Assessed controls passing
+                {t("prose.assessedControlsPassing")}
               </p>
               <p className="mt-1 text-2xl font-bold text-foreground">
                 {posture.controls_passed}/{posture.controls_assessed}
@@ -157,17 +156,17 @@ export default function CompliancePage() {
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Failing</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t("ui.failing")}</p>
               <p className="mt-1 text-2xl font-bold text-rose-600 dark:text-rose-400">{posture.controls_failed}</p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Not assessed</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t("ui.notAssessed")}</p>
               <p className="mt-1 text-2xl font-bold text-muted-foreground">
                 {posture.controls_not_assessed}
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Evidence base</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t("ui.evidenceBase")}</p>
               <p className="mt-1 text-sm text-foreground">
                 {posture.open_findings} open findings · {posture.asset_count} assets
               </p>

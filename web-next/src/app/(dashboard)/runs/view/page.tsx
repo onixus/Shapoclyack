@@ -35,11 +35,12 @@ export default function RunDetailPage() {
 }
 
 function BackToRuns() {
+  const t = useT();
   return (
     <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
       <Link href="/runs">
         <ArrowLeft className="h-4 w-4" />
-        Back to Runs Catalog
+        {t("prose.backToRunsCatalog")}
       </Link>
     </Button>
   );
@@ -58,8 +59,8 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
-          <AlertDescription>Missing runId query parameter.</AlertDescription>
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -69,7 +70,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>
             {report.error instanceof Error ? report.error.message : "Failed to load run"}
           </AlertDescription>
@@ -132,8 +133,8 @@ function RunDetailInner() {
           <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
           <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
           <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
-          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Controls</TabsTrigger>
-          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Org Profile</TabsTrigger>
+          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.controls")}</TabsTrigger>
+          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.orgProfile")}</TabsTrigger>
           <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
           {canOperate ? (
             <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">

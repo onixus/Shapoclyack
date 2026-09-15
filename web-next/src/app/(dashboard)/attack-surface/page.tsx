@@ -99,7 +99,7 @@ export default function AttackSurfacePage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}

@@ -193,12 +193,12 @@ export default function LoginPage() {
         ) : (
           <>
             {localLogin === "disabled" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
                 {t("login.localDisabled")}
               </p>
             ) : null}
             {localLogin === "break-glass" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
                 {t("login.localBreakGlass")}
               </p>
             ) : null}

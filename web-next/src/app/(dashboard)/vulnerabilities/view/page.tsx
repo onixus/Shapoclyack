@@ -82,6 +82,7 @@ function matchRunFinding(
 }
 
 function BackToVulnerabilities() {
+  const t = useT();
   return (
     <Button
       asChild
@@ -91,7 +92,7 @@ function BackToVulnerabilities() {
     >
       <Link href="/vulnerabilities">
         <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-        Back to Vulnerability Center
+        {t("prose.backToVulnerabilityCenter")}
       </Link>
     </Button>
   );
@@ -168,8 +169,8 @@ function VulnerabilityDetailInner() {
     return (
       <div className="space-y-4">
         <BackToVulnerabilities />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
-          <AlertDescription>Missing vulnId query parameter.</AlertDescription>
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <AlertDescription>{t("ui.missingVulnidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -180,7 +181,7 @@ function VulnerabilityDetailInner() {
       return (
         <div className="space-y-4">
           <BackToVulnerabilities />
-          <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+          <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
         </div>
@@ -258,14 +259,14 @@ function VulnerabilityDetailInner() {
           {isAdmin ? <FalsePositiveCard vuln={vuln} /> : null}
           {!canOperate && !isAdmin && !canApproveException ? (
             <p className="text-xs text-muted-foreground">
-              Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.
+              {t("prose.viewerRoleLifecycleAssignmentAnd")}
             </p>
           ) : null}
         </div>
 
         <div className="lg:col-span-2 space-y-6">
           <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-foreground">Finding</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t("ui.finding")}</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
               <Field
@@ -386,7 +387,7 @@ function VulnerabilityDetailInner() {
           </section>
 
           <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-foreground">Evidence</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t("ui.evidence")}</h2>
             {observation?.risk_explanation ? (
               <p className="mt-3 text-sm text-foreground">{observation.risk_explanation}</p>
             ) : (
@@ -417,7 +418,7 @@ function VulnerabilityDetailInner() {
           </section>
 
           <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-foreground">Audit trail</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t("ui.auditTrail")}</h2>
             <div className="mt-4">
               {eventsQuery.isLoading ? (
                 <p className="text-xs text-muted-foreground">Loading events…</p>
@@ -476,7 +477,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-lg space-y-4">
       <div>
-        <h2 className="text-sm font-semibold text-foreground">Move lifecycle</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t("ui.moveLifecycle")}</h2>
         <form onSubmit={onSubmit} className="mt-3 space-y-3">
           <div className="space-y-1.5">
             <Label htmlFor="vuln-next-state" className="text-xs text-muted-foreground">
@@ -532,7 +533,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
           button that cannot work is worse than offering none. */}
       {vuln.source === "endpoint_software" ? (
         <div className="border-t border-border pt-3 space-y-1">
-          <h3 className="text-xs font-semibold text-foreground">Automated verification</h3>
+          <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
           <p className="text-[11px] text-muted-foreground">{t("vuln.software.noVerify")}</p>
           <p className="text-[11px] text-muted-foreground">
             {t("vuln.software.lastSnapshot")}: {formatWhen(vuln.last_seen_at)}
@@ -540,9 +541,9 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
         </div>
       ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
         <div className="border-t border-border pt-3 space-y-2">
-          <h3 className="text-xs font-semibold text-foreground">Automated verification</h3>
+          <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
           <p className="text-[11px] text-muted-foreground">
-            Dispatch a targeted re-scan against this asset to verify remediation.
+            {t("prose.dispatchATargetedRescanAgainst")}
           </p>
           <Button
             type="button"
@@ -550,7 +551,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             variant="outline"
             disabled={verifyMutation.isPending}
             onClick={() => verifyMutation.mutate()}
-            className="w-full border-sky-500/40 bg-sky-950/30 text-sky-600 dark:text-sky-300 hover:bg-sky-900/40 gap-1.5"
+            className="w-full border-sky-500/40 bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-300 hover:bg-sky-50 dark:bg-sky-900/40 gap-1.5"
           >
             <ShieldCheck className="h-4 w-4" />
             {verifyMutation.isPending
@@ -564,6 +565,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
 }
 
 function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const mutation = useAssignVulnerability(vuln.vuln_id);
   const [assignee, setAssignee] = useState(vuln.assignee ?? "");
   const [ownerTeam, setOwnerTeam] = useState(vuln.owner_team ?? "");
@@ -578,7 +580,7 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
 
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-foreground">Ownership</h2>
+      <h2 className="text-sm font-semibold text-foreground">{t("ui.ownership")}</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
           <Label htmlFor="vuln-assignee" className="text-xs text-muted-foreground">
@@ -619,6 +621,7 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
 }
 
 function CommentCard({ vulnId }: { vulnId: string }) {
+  const t = useT();
   const mutation = useCommentOnVulnerability(vulnId);
   const [note, setNote] = useState("");
   function onSubmit(event: FormEvent) {
@@ -628,7 +631,7 @@ function CommentCard({ vulnId }: { vulnId: string }) {
   }
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-foreground">Comment</h2>
+      <h2 className="text-sm font-semibold text-foreground">{t("ui.comment")}</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Textarea
           value={note}
@@ -660,7 +663,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-foreground">Ticket link</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t("ui.ticketLink")}</h2>
         {vuln.ticket_key ? (
           <Button
             type="button"
@@ -676,14 +679,13 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
         ) : null}
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Records where the work lives. Transitions are pushed to the ticket immediately; the
-        ticket&apos;s own status is read back on a cadence, and Sync reads it now.
+        {t("prose.recordsWhereTheWorkLives")}
       </p>
       {vuln.ticket_sync_error ? (
         // A link that has stopped working — a renamed key, a revoked token —
         // is otherwise only in the worker's log, which is where "why is this
         // finding not updating?" goes unanswered.
-        <p className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-300">
+        <p className="mt-2 rounded-md border border-amber-300 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-300">
           Last read failed: {vuln.ticket_sync_error}
         </p>
       ) : null}
@@ -755,6 +757,7 @@ function ExceptionCard({
   canApprove: boolean;
   username: string | null;
 }) {
+  const t = useT();
   const setMutation = useSetVulnerabilityException(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityException(vuln.vuln_id);
   const withdrawMutation = useWithdrawVulnerabilityExceptionRequest(vuln.vuln_id);
@@ -788,7 +791,7 @@ function ExceptionCard({
 
   return (
     <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-foreground">Accepted risk</h2>
+      <h2 className="text-sm font-semibold text-foreground">{t("ui.acceptedRisk")}</h2>
       {inForce ? (
         <p className="mt-2 text-xs text-muted-foreground">
           In force until <span className="text-foreground">{formatWhen(vuln.exception_until)}</span>
@@ -817,7 +820,7 @@ function ExceptionCard({
         </p>
       ) : (
         <p className="mt-2 text-xs text-muted-foreground">
-          No exception. Both expiry and reason are required, and a second person has to approve.
+          {t("prose.noExceptionBothExpiryAnd")}
         </p>
       )}
       {pending ? (

@@ -328,7 +328,7 @@ export default function RemediationPage() {
             {totalFindings}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Total Tracked</p>
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">{t("ui.totalTracked")}</p>
             <p className="text-sm font-bold text-foreground">{rawItems.length} items</p>
           </div>
         </div>
@@ -338,7 +338,7 @@ export default function RemediationPage() {
             {criticalCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-rose-700 dark:text-rose-300 font-semibold">Critical Risk</p>
+            <p className="text-[11px] uppercase tracking-wider text-rose-700 dark:text-rose-300 font-semibold">{t("ui.criticalRisk")}</p>
             <p className="text-sm font-bold text-rose-900 dark:text-rose-200">{criticalCount} critical</p>
           </div>
         </div>
@@ -348,7 +348,7 @@ export default function RemediationPage() {
             {highCount}
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-orange-700 dark:text-orange-300 font-semibold">High Risk</p>
+            <p className="text-[11px] uppercase tracking-wider text-orange-700 dark:text-orange-300 font-semibold">{t("ui.highRisk")}</p>
             <p className="text-sm font-bold text-orange-900 dark:text-orange-200">{highCount} high</p>
           </div>
         </div>
@@ -417,10 +417,10 @@ export default function RemediationPage() {
               <SelectValue placeholder={t("select.severity")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Severities</SelectItem>
-              <SelectItem value="critical">Critical</SelectItem>
+              <SelectItem value="all">{t("ui.allSeverities")}</SelectItem>
+              <SelectItem value="critical">{t("ui.critical")}</SelectItem>
               <SelectItem value="high">High</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="medium">{t("ui.medium")}</SelectItem>
               <SelectItem value="low">Low</SelectItem>
             </SelectContent>
           </Select>
@@ -431,7 +431,7 @@ export default function RemediationPage() {
               <SelectValue placeholder={t("select.slaStatus")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All SLAs</SelectItem>
+              <SelectItem value="all">{t("ui.allSlas")}</SelectItem>
               <SelectItem value="breached">🚨 Breached</SelectItem>
               <SelectItem value="due_soon">⚠️ Due Soon</SelectItem>
               <SelectItem value="on_track">✅ On Track</SelectItem>
@@ -444,9 +444,9 @@ export default function RemediationPage() {
               <SelectValue placeholder={t("select.assignee")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Assignees</SelectItem>
-              <SelectItem value="mine">Assigned to Me</SelectItem>
-              <SelectItem value="unassigned">Unassigned</SelectItem>
+              <SelectItem value="all">{t("ui.allAssignees")}</SelectItem>
+              <SelectItem value="mine">{t("ui.assignedToMe")}</SelectItem>
+              <SelectItem value="unassigned">{t("ui.unassigned")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -480,7 +480,7 @@ export default function RemediationPage() {
           <AlertDescription className="text-xs">
             Showing top {BOARD_OPEN_LIMIT} open and {BOARD_CLOSED_LIMIT} closed findings on Kanban. Open{" "}
             <Link href="/vulnerabilities" className="font-semibold text-primary underline">
-              Vulnerability Center
+              {t("prose.vulnerabilityCenter")}
             </Link>{" "}
             for complete queryable catalog.
           </AlertDescription>
@@ -492,7 +492,7 @@ export default function RemediationPage() {
         <div className="flex h-96 items-center justify-center rounded-xl border border-border bg-card">
           <div className="flex items-center gap-3 text-muted-foreground font-medium text-sm">
             <RefreshCw className="h-5 w-5 animate-spin text-primary" />
-            Loading Remediation Kanban Board…
+            {t("prose.loadingRemediationKanbanBoard")}
           </div>
         </div>
       ) : (
@@ -535,10 +535,10 @@ export default function RemediationPage() {
           <SheetHeader className="border-b border-border/80 p-6 pb-4">
             <SheetTitle className="flex items-center gap-2 text-lg font-bold">
               <History className="h-5 w-5 text-sky-500" />
-              Remediation Audit Trail
+              {t("prose.remediationAuditTrail")}
             </SheetTitle>
             <SheetDescription>
-              Chronological log of all state transitions, comments, assignments, and ticket links.
+              {t("prose.chronologicalLogOfAllState")}
             </SheetDescription>
           </SheetHeader>
 
@@ -789,7 +789,7 @@ function KanbanCard({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuLabel className="text-xs">Quick Move</DropdownMenuLabel>
+                <DropdownMenuLabel className="text-xs">{t("ui.quickMove")}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {possibleTransitions.map((target) => (
                   <DropdownMenuItem
@@ -860,14 +860,14 @@ function VulnerabilityDrawer({
           {/* Key Attributes Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-              <p className="text-[10px] uppercase font-bold text-muted-foreground">Contextual Score</p>
+              <p className="text-[10px] uppercase font-bold text-muted-foreground">{t("ui.contextualScore")}</p>
               <p className="text-xl font-extrabold text-foreground mt-1">
                 {vuln.contextual_score !== null ? vuln.contextual_score.toFixed(1) : "—"}
               </p>
             </div>
 
             <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-              <p className="text-[10px] uppercase font-bold text-muted-foreground">Base CVSS</p>
+              <p className="text-[10px] uppercase font-bold text-muted-foreground">{t("ui.baseCvss")}</p>
               <p className="text-xl font-extrabold text-foreground mt-1">
                 {vuln.cvss !== null ? vuln.cvss.toFixed(1) : "—"}
               </p>
@@ -885,7 +885,7 @@ function VulnerabilityDrawer({
           <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-2">
             <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
               <Server className="h-3.5 w-3.5 text-sky-500" />
-              Target Host & Service
+              {t("prose.targetHostService")}
             </h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
               <div>
@@ -912,15 +912,15 @@ function VulnerabilityDrawer({
             <div className="space-y-4 rounded-xl border border-border bg-card p-4 shadow-sm">
               <h4 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-1.5">
                 <Wrench className="h-3.5 w-3.5 text-primary" />
-                Remediation Actions
+                {t("prose.remediationActions")}
               </h4>
 
               <Tabs defaultValue="move" className="w-full">
                 <TabsList className="grid grid-cols-4 gap-1 bg-muted/80 p-1 border border-border rounded-lg">
                   <TabsTrigger value="move" className="text-xs">Move</TabsTrigger>
-                  <TabsTrigger value="assign" className="text-xs">Assign</TabsTrigger>
+                  <TabsTrigger value="assign" className="text-xs">{t("ui.assign")}</TabsTrigger>
                   <TabsTrigger value="comment" className="text-xs">Note</TabsTrigger>
-                  <TabsTrigger value="ticket" className="text-xs">Ticket</TabsTrigger>
+                  <TabsTrigger value="ticket" className="text-xs">{t("ui.ticket")}</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="move" className="mt-3">
@@ -939,7 +939,7 @@ function VulnerabilityDrawer({
             </div>
           ) : (
             <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              Viewer mode: Workflow transitions and assignments require Operator permissions.
+              {t("prose.viewerModeWorkflowTransitionsAnd")}
             </div>
           )}
 
@@ -976,13 +976,14 @@ function VulnerabilityDrawer({
 // REMEDIATION FORMS
 // ----------------------------------------------------------------------------
 function MoveForm({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const mutation = useTransitionVulnerability(vuln.vuln_id);
   const options = legalTransitions(vuln.state);
   const [target, setTarget] = useState<VulnLifecycleState>(options[0] ?? vuln.state);
   const [note, setNote] = useState("");
 
   if (options.length === 0) {
-    return <p className="text-xs text-muted-foreground">No further lifecycle transitions available.</p>;
+    return <p className="text-xs text-muted-foreground">{t("ui.noFurtherLifecycleTransitionsAvailable")}</p>;
   }
 
   return (
@@ -994,7 +995,7 @@ function MoveForm({ vuln }: { vuln: TrackedVulnerability }) {
       }}
     >
       <div className="space-y-1">
-        <Label className="text-xs font-medium text-foreground">Target Stage</Label>
+        <Label className="text-xs font-medium text-foreground">{t("ui.targetStage")}</Label>
         <Select value={target} onValueChange={(val) => setTarget(val as VulnLifecycleState)}>
           <SelectTrigger className="h-9 text-xs">
             <SelectValue />
@@ -1010,7 +1011,7 @@ function MoveForm({ vuln }: { vuln: TrackedVulnerability }) {
       </div>
 
       <div className="space-y-1">
-        <Label className="text-xs font-medium text-foreground">Resolution Note / Context</Label>
+        <Label className="text-xs font-medium text-foreground">{t("ui.resolutionNoteContext")}</Label>
         <Textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -1028,6 +1029,7 @@ function MoveForm({ vuln }: { vuln: TrackedVulnerability }) {
 }
 
 function AssignForm({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const mutation = useAssignVulnerability(vuln.vuln_id);
   const [assignee, setAssignee] = useState(vuln.assignee ?? "");
 
@@ -1040,7 +1042,7 @@ function AssignForm({ vuln }: { vuln: TrackedVulnerability }) {
       }}
     >
       <div className="space-y-1">
-        <Label className="text-xs font-medium text-foreground">Assignee Username</Label>
+        <Label className="text-xs font-medium text-foreground">{t("ui.assigneeUsername")}</Label>
         <Input
           value={assignee}
           onChange={(e) => setAssignee(e.target.value)}
@@ -1061,6 +1063,7 @@ function AssignForm({ vuln }: { vuln: TrackedVulnerability }) {
 }
 
 function CommentForm({ vulnId }: { vulnId: string }) {
+  const t = useT();
   const mutation = useCommentOnVulnerability(vulnId);
   const [note, setNote] = useState("");
 
@@ -1074,7 +1077,7 @@ function CommentForm({ vulnId }: { vulnId: string }) {
       }}
     >
       <div className="space-y-1">
-        <Label className="text-xs font-medium text-foreground">Audit Note</Label>
+        <Label className="text-xs font-medium text-foreground">{t("ui.auditNote")}</Label>
         <Textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -1096,6 +1099,7 @@ function CommentForm({ vulnId }: { vulnId: string }) {
 }
 
 function TicketForm({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
   const setMutation = useSetVulnerabilityTicket(vuln.vuln_id);
   const clearMutation = useClearVulnerabilityTicket(vuln.vuln_id);
   const [system, setSystem] = useState<TicketSystem>((vuln.ticket_system as TicketSystem) || "jira");
@@ -1111,7 +1115,7 @@ function TicketForm({ vuln }: { vuln: TrackedVulnerability }) {
       }}
     >
       <div className="space-y-1">
-        <Label className="text-xs font-medium text-foreground">Ticket Tracker</Label>
+        <Label className="text-xs font-medium text-foreground">{t("ui.ticketTracker")}</Label>
         <Select value={system} onValueChange={(val) => setSystem(val as TicketSystem)}>
           <SelectTrigger className="h-9 text-xs">
             <SelectValue />
@@ -1128,7 +1132,7 @@ function TicketForm({ vuln }: { vuln: TrackedVulnerability }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <div className="space-y-1">
-          <Label className="text-xs font-medium text-foreground">Ticket Key</Label>
+          <Label className="text-xs font-medium text-foreground">{t("ui.ticketKey")}</Label>
           <Input
             value={key}
             onChange={(e) => setKey(e.target.value)}
@@ -1137,7 +1141,7 @@ function TicketForm({ vuln }: { vuln: TrackedVulnerability }) {
           />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs font-medium text-foreground">Ticket URL</Label>
+          <Label className="text-xs font-medium text-foreground">{t("ui.ticketUrl")}</Label>
           <Input
             value={url}
             onChange={(e) => setUrl(e.target.value)}

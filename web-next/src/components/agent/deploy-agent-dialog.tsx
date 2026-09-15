@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useT } from "@/lib/i18n";
 import {
   Check,
   Copy,
@@ -52,16 +53,16 @@ function ProvisioningKeyNotice({
   error: string | null;
   canMint: boolean;
 }) {
+  const t = useT();
   if (keyMinted) {
     return (
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground">
         <p className="flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400">
           <KeyRound className="h-3.5 w-3.5" />
-          Provisioning key shown once
+          {t("prose.provisioningKeyShownOnce")}
         </p>
         <p className="mt-1 leading-relaxed text-muted-foreground">
-          The key below is embedded in these snippets and cannot be retrieved
-          again. Copy the command now; revoke the key from Tenants if it leaks.
+          {t("prose.theKeyBelowIsEmbedded")}
         </p>
       </div>
     );
@@ -73,7 +74,7 @@ function ProvisioningKeyNotice({
         <div>
           <p className="flex items-center gap-1.5 font-semibold">
             <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-            No provisioning key yet
+            {t("prose.noProvisioningKeyYet")}
           </p>
           <p className="mt-1 leading-relaxed text-muted-foreground">
             Snippets show a <code className="font-mono">&lt;PROVISIONING_KEY&gt;</code>{" "}
@@ -82,9 +83,7 @@ function ProvisioningKeyNotice({
           </p>
           {canMint ? null : (
             <p className="mt-1 leading-relaxed text-amber-600 dark:text-amber-400">
-              Minting one takes tenant admin: the key registers agents into the
-              tenant, the same credential the tenant key administration page
-              hands out.
+              {t("prose.mintingOneTakesTenantAdmin")}
             </p>
           )}
         </div>
@@ -104,6 +103,7 @@ function ProvisioningKeyNotice({
 }
 
 export function DeployAgentDialog() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("ssh");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -202,10 +202,10 @@ export function DeployAgentDialog() {
         <DialogHeader className="border-b border-border/80 px-6 pt-6 pb-4">
           <DialogTitle className="flex items-center gap-2.5 text-xl font-bold">
             <Cpu className="h-5 w-5 text-sky-500" />
-            Deploy Scanning Agent
+            {t("prose.deployScanningAgent")}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground text-xs sm:text-sm">
-            Install and register a new security agent to execute remote vulnerability scans.
+            {t("prose.installAndRegisterANew")}
           </DialogDescription>
         </DialogHeader>
 
@@ -245,10 +245,10 @@ export function DeployAgentDialog() {
                   <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
                     <p className="flex items-center gap-1.5 font-semibold text-sky-600 dark:text-sky-400">
                       <Shield className="h-4 w-4" />
-                      Agent Push Deployment via SSH
+                      {t("prose.agentPushDeploymentViaSsh")}
                     </p>
                     <p className="mt-1 text-muted-foreground leading-relaxed">
-                      The platform connects to the target machine over SSH, automatically provisions security tokens, configures the systemd service, and verifies registration. Credentials are processed in-memory and never saved.
+                      {t("prose.thePlatformConnectsToThe")}
                     </p>
                   </div>
 
@@ -287,7 +287,7 @@ export function DeployAgentDialog() {
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-medium text-foreground">Authentication Method</Label>
+                      <Label className="text-xs font-medium text-foreground">{t("ui.authenticationMethod")}</Label>
                       <div className="flex gap-2 pt-1">
                         <Button
                           type="button"
@@ -314,7 +314,7 @@ export function DeployAgentDialog() {
                   <div className="space-y-1.5 rounded-lg border border-border bg-muted/40 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <Label htmlFor="host-key" className="text-xs font-medium text-foreground">
-                        Expected SSH host key fingerprint
+                        {t("prose.expectedSshHostKeyFingerprint")}
                       </Label>
                       <Button
                         type="button"
@@ -351,7 +351,7 @@ export function DeployAgentDialog() {
                         </p>
                         {probedKey.pinned ? (
                           <p className="text-muted-foreground">
-                            Already pinned for this tenant — no fingerprint needed.
+                            {t("prose.alreadyPinnedForThisTenant")}
                           </p>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
@@ -369,17 +369,14 @@ export function DeployAgentDialog() {
                               className="text-xs"
                               onClick={() => setExpectedHostKey(probedKey.fingerprint)}
                             >
-                              It matches — use it
+                              {t("prose.itMatchesUseIt")}
                             </Button>
                           </div>
                         )}
                       </div>
                     ) : (
                       <p className="text-xs leading-relaxed text-muted-foreground">
-                        Required the first time this tenant deploys to a host. Your SSH
-                        credentials and a new provisioning key travel over this
-                        connection, so the deployment is refused until the target&apos;s
-                        identity is known. Afterwards the pinned key is checked instead.
+                        {t("prose.requiredTheFirstTimeThis")}
                       </p>
                     )}
                     {hostKeyMutation.error ? (
@@ -423,7 +420,7 @@ export function DeployAgentDialog() {
                         onChange={(e) => setUseDocker(e.target.checked)}
                         className="rounded border-input bg-background text-primary"
                       />
-                      Deploy as Docker container instead of native systemd service
+                      {t("prose.deployAsDockerContainerInstead")}
                     </label>
 
                     <Button
@@ -440,8 +437,7 @@ export function DeployAgentDialog() {
                     </Button>
                     {isAdmin ? null : (
                       <p className="text-xs text-amber-600 dark:text-amber-400">
-                        The push takes tenant admin: it mints a provisioning key
-                        and installs software as root on the target.
+                        {t("prose.thePushTakesTenantAdmin")}
                       </p>
                     )}
                     {deployMutation.error ? (
@@ -524,15 +520,15 @@ export function DeployAgentDialog() {
             <TabsContent value="systemd" className="mt-4 space-y-4">
               {keyNotice}
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">Automated Systemd Service One-Liner</p>
+                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.automatedSystemdServiceOneliner")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
-                  Run this command on any Linux machine (Ubuntu/Debian/RHEL/Alpine). It automatically sets up Python virtualenv, installs dependencies, writes systemd unit, and enables auto-start on boot.
+                  {t("prose.runThisCommandOnAny")}
                 </p>
               </div>
 
               <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
                 <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
-                  <span className="font-mono text-xs font-semibold text-foreground">Bash Command</span>
+                  <span className="font-mono text-xs font-semibold text-foreground">{t("ui.bashCommand")}</span>
                   <Button
                     size="sm"
                     variant="outline"
@@ -559,14 +555,14 @@ export function DeployAgentDialog() {
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
                 <p className="font-semibold text-sky-600 dark:text-sky-400">Docker Run Command & Compose</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
-                  Runs the scanning agent in an isolated container with host network access for direct vulnerability scanning.
+                  {t("prose.runsTheScanningAgentIn")}
                 </p>
               </div>
 
               <div className="space-y-4">
                 <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
                   <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
-                    <span className="font-mono text-xs font-semibold text-foreground">Docker CLI Command</span>
+                    <span className="font-mono text-xs font-semibold text-foreground">{t("ui.dockerCliCommand")}</span>
                     <Button
                       size="sm"
                       variant="outline"
@@ -606,9 +602,9 @@ export function DeployAgentDialog() {
             <TabsContent value="kubernetes" className="mt-4 space-y-4">
               {keyNotice}
               <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-foreground">
-                <p className="font-semibold text-sky-600 dark:text-sky-400">Kubernetes Deployment Manifest</p>
+                <p className="font-semibold text-sky-600 dark:text-sky-400">{t("ui.kubernetesDeploymentManifest")}</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
-                  Deploy continuous scanner agents into your Kubernetes cluster to assess internal services.
+                  {t("prose.deployContinuousScannerAgentsInto")}
                 </p>
               </div>
 

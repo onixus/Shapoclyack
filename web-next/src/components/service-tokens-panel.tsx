@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,6 +52,7 @@ export function ServiceTokensPanel({
   tenantId: string;
   canManage: boolean;
 }) {
+  const t = useT();
   const { data = [], isLoading, error } = useServiceTokens(tenantId, canManage);
   const createMutation = useCreateServiceToken(tenantId);
   const revokeMutation = useRevokeServiceToken(tenantId);
@@ -109,7 +111,7 @@ export function ServiceTokensPanel({
           />
         </div>
         <div className="grid gap-1.5 sm:col-span-2">
-          <Label htmlFor="service-token-scopes">Scopes</Label>
+          <Label htmlFor="service-token-scopes">{t("ui.scopes")}</Label>
           <Input
             id="service-token-scopes"
             value={scopes}
@@ -149,7 +151,7 @@ export function ServiceTokensPanel({
           role="alert"
           className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
         >
-          <p className="text-sm font-semibold">Copy this token now — it is shown only once.</p>
+          <p className="text-sm font-semibold">{t("ui.copyThisTokenNowItIs")}</p>
           <code className="block break-all rounded bg-background/60 p-2 font-mono text-xs">
             {issued.token}
           </code>
@@ -175,19 +177,19 @@ export function ServiceTokensPanel({
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading service tokens…</p>
       ) : data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No service tokens issued for this tenant.</p>
+        <p className="text-sm text-muted-foreground">{t("ui.noServiceTokensIssuedForThis")}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Prefix</th>
+                <th className="py-2 pr-4">{t("ui.prefix")}</th>
                 <th className="py-2 pr-4">Role</th>
-                <th className="py-2 pr-4">Scopes</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2 pr-4">Expires</th>
-                <th className="py-2 pr-4">Last used</th>
+                <th className="py-2 pr-4">{t("ui.scopes")}</th>
+                <th className="py-2 pr-4">{t("ui.status")}</th>
+                <th className="py-2 pr-4">{t("ui.expires")}</th>
+                <th className="py-2 pr-4">{t("ui.lastUsed")}</th>
                 <th className="py-2" />
               </tr>
             </thead>

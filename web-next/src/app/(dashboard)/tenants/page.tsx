@@ -230,15 +230,15 @@ export default function TenantsPage() {
             </DialogTrigger>
             <DialogContent className="bg-card border-border text-foreground">
               <DialogHeader>
-                <DialogTitle className="text-foreground">Provision New Tenant</DialogTitle>
+                <DialogTitle className="text-foreground">{t("ui.provisionNewTenant")}</DialogTitle>
                 <DialogDescription className="text-xs text-muted-foreground">
-                  Creates a tenant environment and issues a one-time agent provisioning key.
+                  {t("prose.createsATenantEnvironmentAnd")}
                 </DialogDescription>
               </DialogHeader>
               {!generatedKey ? (
                 <div className="space-y-3 py-2">
                   <div className="grid gap-2">
-                    <Label htmlFor="tenant-name" className="text-xs font-semibold text-foreground">Tenant Name</Label>
+                    <Label htmlFor="tenant-name" className="text-xs font-semibold text-foreground">{t("ui.tenantName")}</Label>
                     <Input
                       id="tenant-name"
                       value={name}
@@ -264,7 +264,7 @@ export default function TenantsPage() {
                     onClick={() => void navigator.clipboard.writeText(generatedKey)}
                   >
                     <Copy className="h-3.5 w-3.5" />
-                    Copy Provisioning Key
+                    {t("prose.copyProvisioningKey")}
                   </Button>
                 </div>
               )}
@@ -301,8 +301,7 @@ export default function TenantsPage() {
           Customer posture
         </p>
         <p className="text-[11px] text-muted-foreground">
-          Worst open NIST risk first. Declared internet is operator-set exposure, not a scan
-          measurement.
+          {t("prose.worstOpenNistRiskFirst")}
         </p>
         <DataTable
           columns={postureColumns}

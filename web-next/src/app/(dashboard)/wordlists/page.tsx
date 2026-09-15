@@ -104,13 +104,13 @@ export default function WordlistsPage() {
         className="space-y-5 rounded-xl border border-border bg-card p-6 shadow-xl backdrop-blur"
       >
         <div className="flex items-center justify-between border-b border-border pb-3">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-foreground">Upload Wordlist</h3>
+          <h3 className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.uploadWordlist")}</h3>
         </div>
 
         <div className="grid gap-5 md:grid-cols-3">
           <div className="grid gap-2">
             <Label htmlFor="wl-file" className="text-foreground font-semibold">
-              Wordlist file (one entry per line)
+              {t("prose.wordlistFileOneEntryPer")}
             </Label>
             <Input
               id="wl-file"
@@ -124,7 +124,7 @@ export default function WordlistsPage() {
 
           <div className="grid gap-2">
             <Label htmlFor="wl-name" className="text-foreground font-semibold">
-              Name (optional — defaults to filename)
+              {t("prose.nameOptionalDefaultsToFilename")}
             </Label>
             <Input
               id="wl-name"
@@ -174,7 +174,7 @@ export default function WordlistsPage() {
           <p className="p-6 text-xs text-muted-foreground">Loading wordlists…</p>
         ) : wordlists.length === 0 ? (
           <p className="p-6 text-xs text-muted-foreground">
-            No wordlists uploaded yet. Upload one above to use it in a scan.
+            {t("prose.noWordlistsUploadedYetUpload")}
           </p>
         ) : (
           <Table>
@@ -230,13 +230,12 @@ export default function WordlistsPage() {
               Delete wordlist “{pendingDelete?.name}”?
             </AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground text-xs">
-              Scans already running are unaffected — they copied the list at start. New scans can no
-              longer select it.
+              {t("prose.scansAlreadyRunningAreUnaffected")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">
-              Cancel
+              {t("ui.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {

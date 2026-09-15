@@ -75,7 +75,7 @@ export default function SystemPage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
@@ -133,7 +133,7 @@ export default function SystemPage() {
             </Card>
 
             <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
-              <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Enrichment Databases</Title>
+              <Title className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.enrichmentDatabases")}</Title>
               <table className="mt-4 w-full text-left text-xs">
                 <tbody className="divide-y divide-border">
                   {data.enrichment.map((db) => {
@@ -179,14 +179,14 @@ export default function SystemPage() {
               <div className="mt-5 space-y-3 pt-3 border-t border-border text-xs">
                 {data.scan_config.service_backend ? (
                   <div className="flex items-center justify-between rounded-lg bg-muted p-2 border border-border">
-                    <span className="font-medium text-foreground">Service probe backend</span>
+                    <span className="font-medium text-foreground">{t("ui.serviceProbeBackend")}</span>
                     <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 font-mono text-[11px]">
                       {data.scan_config.service_backend}
                     </Badge>
                   </div>
                 ) : null}
                 <div>
-                  <p className="text-muted-foreground font-semibold mb-1">Speed profiles</p>
+                  <p className="text-muted-foreground font-semibold mb-1">{t("ui.speedProfiles")}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {data.scan_config.profiles.map((p) => (
                       <Badge key={p} variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-[11px]">{p}</Badge>
@@ -194,8 +194,8 @@ export default function SystemPage() {
                   </div>
                 </div>
                 <div>
-                  <p className="text-muted-foreground font-semibold mb-1">Legacy nmap NSE profiles</p>
-                  <p className="text-[10px] text-muted-foreground mb-1.5">Used only when backend is nmap or hybrid</p>
+                  <p className="text-muted-foreground font-semibold mb-1">{t("ui.legacyNmapNseProfiles")}</p>
+                  <p className="text-[10px] text-muted-foreground mb-1.5">{t("ui.usedOnlyWhenBackendIsNmap")}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {data.scan_config.nse_profiles.map((p) => (
                       <Badge key={p} variant="outline" className="border-border text-foreground font-mono text-[11px]">{p}</Badge>
@@ -209,15 +209,15 @@ export default function SystemPage() {
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Runtime Services & Integration</Title>
               <div className="mt-4 space-y-2.5 text-xs">
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Job Execution Mode</span>
+                  <span className="font-semibold text-foreground">{t("ui.jobExecutionMode")}</span>
                   <Badge variant="secondary" className="bg-sky-500/20 text-sky-600 dark:text-sky-300 border-sky-500/30 uppercase font-bold text-[10px]">{data.runtime.job_execution_mode}</Badge>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Postgres (Primary Datastore)</span>
+                  <span className="font-semibold text-foreground">{t("ui.postgresPrimary")}</span>
                   <EnabledBadge on={data.runtime.postgres_enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">ClickHouse (Telemetry Data Lake)</span>
+                  <span className="font-semibold text-foreground">{t("ui.clickhouseLake")}</span>
                   <EnabledBadge on={data.runtime.clickhouse_enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
@@ -225,11 +225,11 @@ export default function SystemPage() {
                   <EnabledBadge on={data.runtime.nats_enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">ClickHouse Ingest Worker</span>
+                  <span className="font-semibold text-foreground">{t("ui.clickhouseIngestWorker")}</span>
                   <EnabledBadge on={data.runtime.ch_ingest_enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Asset Stale Threshold</span>
+                  <span className="font-semibold text-foreground">{t("ui.assetStaleThreshold")}</span>
                   <span className="font-mono font-bold text-sky-600 dark:text-sky-400">{data.runtime.asset_stale_days} days</span>
                 </div>
               </div>
@@ -239,31 +239,31 @@ export default function SystemPage() {
               <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint Inventory & Retention</Title>
               <div className="mt-4 space-y-2.5 text-xs">
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Endpoint Ingestion</span>
+                  <span className="font-semibold text-foreground">{t("ui.endpointIngestion")}</span>
                   <EnabledBadge on={data.endpoint_inventory.enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Endpoints (Stale / Total)</span>
+                  <span className="font-semibold text-foreground">{t("ui.endpointsStaleTotal")}</span>
                   <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
                     {data.endpoint_inventory.devices_stale ?? "—"} / {data.endpoint_inventory.devices_total ?? "—"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Endpoint Stale Threshold</span>
+                  <span className="font-semibold text-foreground">{t("ui.endpointStaleThreshold")}</span>
                   <span className="font-mono font-bold text-sky-600 dark:text-sky-400">{data.endpoint_inventory.stale_hours} hours</span>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Retention Job</span>
+                  <span className="font-semibold text-foreground">{t("ui.retentionJob")}</span>
                   <EnabledBadge on={data.endpoint_inventory.retention_enabled} />
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Software Rows / Change Events</span>
+                  <span className="font-semibold text-foreground">{t("ui.softwareRowsChangeEvents")}</span>
                   <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
                     {data.endpoint_inventory.snapshot_retention_days}d / {data.endpoint_inventory.change_retention_days}d
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-muted p-2.5 border border-border">
-                  <span className="font-semibold text-foreground">Last Retention Sweep</span>
+                  <span className="font-semibold text-foreground">{t("ui.lastRetentionSweep")}</span>
                   <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
                     {data.endpoint_inventory.retention_last_run_at
                       ? ago(data.endpoint_inventory.retention_last_run_at)

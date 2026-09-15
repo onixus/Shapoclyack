@@ -131,7 +131,7 @@ export default function ExposurePage() {
         </div>
       </div>
 
-      <Alert className="border-sky-500/30 bg-sky-950/20 text-sky-100">
+      <Alert className="border-sky-500/30 bg-sky-50 dark:bg-sky-950/20 text-sky-900 dark:text-sky-100">
         <AlertDescription className="text-xs">
           {t("page.exposure.alert")}
         </AlertDescription>

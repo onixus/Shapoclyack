@@ -167,7 +167,7 @@ export default function DashboardPage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>
       ) : null}
@@ -322,22 +322,22 @@ export default function DashboardPage() {
             <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               {t("page.risk.topRisksTitle")}
             </Title>
-            <span className="text-xs text-muted-foreground">Open, worst NIST score first</span>
+            <span className="text-xs text-muted-foreground">{t("ui.openWorstNistScoreFirst")}</span>
           </div>
           {topRisksQuery.isLoading ? (
             <p className="mt-6 text-xs text-muted-foreground">Loading tracked findings…</p>
           ) : topRisks.length === 0 ? (
-            <p className="mt-6 text-xs text-muted-foreground">No open tracked findings.</p>
+            <p className="mt-6 text-xs text-muted-foreground">{t("ui.noOpenTrackedFindings")}</p>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
                   <tr>
-                    <th className="py-2.5 px-2">Finding</th>
-                    <th className="py-2.5 px-2">Asset</th>
+                    <th className="py-2.5 px-2">{t("ui.finding")}</th>
+                    <th className="py-2.5 px-2">{t("ui.asset")}</th>
                     <th className="py-2.5 px-2">Risk</th>
                     <th className="py-2.5 px-2">SLA</th>
-                    <th className="py-2.5 px-2">Owner</th>
+                    <th className="py-2.5 px-2">{t("ui.owner")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -438,7 +438,7 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
-              Estate Risk & Vulnerability Trend (#144)
+              {t("prose.estateRiskVulnerabilityTrend144")}
             </Title>
           </div>
           <Button
@@ -453,11 +453,11 @@ export default function DashboardPage() {
           </Button>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.
+          {t("prose.historicalTimelineOfActiveVulnerabilitie")}
         </p>
         {riskHistoryTrend.length === 0 ? (
           <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-border rounded-lg text-center">
-            <p className="text-xs text-muted-foreground">No historical risk snapshots recorded yet.</p>
+            <p className="text-xs text-muted-foreground">{t("ui.noHistoricalRiskSnapshotsRecordedYet")}</p>
             <Button
               size="sm"
               variant="secondary"
@@ -466,7 +466,7 @@ export default function DashboardPage() {
               disabled={triggerSnapshot.isPending}
             >
               <Camera className="h-3.5 w-3.5" />
-              Capture Initial Snapshot
+              {t("prose.captureInitialSnapshot")}
             </Button>
           </div>
         ) : (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import Link from "next/link";
 import { format } from "date-fns";
 import {
@@ -48,6 +49,7 @@ export function AgentDetailsDrawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useT();
   const { data: agent, isLoading } = useAgentDetail(agentId);
   const upgradeMutation = useUpgradeAgent();
   const deleteMutation = useDeleteAgent();
@@ -156,8 +158,7 @@ export function AgentDetailsDrawer({
                     <span>
                       Update available: Current <strong>v{agent.version}</strong> &rarr; Latest <strong>v{agent.latest_version || "—"}</strong>
                       <span className="block opacity-80">
-                        Marking records the intent for operators. The upgrade itself runs on the
-                        host — the agent receives no command from here.
+                        {t("prose.markingRecordsTheIntentFor")}
                       </span>
                     </span>
                   </div>
@@ -182,7 +183,7 @@ export function AgentDetailsDrawer({
               <div>
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                   <Activity className="h-3.5 w-3.5 text-sky-500" />
-                  Live System Telemetry
+                  {t("prose.liveSystemTelemetry")}
                 </h4>
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {/* CPU */}
@@ -308,7 +309,7 @@ export function AgentDetailsDrawer({
                     </span>
                   ))}
                   {Object.keys(agent.labels || {}).length === 0 && (!agent.capabilities || agent.capabilities.length === 0) && (
-                    <span className="text-xs text-muted-foreground">No custom labels configured</span>
+                    <span className="text-xs text-muted-foreground">{t("ui.noCustomLabelsConfigured")}</span>
                   )}
                 </div>
               </div>
@@ -322,8 +323,7 @@ export function AgentDetailsDrawer({
                 </h4>
                 {lifecycle === "active" ? (
                   <p className="text-xs text-muted-foreground">
-                    Active — this agent may claim jobs and upload results. Disabling or
-                    quarantining it survives a restart; only an operator undoes it.
+                    {t("prose.activeThisAgentMayClaim")}
                   </p>
                 ) : (
                   <p className="text-xs text-amber-700 dark:text-amber-300">
@@ -402,7 +402,7 @@ export function AgentDetailsDrawer({
                         onChange={(event) => setRevokeKey(event.target.checked)}
                         aria-label="Revoke provisioning key"
                       />
-                      Also revoke its provisioning key
+                      {t("prose.alsoRevokeItsProvisioningKey")}
                     </label>
                     {/* The blast radius, before the click rather than in the
                         response: revoking the key stops every agent holding
@@ -431,7 +431,7 @@ export function AgentDetailsDrawer({
                       onClick={() => setConfirmDelete(false)}
                       className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
                     >
-                      Cancel
+                      {t("ui.cancel")}
                     </Button>
                   </div>
                 )}

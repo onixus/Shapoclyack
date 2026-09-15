@@ -86,7 +86,7 @@ export default function GeoPage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
@@ -127,7 +127,7 @@ export default function GeoPage() {
           </div>
 
           {hostsTruncated || findingsTruncated ? (
-            <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
+            <Alert className="border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200">
               <AlertDescription className="text-xs">
                 This run is larger than one page of the run API.{" "}
                 {hostsTruncated

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useQuery } from "@tanstack/react-query";
 import {
   ShieldAlert,
@@ -48,7 +49,7 @@ function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
       );
     case "error":
       return (
-        <Badge className="bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-800 gap-1 font-mono">
+        <Badge className="bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border-rose-800 gap-1 font-mono">
           <AlertTriangle className="h-3.5 w-3.5" />
           ERROR
         </Badge>
@@ -73,25 +74,26 @@ function StatusBadge({ status }: { status: ControlStatus | OverallVerdict }) {
 }
 
 function RiskBadge({ risk }: { risk: string }) {
+  const t = useT();
   const normalized = risk.toLowerCase();
   if (normalized.includes("very_high") || normalized.includes("critical")) {
-    return <Badge className="bg-rose-600/30 text-rose-600 dark:text-rose-300 border-rose-500/40">Critical / Very High</Badge>;
+    return <Badge className="bg-rose-600/30 text-rose-600 dark:text-rose-300 border-rose-500/40">{t("ui.criticalVeryHigh")}</Badge>;
   }
   if (normalized.includes("high")) {
-    return <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30">High Risk</Badge>;
+    return <Badge className="bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30">{t("ui.highRisk")}</Badge>;
   }
   if (normalized.includes("moderate") || normalized.includes("medium")) {
-    return <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30">Moderate Risk</Badge>;
+    return <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30">{t("ui.moderateRisk")}</Badge>;
   }
   // "very_low" has to be tested before "low", otherwise the substring match
   // below claims it and the very-low branch is unreachable.
   if (normalized.includes("very_low")) {
-    return <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">Very Low Risk</Badge>;
+    return <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">{t("ui.veryLowRisk")}</Badge>;
   }
   if (normalized.includes("low")) {
-    return <Badge className="bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/30">Low Risk</Badge>;
+    return <Badge className="bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/30">{t("ui.lowRisk")}</Badge>;
   }
-  return <Badge variant="outline" className="text-muted-foreground border-border">Unassessed</Badge>;
+  return <Badge variant="outline" className="text-muted-foreground border-border">{t("ui.unassessed")}</Badge>;
 }
 
 function SeverityPills({ counts }: { counts: Record<string, number> }) {
@@ -111,6 +113,7 @@ function SeverityPills({ counts }: { counts: Record<string, number> }) {
 }
 
 function ControlRow({ control }: { control: ControlItem }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const hasFindings = control.top_findings && control.top_findings.length > 0;
 
@@ -189,7 +192,7 @@ function ControlRow({ control }: { control: ControlItem }) {
               </div>
             </div>
           ) : (
-            <p className="text-muted-foreground italic">No specific findings listed for this control.</p>
+            <p className="text-muted-foreground italic">{t("ui.noSpecificFindingsListedForThis")}</p>
           )}
         </div>
       )}
@@ -198,6 +201,7 @@ function ControlRow({ control }: { control: ControlItem }) {
 }
 
 export function ControlsMatrix({ runId }: { runId: string }) {
+  const t = useT();
   const { data, isLoading, error } = useQuery<OrgProfileControlsSummary>({
     queryKey: ["run-controls", runId],
     queryFn: () => fetchRunControls(runId),
@@ -208,7 +212,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
     return (
       <div className="flex items-center justify-center py-12 text-muted-foreground gap-2 font-mono text-xs">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
-        Evaluating security controls matrix…
+        {t("prose.evaluatingSecurityControlsMatrix")}
       </div>
     );
   }
@@ -218,7 +222,7 @@ export function ControlsMatrix({ runId }: { runId: string }) {
       <Card className="border-border bg-card">
         <CardContent className="py-8 text-center text-muted-foreground text-xs">
           <ShieldQuestion className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-          Controls matrix telemetry is not available for this run (stage unconfigured or artifacts absent).
+          {t("prose.controlsMatrixTelemetryIsNot")}
         </CardContent>
       </Card>
     );
@@ -232,16 +236,16 @@ export function ControlsMatrix({ runId }: { runId: string }) {
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <Activity className="h-5 w-5 text-sky-600 dark:text-sky-400" />
-              <h2 className="text-base font-bold text-foreground">Organization Security Posture Matrix</h2>
+              <h2 className="text-base font-bold text-foreground">{t("ui.organizationSecurityPostureMatrix")}</h2>
             </div>
             <p className="text-xs text-muted-foreground">
-              Evaluated across 6 foundational external attack surface controls according to NIST SP 800-30 Rev. 1.
+              {t("prose.evaluatedAcross6FoundationalExternal")}
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <span className="text-[11px] text-muted-foreground uppercase tracking-wider block">Overall Verdict</span>
+              <span className="text-[11px] text-muted-foreground uppercase tracking-wider block">{t("ui.overallVerdict")}</span>
               <div className="mt-0.5">
                 <StatusBadge status={data.overall_verdict} />
               </div>

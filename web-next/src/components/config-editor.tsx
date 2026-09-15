@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Card, Title } from "@tremor/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ function asList(v: unknown): string[] {
 }
 
 export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
+  const t = useT();
   const { data, isLoading, error } = useConfig();
   const update = useUpdateConfig();
   const [form, setForm] = useState<Record<string, unknown> | null>(null);
@@ -109,7 +111,7 @@ export function ConfigEditor({ canEdit }: { canEdit: boolean }) {
   return (
     <Card className="rounded-xl border border-border bg-card p-6 shadow-lg backdrop-blur">
       <div className="flex items-center justify-between">
-        <Title className="text-sm font-bold uppercase tracking-wider text-foreground">Scanner Configuration Tuner</Title>
+        <Title className="text-sm font-bold uppercase tracking-wider text-foreground">{t("ui.scannerConfigurationTuner")}</Title>
         {overrideCount > 0 ? (
           <Badge variant="secondary" className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/30 font-mono text-[11px]">{overrideCount} overridden</Badge>
         ) : (

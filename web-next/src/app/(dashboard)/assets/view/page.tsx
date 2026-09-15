@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useT } from "@/lib/i18n";
+import { useAbsoluteTime } from "@/lib/i18n/datetime";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -94,11 +95,12 @@ export default function AssetDetailPage() {
 }
 
 function BackToAssets() {
+  const t = useT();
   return (
     <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
       <Link href="/assets">
         <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-        Back to Assets
+        {t("asset.back")}
       </Link>
     </Button>
   );
@@ -145,8 +147,8 @@ function AssetDetailInner() {
     return (
       <div className="space-y-4">
         <BackToAssets />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
-          <AlertDescription>Missing assetId query parameter.</AlertDescription>
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <AlertDescription>{t("asset.missingParam")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -157,16 +159,25 @@ function AssetDetailInner() {
       return (
         <div className="space-y-4">
           <BackToAssets />
-          <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+          <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
             <AlertDescription>{(detailQuery.error as Error).message}</AlertDescription>
           </Alert>
         </div>
       );
     }
-    return <p className="text-sm text-muted-foreground">Loading asset security view…</p>;
+    return <p className="text-sm text-muted-foreground">{t("asset.loadingView")}</p>;
   }
 
   const risk = asset.risk;
+  // The name heads the page, as it heads the row in the list: "www.example.com"
+  // says what is at risk where "203.0.113.10" is a lookup the operator has to
+  // perform. An asset with neither -- an endpoint-derived one, which carries no
+  // network identifiers at all -- keeps its id, because that is all it has.
+  const primaryFqdn =
+    asset.identifiers.find((i) => i.identifier_type === "fqdn")?.identifier_value ?? null;
+  const primaryIp =
+    asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ?? null;
+  const headingName = primaryFqdn || primaryIp || asset.asset_id;
   const estateLevel = risk?.estate_risk && risk.estate_risk in RISK_LEVEL_STATUS ? risk.estate_risk : null;
   const unassigned = risk?.unassigned ?? 0;
   const breached = risk?.breached ?? 0;
@@ -180,15 +191,14 @@ function AssetDetailInner() {
           <div>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-extrabold font-mono tracking-tight text-foreground">
-                {asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ||
-                  asset.asset_id}
+                {headingName}
               </h1>
               <StatusBadge value={asset.status} map={ASSET_STATUS} />
               {asset.asset_criticality != null ? (
                 <StatusBadge value={String(asset.asset_criticality)} map={ASSET_CRITICALITY} />
               ) : (
                 <Badge variant="outline" className="border-border bg-card text-muted-foreground">
-                  Criticality Unset
+                  {t("asset.criticalityUnset")}
                 </Badge>
               )}
               {asset.environment ? (
@@ -200,9 +210,15 @@ function AssetDetailInner() {
               {estateLevel ? <StatusBadge value={estateLevel} map={RISK_LEVEL_STATUS} /> : null}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {asset.business_service || "No business service"}
+              {asset.business_service || t("asset.noBusinessService")}
               {" · "}
-              {asset.owner_email || "No owner"}
+              {asset.owner_email || t("asset.noOwner")}
+              {primaryIp && primaryIp !== headingName ? (
+                <>
+                  {" · "}
+                  <span className="font-mono">{primaryIp}</span>
+                </>
+              ) : null}
               {" · "}
               <span className="font-mono">{asset.asset_id}</span>
             </p>
@@ -212,49 +228,49 @@ function AssetDetailInner() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
-          label="Asset risk"
-          value={assetRiskLabel(risk)}
-          hint="Worst open NIST level"
+          label={t("asset.kpi.risk")}
+          value={t.label(assetRiskLabel(risk))}
+          hint={t("asset.kpi.riskHint")}
           decorationColor={estateLevel === "very_high" || estateLevel === "high" ? "rose" : "sky"}
         />
         <KpiCard
           label={t("kpi.openFindings")}
           value={risk?.open_total ?? 0}
-          hint={`${untriaged} untriaged`}
+          hint={t("asset.kpi.untriagedHint", { count: untriaged })}
           href={vulnListHref({ assetId })}
         />
         <KpiCard
-          label="Unassigned"
+          label={t("asset.kpi.unassigned")}
           value={unassigned}
-          hint="Need a remediation owner"
+          hint={t("asset.kpi.unassignedHint")}
           href={unassigned ? vulnListHref({ assetId, unassigned: true }) : undefined}
           decorationColor={unassigned ? "amber" : "slate"}
         />
         <KpiCard
           label={t("kpi.slaBreached")}
           value={breached}
-          hint="Act on these first"
+          hint={t("asset.kpi.breachedHint")}
           href={breached ? vulnListHref({ assetId, sla: "breached" }) : undefined}
           decorationColor={breached ? "rose" : "slate"}
         />
       </div>
 
       {unassigned > 0 || breached > 0 ? (
-        <Alert className="border-amber-500/30 bg-amber-950/20 text-amber-100">
+        <Alert className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 text-amber-900 dark:text-amber-100">
           <AlertDescription className="text-xs">
-            Required now:{" "}
-            {breached > 0 ? (
-              <>
-                {breached.toLocaleString()} SLA-breached finding{breached === 1 ? "" : "s"}
-              </>
-            ) : null}
-            {breached > 0 && unassigned > 0 ? " and " : null}
-            {unassigned > 0 ? (
-              <>
-                {unassigned.toLocaleString()} without a remediation owner
-              </>
-            ) : null}
-            . Box owner is {asset.owner_email || "unassigned"} — assign or move the findings below.
+            {t("asset.alert.requiredNow", {
+              what: [
+                breached > 0
+                  ? t("asset.alert.breached", { count: breached.toLocaleString() })
+                  : "",
+                unassigned > 0
+                  ? t("asset.alert.unassigned", { count: unassigned.toLocaleString() })
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(t("asset.alert.and")),
+              owner: asset.owner_email || t("asset.unassignedShort"),
+            })}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -274,16 +290,16 @@ function AssetDetailInner() {
           <Tabs defaultValue="findings">
             <TabsList className="bg-card border border-border">
               <TabsTrigger value="findings" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
-                Findings ({trackedOpen})
+                {t("asset.tab.findings", { count: trackedOpen })}
               </TabsTrigger>
               <TabsTrigger value="software" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
-                Software ({software.length})
+                {t("asset.tab.software", { count: software.length })}
               </TabsTrigger>
               <TabsTrigger value="evidence" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
-                Scan evidence
+                {t("asset.tab.evidence")}
               </TabsTrigger>
               <TabsTrigger value="history" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
-                History
+                {t("asset.tab.history")}
               </TabsTrigger>
             </TabsList>
 
@@ -342,11 +358,11 @@ function AssetDetailInner() {
                 . Tracked findings above are the working set.
               </p>
               {!ip ? (
-                <EmptyNote>No IP identifier — cannot correlate scan findings.</EmptyNote>
+                <EmptyNote>{t("asset.empty.noIpIdentifier")}</EmptyNote>
               ) : vulnsQuery.isLoading ? (
-                <EmptyNote>Correlating findings from scan stream…</EmptyNote>
+                <EmptyNote>{t("asset.empty.correlating")}</EmptyNote>
               ) : vulns.length === 0 ? (
-                <EmptyNote>No vulnerability findings detected for this asset in the latest scan run.</EmptyNote>
+                <EmptyNote>{t("asset.empty.noScanFindings")}</EmptyNote>
               ) : (
                 <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
                   <table className="w-full text-left text-xs">
@@ -355,7 +371,7 @@ function AssetDetailInner() {
                         <th className="px-3.5 py-3">CVE / Script ID</th>
                         <th className="px-3.5 py-3">Port</th>
                         <th className="px-3.5 py-3">CVSS Score</th>
-                        <th className="px-3.5 py-3">Severity</th>
+                        <th className="px-3.5 py-3">{t("col.severity")}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -396,25 +412,25 @@ function AssetDetailInner() {
                 }))}
                 activeKey={null}
                 onSelect={() => {}}
-                emptyMessage={ip ? "No open ports recorded for this asset in the latest run." : "No IP to correlate."}
+                emptyMessage={ip ? t("asset.empty.noPorts") : t("asset.empty.noIp")}
               />
               {hostRow ? (
                 <div className="grid grid-cols-2 gap-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
-                  <Field label="Hostname (Reverse PTR)" value={hostRow.hostname || hostRow.names[0] || "—"} />
-                  <Field label="GeoIP Location" value={formatLocation(hostRow) || "—"} />
+                  <Field label={t("asset.field.hostname")} value={hostRow.hostname || hostRow.names[0] || "—"} />
+                  <Field label={t("asset.field.geoip")} value={formatLocation(hostRow) || "—"} />
                   <Field
-                    label="Detected OS"
+                    label={t("asset.field.detectedOs")}
                     value={
                       hostRow.os_name
                         ? `${hostRow.os_name}${hostRow.os_accuracy ? ` (${hostRow.os_accuracy}% accuracy)` : ""}`
                         : "—"
                     }
                   />
-                  <Field label="Total Findings" value={String(hostRow.vulnerability_count)} />
+                  <Field label={t("asset.field.totalFindings")} value={String(hostRow.vulnerability_count)} />
                 </div>
               ) : (
                 <EmptyNote>
-                  {ip ? "This asset was not detected as alive in the latest scan run." : "No IP to correlate."}
+                  {ip ? t("asset.empty.notAlive") : t("asset.empty.noIp")}
                 </EmptyNote>
               )}
             </TabsContent>
@@ -442,8 +458,9 @@ function TrackedFindingsPanel({
   total: number;
   isLoading: boolean;
 }) {
+  const t = useT();
   if (isLoading) {
-    return <EmptyNote>Loading tracked findings…</EmptyNote>;
+    return <EmptyNote>{t("asset.findings.loading")}</EmptyNote>;
   }
   if (findings.length === 0) {
     return (
@@ -459,25 +476,27 @@ function TrackedFindingsPanel({
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        Working set of tracked findings — lifecycle, owner and the next required action.
-        {total > findings.length ? ` Showing ${findings.length} of ${total}.` : ""}{" "}
+        {t("asset.findings.intro")}
+        {total > findings.length
+          ? ` ${t("asset.findings.showing", { shown: findings.length, total })}`
+          : ""}{" "}
         <Link href={vulnListHref({ assetId })} className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
-          Open in Vulnerability Center
+          {t("asset.findings.openInCenter")}
         </Link>
         {" · "}
         <Link href="/remediation" className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
-          Remediation board
+          {t("asset.findings.remediationBoard")}
         </Link>
       </p>
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
             <tr>
-              <th className="px-3.5 py-3">Finding</th>
-              <th className="px-3.5 py-3">Severity</th>
-              <th className="px-3.5 py-3">Lifecycle</th>
+              <th className="px-3.5 py-3">{t("asset.col.finding")}</th>
+              <th className="px-3.5 py-3">{t("col.severity")}</th>
+              <th className="px-3.5 py-3">{t("col.lifecycle")}</th>
               <th className="px-3.5 py-3">SLA</th>
-              <th className="px-3.5 py-3">Required</th>
+              <th className="px-3.5 py-3">{t("asset.col.required")}</th>
               <th className="px-3.5 py-3" />
             </tr>
           </thead>
@@ -492,8 +511,8 @@ function TrackedFindingsPanel({
                     {findingLabel(vuln)}
                   </Link>
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    {vuln.port ? `port ${vuln.port}` : "no port"}
-                    {vuln.assignee ? ` · ${vuln.assignee}` : " · unassigned"}
+                    {vuln.port ? t("vulns.port", { port: vuln.port }) : t("asset.noPort")}
+                    {vuln.assignee ? ` · ${vuln.assignee}` : ` · ${t("asset.unassignedShort")}`}
                   </p>
                 </td>
                 <td className="px-3.5 py-3">
@@ -505,7 +524,7 @@ function TrackedFindingsPanel({
                 <td className="px-3.5 py-3">
                   <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
                 </td>
-                <td className="px-3.5 py-3 font-semibold text-foreground">{requiredAction(vuln)}</td>
+                <td className="px-3.5 py-3 font-semibold text-foreground">{t.label(requiredAction(vuln))}</td>
                 <td className="px-3.5 py-3 text-right">
                   <Button
                     asChild
@@ -513,7 +532,7 @@ function TrackedFindingsPanel({
                     size="sm"
                     className="h-7 text-xs border-border bg-card text-sky-600 dark:text-sky-400"
                   >
-                    <Link href={vulnDetailHref(vuln.vuln_id, tenantId)}>Act</Link>
+                    <Link href={vulnDetailHref(vuln.vuln_id, tenantId)}>{t("asset.act")}</Link>
                   </Button>
                 </td>
               </tr>
@@ -526,57 +545,64 @@ function TrackedFindingsPanel({
 }
 
 function OverviewCard({ asset }: { asset: AssetDetail }) {
+  const t = useT();
+  const when = useAbsoluteTime();
   return (
     <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">Business context</p>
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.businessContext")}</p>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="First Discovered" value={new Date(asset.first_seen).toLocaleString()} />
-        <Field label="Last Telemetry" value={new Date(asset.last_seen).toLocaleString()} />
-        <Field label="Owner Email" value={asset.owner_email || "Unassigned"} />
-        <Field label="Business Unit" value={asset.business_unit || "Unassigned"} />
-        <Field label="Business Service" value={asset.business_service || "Unassigned"} />
+        <Field label={t("asset.field.firstDiscovered")} value={when(asset.first_seen)} />
+        <Field label={t("asset.field.lastTelemetry")} value={when(asset.last_seen)} />
+        <Field label={t("asset.field.ownerEmail")} value={asset.owner_email || t("common.unassigned")} />
+        <Field label={t("asset.field.businessUnit")} value={asset.business_unit || t("common.unassigned")} />
+        <Field label={t("asset.field.businessService")} value={asset.business_service || t("common.unassigned")} />
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">Environment</p>
+          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.environment")}</p>
           <div className="mt-0.5">
             {asset.environment ? (
               <StatusBadge value={asset.environment} map={ASSET_ENVIRONMENT} />
             ) : (
-              <p className="text-xs font-semibold text-foreground">Unset</p>
+              <p className="text-xs font-semibold text-foreground">{t("common.unsetValue")}</p>
             )}
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">Data Classification</p>
+          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.dataClassification")}</p>
           <div className="mt-0.5">
             {asset.data_classification ? (
               <StatusBadge value={asset.data_classification} map={ASSET_DATA_CLASSIFICATION} />
             ) : (
-              <p className="text-xs font-semibold text-foreground">Unset</p>
+              <p className="text-xs font-semibold text-foreground">{t("common.unsetValue")}</p>
             )}
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-muted-foreground">Exposure</p>
+          <p className="text-[11px] font-medium text-muted-foreground">{t("asset.field.exposure")}</p>
           <div className="mt-0.5">
             {asset.exposure_level ? (
               <StatusBadge value={asset.exposure_level} map={ASSET_EXPOSURE} />
             ) : (
-              <p className="text-xs font-semibold text-foreground">Unset</p>
+              <p className="text-xs font-semibold text-foreground">{t("common.unsetValue")}</p>
             )}
           </div>
         </div>
       </div>
       {asset.context_source ? (
         <p className="text-[11px] text-muted-foreground">
-          Context last written by{" "}
-          <StatusBadge value={asset.context_source} map={ASSET_CONTEXT_SOURCE} />
-          {" — "}
-          exposure is an operator decision, not a scan measurement.
+          {t("asset.contextWrittenBy", {
+            // The badge is gone from this sentence: a pill in the middle of a
+            // line of prose reads as a button. The word itself is vocabulary
+            // the console already translates.
+            source: t.label(
+              ASSET_CONTEXT_SOURCE[asset.context_source as keyof typeof ASSET_CONTEXT_SOURCE]
+                ?.label ?? asset.context_source ?? "",
+            ),
+          })}
         </p>
       ) : null}
       <div className="pt-2 border-t border-border">
         <p className="mb-2 text-xs font-semibold text-muted-foreground">
-          Identifiers ({asset.identifiers.length})
+          {t("asset.field.identifiers", { count: asset.identifiers.length })}
         </p>
         <ul className="space-y-1.5">
           {asset.identifiers.map((identifier) => (
@@ -594,7 +620,7 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
       </div>
       {Object.keys(asset.tags).length > 0 ? (
         <div className="pt-2 border-t border-border">
-          <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Asset Tags</p>
+          <p className="mb-1.5 text-xs font-semibold text-muted-foreground">{t("asset.tags")}</p>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(asset.tags).map(([key, value]) => (
               <Badge key={key} variant="outline" className="border-border bg-muted text-foreground text-[11px]">
@@ -609,19 +635,19 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
 }
 
 function NoEndpointCard({ loading }: { loading: boolean }) {
+  const t = useT();
   return (
     <div className="space-y-3 rounded-xl border border-dashed border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint (Lariska)</p>
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground">
+        {t("asset.endpointTitle")}
+      </p>
       {loading ? (
-        <p className="text-muted-foreground">Checking for linked agent…</p>
+        <p className="text-muted-foreground">{t("asset.endpointChecking")}</p>
       ) : (
         <>
-          <p className="leading-relaxed text-muted-foreground">
-            No Lariska agent is correlated to this network asset yet. Install the endpoint agent with a
-            tenant provisioning key; inventory links here by hostname / platform identifiers.
-          </p>
+          <p className="leading-relaxed text-muted-foreground">{t("asset.endpointNone")}</p>
           <Button asChild variant="outline" size="sm" className="h-7 border-border text-xs text-sky-600 dark:text-sky-400">
-            <Link href="/endpoints">Browse endpoints</Link>
+            <Link href="/endpoints">{t("asset.endpointBrowse")}</Link>
           </Button>
         </>
       )}
@@ -630,6 +656,8 @@ function NoEndpointCard({ loading }: { loading: boolean }) {
 }
 
 function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
+  const t = useT();
+  const when = useAbsoluteTime();
   // Server-derived against OCTO_ENDPOINT_STALE_HOURS (Agent_plan.md S9) — the
   // threshold is enforced in the API, not recomputed here.
   const isStale = device.status === "stale" && device.last_inventory_at != null;
@@ -638,34 +666,28 @@ function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
     <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
       <div className="flex items-center justify-between border-b border-border pb-2">
         <div>
-          <p className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint (Lariska)</p>
+          <p className="text-sm font-bold uppercase tracking-wider text-foreground">{t("asset.endpointTitle")}</p>
           <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{device.hostname}</p>
         </div>
         <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
       </div>
       {device.reconciliation_status === "conflict" ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
-          <AlertDescription>
-            A platform identifier on this device is already claimed by another endpoint in this
-            tenant. Not auto-merged — review manually.
-          </AlertDescription>
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <AlertDescription>{t("asset.endpointConflict")}</AlertDescription>
         </Alert>
       ) : null}
       {isStale ? (
-        <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
-          <AlertDescription>
-            No inventory received within the configured staleness window — this endpoint may be
-            offline.
-          </AlertDescription>
+        <Alert className="border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200">
+          <AlertDescription>{t("asset.endpointStale")}</AlertDescription>
         </Alert>
       ) : null}
       <div className="grid grid-cols-2 gap-3">
         <Field label="OS" value={[device.os_name, device.os_version].filter(Boolean).join(" ") || "—"} />
-        <Field label="Architecture" value={device.os_arch || "—"} />
-        <Field label="Agent Version" value={device.agent_version || "—"} />
+        <Field label={t("asset.field.architecture")} value={device.os_arch || "—"} />
+        <Field label={t("asset.field.agentVersion")} value={device.agent_version || "—"} />
         <Field
-          label="Last Inventory"
-          value={device.last_inventory_at ? new Date(device.last_inventory_at).toLocaleString() : "never"}
+          label={t("asset.field.lastInventory")}
+          value={when(device.last_inventory_at, t("common.never"))}
         />
       </div>
     </div>
@@ -683,6 +705,7 @@ function SoftwareTab({
   isLoading: boolean;
   tenantId: string;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<"name" | "version" | "publisher" | "source">("name");
   const changesQuery = useEndpointDeviceChanges(device.device_id, tenantId);
@@ -710,14 +733,14 @@ function SoftwareTab({
       <Input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search installed software…"
+        placeholder={t("asset.software.search")}
         className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
       />
 
       {isLoading ? (
-        <EmptyNote>Loading installed software…</EmptyNote>
+        <EmptyNote>{t("asset.empty.loadingSoftware")}</EmptyNote>
       ) : filtered.length === 0 ? (
-        <EmptyNote>No installed software recorded for this endpoint.</EmptyNote>
+        <EmptyNote>{t("asset.noSoftware")}</EmptyNote>
       ) : (
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
           <table className="w-full text-left text-xs">
@@ -732,7 +755,7 @@ function SoftwareTab({
                     {col}
                   </th>
                 ))}
-                <th className="px-3.5 py-3">Architecture</th>
+                <th className="px-3.5 py-3">{t("asset.field.architecture")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -754,6 +777,7 @@ function SoftwareTab({
 }
 
 function EditCard({ asset }: { asset: AssetDetail }) {
+  const t = useT();
   const update = useUpdateAsset(asset.asset_id);
   const [owner, setOwner] = useState(asset.owner_email || "");
   const [unit, setUnit] = useState(asset.business_unit || "");
@@ -800,10 +824,10 @@ function EditCard({ asset }: { asset: AssetDetail }) {
 
   return (
     <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">Asset Posture Configurator</p>
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">{t("asset.postureConfigurator")}</p>
 
       <div className="space-y-1.5">
-        <Label htmlFor="owner" className="text-foreground font-semibold">Owner Email</Label>
+        <Label htmlFor="owner" className="text-foreground font-semibold">{t("asset.field.ownerEmail")}</Label>
         <Input
           id="owner"
           value={owner}
@@ -814,7 +838,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="unit" className="text-foreground font-semibold">Business Unit</Label>
+        <Label htmlFor="unit" className="text-foreground font-semibold">{t("asset.field.businessUnit")}</Label>
         <Input
           id="unit"
           value={unit}
@@ -825,7 +849,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="service" className="text-foreground font-semibold">Business Service</Label>
+        <Label htmlFor="service" className="text-foreground font-semibold">{t("asset.field.businessService")}</Label>
         <Input
           id="service"
           value={service}
@@ -836,13 +860,13 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-foreground font-semibold">Environment</Label>
+        <Label className="text-foreground font-semibold">{t("asset.field.environment")}</Label>
         <Select value={environment} onValueChange={setEnvironment}>
           <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-card border-border text-foreground">
-            <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
+            <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_ENVIRONMENTS.map((value) => (
               <SelectItem key={value} value={value}>
                 {ASSET_ENVIRONMENT[value].label}
@@ -853,13 +877,13 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-foreground font-semibold">Data Classification</Label>
+        <Label className="text-foreground font-semibold">{t("asset.field.dataClassification")}</Label>
         <Select value={classification} onValueChange={setClassification}>
           <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-card border-border text-foreground">
-            <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
+            <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_DATA_CLASSIFICATIONS.map((value) => (
               <SelectItem key={value} value={value}>
                 {ASSET_DATA_CLASSIFICATION[value].label}
@@ -870,13 +894,13 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-foreground font-semibold">Exposure</Label>
+        <Label className="text-foreground font-semibold">{t("asset.field.exposure")}</Label>
         <Select value={exposure} onValueChange={setExposure}>
           <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-card border-border text-foreground">
-            <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
+            <SelectItem value={CONTEXT_UNSET}>{t("common.unsetValue")}</SelectItem>
             {ASSET_EXPOSURE_LEVELS.map((value) => (
               <SelectItem key={value} value={value}>
                 {ASSET_EXPOSURE[value].label}
@@ -890,13 +914,13 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-foreground font-semibold">Asset Criticality (0 - 4)</Label>
+        <Label className="text-foreground font-semibold">{t("asset.edit.criticality")}</Label>
         <Select value={crit} onValueChange={setCrit}>
           <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-card border-border text-foreground">
-            <SelectItem value={CRIT_UNSET}>Unset (Heuristic Evaluation)</SelectItem>
+            <SelectItem value={CRIT_UNSET}>{t("asset.edit.critUnset")}</SelectItem>
             {[0, 1, 2, 3, 4].map((n) => (
               <SelectItem key={n} value={String(n)}>
                 L{n} — {ASSET_CRITICALITY[n].label}
@@ -908,36 +932,36 @@ function EditCard({ asset }: { asset: AssetDetail }) {
 
       <div className="flex items-center justify-between pt-3 border-t border-border">
         <Button onClick={save} disabled={update.isPending} size="sm" className="bg-sky-600 hover:bg-sky-500 text-foreground font-semibold">
-          {update.isPending ? "Updating…" : "Save Changes"}
+          {update.isPending ? t("asset.edit.saving") : t("asset.edit.save")}
         </Button>
 
         {!decommissioned ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-950/60">
+              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:bg-rose-950/60">
                 Decommission
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent className="bg-card border-border text-foreground">
               <AlertDialogHeader>
-                <AlertDialogTitle className="text-foreground">Decommission this asset?</AlertDialogTitle>
+                <AlertDialogTitle className="text-foreground">{t("asset.decommissionTitle")}</AlertDialogTitle>
                 <AlertDialogDescription className="text-muted-foreground text-xs">
-                  Marks the asset as decommissioned. Decommissioning is logged into Postgres state.
+                  {t("asset.decommissionBody")}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">Cancel</AlertDialogCancel>
+                <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">{t("common.cancel")}</AlertDialogCancel>
                 <AlertDialogAction 
                   onClick={() => update.mutate({ status: "decommissioned" })}
                   className="bg-rose-600 text-foreground hover:bg-rose-500"
                 >
-                  Decommission Asset
+                  {t("asset.decommissionConfirm")}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
         ) : (
-          <Badge variant="secondary" className="bg-muted text-muted-foreground">Decommissioned</Badge>
+          <Badge variant="secondary" className="bg-muted text-muted-foreground">{t.label("decommissioned")}</Badge>
         )}
       </div>
     </div>
@@ -945,20 +969,21 @@ function EditCard({ asset }: { asset: AssetDetail }) {
 }
 
 function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: string }) {
+  const t = useT();
   const eventsQuery = useAssetContextEvents(assetId, tenantId);
   const events = eventsQuery.data?.items ?? [];
 
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
       <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">
-        Context history
+        {t("asset.contextHistory")}
       </p>
       {eventsQuery.isLoading ? (
-        <p className="text-muted-foreground">Loading context changes…</p>
+        <p className="text-muted-foreground">{t("asset.contextLoading")}</p>
       ) : events.length === 0 ? (
-        <p className="text-muted-foreground">No business-context changes recorded yet.</p>
+        <p className="text-muted-foreground">{t("asset.contextEmpty")}</p>
       ) : (
-        <ol className="space-y-3" aria-label="Asset context audit trail">
+        <ol className="space-y-3" aria-label={t("asset.contextTrail")}>
           {events.map((event) => (
             <ContextHistoryItem key={event.id} event={event} />
           ))}

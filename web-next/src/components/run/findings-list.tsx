@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
@@ -17,13 +18,14 @@ export function FindingsList({
   grouped: Record<Severity, Vulnerability[]>;
   truncation: RunReportTruncation;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState<Partial<Record<Severity, boolean>>>({});
   const totalShown = SEVERITIES.reduce((n, sev) => n + grouped[sev].length, 0);
 
   return (
     <div className="space-y-4">
       {truncation.isTruncated ? (
-        <Alert variant="warning" className="border-amber-500/30 bg-amber-950/40 text-amber-200">
+        <Alert variant="warning" className="border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200">
           <AlertDescription className="text-xs">
             Showing {truncation.shown.toLocaleString()} of{" "}
             {truncation.total != null
@@ -125,7 +127,7 @@ export function FindingsList({
       })}
 
       {totalShown === 0 ? (
-        <p className="py-8 text-center text-xs text-muted-foreground">No findings for the current filters.</p>
+        <p className="py-8 text-center text-xs text-muted-foreground">{t("ui.noFindingsForTheCurrentFilters")}</p>
       ) : null}
     </div>
   );

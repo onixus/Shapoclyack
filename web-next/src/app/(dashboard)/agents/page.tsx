@@ -196,31 +196,31 @@ export default function AgentsPage() {
         <KpiCard
           label={t("kpi.totalAgents")}
           value={summary?.total_agents ?? data?.total ?? 0}
-          hint="Registered scan nodes"
+          hint={t("hint.registeredNodes")}
           decorationColor="sky"
         />
         <KpiCard
           label={t("kpi.onlineActive")}
           value={summary?.online_agents ?? 0}
-          hint="Sending heartbeats"
+          hint={t("hint.sendingHeartbeats")}
           decorationColor="emerald"
         />
         <KpiCard
           label={t("kpi.scanningBusy")}
           value={summary?.busy_agents ?? 0}
-          hint="Executing scan tasks"
+          hint={t("hint.executingTasks")}
           decorationColor="blue"
         />
         <KpiCard
           label={t("kpi.staleOffline")}
           value={summary?.stale_agents ?? 0}
-          hint="Heartbeat timed out"
+          hint={t("hint.heartbeatTimedOut")}
           decorationColor="rose"
         />
         <KpiCard
           label={t("kpi.updatesAvailable")}
           value={summary?.outdated_agents ?? 0}
-          hint={`Target: v${summary?.latest_version || "—"}`}
+          hint={t("hint.targetVersion", { version: summary?.latest_version || "—" })}
           decorationColor="amber"
         />
       </div>

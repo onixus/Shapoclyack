@@ -40,7 +40,7 @@ export function RunMetrics({
       <KpiCard
         label={t("kpi.openPorts")}
         value={openPairs ?? ports.reduce((n, p) => n + p.host_count, 0)}
-        hint={`${ports.length} distinct`}
+        hint={t("hint.distinct", { count: ports.length })}
       />
       <KpiCard label={t("kpi.vulnerabilities")} value={totalVulns ?? vulnCount} hint={vulnHint} />
       <KpiCard label={t("kpi.osDetected")} value={osDetected ?? "—"} />

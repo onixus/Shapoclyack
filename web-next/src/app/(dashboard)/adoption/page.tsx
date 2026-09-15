@@ -26,6 +26,7 @@ function NoiseTable({
   threshold: number;
   caption: string;
 }) {
+  const t = useT();
   if (rows.length === 0) {
     return <p className="text-sm text-muted-foreground">{caption}</p>;
   }
@@ -33,10 +34,10 @@ function NoiseTable({
     <table className="w-full text-sm">
       <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
         <tr>
-          <th className="py-1.5 font-semibold">Source</th>
-          <th className="py-1.5 text-right font-semibold">Closed</th>
-          <th className="py-1.5 text-right font-semibold">False</th>
-          <th className="py-1.5 text-right font-semibold">Rate</th>
+          <th className="py-1.5 font-semibold">{t("ui.source")}</th>
+          <th className="py-1.5 text-right font-semibold">{t("ui.closed")}</th>
+          <th className="py-1.5 text-right font-semibold">{t("ui.falsePositives")}</th>
+          <th className="py-1.5 text-right font-semibold">{t("ui.rate")}</th>
         </tr>
       </thead>
       <tbody>
@@ -72,10 +73,11 @@ function SeverityRow({ label, value }: { label: string; value: number | null }) 
 }
 
 function Analysts({ rows }: { rows: AdoptionMetrics["analysts"] }) {
+  const t = useT();
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No findings were closed in this window, so there is nobody to attribute a closure to.
+        {t("prose.noFindingsWereClosedIn")}
       </p>
     );
   }
@@ -83,9 +85,9 @@ function Analysts({ rows }: { rows: AdoptionMetrics["analysts"] }) {
     <table className="w-full text-sm">
       <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
         <tr>
-          <th className="py-1.5 font-semibold">Analyst</th>
-          <th className="py-1.5 text-right font-semibold">Closed</th>
-          <th className="py-1.5 text-right font-semibold">Verified by scan</th>
+          <th className="py-1.5 font-semibold">{t("ui.analyst")}</th>
+          <th className="py-1.5 text-right font-semibold">{t("ui.closed")}</th>
+          <th className="py-1.5 text-right font-semibold">{t("ui.verifiedByScan")}</th>
         </tr>
       </thead>
       <tbody>
@@ -110,15 +112,13 @@ export default function AdoptionPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Adoption</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("ui.adoption")}</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Whether the platform is producing outcomes rather than data: what got fixed, how
-            fast, how much of it a scan confirmed, and how much of the estate has an owner. All of
-            it is computed here, from this tenant&apos;s own tables; nothing is sent anywhere.
+            {t("prose.whetherThePlatformIsProducing")}
           </p>
         </div>
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
-          Window
+          {t("ui.window")}
           <Select value={String(windowDays)} onValueChange={(value) => setWindowDays(Number(value))}>
             <SelectTrigger className="w-28" aria-label={t("adoption.windowDays")}>
               <SelectValue />
@@ -151,14 +151,21 @@ export default function AdoptionPage() {
               <KpiCard
                 label={t("adoption.closed")}
                 value={data.findings.closed_in_window}
-                hint={`${data.findings.open} still open (${data.findings.accepted_open} risk-accepted). Remediation only — ${data.findings.false_positive_in_window} closed as noise are counted under Noise, not here`}
+                hint={t("hint.stillOpen", {
+            open: data.findings.open,
+            accepted: data.findings.accepted_open,
+            noise: data.findings.false_positive_in_window,
+          })}
                 href="/vulnerabilities"
                 decorationColor="blue"
               />
               <KpiCard
                 label={t("adoption.confirmedByScan")}
                 value={share(data.findings.machine_verified_share)}
-                hint={`${data.findings.machine_verified_closed} of ${data.findings.closed_in_window} closures were verified mechanically`}
+                hint={t("hint.verifiedMechanically", {
+            verified: data.findings.machine_verified_closed,
+            closed: data.findings.closed_in_window,
+          })}
                 decorationColor={
                   data.findings.machine_verified_share === null
                     ? "slate"
@@ -170,13 +177,13 @@ export default function AdoptionPage() {
               <KpiCard
                 label={t("adoption.closedWithinSla")}
                 value={share(data.findings.closed_within_sla_share)}
-                hint="Of closures that had a deadline"
+                hint={t("hint.ofClosuresWithDeadline")}
                 decorationColor="emerald"
               />
               <KpiCard
                 label={t("adoption.medianTimeToFix")}
                 value={hours(data.findings.mttr_hours)}
-                hint="From SLA start to closure"
+                hint={t("hint.fromSlaStart")}
                 decorationColor="orange"
               />
             </div>
@@ -199,7 +206,7 @@ export default function AdoptionPage() {
                 <KpiCard
                   label={t("adoption.suppressions")}
                   value={data.false_positives.suppressions_active}
-                  hint={`${data.false_positives.suppressions_lapsed} have expired and are waiting for a second look`}
+                  hint={t("hint.suppressionsLapsed", { count: data.false_positives.suppressions_lapsed })}
                   decorationColor={
                     data.false_positives.suppressions_lapsed > 0 ? "amber" : "slate"
                   }
@@ -207,7 +214,7 @@ export default function AdoptionPage() {
                 <KpiCard
                   label={t("adoption.brokenByEvidence")}
                   value={data.false_positives.overridden_in_window}
-                  hint="Verdicts the scanner overrode because the assessment got worse — the number that says whether one was hiding something"
+                  hint={t("hint.overriddenVerdicts")}
                   decorationColor={
                     data.false_positives.overridden_in_window > 0 ? "rose" : "slate"
                   }
@@ -215,14 +222,14 @@ export default function AdoptionPage() {
                 <KpiCard
                   label={t("adoption.medianTimeToVerdict")}
                   value={hours(data.false_positives.median_hours_to_verdict)}
-                  hint="How long noise sat in the queue before someone ruled on it. Triage speed, not fix speed — it is deliberately not part of MTTR"
+                  hint={t("hint.noiseQueueTime")}
                   decorationColor="sky"
                 />
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <div className="rounded-xl border border-border bg-card p-5">
                   <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                    Noisiest detectors
+                    {t("prose.noisiestDetectors")}
                   </h3>
                   <NoiseTable
                     rows={data.false_positives.by_source}
@@ -247,9 +254,7 @@ export default function AdoptionPage() {
                     caption="Nothing was closed in this window."
                   />
                   <p className="mt-3 text-xs text-muted-foreground">
-                    The network scanner against the endpoint software matcher. The two are wrong
-                    for unrelated reasons and are tuned in unrelated places, so the quiet one is
-                    listed as well — it is what makes the other number mean something.
+                    {t("prose.theNetworkScannerAgainstThe")}
                   </p>
                 </div>
               </div>
@@ -341,26 +346,26 @@ export default function AdoptionPage() {
               <KpiCard
                 label={t("adoption.assetsWithOwner")}
                 value={share(data.assets.with_owner_share)}
-                hint={`${data.assets.unowned} of ${data.assets.active} active assets have nobody to hand a finding to`}
+                hint={t("hint.unownedAssets", { unowned: data.assets.unowned, active: data.assets.active })}
                 href="/assets"
                 decorationColor={data.assets.unowned > 0 ? "amber" : "emerald"}
               />
               <KpiCard
                 label={t("adoption.assetsWithContext")}
                 value={share(data.assets.with_context_share)}
-                hint="Service, environment or classification set"
+                hint={t("hint.contextSet")}
                 decorationColor="sky"
               />
               <KpiCard
                 label={`Scanned in ${data.assets.coverage_days} days`}
                 value={share(data.assets.scanned_recently_share)}
-                hint="Coverage: share of active assets seen by a recent run"
+                hint={t("hint.coverageShare")}
                 decorationColor="blue"
               />
               <KpiCard
                 label={t("adoption.networkAndAgent")}
                 value={share(data.assets.dual_source_share)}
-                hint="Assets also reporting an endpoint inventory"
+                hint={t("hint.dualSource")}
                 href="/endpoints"
                 decorationColor="sky"
               />
@@ -370,18 +375,17 @@ export default function AdoptionPage() {
           <div className="grid gap-4 lg:grid-cols-3">
             <section className="rounded-xl border border-border bg-card p-5">
               <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Closed and verified, per analyst
+                {t("prose.closedAndVerifiedPerAnalyst")}
               </h2>
               <Analysts rows={data.analysts} />
               <p className="mt-3 text-xs text-muted-foreground">
-                The quarterly control question: did this go up? If it did not, the new
-                functionality produced data rather than outcomes.
+                {t("prose.theQuarterlyControlQuestionDid")}
               </p>
             </section>
 
             <section className="rounded-xl border border-border bg-card p-5">
               <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Median time to fix, by severity
+                {t("prose.medianTimeToFixBy")}
               </h2>
               <ul>
                 {Object.entries(data.findings.mttr_hours_by_severity).map(([severity, value]) => (
@@ -397,23 +401,23 @@ export default function AdoptionPage() {
             <section className="space-y-4">
               <div className="rounded-xl border border-border bg-card p-5">
                 <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  Time to first value
+                  {t("prose.timeToFirstValue")}
                 </h2>
                 <dl className="space-y-1.5 text-sm">
                   <div className="flex justify-between">
-                    <dt className="text-muted-foreground">Tenant created</dt>
+                    <dt className="text-muted-foreground">{t("ui.tenantCreated")}</dt>
                     <dd className="font-mono text-foreground">
                       {data.onboarding.tenant_created_at?.slice(0, 10) ?? "n/a"}
                     </dd>
                   </div>
                   <div className="flex justify-between">
-                    <dt className="text-muted-foreground">To first successful scan</dt>
+                    <dt className="text-muted-foreground">{t("ui.toFirstSuccessfulScan")}</dt>
                     <dd className="font-mono text-foreground">
                       {hours(data.onboarding.hours_to_first_scan)}
                     </dd>
                   </div>
                   <div className="flex justify-between">
-                    <dt className="text-muted-foreground">To first tracked finding</dt>
+                    <dt className="text-muted-foreground">{t("ui.toFirstTrackedFinding")}</dt>
                     <dd className="font-mono text-foreground">
                       {hours(data.onboarding.hours_to_first_finding)}
                     </dd>
@@ -422,7 +426,7 @@ export default function AdoptionPage() {
               </div>
               <div className="rounded-xl border border-border bg-card p-5">
                 <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  Enrichment overlays
+                  {t("prose.enrichmentOverlays")}
                 </h2>
                 <ul className="space-y-1.5 text-sm">
                   {data.enrichment.map((dataset) => (

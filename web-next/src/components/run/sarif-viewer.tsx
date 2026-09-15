@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useT } from "@/lib/i18n";
 import {
   AlertCircle,
   AlertTriangle,
@@ -89,6 +90,7 @@ export function SarifViewerDialog({
   runId,
   onDownload,
 }: SarifViewerDialogProps) {
+  const t = useT();
   const [activeTab, setActiveTab] = useState<"findings" | "rules" | "raw">("findings");
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState<string>("all");
@@ -178,7 +180,7 @@ export function SarifViewerDialog({
               className="h-8 text-xs gap-1.5 border-border bg-card hover:bg-muted text-foreground"
             >
               <Download className="h-3.5 w-3.5" />
-              Download sarif.json
+              {t("prose.downloadSarifjson")}
             </Button>
           </div>
         </DialogHeader>
@@ -188,25 +190,25 @@ export function SarifViewerDialog({
           <div className="flex items-center gap-2.5 rounded-lg bg-card p-2.5 border border-border">
             <Layers className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Total Findings</p>
+              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">{t("ui.totalFindings")}</p>
               <p className="text-sm font-bold font-mono text-foreground">{counts.total.toLocaleString()}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-rose-950/20 p-2.5 border border-rose-900/30">
+          <div className="flex items-center gap-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/20 p-2.5 border border-rose-300 dark:border-rose-900/30">
             <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-rose-600 dark:text-rose-400 tracking-wider">Errors (High/Crit)</p>
+              <p className="text-[10px] uppercase font-bold text-rose-600 dark:text-rose-400 tracking-wider">{t("ui.errorsHighcrit")}</p>
               <p className="text-sm font-bold font-mono text-rose-600 dark:text-rose-300">{counts.errors.toLocaleString()}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-amber-950/20 p-2.5 border border-amber-900/30">
+          <div className="flex items-center gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 p-2.5 border border-amber-300 dark:border-amber-900/30">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
             <div>
-              <p className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 tracking-wider">Warnings (Medium)</p>
+              <p className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-400 tracking-wider">{t("ui.warningsMedium")}</p>
               <p className="text-sm font-bold font-mono text-amber-600 dark:text-amber-300">{counts.warnings.toLocaleString()}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 rounded-lg bg-sky-950/20 p-2.5 border border-sky-900/30">
+          <div className="flex items-center gap-2.5 rounded-lg bg-sky-50 dark:bg-sky-950/20 p-2.5 border border-sky-300 dark:border-sky-900/30">
             <Info className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <div>
               <p className="text-[10px] uppercase font-bold text-sky-600 dark:text-sky-400 tracking-wider">Notes & Rules</p>
@@ -274,7 +276,7 @@ export function SarifViewerDialog({
           <TabsContent value="findings" className="flex-1 overflow-y-auto pr-1 space-y-2.5">
             {filteredResults.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground text-xs">
-                No SARIF findings match current filters.
+                {t("prose.noSarifFindingsMatchCurrent")}
               </div>
             ) : (
               filteredResults.map((res, idx) => {
@@ -352,7 +354,7 @@ export function SarifViewerDialog({
           <TabsContent value="rules" className="flex-1 overflow-y-auto pr-1 space-y-3">
             {rules.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground text-xs">
-                No rules metadata defined in SARIF driver.
+                {t("prose.noRulesMetadataDefinedIn")}
               </div>
             ) : (
               rules.map((rule) => (

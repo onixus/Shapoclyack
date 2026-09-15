@@ -305,7 +305,7 @@ function VulnerabilitiesInner() {
               </SelectTrigger>
               <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={OPEN_WORKING_SET}>{t("vulns.filter.openOnly")}</SelectItem>
-                <SelectItem value="all">All findings</SelectItem>
+                <SelectItem value="all">{t("ui.allFindings")}</SelectItem>
               </SelectContent>
             </Select>
             <Select

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { format } from "date-fns";
 import { CalendarClock, Snowflake } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -45,6 +46,7 @@ export function MaintenancePanel({
   canAdmin: boolean;
   tenantId?: string;
 }) {
+  const t = useT();
   const { data, isLoading } = useMaintenanceCalendar(canRead, tenantId);
   const freezeMutation = useSetChangeFreeze(tenantId);
   const [note, setNote] = useState("");
@@ -63,7 +65,7 @@ export function MaintenancePanel({
       {data.change_freeze ? (
         <Alert variant="destructive">
           <Snowflake className="h-4 w-4" />
-          <AlertTitle>Change freeze is on</AlertTitle>
+          <AlertTitle>{t("ui.changeFreezeIsOn")}</AlertTitle>
           <AlertDescription>
             No scan will start in {data.tenant_id} until an admin lifts it
             {data.change_freeze_note ? `: ${data.change_freeze_note}` : ""}
@@ -73,7 +75,7 @@ export function MaintenancePanel({
       ) : !admission.allowed ? (
         <Alert variant="warning">
           <CalendarClock className="h-4 w-4" />
-          <AlertTitle>Scanning is paused by the maintenance calendar</AlertTitle>
+          <AlertTitle>{t("ui.scanningIsPausedByTheMaintenance")}</AlertTitle>
           <AlertDescription>
             {admission.detail}
             {admission.retry_at ? ` Scans resume at ${shown(admission.retry_at)}.` : ""}
@@ -86,10 +88,10 @@ export function MaintenancePanel({
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
               <tr>
-                <th className="px-3 py-2">Window</th>
+                <th className="px-3 py-2">{t("ui.window")}</th>
                 <th className="px-3 py-2">Kind</th>
-                <th className="px-3 py-2">Applies to</th>
-                <th className="px-3 py-2">Recurrence</th>
+                <th className="px-3 py-2">{t("ui.appliesTo")}</th>
+                <th className="px-3 py-2">{t("ui.recurrence")}</th>
                 <th className="px-3 py-2">Now</th>
               </tr>
             </thead>
