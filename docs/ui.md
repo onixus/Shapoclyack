@@ -33,11 +33,12 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/threats` | Open tracked findings on CISA KEV | Viewer |
 | `/tenants` | MSSP customer posture comparison, provisioning, and per-tenant scan-scope approval | Operator; admin to create and to approve scope |
 | `/attack-surface` | One scan's hostname → IP → port → service graph (not an attack path) | Viewer |
+| `/org-profile` | Organization Profile: domain attribution, related domains and the control matrix of one run (newest by default, `?runId=` pins one) | Viewer; operator to promote or withdraw a related domain |
 | `/geo` | World map of a run's hosts by GeoIP position, coloured by worst finding | Viewer |
-| `/endpoints` | Endpoint device/software inventory, CVE matches and the patch-gap panel | Viewer |
+| `/endpoints` | Endpoint (Agent/Lariska) device/software inventory, CVE matches and the patch-gap panel | Viewer |
 | `/scans` | Scan operations across both surfaces: KPIs, launcher, job list with cancel (including a scan already running — see below) and per-job record, recent runs. `/jobs` redirects here | Operator |
 | `/scans/external` | External scans: internet-facing launcher (domains, public ranges, org profile, wordlists) and the jobs/runs classified `external` | Operator |
-| `/scans/internal` | Internal scans: private-range launcher, agent/endpoint context and the jobs/runs classified `internal` | Operator |
+| `/scans/internal` | Internal scans: private-range launcher, sensor/endpoint context and the jobs/runs classified `internal` | Operator |
 | `/runs` | Tenant-scoped run history, filterable by surface (`?surface=external|internal|mixed|unknown`) | Viewer |
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
@@ -46,13 +47,13 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules, with the tenant's maintenance calendar and change freeze above them | Operator; admin to freeze or thaw |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
-| `/users` | Users & access: accounts and roles, tenant membership, provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
+| `/users` | Users & access: accounts and roles, tenant membership, sensor provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
-| `/agents` | **Sensors** — the scanning-node fleet: live health tiles, sensor drawer, SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator |
+| `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
-| `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/agent counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
+| `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
 ## Application shell
 
@@ -75,10 +76,11 @@ run report, a 12-hex job id opens that job's record on `/scans`, a
 `vuln_…` / `asset_…` id opens the detail page, anything else becomes a search
 on the Vulnerability Center or the asset inventory (`?q=`). For operators the
 header also shows the live count of running and queued jobs (from
-`GET /api/jobs/summary`, one grouped count every 15 s) and sensors online, in
-place of the former decorative "Live System" pill. The sidebar
-footer shows the API version and the execution mode (local / agent) from
-`GET /api/system`.
+`GET /api/jobs/summary`, one grouped count every 15 s) and sensors online
+(`GET /api/agents/summary`), in place of the former decorative "Live System"
+pill. The sidebar footer shows the API version and the execution mode (local /
+agent — the latter meaning jobs are handed to sensors, `job_execution_mode`)
+from `GET /api/system`.
 
 ### Sessions
 
@@ -166,7 +168,8 @@ replayed: the dialog says to repeat the action, because a `POST` nobody saw
 succeed is not a thing to repeat silently. That covers the whole step-up set,
 which is wider than the credential screens — creating an account, resetting a
 password, changing a role, setting a verified address, resetting somebody's
-MFA, replacing a scan scope, and the **Deploy agent** button.
+MFA, replacing a scan scope, and the **Deploy Agent** button on the sensors
+page.
 
 The login form also reads `local_login` from `GET /api/auth/sso` and says when
 password sign-in is disabled or reserved for break-glass accounts. It still
@@ -191,7 +194,8 @@ renders an absent value as internal: it shows **Unclassified**.
   surface-specific tile: open findings whose network exposure matches the
   surface (`by_network_exposure_open`; a scan launched from the external page
   declares its surface, and that declaration is exposure evidence — see
-  [risk-scoring.md](risk-scoring.md)), sensors online (internal), approved
+  [risk-scoring.md](risk-scoring.md)), sensors online (internal; `online/total`
+  from `GET /api/agents/summary`), approved
   domains and promoted related domains (external, admin);
 - the launcher, shaped by the surface: external leads with domains and offers
   `org_profile` and wordlists; internal leads with private ranges and hides
@@ -202,29 +206,27 @@ renders an absent value as internal: it shows **Unclassified**.
   twice, while an edited form is a new request (the API also compares a
   digest of the body and answers 409 when a key is reused for a different
   scan);
-- in agent mode, an **Agent group** selector beside the speed profile, listing
-  the tenant's groups (`GET /api/agent-groups`) with "any agent of this tenant"
-  as the default. It is hidden entirely when scans run locally, or when the
-  tenant has no groups, so an installation that never uses them sees the form
-  it always saw. Picking a group with no agent online replaces the hint with a
-  warning that the scan will wait in the queue; the approved scope may also
-  require a group for the typed targets, and the server then refuses a
-  different one with a `403` that names both sides
-  ([#361](https://github.com/onixus/Shapoclyack/issues/361));
+- when jobs are handed to sensors (`job_execution_mode = agent`), an **Agent
+  group** selector beside the speed profile, listing the tenant's sensor groups
+  (`GET /api/agent-groups`) with "any agent of this tenant" as the default. It
+  is hidden entirely when scans run locally, or when the tenant has no groups,
+  so an installation that never uses them sees the form it always saw. Picking
+  a group with no sensor online replaces the hint with a warning that the scan
+  will wait in the queue; the approved scope may also require a group for the
+  typed targets, and the server then refuses a different one with a `403` that
+  names both sides ([#361](https://github.com/onixus/Shapoclyack/issues/361));
 - an amber **person-with-a-cross** marker beside the status of a queued job
-  addressed to an agent group that has no agent online, with the group name in
+  addressed to a sensor group that has no sensor online, with the group name in
   its tooltip; the drawer carries the same thing as an **Agent group** row
   ("any agent of this tenant" when the job is addressed to none). It is
-  computed at read time, so it clears on the next refresh once an agent of that
+  computed at read time, so it clears on the next refresh once a sensor of that
   group heartbeats ([#361](https://github.com/onixus/Shapoclyack/issues/361));
-- the job table with a **Cancel** action on queued/claimed jobs (the API
-  answers 409 once a job runs) and a per-job drawer: timeline and duration,
 - the job table with a **Cancel** action on queued, claimed and running jobs
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The confirm
   dialog says which stop is being asked for: a queued job is simply never
-  handed out, while a running one has its agent asked to put the scan down on
+  handed out, while a running one has its sensor asked to put the scan down on
   its next heartbeat — that job shows as **cancelling** with an hourglass
-  until the agent confirms, and what the scan produced before it stopped is
+  until the sensor confirms, and what the scan produced before it stopped is
   kept. Asking again for a job that is already `cancelling` changes nothing:
   the API answers the job as it stands rather than declaring a stop nobody has
   confirmed, which is why the button is hidden in that state and why a second
@@ -236,7 +238,7 @@ renders an absent value as internal: it shows **Unclassified**.
   reaches them by link rather than from the menu.) There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
-  admitted and dropped, wordlist, agent, command line, links to the run and
+  admitted and dropped, wordlist, sensor, command line, links to the run and
   its findings. `/scans?job=<id>` opens the drawer directly;
 - recent runs on that surface, linking to `/runs?surface=`.
 
@@ -439,7 +441,8 @@ owner or service.
 - **Findings** — tracked findings with lifecycle, SLA and the next required
   action (assign, acknowledge, …), linking to the finding card and the
   Remediation board;
-- **Software** — Lariska inventory when an endpoint is linked;
+- **Software** — the endpoint Agent's (Lariska) inventory when an endpoint
+  is linked;
 - **Scan evidence** — last-run ports, host telemetry and raw findings
   (secondary; the working set is the tracker);
 - **History** — business-context changes (`GET /api/assets/{id}/events`).
@@ -563,21 +566,26 @@ Security, DefectDojo or a SIEM unchanged.
 
 ## Sensor fleet and deployment
 
-`/agents` is the **Sensors** page — the scanning-node fleet (`agent_kind = "scanner"`, see the Terminology section in [README.md](README.md); the Lariska endpoint agent lives on `/endpoints`): status, version, telemetry, deregistration and
-remote upgrade. The page takes `operator`; the two actions in the **Deploy
-Sensor** dialog that hand out a credential — **Generate key** and the SSH push —
-take tenant `admin` and answer `403` for an operator
+`/agents` is the **Sensors** page — the fleet of sensors, the remote scanning
+nodes that run `agent/worker.py`, claim scan jobs and upload results (API
+resource `agents`, `agent_kind = scanner`; see the Terminology section in
+[README.md](README.md)). It is not the place for the Lariska endpoint Agent,
+which lives on `/endpoints`. The page shows status, version, telemetry,
+deregistration and remote upgrade. It takes `operator`; the two actions in the
+**Deploy Sensor** dialog that hand out a credential — **Generate key** and the
+SSH push — take tenant `admin` and answer `403` for an operator
 ([#231](https://github.com/onixus/Shapoclyack/issues/231)). The page refreshes
 on a poll, so it reads as a live view rather than one that needs reloading.
 
-The tiles above the table are `GET /api/agents/summary`: total, online, busy,
-stale and **outdated** sensors, the last against the server's target version.
+The tiles above the table are `GET /api/agents/summary`: total, online /
+active, scanning (busy), stale / offline and **updates available** (outdated
+against the server's target version).
 A row opens a details drawer with the sensor's heartbeat metrics — OS and
 architecture, CPU, memory, disk, load and uptime — its capabilities, current
 job, and an **Upgrade** action. Upgrade marks the sensor (`upgrade_requested`)
 and the button then reads as requested; it does not push anything to the host.
 The host is upgraded there — see
-[operations.md](operations.md#agent-installation-and-upgrade).
+[operations.md](operations.md#sensor-installation-and-upgrade).
 
 **Sensor State** in the drawer is the operator's verdict on the sensor, and it
 sits apart from the status badge because the two say different things
@@ -594,8 +602,9 @@ because one key commonly provisions a whole fleet. Left off, the deregistration
 is a pause: the host still holds the key and re-registers on its next poll, and
 the toast says so rather than letting the operator assume otherwise. Ticked, it
 names the size of the fleet it is about to stop — "This key also provisioned 12
-other sensors" — read from the sensor before the click rather than reported in the
-answer afterwards, which is too late to be a warning.
+other registrations" — the count is every agent row on the key, sensors and
+endpoint Agents alike — read from the sensor before the click rather than
+reported in the answer afterwards, which is too late to be a warning.
 
 The **Deploy Sensor** dialog has four tabs. **Remote SSH Push** installs onto a
 host the platform connects to itself: host, port, username, either a password or
@@ -616,16 +625,16 @@ key the push fails with both fingerprints named — see
 
 The **Linux One-Liner**, **Docker Container** and **Kubernetes** tabs show
 copy-paste snippets, and they open with a `<PROVISIONING_KEY>` placeholder
-rather than a live key: opening the dialog must not create a tenant credential.
-**Generate key** mints one (`POST /api/agent/deployment-command`) and fills the
-snippets in.
+rather than a live key (`GET /api/agent/deployment-command`): opening the
+dialog must not create a tenant credential. **Generate key** mints one
+(`POST /api/agent/deployment-command`) and fills the snippets in.
 
 The minted key is plaintext in that one response and is hashed at rest, so the
 dialog says it cannot be shown again — copy the command before closing. Keys
 that were generated and never used are revoked from the tenant's provisioning
 keys, not from this dialog.
 
-Removing an agent from this page forgets its registration. A process still
+Removing a sensor from this page forgets its registration. A process still
 running on the host re-registers on its next heartbeat; stop it there first.
 
 ## Compliance posture
@@ -658,9 +667,9 @@ other row mean anything.
 **Coverage** answers the question underneath every other number on the page: is
 the scanner looking at the whole of what it was allowed to look at? The scanned
 share is read from a column only the scan-ingest path writes, never from
-`last_seen`, which an endpoint agent's inventory check-in also moves — a fleet
-of agents reporting on schedule used to make an unscanned estate look fully
-covered. There is no backfill, so the columns fill one run at a time after an
+`last_seen`, which an endpoint Agent's (Lariska) inventory check-in also moves —
+a fleet of Agents reporting on schedule used to make an unscanned estate look
+fully covered. There is no backfill, so the columns fill one run at a time after an
 upgrade, and both scan shares read `n/a` until enough of the estate has any scan
 history for a share to be about the estate rather than about the rollout: no
 coverage *data*, which is not the same as no coverage. **Assessed for
@@ -765,8 +774,8 @@ are left unregistered. That refusal is visible in the API logs and in
 
 ## Endpoint inventory and patch gaps
 
-`/endpoints` lists endpoint devices, their installed software and recent
-changes, and — when the software→CVE matcher has vulnerable rows with a
+`/endpoints` lists endpoint devices — hosts with the Agent (Lariska) installed
+— their installed software and recent changes, and — when the software→CVE matcher has vulnerable rows with a
 published fix — a **patch-gap panel** that regroups those findings by the
 package that actually gets upgraded and names the command. The panel stays
 hidden when nothing is outstanding. The asset page's Software tab carries the
@@ -794,7 +803,7 @@ same transaction, so a refused address leaves no half-created account; change
 role, set email, disable, reset password, delete — never offered for the
 signed-in account), **Tenant membership** (grant, change, revoke per tenant;
 a platform admin needs no rows), **Provisioning keys** (list and revoke; the
-key is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
+key for a sensor is *created* on `/agents`), **Sign-in audit** (`GET /api/auth/events`,
 paged, filter by outcome) and **My account** (own password, and a link to
 `/security` for the second factor), which is the
 only tab a non-admin sees. The Users table also carries **Reset MFA**, the
@@ -880,7 +889,8 @@ Operators read, admins change.
 The event-kind checkboxes carry, after the five asset events, the eight
 remediation-workflow kinds — *SLA due soon*, *SLA breached*, *Risk acceptance
 expiring*, *Finding state changed*, *Finding reassigned*, *Scan failed*,
-*Report generated*, *Agent offline*
+*Report generated*, *Agent offline* (`agent_offline` — a sensor that stopped
+heartbeating)
 ([#349](https://github.com/onixus/Shapoclyack/issues/349)) — and last *Audit
 trail (every action)*, the `audit.*` kind
 ([#328](https://github.com/onixus/Shapoclyack/issues/328)), which delivers

@@ -1,7 +1,6 @@
 # Модуль «Профиль организации» (org_profile)
 
 Проектный документ. **Все этапы M1 (`ownership.py`), M2 (`dns_hygiene.py`, `mail_posture.py`), M3 (`controls.py`, API, Web UI), M4 (`related_domains.py`, promote-flow, API, Web UI) и M5 (`credential_leaks.py`, RBAC-гейт, API) полностью реализованы и протестированы**. Соглашения по языку: файл на русском по
-поведение. Соглашения по языку: файл на русском по
 образцу `README.ru.md`; при переводе в официальную документацию — английская
 версия в `docs/`.
 
@@ -414,7 +413,7 @@ RDAP-сервер реестра не подхватился бы никогда
 3. **по адресу NS:** каждый адрес NS обязан пройти
    `safe_http.is_public_address`. NS-запись пишет сканируемая сторона, поэтому
    `ns1.target.example → 10.0.0.5` превращает пробу в TCP/53-коннект по
-   внутренней сети агента. Проверка одна на весь сканер — та же функция, что
+   внутренней сети сенсора (узла, на котором выполняется скан). Проверка одна на весь сканер — та же функция, что
    валидирует адреса исходящего HTTPS.
 
 **Зона не попадает ни в лог, ни в артефакт.** `utils.run_command` логирует
@@ -541,22 +540,31 @@ NIST SP 800-30 Table I-2 из `api/services/nist_risk.py`: статус конт
 Новая секция в `scanner/config/default.yaml`, классы — в `config_schema.py`
 рядом с `DomainMonitorConfig`:
 
+Фактические дефолты (общего `org_profile.enabled`/`seed_domains` нет — каждая
+стадия включается своим `enabled`, а список доменов у каждой свой, пустой =
+`base_domains_from_fqdns`; интент `org_profile` включает стадии поверх этих
+дефолтов):
+
 ```yaml
 org_profile:
-  enabled: false
-  seed_domains: []            # пусто → base_domains_from_fqdns(scope)
   ownership:
-    enabled: true
-    timeout_seconds: 10
+    enabled: false
+    domains: []
+    max_domains: 50
+    timeout_seconds: 15
+    deadline_seconds: 300
   related_domains:
-    enabled: true
+    enabled: false
+    domains: []
     sources: [cert_san, ct_org, reverse_ns, reverse_mx]
-    excluded_ns_providers: [cloudflare.com, awsdns, googledomains, …]
+    excluded_ns_providers: [cloudflare.com, awsdns, googledomains, azure-dns, …]
+    excluded_mx_providers: [google.com, outlook.com, pphosted.com, mimecast.com, yandex.ru, mail.ru, …]
     max_candidates: 500
     min_confidence: 0.6
     merge_into_scope: false
     auto_merge: false
     max_merged_domains: 25
+    timeout_seconds: 15
   dns_hygiene:            # реализовано в M2, полный список параметров выше
     enabled: false
     axfr_probe: false         # единственная активная проверка
@@ -567,7 +575,11 @@ org_profile:
   credential_leaks:
     enabled: false
     provider: hibp
-    api_key: ""
+    api_key: ""               # лучше через env OCTO_HIBP_API_KEY
+    domains: []
+    max_domains: 50
+    timeout_seconds: 15
+    deadline_seconds: 300
     # false: на диск пишутся только маскированные идентификаторы; полные
     # адреса в credential_leaks_identifiers.json не сохраняются вовсе
     reveal_identifiers: false
@@ -598,7 +610,7 @@ org_profile:
 - `GET /tenants/{id}/promoted-domains` (admin) — то же по любому тенанту:
   что операторы добавили под утверждённый scope;
 - на job'е: `target_counts.promoted_domains`, `scan_options.promoted_domains`
-  и `scan_options.promoted_domains_refused`; агенту файл уезжает в `inputs`
+  и `scan_options.promoted_domains_refused`; сенсору файл уезжает в `inputs`
   рядом с `scan_scope.json` и превращается в `--promoted-domains`;
   `jobs.start_scan(widen_with_promoted=False)` — отдельный от `quota_exempt`
   выключатель для диспетчей, нацеленных на одно (verification-перескан #183);

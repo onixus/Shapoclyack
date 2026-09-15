@@ -3,21 +3,24 @@
 > Integration architecture, technical specifications, and delivery backlog for the Lariska endpoint inventory.
 > For operator documentation, see [docs/README.md](docs/README.md) and [docs/operations.md](docs/operations.md).
 
-**Current Status (2026-09-03):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
+**Current Status (2026-09-16):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
 
-The inventory is no longer the end of the line. Two **ROADMAP Track E** milestones now consume it and are also merged:
+The inventory is no longer the end of the line. Three **ROADMAP Track E** milestones now consume it and are also merged:
 
 - **M1 — software→CVE matching.** Installed packages are matched against offline-first Debian and Ubuntu vendor advisories with purl/CPE identity and real dpkg/rpm EVR comparison, persisted to `software_cve_matches` (migration `0027_software_cve_matches`). `unknown` is a first-class result, never silently "clean". See [docs/software-cve-matching.md](docs/software-cve-matching.md).
 - **M2 — patch-gap analysis.** The matcher's `vulnerable` rows are regrouped, on read, by the package an operator actually upgrades, with the target version and the command that applies it. No table of its own — a gap cannot outlive the snapshot behind it.
+- **M3 — tracked software findings.** A `vulnerable` match with a published fix folds into `vulnerabilities` as `source = "endpoint_software"` (migration `0032_endpoint_software_findings`), so it carries SLA, owner, ticket and NIST risk and closes on the next inventory that shows the upgrade. Matching re-runs automatically after each accepted snapshot (`api/services/software_match_worker.py`, `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, marker column from migration `0033`).
 
-What Track D deliberately does **not** do is unchanged: it does not reuse the scan-result path, and Lariska does not become an EDR (ROADMAP, *Not doing, and why*). What is still open is listed in [16.4 Remaining scope](#164-remaining-scope-m3).
+**Terminology.** In this record *Agent* means Lariska, the in-guest endpoint agent (`agent_kind = "endpoint"`). The remote node that claims scan jobs and runs the scanner (`agent/worker.py`, `agent_kind = "scanner"`) is a **sensor**; both are rows of the same `agents` table and share the `/api/agent/*` routes.
+
+What Track D deliberately does **not** do is unchanged: it does not reuse the scan-result path, and Lariska does not become an EDR (ROADMAP, *Not doing, and why*). What is still open is listed in [16.4 Remaining scope](#164-remaining-scope-m4).
 
 ---
 
 ## Table of Contents
 
 - [1. Goal & Platform Component Ecosystem](#1-goal--platform-component-ecosystem)
-  - [1.1 Component Matrix & Dependencies (Pulse, Scanner, Lariska, API)](#11-component-matrix--dependencies-pulse-scanner-lariska-api)
+  - [1.1 Component Matrix & Dependencies (Pulse, Sensor, Lariska, API)](#11-component-matrix--dependencies-pulse-sensor-lariska-api)
   - [1.2 Sourcing and Installing the Pulse Module](#12-sourcing-and-installing-the-pulse-module)
 - [2. Definition of Done](#2-definition-of-done)
 - [3. Architectural Decisions](#3-architectural-decisions)
@@ -47,9 +50,9 @@ What Track D deliberately does **not** do is unchanged: it does not reuse the sc
 - [15. Rollout & Compatibility](#15-rollout--compatibility)
 - [16. Implementation Phases](#16-implementation-phases)
   - [16.1 Track D — Integration contract (S1–S10)](#161-track-d--integration-contract-s1s10)
-  - [16.2 Track E — Assessment over the inventory (M1–M2)](#162-track-e--assessment-over-the-inventory-m1m2)
+  - [16.2 Track E — Assessment over the inventory (M1–M3)](#162-track-e--assessment-over-the-inventory-m1m3)
   - [16.3 Track F — Windows, and managing the fleet (#358)](#163-track-f--windows-and-managing-the-fleet-358)
-  - [16.4 Remaining scope (M3+)](#164-remaining-scope-m3)
+  - [16.4 Remaining scope (M4+)](#164-remaining-scope-m4)
 - [17. Architecture Decision Records (ADRs)](#17-architecture-decision-records-adrs)
 - [18. Implementation Guidelines](#18-implementation-guidelines)
 
@@ -57,16 +60,16 @@ What Track D deliberately does **not** do is unchanged: it does not reuse the sc
 
 ## 1. Goal & Platform Component Ecosystem
 
-Add a secure, tenant-isolated endpoint inventory ingestion path for the **Lariska** endpoint agent without modifying, breaking, or overloading Shapoclyack's existing remote network-scanner agent protocol.
+Add a secure, tenant-isolated endpoint inventory ingestion path for the **Lariska** endpoint Agent without modifying, breaking, or overloading Shapoclyack's existing sensor protocol (the remote network-scanner node).
 
-### 1.1 Component Matrix & Dependencies (Pulse, Scanner, Lariska, API)
+### 1.1 Component Matrix & Dependencies (Pulse, Sensor, Lariska, API)
 
 The Shapoclyack architecture consists of cooperating subsystems with clearly separated responsibilities and boundaries:
 
 | Component | Repository / Location | Role & Protocols | Dependencies & Sourcing |
 |---|---|---|---|
-| **Lariska Endpoint Agent** | External / `lariska` | In-guest endpoint inventory agent; collects OS metrics, installed packages, and hardware identity hashes. Submits snapshots via HTTPS `POST /api/v1/endpoint/inventory`. | Authenticates via provisioning key / JWT exchange at `/api/auth/agent/token`. |
-| **Shapoclyack Scanner Worker** | [`agent/worker.py`](agent/worker.py) & [`scanner/`](scanner/) | Remote or local network scan worker; polls/claims scan jobs and executes network reconnaissance, service discovery, and vulnerability checks. | Pulls jobs via HTTP polling (`/api/agent/jobs/claim`) or NATS JetStream (`jobs.scan`). Uses Pulse, Nmap, Nuclei. |
+| **Lariska Endpoint Agent** | External / `lariska` | In-guest endpoint inventory Agent (`agent_kind = "endpoint"`); collects OS metrics, installed packages, and hardware identity hashes. Submits snapshots via HTTPS `POST /api/endpoint/inventory`. Never claims scan jobs. | Authenticates via provisioning key / JWT exchange at `/api/auth/agent/token`; registers through `/api/agent/register`. |
+| **Shapoclyack Sensor** | [`agent/worker.py`](agent/worker.py) & [`scanner/`](scanner/) | Remote or local network scan node (`agent_kind = "scanner"`); claims scan jobs and executes network reconnaissance, service discovery, and vulnerability checks. | Pulls jobs via HTTP claim polling (`POST /api/agent/jobs/claim`) or NATS JetStream (`jobs.scan.{tenant}`, stream `JOBS`). Uses Pulse, Nmap, Nuclei. |
 | **Pulse Probe Engine** | **[onixus/GenDec](https://github.com/onixus/GenDec)** | High-performance OS fingerprinting, service banner grabbing, and CVE correlation engine. Primary default backend for the scanner pipeline (`service_probe.backend: pulse`). | Sourced from `onixus/GenDec` via [`scripts/install-pulse.sh`](scripts/install-pulse.sh). Documentation in [`docs/pulse-backend.md`](docs/pulse-backend.md). |
 | **Control Plane API** | [`api/`](api/) | Central FastAPI service; manages RBAC, tenant isolation, scan scheduling, endpoint ingestion, asset reconciliation, and retention lifecycle. | Backed by PostgreSQL and optional NATS broker. |
 | **Scanner Core Pipeline** | [`scanner/pipeline/`](scanner/pipeline/) | Python orchestration pipeline executing scan stages: port discovery, service probe ([`pulse_probe.py`](scanner/pipeline/pulse_probe.py), [`nse.py`](scanner/pipeline/nse.py)), TLS posture, Nuclei. | Invokes local CLI binaries (`pulse`, `nmap`, `nuclei`). |
@@ -116,7 +119,7 @@ Detailed usage, benchmark timings, and profile tuning are documented in [`docs/p
 Server integration is considered complete when:
 
 1. **Authentication:** Lariska authenticates via the existing provisioning-key JWT exchange (`/api/auth/agent/token`).
-2. **Ingestion:** Authenticated agents can submit versioned inventory snapshots (`POST /api/v1/endpoint/inventory`).
+2. **Ingestion:** Authenticated Agents can submit versioned inventory snapshots (`POST /api/endpoint/inventory`).
 3. **Tenant Scoping:** Tenant and agent identities are derived solely from verified JWT/registration state, not request bodies.
 4. **Idempotency:** Duplicate deliveries with identical digests are processed idempotently.
 5. **Asset Linking:** Endpoint devices link deterministically to the core asset inventory.
@@ -124,7 +127,7 @@ Server integration is considered complete when:
 7. **Change Tracking:** `software_installed`, `software_removed`, and `software_updated` events are automatically computed and persisted.
 8. **UI Visibility:** Asset detail view displays endpoint summary, software inventory table, and change events.
 9. **Operations:** Body size limits, retention pruning, RBAC, migrations, and operational metrics are implemented and documented.
-10. **Backward Compatibility:** Existing scan agent workflows and APIs remain 100% backward compatible.
+10. **Backward Compatibility:** Existing sensor workflows and APIs remain 100% backward compatible.
 
 All ten are met on `main`. The assessment layer built on top of them (M1/M2) adds its own bar:
 
@@ -137,11 +140,11 @@ All ten are met on `main`. The assessment layer built on top of them (M1/M2) add
 
 ### 3.1 Protocol Separation
 
-Do not multiplex endpoint software inventory into scanner agent channels:
-- Network scanner routes: `/api/agent/jobs/{job_id}/results`
-- Network scan NATS subjects: `ingest.raw_results`, `ingest.results.{tenant}`
+Do not multiplex endpoint software inventory into sensor channels:
+- Sensor result route: `/api/agent/jobs/{job_id}/results`
+- Sensor NATS subjects: `jobs.scan.{tenant}`, `ingest.raw_results`, `ingest.results.{tenant_id}`
 
-Endpoint inventory uses dedicated HTTP endpoints (`/api/v1/endpoint/inventory`) and an optional dedicated internal event stream.
+Endpoint inventory uses dedicated HTTP endpoints (`/api/endpoint/inventory`) and an optional dedicated internal event stream.
 
 ### 3.2 Tenant Identity Ownership
 
@@ -165,7 +168,7 @@ Request payloads must specify `schema_version`. Version `1` is enforced (`Litera
 
 ### 4.1 Inventory Ingestion
 
-`POST /api/v1/endpoint/inventory`
+`POST /api/endpoint/inventory` (router prefix `/endpoint` under `/api`, [api/routes/endpoint_inventory.py](api/routes/endpoint_inventory.py); there is no `/api/v1/` prefix on this route)
 
 - **Authentication:** Bearer Agent JWT (`Authorization: Bearer <agent_jwt>`)
 - **Headers:**
@@ -185,7 +188,7 @@ Request payloads must specify `schema_version`. Version `1` is enforced (`Litera
 | `411 Length Required` | Missing header | Request missing `Content-Length` |
 | `413 Payload Too Large` | Limit exceeded | Body exceeds 15 MiB or entry count exceeded |
 | `422 Unprocessable Entity` | Validation error | Schema version mismatch or malformed structure |
-| `429 Too Many Requests` | Rate limited | Submissions per agent per hour limit exceeded |
+| `429 Too Many Requests` | Rate limited | Submissions per Agent per hour limit exceeded (`OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR`, default 12) |
 
 #### Ingestion Response Format
 
@@ -449,7 +452,8 @@ Configured in [api/settings.py](api/settings.py) and enforced in ingestion pipel
 | `OCTO_ENDPOINT_STALE_HOURS` | `48` | Hours without inventory before device is marked stale |
 | `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` | `90` | Retention window for full software item snapshots |
 | `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Retention window for software change audit events |
-| `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `86400` (24h) | Frequency of background retention sweep |
+| `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` (6h) | Frequency of background retention sweep |
+| `OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR` | `12` | Snapshot submissions accepted per Agent per hour |
 
 ### Normalization Rules
 
@@ -529,7 +533,7 @@ Extended for the assessment layer:
 | **API Contract Tests** | Ingestion + read routes, RBAC on refresh, filters, 404 vs empty | [tests/test_api_endpoint_inventory.py](tests/test_api_endpoint_inventory.py), [tests/test_api_software_cve_match.py](tests/test_api_software_cve_match.py) |
 | **E2E Lifecycle** | Enrol → ingest → reconcile → diff → query → prune, with Lariska fixtures | [tests/test_endpoint_inventory_lifecycle.py](tests/test_endpoint_inventory_lifecycle.py) |
 | **Matcher Tests** | Advisory providers, package identity, EVR comparison, `unknown` reasons, patch-gap grouping | [tests/test_advisory_providers.py](tests/test_advisory_providers.py), [tests/test_package_identity.py](tests/test_package_identity.py), [tests/test_version_compare.py](tests/test_version_compare.py), [tests/test_software_cve_match.py](tests/test_software_cve_match.py), [tests/test_patch_gap.py](tests/test_patch_gap.py) |
-| **Regression Tests** | Existing scanner agent jobs, uploads, heartbeat, and scans | [tests/test_agent_worker.py](tests/test_agent_worker.py), [tests/test_api_agents.py](tests/test_api_agents.py) |
+| **Regression Tests** | Existing sensor jobs, uploads, heartbeat, and scans | [tests/test_agent_worker.py](tests/test_agent_worker.py), [tests/test_api_agents.py](tests/test_api_agents.py) |
 
 ---
 
@@ -545,7 +549,7 @@ Prometheus metrics exposed in [api/services/metrics.py](api/services/metrics.py)
 - `octo_endpoint_retention_deleted_total` — Rows removed by retention sweeps.
 - `octo_endpoint_retention_run_duration_seconds` — Retention sweep latency.
 
-The matcher has **no metrics of its own** — it runs on request rather than on a schedule, so there is no background loop to observe. That changes if M3 makes matching automatic.
+The matcher still has **no metrics of its own** in [api/services/metrics.py](api/services/metrics.py), although since M3 it does run in the background ([api/services/software_match_worker.py](api/services/software_match_worker.py)); the worker's activity is visible only through its logs and the `last_matched_snapshot_id` marker.
 
 ---
 
@@ -553,7 +557,7 @@ The matcher has **no metrics of its own** — it runs on request rather than on 
 
 1. **Feature Flag:** Rollout gated by `OCTO_ENDPOINT_INVENTORY_ENABLED` (default: `true`).
 2. **Zero-Downtime Migrations:** Migrations `0004_endpoint_inventory` and `0006_endpoint_fk_cascade` are non-blocking.
-3. **Backward Compatibility:** Agent API (`/api/agent/*`) and scanner worker behavior remain completely untouched.
+3. **Backward Compatibility:** The `/api/agent/*` routes and sensor behavior remain completely untouched.
 4. **Advisory Data:** Offline-first. `OCTO_DEBIAN_ADVISORY_DATABASE` / `OCTO_UBUNTU_ADVISORY_DATABASE` point at the datasets on disk; `OCTO_ADVISORY_FETCH_ENABLED` gates any network refresh, and matching works with it off. The matcher is exactly as current as the dataset — absence of a match is not evidence of absence of a vulnerability.
 
 ---
@@ -575,7 +579,7 @@ The matcher has **no metrics of its own** — it runs on request rather than on 
 | **S9** | Retention, Ops & Metrics | Pruning sweeps, 15 MiB body cap, staleness tracking, Prometheus metrics | **Done** |
 | **S10** | Cross-Repo E2E Tests | Automated cross-repository integration tests with Lariska fixtures | **Done** |
 
-### 16.2 Track E — Assessment over the inventory (M1–M2)
+### 16.2 Track E — Assessment over the inventory (M1–M3)
 
 Tracked in [ROADMAP.md](ROADMAP.md#track-e--product-direction); recorded here because it is built entirely on this contract.
 
@@ -587,10 +591,11 @@ Tracked in [ROADMAP.md](ROADMAP.md#track-e--product-direction); recorded here be
 | **M1d** | Matcher & Storage | `software_cve_matches`, migration `0027`, tenant/device runs and read APIs ([api/services/software_cve_match.py](api/services/software_cve_match.py)) | **Done** |
 | **M1e** | Console Integration | Endpoint CVE match panel on the asset Software tab; feed provenance on the System page | **Done** |
 | **M2** | Patch-Gap Analysis | Per-package upgrades, target version, runnable command; `unfixed` counted separately ([api/services/patch_gap.py](api/services/patch_gap.py)) | **Done** |
+| **M3** | Tracked Software Findings | `vulnerable` matches with a fix become `vulnerabilities` rows (`source = endpoint_software`, migration `0032`); automatic re-matching after each snapshot ([api/services/software_match_worker.py](api/services/software_match_worker.py), migration `0033`) | **Done** |
 
 ### 16.3 Track F — Windows, and managing the fleet (#358)
 
-Added when the agent was first brought up on real Windows hardware. Two halves
+Added when the Agent was first brought up on real Windows hardware. Two halves
 that turned out to need each other: a Windows host could be inventoried and not
 assessed, and every fix to the agent meant walking to the machine.
 
@@ -598,15 +603,17 @@ assessed, and every fix to the agent meant walking to the machine.
 |---|---|
 | **Windows matching** | On the operating system's *build*, not on packages — `10.0.<build>.<ubr>` against each remediation's `FixedBuild`. Cumulative servicing makes the revision the whole answer; an installed `KB` is consulted too and can only move a verdict toward fixed. The unit of assessment is the OS, so the products are reported once, in aggregate. See docs/software-cve-matching.md |
 | **Windows collection** | MSI entries separated from `winreg`, per-user installs from the loaded profiles under `HKEY_USERS` (not `HKEY_CURRENT_USER` — under a SYSTEM service that is the service's own hive), and applied `KB` updates from Component Based Servicing in state 112 only |
-| **`agents.agent_kind`** | Endpoint agents stopped being judged against the scanning agent's release line, escalated as missing scanners, or eligible to claim scan work. Migration `0057` |
-| **Remote management** | Collection settings and the build an agent should run travel in the heartbeat response. A policy cannot carry `server_url`, the provisioning key or `allow_plain_http`: an agent that can be told where to report can be told to report somewhere else. A build is verified against a digest the same authenticated channel published, and an upgrade over plain HTTP is refused |
+| **`agents.agent_kind`** | Endpoint Agents (`endpoint`) stopped being judged against the sensors' release line, escalated as missing sensors, or eligible to claim scan work; sensors are `scanner`. Migration `0057` (also adds `endpoint_agent_releases` and `endpoint_agent_policies`) |
+| **Remote management** | Collection settings and the build an Agent should run travel in the heartbeat response (`/api/endpoint/agent/policies`, `/api/endpoint/agent/releases`). A policy cannot carry `server_url`, the provisioning key or `allow_plain_http`: an agent that can be told where to report can be told to report somewhere else. A build is verified against a digest the same authenticated channel published, and an upgrade over plain HTTP is refused |
 | **TLS at the edge** | `OCTO_API_TLS_CERT`/`_KEY` — the precondition for the above, and what a stand without an ingress needs to speak HTTPS at all. Half a configuration refuses to start |
 
-Not closed by it: the endpoint agent still registers through the scanning
-agents' door (`POST /api/agent/register`) rather than a door of its own, and
-the datastore links behind the API remain plaintext (#309).
+Not closed by it: the endpoint Agent still registers through the sensors'
+door (`POST /api/agent/register`) rather than a door of its own, and
+the datastore links behind the API remain plaintext (#309). The Windows half of
+#358 is merged (MSRC provider, `OCTO_MSRC_DATABASE`); the issue stays open for
+RHEL/SUSE/Amazon Linux matching.
 
-### 16.4 Remaining scope (M3+)
+### 16.4 Remaining scope (M4+)
 
 Not started; listed so the two sections above are not misread as coverage of the estate.
 
@@ -615,8 +622,6 @@ Not started; listed so the two sections above are not misread as coverage of the
 | **More distributions** | RHEL, Rocky, AlmaLinux, Fedora, Amazon Linux, SUSE are *recognised* but have no provider, so their packages are `unknown` with `unsupported_distro`. The rpm comparison already exists and is tested — each one is a normalizer plus a small provider subclass. |
 | **Language ecosystems** | npm, PyPI and Java packages *are* collected — the agent's runtime collectors report them as `npm`/`pip`/`java` — but no advisory provider covers them, so they match as `non_distro_source`. RubyGems, Go modules and Cargo are not collected at all. A large share of real application risk lives here. |
 | **macOS** | Homebrew inventory is collected but not matched: Apple's patch model does not map onto the distribution advisory model. Reported as `unknown`. Windows *is* matched now (#358) — on the operating system's build against Microsoft's remediations, which is a different axis from the package-and-release question every distribution provider answers; the Windows products in the uninstall registry remain unmatched, and are reported once in aggregate as `windows_product`. See docs/software-cve-matching.md. |
-| **Findings lifecycle** | A match is not yet a tracked finding: it carries no SLA, owner, state machine or remediation-verification path, so the closed loop (#183) does not apply to it. |
-| **Scheduled matching** | Matching runs only on `POST .../cve-matches/refresh`. Nothing re-runs it when a new snapshot arrives or when the advisory feed is updated, so a device's matches can be older than its inventory. |
 | **Offline enrichment bundle** | The advisory datasets ship in the image, but there is no air-gapped bundle covering them together with the EPSS/KEV/CVSS4 overlays. |
 | **Kernel livepatching** | A livepatched host reports the booted package version and can read as `vulnerable`. There is no signal in the inventory to correct this. |
 
@@ -642,7 +647,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 11. **Matches Are Derived, Never Authored:** `software_cve_matches` is recomputed from the latest accepted snapshot and replaced wholesale per device. Nothing in it is authored by a person, so `downgrade` drops the table outright and no run needs to reconcile with a prior one.
 12. **`unknown` Is a Result, Not an Omission:** A package that cannot be assessed produces an `unknown` row with a machine-readable reason. An endpoint whose distribution could not be resolved must never read as clean. Unknown rows are collapsed to one per reason per device.
 13. **Patch Gap Is a View:** No stored table. A stored gap would need its own invalidation and would eventually disagree with the matches behind it. The target version is the highest fix among the CVEs on that package, ordered by the distribution's own comparison rules, so one command per package is correct rather than a convenient simplification.
-14. **Matching Is On-Demand and `operator`-Gated:** A refresh walks every package on every device in the tenant — a workload, not a query — so it sits behind `operator`, alongside `POST /vulnerabilities/risk-history/snapshot`. Automatic re-matching is deferred to M3.
+14. **Matching Is `operator`-Gated On Demand, Automatic After Ingest:** A manual refresh walks every package on every device in the tenant — a workload, not a query — so it sits behind `operator`, alongside `POST /vulnerabilities/risk-history/snapshot`. Since M3 the same fold also runs in the background after each accepted snapshot; the queue is the comparison `latest_snapshot_id` vs `last_matched_snapshot_id`, not an in-memory list.
 15. **Offline-First Advisories:** Providers read datasets from disk and work with `OCTO_ADVISORY_FETCH_ENABLED` off. Feed date and entry counts are surfaced rather than hidden, because a stale feed under-reports silently.
 
 ---
@@ -654,7 +659,7 @@ When extending or maintaining endpoint inventory code:
 1. **Verify Contracts First:** Inspect [api/schemas.py](api/schemas.py) and ensure any changes adhere to Schema v1.
 2. **Tenant Scoping:** Never rely solely on route-level guards; always include `tenant_id` filters in core service queries.
 3. **PostgreSQL Compatibility:** Validate constraint and cascade behavior on PostgreSQL.
-4. **Regression Safety:** Ensure existing scanner worker unit/integration tests ([tests/test_agent_worker.py](tests/test_agent_worker.py)) continue to pass.
+4. **Regression Safety:** Ensure existing sensor unit/integration tests ([tests/test_agent_worker.py](tests/test_agent_worker.py)) continue to pass.
 5. **Keep Documentation Synchronized:** When modifying configuration keys or behavior, update [docs/configuration.md](docs/configuration.md), [docs/operations.md](docs/operations.md) and, for the assessment layer, [docs/software-cve-matching.md](docs/software-cve-matching.md).
 6. **Do Not Invent Coverage:** When a package, distribution or ecosystem cannot be assessed, emit `unknown` with a reason. Silently skipping it turns an unassessed host into a clean one, which is the single most damaging way to misread this feature.
 7. **Keep Derived Data Derived:** Matches are recomputed and replaced; patch gaps are computed on read. Do not add a cache or a stored aggregate without an invalidation story tied to the snapshot.

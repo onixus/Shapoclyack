@@ -57,8 +57,9 @@ issues. Actual timelines depend on severity, exploitability, and release risk.
 - the Go discovery worker under `recon/`;
 - shell helpers shipped under `scripts/` and `bench/`;
 - Dockerfiles, Kubernetes manifests, and GitHub Actions workflows;
-- authentication, authorization, tenant isolation, provisioning, and remote
-  agent trust boundaries;
+- authentication, authorization, tenant isolation, provisioning, and the
+  sensor (remote scanning node) and Agent (Lariska endpoint agent) trust
+  boundaries;
 - unsafe defaults that expose the scanner host, operator credentials, tenant
   data, scan artifacts, or control-plane services;
 - packaging or release weaknesses in official GHCR images.
@@ -124,12 +125,12 @@ At minimum:
 - store credentials in Kubernetes Secrets or an external secret manager;
 - restrict API, NATS, PostgreSQL, and ClickHouse network exposure;
 - grant `NET_RAW` or `NET_ADMIN` only to scanner workloads that require them;
-- never mount the Docker socket into scanner, agent, API, or Web workloads;
+- never mount the Docker socket into scanner, sensor, API, or Web workloads;
 - treat scan artifacts, endpoint inventory, banners, findings, and logs as
   sensitive operational data;
 - enforce tenant membership and role checks server-side rather than trusting
   client-supplied tenant identifiers;
-- use TLS and authenticated transport for remote agents and external service
+- use TLS and authenticated transport for sensors, Agents and external service
   integrations;
 - pin official image tags and review release notes before upgrading;
 - back up persistent data and test restoration before relying on retention or

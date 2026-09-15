@@ -1,7 +1,7 @@
 # Scan performance without more hardware
 
 How to get faster *operator outcomes* from Shapoclyack without adding CPU,
-RAM, agents, or packet rate. Companion to [configuration.md](configuration.md),
+RAM, sensors, or packet rate. Companion to [configuration.md](configuration.md),
 [slo.md](slo.md), and [scale-profile.md](scale-profile.md).
 
 ## Diagnosis first: stage timings
@@ -54,8 +54,8 @@ POST /api/jobs
 ```
 
 Persisted as `scan_options.intent` (+ `intent_summary`). Local execution merges
-nuclei/top_ports into the job effective config; agent mode still gets CLI flags
-but not the nuclei overlay.
+nuclei/top_ports into the job effective config; in `agent` execution mode the
+sensor still gets the CLI flags but not the nuclei overlay.
 
 ### Suggested schedule shape (same fleet)
 
@@ -66,7 +66,7 @@ weekly       → intent=full
 on-demand    → intent=full or vuln
 ```
 
-Same agents, same packet budget, far less average wall-clock per day.
+Same sensors, same packet budget, far less average wall-clock per day.
 
 ## Levers that do **not** need more resources
 

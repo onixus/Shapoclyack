@@ -8,26 +8,29 @@ to whoever owns the firewall.
 Two rules run through all of it:
 
 - **Every component is outbound-only towards the control plane.** Nothing dials
-  an agent, and nothing dials a scanner. A remote agent needs egress to the API
-  and nothing needs ingress to the agent.
+  a sensor, and nothing dials a scanner. A sensor (the remote scanning node —
+  API resource `agents`, `agent_kind = scanner`) needs egress to the API and
+  nothing needs ingress to the sensor. The same holds for the Agent (Lariska),
+  which only ever POSTs inventory to the API.
 - **HTTP egress obeys a proxy; NATS does not.** That asymmetry decides how a
   proxy-only site is deployed, and it is spelled out under
   [NATS and proxies](#nats-and-proxies).
 
 ## Ports and directions
 
-### Remote agent → control plane
+### Sensor → control plane
 
 | From | To | Port | Protocol | Required | What breaks without it |
 |---|---|---|---|---|---|
-| Agent | API (`OCTO_API_URL`) | 443 (or 80) | HTTPS | **Yes** | Everything: token exchange, registration, heartbeat, job claim, results upload |
-| Agent | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The agent falls back to HTTP claim polling |
-| Agent | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
-| Agent | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
-| Agent | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target |
-| Agent | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
+| Sensor | API (`--api-url`) | 443 (or 80) | HTTPS | **Yes** | Everything: token exchange, registration, heartbeat, job claim, results upload |
+| Sensor | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The sensor falls back to HTTP claim polling |
+| Sensor | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
+| Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
+| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target |
+| Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
 
-An agent needs **no inbound rule at all**. `k8s/shapoclyack/examples/networkpolicy-agent.example.yaml`
+A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
+first row — HTTPS to the API — for `POST /api/endpoint/inventory`. `k8s/shapoclyack/examples/networkpolicy-agent.example.yaml`
 is the in-cluster expression of the same list.
 
 ### Inside the cluster
@@ -77,17 +80,17 @@ that fail.
 RIPEstat and the three object stores are never on the inside, so there is no
 exemption to express, and honouring half the dialect would be worse than
 honouring none of it. `scanner/pipeline/egress_env.py` is where this lives,
-deliberately narrower than the API's and the agent's egress modules rather than
+deliberately narrower than the API's and the sensor's (`agent/egress.py`) egress modules rather than
 a third copy of them.
 
 ## Proxy and CA variables
 
 | Variable | Applies to | Meaning |
 |---|---|---|
-| `OCTO_HTTPS_PROXY` | API, agent, scanner | Proxy for `https://` targets. `[http://][user:pass@]host[:port]` — the proxy URL itself must be `http://`, no `https://` and no SOCKS |
-| `OCTO_HTTP_PROXY` | API, agent | The same for `http://` targets |
-| `OCTO_NO_PROXY` | API, agent | Comma-separated exemptions. `*` bypasses everything; a bare name matches it and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`); `host:port` pins the port; a CIDR matches an address literal inside it |
-| `OCTO_CA_BUNDLE` | API, agent, scanner | PEM file **added to** the system trust store, for HTTPS, SMTP and NATS alike — on the API's NATS connection as well as the agent's. Verification is never turned off |
+| `OCTO_HTTPS_PROXY` | API, sensor, scanner | Proxy for `https://` targets. `[http://][user:pass@]host[:port]` — the proxy URL itself must be `http://`, no `https://` and no SOCKS |
+| `OCTO_HTTP_PROXY` | API, sensor | The same for `http://` targets |
+| `OCTO_NO_PROXY` | API, sensor | Comma-separated exemptions. `*` bypasses everything; a bare name matches it and its subdomains (`example.com` covers `api.example.com`, not `notexample.com`); `host:port` pins the port; a CIDR matches an address literal inside it |
+| `OCTO_CA_BUNDLE` | API, sensor, scanner | PEM file **added to** the system trust store, for HTTPS, SMTP and NATS alike — on the API's NATS connection as well as the sensor's. Verification is never turned off |
 
 Each falls back to the conventional `HTTPS_PROXY` / `NO_PROXY` (and their
 lowercase spellings) when unset — with one exception, and it runs the other way
@@ -108,7 +111,7 @@ receiver's own name.
 The `OCTO_`-prefixed names exist so a pod can override a cluster-wide
 `HTTPS_PROXY` injected for something else without unsetting the ambient one.
 
-The agent logs its decision once at start, so "the agent cannot reach the API"
+The sensor logs its decision once at start, so "the sensor cannot reach the API"
 has one place to look:
 
 ```
@@ -123,7 +126,7 @@ the inspecting proxy fails", diagnosed hours later.
 ## TLS inspection
 
 Where an appliance terminates and re-signs TLS, the certificate the API or the
-agent sees is the appliance's, issued by an internal root. Put that root in
+sensor sees is the appliance's, issued by an internal root. Put that root in
 `OCTO_CA_BUNDLE`. It is added to the system store rather than replacing it, so
 the same process still verifies the receivers it reaches *without* the
 inspector — a webhook to an on-cluster endpoint listed in `OCTO_NO_PROXY`, for
@@ -163,8 +166,8 @@ not a gap in configuration.
 
 So on a site where the proxy is the only way out:
 
-1. Leave `OCTO_NATS_URL` **unset** on the agent.
-2. The agent then polls `POST /api/agent/jobs/claim` over HTTP — through the
+1. Leave `OCTO_NATS_URL` **unset** on the sensor.
+2. The sensor then polls `POST /api/agent/jobs/claim` over HTTP — through the
    proxy, like every other call — every `--poll-interval` seconds
    (`OCTO_AGENT_POLL_INTERVAL`, default 5).
 
@@ -178,20 +181,20 @@ Where NATS *is* reachable but 4222 is not, use 443:
 | Option | URL | What terminates TLS | Needs |
 |---|---|---|---|
 | TCP (stream) ingress | `tls://nats.example.com:443` | `nats-server` itself, end to end | An ingress controller forwarding raw TCP; `nats-tls-configmap-patch.yaml` |
-| WebSocket | `wss://nats.example.com:443` | The HTTPS ingress in front | A `websocket {}` listener, an ordinary Ingress, and `aiohttp` installed on the agent |
+| WebSocket | `wss://nats.example.com:443` | The HTTPS ingress in front | A `websocket {}` listener, an ordinary Ingress, and `aiohttp` installed on the sensor |
 
 `k8s/shapoclyack/examples/nats-443-ingress.example.yaml` has both, with the
 Service and container ports each needs.
 
 `wss://` is the more portable of the two and the weaker: the WebSocket upgrade
 is an HTTP request, so anything terminating HTTPS in the path terminates it.
-nats-py implements the transport through `aiohttp`, which the agent image does
-not ship — the agent refuses at start with that message rather than failing
+nats-py implements the transport through `aiohttp`, which the sensor image does
+not ship — the sensor refuses at start with that message rather than failing
 later inside its event loop.
 
 ## Bandwidth
 
-The results upload is the largest thing an agent sends: one gzipped run
+The results upload is the largest thing a sensor sends: one gzipped run
 directory, whose size follows the number of hosts and whether screenshots are
 on. On a branch office's uplink an unshaped upload is the reason the site's
 voice traffic stutters for two minutes after every scan.
@@ -203,7 +206,7 @@ The bucket holds one second's worth, so a burst up to the rate leaves
 immediately and only a sustained stream is held back.
 
 `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` on the API side (default 128 MiB) is the
-other half: it caps what a single upload may be, and a shaped agent whose
+other half: it caps what a single upload may be, and a shaped sensor whose
 archive exceeds it still fails.
 
 ## See also

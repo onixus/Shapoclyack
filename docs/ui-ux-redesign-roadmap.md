@@ -65,13 +65,23 @@ Every vulnerability must have a visible lifecycle, owner and remediation state.
 
 # Current UI gaps
 
-- UI focuses on scans and findings instead of business risk.
-- Asset context is insufficient.
-- Vulnerability lifecycle is not visible.
-- Remediation workflow is missing.
-- Executive/CISO view is missing.
-- Risk calculation is not explained.
-- Business impact is disconnected from technical findings.
+The gaps this roadmap was written against, kept for the record. Each is
+struck where the current console closes it ([ui.md](ui.md) is the
+current-state guide):
+
+- ~~UI focuses on scans and findings instead of business risk~~ — `/` is the
+  Risk Overview, the sidebar leads with risk workflows.
+- ~~Asset context is insufficient~~ — owner, service, environment, data class,
+  criticality and exposure on `/assets/view` ([asset-context.md](asset-context.md)).
+- ~~Vulnerability lifecycle is not visible~~ — `/vulnerabilities/view` stepper.
+- ~~Remediation workflow is missing~~ — `/remediation` board.
+- ~~Executive/CISO view is missing~~ — Risk Overview plus the executive report
+  ([reports-and-compliance.md](reports-and-compliance.md)).
+- ~~Risk calculation is not explained~~ — `risk_explanation` on every finding
+  ([risk-scoring.md](risk-scoring.md)).
+- Business impact is disconnected from technical findings — partly: asset
+  criticality and exposure move the score; environment and data class still do
+  not.
 
 ---
 
@@ -91,7 +101,7 @@ Dashboard
  +-- Operations
  |     +-- Scans
  |     +-- Jobs
- |     +-- Agents
+ |     +-- Agents (the sensor fleet; the console entry is still named Agents)
  |     +-- Schedules
  |
  +-- Administration
@@ -107,7 +117,10 @@ Dashboard
 
 ## Risk Dashboard
 
-Create executive dashboard.
+Delivered on `/` (Risk Overview, [ui.md](ui.md#risk-overview)). One metric
+below is deliberately **not** on it: internet-exposed assets, because exposure
+is operator-declared, not measured
+([#171](https://github.com/onixus/Shapoclyack/issues/171)).
 
 Metrics:
 
@@ -161,7 +174,7 @@ Required features (delivered on `/assets` and `/assets/view`,
 
 ## Vulnerability Center
 
-Replace simple findings list with lifecycle management.
+Delivered on `/vulnerabilities` ([ui.md](ui.md#vulnerability-center)).
 
 Required fields:
 
@@ -182,7 +195,7 @@ Required fields:
 
 ## Vulnerability lifecycle
 
-Implement visible workflow:
+Delivered ([vulnerability-lifecycle.md](vulnerability-lifecycle.md)):
 
 ```
 OPEN
@@ -204,7 +217,11 @@ CLOSED
 
 ## Remediation Board
 
-Kanban workflow:
+Delivered on `/remediation` ([ui.md](ui.md#remediation-board)), with one
+departure from the sketch below: the columns are the lifecycle states
+(`OPEN → ACKNOWLEDGED → PLANNED → FIXING → VERIFYING → CLOSED`) and accepted
+risk is a badge on the card, not a "Waiting exception" column. The original
+sketch:
 
 ```
 New
@@ -222,11 +239,11 @@ Closed
 
 Features:
 
-- owner assignment;
-- SLA tracking;
-- comments;
-- evidence attachment;
-- exception handling.
+- owner assignment — done;
+- SLA tracking — done;
+- comments — done;
+- evidence attachment — **not implemented** (evidence is the last observing run; file attachments are out of scope);
+- exception handling — done (request/approve workflow, [#348](https://github.com/onixus/Shapoclyack/issues/348)).
 
 ---
 
@@ -234,12 +251,14 @@ Features:
 
 Support:
 
-- Micro Focus SMAX
-- Jira
-- ServiceNow
-- DefectDojo
+- Micro Focus SMAX — link only (`ticket_system=smax`); no transport opens tickets there
+- Jira — link, native create and status sync
+- ServiceNow — link, native create and status sync
+- DefectDojo — link, native create and status sync
 
-Ticket view:
+Ticket view (**not implemented** as a page: the console shows the link and
+sync state on the finding card, and ticket views beyond that are still
+planned):
 
 - linked vulnerability;
 - affected assets;
@@ -252,7 +271,9 @@ Ticket view:
 
 ## Risk explanation
 
-Every critical finding must explain why it has priority.
+Delivered as `risk_explanation` on every finding
+([risk-scoring.md](risk-scoring.md)); the shape below is the sketch, the real
+model is NIST SP 800-30 likelihood × impact rather than a sum.
 
 Example:
 
@@ -317,7 +338,7 @@ Focus:
 Focus:
 
 - scans;
-- agents;
+- sensors (the Agents page, `/agents`);
 - jobs;
 - schedules.
 
