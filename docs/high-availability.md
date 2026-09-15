@@ -43,27 +43,71 @@ older API servers, which puts that behaviour back.
 
 ## Prerequisites
 
-### ReadWriteMany artifact storage (or #336)
+### Somewhere both API pods can reach the artifacts
 
-This is the hard one. Scan artifacts are files on the `scanner-data` PVC,
-mounted by the API Deployment, the scan Job and the CronJob. Base requests
-`ReadWriteOnce`, and an RWO volume attaches to **one node at a time** — so a
-second API replica scheduled on another node sits in `ContainerCreating` with a
-`Multi-Attach error for volume` event until the first pod goes away.
+This is the hard one. Scan artifacts — run directories, screenshots, generated
+reports, the input files a job hands its executor — used to be files on the
+`scanner-data` PVC, mounted by the API Deployment, the scan Job and the
+CronJob. Base requests `ReadWriteOnce`, and an RWO volume attaches to **one
+node at a time**, so a second API replica scheduled on another node sits in
+`ContainerCreating` with a `Multi-Attach error for volume` event until the
+first pod goes away.
 
-`pvc-rwx-patch.yaml` therefore requests `ReadWriteMany` and leaves the class
-name as `REPLACE-WITH-YOUR-RWX-STORAGE-CLASS`. Replace it with a class your
-cluster actually has — CephFS, AWS EFS, Azure Files, GCP Filestore, NFS,
-Portworx shared volumes. A wrong name binds to the wrong backend silently; an
-unknown one leaves the PVC `Pending` with a `storageclass not found` event,
-which is why it is not guessed here.
+Since [#336](https://github.com/onixus/Shapoclyack/issues/336) there are two
+ways to satisfy that, and **exactly one of them is enabled** in
+`overlays/prod-ha/kustomization.yaml`.
 
-**Without RWX storage this overlay cannot be applied.** The other option is
-[#336](https://github.com/onixus/Shapoclyack/issues/336), which moves artifacts
-to object storage and removes the shared filesystem from the picture; until it
-lands there is no third path that keeps both the replicas and the artifacts.
-`storageClassName` is immutable on an existing PVC, so this is a decision made
-at install time, not migrated into later.
+#### Object storage (`artifacts-s3-patch.yaml`)
+
+The better answer where S3, MinIO, Ceph RGW or any other S3-compatible gateway
+is available: there is no shared filesystem at all, so there is no storage
+class to find and no multi-attach to get right, and the artifacts outlive the
+cluster that produced them. Set `OCTO_ARTIFACT_BACKEND=s3` and a bucket; the
+patch wires the rest from a `shapoclyack-artifacts` Secret
+(`examples/artifacts-s3.secret.example.yaml`). Each pod keeps a node-local
+working copy of the runs it is asked about, on an `emptyDir` — a cache, whose
+loss costs a re-fetch and nothing else.
+
+Two things to decide when you enable it:
+
+* **Presigned downloads are off.** The API streams every artifact itself, which
+  always works. Turning them on (`OCTO_ARTIFACT_PRESIGN_ENABLED=true`) answers a
+  download with a redirect to a short-lived signed URL, so the bytes never pass
+  through the API — but the console downloads through XHR, so the redirect is a
+  cross-origin request the browser blocks unless the **bucket is configured to
+  send CORS headers** for the console's origin. An in-cluster MinIO reachable
+  only from inside the cluster cannot serve such a download at all. Worth doing
+  for large reports on a public bucket; not something to switch on blind.
+* **No bucket lifecycle rule.** Run retention (`OCTO_RUN_RETENTION_DAYS`)
+  already prunes artifacts through the API, which knows what the console is
+  still listing. A second expiry policy in the bucket does not, and would
+  delete runs out from under it.
+
+Moving an existing installation into a bucket is a copy, not a cutover:
+
+```bash
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  python3 scripts/migrate-artifacts.py --dry-run
+```
+
+It copies and deletes nothing, skips what is already there, and is safe to
+re-run and safe to run while the API is serving. Check the console lists the
+runs and reports you expect before removing the volume.
+
+#### ReadWriteMany storage (`pvc-rwx-patch.yaml`)
+
+Enabled by default, because it is what this overlay has always carried and an
+upgrade should not switch an installation's storage backend on its own. It
+requests `ReadWriteMany` and leaves the class name as
+`REPLACE-WITH-YOUR-RWX-STORAGE-CLASS`. Replace it with a class your cluster
+actually has — CephFS, AWS EFS, Azure Files, GCP Filestore, NFS, Portworx
+shared volumes. A wrong name binds to the wrong backend silently; an unknown
+one leaves the PVC `Pending` with a `storageclass not found` event, which is
+why it is not guessed here. `storageClassName` is immutable on an existing PVC,
+so this is a decision made at install time, not migrated into later.
+
+**With neither, this overlay cannot be applied.** There is no third path that
+keeps both the replicas and the artifacts.
 
 ### External Postgres
 
@@ -253,9 +297,13 @@ Naming these is the point of the page.
   ClickHouse cluster (Keeper, sharded or replicated tables) is out of scope
   here; nothing in this repository sets one up, and
   `base/clickhouse/init-local.sql` creates non-replicated tables.
-* **Artifacts still live on a shared filesystem.**
-  [#336](https://github.com/onixus/Shapoclyack/issues/336) — object storage — is
-  the fix; RWX is the workaround this overlay depends on.
+* **Artifacts on a shared filesystem are still the default here.** Object
+  storage ([#336](https://github.com/onixus/Shapoclyack/issues/336)) shipped and
+  is the better answer, but `pvc-rwx-patch.yaml` is what this overlay enables
+  out of the box — switching is a decision, not an upgrade. Note also that run
+  keys are flat (`runs/<run_id>`): per-tenant prefixes, which is what would let
+  a bucket policy enforce the isolation the API enforces in code, are
+  [#311](https://github.com/onixus/Shapoclyack/issues/311).
 * **Disaster recovery beyond Postgres is unproven.**
   [#333](https://github.com/onixus/Shapoclyack/issues/333) tracks a rehearsed
   restore of ClickHouse, artifacts and JetStream state. Only the Postgres drill

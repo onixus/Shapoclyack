@@ -1,0 +1,111 @@
+# Scan artifacts in object storage (#336) — the other way to satisfy this
+# overlay's hard prerequisite.
+#
+# `pvc-rwx-patch.yaml` is one answer to "two API pods cannot share a
+# ReadWriteOnce volume": give them a ReadWriteMany one. This is the other, and
+# the better one where object storage is available — there is no shared
+# filesystem at all, so there is no storage class to find, no multi-attach to
+# get right, and the artifacts outlive the cluster they were produced in.
+#
+# ENABLE EXACTLY ONE of the two. They are not additive:
+#
+#   * S3/MinIO reachable  -> list this patch in kustomization.yaml and leave
+#     `pvc-rwx-patch.yaml` out. The PVC stays ReadWriteOnce and is used only as
+#     the scan Job's scratch space, which is one pod at a time.
+#   * no object storage   -> keep `pvc-rwx-patch.yaml` and name an RWX class.
+#
+# Prerequisite: a Secret named `shapoclyack-artifacts` holding `bucket` and,
+# unless the pods carry an instance role or IRSA, `access_key_id` and
+# `secret_access_key`. See ../../examples/artifacts-s3.secret.example.yaml.
+# The keys match `shapoclyack-backup` on purpose: an installation that already
+# has somewhere to put a database dump does not learn a second vocabulary.
+#
+# Before the first apply, copy what is already on the volume into the bucket:
+#
+#   kubectl exec deploy/shapoclyack-api -- python3 scripts/migrate-artifacts.py
+#
+# It copies and deletes nothing, so it is safe to run twice and safe to run
+# while the API is serving. Check the console lists the runs you expect before
+# removing anything.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: OCTO_ARTIFACT_BACKEND
+              value: "s3"
+            - name: OCTO_ARTIFACT_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: bucket
+            - name: OCTO_ARTIFACT_S3_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: prefix
+                  optional: true
+            # Empty means AWS. An in-cluster MinIO is named here, e.g.
+            # http://minio.minio.svc.cluster.local:9000 — and note that such an
+            # endpoint is not reachable from an operator's browser at all, which
+            # is one reason presigned downloads stay off below.
+            - name: OCTO_ARTIFACT_S3_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: endpoint_url
+                  optional: true
+            - name: OCTO_ARTIFACT_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: region
+                  optional: true
+            # Optional, and best left unset on a cluster with an instance role
+            # or IRSA: boto3's own credential chain is the preferred shape, and
+            # a Secret that does not exist is one that cannot leak.
+            - name: OCTO_ARTIFACT_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: access_key_id
+                  optional: true
+            - name: OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-artifacts
+                  key: secret_access_key
+                  optional: true
+            # Most self-hosted gateways serve path-style; AWS prefers
+            # virtual-host. "auto" leaves the choice to boto3.
+            - name: OCTO_ARTIFACT_S3_ADDRESSING_STYLE
+              value: "auto"
+            # Off: the API streams every artifact itself, which always works.
+            # "true" answers a download with a redirect to a short-lived signed
+            # URL instead — faster, and only usable once the bucket sends CORS
+            # headers for the console's origin, since the console downloads
+            # through XHR and the redirect is cross-origin.
+            - name: OCTO_ARTIFACT_PRESIGN_ENABLED
+              value: "false"
+            # Node-local working copies of run directories. An emptyDir, below:
+            # this is a cache, and losing it costs a re-fetch and nothing else.
+            - name: OCTO_ARTIFACT_CACHE_DIR
+              value: "/app/scanner/cache/runs"
+            - name: OCTO_ARTIFACT_CACHE_MAX_MB
+              value: "4096"
+          volumeMounts:
+            - name: artifact-cache
+              mountPath: /app/scanner/cache
+      volumes:
+        - name: artifact-cache
+          emptyDir:
+            # Sized above OCTO_ARTIFACT_CACHE_MAX_MB with room to spare: the
+            # eviction sweep runs when a run is fetched, so the directory
+            # briefly holds the budget plus the run arriving. A pod that
+            # exceeds an emptyDir's sizeLimit is evicted.
+            sizeLimit: 6Gi

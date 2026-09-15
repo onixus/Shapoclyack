@@ -8,6 +8,14 @@ Every scan writes to:
 scanner/output/runs/<run_id>/
 ```
 
+That is where the scanner writes. Where the run *lives* afterwards depends on
+`OCTO_ARTIFACT_BACKEND` ([#336](https://github.com/onixus/Shapoclyack/issues/336)):
+`local` (the default) leaves it exactly there, and `s3` publishes it to object
+storage once the scan finishes, after which each API replica keeps a node-local
+working copy of the runs it is asked about. Everything below describes the run
+either way — the layout inside it is the same, and so are the paths the console
+and the API use to name its artifacts.
+
 The directory can contain:
 
 - run metadata and normalized summaries;
@@ -498,7 +506,7 @@ Retention must cover all stateful layers:
 
 | Layer | Retain/backup |
 |---|---|
-| Run filesystem/PVC | Raw artifacts, reports, checkpoints |
+| Artifact store (PVC or object storage) | Raw artifacts, reports, checkpoints |
 | PostgreSQL | Tenants, keys metadata, assets, schedules, overrides, endpoint inventory, risk snapshots, the append-only audit trail. `idempotency_records` is the one table that needs *no* retention decision — it self-expires in 24h, see below |
 | ClickHouse | Analytical vulnerability and port history |
 | NATS | Pending jobs and ingest messages |
@@ -528,13 +536,23 @@ ALTER TABLE shapoclyack.shapoclyack_controls MODIFY TTL timestamp + INTERVAL 180
 
 ### Scan run artifact retention (ROADMAP #187)
 
-Scan artifacts written to `output_dir/runs/<run_id>/` accumulate over time on persistent storage.
-An in-process retention worker runs every `OCTO_RUN_RETENTION_INTERVAL_SECONDS` (1h) and
-deletes expired run directories whose age exceeds `OCTO_RUN_RETENTION_DAYS` (30).
+Scan artifacts accumulate over time on whatever they are stored on. An
+in-process retention worker runs every `OCTO_RUN_RETENTION_INTERVAL_SECONDS`
+(1h) and deletes runs older than `OCTO_RUN_RETENTION_DAYS` (30) through the
+artifact store, so the same setting bounds a persistent volume and an
+object-storage bucket.
 
-- Age is determined from `run_meta.json` timestamps (`finished_at`, `started_at`) or directory mtime.
+- Age comes from `run_meta.json`'s own timestamps (`finished_at`, `started_at`,
+  `created_at`) where it has them — they say when the *scan* happened, whereas a
+  storage timestamp says when the bytes were last written, and a restored backup
+  would otherwise look like this morning's work. Failing that, when
+  `run_meta.json` itself was written; failing that, the newest object anywhere
+  in the run.
 - `0` days disables the reaper.
-- Safe across multiple API replicas (directory removal is idempotent and fail-soft).
+- Safe across multiple API replicas (removal is idempotent and fail-soft).
+- **Do not add a bucket lifecycle rule as well.** This worker knows which runs
+  the console still lists; a lifecycle policy does not, and the two would be two
+  retention policies in two places disagreeing about the same objects.
 
 ### Idempotency records (#346)
 

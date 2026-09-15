@@ -44,10 +44,12 @@ from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
+from api.services import artifact_store
 from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import audit as audit_service
 from api.services import config_override as config_override_service
+from api.services.artifact_store import workspace as artifact_workspace
 from api.services import job_states
 from api.services import maintenance
 from api.services import metrics as metrics_service
@@ -715,6 +717,47 @@ def job_inputs_dir(settings: Settings, job_id: str) -> Path:
     return settings.state_dir / "job_inputs" / job_id
 
 
+def publish_job_inputs(settings: Settings, job_id: str) -> None:
+    """Mirror a job's input files into the artifact store (#336).
+
+    They are written by the replica that accepted the scan and read by
+    whichever replica the agent happens to claim it from, which before object
+    storage was the same pod or a shared volume. On a remote backend it is
+    neither, so an unmirrored job is claimed with an empty ``inputs`` map: no
+    scan scope, no policy, no targets -- a scan that runs wider than the
+    tenant approved rather than one that fails.
+
+    Loud on failure for that reason, and a no-op on the local backend, where
+    the files were written in their final place.
+    """
+    if not artifact_store.is_remote(settings):
+        return
+    directory = job_inputs_dir(settings, job_id)
+    if not directory.is_dir():
+        return
+    artifact_store.get_store(settings).upload_tree(
+        artifact_store.keys.job_inputs_prefix(job_id), directory
+    )
+
+
+def ensure_job_inputs_local(settings: Settings, job_id: str) -> Path:
+    """Materialise a job's input files on this pod and answer the directory.
+
+    Fetched only when they are not already here: a job claimed twice, or
+    claimed on the replica that wrote it, pays nothing.
+    """
+    directory = job_inputs_dir(settings, job_id)
+    if directory.is_dir() or not artifact_store.is_remote(settings):
+        return directory
+    try:
+        artifact_store.get_store(settings).download_tree(
+            artifact_store.keys.job_inputs_prefix(job_id), directory
+        )
+    except artifact_store.ArtifactStoreError:
+        _log.warning("Could not fetch the input files for job %s", job_id, exc_info=True)
+    return directory
+
+
 def _discard_job_inputs(settings: Settings, job_id: str) -> None:
     """Drop a finished job's input directory (#258).
 
@@ -733,6 +776,16 @@ def _discard_job_inputs(settings: Settings, job_id: str) -> None:
     must not be reported as failed because its scratch directory would not
     unlink -- and idempotent, since the reaper may have swept it already.
     """
+    if artifact_store.is_remote(settings):
+        try:
+            artifact_store.get_store(settings).delete_prefix(
+                artifact_store.keys.job_inputs_prefix(job_id)
+            )
+        except artifact_store.ArtifactStoreError:
+            # Same best-effort contract as the local removal below: a finished
+            # scan must not be reported as failed because its scratch
+            # directory outlived it. The retention sweep collects it later.
+            _log.warning("Could not remove stored inputs for job %s", job_id, exc_info=True)
     try:
         shutil.rmtree(job_inputs_dir(settings, job_id), ignore_errors=False)
     except FileNotFoundError:
@@ -772,6 +825,13 @@ def _wordlist_overrides(
 
     dest = wordlist_file_for_job(settings, job_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Written to this pod's disk and deliberately NOT to the artifact store,
+    # unlike the job's other inputs (#336). Nothing else would ever read it:
+    # the only consumer is the scanner subprocess, started by ``start_scan`` in
+    # the same process that writes this file, and a job retried after a restart
+    # comes back through here and rewrites it. The list itself is a row in
+    # Postgres, which every replica already reads. A copy in the bucket would
+    # be storage nothing fetches and the retention worker then has to sweep.
     dest.write_text(resolved.content + "\n", encoding="utf-8")
     path = str(dest)
 
@@ -897,7 +957,7 @@ def _publish_asset_events_best_effort(
     try:
         asset_events.publish_run_events(
             nats_url=settings.nats_url,
-            run_dir=settings.output_dir / "runs" / run_id,
+            run_dir=artifact_workspace.run_dir(settings, run_id, refresh=False),
             tenant_id=tenant_id,
             run_id=run_id,
             job_id=job_id,
@@ -936,7 +996,7 @@ def _notify_channels_best_effort(
         channels_service.notify_run_complete_async(
             tenant_id=tenant_id,
             run_id=run_id,
-            run_dir=settings.output_dir / "runs" / run_id,
+            run_dir=artifact_workspace.run_dir(settings, run_id, refresh=False),
         )
     except Exception:  # noqa: BLE001 - a thread that would not start
         logging.exception(
@@ -976,7 +1036,9 @@ def _record_scope_denials_best_effort(
     """
     if not run_id:
         return
-    artifact = settings.output_dir / "runs" / run_id / scan_scope.DENIED_ARTIFACT
+    artifact = (
+        artifact_workspace.run_dir(settings, run_id, refresh=False) / scan_scope.DENIED_ARTIFACT
+    )
     try:
         report = json.loads(artifact.read_text(encoding="utf-8"))
         denied = [str(item) for item in (report.get("denied") or [])]
@@ -1204,6 +1266,19 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
             run_id=str(run_id) if run_id else None,
             requested_by=job.requested_by if job else "",
         )
+        if run_id:
+            # The scanner chose the run id and wrote the directory itself, so
+            # this is the first moment the run can be put in the artifact
+            # store (#336). Before the tagging below, and before the hooks:
+            # they all read the run back through the workspace.
+            try:
+                artifact_workspace.adopt_local_run(
+                    settings, str(run_id), settings.output_dir / "runs" / str(run_id)
+                )
+            except artifact_store.ArtifactStoreError:
+                logging.exception(
+                    "Could not publish run %s to the artifact store", run_id
+                )
         if status == job_states.SUCCEEDED:
             # Tag the run before the asset upsert: an untagged run reads back as
             # the default tenant, which would leak it to every tenant's run list.
@@ -1543,6 +1618,7 @@ def start_scan(
             scope=scope,
             policy=policy_snapshot,
         )
+        publish_job_inputs(settings, job_id)
         # Second barrier, deliberately redundant. start_scan is also reached
         # from schedule_dispatcher, which replays targets stored days ago and
         # never passed through the check above, and the approved scope may
@@ -1878,7 +1954,7 @@ def _publish_job_offer(settings: Settings, job_id: str) -> None:
 
 
 def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
-    inputs_dir = job_inputs_dir(settings, job_id)
+    inputs_dir = ensure_job_inputs_local(settings, job_id)
     if not inputs_dir.is_dir():
         return {}
     out: dict[str, str] = {}
@@ -1939,6 +2015,7 @@ def apply_policy_to_queued(
                 continue
             command = list(row.command or [])
             policy_path = _write_policy_input(job_inputs_dir(settings, row.job_id), merged)
+            publish_job_inputs(settings, row.job_id)
             if "--scan-policy" not in command:
                 command.extend(["--scan-policy", str(policy_path)])
             options["scan_policy"] = merged
@@ -2632,10 +2709,15 @@ def complete_job(
                     )
                 except results_ingest.IngestError as exc:
                     raise ValueError(str(exc)) from exc
-            dest = settings.output_dir / "runs" / str(resolved_run_id)
+            dest = artifact_workspace.scratch_run_dir(settings, str(resolved_run_id))
             try:
                 results_ingest.extract_run_archive(archive_bytes, dest)
                 results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
+                # Into the store before the marker is written, so the marker
+                # is never the only part of the run the other replicas can
+                # see. Not best-effort: an agent's results that stayed on one
+                # pod are results the installation does not have.
+                artifact_workspace.publish_run(settings, str(resolved_run_id))
                 runs_service.write_run_tenant(
                     settings,
                     str(resolved_run_id),
@@ -2645,6 +2727,8 @@ def complete_job(
                 )
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc
+            except artifact_store.ArtifactStoreError as exc:
+                raise ValueError(f"could not store run artifacts: {exc}") from exc
             _upsert_assets_best_effort(
                 settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
             )

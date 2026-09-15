@@ -198,10 +198,10 @@ def test_the_json_export_is_the_same_report_as_the_pdf(tmp_path, monkeypatch):
     report = client.post(
         "/api/reports/generate", headers=operator, json={"kind": "executive", "format": "json"}
     ).json()
-    path, _media, _name = store.resolve_report_file(
+    key, _media, _name = store.resolve_report_object(
         settings, report["report_id"], tenant_id=tenant_id
     )
-    body = json.loads(path.read_text(encoding="utf-8"))
+    body = json.loads(store.read_report_bytes(settings, key).decode("utf-8"))
     summary = client.get("/api/vulnerabilities/summary", headers=operator).json()
     assert body["kpis"]["open_total"] == summary["open_total"]
     assert body["kpis"]["breached"] == summary["breached"]
@@ -217,20 +217,20 @@ def test_compliance_report_carries_controls_and_executive_one_does_not(tmp_path,
         headers=operator,
         json={"kind": "compliance", "framework_id": "pci-dss-4.0", "format": "json"},
     ).json()
-    path, _media, _name = store.resolve_report_file(
+    key, _media, _name = store.resolve_report_object(
         settings, compliance["report_id"], tenant_id=tenant_id
     )
-    body = json.loads(path.read_text(encoding="utf-8"))
+    body = json.loads(store.read_report_bytes(settings, key).decode("utf-8"))
     assert body["compliance"][0]["framework_id"] == "pci-dss-4.0"
     assert body["compliance"][0]["controls"]
 
     executive = client.post(
         "/api/reports/generate", headers=operator, json={"kind": "executive", "format": "json"}
     ).json()
-    path, _media, _name = store.resolve_report_file(
+    key, _media, _name = store.resolve_report_object(
         settings, executive["report_id"], tenant_id=tenant_id
     )
-    exec_body = json.loads(path.read_text(encoding="utf-8"))
+    exec_body = json.loads(store.read_report_bytes(settings, key).decode("utf-8"))
     # Every framework's score, none of their control tables.
     assert len(exec_body["compliance"]) == 3
     assert all("controls" not in entry for entry in exec_body["compliance"])
@@ -246,7 +246,7 @@ def test_a_report_is_about_one_tenant_only(tmp_path, monkeypatch):
 
     # Same id, a different tenant asking: not found, not "here you go".
     assert store.get_report(settings, report["report_id"], tenant_id="other") is None
-    assert store.resolve_report_file(settings, report["report_id"], tenant_id="other") is None
+    assert store.resolve_report_object(settings, report["report_id"], tenant_id="other") is None
 
 
 def test_download_path_is_derived_not_read_from_the_row(tmp_path, monkeypatch):
@@ -272,11 +272,13 @@ def test_download_path_is_derived_not_read_from_the_row(tmp_path, monkeypatch):
         row.storage_path = "../../../etc/passwd"
         session.commit()
 
-    path, _media, _name = store.resolve_report_file(
+    key, _media, name = store.resolve_report_object(
         settings, report["report_id"], tenant_id=tenant_id
     )
-    assert path.name == f"{report['report_id']}.json"
-    assert store.reports_root(settings) in path.parents
+    assert name == f"{report['report_id']}.json"
+    # The key is rebuilt from the row's tenant and id, so the poisoned
+    # storage_path above reaches nothing: it is not consulted at all.
+    assert key == f"reports/{tenant_id}/{report['report_id']}.json"
 
 
 # ----------------------------------------------------------------- schedules
@@ -578,7 +580,8 @@ def test_a_relay_that_refuses_starttls_does_not_get_the_report(tmp_path, monkeyp
     entries = report_delivery.deliver(
         settings,
         report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
-        path=path,
+        payload=path.read_bytes(),
+        filename=path.name,
         recipients=[{"transport": "email", "target": "ciso@example.com"}],
     )
     assert entries[0]["status"] == "failed"
@@ -613,7 +616,8 @@ def test_starttls_gets_a_verifying_context(tmp_path, monkeypatch):
     entries = report_delivery.deliver(
         settings,
         report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
-        path=path,
+        payload=path.read_bytes(),
+        filename=path.name,
         recipients=[{"transport": "email", "target": "ciso@example.com"}],
     )
 
@@ -654,7 +658,8 @@ def test_smtp_verification_can_be_turned_off_deliberately(tmp_path, monkeypatch)
     report_delivery.deliver(
         settings,
         report={"report_id": "rpt_1", "title": "t", "format": "json", "generated_at": "now"},
-        path=path,
+        payload=path.read_bytes(),
+        filename=path.name,
         recipients=[{"transport": "email", "target": "ciso@example.com"}],
     )
 
@@ -672,7 +677,8 @@ def test_delivery_records_one_entry_per_recipient(tmp_path, monkeypatch):
     entries = report_delivery.deliver(
         settings,
         report=report,
-        path=path,
+        payload=path.read_bytes(),
+        filename=path.name,
         recipients=[
             {"transport": "email", "target": "ciso@example.com"},
             {"transport": "carrier-pigeon", "target": "roof"},
@@ -754,12 +760,12 @@ def test_retention_prunes_old_reports_and_their_files(tmp_path, monkeypatch):
     settings = make_settings(tmp_path, report_retention_days=30)
     _seed(tmp_path)
     report = store.generate(settings, tenant_id="default", fmt="json")
-    path, _media, _name = store.resolve_report_file(settings, report["report_id"])
+    key, _media, _name = store.resolve_report_object(settings, report["report_id"])
 
     assert store.prune_reports(settings)["deleted"] == 0
-    assert path.is_file()
+    assert store.read_report_bytes(settings, key) is not None
 
     result = store.prune_reports(settings, now=datetime.now(UTC) + timedelta(days=31))
     assert result["deleted"] == 1
-    assert not path.is_file()
+    assert store.read_report_bytes(settings, key) is None
     assert store.get_report(settings, report["report_id"]) is None

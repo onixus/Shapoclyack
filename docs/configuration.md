@@ -433,8 +433,8 @@ Core deployment variables:
 |---|---|
 | `OCTO_ENV` | `prod` (default) or `dev`. `prod` refuses to start on built-in defaults — see [above](#startup-safety-octo_env) |
 | `OCTO_CONFIG` | Scanner YAML path |
-| `OCTO_OUTPUT_DIR` | Per-run output root |
-| `OCTO_STATE_DIR` | Checkpoint and scheduler state |
+| `OCTO_OUTPUT_DIR` | Per-run output root. With `OCTO_ARTIFACT_BACKEND=local` (the default) this is where runs and reports live; with `s3` the scanner still writes here and the run is published from it |
+| `OCTO_STATE_DIR` | Checkpoint and scheduler state, materialised wordlists, and — on the local backend — job inputs |
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
 | `OCTO_JWT_ALGORITHM` | JWT signing algorithm. `HS256` is the only accepted value and the default; anything else **refuses startup** in every environment. It used to be read by `api/core/security.py` alone while `Settings` pinned `HS256` regardless, so setting it changed what half the codebase signed with and nothing that verified ([#312](https://github.com/onixus/Shapoclyack/issues/312)). Widening this is a key-management change (RS256/EdDSA needs key material, a `kid` and a rotation path), not a configuration one |
 | `OCTO_AGENT_JWT_SECRET` | Signing secret for **agent** JWTs, separate from `OCTO_JWT_SECRET` ([#312](https://github.com/onixus/Shapoclyack/issues/312)). Optional: when unset it is derived from `OCTO_JWT_SECRET` with HKDF-SHA256, so an upgrade needs no new variable and the two audiences still get different key material. Set it explicitly to rotate the fleet's tokens without invalidating console sessions, or to keep the key an agent host could leak away from the one that signs admin sessions. Must be identical across API replicas; changing it invalidates every agent token at once, and agents re-exchange their provisioning key within `OCTO_AGENT_JWT_EXPIRE_MINUTES` (immediately, if they meet a `401` before that) |
@@ -823,12 +823,45 @@ Software→CVE findings in the vulnerability lifecycle (Track E, M3 — see
 | `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` | `60` | How long one tick may spend draining, shared across tenants. Whatever is left is still due and is taken by the next tick. Raise it on a large estate; a tick that repeatedly logs `out of tick budget` is the signal |
 | `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` | *(unset)* | Severity floor for creating a tracked finding: `critical`, `high`, `medium` or `low`. Unset means no floor. Applies **on top of** the built-in rule that only a match with a published fix becomes a finding at all — raise it when the SLA dashboard is drowning in low-severity backports. Raising it does **not** close the findings that fall below the new floor: they stay open and stop being re-tracked, because a change to this variable is not a remediation anybody performed |
 
+Artifact storage ([#336](https://github.com/onixus/Shapoclyack/issues/336)):
+
+Scan artifacts — run directories, screenshots, generated reports, the input
+files a job hands its executor — go either on the filesystem this process can
+see, or in object storage. (Materialised wordlists do not: they are a scratch
+copy of a row the database already holds, read by a subprocess on the pod that
+wrote them.) The filesystem is the
+default and behaves exactly as every release before this one did. Object
+storage is what lets the API run more than one replica: artifacts on a
+ReadWriteOnce volume pin every pod that mounts it to one node
+([high-availability.md](high-availability.md)).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_ARTIFACT_BACKEND` | `local` | `local` (the filesystem under `OCTO_OUTPUT_DIR` / `OCTO_STATE_DIR`) or `s3`. Anything else **refuses startup** — an operator who asked for object storage and silently got a filesystem would find out when the second replica could not see the first one's runs |
+| `OCTO_ARTIFACT_S3_BUCKET` | *(unset)* | Bucket for artifacts. **Required** when the backend is `s3`; refuses startup in `prod` without it |
+| `OCTO_ARTIFACT_S3_PREFIX` | *(unset)* | Key prefix inside the bucket, so one bucket can hold several installations. Per-**tenant** prefixes are [#311](https://github.com/onixus/Shapoclyack/issues/311); this one is per installation |
+| `OCTO_ARTIFACT_S3_ENDPOINT_URL` | *(unset)* | Empty means AWS. MinIO, Ceph RGW and every other gateway are named here — the same variable shape as the Postgres backup CronJob's `S3_ENDPOINT_URL` |
+| `OCTO_ARTIFACT_S3_REGION` | *(unset)* | Passed to boto3 as `region_name` |
+| `OCTO_ARTIFACT_S3_ACCESS_KEY_ID` / `OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` | *(unset)* | Static credentials. Leave both unset on a cluster with an instance role or IRSA — boto3's own credential chain is the preferred shape, and a Secret that does not exist cannot leak |
+| `OCTO_ARTIFACT_S3_SESSION_TOKEN` | *(unset)* | For temporary credentials; only read when the two above are set |
+| `OCTO_ARTIFACT_S3_ADDRESSING_STYLE` | `auto` | `path` for most self-hosted gateways, `virtual` for AWS, `auto` to leave the choice to boto3 |
+| `OCTO_ARTIFACT_S3_VERIFY_TLS` | `true` | `false` skips certificate verification against the gateway. A deliberate downgrade for a lab MinIO with a self-signed certificate; prefer adding the CA |
+| `OCTO_ARTIFACT_PRESIGN_ENABLED` | `false` | Answer a download with a redirect to a short-lived signed URL instead of streaming the bytes through the API. Faster, and keeps large artifacts off the API's event loop — but it does not work until you have done something else, which is why it is off. The console downloads through XHR, so the redirect is a cross-origin request the browser blocks unless the **bucket sends CORS headers** for the console's origin; and an in-cluster MinIO is usually not reachable from a browser at all. Turn it on once the bucket's CORS configuration allows `GET` from the console origin |
+| `OCTO_ARTIFACT_PRESIGN_EXPIRES_SECONDS` | `900` | How long a signed URL lasts. It is a bearer token for one artifact, valid without a session, so this is clamped to 30 seconds .. 1 day |
+| `OCTO_ARTIFACT_CACHE_DIR` | `$OCTO_STATE_DIR/cache/runs` | Node-local working copies of run directories, on a remote backend. A cache and nothing else: losing it costs a re-fetch, never an artifact, so an `emptyDir` is the right volume |
+| `OCTO_ARTIFACT_CACHE_TTL_SECONDS` | `60` | How long a working copy is served without re-checking the store. Also how long a replica can disagree with it — a run published elsewhere appears in this pod's copy within the window. `0` re-checks every time |
+| `OCTO_ARTIFACT_CACHE_MAX_MB` | `2048` | Budget for the working-copy cache; the oldest copies are evicted past it, never the one being fetched. `0` disables eviction, which on an `emptyDir` means the pod eventually fills its node |
+
+Moving an existing installation into a bucket: `scripts/migrate-artifacts.py`
+copies what is on the volume under the same keys new artifacts get. It deletes
+nothing, skips what is already there, and is safe to re-run.
+
 Web screenshots (ROADMAP P4.4 / Phase 9.3):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_SCREENSHOT_RETENTION_ENABLED` | `true` | Run the in-process PNG reaper. Safe in every replica; deletes are idempotent |
-| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is unlinked. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
+| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is deleted, from the artifact store. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
 | `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Scan run artifact retention (ROADMAP #187):
@@ -836,7 +869,7 @@ Scan run artifact retention (ROADMAP #187):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
-| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which `output_dir/runs/<run_id>` directories are deleted. `0` disables the reaper |
+| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which a run is deleted — from the artifact store, so the same setting bounds a volume and a bucket. `0` disables the reaper. Do **not** add a bucket lifecycle rule as well: it would expire runs the console still lists |
 | `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Risk snapshot retention (#229):

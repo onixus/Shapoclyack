@@ -6,12 +6,16 @@ operator pressing "generate") and from the schedule dispatcher, and a single
 implementation is what makes the scheduled report identical to the one the
 operator previewed.
 
-Bytes go to ``output_dir/reports/<tenant>/<report_id>.<ext>`` and the row keeps
-a path *relative to* ``output_dir``. Relative because an absolute path stored
-in a row stops resolving the moment the deployment's volume layout changes, and
-because a path from the database that is later joined onto a directory is the
-classic traversal sink — ``resolve_report_file`` re-derives the path from the
-row's own id instead of trusting the stored string.
+Bytes go to the artifact store under ``reports/<tenant>/<report_id>.<ext>``
+(#336) and the row keeps that key in ``storage_path``. On the filesystem
+backend the key *is* the path relative to ``output_dir``, which is what the
+column has always held, so no row needed rewriting when object storage arrived.
+
+Relative, and re-derived: an absolute path stored in a row stops resolving the
+moment the deployment's volume layout changes, and a path from the database
+later joined onto a directory is the classic traversal sink —
+``resolve_report_object`` rebuilds the key from the row's own tenant and id
+instead of trusting the stored string.
 """
 
 from __future__ import annotations
@@ -20,14 +24,13 @@ import logging
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import workflow_events
+from api.services import artifact_store, workflow_events
 from api.services.compliance import frameworks as catalog
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
@@ -36,7 +39,11 @@ from scanner.scheduler import next_cron_time, parse_cron
 
 LOG = logging.getLogger("shapoclyack.reports")
 
-REPORTS_SUBDIR = "reports"
+#: The artifact family reports are keyed under. Named here as well as in
+#: ``artifact_store.keys`` because the two must agree: on the filesystem
+#: backend this is also the directory under ``OCTO_OUTPUT_DIR`` that every
+#: existing installation already has.
+REPORTS_SUBDIR = artifact_store.keys.REPORTS
 MAX_TEMPLATES_PER_TENANT = 50
 MAX_SCHEDULES_PER_TENANT = 20
 MAX_RECIPIENTS = 20
@@ -478,18 +485,15 @@ def _report_dict(row: models.GeneratedReport) -> dict[str, Any]:
     }
 
 
-def reports_root(settings: Settings) -> Path:
-    return Path(settings.output_dir) / REPORTS_SUBDIR
-
-
-def _report_path(settings: Settings, tenant_id: str, report_id: str, fmt: str) -> Path:
+def _report_key(settings: Settings, tenant_id: str, report_id: str, fmt: str) -> str:
     # Both components are platform-generated ids, but they are still checked:
-    # this is the one place a stored string becomes a filesystem path.
+    # this is the one place a stored string becomes a storage key -- and on the
+    # filesystem backend, a path.
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tenant_id):
         raise ReportError("tenant_id is not usable as a path component")
     if not re.fullmatch(r"rpt_[0-9a-f]{16}", report_id):
         raise ReportError("report_id is not a generated report id")
-    return reports_root(settings) / tenant_id / f"{report_id}.{_EXTENSIONS[fmt]}"
+    return artifact_store.keys.report_key(tenant_id, f"{report_id}.{_EXTENSIONS[fmt]}")
 
 
 def generate(
@@ -553,11 +557,12 @@ def generate(
             title=title,
         )
         payload = renderer.render(body, fmt)
-        target = _report_path(settings, tenant_id, report_id, fmt)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
+        key = _report_key(settings, tenant_id, report_id, fmt)
+        artifact_store.get_store(settings).put_bytes(
+            key, payload, content_type=renderer.MEDIA_TYPES[fmt]
+        )
         size = len(payload)
-        storage_path = str(target.relative_to(Path(settings.output_dir)))
+        storage_path = key
         row.title = row.title or str(body.get("title") or "")
     except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
         LOG.exception("Report generation failed for tenant %s", tenant_id)
@@ -624,26 +629,46 @@ def get_report(
         return _report_dict(row) if row else None
 
 
-def resolve_report_file(
+def resolve_report_object(
     settings: Settings, report_id: str, *, tenant_id: str | None = None
-) -> tuple[Path, str, str] | None:
-    """``(path, media_type, filename)`` for a ready report, or ``None``.
+) -> tuple[str, str, str] | None:
+    """``(key, media_type, filename)`` for a ready report, or ``None``.
 
-    The path is recomputed from the row's tenant, id and format rather than
-    read from ``storage_path``: the stored string is bookkeeping, and a value
-    from the database joined onto a directory is how a path traversal reaches
-    a file server."""
+    The key is recomputed from the row's tenant, id and format rather than read
+    from ``storage_path``: the stored string is bookkeeping, and a value from
+    the database joined onto a directory is how a path traversal reaches a file
+    server.
+
+    ``None`` covers three cases the caller turns into the same 404 -- no such
+    report, a report belonging to another tenant, and a row whose bytes are not
+    in the store. The third is not hypothetical: a ``ready`` row whose object
+    was swept by retention, or written by a replica that had a different
+    backend configured, is exactly what a download must not 500 on.
+    """
 
     row = get_report(settings, report_id, tenant_id=tenant_id)
     if row is None or row["status"] != "ready":
         return None
     try:
-        path = _report_path(settings, row["tenant_id"], row["report_id"], row["format"])
+        key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
     except ReportError:
         return None
-    if not path.is_file():
+    if not artifact_store.get_store(settings).exists(key):
         return None
-    return path, renderer.MEDIA_TYPES[row["format"]], path.name
+    return key, renderer.MEDIA_TYPES[row["format"]], key.rsplit("/", 1)[-1]
+
+
+def read_report_bytes(settings: Settings, key: str) -> bytes | None:
+    """The whole report, or ``None`` when it is not in the store.
+
+    Whole rather than streamed because the one caller is delivery, which
+    attaches the report to an email or posts it to a webhook: both need the
+    bytes in hand. Downloads stream instead.
+    """
+    try:
+        return artifact_store.get_store(settings).get_bytes(key)
+    except artifact_store.ArtifactNotFound:
+        return None
 
 
 def delete_report(
@@ -653,10 +678,13 @@ def delete_report(
     if row is None:
         return False
     try:
-        path = _report_path(settings, row["tenant_id"], row["report_id"], row["format"])
-        path.unlink(missing_ok=True)
-    except ReportError:
-        pass
+        key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
+        artifact_store.get_store(settings).delete(key)
+    except (ReportError, artifact_store.ArtifactStoreError):
+        # The row goes either way. A report whose bytes could not be removed is
+        # a leak worth logging, but leaving the row would offer the operator a
+        # download of something they asked to be gone.
+        LOG.warning("Could not remove the stored object for report %s", report_id, exc_info=True)
     with get_session(settings.postgres_url) as session:
         db_row = session.execute(
             select(models.GeneratedReport).where(models.GeneratedReport.report_id == report_id)
@@ -698,9 +726,9 @@ def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[st
         ).scalars().all()
         for row in rows:
             try:
-                path = _report_path(settings, row.tenant_id, row.report_id, row.fmt)
-                path.unlink(missing_ok=True)
-            except (ReportError, OSError):
+                key = _report_key(settings, row.tenant_id, row.report_id, row.fmt)
+                artifact_store.get_store(settings).delete(key)
+            except (ReportError, OSError, artifact_store.ArtifactStoreError):
                 errors += 1
             session.delete(row)
             deleted += 1

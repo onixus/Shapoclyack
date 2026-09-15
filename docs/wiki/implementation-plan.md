@@ -35,7 +35,7 @@ gantt
 ### Задачи этапа:
 1. **Выбор архитектуры развертывания:**
    * **Вариант А (PoC / Тестовый стенд):** локальный кластер kind через `scripts/dev-up.sh` (`k8s/kind-config.yaml`; Docker Compose из репозитория удален, kind его заменил). Ориентир по ресурсам: 4 vCPU, 8 GB RAM, 50 GB SSD.
-   * **Вариант Б (Production):** кластер Kubernetes, оверлей `k8s/shapoclyack/overlays/prod`. Что он разворачивает сегодня: FastAPI Control Plane **в одной реплике** (`overlays/prod/api-replicas-patch.yaml`), PostgreSQL и артефакты на PVC. NATS и ClickHouse в этом оверлее **выключены** пустыми `OCTO_NATS_URL` / `OCTO_CLICKHOUSE_URL` (`base/api-deployment.yaml:100-105`) — включаются вручную, значениями из комментариев рядом. Отказоустойчивый профиль (несколько реплик API, HA-Postgres, кластер NATS) — [#335](https://github.com/onixus/Shapoclyack/issues/335); RWX/S3 под артефакты — [#336](https://github.com/onixus/Shapoclyack/issues/336).
+   * **Вариант Б (Production):** кластер Kubernetes, оверлей `k8s/shapoclyack/overlays/prod`. Что он разворачивает сегодня: FastAPI Control Plane **в одной реплике** (`overlays/prod/api-replicas-patch.yaml`), PostgreSQL и артефакты на PVC. NATS и ClickHouse в этом оверлее **выключены** пустыми `OCTO_NATS_URL` / `OCTO_CLICKHOUSE_URL` (`base/api-deployment.yaml:100-105`) — включаются вручную, значениями из комментариев рядом. Отказоустойчивый профиль (несколько реплик API, HA-Postgres, кластер NATS) — [#335](https://github.com/onixus/Shapoclyack/issues/335). Объектное хранилище под артефакты сделано ([#336](https://github.com/onixus/Shapoclyack/issues/336)): `OCTO_ARTIFACT_BACKEND=s3`, включается в `overlays/prod-ha` патчем `artifacts-s3-patch.yaml`.
 2. **Настройка базовой безопасности и аутентификации:**
    * Генерация криптографических секретов (JWT secret, мастер-ключи шифрования) согласно `k8s/shapoclyack/examples/api-secrets.example.yaml`;
    * Подключение корпоративного OIDC SSO (Keycloak, Okta, Microsoft Entra ID, ADFS);
@@ -45,7 +45,7 @@ gantt
    * Внесение и юридическое утверждение администратором скоупа внешних IP-адресов и доменов (`scope_approval`). Без явного утверждения платформа блокирует любые сетевые воздействия.
 
 > **🎯 Контрольная точка M1 (Конец 3-й недели):**  
-> Кластер развернут и доступен по HTTPS (Ingress с `spec.tls`, см. `k8s/shapoclyack/examples/ingress.example.yaml`). Инженеры авторизуются через единый SSO. Выполнен первый валидационный скан внешнего периметра, артефакты прогона сохранены на PVC (объектное хранилище — [#336](https://github.com/onixus/Shapoclyack/issues/336)); если ClickHouse был включен вручную, аналитический срез виден и в нем.
+> Кластер развернут и доступен по HTTPS (Ingress с `spec.tls`, см. `k8s/shapoclyack/examples/ingress.example.yaml`). Инженеры авторизуются через единый SSO. Выполнен первый валидационный скан внешнего периметра, артефакты прогона сохранены на PVC или в бакете ([#336](https://github.com/onixus/Shapoclyack/issues/336)); если ClickHouse был включен вручную, аналитический срез виден и в нем.
 
 ---
 

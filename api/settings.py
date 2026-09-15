@@ -495,6 +495,51 @@ class Settings:
     risk_snapshot_retention_days: int = 90
     risk_snapshot_retention_interval_seconds: int = 21600
 
+    # Where scan artifacts live (#336). "local" is the filesystem this process
+    # can see -- the behaviour every release before this one had, and still the
+    # default. "s3" is object storage, and is what lets the API run more than
+    # one replica: artifacts on a ReadWriteOnce volume pin every pod that
+    # mounts it to one node, so the shared filesystem, not the code, is what
+    # caps the API at a single instance (#335).
+    artifact_backend: str = "local"
+    artifact_s3_bucket: str = ""
+    # Key prefix inside the bucket, so one bucket can hold several
+    # installations. Per-*tenant* prefixes are #311, which moves run keys to
+    # runs/{tenant}/{run_id}; this one is per installation.
+    artifact_s3_prefix: str = ""
+    # Empty means AWS. MinIO, Ceph RGW and every other gateway are named here,
+    # matching the Postgres backup CronJob's S3_ENDPOINT_URL.
+    artifact_s3_endpoint_url: str = ""
+    artifact_s3_region: str = ""
+    # Left empty on a cluster with an instance role or IRSA -- boto3's own
+    # credential chain is the preferred shape and the reason these are not
+    # required.
+    artifact_s3_access_key_id: str = ""
+    artifact_s3_secret_access_key: str = ""
+    artifact_s3_session_token: str = ""
+    # "auto" leaves boto3 to choose; "path" is what most self-hosted gateways
+    # need, "virtual" is AWS's.
+    artifact_s3_addressing_style: str = "auto"
+    artifact_s3_verify_tls: bool = True
+    # Answer a download with a redirect to object storage instead of streaming
+    # the bytes through the API. Faster, and takes large artifacts off the API's
+    # event loop -- but OFF by default, because it does not work until the
+    # operator has done something else. The console downloads through XHR, so a
+    # redirect to the bucket is a cross-origin request the browser will block
+    # unless the bucket sends CORS headers for the console's origin; and an
+    # in-cluster MinIO is usually not reachable from the browser at all. It is
+    # also a URL that is valid without a session for as long as it lasts, hence
+    # the short expiry. Streaming always works, so it is what an installation
+    # gets until it asks for the other thing.
+    artifact_presign_enabled: bool = False
+    artifact_presign_expires_seconds: int = 900
+    # Node-local working copies of run directories on a remote backend. Empty
+    # means state_dir/cache/runs. This is a cache and nothing else: losing it
+    # costs a re-fetch, never an artifact.
+    artifact_cache_dir: str = ""
+    artifact_cache_ttl_seconds: int = 60
+    artifact_cache_max_mb: int = 2048
+
     # OpenTelemetry (ROADMAP P3). Empty = no TracerProvider, no export.
     # The value is the OTLP HTTP traces URL, e.g. http://otel-collector:4318/v1/traces
     otel_exporter_otlp_endpoint: str = ""
@@ -1096,6 +1141,18 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    Include the scheme, e.g. https://shapoclyack.example.com"
         )
 
+    # Object storage that is asked for but not named (#336). The store would
+    # raise on its first use instead — which is the end of a scan, after the
+    # work is done and with the run on a pod's disk where no other replica can
+    # see it. Refusing at startup keeps the failure where an operator is
+    # looking.
+    if settings.artifact_backend == "s3" and not settings.artifact_s3_bucket:
+        problems.append(
+            "OCTO_ARTIFACT_BACKEND=s3 without OCTO_ARTIFACT_S3_BUCKET.\n"
+            "    Name the bucket scan artifacts go to, or set\n"
+            "    OCTO_ARTIFACT_BACKEND=local to keep them on the volume."
+        )
+
     # Each of these is a credential printed in k8s/shapoclyack/base — an install
     # that overrode the JWT secret and stopped there used to start silently.
     for variable in _shipped_data_plane_secrets(settings):
@@ -1440,6 +1497,38 @@ def load_settings() -> Settings:
         ),
         risk_snapshot_retention_interval_seconds=max(
             60, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS", "21600"))
+        ),
+        artifact_backend=os.environ.get("OCTO_ARTIFACT_BACKEND", "local").strip().lower()
+        or "local",
+        artifact_s3_bucket=os.environ.get("OCTO_ARTIFACT_S3_BUCKET", "").strip(),
+        artifact_s3_prefix=os.environ.get("OCTO_ARTIFACT_S3_PREFIX", "").strip().strip("/"),
+        artifact_s3_endpoint_url=os.environ.get("OCTO_ARTIFACT_S3_ENDPOINT_URL", "").strip(),
+        artifact_s3_region=os.environ.get("OCTO_ARTIFACT_S3_REGION", "").strip(),
+        artifact_s3_access_key_id=os.environ.get("OCTO_ARTIFACT_S3_ACCESS_KEY_ID", "").strip(),
+        artifact_s3_secret_access_key=os.environ.get(
+            "OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY", ""
+        ).strip(),
+        artifact_s3_session_token=os.environ.get("OCTO_ARTIFACT_S3_SESSION_TOKEN", "").strip(),
+        artifact_s3_addressing_style=os.environ.get(
+            "OCTO_ARTIFACT_S3_ADDRESSING_STYLE", "auto"
+        ).strip().lower()
+        or "auto",
+        artifact_s3_verify_tls=os.environ.get("OCTO_ARTIFACT_S3_VERIFY_TLS", "true").lower()
+        in {"1", "true", "yes"},
+        artifact_presign_enabled=os.environ.get("OCTO_ARTIFACT_PRESIGN_ENABLED", "false").lower()
+        in {"1", "true", "yes"},
+        # Clamped to a day: a presigned URL is a bearer token for one artifact,
+        # and an operator who types 8640000 has written a link that outlives the
+        # session that produced it by a hundred days.
+        artifact_presign_expires_seconds=min(
+            86400, max(30, int(os.environ.get("OCTO_ARTIFACT_PRESIGN_EXPIRES_SECONDS", "900")))
+        ),
+        artifact_cache_dir=os.environ.get("OCTO_ARTIFACT_CACHE_DIR", "").strip(),
+        artifact_cache_ttl_seconds=max(
+            0, int(os.environ.get("OCTO_ARTIFACT_CACHE_TTL_SECONDS", "60"))
+        ),
+        artifact_cache_max_mb=max(
+            0, int(os.environ.get("OCTO_ARTIFACT_CACHE_MAX_MB", "2048"))
         ),
 
         otel_exporter_otlp_endpoint=os.environ.get("OCTO_OTEL_EXPORTER_OTLP_ENDPOINT", "").strip(),

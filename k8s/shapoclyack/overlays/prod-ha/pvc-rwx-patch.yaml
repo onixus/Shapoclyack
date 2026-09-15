@@ -10,10 +10,12 @@
 #
 #   * an RWX-capable StorageClass — CephFS, Azure Files, AWS EFS, GCP
 #     Filestore, NFS, Portworx shared volumes — named below; or
-#   * #336, which moves artifacts to object storage and removes the shared
-#     filesystem from the picture entirely. Until #336 lands, an installation
-#     without RWX storage CANNOT run this overlay. There is no third option
-#     that keeps both the replicas and the artifacts.
+#   * object storage (#336, shipped): `artifacts-s3-patch.yaml` in this
+#     directory removes the shared filesystem from the picture entirely, and is
+#     the better answer where S3 or MinIO is available. Enable that patch
+#     INSTEAD of this one — they are alternatives, not layers.
+#
+# There is no third option that keeps both the replicas and the artifacts.
 #
 # `accessModes` and `storageClassName` are immutable on a claim that already
 # exists, so this patch does not upgrade an installation in place: it applies

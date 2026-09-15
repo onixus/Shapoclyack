@@ -1,11 +1,13 @@
 """Delete aged scan run artifact directories and job inputs (ROADMAP #187, #258).
 
-Scan outputs written to ``output_dir/runs/<run_id>/`` accumulate over time and
-can consume significant disk space on persistent volumes. This worker walks
-``output_dir/runs/*`` and deletes any run directory older than
-``run_retention_days``.
+Scan outputs accumulate over time and consume whatever they are stored on.
+This worker walks the artifact store's ``runs/`` prefix and deletes any run
+older than ``run_retention_days`` -- through the store (#336), so the same
+sweep bounds a persistent volume and an object-storage bucket. Nothing else
+prunes the bucket: a lifecycle rule would be a second retention policy, in a
+second place, with no idea which runs an operator is still looking at.
 
-It also sweeps ``state_dir/job_inputs/<job_id>/`` on the same cutoff (#258).
+It also sweeps ``job_inputs/<job_id>/`` on the same cutoff (#258).
 Those are removed by the job completion paths; what reaches the reaper is what
 never completed, plus whatever an installation accumulated before that cleanup
 existed.
@@ -22,9 +24,10 @@ import logging
 import shutil
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
+from api.services import artifact_store
+from api.services.artifact_store import workspace
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.run-retention")
@@ -36,28 +39,22 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _parse_timestamp(meta_path: Path) -> float | None:
-    if not meta_path.is_file():
+def _timestamp_from_meta(data: Any) -> float | None:
+    """Epoch seconds from a parsed ``run_meta.json``, or ``None``."""
+    if not isinstance(data, dict):
         return None
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            for field in ("finished_at", "started_at", "created_at"):
-                val = data.get(field)
-                if isinstance(val, str) and val.strip():
-                    try:
-                        cleaned = val.strip().replace("Z", "+00:00")
-                        dt = datetime.fromisoformat(cleaned)
-                        return dt.timestamp()
-                    except (ValueError, TypeError):
-                        pass
-    except Exception:  # noqa: BLE001
-        pass
+    for field in ("finished_at", "started_at", "created_at"):
+        val = data.get(field)
+        if isinstance(val, str) and val.strip():
+            try:
+                return datetime.fromisoformat(val.strip().replace("Z", "+00:00")).timestamp()
+            except (ValueError, TypeError):
+                continue
     return None
 
 
 def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
-    """Delete aged ``state_dir/job_inputs/<job_id>/`` directories (#258).
+    """Delete aged ``job_inputs/<job_id>/`` subtrees (#258).
 
     The completion paths in ``api.services.jobs`` remove these when a job
     finishes, so what is left here is what never finished cleanly: a job
@@ -69,30 +66,52 @@ def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
     retention is disabled.
     """
     deleted = errors = kept = 0
-    root = settings.state_dir / "job_inputs"
-    if not root.is_dir():
-        return {"deleted": 0, "errors": 0, "kept": 0}
+    store = artifact_store.get_store(settings)
+    try:
+        job_ids = list(store.list_children(artifact_store.keys.JOB_INPUTS))
+    except artifact_store.ArtifactStoreError:
+        LOG.warning("Run retention: could not list job inputs", exc_info=True)
+        return {"deleted": 0, "errors": 1, "kept": 0}
 
-    for job_dir in root.iterdir():
-        if not job_dir.is_dir():
-            continue
+    for job_id in job_ids:
+        prefix = artifact_store.keys.job_inputs_prefix(job_id)
         try:
-            if job_dir.stat().st_mtime > cutoff:
+            newest = _prefix_modified(store, prefix)
+            if newest is None:
+                # Listed a moment ago and empty now: another replica swept it
+                # between the two calls, which is the outcome either way.
+                deleted += 1
+                continue
+            if newest > cutoff:
                 kept += 1
                 continue
-            shutil.rmtree(job_dir, ignore_errors=False)
+            store.delete_prefix(prefix)
+            # The pod that wrote them keeps a copy for the local runner; it
+            # goes with the stored one so the two cannot disagree about what
+            # an unfinished job still has.
+            shutil.rmtree(settings.state_dir / "job_inputs" / job_id, ignore_errors=True)
             deleted += 1
-            LOG.info("Run retention: deleted orphaned job input directory %s", job_dir.name)
-        except FileNotFoundError:
-            # Another replica swept it, or the job finished between the walk
-            # and the remove. Either way it is gone, which is the goal.
-            deleted += 1
-        except OSError:
+            LOG.info("Run retention: deleted orphaned job input directory %s", job_id)
+        except (artifact_store.ArtifactStoreError, OSError):
             errors += 1
             LOG.warning(
-                "Run retention: could not remove job input directory %s", job_dir, exc_info=True
+                "Run retention: could not remove job input directory %s", job_id, exc_info=True
             )
     return {"deleted": deleted, "errors": errors, "kept": kept}
+
+
+def _prefix_modified(store: artifact_store.ArtifactStore, prefix: str) -> float | None:
+    """Newest modification time under ``prefix``, or ``None`` when it is empty.
+
+    Newest rather than oldest: a subtree is as young as its most recent write,
+    and ageing one out on its *first* file would delete a job whose inputs were
+    added to an hour ago.
+    """
+    newest: float | None = None
+    for entry in store.list_prefix(prefix):
+        if newest is None or entry.modified > newest:
+            newest = entry.modified
+    return newest
 
 
 def _stats(
@@ -130,41 +149,63 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
 
     cutoff = now.timestamp() - days * 86400.0
     deleted = errors = kept = 0
-    runs_root = settings.output_dir / "runs"
+    store = artifact_store.get_store(settings)
 
-    if not runs_root.is_dir():
-        return _stats(inputs=_sweep_job_inputs(settings, cutoff))
-
-    for run_dir in runs_root.iterdir():
-        if not run_dir.is_dir():
-            continue
-
+    for run_id in workspace.run_ids(settings):
         try:
-            meta = run_dir / "run_meta.json"
-            meta_ts = _parse_timestamp(meta)
-
-            if meta_ts is not None:
-                age_base = meta_ts
-            elif meta.is_file():
-                age_base = meta.stat().st_mtime
-            else:
-                age_base = run_dir.stat().st_mtime
-
+            age_base = _run_age(store, run_id)
+            if age_base is None:
+                # Gone between the listing and now.
+                deleted += 1
+                continue
             if age_base > cutoff:
                 kept += 1
                 continue
-
-            shutil.rmtree(run_dir, ignore_errors=False)
+            workspace.delete_run(settings, run_id)
+            workspace.forget_run_marker(run_id)
             deleted += 1
-            LOG.info("Run retention: deleted expired run directory %s", run_dir.name)
-        except OSError:
+            LOG.info("Run retention: deleted expired run %s", run_id)
+        except (artifact_store.ArtifactStoreError, OSError):
             errors += 1
-            LOG.warning("Run retention: could not remove run directory %s", run_dir, exc_info=True)
+            LOG.warning("Run retention: could not remove run %s", run_id, exc_info=True)
         except Exception:  # noqa: BLE001
             errors += 1
-            LOG.exception("Run retention: unexpected error removing %s", run_dir)
+            LOG.exception("Run retention: unexpected error removing %s", run_id)
 
     return _stats((deleted, errors, kept), _sweep_job_inputs(settings, cutoff))
+
+
+def _run_age(store: artifact_store.ArtifactStore, run_id: str) -> float | None:
+    """When this run last mattered, in epoch seconds, or ``None`` if it is gone.
+
+    Three answers, in the order they deserve to be believed:
+
+    1. ``run_meta.json``'s own timestamps, because they say when the *scan*
+       happened. Storage timestamps say when the bytes were last written, and a
+       restored backup or a re-uploaded archive would make a year-old run look
+       like this morning's.
+    2. Failing that, when ``run_meta.json`` was written -- it is the last file a
+       run produces, so its age is the run's age even when its contents carry
+       no timestamp (an older scanner, a CLI run).
+    3. Failing that, the newest object anywhere in the run. Newest rather than
+       oldest: a run is as young as its most recent write, and ageing one out on
+       its first file would delete a scan still being added to.
+    """
+    meta_key = artifact_store.keys.run_artifact(run_id, "run_meta.json")
+    try:
+        meta = json.loads(store.get_bytes(meta_key).decode("utf-8"))
+    except artifact_store.ArtifactNotFound:
+        meta = None
+    except (artifact_store.ArtifactStoreError, UnicodeDecodeError, json.JSONDecodeError):
+        meta = None
+    stamp = _timestamp_from_meta(meta)
+    if stamp is not None:
+        return stamp
+    if meta is not None:
+        entry = store.stat(meta_key)
+        if entry is not None:
+            return entry.modified
+    return _prefix_modified(store, artifact_store.keys.run_prefix(run_id))
 
 
 class RunRetentionWorker:

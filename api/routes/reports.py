@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.routes import _artifact_download as artifact_download
 from api.routes._audit import AuditDep
 from api.schemas import (
     GeneratedReportInfo,
@@ -275,12 +275,12 @@ def download_report(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
     settings: SettingsDep,
     audit: AuditDep,
-) -> FileResponse:
+) -> Response:
     """Hand over the file. Recorded: a report is the tenant's findings leaving it."""
-    resolved = store.resolve_report_file(settings, report_id, tenant_id=principal.tenant_id)
+    resolved = store.resolve_report_object(settings, report_id, tenant_id=principal.tenant_id)
     if resolved is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-    path, media_type, filename = resolved
+    key, media_type, filename = resolved
     # The only audited act here that is not a database write, so it gets its own
     # transaction: there is none to join, and a read cannot roll back (#327).
     # Recorded after the 404 above, so a probe for an id in another tenant does
@@ -293,7 +293,9 @@ def download_report(
         tenant_id=principal.tenant_id,
         after={"filename": filename, "media_type": media_type},
     )
-    return FileResponse(path, media_type=media_type, filename=filename)
+    return artifact_download.respond(
+        settings, key, media_type=media_type, filename=filename
+    )
 
 
 @router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
