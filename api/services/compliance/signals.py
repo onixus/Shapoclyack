@@ -21,16 +21,24 @@ Classification reads the denormalised fields on ``vulnerabilities`` — title,
 ``script_id``, ``port``, ``cve``, ``in_kev``, ``network_exposure`` — and never
 the run artifacts: a control's status must not change because a run directory
 was pruned.
+
+Two readings are handed in rather than computed here, because both need a
+clock: the tenant's own SLA verdict (``sla_reading``) and whether the finding
+has outlived the remediation window the Russian regulator publishes
+(``fstec_overdue``, see :func:`fstec_window_exceeded`). A classifier that read
+the clock could not be tested against a fixed estate.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 # The closed vocabulary. Framework catalogues may only reference these.
 UNPATCHED_CVE = "unpatched_cve"
 OVERDUE_REMEDIATION = "overdue_remediation"
+OVERDUE_FSTEC_WINDOW = "overdue_fstec_window"
 KNOWN_EXPLOITED = "known_exploited"
 INTERNET_EXPOSED = "internet_exposed_finding"
 WEAK_CRYPTOGRAPHY = "weak_cryptography"
@@ -47,6 +55,7 @@ UNASSESSABLE_SOFTWARE = "unassessable_software"
 SIGNALS: tuple[str, ...] = (
     UNPATCHED_CVE,
     OVERDUE_REMEDIATION,
+    OVERDUE_FSTEC_WINDOW,
     KNOWN_EXPLOITED,
     INTERNET_EXPOSED,
     WEAK_CRYPTOGRAPHY,
@@ -64,6 +73,7 @@ SIGNALS: tuple[str, ...] = (
 SIGNAL_LABELS: dict[str, str] = {
     UNPATCHED_CVE: "Unpatched known vulnerability",
     OVERDUE_REMEDIATION: "Remediation past its SLA deadline",
+    OVERDUE_FSTEC_WINDOW: "Open past the FSTEC remediation window for its severity",
     KNOWN_EXPLOITED: "Known-exploited vulnerability (CISA KEV)",
     INTERNET_EXPOSED: "Finding on an internet-facing service",
     WEAK_CRYPTOGRAPHY: "Weak or outdated cryptography",
@@ -170,6 +180,50 @@ _ADMIN_PORTS = {
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
+#: The remediation windows FSTEC of Russia publishes in its vulnerability-
+#: management guidance (Руководство по организации процесса управления
+#: уязвимостями в органе (организации), 17 May 2023): critical within 24
+#: hours, high within 7 days, medium within 4 weeks, low within 4 months,
+#: counted from the moment the vulnerability was identified in the system.
+#: These are the regulator's figures and not the tenant's SLA — a tenant may
+#: set itself a laxer policy, and the Russian catalogues are written about
+#: this clock, not that one. ``unknown`` has no window: the guidance's levels
+#: are assigned by its own criticality method, and a finding this platform
+#: could not grade is not evidence of a missed deadline.
+FSTEC_WINDOW_DAYS: dict[str, int] = {
+    "critical": 1,
+    "high": 7,
+    "medium": 28,
+    "low": 120,
+}
+
+
+def fstec_window_exceeded(
+    severity: str | None, started_at: datetime | None, *, now: datetime
+) -> bool:
+    """Whether an open finding has outlived its FSTEC remediation window.
+
+    ``started_at`` is the finding's ``sla_started_at`` — first discovery, or
+    the re-observation that reopened it — which is the closest thing the
+    platform has to "the moment the vulnerability was identified". The
+    platform's CVSS-derived severity stands in for the guidance's own
+    criticality level; the catalogues that use this signal say so.
+    """
+
+    days = FSTEC_WINDOW_DAYS.get(str(severity or ""))
+    if days is None or started_at is None:
+        return False
+    # The vulnerability module keeps its clocks naive-UTC; a caller handing in
+    # an aware datetime on either side gets the same comparison, not a
+    # TypeError on the first finding with a window.
+    return _naive_utc(started_at) + timedelta(days=days) <= _naive_utc(now)
+
+
+def _naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
 
 def _haystack(finding: dict[str, Any]) -> str:
     parts = (finding.get("title") or "", finding.get("script_id") or "")
@@ -182,13 +236,19 @@ def _port(finding: dict[str, Any]) -> str:
     return raw.split("/", 1)[0]
 
 
-def classify_finding(finding: dict[str, Any], *, sla_reading: str | None = None) -> set[str]:
+def classify_finding(
+    finding: dict[str, Any],
+    *,
+    sla_reading: str | None = None,
+    fstec_overdue: bool = False,
+) -> set[str]:
     """Signals raised by one tracked finding.
 
-    ``sla_reading`` is ``api.services.vulnerabilities.sla_state``'s verdict. It
-    is passed in rather than recomputed here because the deadline comparison
-    needs a clock, and a classifier that reads the clock cannot be tested
-    against a fixed estate.
+    ``sla_reading`` is ``api.services.vulnerabilities.sla_state``'s verdict and
+    ``fstec_overdue`` is :func:`fstec_window_exceeded`'s. Both are passed in
+    rather than recomputed here because the deadline comparisons need a clock,
+    and a classifier that reads the clock cannot be tested against a fixed
+    estate.
     """
 
     signals: set[str] = set()
@@ -199,6 +259,8 @@ def classify_finding(finding: dict[str, Any], *, sla_reading: str | None = None)
         signals.add(KNOWN_EXPLOITED)
     if sla_reading == "breached":
         signals.add(OVERDUE_REMEDIATION)
+    if fstec_overdue:
+        signals.add(OVERDUE_FSTEC_WINDOW)
     if str(finding.get("network_exposure") or "") == "external":
         signals.add(INTERNET_EXPOSED)
 

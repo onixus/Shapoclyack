@@ -41,7 +41,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/runs` | Tenant-scoped run history, filterable by surface (`?surface=external|internal|mixed|unknown`) | Viewer |
 | `/runs/view?runId=…` | Findings, entities, diff, artifacts, contextual score and risk explanation; operator-only Screenshots tab | Viewer; operator for screenshots |
 | `/reports` | Report and artifact discovery, plus the report factory panel (branding, templates, schedules, on-demand generation) | Viewer; operator to generate, admin for branding and delivery schedules |
-| `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 control status for the selected tenant, with per-control evidence | Viewer |
+| `/compliance` | PCI DSS 4.0 / CIS v8 / ISO 27001 / ФСТЭК № 117, 21, 239 / ГОСТ Р 57580.1 control status for the selected tenant, with per-control evidence | Viewer |
 | `/adoption` | Whether the platform produces outcomes: closures in a window, share confirmed by a scan, SLA adherence, median time to fix, owner and context coverage, closed-and-verified per analyst, time to first value, overlay age; plus **Noise** (false-positive verdicts, suppressions in force and lapsed, overrides, noisiest detectors and observers) and **Coverage** (scanned share, vulnerability-assessed share, and how many approved ranges a scan has reached) | Viewer |
 | `/usage` | Usage against quota for the selected tenant, 12-month scan volume, and — for a platform admin — every tenant's consumption plus the quota editor | Viewer; admin for the cross-tenant table and quota edits |
 | `/schedules` | Tenant-scoped recurring scan schedules, with the tenant's maintenance calendar and change freeze above them | Operator; admin to freeze or thaw |

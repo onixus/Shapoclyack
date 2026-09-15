@@ -197,7 +197,7 @@ def test_closed_findings_stop_failing_and_accepted_risk_is_separated(tmp_path):
     assert by_id["A.8.21"]["accepted_count"] == 1
 
 
-def _seed_own_tenant(tmp_path: Path):
+def _seed_own_tenant(tmp_path: Path, findings: list[dict] | None = None):
     """``_seed`` in a tenant of this test's own.
 
     The findings in this file are keyed on ``(asset, cve-or-script, port)``,
@@ -215,7 +215,9 @@ def _seed_own_tenant(tmp_path: Path):
     run_dir = settings.output_dir / "runs" / "run-1"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "alive_hosts.json").write_text(json.dumps(_HOSTS), encoding="utf-8")
-    (run_dir / "vulnerabilities.json").write_text(json.dumps(_FINDINGS), encoding="utf-8")
+    (run_dir / "vulnerabilities.json").write_text(
+        json.dumps(_FINDINGS if findings is None else findings), encoding="utf-8"
+    )
 
     tenants_service.configure(settings)
     tenants_service.load_tenants(settings)
@@ -387,7 +389,15 @@ def test_api_lists_frameworks_and_returns_posture(tmp_path, monkeypatch):
     frameworks = client.get("/api/compliance/frameworks", headers=viewer)
     assert frameworks.status_code == 200
     ids = {entry["framework_id"] for entry in frameworks.json()}
-    assert ids == {"pci-dss-4.0", "cis-controls-v8", "iso-27001-2022"}
+    assert ids == {
+        "pci-dss-4.0",
+        "cis-controls-v8",
+        "iso-27001-2022",
+        "fstec-117",
+        "fstec-21",
+        "fstec-239",
+        "gost-r-57580.1-2017",
+    }
     # The scope note is the anti-overclaim guard; it must reach the client.
     assert all(entry["scope_note"] for entry in frameworks.json())
 
@@ -411,3 +421,139 @@ def test_api_control_detail_and_auth(tmp_path, monkeypatch):
 
     assert client.get("/api/compliance/iso-27001-2022/controls/A.0.0", headers=viewer).status_code == 404
     assert client.get("/api/compliance/pci-dss-4.0").status_code == 401
+
+
+# ------------------------------------------------------------ Russia
+
+_RU_FRAMEWORKS = ("fstec-117", "fstec-21", "fstec-239", "gost-r-57580.1-2017")
+
+
+def test_the_fstec_window_is_the_regulators_clock():
+    now = datetime(2026, 9, 16, 12, 0)
+    two_days = now - timedelta(days=2)
+    # 24 hours for a critical: two days is past it. 7 days for a high: inside.
+    assert sig.fstec_window_exceeded("critical", two_days, now=now)
+    assert not sig.fstec_window_exceeded("high", two_days, now=now)
+    assert sig.fstec_window_exceeded("high", now - timedelta(days=7), now=now)
+    assert not sig.fstec_window_exceeded("medium", now - timedelta(days=27), now=now)
+    assert sig.fstec_window_exceeded("medium", now - timedelta(days=28), now=now)
+    assert sig.fstec_window_exceeded("low", now - timedelta(days=120), now=now)
+    # The guidance grades by its own criticality method; a finding this
+    # platform could not grade has no window, and neither does one with no
+    # start. Neither is evidence of a missed deadline.
+    assert not sig.fstec_window_exceeded("unknown", now - timedelta(days=400), now=now)
+    assert not sig.fstec_window_exceeded("critical", None, now=now)
+    # Aware and naive on either side compare instead of raising.
+    assert sig.fstec_window_exceeded("critical", two_days.replace(tzinfo=UTC), now=now)
+    assert sig.fstec_window_exceeded("critical", two_days, now=now.replace(tzinfo=UTC))
+
+
+def test_the_window_signal_is_only_raised_when_the_caller_says_so():
+    finding = {"cve": "CVE-2024-0001"}
+    assert sig.OVERDUE_FSTEC_WINDOW not in sig.classify_finding(finding)
+    assert sig.OVERDUE_FSTEC_WINDOW in sig.classify_finding(finding, fstec_overdue=True)
+    # It is the regulator's clock, not the tenant's: neither reading implies the other.
+    raised = sig.classify_finding(finding, sla_reading="breached")
+    assert sig.OVERDUE_REMEDIATION in raised and sig.OVERDUE_FSTEC_WINDOW not in raised
+
+
+def test_russian_catalogues_carry_the_regulators_codes_and_the_regulators_clock():
+    for framework_id in _RU_FRAMEWORKS:
+        framework = catalog.get_framework(framework_id)
+        assert framework is not None, framework_id
+        # The scope note is what stops «82 % ФСТЭК № 239» being read as compliance.
+        assert framework.scope_note
+        ids = [control.control_id for control in framework.controls]
+        assert len(ids) == len(set(ids)), framework_id
+        # The window is what makes these catalogues Russian rather than a
+        # retitled ISO: each has at least one control on the regulator's clock.
+        assert any(
+            sig.OVERDUE_FSTEC_WINDOW in control.all_signals for control in framework.controls
+        ), framework_id
+
+
+def test_a_two_day_old_critical_fails_the_fstec_window_but_not_the_tenants_sla(
+    tmp_path, monkeypatch
+):
+    """The two clocks start together and diverge only in how long they run.
+
+    The tenant's default SLA gives a critical 15 days; FSTEC gives it 24 hours.
+    Two days after discovery the finding is inside the first and outside the
+    second, and an audit page for a Russian regulator has to say the second.
+
+    A tenant of its own, because the assertion is about the age of the rows:
+    the shared ``_seed`` rows are as old as whichever test registered them.
+    """
+    settings, tenant_id = _seed_own_tenant(tmp_path)
+
+    fresh = compliance.assess(settings, framework_id="fstec-117", tenant_id=tenant_id)
+    by_id = {entry["control_id"]: entry for entry in fresh["controls"]}
+    # Just registered: inside every window, so both timing controls pass while
+    # the plain "known vulnerability" one already fails on the critical CVE.
+    assert by_id["КУ-сроки"]["status"] == compliance.PASSED
+    assert by_id["КО"]["status"] == compliance.PASSED
+    assert by_id["КУ"]["status"] == compliance.FAILED
+
+    later = datetime.now(UTC) + timedelta(days=2)
+    monkeypatch.setattr(compliance, "_now", lambda: later)
+
+    aged = compliance.assess(settings, framework_id="fstec-117", tenant_id=tenant_id)
+    by_id = {entry["control_id"]: entry for entry in aged["controls"]}
+    # The critical CVE is past 24 hours: КУ-сроки fails on the regulator's clock…
+    assert by_id["КУ-сроки"]["status"] == compliance.FAILED
+    failing = {item["label"]: item for item in by_id["КУ-сроки"]["evidence"]}
+    assert "CVE-2024-0001" in failing
+    assert sig.OVERDUE_FSTEC_WINDOW in failing["CVE-2024-0001"]["signals"]
+    # …the high-severity telnet finding is inside its 7 days and is not evidence…
+    assert not any(item["severity"] == "high" for item in by_id["КУ-сроки"]["evidence"])
+    # …and the tenant's own 15-day SLA is untouched, so КО — the one control
+    # written about the operator's *own* update regulation — still passes.
+    assert by_id["КО"]["status"] == compliance.PASSED
+
+    # The same estate, on the same clock, read through the other three
+    # Russian catalogues: each has a control on both clocks, and the
+    # regulator's one is the one that fires.
+    for framework_id, control_id in (
+        ("fstec-21", "АНЗ.2"),
+        ("fstec-239", "ОПО.4"),
+        ("gost-r-57580.1-2017", "ЦЗИ.8"),
+    ):
+        posture = compliance.assess(settings, framework_id=framework_id, tenant_id=tenant_id)
+        entry = {c["control_id"]: c for c in posture["controls"]}[control_id]
+        assert entry["status"] == compliance.FAILED, (framework_id, control_id)
+
+
+def test_russian_exposure_controls_pair_the_admin_port_with_the_observation(tmp_path):
+    """«Управление информационными потоками» is not failed by an internal SSH port."""
+
+    paired = (
+        ("fstec-117", "МСЭ.3"),
+        ("fstec-21", "УПД.3"),
+        ("fstec-21", "ЗИС.17"),
+        ("fstec-239", "ЗИС.2"),
+        ("gost-r-57580.1-2017", "СМЭ.3"),
+    )
+    # Own tenants, not the shared one: an exposed RDP another test registered
+    # there (and nothing closes) would fail the first half on its own.
+    settings, tenant_id = _seed_own_tenant(tmp_path)
+    for framework_id, control_id in paired:
+        posture = compliance.assess(settings, framework_id=framework_id, tenant_id=tenant_id)
+        entry = {c["control_id"]: c for c in posture["controls"]}[control_id]
+        assert entry["status"] == compliance.PASSED, (framework_id, control_id)
+
+    settings, tenant_id = _seed_own_tenant(tmp_path, findings=[*_FINDINGS, _EXPOSED_ADMIN])
+    for framework_id, control_id in paired:
+        posture = compliance.assess(settings, framework_id=framework_id, tenant_id=tenant_id)
+        entry = {c["control_id"]: c for c in posture["controls"]}[control_id]
+        assert entry["status"] == compliance.FAILED, (framework_id, control_id)
+
+
+def test_api_serves_a_cyrillic_control_id(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    viewer = auth_headers(client, "viewer")
+
+    detail = client.get("/api/compliance/fstec-239/controls/АУД.2", headers=viewer)
+    assert detail.status_code == 200
+    assert detail.json()["control_id"] == "АУД.2"
+    assert detail.json()["framework_id"] == "fstec-239"

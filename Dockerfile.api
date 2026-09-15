@@ -25,7 +25,7 @@ WORKDIR /app
 # HostKeyUnavailable before anything reached the target.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends openssh-client; \
+    apt-get install -y --no-install-recommends openssh-client fonts-dejavu-core; \
     rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-api.txt /app/
 # Upgrade pip before installing: the base image's bundled pip (25.0.1) carries

@@ -6,10 +6,15 @@ a PDF whose numbers disagree with the JSON export taken a second earlier, and
 "the report says 41, the API says 40" is the kind of discrepancy that costs an
 MSSP a customer call rather than a bug report.
 
-The PDF keeps using ``fpdf2``'s core fonts, as ``scanner/pipeline/pdf_report``
-does. That limits text to Latin-1 and is why every string goes through
-``_safe``: a customer name with a character the core fonts lack must degrade to
-a replacement character, not raise mid-render on the first of the month.
+The PDF uses a Unicode TrueType face when the host has one (DejaVu Sans, which
+the images install — see ``_UNICODE_FONT_DIRS``) and ``fpdf2``'s core fonts
+otherwise, as ``scanner/pipeline/pdf_report`` does. The core fonts are Latin-1
+only, and the Russian compliance catalogues put Cyrillic measure codes on every
+page of a compliance report — «АУД.2» rendered as «???.2» is a report an
+auditor cannot use — which is why the face is looked for. Without it every
+string still goes through ``_safe``: a customer name with a character the core
+fonts lack must degrade to a replacement character, not raise mid-render on
+the first of the month.
 
 The HTML renderer emits a self-contained document with no external references —
 no CDN, no webfont, no tracking pixel. It is emailed to people outside the
@@ -23,12 +28,16 @@ import base64
 import html
 import io
 import json
+import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fpdf import FPDF
 
 from api.services.reports import branding as branding_service
+
+logger = logging.getLogger(__name__)
 
 FORMATS = ("pdf", "html", "json")
 
@@ -53,6 +62,48 @@ def _safe(text: object) -> str:
     return str(text if text is not None else "").encode("latin-1", errors="replace").decode(
         "latin-1"
     )
+
+
+#: Where a Unicode TrueType face is looked for, in order. The API and
+#: all-in-one images install Debian's ``fonts-dejavu-core``; the other entries
+#: are where the same package lands on Fedora, Arch and a hand-installed font.
+#: An installation with none of them keeps the core fonts and ``_safe``'s
+#: replacement character, which is the behaviour before this lookup existed,
+#: not a failure — a report must render on the first of the month whatever the
+#: host has. Module-level so a test can point it somewhere or empty it.
+_UNICODE_FONT_DIRS: tuple[str, ...] = (
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu-sans-fonts",
+    "/usr/share/fonts/dejavu",
+    "/usr/share/fonts/TTF",
+    "/usr/local/share/fonts",
+)
+_UNICODE_FONT_FAMILY = "DejaVu"
+_UNICODE_FONT_FILES = {
+    "": "DejaVuSans.ttf",
+    "B": "DejaVuSans-Bold.ttf",
+    "I": "DejaVuSans-Oblique.ttf",
+}
+
+
+def find_unicode_font() -> dict[str, Path] | None:
+    """The DejaVu Sans faces to register, by fpdf style, or ``None``.
+
+    Bold and oblique fall back to the regular file when only it is present
+    (``fonts-dejavu-core`` ships no oblique): a heading set in regular weight
+    is a cosmetic loss, a heading set in a font that raises is not a report.
+    """
+
+    for directory in _UNICODE_FONT_DIRS:
+        regular = Path(directory) / _UNICODE_FONT_FILES[""]
+        if not regular.is_file():
+            continue
+        faces = {"": regular}
+        for style in ("B", "I"):
+            candidate = Path(directory) / _UNICODE_FONT_FILES[style]
+            faces[style] = candidate if candidate.is_file() else regular
+        return faces
+    return None
 
 
 def _hex_to_rgb(value: str | None, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -102,8 +153,45 @@ class _BrandedPDF(FPDF):
         self.primary = _hex_to_rgb(brand.get("primary_color"), (30, 58, 138))
         self.accent = _hex_to_rgb(brand.get("accent_color"), (59, 130, 246))
         self._logo = _decode_logo(brand.get("logo_png"))
+        # Same contract as the logo below: a font the host has but cannot
+        # actually serve (zero bytes, truncated, unreadable by the API's user)
+        # must not fail the report. ``is_file()`` in the lookup cannot tell
+        # those apart from a good one; only parsing can.
+        faces = find_unicode_font()
+        self.font_family = "Helvetica"
+        self.unicode_text = False
+        if faces is None:
+            # Said once per render, not once per string: the report still
+            # goes out, but an operator reading «???.2» on it needs somewhere
+            # to find out why.
+            logger.warning(
+                "no Unicode TrueType face found in %s; PDF text outside Latin-1 "
+                "is rendered as replacement characters",
+                ", ".join(_UNICODE_FONT_DIRS),
+            )
+        else:
+            try:
+                for style, path in faces.items():
+                    self.add_font(_UNICODE_FONT_FAMILY, style=style, fname=str(path))
+            except Exception as exc:  # noqa: BLE001 - a bad font must not fail the report
+                logger.warning(
+                    "Unicode TrueType face at %s could not be loaded (%s); PDF text "
+                    "outside Latin-1 is rendered as replacement characters",
+                    faces[""].parent,
+                    exc,
+                )
+            else:
+                self.font_family = _UNICODE_FONT_FAMILY
+                self.unicode_text = True
         self.set_auto_page_break(auto=True, margin=18)
         self.set_margins(left=15, top=16, right=15)
+
+    def txt(self, value: object) -> str:
+        """A string the current face can set: as-is with a Unicode face, Latin-1 otherwise."""
+
+        if self.unicode_text:
+            return str(value if value is not None else "")
+        return _safe(value)
 
     def header(self) -> None:
         self.set_x(self.l_margin)
@@ -114,9 +202,9 @@ class _BrandedPDF(FPDF):
             except Exception:  # noqa: BLE001 - a bad logo must not fail the report
                 self._logo = None
                 self.set_x(self.l_margin)
-        self.set_font("Helvetica", "B", 9)
+        self.set_font(self.font_family, "B", 9)
         self.set_text_color(*self.primary)
-        self.cell(0, 6, _safe(self.org_name or "Security report"), align="L")
+        self.cell(0, 6, self.txt(self.org_name or "Security report"), align="L")
         self.ln(7)
         y = self.get_y()
         self.set_draw_color(*self.accent)
@@ -127,9 +215,9 @@ class _BrandedPDF(FPDF):
     def footer(self) -> None:
         self.set_y(-14)
         self.set_x(self.l_margin)
-        self.set_font("Helvetica", "", 8)
+        self.set_font(self.font_family, "", 8)
         self.set_text_color(100, 116, 139)
-        self.cell(0, 8, _safe(f"{self.footer_text}  |  Page {self.page_no()}"), align="C")
+        self.cell(0, 8, self.txt(f"{self.footer_text}  |  Page {self.page_no()}"), align="C")
 
 
 def _decode_logo(value: str | None) -> bytes | None:
@@ -148,9 +236,9 @@ def _width(pdf: FPDF) -> float:
 def _title(pdf: _BrandedPDF, text: str) -> None:
     pdf.set_x(pdf.l_margin)
     pdf.ln(3)
-    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_font(pdf.font_family, "B", 13)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 8, _safe(text), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, pdf.txt(text), new_x="LMARGIN", new_y="NEXT")
     y = pdf.get_y()
     pdf.set_draw_color(226, 232, 240)
     pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
@@ -162,33 +250,46 @@ def _kv(pdf: _BrandedPDF, key: str, value: object) -> None:
     pdf.set_x(pdf.l_margin)
     key_w = 62.0
     y = pdf.get_y()
-    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_font(pdf.font_family, "B", 10)
     pdf.set_text_color(51, 65, 85)
-    pdf.cell(key_w, 6, _safe(key))
+    pdf.cell(key_w, 6, pdf.txt(key))
     pdf.set_xy(pdf.l_margin + key_w, y)
-    pdf.set_font("Helvetica", "", 10)
+    pdf.set_font(pdf.font_family, "", 10)
     pdf.set_text_color(15, 23, 42)
-    pdf.multi_cell(_width(pdf) - key_w, 6, _safe(value))
+    pdf.multi_cell(_width(pdf) - key_w, 6, pdf.txt(value))
     pdf.set_x(pdf.l_margin)
+
+
+def _fit(pdf: FPDF, text: str, width: float) -> str:
+    """``text`` cut to what the current face sets inside ``width`` millimetres."""
+
+    measured = pdf.get_string_width(text)
+    if measured <= width:
+        return text
+    # One proportional cut, then trim the few glyphs the proportion missed.
+    text = text[: max(1, int(len(text) * width / measured))]
+    while len(text) > 1 and pdf.get_string_width(text) > width:
+        text = text[:-1]
+    return text
 
 
 def _table(pdf: _BrandedPDF, headers: list[str], rows: list[list[str]], widths: list[float]) -> None:
     pdf.set_x(pdf.l_margin)
-    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_font(pdf.font_family, "B", 9)
     pdf.set_fill_color(241, 245, 249)
     pdf.set_text_color(15, 23, 42)
     for header, width in zip(headers, widths, strict=True):
-        pdf.cell(width, 7, _safe(header), border=1, fill=True)
+        pdf.cell(width, 7, pdf.txt(header), border=1, fill=True)
     pdf.ln()
-    pdf.set_font("Helvetica", "", 9)
+    pdf.set_font(pdf.font_family, "", 9)
     for row in rows:
         pdf.set_x(pdf.l_margin)
         for cell, width in zip(row, widths, strict=True):
             # Truncated rather than wrapped: a wrapped cell in fpdf's simple
             # cell layout desynchronises the row height from its neighbours.
-            text = _safe(cell)
-            limit = max(4, int(width / 1.8))
-            pdf.cell(width, 6, text[:limit], border=1)
+            # Measured, not counted: a character budget tuned for Helvetica
+            # let a Cyrillic title in DejaVu run into the next column.
+            pdf.cell(width, 6, _fit(pdf, pdf.txt(cell), width - 2), border=1)
         pdf.ln()
     pdf.set_x(pdf.l_margin)
 
@@ -199,16 +300,16 @@ def render_pdf(body: dict[str, Any]) -> bytes:
     width = _width(pdf)
 
     pdf.set_x(pdf.l_margin)
-    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_font(pdf.font_family, "B", 18)
     pdf.set_text_color(*pdf.primary)
-    pdf.multi_cell(width, 9, _safe(body.get("title") or "Security report"))
+    pdf.multi_cell(width, 9, pdf.txt(body.get("title") or "Security report"))
     pdf.set_x(pdf.l_margin)
-    pdf.set_font("Helvetica", "", 10)
+    pdf.set_font(pdf.font_family, "", 10)
     pdf.set_text_color(71, 85, 105)
     pdf.multi_cell(
         width,
         6,
-        _safe(
+        pdf.txt(
             "Vulnerability posture for the period ending "
             f"{_fmt_date(body.get('generated_at'))}."
         ),
@@ -355,9 +456,9 @@ def render_pdf(body: dict[str, Any]) -> bytes:
                 + (f" ({score}%)" if score is not None else ""),
             )
             _kv(pdf, "Not assessed", framework.get("controls_not_assessed", 0))
-            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_font(pdf.font_family, "I", 8)
             pdf.set_text_color(100, 116, 139)
-            pdf.multi_cell(width, 4.5, _safe(framework.get("scope_note") or ""))
+            pdf.multi_cell(width, 4.5, pdf.txt(framework.get("scope_note") or ""))
             pdf.ln(1)
             controls = framework.get("controls") or []
             if controls:

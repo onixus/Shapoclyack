@@ -2,7 +2,7 @@
 
 One pass over the tenant's open findings and its asset registry, classified
 into signals (``signals.py``) and folded onto the control catalogues
-(``frameworks.py``). The pass is shared across all three frameworks in a
+(``frameworks.py``). The pass is shared across every framework in a
 single-framework request too, because the expensive part is the query, not the
 fold, and because two frameworks disagreeing about the same estate would be a
 bug that only appears under load.
@@ -133,6 +133,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
                 models.Vulnerability.network_exposure,
                 models.Vulnerability.due_at,
                 models.Vulnerability.exception_until,
+                models.Vulnerability.sla_started_at,
                 models.Vulnerability.asset_id,
             ).where(*vuln_filters, models.Vulnerability.state.in_(sorted(vuln_states.ACTIVE)))
         ).all()
@@ -203,6 +204,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             exposure,
             due_at,
             exception_until,
+            sla_started_at,
             asset_id,
         ) = row
         finding = {
@@ -217,7 +219,14 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
             {"state": state, "due_at": due_at, "exception_until": exception_until},
             now=sla_now,
         )
-        raised = sig.classify_finding(finding, sla_reading=reading)
+        # The Russian catalogues are written about the regulator's remediation
+        # window, not the tenant's SLA. The two clocks start together
+        # (``sla_started_at``) and diverge only in how long they run.
+        raised = sig.classify_finding(
+            finding,
+            sla_reading=reading,
+            fstec_overdue=sig.fstec_window_exceeded(severity, sla_started_at, now=sla_now),
+        )
         if not raised:
             continue
         evidence.append(
