@@ -153,7 +153,13 @@ class _BrandedPDF(FPDF):
         self.primary = _hex_to_rgb(brand.get("primary_color"), (30, 58, 138))
         self.accent = _hex_to_rgb(brand.get("accent_color"), (59, 130, 246))
         self._logo = _decode_logo(brand.get("logo_png"))
+        # Same contract as the logo below: a font the host has but cannot
+        # actually serve (zero bytes, truncated, unreadable by the API's user)
+        # must not fail the report. ``is_file()`` in the lookup cannot tell
+        # those apart from a good one; only parsing can.
         faces = find_unicode_font()
+        self.font_family = "Helvetica"
+        self.unicode_text = False
         if faces is None:
             # Said once per render, not once per string: the report still
             # goes out, but an operator reading «???.2» on it needs somewhere
@@ -163,13 +169,20 @@ class _BrandedPDF(FPDF):
                 "is rendered as replacement characters",
                 ", ".join(_UNICODE_FONT_DIRS),
             )
-            self.font_family = "Helvetica"
-            self.unicode_text = False
         else:
-            for style, path in faces.items():
-                self.add_font(_UNICODE_FONT_FAMILY, style=style, fname=str(path))
-            self.font_family = _UNICODE_FONT_FAMILY
-            self.unicode_text = True
+            try:
+                for style, path in faces.items():
+                    self.add_font(_UNICODE_FONT_FAMILY, style=style, fname=str(path))
+            except Exception as exc:  # noqa: BLE001 - a bad font must not fail the report
+                logger.warning(
+                    "Unicode TrueType face at %s could not be loaded (%s); PDF text "
+                    "outside Latin-1 is rendered as replacement characters",
+                    faces[""].parent,
+                    exc,
+                )
+            else:
+                self.font_family = _UNICODE_FONT_FAMILY
+                self.unicode_text = True
         self.set_auto_page_break(auto=True, margin=18)
         self.set_margins(left=15, top=16, right=15)
 

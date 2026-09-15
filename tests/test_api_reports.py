@@ -827,24 +827,69 @@ def _cyrillic_compliance_body() -> dict:
     }
 
 
-def test_the_pdf_keeps_cyrillic_when_the_host_has_a_unicode_face():
+#: A Latin + Cyrillic subset of DejaVu Sans (27 KB, ``pyftsubset``), so the
+#: Unicode path runs on every host — a test that skips on the macOS laptop and
+#: in the slim CI container is a test of nothing.
+_FONT_FIXTURES = Path(__file__).parent / "fixtures" / "fonts"
+
+
+def _pdf_streams(out: bytes) -> list[bytes]:
+    """Every stream object of a PDF, inflated where fpdf2 deflated it."""
+    import re
+    import zlib
+
+    streams = []
+    for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", out, re.DOTALL):
+        raw = match.group(1)
+        try:
+            streams.append(zlib.decompress(raw))
+        except zlib.error:
+            streams.append(raw)
+    return streams
+
+
+def test_the_pdf_keeps_cyrillic_with_a_unicode_face(monkeypatch):
     """«АУД.2» has to reach the auditor as «АУД.2», not as «???.2».
 
-    The core fonts fpdf2 ships are Latin-1 only; the images install DejaVu
-    Sans and the renderer picks it up. Skipped rather than failed on a host
-    without it, because the fallback is the next test's subject.
+    fpdf2's core fonts are Latin-1 only; with a TrueType face the text is
+    passed through untouched and the face's ToUnicode map carries the
+    Cyrillic code points the page uses. Asserted on that map rather than on
+    the font's name: a regression that still embedded the face but routed
+    text through ``_safe`` would keep the name and lose the letters.
     """
-    if renderer.find_unicode_font() is None:
-        pytest.skip("no DejaVu Sans on this host (fonts-dejavu-core)")
+    monkeypatch.setattr(renderer, "_UNICODE_FONT_DIRS", (str(_FONT_FIXTURES),))
+    pdf = renderer._BrandedPDF(_cyrillic_compliance_body())
+    assert pdf.unicode_text
+    assert pdf.txt("АУД.2") == "АУД.2"
+
     out = renderer.render_pdf(_cyrillic_compliance_body())
     assert out[:4] == b"%PDF"
-    # The face is embedded under its own name; the core fonts never are.
     assert b"DejaVu" in out
+    # U+0410 ('А'), U+0423 ('У'), U+0414 ('Д') from «АУД.2», as the ToUnicode
+    # CMap spells them; the core-font PDF has no such map at all.
+    cmaps = [s for s in _pdf_streams(out) if b"beginbfchar" in s or b"beginbfrange" in s]
+    assert cmaps, "no ToUnicode map: the text did not go through the TrueType face"
+    joined = b"".join(cmaps)
+    assert all(code in joined for code in (b"0410", b"0423", b"0414"))
 
 
 def test_the_pdf_degrades_to_core_fonts_without_a_unicode_face(monkeypatch):
     """A host with no TrueType face still gets its report on the first of the month."""
     monkeypatch.setattr(renderer, "_UNICODE_FONT_DIRS", ())
+    out = renderer.render_pdf(_cyrillic_compliance_body())
+    assert out[:4] == b"%PDF"
+    assert b"DejaVu" not in out
+
+
+def test_a_font_the_host_cannot_serve_does_not_fail_the_report(tmp_path, monkeypatch):
+    """``is_file()`` cannot tell a good face from a truncated one; only parsing can.
+
+    A zero-byte DejaVuSans.ttf on a bind-mounted font directory used to raise
+    out of the constructor, and ``store.generate`` would then record every
+    tenant's PDF report as failed until somebody fixed the file.
+    """
+    (tmp_path / "DejaVuSans.ttf").write_bytes(b"")
+    monkeypatch.setattr(renderer, "_UNICODE_FONT_DIRS", (str(tmp_path),))
     out = renderer.render_pdf(_cyrillic_compliance_body())
     assert out[:4] == b"%PDF"
     assert b"DejaVu" not in out
