@@ -1,0 +1,52 @@
+# Serve the stand over TLS.
+#
+# The API terminates it itself (`OCTO_API_TLS_CERT`/`_KEY`, api/__main__.py)
+# rather than behind an ingress: kind has no ingress controller, and a stand
+# that needs one to speak HTTPS is a stand nobody turns on.
+#
+# The port does not change. Reusing 8080 keeps the cluster's single
+# extraPortMapping, and changing that in k8s/kind-config.yaml would mean
+# recreating the cluster — which discards the Postgres volume, and with it the
+# endpoint inventory the stand exists to hold.
+#
+# The probes move to HTTPS with it. They would otherwise speak plaintext to a
+# TLS listener and fail, and kubelet does not verify the certificate for an
+# `httpGet` probe, so a self-signed one is not a problem here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      volumes:
+        - name: api-tls
+          secret:
+            secretName: shapoclyack-api-tls
+            defaultMode: 0400
+      containers:
+        - name: api
+          env:
+            - name: OCTO_API_TLS_CERT
+              value: /etc/shapoclyack/tls/tls.crt
+            - name: OCTO_API_TLS_KEY
+              value: /etc/shapoclyack/tls/tls.key
+          volumeMounts:
+            - name: api-tls
+              mountPath: /etc/shapoclyack/tls
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+              scheme: HTTPS
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              scheme: HTTPS
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+              scheme: HTTPS

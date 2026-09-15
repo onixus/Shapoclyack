@@ -72,6 +72,15 @@ fi
 echo "==> Applying ${OVERLAY_DIR}"
 kubectl apply -k "${OVERLAY_DIR}"
 
+# After the apply, because the Secret needs the namespace the overlay creates,
+# and before the rollout wait below, because the API mounts it. A pod that
+# starts first sits in ContainerCreating until the Secret appears rather than
+# failing, so the order is a matter of not waiting three minutes for something
+# that could be there in one second.
+if [ "${OVERLAY}" = "kind-dev" ] || [ "${OVERLAY}" = "kind-enrichment" ]; then
+  NAMESPACE="${NAMESPACE}" ./scripts/dev-tls-cert.sh
+fi
+
 echo "==> Waiting for rollout"
 kubectl -n "${NAMESPACE}" rollout status statefulset/shapoclyack-postgres --timeout=180s
 
@@ -103,7 +112,11 @@ fi
 echo
 # 127.0.0.1, not localhost: kind publishes the NodePort on 0.0.0.0 (IPv4 only),
 # while localhost resolves to ::1 first on macOS -- which just gets refused.
-echo "Ready: http://127.0.0.1:8080"
+if [ "${OVERLAY}" = "kind-dev" ] || [ "${OVERLAY}" = "kind-enrichment" ]; then
+  echo "Ready: https://127.0.0.1:8080  (CA: .dev-tls/ca.crt)"
+else
+  echo "Ready: http://127.0.0.1:8080"
+fi
 echo "Sign in as operator / operator-change-me"
 echo "Change the JWT secret and demo passwords before exposing this beyond a trusted lab."
 echo
