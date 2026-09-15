@@ -17,8 +17,9 @@ target before you page anyone on it if your stand is slower than this lab.
 - **Window:** rolling 30 days, evaluated per installation (not per tenant —
   no metric carries a `tenant_id` label, by design).
 - **Reporting period:** calendar month.
-- **Applies to:** the API process. The scanner (`scanner/main.py`) and remote
-  agent (`agent/worker.py`) run no HTTP server and export nothing directly;
+- **Applies to:** the API process. The scanner (`scanner/main.py`) and the
+  sensor (`agent/worker.py`; API resource `agents`, `agent_kind = scanner`)
+  run no HTTP server and export nothing directly;
   their contribution is visible only through `octo_job_duration_seconds`.
 
 ## SLIs and objectives
@@ -131,31 +132,32 @@ counting an operator's decision against the success ratio would make stopping a
 scan look like a defect. Cross-check against `octo_jobs_running`: a gauge stuck
 above zero with no matching histogram increments means jobs are being lost, and
 that is worse than a failure rate. `octo_jobs_running` counts `running`,
-`claimed` and `cancelling` jobs — all three are out with a worker, so folding
+`claimed` and `cancelling` jobs — all three are out with a sensor (or the
+local executor), so folding
 them into `octo_jobs_queued` would read as a backlog nothing is working on.
 
 `octo_job_lease_expired_total{outcome="requeued"}` is the fleet-health signal
-underneath the ratio above: a rising rate means agents are dying mid-job and
+underneath the ratio above: a rising rate means sensors are dying mid-job and
 their work is being handed to someone else. `outcome="failed"` means a job
 exhausted `OCTO_JOB_MAX_ATTEMPTS` (or was a local job whose replica died) and
 was given up on — those *do* land in the failure side of SLO 3.
 
 `octo_job_cancellations_total` counts the scans operators stopped, by how the
-stop ended: `queued` (never handed out), `confirmed` (the agent reported it put
+stop ended: `queued` (never handed out), `confirmed` (the sensor reported it put
 the scan down), `unconfirmed` (the grace period expired first) and
 `late_results` (the archive of a stop the grace period had already written off
 arrived afterwards and was kept). `unconfirmed` is the series to alert on —
 every increment is a job the control plane closed without ever being told the
-scan stopped, which usually means agents older than the release that added the
+scan stopped, which usually means sensors older than the release that added the
 heartbeat cancel channel.
 
 `sum by (outcome)` is therefore **not** the number of cancellations: one stop
 that is reaped and then delivers its archive increments `unconfirmed` and
 `late_results` both, which is the point — the second says the operator got the
 partial results anyway. Alert on `unconfirmed` alone and read `late_results`
-next to it: a rising share of it with a flat `confirmed` is an agent that cannot
+next to it: a rising share of it with a flat `confirmed` is a sensor that cannot
 finish an upload inside `OCTO_JOB_CANCEL_GRACE_SECONDS`, which is a bandwidth or
-grace-period problem rather than a stuck agent. For "how many scans were
+grace-period problem rather than a stuck sensor. For "how many scans were
 stopped", use `queued + confirmed + unconfirmed`.
 
 ### 4. Job duration
@@ -175,7 +177,7 @@ Deliberately left without a repository-wide number. Scan duration is a function
 of target-set size, profile, rate limits, and whether NSE/Pulse stages run —
 a value that fits a /24 lab is meaningless for 50k assets. Set it per
 installation from your own p95 after a month, and split by `execution`
-(`local` vs. agent) before comparing anything.
+(`local` vs. `agent`, i.e. run by a sensor) before comparing anything.
 
 ### 5. Ingest freshness
 
@@ -220,8 +222,8 @@ sum(rate(octo_endpoint_inventory_submissions_total[30d]))
 ```
 
 `result="replay"` counts as a *failure* here on purpose: idempotent replay is
-correct behaviour, but a sustained replay share means an agent is retrying
-without progressing. Break the ratio down by `result` before acting —
+correct behaviour, but a sustained replay share means an Agent (the Lariska
+endpoint agent, `agent_kind = endpoint`) is retrying without progressing. Break the ratio down by `result` before acting —
 `rate_limited` and `too_large` are operator-tunable, `invalid` and `conflict`
 are contract bugs.
 

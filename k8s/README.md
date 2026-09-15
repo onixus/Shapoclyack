@@ -95,28 +95,29 @@ k8s/shapoclyack/
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
-├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +agents) only
-├── base/agents/          # optional agent Deployment + VPA (not in default base)
+├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +sensor pods) only
+├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
-├── overlays/agents/      # remote agents (topology spread + VPA) + API agent-mode
+├── overlays/agents/      # sensors (topology spread + VPA) + API agent-mode
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
 ├── overlays/kind-enrichment/ # kind-dev + enrichment, with the PVC dropped to RWO for local-path
-└── examples/             # Secrets / Ingress / agent / NATS patches + ServiceMonitor
+└── examples/             # Secrets / Ingress / sensor / NATS patches + ServiceMonitor
 ```
 
 ### NATS JetStream
 
 Base includes `shapoclyack-nats` under `base/nats/` (ConfigMap + StatefulSet + headless/client Services).
-API/agent stay HTTP-only until you set:
+API and sensors (the remote scanning nodes — API resource `agents`,
+`agent_kind = scanner`) stay HTTP-only until you set:
 
 ```bash
 # API:    user `api`   — full subject tree
 OCTO_NATS_URL=nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
-# Agent:  user `agent` — pull + ack jobs.scan.{tenant}, nothing else
+# Sensor: user `agent` — pull + ack jobs.scan.{tenant}, nothing else
 OCTO_NATS_URL=nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
 ```
 
@@ -164,7 +165,7 @@ See [../docs/configuration.md](../docs/configuration.md) for the full
 
 **Retention:** streams are bounded by default (`JOBS` max age 24h, `INGEST` max
 age 7d / max bytes 10GiB, `EVENTS` max age 30d / max bytes 1GiB) so a stalled
-agent, disabled ClickHouse worker or absent event consumer can't grow JetStream
+sensor, disabled ClickHouse worker or absent event consumer can't grow JetStream
 storage without limit. Override on the API deployment:
 `OCTO_NATS_JOBS_MAX_AGE_SECONDS`, `OCTO_NATS_INGEST_MAX_AGE_SECONDS`,
 `OCTO_NATS_INGEST_MAX_BYTES`, `OCTO_NATS_EVENTS_MAX_AGE_SECONDS`,
@@ -333,7 +334,7 @@ falls back to an existing `scanner/state/octo_man.db` when the new
 ### MSSP tenancy (Phase 2)
 
 - Admin: `POST /api/tenants`, `POST /api/tenants/{id}/provisioning-keys`
-- Agent: `POST /api/auth/agent/token` with provisioning key → short-lived JWT
+- Sensor (or Agent, Lariska): `POST /api/auth/agent/token` with provisioning key → short-lived agent JWT
 - Env: `OCTO_AGENT_PROVISIONING_KEY` (preferred) or legacy `OCTO_AGENT_TOKEN` (`tenant_id=default`)
 - Examples: `networkpolicy-agent.example.yaml`, `externalsecret.example.yaml`
 
@@ -459,17 +460,17 @@ Default RBAC:
 | Role | Access |
 |------|--------|
 | `viewer` | List/read runs, summaries, diffs, vulns, artifacts |
-| `operator` | Viewer + start/list scan jobs / agents via API |
+| `operator` | Viewer + start/list scan jobs / sensors via API |
 | `admin` | Operator access plus tenant provisioning and configuration administration |
 
 Default aio Deployment sets **`OCTO_ALLOW_SCAN_START=true`** so operators start scans from
-the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Remote agents remain optional
+the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Sensors remain optional
 (see **overlays/agents** below, or `examples/agent-*.yaml`).
 
-### Optional: scanner agents (topology spread + VPA)
+### Optional: sensors (topology spread + VPA)
 
-Agents are **not** in the default `base` kustomization (they need an agent token and
-usually `OCTO_JOB_EXECUTION_MODE=agent`). Enable with:
+Sensors are **not** in the default `base` kustomization (they need a provisioning key
+or the legacy `OCTO_AGENT_TOKEN`, and usually `OCTO_JOB_EXECUTION_MODE=agent`). Enable with:
 
 ```bash
 # Requires: Secret shapoclyack-agent, VPA CRDs, and preferably NATS

@@ -5,7 +5,9 @@ review expectations for Shapoclyack changes.
 
 ## Toolchains
 
-- Python 3.12 for local development; CI also validates the supported matrix.
+- Python 3.12 for local development; CI runs the test suite on 3.11 and 3.12
+  (the loop in the `Jenkinsfile`, mirrored by the matrix in
+  `.github/workflows/ci.yml`).
 - Node.js 26 or newer for `web-next/` (`engines.node: ">=26"`; CI and the
   image builders use `node:26-bookworm-slim`).
 - Go version declared in `recon/go.mod`.
@@ -31,7 +33,7 @@ Run the baseline checks:
 
 ```bash
 ruff check .
-python -m compileall scanner api tests agent
+python -m compileall scanner api tests agent   # `agent/` is the sensor package (agent/worker.py)
 python -m pytest
 ```
 
@@ -232,7 +234,8 @@ workspace, which is already per job. This is the same class as the shared image
 tag: one resource, many jobs. Before adding any named volume, ask what happens
 when two branches build at once.
 
-**The Python matrix runs sequentially, on one agent.** When the two cells ran in
+**The Python matrix runs sequentially, on one Jenkins agent** (a CI executor,
+not a Shapoclyack sensor or endpoint Agent). When the two cells ran in
 parallel they each took their own workspace and cloned the repository at the same
 time, and that clone failed intermittently with `inflate: data stream error`,
 taking the whole build down while the other cell passed. What it is *not*: the

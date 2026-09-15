@@ -19,7 +19,7 @@ graph TB
         API["FastAPI Control Plane<br/>(RBAC, Multi-tenancy, Assets)"]
         NATS["NATS JetStream<br/>(Durable Event Bus)"]
         CH["ClickHouse & PostgreSQL<br/>(Аналитика & OLTP-состояние)"]
-        Agents["Distributed Agents Fleet<br/>(DMZ, Private Clouds, Branch Offices)"]
+        Sensors["Sensors (scan nodes)<br/>(DMZ, Private Clouds, Branch Offices)"]
     end
 
     CMDB -->|PATCH /api/assets/{id}| API
@@ -27,13 +27,13 @@ graph TB
     API -->|Outbound Webhooks / NATS| SIEM
     API <-->|Two-way ticket sync| Jira
     API <--> NATS
-    NATS <--> Agents
+    NATS <--> Sensors
 ```
 
 | Направление | Архитектурная задача | Реализация в Shapoclyack |
 |---|---|---|
 | **EASM и инвентарь периметра** | Выявление Shadow IT, учет активов, картографирование графа сервисов | Модуль `org_profile`, `/attack-surface`, `/assets` |
-| **Сетевая топология и агенты** | Проектирование безопасного размещения сканеров в DMZ и VPC | Распределенный флот Remote Agents через NATS JetStream |
+| **Сетевая топология и сенсоры** | Проектирование безопасного размещения сканирующих узлов в DMZ и VPC | Распределенный флот сенсоров (API-ресурс `agents`, `agent_kind = scanner`) через NATS JetStream или HTTPS-claim |
 | **Интеграция с CMDB и каталогами** | Автоматическое обогащение активов бизнес-контекстом и владельцами | Контракт `PATCH /api/assets/{id}` (`context_source: cmdb/ad`) |
 | **Встраивание в DevSecOps (CI/CD)** | Автоматизированный контроль релизных контуров и динамических сред | Сервисные токены (`/service-tokens`), REST API, Idempotency-Key |
 | **SOC & Event-Driven архитектура** | Потоковая передача событий об уязвимостях и новых активах | Webhooks dispatcher, NATS JetStream asset-event streams |
@@ -61,9 +61,9 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 
 ---
 
-## Сценарий 2: Архитектура распределенного флота агентов (Remote Agents)
+## Сценарий 2: Архитектура распределенного флота сенсоров
 
-Для сканирования изолированных сред (DMZ, сегменты обработки данных платежных карт, приватные облака AWS/GCP/Yandex Cloud) архитектор проектирует распределенную схему размещения воркеров.
+Для сканирования изолированных сред (DMZ, сегменты обработки данных платежных карт, приватные облака AWS/GCP/Yandex Cloud) архитектор проектирует распределенную схему размещения сенсоров — узлов, которые запускают `agent/worker.py`, забирают задания и выполняют сканер. Не путать с агентом Lariska: агент стоит на управляемом хосте, шлёт инвентарь ПО (`agent_kind = endpoint`) и заданий не берёт. В консоли сенсоры видны на странице «Флот удалённых агентов» (маршрут `/agents`).
 
 ```
        [ Интернет ]
@@ -87,9 +87,9 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
              ┌──────────────────────────────────────┴──────────────┐
              │                                                     │
 ┌────────────▼──────────────────────┐    ┌─────────────────────────▼────────────────────────┐
-│ DMZ Segment Worker                │    │ Isolated VPC / PCI DSS CDE Worker                │
+│ DMZ Segment Sensor                │    │ Isolated VPC / PCI DSS CDE Sensor                │
 │ ┌───────────────────────────────┐ │    │ ┌──────────────────────────────────────────────┐ │
-│ │ Shapoclyack Remote Agent      │ │    │ │ Shapoclyack Remote Agent                     │ │
+│ │ Shapoclyack Sensor            │ │    │ │ Shapoclyack Sensor                           │ │
 │ │ (Claiming jobs via NATS)      │ │    │ │ (Claiming jobs via NATS)                     │ │
 │ └───────────────────────────────┘ │    │ └──────────────────────────────────────────────┘ │
 │ Исходящее соединение:             │    │ Исходящее соединение:                            │
@@ -99,10 +99,10 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 ```
 
 ### 2.1. Сетевые требования и изоляция
-* **Никаких входящих портов на агентах:** Remote Agent инициирует только **исходящие** сессии — к FastAPI Control Plane по HTTPS и к NATS JetStream. Аутентификация в обоих случаях — агентский JWT, полученный в обмен на пер-тенантный provisioning key; **mTLS в сборке нет**; TLS до NATS включается явно (`tls://`, `OCTO_NATS_TLS_CA/CERT/KEY/HOSTNAME`, пример серверной части — `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`). Без TLS брокер держат внутри доверенного сегмента, а между сегментами пускают только HTTPS-режим claim'а (`OCTO_NATS_URL` пустой).
+* **Никаких входящих портов на сенсорах:** сенсор инициирует только **исходящие** сессии — к FastAPI Control Plane по HTTPS (`/api/agent/register`, `/api/agent/heartbeat`, `/api/agent/jobs/claim`, `/api/agent/jobs/{job_id}/results`) и к NATS JetStream. Аутентификация в обоих случаях — JWT сенсора, полученный в обмен на пер-тенантный provisioning key (`/api/auth/agent/token`); **mTLS в сборке нет**; TLS до NATS включается явно (`tls://`, `OCTO_NATS_TLS_CA/CERT/KEY/HOSTNAME`, пример серверной части — `k8s/shapoclyack/examples/nats-tls-configmap-patch.yaml`). Без TLS брокер держат внутри доверенного сегмента, а между сегментами пускают только HTTPS-режим claim'а (`OCTO_NATS_URL` пустой).
 * **Транспорт до хранилищ:** Postgres и ClickHouse шифруются только если это настроено явно (`?sslmode=verify-full`, схема `https://`) — см. [operations.md § Transport encryption](../operations.md#transport-encryption).
-* **Изоляция очередей тенантов:** задачи тенанта изолированы в NATS-субъектах (`shapoclyack.jobs.<tenant_id>.*`), агент одного тенанта физически не может перехватить задачи другого заказчика.
-* **Защита от сбоев (Leases & Fencing):** агент получает задачу в аренду на ограниченное время (`claimed_until`). Если агент завис или потерял связь, задача возвращается в очередь без потери статуса. Токен попытки (`attempt`) предотвращает запись устаревших результатов.
+* **Изоляция очередей тенантов:** задачи тенанта изолированы в NATS-субъектах (`jobs.scan.{tenant}`, стрим `JOBS`; durable-консьюмер `octo-agents-{tenant}`), сенсор одного тенанта физически не может перехватить задачи другого заказчика. Сенсор, помещённый в группу (`/api/agent-groups`, миграция `0052`), дополнительно слушает `jobs.scan.{tenant}.{group}`, а задание с `agent_group` в `POST /api/jobs` берут только сенсоры этой группы; привязка сенсора к скоупу/сегменту как таковому — [#361](https://github.com/onixus/Shapoclyack/issues/361).
+* **Защита от сбоев (Leases & Fencing):** сенсор получает задачу в аренду на ограниченное время (`claimed_until`). Если сенсор завис или потерял связь, задача возвращается в очередь без потери статуса. Токен попытки (`attempt`) предотвращает запись устаревших результатов.
 
 ---
 
@@ -154,7 +154,7 @@ sequenceDiagram
     autonumber
     participant CI as GitLab CI / Jenkins
     participant API as Shapoclyack API
-    participant Agent as Scanner Agent
+    participant Sensor as Sensor
     participant Gate as Quality Gate Check
     
     CI->>CI: Деплой ветки во временный стенд (staging-pr-42.test.local)
@@ -164,8 +164,8 @@ sequenceDiagram
         CI->>API: GET /api/jobs/job_xyz789
         API-->>CI: Status: running / succeeded
     end
-    CI->>API: GET /api/runs/run_xyz789/findings?min_severity=high
-    API-->>CI: Список находок и NIST Risk Level
+    CI->>API: GET /api/runs/run_xyz789/vulnerabilities
+    API-->>CI: Список находок с severity и NIST Risk Level
     alt Обнаружены Critical/High уязвимости
         CI->>Gate: Блокировка релиза (Quality Gate Failed)
     else Уязвимостей нет
@@ -173,7 +173,7 @@ sequenceDiagram
     end
 ```
 
-* **Сервисные токены (`/service-tokens`):** создаются с ограниченными правами для конкретного конвейера сборки.
+* **Сервисные токены (`/service-tokens`):** создаются с ограниченными правами для конкретного конвейера сборки. Порог качества (Quality Gate) конвейер вычисляет сам по полю `severity` в ответе `GET /api/runs/{run_id}/vulnerabilities` (фильтры маршрута — `host`, `port`, `limit`; серверного `min_severity` у него нет).
 * **Идемпотентность запусков:** использование заголовка `Idempotency-Key: commit-sha-build-id` исключает дублирование сканов при повторном запуске пайплайна в GitLab CI. Ключ старта скана принадлежит **тенанту**, а не конвейеру, поэтому имя должно быть уникальным у заказчика целиком — `commit-sha-build-id` таково, `nightly` нет.
 * **Массовая триажная обработка (`POST /api/vulnerabilities/bulk`):** тот же заголовок, но здесь ключ принадлежит **вызывающему** — сервисному токену конвейера, — а не тенанту целиком, поэтому осмысленное имя вроде `nightly-triage` не пересекается с ключом соседнего конвейера того же заказчика.
 
@@ -192,9 +192,12 @@ Shapoclyack реализует доказательный подход к ком
 * `exposed_admin_service` — открытые интерфейсы SSH, RDP, баз данных, административных панелей;
 * `unowned_asset` — сервер, у которого отсутствует назначенный владелец (`owner_email`).
 
+Полный словарь — `api/services/compliance/signals.py`: кроме перечисленных, есть `known_exploited` (CISA KEV), `internet_exposed_finding`, `default_or_weak_credentials`, `misconfiguration`, `information_disclosure`, `unclassified_asset`, `stale_asset`, `unassessable_software` и `overdue_fstec_window` (сроки Руководства ФСТЭК).
+
 ### 5.2. Поддерживаемые фреймворки в `/compliance`
 1. **PCI DSS 4.0:** требования 1.2.1 (ограничение трафика к админ-сервисам), 2.2.4/2.2.7 (отключение небезопасных протоколов), 4.2.1 (стойкая криптография при передаче), 6.3.3 (устранение High/Critical уязвимостей в установленные сроки), 11.3.1/11.3.2 (регулярное внутреннее и внешнее сканирование).
 2. **CIS Controls v8:** контроли 1.1 (инвентарь активов), 2.1 (инвентарь ПО), 4.6 (защита сетевых портов), 7.1/7.3/7.7 (управление уязвимостями и прикладными патчами).
 3. **ISO/IEC 27001:2022:** контроли A.5.9/A.5.10 (инвентарь активов и правила использования), A.8.8 (управление техническими уязвимостями), A.8.20/A.8.24 (сетевая безопасность и использование криптографии).
+4. **Российская нормативка:** приказы ФСТЭК № 117, № 21, № 239 и ГОСТ Р 57580.1-2017 (`fstec-117`, `fstec-21`, `fstec-239`, `gost-r-57580.1-2017` в `api/services/compliance/frameworks.py`), сроки устранения — по Руководству ФСТЭК ([reports-and-compliance.md](../reports-and-compliance.md)).
 
 Архитектор использует выгрузки раздела `/compliance` для демонстрации внешним аудиторам объективных технических подтверждений выполнения контролей.

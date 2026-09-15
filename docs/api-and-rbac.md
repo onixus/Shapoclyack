@@ -42,9 +42,11 @@ Use the returned token:
 Authorization: Bearer <access-token>
 ```
 
-Agents use a separate provisioning flow. A tenant provisioning key is exchanged
-for a short-lived agent JWT; the plaintext provisioning key is returned only
-when it is created.
+Sensors — the remote scanning nodes that claim jobs and run the scanner (API
+resource `agents`, `agent_kind = scanner`) — and the Lariska endpoint Agent
+(`agent_kind = endpoint`) both use a separate provisioning flow. A tenant
+provisioning key is exchanged for a short-lived agent JWT; the plaintext
+provisioning key is returned only when it is created.
 
 The two token families are signed with **different keys**
 ([#312](https://github.com/onixus/Shapoclyack/issues/312)). A console session is
@@ -54,7 +56,7 @@ key derived from `OCTO_JWT_SECRET` via HKDF-SHA256. Both families still carry a
 `typ` claim and both are still checked, but the signature alone now separates
 them: an operator token does not verify on an agent route and an agent token
 does not verify on `/api/auth/me`, so no single missed `typ` check is enough to
-turn one into the other. The agent key sits on every scanner host, which is a
+turn one into the other. The agent key sits on every sensor host, which is a
 much wider blast radius than the API's own secret — see
 [configuration.md](configuration.md#environment-variables) for rotating it.
 
@@ -127,7 +129,7 @@ naming one key of the window and signed with another is refused, and a token
 with no `kid` (anything minted before #314) is tried against the whole window.
 
 While `OCTO_AGENT_JWT_SECRET` is unset the agent key is derived from the
-operator key, so the same list rotates both audiences and an agent fleet is not
+operator key, so the same list rotates both audiences and a sensor fleet is not
 locked out mid-rotation. The OIDC login state (`api/services/oidc.py`) is
 signed with the same key and verified against the same window, so an SSO login
 started just before a rotating deploy still completes on a replica that has
@@ -348,14 +350,15 @@ One row per administrative change, with the resource before and after it:
 | `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
 | `user.password_reset` | `PUT /api/users/{u}/password` — an admin resetting someone else's password is one request away from acting as them. `before`/`after` carry the `password_changed_at` that moved, never the password |
 | `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
+| `user.mfa_enable`, `user.mfa_disable` | `POST /api/auth/mfa/totp/confirm`, `POST /api/auth/mfa/disable` — the account enrolling or removing its own second factor; the admin-side reset is `user.mfa_reset` |
 | `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
-| `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the agent was moved out of, `after` the new state and the operator's reason |
+| `agent.disable`, `agent.enable`, `agent.quarantine` | `PATCH /api/agents/{id}` — one action per resulting state, so "who took this host out of the fleet" is a filter on the action rather than a read of every lifecycle row. `before` carries the state the sensor was moved out of, `after` the new state and the operator's reason |
 | `agent_group.create`, `agent_group.delete` | `POST` / `DELETE /api/agent-groups` — the groups a job can be addressed to ([#361](https://github.com/onixus/Shapoclyack/issues/361)) |
-| `agent_group.assign` | `PUT /api/agents/{id}/group` — `before` and `after` carry the group the agent left and the one it joined. Membership decides which of the tenant's scans that host may execute, so it belongs in the same trail as a membership grant |
-| `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the agent |
+| `agent_group.assign` | `PUT /api/agents/{id}/group` — `before` and `after` carry the group the sensor left and the one it joined. Membership decides which of the tenant's scans that host may execute, so it belongs in the same trail as a membership grant |
+| `agent.delete` | `DELETE /api/agents/{id}` — `before` holds the hostname, the lifecycle state, the `provisioning_key_id` on record and `other_agents_on_key`. With `?revoke_key=true` a second row, `provisioning_key.revoke`, follows under the same actor and `X-Request-Id`: two acts on two resources, and the key survives the sensor |
 | `report.download` | `GET /api/reports/{id}/download` — a report is the tenant's findings leaving it |
 | `scan_scope.replace` | `PUT /api/tenants/{id}/scan-scope`. `before` holds the entries that went (`removed`), `after` the ones that arrived (`added`), each with the scope's `entry_count` — a diff rather than two full scopes, so the record is bounded by the change and not by a tenant with 3 000 entries |
 | `scan_policy.update` | `PUT` / `DELETE /api/tenants/{id}/scan-policy` ([#362](https://github.com/onixus/Shapoclyack/issues/362)). `before` and `after` hold the whole document — it is one small row per tenant, and "who took the plant network's rate limit off, and what had it been" is what this trail is asked afterwards. `after: null` is the deletion, which is the loosening in its purest form |
@@ -411,8 +414,9 @@ GET /api/audit?tenant_id=acme&format=csv
 | `offset`, `limit` | `Page` envelope like the other lists. Always newest first: this is a log, so there is no `sort`/`order` |
 | `format=csv\|ndjson` | Streams **every** matching event rather than the current page, as an attachment. An export bounded by `limit` would be a page with a filename |
 
-Reading requires **admin in the tenant**: the people who administer a customer
-are the ones who have to review its changes. Rows with no tenant at all —
+Reading requires **`audit.read` in the tenant** — the tenant's own `admin`, its
+`auditor`, or the platform admin: the people who administer or review a customer
+are the ones who have to see its changes. Rows with no tenant at all —
 creating a console account, editing the installation-wide scanner config — are
 platform-level acts and appear only in the platform admin's answer.
 
@@ -616,7 +620,7 @@ it is only supposed to approve.
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
 | `scan_policy.manage` | tenant `admin`, platform admin. Reading a policy needs only `scan_scope.read`: whoever may see what a tenant is allowed to scan may see how hard |
-| `endpoint_agent.manage` | tenant `admin`, platform admin. Covers both halves of managing an endpoint agent remotely (#358): its collection settings and the build it should be running. The version half is the authority to replace a binary on every endpoint in the tenant, which is why it is an administrator's |
+| `endpoint_agent.manage` | tenant `admin`, platform admin. Covers both halves of managing an Agent (Lariska) remotely (#358): its collection settings and the build it should be running. The version half is the authority to replace a binary on every endpoint in the tenant, which is why it is an administrator's |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
@@ -656,7 +660,7 @@ raise their own limit or widen their own scope is the control removing itself.
 
 `tenants.status` is `active` or `suspended`. **The word is `suspended`**, in
 the column, in the `TenantInfo` schema, in the refusal and in this document:
-`disabled` is already an account (`PUT /api/users/{u}/disabled`) and an agent
+`disabled` is already an account (`PUT /api/users/{u}/disabled`) and a sensor
 (`lifecycle_status`), and a third meaning of it on a third object is how a
 reader ends up guessing.
 
@@ -687,8 +691,8 @@ sets the status yet — see
 | `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`), read-only |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
-| `/api/agents` | Agent registration, heartbeat, claim, fleet status and per-agent lifecycle |
-| `/api/agent/deploy` | Operator-driven SSH push installation of an agent onto a Linux host |
+| `/api/agents`, `/api/agent/*` | Sensors: fleet status and per-sensor lifecycle under `/api/agents`; registration, heartbeat and job claim under `/api/agent/*` (agent JWT) |
+| `/api/agent/deploy` | Operator-driven SSH push installation of a sensor onto a Linux host |
 | `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
@@ -713,9 +717,9 @@ What comes back says what was actually stopped:
 
 - a `queued` job becomes `cancelled` at once: no executor has taken it, so
   refusing to hand it out is the whole stop;
-- a `claimed`/`running` **agent** job becomes `cancelling`
+- a `claimed`/`running` **sensor** job becomes `cancelling`
   ([#360](https://github.com/onixus/Shapoclyack/issues/360)). The request
-  reaches the agent on its next heartbeat, the agent signals its scanner's
+  reaches the sensor on its next heartbeat, the sensor signals its scanner's
   process group and uploads whatever the run produced with `cancelled=true`,
   and only that upload — or the grace period expiring — makes the job
   `cancelled`. That upload is idempotent like any other: a retry carrying the
@@ -723,14 +727,13 @@ What comes back says what was actually stopped:
   conflict. Partial results are ingested and kept; they do not feed the
   vulnerability tracker or the notification channels, because a partial sweep
   read as a complete one would report hosts a scan never reached as gone. The
-  agent keeps heartbeating (`stage=cancelling`) while it terminates the process
-  group and packs the partial run, so the fleet does not read an agent carrying
+  sensor keeps heartbeating (`stage=cancelling`) while it terminates the process
+  group and packs the partial run, so the fleet does not read a sensor carrying
   out the order as one that has gone offline
   ([#349](https://github.com/onixus/Shapoclyack/issues/349)); the upload itself
   is still sent without a beat behind it, so a very slow upload of a very large
-  archive can still cross `OCTO_AGENT_STALE_SECONDS`;
-  read as a complete one would report hosts a scan never reached as gone. An
-  archive that arrives **after** the grace period — the agent obeyed, but a
+  archive can still cross `OCTO_AGENT_STALE_SECONDS`. An
+  archive that arrives **after** the grace period — the sensor obeyed, but a
   large partial run on a narrow link did not finish uploading in time — is
   still kept, for one further grace period after the job was closed. What is
   kept is the bytes and not the verdict: the job stays `cancelled` with the
@@ -740,14 +743,14 @@ What comes back says what was actually stopped:
   accepting it would be recording a confirmation that never came;
 - a job already `cancelling` answers `200` with that job unchanged. The stop
   stands and its grace period is already running, so asking again is not a
-  second decision — and terminalizing here would report a stop no agent has
+  second decision — and terminalizing here would report a stop no sensor has
   confirmed and clear the flag before it was read;
 - a `running` **local** job answers `409` and says why: it is a subprocess
   inside one API replica, so there is nothing this request can signal;
 - a finished job answers `409`.
 
-The reason is recorded in `error` and survives the agent's confirmation: what
-the agent reports is appended to it rather than written over it, so a finished
+The reason is recorded in `error` and survives the sensor's confirmation: what
+the sensor reports is appended to it rather than written over it, so a finished
 `cancelled` job still says who asked. The request also writes a `scan.cancel` row
 to `audit_events` carrying the actor and the status the job was in. See the job
 lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
@@ -774,7 +777,7 @@ replaying on the key alone.
 
 `GET /api/jobs/summary` (operator) is the queue depth behind the job list, in
 one grouped query: `by_status` (all six lifecycle states, zero-filled),
-`running`, `queued` (queued **plus** claimed — a job an agent holds but has not
+`running`, `queued` (queued **plus** claimed — a job a sensor holds but has not
 started is still work waiting), `by_surface` (`external` / `internal` / `mixed`
 / `unknown`, each with `running`, `queued`, `total`) and `generated_at`.
 Tenant-scoped exactly like `GET /api/jobs`: fleet-wide for a platform admin who
@@ -787,26 +790,26 @@ form field with the same intent on the upload side: repeating an upload that
 already landed returns the stored outcome (200), rather than the 422 a second
 completion would otherwise get. A second upload that *disagrees* with the
 stored one answers **409**, as does a duplicate that arrives while the first is
-still being ingested — retry it once the first request finishes. Agents that
-send no key still get replay detection from the natural key (same agent, same
+still being ingested — retry it once the first request finishes. Sensors that
+send no key still get replay detection from the natural key (same sensor, same
 job, same exit code).
 
 The same endpoint accepts the `attempt` returned by the claim
 (`AgentClaimResponse.attempt`). It is a fencing token: if the job's lease
 expired and it was handed out again, an upload carrying the older attempt
 answers **409** rather than overwriting the run of the attempt that replaced
-it. This matters because a restarted worker keeps its `agent_id`, so the agent
-identity alone cannot tell the two apart. Agents that omit it are unfenced,
+it. This matters because a restarted sensor keeps its `agent_id`, so the
+identity alone cannot tell the two apart. Sensors that omit it are unfenced,
 exactly as before.
 
-`POST /api/endpoint/inventory` is the only agent-authenticated write in that
-group and carries contract-specific limits: `411` when `Content-Length` is
+`POST /api/endpoint/inventory` — the Agent (Lariska) submitting a snapshot —
+is the only agent-JWT-authenticated write in that group and carries contract-specific limits: `411` when `Content-Length` is
 absent, `413` when the body or a bounded field exceeds its limit, `429` on the
-per-agent hourly rate limit, `409` when a `snapshot_id` is resubmitted with
+per-Agent hourly rate limit, `409` when a `snapshot_id` is resubmitted with
 different content, and `200` (rather than `201`) for an exact replay. Since
 [#308](https://github.com/onixus/Shapoclyack/issues/308) it also answers `403`
-for a `disabled` or `quarantined` agent, like the job routes: quarantining a
-host is meant to stop it writing, not to stop only the half of its traffic that
+for a `disabled` or `quarantined` Agent, like the job routes do for a sensor:
+quarantining a host is meant to stop it writing, not to stop only the half of its traffic that
 carries a job id. Read
 routes expose each device's server-derived `status` (`active`/`stale`, from
 `OCTO_ENDPOINT_STALE_HOURS`) and accept `device_status=active|stale` as a
@@ -1014,28 +1017,28 @@ principal is the same on every retry. Rows written before this change carry no
 caller and keep the old tenant-wide reading for the 24 hours they survive, so a
 retry that crosses the upgrade still replays instead of re-applying its batch.
 
-### Agent fleet, deployment and upgrade
+### Sensor fleet, deployment and upgrade
 
 | Route | Role | Notes |
 |---|---|---|
-| `GET /api/agents` | operator | Page of agents; fleet-wide for an unscoped platform admin, as for `/jobs` |
+| `GET /api/agents` | operator | Page of sensors (and endpoint Agents — both live in the `agents` table, told apart by `agent_kind`); fleet-wide for an unscoped platform admin, as for `/jobs` |
 | `GET /api/agents/summary` | viewer | Fleet rollup: total / online / busy / stale / error / outdated, `latest_version`, and a per-tenant count |
-| `GET /api/agents/{id}` | viewer | One agent, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities, `upgrade_requested`, and `other_agents_on_key` — how many other agents share its provisioning key, which is what `?revoke_key=true` below would stop; `404` outside the tenant |
-| `PATCH /api/agents/{id}` | **admin** | Moves the agent between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the agent as it now stands. A non-`active` agent is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
-| `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the agent registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (an agent registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* agents that revocation stopped |
-| `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of agents in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
-| `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, agents and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name — including when the duplicate is only discovered by the unique index, i.e. two operators posting the same name at the same instant |
-| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. The name in the path is normalised the same way `POST` normalises it, so `DELETE /api/agent-groups/PCI` deletes the group that `POST {"name": "PCI"}` created; `422` for a name no group could have. `409` while an agent, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any agent". A reference cannot be written *while* the group is being deleted either: all four writers that name a group (`PUT /api/tenants/{id}/scan-scope`, `POST /api/jobs`, `POST /api/schedules`, `PUT /api/agents/{id}/group`) check the name inside the transaction that stores the reference and hold the group row while they do, so one of the two requests sees the other's result rather than the state that preceded it. The scan or schedule that loses is answered `422` with the group named; the deletion that loses is the `409` above |
-| `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the agent into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the agent as it now stands. The agent's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the agent already holds is not recalled; the move applies from its next claim |
-| `GET /api/endpoint/agent/policies` | `endpoint_agent.manage` | Every endpoint-agent policy the tenant has set: the tenant-wide default first (`agent_id: null`), then the per-agent overrides |
-| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` | Set the default every endpoint agent inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
+| `GET /api/agents/{id}` | viewer | One sensor, including heartbeat telemetry (OS, CPU, memory, disk, load, uptime), capabilities, `upgrade_requested`, and `other_agents_on_key` — how many other sensors share its provisioning key, which is what `?revoke_key=true` below would stop; `404` outside the tenant |
+| `PATCH /api/agents/{id}` | **admin** | Moves the sensor between `active`, `disabled` and `quarantined` (`{"status": …, "reason": …}`), and answers the sensor as it now stands. A non-`active` sensor is refused job claims and result uploads with `403`; its heartbeat is still accepted so the reason reaches it. The state survives re-registration — a restart is not an appeal ([#308](https://github.com/onixus/Shapoclyack/issues/308)) |
+| `DELETE /api/agents/{id}?revoke_key=false` | operator | Forgets the registration. It does **not** stop the remote process, and on its own it does **not** revoke anything: the host still holds its provisioning key and a live JWT, so it re-registers on its next heartbeat. `?revoke_key=true` revokes the key the sensor registered with, which also invalidates the JWTs already minted from it. The response reports which happened — `provisioning_key_id: null, key_revoked: false` means there was no key on record (a sensor registered before [#308](https://github.com/onixus/Shapoclyack/issues/308), or a legacy shared-token one) — and `other_agents_on_key` says how many *other* sensors that revocation stopped |
+| `GET /api/agent-groups` | viewer | The tenant's agent groups ([#361](https://github.com/onixus/Shapoclyack/issues/361)), each with the number of sensors in it. Readable at viewer rank because it is the vocabulary of the scan form and of the approved scope |
+| `POST /api/agent-groups` | `agent.group.manage` | Create one (`{"name": "pci-segment", "description": …}`). Names are lowercase letters, digits and dashes, unique within the tenant, and **immutable** — the name is what jobs, sensors and scope entries refer to, so a rename would silently re-point a restriction. `422` for a malformed or duplicate name — including when the duplicate is only discovered by the unique index, i.e. two operators posting the same name at the same instant |
+| `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. The name in the path is normalised the same way `POST` normalises it, so `DELETE /api/agent-groups/PCI` deletes the group that `POST {"name": "PCI"}` created; `422` for a name no group could have. `409` while a sensor, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any sensor". A reference cannot be written *while* the group is being deleted either: all four writers that name a group (`PUT /api/tenants/{id}/scan-scope`, `POST /api/jobs`, `POST /api/schedules`, `PUT /api/agents/{id}/group`) check the name inside the transaction that stores the reference and hold the group row while they do, so one of the two requests sees the other's result rather than the state that preceded it. The scan or schedule that loses is answered `422` with the group named; the deletion that loses is the `409` above |
+| `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the sensor into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the sensor as it now stands. The sensor's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the sensor already holds is not recalled; the move applies from its next claim |
+| `GET /api/endpoint/agent/policies` | `endpoint_agent.manage` | Every Agent (Lariska) policy the tenant has set: the tenant-wide default first (`agent_id: null`), then the per-agent overrides |
+| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` | Set the default every Agent (Lariska) inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
 | `PUT /api/endpoint/agent/policy/{agent_id}` | `endpoint_agent.manage` | The same, for one agent, merged over the default field by field. `404` for an agent that is not this tenant's |
 | `DELETE /api/endpoint/agent/policy[/{agent_id}]` | `endpoint_agent.manage` | Remove the default, or one override. `204` whether or not there was one |
 | `GET /api/endpoint/agent/releases` | `endpoint_agent.manage` | Builds this installation can hand out — version, platform, sha256, size. Installation-wide rather than per tenant: it is the same program, and one version meaning two binaries is a version meaning nothing |
 | `POST /api/endpoint/agent/releases` | `endpoint_agent.manage` | Upload one build (multipart: `version`, `platform`, `binary`, optional `notes`). `platform` is the agent's target triple, e.g. `x86_64-pc-windows-msvc`; a version is identified by both, because a version alone does not identify a binary. The `sha256` in the response is computed here from the stored bytes and is **not** accepted from the uploader: it is what an endpoint verifies a download against before executing it, and a digest travelling beside the bytes it describes attests to nothing. Re-uploading the same (version, platform) replaces it. `422` over 64 MiB or with an empty body |
 | `DELETE /api/endpoint/agent/releases/{version}/{platform}` | `endpoint_agent.manage` | Remove one build. An agent already told to move to it is then told nothing, with the reason on its heartbeat |
 | `GET /api/endpoint/agent/releases/{version}/{platform}/download` | agent JWT | The bytes, for an agent that has been told to move to this build. Authenticated as the agent with the same token it heartbeats with, so the digest and the bytes come from one channel: substituting the download would mean substituting the heartbeat that named its digest |
-| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the agent record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#agent-installation-and-upgrade)) |
+| `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the sensor record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#sensor-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing |
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
 | `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
@@ -1044,7 +1047,7 @@ retry that crosses the upgrade still replays instead of re-applying its batch.
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
 | `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
-An agent id belonging to another tenant answers `404`, exactly as an id that
+A sensor id belonging to another tenant answers `404`, exactly as an id that
 exists nowhere does, on `GET`, `DELETE` and `upgrade` alike
 ([#223](https://github.com/onixus/Shapoclyack/issues/223)). Answering `403`
 for the former and `404` for the latter told a caller which ids are real
@@ -1060,13 +1063,13 @@ that takes one from the caller — `agent_id` in the body of
 the query string of `/api/agent/jobs/claim`, in the form of
 `/api/agent/jobs/{id}/results` — now requires it to be the token's own, or
 answers `403`. Before this the id was
-checked only against the tenant, so one compromised agent could heartbeat as,
-claim for and upload results as every other agent in the tenant, which for an
+checked only against the tenant, so one compromised sensor could heartbeat as,
+claim for and upload results as every other sensor in the tenant, which for an
 MSSP customer is its whole fleet. Registering with no `agent_id` uses the
-token's rather than minting a random one, so a restarted agent comes back as
+token's rather than minting a random one, so a restarted sensor comes back as
 itself.
 
-**And a valid key is not a right to be a particular agent.** The check above
+**And a valid key is not a right to be a particular sensor.** The check above
 runs after the token exists, which left the exchange itself open: `POST
 /api/auth/agent/token` (and `/api/auth/exchange`) minted a token for whatever
 `agent_id` was asked for. Two things followed from that, and both are now
@@ -1074,48 +1077,48 @@ runs after the token exists, which left the exchange itself open: `POST
 fine and the identity is not available:
 
 - **Impersonation by a peer.** A holder of any valid key in the tenant could
-  ask for a live agent's id and get a token that passes every check above,
-  rewriting that agent's hostname and labels. An `agent_id` already registered
+  ask for a live sensor's id and get a token that passes every check above,
+  rewriting that sensor's hostname and labels. An `agent_id` already registered
   with a *different provisioning key that is still active* is refused.
-- **Walking out of quarantine.** A `disabled` or `quarantined` agent could
+- **Walking out of quarantine.** A `disabled` or `quarantined` sensor could
   exchange for a token under a fresh id and register as a second, `active` row.
   The exchange now reads the lifecycle state and answers with the same sentence
-  the claim does, so the agent's own loop recognises it and backs off.
+  the claim does, so the sensor's own loop recognises it and backs off.
 
 Rotating a key is still one procedure and not a trap: **revoke the old key
 first**, which already stops the JWTs minted from it, and the id is released to
 whichever key re-provisions the host. An `agent_id` that has never registered
-is always free — that is how every agent starts.
+is always free — that is how every sensor starts.
 
 **The boundary this does not fix.** Two of them, and both are the shape of the
 credential rather than an oversight:
 
-- A legacy `OCTO_AGENT_TOKEN` agent has *no* identity to bind to — the shared
-  token is one credential for every agent in the `default` tenant by
+- A legacy `OCTO_AGENT_TOKEN` sensor has *no* identity to bind to — the shared
+  token is one credential for every sensor in the `default` tenant by
   construction — so it keeps behaving exactly as before, and the tenant check
   remains the only boundary it has. That is another reason the variable is
   deprecated and refused in `prod` from 2027-03-01
   (see [configuration.md](configuration.md)).
 - **One provisioning key deployed to several hosts is one identity for all of
-  them.** The exchange refuses a *different* key asking for an agent's id, but
-  not the key that agent registered with — it cannot, because that is the same
+  them.** The exchange refuses a *different* key asking for a sensor's id, but
+  not the key that sensor registered with — it cannot, because that is the same
   key the host itself re-exchanges on every refresh. Whoever holds a fleet key
-  can therefore be any agent provisioned from it. Mint a key per host (`POST
+  can therefore be any sensor provisioned from it. Mint a key per host (`POST
   /api/tenants/{tenant_id}/provisioning-keys` is cheap, and the SSH deployment
   already does exactly that) where that matters.
 
-**A verified signature is not the whole check.** Every authenticated agent
-request re-reads two things from the database, so revocation lands at once
+**A verified signature is not the whole check.** Every request made with an
+agent JWT re-reads two things from the database, so revocation lands at once
 instead of after the token's remaining lifetime: the provisioning key behind
 the token must still exist, be unrevoked and be unexpired (`401` otherwise),
-and the agent row, when there is one, must belong to the token's tenant
-(`403`). A *missing* row is not refused — the first request an agent ever makes
-is the registration that creates it, and a deleted agent is indistinguishable
+and the `agents` row, when there is one, must belong to the token's tenant
+(`403`). A *missing* row is not refused — the first request a sensor ever makes
+is the registration that creates it, and a deleted sensor is indistinguishable
 from a never-registered one. Making a delete permanent is therefore
 `?revoke_key=true`, not the delete alone.
 
 **Who may mint a provisioning key** ([#231](https://github.com/onixus/Shapoclyack/issues/231)).
-A provisioning key registers agents into the tenant, which makes handing one
+A provisioning key registers sensors into the tenant, which makes handing one
 out an authorization decision rather than a read. `POST` on
 `/api/agent/deployment-command` and `/api/agent/deploy/ssh` therefore take
 tenant **`admin`** — the same bar as
@@ -1163,38 +1166,39 @@ an operator was never told had one would strand whichever fleets are already
 past it; expiring an old key is a deliberate revoke, and the list is what finds
 the ones still carrying no expiry.
 
-**Agent version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
-The agent ships in the same release as the API and carries the same version, so
+**Sensor version, and the floor** ([#363](https://github.com/onixus/Shapoclyack/issues/363)).
+The sensor (`agent/worker.py`) ships in the same release as the API and carries
+the same version, so
 `latest_version` in `GET /api/agents/summary` is the app version and
 `is_outdated` means "not on the current release". It used to be a separate
-constant that no release ever produced, which reported every agent in every
+constant that no release ever produced, which reported every sensor in every
 installation as outdated and made `upgrade_requested` permanent — the flag
-clears when the agent reports a *different* version, and no upgrade could reach
+clears when the sensor reports a *different* version, and no upgrade could reach
 the version the constant wanted.
 
 `OCTO_AGENT_MIN_VERSION` (empty by default) turns that reporting into a rule.
-An agent below the floor is answered **`426 Upgrade Required`** on
+A sensor below the floor is answered **`426 Upgrade Required`** on
 `POST /api/agent/jobs/claim`, with the required version in the detail.
-`register` and `heartbeat` keep working on purpose: a gated agent that
+`register` and `heartbeat` keep working on purpose: a gated sensor that
 disappeared from `GET /api/agents` would be a host nobody can find to upgrade.
 The same `426` has a second cause since
 [#362](https://github.com/onixus/Shapoclyack/issues/362): a job whose tenant
-has a scan policy is handed only to an agent that reports the `scan_policy`
+has a scan policy is handed only to a sensor that reports the `scan_policy`
 capability (on `register` and on every heartbeat), because the ceilings are
-applied by the executor and an agent that ignores them would scan at whatever
+applied by the executor and a sensor that ignores them would scan at whatever
 its local config says. The detail names the capability; the job stays queued.
 `capabilities` has three states on both `register` and `heartbeat`, and
 they mean different things. **Omitted** leaves the stored list alone — an
-agent that declares its capabilities only on the heartbeat must not lose
+sensor that declares its capabilities only on the heartbeat must not lose
 them by restarting. **A list** replaces it. **The empty list** is a list,
-not silence: a worker rolled back to a build without `scan_policy` reports
+not silence: a sensor rolled back to a build without `scan_policy` reports
 honestly that it has none, and treating that as "said nothing" would leave
 the API handing it policy-carrying jobs it then scans at whatever its local
 config says — the ceiling not applying, which is the failure the `426`
 exists to prevent.
 The heartbeat response carries `min_version`, `upgrade_required` and a
 human-readable `upgrade_message`, which is the only channel that reaches a
-running agent — `agent/worker.py` logs it once per change rather than once per
+running sensor — `agent/worker.py` logs it once per change rather than once per
 poll. Note the two are different questions: `upgrade_requested` is an
 operator's wish recorded by `POST /api/agents/{id}/upgrade`, `upgrade_required`
 is the installation's floor and is what refuses work.
@@ -1217,7 +1221,7 @@ Three further properties of this group are worth knowing before it is used:
   ([#240](https://github.com/onixus/Shapoclyack/issues/240)). Both the probe and
   the run open a TCP connection to a host and port from the request body, so
   both are checked first. The check is deliberately *not* the webhook boundary:
-  an agent belongs inside a private network, so RFC1918 is the ordinary answer
+  a sensor belongs inside a private network, so RFC1918 is the ordinary answer
   here and refusing it would refuse the product. What is refused is this
   platform's own reflection — loopback, link-local (`169.254.169.254` is a
   metadata service, not a Linux box), multicast, the unspecified address — a
@@ -1226,7 +1230,7 @@ Three further properties of this group are worth knowing before it is used:
   ([#226](https://github.com/onixus/Shapoclyack/issues/226)): a prohibition that
   stopped a scan but not an SSH connection from the same API would not be
   recording anything. Containment in the *allowed* scope is opt-in
-  (`OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE`), because where an agent lives is not
+  (`OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE`), because where a sensor lives is not
   the same question as what it is approved to scan. Every refusal is a `403`
   and a row in `GET /api/auth/events?outcome=denied`.
 - **SSH credentials are request data.** The password or private key in
@@ -1412,7 +1416,7 @@ curl http://localhost:8080/openapi.json
 
 - A principal may act only within the tenant scope granted by its token or the
   route's authorization policy.
-- Agent claim and completion calls validate job and agent tenant equality.
+- Sensor claim and completion calls validate job and sensor tenant equality.
 - NATS messages carry tenant metadata.
 - Asset and endpoint-inventory queries require tenant context.
 - Do not accept a tenant identifier from a client without server-side
@@ -1506,15 +1510,12 @@ not. Both directions are journalled as `trust_change` events
 (`promoted_domain_added` / `promoted_domain_withdrawn`) with the actor, like
 the SSH host-key pins.
 
-```http
-```
-
 `PUT` replaces the whole scope in one transaction and stamps the caller as
 `approved_by` on every resulting row; `entries: []` is accepted and means the
 tenant scans nothing. A malformed entry is `422`, an unknown tenant `404`.
 
-An **allow** entry may also carry `agent_groups` — the agent groups entitled to
-scan what it approves (#361):
+An **allow** entry may also carry `agent_groups` — the agent groups (named sets
+of sensors, `/api/agent-groups`) entitled to scan what it approves (#361):
 
 ```http
 PUT /api/tenants/{tenant_id}/scan-scope
@@ -1523,7 +1524,7 @@ PUT /api/tenants/{tenant_id}/scan-scope
 ```
 
 An empty list, which is what every entry written before #361 carries, permits
-any agent of the tenant. Where several allow entries cover one target, **the
+any sensor of the tenant. Where several allow entries cover one target, **the
 narrowest of them decides** — `10.1.0.0/16 → pci-segment` under a plain
 `10.0.0.0/8`, or under the `0.0.0.0/0` and `domain *` rows migration 0025 left
 on every tenant that predates the scope table, is the restriction that applies.
@@ -1534,10 +1535,10 @@ addressed to the single permitted group when there is one, refused with `422`
 asking the operator to choose when the covering entries leave several, and
 refused with `403` when the request names a group the entry does not permit.
 Targets whose entries share no group cannot be scanned in one job — one job
-runs on one agent — and that is a `403` too, naming both sides. `agent_groups`
+runs on one sensor — and that is a `403` too, naming both sides. `agent_groups`
 on a **deny** entry is `422`: a deny refuses everybody and has no exception to
 express. A group that does not exist is refused here rather than at 02:00,
-where the only symptom would be a scan nobody can claim.
+where the only symptom would be a scan no sensor can claim.
 
 An out-of-scope scan is refused with **`403`, not `422`** — the target is
 well-formed, the tenant is simply not entitled to it — and the refusal is
@@ -1555,10 +1556,10 @@ grandfathering migration `0025` applies on upgrade are described in
 
 The approved scope says *what* a tenant may be pointed at. The scan policy says
 at what pace, and it is the answer to a gap that was total before
-[#362](https://github.com/onixus/Shapoclyack/issues/362): the API sent a remote
-agent `--mode` and every actual number — 2000 packets per second for `safe`
+[#362](https://github.com/onixus/Shapoclyack/issues/362): the API sent a
+sensor `--mode` and every actual number — 2000 packets per second for `safe`
 discovery, the host concurrency, the nmap timing — came from the
-`scanner/config/default.yaml` on **the agent's own host**. The platform
+`scanner/config/default.yaml` on **the sensor's own host**. The platform
 operator, who answers for the traffic, could not set it.
 
 ```http
@@ -1572,7 +1573,7 @@ DELETE /api/tenants/{tenant_id}/scan-policy     # scan_policy.manage, step-up
 
 `GET` answers `null` for a tenant that has no policy, and that is the normal
 state rather than a missing resource: **no policy is the pre-#362 behaviour** —
-no ceiling is pushed, the agent's local config decides, every speed profile is
+no ceiling is pushed, the sensor's local config decides, every speed profile is
 allowed. Writing one needs `scan_policy.manage`, held by the tenant's own
 `admin` and the platform admin (unlike the scope approval, which no role that
 can start a scan holds — this control only ever *narrows* what the platform
@@ -1598,7 +1599,7 @@ Enforcement is in three places and none of them is the console:
 | `jobs.start_scan` | Beside the quota, the scope and the calendar, so the recurring dispatcher and the platform's own re-scans are held to it too. A `safe-only` tenant asking for `balanced`/`fast`/`test` is **`403`**, and so is a scan naming a port on the avoid-list — refused rather than silently filtered, because an operator who asked to scan 502 should hear no rather than get results that omit it. The refusal is in `audit_events` as `scan.policy_block` and counted in `octo_scan_policy_refusals_total` |
 | The executor | The resolved policy is frozen onto the job and travels to whoever runs it as the `scan_policy.json` input, beside the targets and the approved scope — in the claim response, never in the broadcast NATS offer (#361). `scanner/pipeline/scan_policy.py` applies it onto the local config, where it can only ever *lower* a rate, union the port exclusions, or turn the service probe off. Every stage that reads a rate of its own is covered: the two discovery passes after wave 1, the probe ladder's TCP step, nuclei's rate limit and concurrency, and naabu's own `-rate` when a batch is a single host |
 | The `PUT` itself | Jobs of that tenant still in `queued` are held to the stricter of their frozen snapshot and the new policy, and the response says how many (`retightened_queued_jobs`). Tightening only, and never a job already claimed: the night's scan that has not started yet is the one an operator writing `fragile` in the morning means to catch, and a scan already handed to a worker is answerable for the document it was handed |
-| `claim_job` | A job whose tenant has a policy is handed only to an agent that declares the `scan_policy` capability. Anything else gets **`426`**, the same status the version floor uses, and the job stays queued for a worker that can pace itself. A ceiling an older agent silently ignored would read as enforced and would not be |
+| `claim_job` | A job whose tenant has a policy is handed only to a sensor that declares the `scan_policy` capability. Anything else gets **`426`**, the same status the version floor uses, and the job stays queued for a sensor that can pace itself. A ceiling an older sensor silently ignored would read as enforced and would not be |
 
 A schedule the policy forbids is **skipped** at dispatch (`skipped_policy` in
 the dispatcher stats), not deferred: unlike a blackout this does not lift by
@@ -1606,7 +1607,7 @@ itself, so there is no moment to move the tick to.
 
 The operational side — what the fragile profile costs in wall-clock, why the
 local `default.yaml` is now the fallback rather than the decision, and what
-this control does *not* prove about an agent — is in
+this control does *not* prove about a sensor — is in
 [operations.md](operations.md#scan-policy-and-the-ot-profile).
 
 ## Maintenance windows and the change freeze
@@ -1666,9 +1667,10 @@ platform's own re-scans are held to the same calendar; a verification re-scan
 is **not** exempt the way it is from the quota, because it still reaches the
 customer's network.
 
-The check runs when a scan is **accepted**. In agent execution mode the job
-then waits in the queue, and `claim_job` does not re-check the calendar: a
-worker that was busy at 21:50 can claim that job at 22:30, inside a blackout
+The check runs when a scan is **accepted**. In `agent` execution mode
+(`OCTO_JOB_EXECUTION_MODE=agent` — jobs go to sensors) the job then waits in
+the queue, and `claim_job` does not re-check the calendar: a
+sensor that was busy at 21:50 can claim that job at 22:30, inside a blackout
 that opened at 22:00. Admission is a control over what the platform accepts,
 not a kill switch over queued work — see
 [operations.md](operations.md#maintenance-windows-and-the-change-freeze).
@@ -1826,7 +1828,7 @@ partially: assets that already exist keep getting this run's data, and only
 newly discovered hosts are dropped (`quota_skipped` in the upsert stats).
 Refusing the whole result set would throw away findings for the assets inside
 the quota as well, which punishes the wrong thing. An endpoint-inventory
-snapshot from an agent is accepted for the same reason — the device is left
+snapshot from an Agent (Lariska) is accepted for the same reason — the device is left
 `reconciliation_status: "unlinked"` and links itself on a later submit once the
 limit is raised, because losing software and patch data over a *registry* limit
 is not a trade anybody asked for.
@@ -1889,7 +1891,7 @@ know it.
 
 The scanner itself has no tenant concept, so the API tags each completed run by
 writing `tenant.json` (`{"tenant_id": …}`) into the run directory — from
-`_run_job` for local execution and from `complete_job` for agent uploads. Run
+`_run_job` for local execution and from `complete_job` for sensor uploads. Run
 listings, sub-resources (`hosts`/`ports`/`vulnerabilities`/`diff`), and both
 artifact endpoints are filtered by that marker.
 

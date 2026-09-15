@@ -4,6 +4,16 @@ This directory is the stable entry point for Shapoclyack documentation. Use it b
 
 Commands assume the repository root unless a guide explicitly says otherwise.
 
+## Terminology
+
+Three words are used precisely throughout these guides:
+
+- **Sensor** — a remote scanning node. It runs `agent/worker.py`, claims scan jobs from the API (over NATS JetStream or by HTTPS polling), executes the scanner (nmap/httpx/nuclei/…) and uploads the results. Registered in the `agents` table with `agent_kind = "scanner"`.
+- **Agent** — the Lariska in-guest endpoint inventory agent installed on a managed host. It submits inventory snapshots to `POST /api/endpoint/inventory` and never claims scan jobs. Registered in the same `agents` table with `agent_kind = "endpoint"`.
+- **Endpoint** — a managed host that has the Agent installed.
+
+The bare word "agent" always means the Lariska endpoint Agent; anything that claims jobs and runs scans is a sensor. Code identifiers were not renamed: the Python package `agent/`, the `agents` table and `/api/agents/*` routes, the `OCTO_AGENT_*` variables, the k8s `agents` overlay and the console page at `/agents` (still titled "Distributed Agent Fleet") all keep their names and are described as "the sensor (API resource `agents`)" in prose.
+
 ## Start here
 
 | Goal | Authoritative guide |
@@ -18,6 +28,7 @@ Commands assume the repository root unless a guide explicitly says otherwise.
 | Use the Web UI | [Web interface](ui.md) |
 | Diagnose failures | [Troubleshooting](troubleshooting.md) |
 | Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |
+| Hand the firewall team what sensors and the API open | [Network requirements](network-requirements.md) |
 | Develop or review changes | [Development](development.md) |
 
 ## Product and UX direction
@@ -34,7 +45,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 |---|---|
 | [Wiki Portal](wiki/README.md) | Central portal: concept, data model, NIST SP 800-30, mechanical verification, index |
 | [Security Engineer Scenarios](wiki/scenarios-security-engineer.md) | Day-to-day operations: scanning, triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
-| [Architect Scenarios](wiki/scenarios-architect.md) | Architecture: EASM, CMDB/AD integration, remote agents in DMZ/VPC, CI/CD DevSecOps, compliance controls |
+| [Architect Scenarios](wiki/scenarios-architect.md) | Architecture: EASM, CMDB/AD integration, sensors in DMZ/VPC, CI/CD DevSecOps, compliance controls |
 | [CISO Scenarios](wiki/scenarios-ciso.md) | Executive view: Risk Overview (NIST SP 800-30), CISA KEV threats, SLA & adoption metrics, board reporting |
 | [Security Processes](wiki/security-processes.md) | Formal VM lifecycle, EASM, emergency 0-day response, IT/DevOps SLA collaboration |
 | [Implementation Plan](wiki/implementation-plan.md) | 12-week enterprise rollout roadmap, milestones M1–M4, RACI matrix, deployment models, KPIs |
@@ -48,6 +59,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Web interface](ui.md) | Current UI routes, tenant context, workflows, screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
 | [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
+| [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |

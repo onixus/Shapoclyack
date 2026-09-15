@@ -19,10 +19,18 @@ yet production-ready.
 | Track | What it answers | Where it lives | State |
 |-------|-----------------|----------------|-------|
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
-| **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Blocking GA** |
+| **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Done** — EPIC #154 closed; Waves 0–2 shipped in `0.43-0828`. The next readiness pass is the enterprise-readiness review, [EPIC #370](https://github.com/onixus/Shapoclyack/issues/370) (Track E) |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
-| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2) recorded in the same file |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183) and the Sprint 4 report factory / compliance mapping merged |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2, Windows/MSRC matching and console-driven Agent management, migration `0057`) recorded in the same file |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183), the Sprint 4 report factory / compliance mapping, and the first wave of the enterprise-readiness review ([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370): MFA, revocable sessions, named permissions, sensor identity/quarantine, encrypted integration secrets, maintenance windows, object-storage artifacts, Russian compliance catalogues) merged and still in `## Unreleased` |
+
+**Terminology.** A **sensor** is a remote scanning node — it runs `agent/worker.py`, claims scan
+jobs and uploads results; it is registered as API resource `agents` with `agent_kind = scanner`.
+The **Agent** is the Lariska endpoint agent installed on a managed host (`agent_kind = endpoint`);
+it submits inventory to `POST /api/endpoint/inventory` and never claims jobs. The bare word
+"agent" below means the Lariska Agent. Identifiers are unchanged: the `agents` table, `/api/agents`,
+`OCTO_AGENT_*`, the `agent/` package, the k8s `agents` overlay and the console route `/agents`
+(whose page is still titled "Distributed Agent Fleet"; it lists sensors).
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
@@ -35,39 +43,47 @@ map and each source stays authoritative for its own scope.
 
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.43-0828](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.43-0828)**.
-Includes all capabilities of Phases 1–11 and P0–P4, full EASM lifecycle & NIST risk scoring,
-Track B Wave 0, Wave 1 and Wave 2 GA hardening (#151–#159, #185–#188, #222–#231),
-ClickHouse TTL and run retention (#187), and multi-replica load validation (#188).
-GHCR images are published by the **local Jenkins** job `shapoclyack-publish` (`Jenkinsfile.publish`)
-with tag `shapoclyack-0.43-0828`; the k8s manifests pin `tag@sha256:` to that tag ([#267](https://github.com/onixus/Shapoclyack/pull/267)).
+Shipped through **[shapoclyack-0.44-0907](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.44-0907)**
+(2026-09-07; `0.43-0828` before it). Includes all capabilities of Phases 1–11 and P0–P4, full EASM
+lifecycle & NIST risk scoring, Track B Wave 0, Wave 1 and Wave 2 GA hardening (#151–#159,
+#185–#188, #222–#231), ClickHouse TTL and run retention (#187), multi-replica load validation
+(#188), and the Track E work recorded under `[0.44-0907]` in `CHANGELOG.md`: `org_profile`
+M1–M5, usage metering and quotas, the Adoption page, the report factory and compliance mapping,
+software→CVE matching M1–M3, mechanical verification (#183), OIDC + service tokens, and the
+Apache-2.0 licence. GHCR images are published by the **local Jenkins** job `shapoclyack-publish`
+(`Jenkinsfile.publish`); since `0.44-0907` the job also accepts `-alpha<N>`/`-beta<N>`/`-rc<N>`
+tags, which do not move `:latest`. The k8s manifests pin `tag@sha256:`
+([#267](https://github.com/onixus/Shapoclyack/pull/267)). `agent/__init__.py` and
+`api/__init__.py` carry the same version string as the tag.
 
 Everything this section listed on 2026-08-26 as merged-but-untagged shipped in
 `shapoclyack-0.43-0828`, together with all of Wave 2: historical risk score snapshots
 ([#144](https://github.com/onixus/Shapoclyack/issues/144)), a SARIF v2.1.0 exporter with an
 in-UI viewer, endpoint-inventory NATS events and the end-to-end lifecycle suite completing
-**Track D** (S8/S10), agent fleet monitoring and UI-driven SSH deployment, a UX/UI refactor
+**Track D** (S8/S10), sensor fleet monitoring and UI-driven SSH deployment, a UX/UI refactor
 with a redesigned remediation kanban, and JWT-algorithm / request-body hardening.
 Auto-update was claimed in that list in error and does not exist — the bundle route the
-scripts fetched was never implemented and `upgrade_requested` is a flag nothing on the host
+scripts fetched was never implemented and `upgrade_requested` is a flag nothing on the sensor host
 reads (~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
 [#233](https://github.com/onixus/Shapoclyack/pull/233)).
-`CHANGELOG.md` has no open `## Unreleased` section at the cut; `main` is that tag plus the
-publish-parameter validation ([#268](https://github.com/onixus/Shapoclyack/pull/268)), the
-k8s digest pins and documentation.
+`CHANGELOG.md` has an open `## Unreleased` section again, and a large one: `main` is the
+`0.44-0907` tag plus ~210 commits — the first wave of the enterprise-readiness review
+([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370)), migrations `0046`–`0057` (there is no `0054`;
+workflow events, notification channels, maintenance windows, named permissions, exception
+approval, job cancellation, sensor groups, tenant scan policy, idempotency actor, sensor
+`healthy_since`, endpoint Agent management), object-storage artifacts, the Russian compliance
+catalogues, the light console theme and the Russian translation. The review's issues stay open
+in GitHub until the release that ships them is cut, so an open issue whose fix is listed under
+`## Unreleased` is not a contradiction — the code is the arbiter, not the issue state.
 
 Local CI is the multibranch job `shapoclyack-branches`, branch `main` — the single-branch
 `shapoclyack` job is disabled and its last builds are stale, so it is not evidence of
-anything. Build **#8** (2026-08-28, revision `645bdc5`) is SUCCESS: 1291 pytest on 3.11 and
-3.12, coverage 83.36% against a 74% gate, 142 vitest in 26 files, load run 16/16 hosts.
-Build #9 (revision `d644f20`) was **FAILURE** on
-`tests/test_nats_live.py::test_live_ingest_publish`, and that was not a test problem:
-`NatsBus._ensure_stream` returned quietly when the stream could not be created, so the bus
-came up reporting itself healthy with nothing behind it
-(~~[#270](https://github.com/onixus/Shapoclyack/issues/270)~~, fixed in
-[#271](https://github.com/onixus/Shapoclyack/pull/271)). The failing run had also reached the
-end of the host's disk, which is what made the stream unallocatable in the first place — so
-that build says nothing about the code it was testing.
+anything. Build **#45** (2026-09-15, revision `f16055b`, merge of #405) is SUCCESS: 2998
+pytest on 3.11 and 3.12, coverage 88% against a 74% gate, vitest in 71 files, kustomize, image,
+smoke and load stages green. Build #46 (revision `14d26b9`, merge of #406) is **FAILURE** on
+one test, `tests/test_sla_escalation.py::test_the_owner_digest_is_sent_once_a_day_to_the_asset_owner`
+(`assert 2 == 1`), with the same 88% coverage — not yet diagnosed at the time of writing, so
+`main` is amber until it is.
 
 
 | Area | Status |
@@ -75,7 +91,7 @@ that build says nothing about the code it was testing.
 | Scanner pipeline (`resolve → discovery → hostnames → ports → NSE`) | Done |
 | CVSS v4 + GeoIP enrichment | Done |
 | FastAPI API + React dashboard + JWT RBAC | Done |
-| Remote agents, DefectDojo, PDF reports | Done |
+| Sensors (remote scanning nodes; API resource `agents`, `agent_kind = scanner`), DefectDojo, PDF reports | Done |
 | Kubernetes (`k8s/shapoclyack/`) + all-in-one compose | Done |
 | GHCR images `shapoclyack-{aio,scanner,api}` | Done |
 | Nmap made optional / non-default in published images ([#97](https://github.com/onixus/Shapoclyack/issues/97) Phase 1) — Pulse is the default service-probe backend; default `-aio`/`-scanner` images ship Nmap-free; a legacy `-nmap` tag remains opt-in for NPSL-aware users who want classic NSE | Done |
@@ -91,7 +107,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | Path | Role |
 |------|------|
 | `api/` | FastAPI/Python backend |
-| `agent/` | Remote scanning workers |
+| `agent/` | Sensor worker (the remote scanning node; package name kept) |
 | `scanner/` | Core pipeline (Nmap, CVSS4, GeoIP) |
 | `web-next/` | Next.js 14 App Router dashboard (**Web UI v2**, served from aio) — the only web UI; legacy Vite `web/` was removed after the cutover |
 | `k8s/shapoclyack/` | Kubernetes deployment manifests |
@@ -115,19 +131,19 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 
 ### Phase 1 — NATS JetStream & API Gateway Integration
 
-**Goal:** Decouple agents from DB polling and ensure resilient data ingestion.
+**Goal:** Decouple sensors from DB polling and ensure resilient data ingestion.
 
-**Status:** **Done** — JetStream manifests (cluster-ready, safe at `replicas=1`) + compose auto-wire + long-lived agent pull + live broker tests + bounded retention (`OCTO_NATS_*_MAX_AGE_SECONDS`/`MAX_BYTES`) + opt-in HA (`OCTO_NATS_STREAM_REPLICAS`, `k8s/shapoclyack/overlays/prod-ha/nats-ha-patch.yaml`).
+**Status:** **Done** — JetStream manifests (cluster-ready, safe at `replicas=1`) + compose auto-wire + long-lived sensor pull + live broker tests + bounded retention (`OCTO_NATS_*_MAX_AGE_SECONDS`/`MAX_BYTES`) + opt-in HA (`OCTO_NATS_STREAM_REPLICAS`, `k8s/shapoclyack/overlays/prod-ha/nats-ha-patch.yaml`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 1.1 | Deploy NATS JetStream | `k8s/shapoclyack/base/` | StatefulSet + headless/client Services; compose profile `nats` | **Done** |
 | 1.2 | Refactor API ingest | `api/services/results_ingest.py`, `nats_bus.py` | Validate archive → publish `ingest.raw_results` (JetStream `Nats-Msg-Id` dedupe); still extract to FS for UI | **Done** |
-| 1.3 | Update agent worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **Done** |
+| 1.3 | Update sensor worker | `agent/worker.py` | When `OCTO_NATS_URL` set: JetStream pull on `jobs.scan` (durable `octo-agents`); else HTTP claim poll | **Done** |
 
 ### Phase 2 — MSSP Multi-tenancy & Authentication
 
-**Goal:** Secure agent communication and enforce strict tenant isolation.
+**Goal:** Secure sensor communication and enforce strict tenant isolation.
 
 **Status:** **Done** — tenants/provisioning keys are Postgres-backed (migrated off JSON in Phase 7.4) + agent JWT; legacy `OCTO_AGENT_TOKEN` still maps to `tenant_id=default`.
 
@@ -136,7 +152,7 @@ Reference this layout verbatim (`onixus/shapoclyack`):
 | 2.1 | Provisioning | `api/services/tenants.py`, `api/routes/auth.py` | Create tenants + provisioning keys (hashed); plaintext returned once | **Done** |
 | 2.2 | JWT exchange | `POST /api/auth/agent/token`, `api/services/auth.py`, `agent/worker.py` | Exchange key → short-lived agent JWT (`typ=agent`, `tenant_id`) | **Done** |
 | 2.3 | Gateway JWT validation | `require_agent`, jobs/ingest NATS publish | Enforce agent JWT + tenant match before claim/complete/NATS; `tenant_id` header on messages | **Done** |
-| 2.4 | Kubernetes hardening | `k8s/shapoclyack/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Agent egress NetworkPolicy; ExternalSecrets example for keys via env | **Done** |
+| 2.4 | Kubernetes hardening | `k8s/shapoclyack/examples/networkpolicy-*.yaml`, `externalsecret.example.yaml` | Sensor egress NetworkPolicy; ExternalSecrets example for keys via env | **Done** |
 
 ### Phase 3 — ClickHouse Analytics Engine
 
@@ -163,8 +179,8 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 4.1 | Agent distribution | `k8s/shapoclyack/base/agents/agent-deployment.yaml` | `topologySpreadConstraints` on zone + hostname | **Done** |
-| 4.2 | Vertical Pod Autoscaling | `k8s/shapoclyack/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for agent pods | **Done** |
+| 4.1 | Sensor distribution | `k8s/shapoclyack/base/agents/agent-deployment.yaml` | `topologySpreadConstraints` on zone + hostname | **Done** |
+| 4.2 | Vertical Pod Autoscaling | `k8s/shapoclyack/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for sensor pods | **Done** |
 | 4.3 | Opt-in overlay | `k8s/shapoclyack/overlays/agents` | replicas=3 + API agent-mode; not in default base | **Done** |
 
 ### Phase 5 — Advanced Discovery & Notifications
@@ -181,7 +197,7 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 ### Phase 6 — Shapoclyack Web UI v2 (`web-next/`)
 
-**Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, agents, jobs, runs, asset inventory).
+**Goal:** Replace the Vite React dashboard with an MSSP / Enterprise Vulnerability Management UI that scales to 50k+ assets (tenants, sensors, jobs, runs, asset inventory).
 
 **Status:** **Done** — full cutover complete: aio/API images serve web-next static export, CI builds/lints `web-next/`, and legacy `web/` has been removed from the repo.
 
@@ -228,7 +244,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 |----|------|---------------|--------|--------|
 | 7.1 | Postgres as PRIMARY_DB | `api/db/` (new), `api/services/` | SQLAlchemy/Alembic; `tenants`, `provisioning_keys`, `assets`, `asset_identifiers` (IP/domain/cert-hash), `asset_tags` tables | **Done** |
 | 7.2 | Asset dedup / fingerprint | `scanner/pipeline/asset_identity.py` (new) | Stable `asset_id` keyed by tenant+IP or tenant+FQDN sha256 hash, to avoid duplicates across runs | **Done** |
-| 7.3 | Lifecycle tracking | `api/services/assets.py`, hooked from `api/services/jobs.py` (`_run_job` + `complete_job`, covering both local-mode and agent-upload execution paths) | `first_seen` / `last_seen` / `status` (active/stale/decommissioned) per asset; staleness is a `last_seen` age threshold (`OCTO_ASSET_STALE_DAYS`, default 14d) | **Done** |
+| 7.3 | Lifecycle tracking | `api/services/assets.py`, hooked from `api/services/jobs.py` (`_run_job` + `complete_job`, covering both local-mode and sensor-upload execution paths) | `first_seen` / `last_seen` / `status` (active/stale/decommissioned) per asset; staleness is a `last_seen` age threshold (`OCTO_ASSET_STALE_DAYS`, default 14d) | **Done** |
 | 7.4 | Migrate tenants/keys off JSON | `api/services/tenants.py` | Postgres-backed behind the same public function signatures; `resolve_provisioning_key` now O(1) via an indexed `key_lookup` prefix instead of scan-and-bcrypt-verify-all | **Done** |
 
 ### Phase 8 — Outside-In Continuous Discovery
@@ -240,10 +256,10 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 8.1 | ASN / WHOIS / BGP org mapping | `scanner/pipeline/asn_discovery.py` (new) | Seed domain → resolved IP → ASN → announced prefixes via RIPEstat's free keyless API; hard-capped at `max_total_ips` (default 4096) since one ASN can span far more than one org's infra | **Done** |
-| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py`, `api/routes/wordlists.py`, `api/services/wordlists.py`, migration `0012`, `web-next/.../wordlists` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped). Tenant-uploaded wordlists now live in Postgres per tenant (`POST /api/wordlists` + Wordlists page), selected per scan via `StartScanRequest.wordlist_id`: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on cloud discovery, materialized to a job-scoped file and merged **not** fail-soft (a scan that asked for a wordlist must not run without one). Body normalized/de-duped on write, reads return metadata only, capped by `OCTO_WORDLIST_MAX_BODY_BYTES`/`OCTO_WORDLIST_MAX_WORDS`; agent mode 422s `wordlist_id` (materialized on the API pod, unreachable by a remote worker's mounted config) | **Done** |
+| 8.2 | Expanded subdomain enum | `scanner/pipeline/hostnames.py`, `api/routes/wordlists.py`, `api/services/wordlists.py`, migration `0012`, `web-next/.../wordlists` | Adds an `otx` (AlienVault OTX passive DNS) provider alongside crt.sh/Cert Spotter, plus an opt-in wordlist brute-force pass (`discovery.ct.brute_force`, built-in `scanner/data/wordlists/subdomains-small.txt`, concurrency/candidate-capped). Tenant-uploaded wordlists now live in Postgres per tenant (`POST /api/wordlists` + Wordlists page), selected per scan via `StartScanRequest.wordlist_id`: a `subdomain` list turns on `ct.brute_force`, a `bucket` list turns on cloud discovery, materialized to a job-scoped file and merged **not** fail-soft (a scan that asked for a wordlist must not run without one). Body normalized/de-duped on write, reads return metadata only, capped by `OCTO_WORDLIST_MAX_BODY_BYTES`/`OCTO_WORDLIST_MAX_WORDS`; sensor mode (`execution=agent`) 422s `wordlist_id` (materialized on the API pod, unreachable by a sensor's mounted config) | **Done** |
 | 8.3 | Cloud resource discovery | `scanner/pipeline/cloud_discovery.py` (new) | S3/GCS/Azure Blob bucket + container enumeration via unauthenticated HEAD/GET against public provider endpoints; org tokens × wordlist candidates, hard-capped at `max_candidates` (default 500) and `concurrency` (default 10) since checks hit shared third-party cloud infrastructure, not the target's own hosts; findings reported, never merged into scan scope | **Done** |
 | 8.4 | Typosquat / domain monitoring | `scanner/pipeline/domain_monitor.py` (new) | Look-alike domain candidates (omission/transposition/keyboard-adjacent/doubling/homoglyph/TLD-swap generators) resolved via passive dnsx A/AAAA lookups only — same risk class as `ct.brute_force`, never merged into scan scope; plus a dangling-CNAME/subdomain-takeover heuristic over the org's own in-scope FQDNs (CNAME target matches a known vulnerable-service suffix AND has no A/AAAA record) that flags the pattern + non-resolution only and never confirms an actual takeover | **Done** |
-| 8.5 | Continuous org-level scheduling | `api/db/models.py` (`ScanSchedule`), `api/services/scan_schedules.py`, `api/services/schedule_dispatcher.py`, `api/routes/schedules.py` | Per-tenant `scan_schedules` table (cron or fixed-interval, target set + scan options); an in-process dispatcher thread (started from the API `lifespan`, same pattern as the ClickHouse ingest worker — no per-tenant K8s CronJob) polls due schedules and calls the existing `jobs_service.start_scan`, skipping a tick if the schedule's previous job is still running. `CRUD via `/api/schedules` (operator role; delete is admin-only). API-only this iteration, no web-next UI. The original `scanner/scheduler.py`/static `cronjob.yaml` remain as-is for simple single-tenant self-hosts. | **Done** |
+| 8.5 | Continuous org-level scheduling | `api/db/models.py` (`ScanSchedule`), `api/services/scan_schedules.py`, `api/services/schedule_dispatcher.py`, `api/routes/schedules.py` | Per-tenant `scan_schedules` table (cron or fixed-interval, target set + scan options); an in-process dispatcher thread (started from the API `lifespan`, same pattern as the ClickHouse ingest worker — no per-tenant K8s CronJob) polls due schedules and calls the existing `jobs_service.start_scan`, skipping a tick if the schedule's previous job is still running. CRUD via `/api/schedules` (operator role; delete is admin-only). The console page `(dashboard)/schedules` followed with 8.6/P3.3. The original `scanner/scheduler.py`/static `cronjob.yaml` remain as-is for simple single-tenant self-hosts. | **Done** |
 | 8.6 | Scan intents for jobs & schedules | `api/services/scan_intents.py` (new), `api/services/jobs.py`, `api/routes/schedules.py`, `web-next/.../{jobs,schedules}`, [docs/scan-performance.md](docs/scan-performance.md) | Product-level "what work to do", orthogonal to the speed profile (`mode`: safe/balanced/fast = how hard to hit the network). `intent` picks which pipeline stages + nuclei floor run so operators can schedule **inventory** often (ports-only L1, `--skip-nse`, nuclei off, top_ports 100) and **full** assessments rarely (default pipeline, nuclei critical/high/medium) without hand-editing YAML — plus **vuln** (full probe + nuclei critical/high only) and **delta** (full + `--delta` discovery refresh). When set, intent owns `skip_nse`/`delta`/nuclei/top_ports and explicit legacy flags are ignored; when omitted, legacy `skip_nse`/`delta` apply as before. Wired into both ad-hoc jobs and schedules with a human-readable summary in `scan_options` | **Done** |
 
 ### Phase 9 — Exposure Fingerprinting
@@ -268,7 +284,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
 | 10.1 | Asset-level diff events | `scanner/pipeline/report_diff.py`, `api/services/ch_diff.py`, `api/services/assets.py` | `report_diff.py` emits a normalized `events: [{"kind": ...}]` list (`new_asset`/`new_open_port`/`new_cve` from the existing added-sets, plus a new `cert_expiring` event on a host:port's *first* cert_expired/cert_expiring_soon occurrence across the two most recent runs' `tls_posture.json`); `ch_diff.py`'s tenant-wide ClickHouse path gets the same `new_cve`/`new_open_port` events; `decommissioned_host` is logged when an operator manually transitions an asset via `PATCH /assets/{asset_id}` (`status: "decommissioned"`, the only status an operator may set — active/stale stay system-managed). No NATS/alerting wiring yet — that's 10.2. | **Done** |
-| 10.2 | Event bus for alerts | `api/services/asset_events.py` (new), `api/services/nats_bus.py`, `api/services/{jobs,assets}.py`, `api/settings.py` | The 10.1 events are published to JetStream on `events.asset.{tenant_id}.{kind}` (stream `EVENTS`, `LIMITS` retention — one event is meant to reach several independent consumers, so `WORK_QUEUE` would let the first one take it from the rest). Tenant token before kind, so the common per-tenant policy is `events.asset.acme.>` rather than a client-side filter over every other tenant's traffic. **Published from the API, not from `scanner/pipeline/alerts.py` as originally sketched:** the scanner is the agent's payload and has no tenant context — the tenant is a property of the job — so publishing there would mean broker credentials on every remote worker; the API's post-run hook covers local and agent execution from one place. `alerts.py` keeps its per-run SMTP/webhook digest, a human surface rather than the machine stream. Best-effort by design (a scan whose artifacts are on disk must not fail because the broker blinked); `octo_asset_events_published_total{kind,outcome}` records what did not go out, and `diff.json` keeps the payload. Event ids are content-derived (tenant+run+kind+host+port+CVE) so a replayed upload dedupes inside the stream's 24h duplicate window, while the same finding in a *later* run stays a new occurrence. Per-run cap `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) with the overflow logged, not silently dropped — a first scan of a /16 is otherwise an alert storm. `OCTO_ASSET_EVENTS_ENABLED` silences the stream without disabling job dispatch and ingest on the same broker. No consumer yet — that's 10.3 | **Done** |
+| 10.2 | Event bus for alerts | `api/services/asset_events.py` (new), `api/services/nats_bus.py`, `api/services/{jobs,assets}.py`, `api/settings.py` | The 10.1 events are published to JetStream on `events.asset.{tenant_id}.{kind}` (stream `EVENTS`, `LIMITS` retention — one event is meant to reach several independent consumers, so `WORK_QUEUE` would let the first one take it from the rest). Tenant token before kind, so the common per-tenant policy is `events.asset.acme.>` rather than a client-side filter over every other tenant's traffic. **Published from the API, not from `scanner/pipeline/alerts.py` as originally sketched:** the scanner is the sensor's payload and has no tenant context — the tenant is a property of the job — so publishing there would mean broker credentials on every sensor; the API's post-run hook covers local and sensor execution from one place. `alerts.py` keeps its per-run SMTP/webhook digest, a human surface rather than the machine stream. Best-effort by design (a scan whose artifacts are on disk must not fail because the broker blinked); `octo_asset_events_published_total{kind,outcome}` records what did not go out, and `diff.json` keeps the payload. Event ids are content-derived (tenant+run+kind+host+port+CVE) so a replayed upload dedupes inside the stream's 24h duplicate window, while the same finding in a *later* run stays a new occurrence. Per-run cap `OCTO_ASSET_EVENTS_MAX_PER_RUN` (default 1000) with the overflow logged, not silently dropped — a first scan of a /16 is otherwise an alert storm. `OCTO_ASSET_EVENTS_ENABLED` silences the stream without disabling job dispatch and ingest on the same broker. No consumer yet — that's 10.3 | **Done** |
 | 10.3 | Workflow integrations | `api/services/integrations/{webhooks,delivery,tickets,webhook_worker}.py`, `api/routes/webhooks.py`, migrations `0011`/`0022` | **Done.** Per-tenant subscriptions carry the routing policy (event kinds + a `min_severity` floor that applies only to the kinds that have a severity, so a "critical only" rule cannot silently swallow a decommission). A JetStream durable consumer on `events.asset.>` queues matching events and acks; a separate dispatcher delivers them, so a slow receiver never stalls consumption of the stream. `webhook_deliveries` is queue, DLQ and audit trail in one table. Retries exponential and capped; 5xx/408/429/timeouts retry, every other 4xx is dead-lettered on the first attempt. HMAC-signed webhook POSTs remain the default `transport`. **Ticket transports** (`jira` / `servicenow` / `defectdojo`) reuse that queue: native create-issue POST, no HMAC, then link `ticket_key` on the matching tracked finding without overwriting an operator-set link. Writes need tenant `admin` | **Done** |
 
 ### Phase 11 — Web UI v2: Attack Surface View
@@ -281,7 +297,7 @@ Then implement `Sidebar.tsx` and `(dashboard)/layout.tsx` before the remaining p
 | 11.2 | Attack surface graph | `web-next/src/components/attack-surface-graph.tsx`, `(dashboard)/attack-surface`, `scanner/pipeline/asn_enrich.py` | Hostnames → IPs → ports → **services** as a dependency-free layered SVG graph from `/runs/{id}/hosts`+`/ports` (ports now carry aggregated service names), node caps for scale, run selector. IP nodes cluster/color by **ASN/org** (new offline `enrichment.asn` MMDB enrichment, baked in Docker) when available, else GeoIP country | **Done** |
 | 11.3 | Exposure trend & exec dashboard | Tremor charts in `web-next/src/app/(dashboard)/page.tsx` | Exposure trend, findings-by-severity donut, top critical/high findings table, asset-posture (criticality distribution + status counts), vulnerable-hosts KPI — all from existing endpoints | **Done** |
 | 11.4 | Reports surface | `web-next/src/app/(dashboard)/reports`, `runs/view` Reports tab, `api/routes/runs.py` | Surface run artifacts + business PDF in the UI (per-run Reports tab with text preview/download + top-level Reports page); new binary-safe `GET /runs/{id}/download/{path}` endpoint | **Done** |
-| 11.5 | System status page | `web-next/src/app/(dashboard)/system`, `api/routes/system.py`, `api/services/system_status.py` | Read-only installation configurator: app/tool versions, enrichment-DB freshness, enabled stages, runtime flags, tenant/agent counts via `GET /api/system` (no secrets) | **Done** |
+| 11.5 | System status page | `web-next/src/app/(dashboard)/system`, `api/routes/system.py`, `api/services/system_status.py` | Read-only installation configurator: app/tool versions, enrichment-DB freshness, enabled stages, runtime flags, tenant/sensor counts via `GET /api/system` (no secrets) | **Done** |
 | 11.6 | Editable configurator | `api/routes/config.py`, `api/services/config_override.py`, `config_overrides` table, `web-next/src/components/config-editor.tsx` | Admin-editable stage toggles + per-profile scan tuning via `GET`/`PUT /api/config`; whitelist + full-schema validation; Postgres-persisted overrides deep-merged onto the base config at local scan start | **Done** |
 | 11.7 | Geo map | `web-next/src/app/(dashboard)/geo`, `components/geo-map.tsx`, `lib/geo/{aggregate,world-map}.ts`, `scanner/pipeline/geoip.py`, `api/services/runs.py` | Run's alive hosts on a world map by GeoIP position, marker coloured by worst finding and sized by host count. GeoIP now also records **coordinates** (City-edition MMDB `location`) through `alive_hosts.json` → `latitude`/`longitude` on `GET /runs/{id}/hosts`; a country-only record falls back to the country centroid and is drawn dashed, a host with neither is listed as unlocated rather than dropped — a dot on a map reads as more certain than GeoIP is, so the precision is on the marker. Dependency-free SVG with the land outline generated into a committed constant (`scripts/generate-world-map.mjs`), so the page needs no tiles and no network | **Done** |
 
@@ -303,7 +319,7 @@ Phase 1 (NATS + ingest gateway)
                                 → Phase 11 (attack surface UI)   # depends on 7; UI shell can start earlier on mocks
 ```
 
-Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP console (can bootstrap UI early with mocks, wire JWT after 2.x). Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting. Phases 7–11 turn the platform into full EASM: a persistent asset inventory, continuous outside-in discovery, exposure fingerprinting, and asset-level change alerting.
+Phases 1–2 unlock safe multi-tenant sensor scale. Phase 6 delivers the MSSP console (can bootstrap UI early with mocks, wire JWT after 2.x). Phase 3 unlocks 50k-asset analytics. Phases 4–5 harden ops and expand discovery/alerting. Phases 7–11 turn the platform into full EASM: a persistent asset inventory, continuous outside-in discovery, exposure fingerprinting, and asset-level change alerting.
 
 ---
 
@@ -311,8 +327,8 @@ Phases 1–2 unlock safe multi-tenant agent scale. Phase 6 delivers the MSSP con
 
 | Priority | Est. effort | Theme | Scope |
 |----------|-------------|-------|-------|
-| **P0** | 1–2 sprints | Tenant-aware IAM | **Done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/agents/assets/schedules/endpoint inventory **and runs/run artifacts** (`tenant.json` run marker), the header tenant switcher, and negative cross-tenant tests are merged |
-| **P1** | 2–4 sprints | Durable control plane | **Done** — jobs/agents in PostgreSQL (1.1/1.2), formal state machine (1.3), leases + reaper (1.4), idempotency keys (1.5), scheduler leader election (1.6) — see [breakdown](#p1-breakdown--durable-control-plane) |
+| **P0** | 1–2 sprints | Tenant-aware IAM | **Done** — user memberships (`user_tenants`, migration `0007`), server-derived tenant context (`require_tenant`), scoping for jobs/sensors/assets/schedules/endpoint inventory **and runs/run artifacts** (`tenant.json` run marker), the header tenant switcher, and negative cross-tenant tests are merged |
+| **P1** | 2–4 sprints | Durable control plane | **Done** — jobs/sensors in PostgreSQL (1.1/1.2), formal state machine (1.3), leases + reaper (1.4), idempotency keys (1.5), scheduler leader election (1.6) — see [breakdown](#p1-breakdown--durable-control-plane) |
 | **P2** | 2–3 sprints | Asset event workflows | **Done** — ~~`events.asset.*` bus~~ ([10.2](#phase-10--change-detection--alerting-at-asset-level)); ~~routing policies, webhooks, retries, DLQ, audit trail~~; ~~Jira/ServiceNow/DefectDojo ticket creation~~ as further transports over the same delivery queue ([10.3](#phase-10--change-detection--alerting-at-asset-level)) |
 | **P3** | parallel track | Scale & observability | **Done** — ~~Prometheus~~ (3.4/3.5), ~~OpenTelemetry~~ (opt-in OTLP HTTP on the API; empty endpoint = no TracerProvider), ~~SLOs~~ (3.6), ~~server-side pagination~~ (3.2/3.3), ~~1k/10k/50k-asset test fixtures~~ (3.7), ~~ClickHouse/API profiling~~ (3.8), ~~coverage gate + frontend tests in CI~~ (3.0/3.1) |
 | **P4** | 3–5 sprints | Differentiating features | **Done** — ~~TLS hostname/SAN-CN mismatch check~~ (4.1); ~~IP↔FQDN↔certificate correlation~~ (4.2); ~~ownership graph~~ (4.3); ~~web screenshots with retention/redaction~~ (4.4, closes [9.3](#phase-9--exposure-fingerprinting)); ~~risk-priority explanation~~ (`risk_explanation` from scoring model `nist-1`, see [docs/pulse-backend.md](docs/pulse-backend.md)) — see [breakdown](#p4-breakdown--differentiating-features) |
@@ -321,15 +337,15 @@ P0 and P1 are complete — a second API replica is now safe to run; P2 completes
 
 ### P1 breakdown — Durable control plane
 
-**Why this blocks MSSP scale:** every manifest in `k8s/` runs `replicas: 1`, and until 1.1/1.2 that was not a sizing choice but a correctness requirement — the job queue and the agent registry were per-process dicts, so a second replica meant a second control plane. 1.1/1.2 removed that constraint for *state*, 1.4 makes a replica's death recoverable rather than permanent, and 1.6 gives the one worker that must not run everywhere a leader. `replicas: 1` in `k8s/` is now a sizing default, not a correctness requirement.
+**Why this blocks MSSP scale:** every manifest in `k8s/` runs `replicas: 1`, and until 1.1/1.2 that was not a sizing choice but a correctness requirement — the job queue and the sensor registry were per-process dicts, so a second replica meant a second control plane. 1.1/1.2 removed that constraint for *state*, 1.4 makes a replica's death recoverable rather than permanent, and 1.6 gives the one worker that must not run everywhere a leader. `replicas: 1` in `k8s/` is now a sizing default, not a correctness requirement.
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 1.1 | `jobs` / `agents` tables | `api/db/models.py`, `api/db/migrations/versions/0008_jobs_agents.py` | Tenant-scoped (FK to `tenants`) with the claim query's exact composite index (`execution, status, tenant_id, queued_at`). Agent `status` stores only what the agent reported; "stale" stays derived from `last_seen_at` on read, so one replica's clock cannot freeze a flag the others read back | **Done** |
+| 1.1 | `jobs` / `agents` tables | `api/db/models.py`, `api/db/migrations/versions/0008_jobs_agents.py` | Tenant-scoped (FK to `tenants`) with the claim query's exact composite index (`execution, status, tenant_id, queued_at`). Sensor `status` stores only what the sensor reported; "stale" stays derived from `last_seen_at` on read, so one replica's clock cannot freeze a flag the others read back | **Done** |
 | 1.2 | Services over the DB | `api/services/{jobs,agents}.py`, `api/routes/jobs.py`, `api/services/schedule_dispatcher.py`, `api/settings.py` | Both services rewritten against SQLAlchemy; list/search/sort pushed into SQL with the P3.2 query parameters and `Page` envelope unchanged (no API change). `claim_job` takes the candidate row with `SELECT … FOR UPDATE SKIP LOCKED` — the guarantee the per-process `threading.Lock` stopped making the moment a second replica existed. Job gauges are now counted in the table, closing the "single-process gauges" gap in [docs/slo.md](docs/slo.md) (they are cluster-wide, so aggregate with `max()`, not `sum()`). Legacy `state/api_{jobs,agents}.json` are imported once at startup and renamed `*.imported`. New `OCTO_INSTANCE_ID` records which replica owns a local-mode job, so a restart fails only its own orphans instead of every other replica's running scans | **Done** |
-| 1.3 | Formal state machine | `api/services/job_states.py` (new), `api/services/jobs.py`, `api/routes/{jobs,agents}.py` | The lifecycle is a transition table, enforced on every status write (`_update_job`), not assigned per call site; an illegal move raises `InvalidJobTransition` instead of overwriting — so a result upload retried after a network timeout can no longer rewrite a job that already finished. Adds `claimed` (an agent holds the job but has not reported starting; its first heartbeat naming the job promotes it to `running`, which is also where `started_at` is now stamped) and `cancelled` via `POST /api/jobs/{job_id}/cancel`. **Cancellation is only legal from `queued`**: an agent that has claimed a job starts scanning without asking the API again, and nothing can stop a scan in flight, so cancelling a `claimed`/`running` job would report a stop that never happened while the targets were still being scanned — the endpoint answers 409, and an abandoned claimed job is the 1.4 reaper's business. `octo_jobs_running` counts `claimed` too. API-only this iteration: the Web UI renders both new statuses but has no cancel action | **Done** |
-| 1.4 | Leases + reaper | `api/db/migrations/versions/0009_job_leases.py` (new), `api/services/job_reaper.py` (new), `api/services/jobs.py`, `api/settings.py`, `api/app.py` | `jobs.claimed_until` + `jobs.attempts` (migration `0009`). The deadline is set at the claim, not at the first heartbeat — an agent that dies in between is exactly the case this exists for — and is renewed by the agent heartbeat; **local jobs renew from a thread beside the scan**, which is what finally closes the 1.2 residual (the renewals stop with the replica, so an orphaned local job stops looking attended). A 60s sweep (`OCTO_JOB_REAPER_INTERVAL_SECONDS`) requeues expired **agent** jobs until `OCTO_JOB_MAX_ATTEMPTS` hand-outs are used, then fails them, so a target that kills whatever picks it up cannot cycle the fleet; expired **local** jobs are failed outright, since their only executor was the dead process and requeueing would park them forever. Runs in **every** replica with no leader election (`FOR UPDATE SKIP LOCKED`; expiry is a property of the row) — unlike the 1.6 dispatcher. The claim response carries the `attempt` number as a fencing token, so a straggling upload from an expired lease cannot overwrite the run of the attempt that replaced it (a restarted worker keeps its `agent_id`). The bundled agent now heartbeats for the whole scan — one heartbeat at the start would have let any scan longer than the lease be requeued underneath it. New `octo_job_lease_expired_total{outcome}`; lease-exhausted failures are observed by the duration histogram, so they land on the failure side of the completion SLO; `attempts` is on `JobInfo` | **Done** |
-| 1.5 | Idempotency keys | `api/db/migrations/versions/0010_job_idempotency.py` (new), `api/routes/{jobs,agents}.py`, `api/services/jobs.py`, `agent/worker.py`, `api/services/schedule_dispatcher.py` | `jobs.idempotency_key` (unique per tenant, enforced by the index — a read-then-insert loses the race between two replicas serving one retry) and `jobs.results_idempotency_key`. `POST /api/jobs` honours an `Idempotency-Key` header and answers **200** (not 202) with the existing job; `POST /agent/jobs/{id}/results` takes an `idempotency_key` form field and replays the stored outcome instead of the 422 a second completion gets, with **409** when a second upload contradicts the first. Keyless agents still get replay detection from the natural key (same agent + job + exit code), so the agent contract stays backward compatible; the bundled agent derives its key rather than randomising it, so a restarted process computes the same one. A cancelled job is explicitly *not* replayable — cancellation is a decision, not an outcome. Applied to the schedule dispatcher too (keyed on the schedule's due time), which stops duplicate *scans* across replicas without pretending to be 1.6. New `octo_job_idempotent_replays_total{operation}` | **Done** |
+| 1.3 | Formal state machine | `api/services/job_states.py` (new), `api/services/jobs.py`, `api/routes/{jobs,agents}.py` | The lifecycle is a transition table, enforced on every status write (`_update_job`), not assigned per call site; an illegal move raises `InvalidJobTransition` instead of overwriting — so a result upload retried after a network timeout can no longer rewrite a job that already finished. Adds `claimed` (a sensor holds the job but has not reported starting; its first heartbeat naming the job promotes it to `running`, which is also where `started_at` is now stamped) and `cancelled` via `POST /api/jobs/{job_id}/cancel`. **Cancellation is only legal from `queued`**: a sensor that has claimed a job starts scanning without asking the API again, and nothing can stop a scan in flight, so cancelling a `claimed`/`running` job would report a stop that never happened while the targets were still being scanned — the endpoint answers 409, and an abandoned claimed job is the 1.4 reaper's business. `octo_jobs_running` counts `claimed` too. API-only this iteration: the Web UI renders both new statuses but has no cancel action | **Done** |
+| 1.4 | Leases + reaper | `api/db/migrations/versions/0009_job_leases.py` (new), `api/services/job_reaper.py` (new), `api/services/jobs.py`, `api/settings.py`, `api/app.py` | `jobs.claimed_until` + `jobs.attempts` (migration `0009`). The deadline is set at the claim, not at the first heartbeat — a sensor that dies in between is exactly the case this exists for — and is renewed by the sensor heartbeat; **local jobs renew from a thread beside the scan**, which is what finally closes the 1.2 residual (the renewals stop with the replica, so an orphaned local job stops looking attended). A 60s sweep (`OCTO_JOB_REAPER_INTERVAL_SECONDS`) requeues expired **sensor** jobs until `OCTO_JOB_MAX_ATTEMPTS` hand-outs are used, then fails them, so a target that kills whatever picks it up cannot cycle the fleet; expired **local** jobs are failed outright, since their only executor was the dead process and requeueing would park them forever. Runs in **every** replica with no leader election (`FOR UPDATE SKIP LOCKED`; expiry is a property of the row) — unlike the 1.6 dispatcher. The claim response carries the `attempt` number as a fencing token, so a straggling upload from an expired lease cannot overwrite the run of the attempt that replaced it (a restarted worker keeps its `agent_id`). The bundled sensor now heartbeats for the whole scan — one heartbeat at the start would have let any scan longer than the lease be requeued underneath it. New `octo_job_lease_expired_total{outcome}`; lease-exhausted failures are observed by the duration histogram, so they land on the failure side of the completion SLO; `attempts` is on `JobInfo` | **Done** |
+| 1.5 | Idempotency keys | `api/db/migrations/versions/0010_job_idempotency.py` (new), `api/routes/{jobs,agents}.py`, `api/services/jobs.py`, `agent/worker.py`, `api/services/schedule_dispatcher.py` | `jobs.idempotency_key` (unique per tenant, enforced by the index — a read-then-insert loses the race between two replicas serving one retry) and `jobs.results_idempotency_key`. `POST /api/jobs` honours an `Idempotency-Key` header and answers **200** (not 202) with the existing job; `POST /agent/jobs/{id}/results` takes an `idempotency_key` form field and replays the stored outcome instead of the 422 a second completion gets, with **409** when a second upload contradicts the first. Keyless sensors still get replay detection from the natural key (same sensor + job + exit code), so the sensor contract stays backward compatible; the bundled sensor derives its key rather than randomising it, so a restarted process computes the same one. A cancelled job is explicitly *not* replayable — cancellation is a decision, not an outcome. Applied to the schedule dispatcher too (keyed on the schedule's due time), which stops duplicate *scans* across replicas without pretending to be 1.6. New `octo_job_idempotent_replays_total{operation}` | **Done** |
 | 1.6 | Scheduler leader election | `api/services/leader_lock.py` (new), `api/services/schedule_dispatcher.py`, `api/services/metrics.py` | The dispatcher thread still starts in every replica, but each tick first takes a **session-scoped Postgres advisory lock** and does nothing without it, so exactly one replica polls and writes the schedule's bookkeeping. A session lock rather than a leader row with a lease: it lives in the connection, so a leader that crashes or is partitioned away has it dropped by Postgres when its backend ends — no expiry to wait out, no lease duration to tune wrong, and a follower's next tick simply wins. It is deliberately **not** a fence: a dying leader and its successor can briefly overlap, which is why the 1.5 idempotency key on each dispatch stays load-bearing rather than becoming redundant. Costs one pooled connection per replica; `octo_scheduler_is_leader` is 1 on exactly one replica. SQLite (the fallback URL) has no advisory locks and no second replica, so the process always leads. This retires the "run one API replica or set `OCTO_SCHEDULER_DISPATCH_ENABLED=false` on all but one" rule | **Done** |
 
 Suggested order: ~~1.3 → 1.4 → 1.5 → 1.6~~ — **all of P1 is Done.**
@@ -393,7 +409,7 @@ read as one list than as five *Partial* rows spread over 40 KB:
 | Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | **Done** — groups the 11.2 graph by operator-set unit/owner; unowned names by registrable domain |
 | Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Done** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
 | Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | **Done** — merged |
-| Idempotency key `actor` — contract step | [#346](https://github.com/onixus/Shapoclyack/issues/346) | **Open** — one release after `0055` ships, drop the `actor IS NULL` fallback in `api/services/idempotency.py`, the `uq_idempotency_legacy_tenant_endpoint_key` index and the `idempotency_records_cross_generation` trigger. Until then a key reserved before the upgrade is still read tenant-wide; see [docs/operations.md](docs/operations.md) |
+| Idempotency key `actor` — contract step | not filed (originated in ~~[#346](https://github.com/onixus/Shapoclyack/issues/346)~~, bulk actions, closed; migration `0055`) | **Open** — one release after `0055` ships, drop the `actor IS NULL` fallback in `api/services/idempotency.py`, the `uq_idempotency_legacy_tenant_endpoint_key` index and the `idempotency_records_cross_generation` trigger. Until then a key reserved before the upgrade is still read tenant-wide; see [docs/operations.md](docs/operations.md) |
 
 Everything else in Phases 1–11 and P0–P3 is merged.
 
@@ -431,8 +447,8 @@ Order: Wave 0 is done (~~#158~~ drill 2026-08-20). Wave 1 is done:
 is **closed** and shipped in `shapoclyack-0.43-0828` (published 2026-08-28). The advisories
 that cut unblocked have been resolved: one published, two closed as never released — see
 [below](#wave-2--what-was-never-filed). EPIC [#154](https://github.com/onixus/Shapoclyack/issues/154)
-stays open on its last unchecked criterion, which is now the release *procedure* rather than
-the content: a prod install taken from the tag, with `Unreleased` empty after the cut.
+is closed; its last criterion — a prod install taken from the tag, with `Unreleased` empty after
+the cut — was met by the `0.44-0907` cut.
 
 **Wave 1** is now filed rather than described here:
 ~~[#152](https://github.com/onixus/Shapoclyack/issues/152)~~ webhook state-machine
@@ -479,14 +495,14 @@ three fixes shipped in `shapoclyack-0.43-0828`, and the three drafts were resolv
    `/proc/self/environ` reports `st_size == 0`, and `FileResponse` takes `Content-Length`
    from that `stat`, so the body is empty. Measured, not assumed. It is a serious disclosure,
    not the collapse of the access model this file previously described.
-2. **Agent SSH deployment accepts any host key** (`api/services/agent_deployer.py`) — the
+2. **Sensor SSH deployment accepts any host key** (`api/services/agent_deployer.py`) — the
    operator credential for the target host and a tenant provisioning key travel over it.
-3. **Agent install URL derived from a request header** (`api/routes/agents.py`), which decides
-   what the target host executes as root and what control plane the agent keeps talking to.
+3. **Sensor install URL derived from a request header** (`api/routes/agents.py`), which decides
+   what the target host executes as root and what control plane the sensor keeps talking to.
 
 | Issue | Theme | Note |
 |-------|-------|------|
-| ~~[#222](https://github.com/onixus/Shapoclyack/issues/222)~~ | Agent result upload has no body cap and no decompression cap | **Done** ([#234](https://github.com/onixus/Shapoclyack/pull/234)) — a 128 MiB transport cap plus a 512 MiB expansion ceiling read from the tar headers, so an over-budget archive is refused before the first write |
+| ~~[#222](https://github.com/onixus/Shapoclyack/issues/222)~~ | Sensor result upload has no body cap and no decompression cap | **Done** ([#234](https://github.com/onixus/Shapoclyack/pull/234)) — a 128 MiB transport cap plus a 512 MiB expansion ceiling read from the tar headers, so an over-budget archive is refused before the first write |
 | ~~[#223](https://github.com/onixus/Shapoclyack/issues/223)~~ | Deployment status is not tenant-scoped, and its journal is process-local | **Done** ([#239](https://github.com/onixus/Shapoclyack/pull/239)) — journal moved to Postgres (migration `0024`) with a `tenant_id`; the 403/404 existence oracle in `agents.py` closed with it |
 | ~~[#224](https://github.com/onixus/Shapoclyack/issues/224)~~ | Fail-closed startup misses the Postgres password, `OCTO_AGENT_TOKEN` and HSTS | **Done** — HSTS in [#234](https://github.com/onixus/Shapoclyack/pull/234), default secrets and `OCTO_AGENT_TOKEN` in [#239](https://github.com/onixus/Shapoclyack/pull/239). The secret check also covers the ClickHouse and NATS placeholders #225 introduced, and every problem lands in one list so a misconfigured install is fixed in one restart |
 | ~~[#225](https://github.com/onixus/Shapoclyack/issues/225)~~ | ClickHouse and NATS unauthenticated; no NetworkPolicy to stateful services | **Done** ([#236](https://github.com/onixus/Shapoclyack/pull/236)) — verified against live ClickHouse and NATS containers; images pinned by digest. Revises the recorded NetworkPolicy decision for ingress only, egress reasoning stands. NetworkPolicy **enforcement is a CNI behaviour and is not verified on a live cluster** |
@@ -505,7 +521,7 @@ they were the honest residue of it. **All four are closed and shipped in `0.43-0
 was a defect, not a test problem: the claim query's `FOR UPDATE SKIP LOCKED` covered the joined
 subscription row, so one dispatcher's claim starved its peers;
 ~~[#240](https://github.com/onixus/Shapoclyack/issues/240)~~ — the host-key probe now goes
-through `outbound_targets.ssh_deploy_policy`, which admits private space (where agents live)
+through `outbound_targets.ssh_deploy_policy`, which admits private space (where sensors live)
 but refuses the API pod's own reflection and the link-local range;
 ~~[#241](https://github.com/onixus/Shapoclyack/issues/241)~~ — a pin is removed with
 `DELETE /api/agent/deploy/ssh/host-key` instead of SQL, journalled under a new `trust_change`
@@ -555,7 +571,7 @@ Not GA blockers, but they are the reason Wave 2 exists: the status columns in th
 
 | Issue | Theme |
 |-------|-------|
-| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Agent auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
+| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Sensor auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
 | ~~[#228](https://github.com/onixus/Shapoclyack/issues/228)~~ | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): `DESC` with the limit, reversed for the chart. The cross-tenant series is gone too — `risk-history` is one tenant now, because snapshots are written per finished run rather than on a shared clock, so any bucketing would invent the time axis |
 | ~~[#229](https://github.com/onixus/Shapoclyack/issues/229)~~ | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235) and [#237](https://github.com/onixus/Shapoclyack/pull/237). The sweep is one half and the lifespan wiring is the other: an unwired worker is the same defect one layer up |
 | ~~[#230](https://github.com/onixus/Shapoclyack/issues/230)~~ | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): the consumer filters `ingest.results.>` under a new durable name, since JetStream will not narrow an existing one |
@@ -564,7 +580,7 @@ Not GA blockers, but they are the reason Wave 2 exists: the status columns in th
 (`api/services/integrations/delivery.py`), the NIST matrix (`api/services/nist_risk.py` matches
 SP 800-30 Table I-2 row for row), the vulnerability lifecycle and its SLA restart on
 re-detection, Track D end to end, [#188](https://github.com/onixus/Shapoclyack/issues/188)'s
-multi-replica tests, and `web-next/` — all 21 screens read the live API, with no mock data.
+multi-replica tests, and `web-next/` — all 21 screens at the time (32 `page.tsx` under `(dashboard)/` today) read the live API, with no mock data.
 
 ---
 
@@ -611,11 +627,11 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 | Gap | Why it blocks |
 |-----|---------------|
 | No authenticated assessment | **Partly closed (M1–M3).** Endpoint software is matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). M3 made the matches *work* rather than data: a `vulnerable` match with a published fix folds into `vulnerabilities` (migration `0032`, `source = "endpoint_software"`), so it carries SLA, owner, ticket and NIST risk, and it closes on an observation — the next inventory after the upgrade, which is verification a re-scan cannot perform for an installed package. The advisory feeds also have a delivery path now; before it the matcher ran against an 18-statement seed on every install. Windows joined them in #358, on its own axis: a Microsoft advisory is about an operating system *build*, not a package version, so a host is matched on `10.0.<build>.<ubr>` against the `FixedBuild` of each remediation — cumulative servicing makes the revision the whole answer — and the image ships the Security Update Guide rather than a seed. What is still missing is the rest of the estate: language ecosystems, macOS, non-distribution software on Windows, and every distribution other than those two |
-| No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). SAML, LDAP and a role model finer than the three built-in roles have not |
+| No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). TOTP MFA (`OCTO_MFA_REQUIRED_ROLES`, step-up on credential-issuing operations), revocable console sessions (`api/services/sessions.py`, migration `0038`) and a permission model finer than three roles — named permissions, an `auditor` role, a tenant admin and a `token-admin` (migration `0049`) — followed in `## Unreleased`. SAML, LDAP and SCIM have not ([#317](https://github.com/onixus/Shapoclyack/issues/317), [#316](https://github.com/onixus/Shapoclyack/issues/316)) |
 | No report factory | **Closed (Sprint 4).** Executive / technical / compliance templates, per-tenant branding, cron-scheduled delivery over SMTP and webhook with a per-recipient delivery trail, and PDF / HTML / JSON off one report body — see [docs/reports-and-compliance.md](docs/reports-and-compliance.md). What is still missing is signed point-in-time evidence packages and per-control ownership |
 | No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. The Russian regulators followed (#356, catalogue half): ФСТЭК № 117 / 21 / 239 and ГОСТ Р 57580.1-2017 on the regulators' own measure codes and FSTEC's remediation windows. Custom frameworks, a БДУ ФСТЭК feed and archivable evidence packages are not in scope |
 | Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
-| The loop is not closed | **Partly closed (#183).** A finding can be sent for **mechanical verification** — a targeted re-scan whose result, not an operator's assertion, moves it out of `VERIFYING` — and ticket status is now synchronized both ways. What is still missing is verification for finding classes a re-scan cannot observe, and remediation SLAs measured against the verified close rather than the state change |
+| The loop is not closed | **Partly closed (#183).** A finding can be sent for **mechanical verification** — a targeted re-scan whose result, not an operator's assertion, moves it out of `VERIFYING` — and ticket status is now synchronized both ways — a poller since `## Unreleased`, not only a refresh button (#347). What is still missing is verification for finding classes a re-scan cannot observe, and remediation SLAs measured against the verified close rather than the state change |
 | No MSSP operations | **Partly closed.** Per-tenant quotas (`max_assets`, `max_scans_per_month`) and consumption metering have landed: `GET /api/usage`, `GET /api/usage/tenants`, platform-admin `GET/PUT /api/tenants/{id}/quota`, a **Usage** console page, and enforcement at scan admission (429 + `Retry-After`) and at asset ingest — see [docs/api-and-rbac.md](docs/api-and-rbac.md). White-label is covered by the report factory's per-tenant branding. What is still missing is an onboarding wizard and a customer read-only portal |
 | Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. What is still missing is an offline bundle, and a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
 
@@ -635,7 +651,7 @@ an owner and a ticket, it was not work. Two things landed with it that the miles
 name — the advisory feeds had no delivery path at all (`fetch.py` was called from nothing but
 its own tests, so every install matched against an 18-statement seed), and closure now has a
 machine verification the network path cannot do, because an inventory genuinely observes a
-package's absence. **Remaining milestones:** more distributions, language ecosystems, macOS. Windows closed in #358.
+package's absence. **Remaining milestones:** more distributions, language ecosystems, macOS. Windows landed in `## Unreleased` (MSRC matching by OS build, migration `0057`; [#358](https://github.com/onixus/Shapoclyack/issues/358) stays open until the release).
 Two limits of M3 are recorded rather than implied: behaviour at 50k hosts against a full feed
 was never run, and a source package that drops out of a vendor's dump still reads as
 "patched" — there is no narrower signal in the data);

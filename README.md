@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Enterprise Wiki](https://img.shields.io/badge/wiki-Enterprise%20Knowledge%20Base-orange)](docs/wiki/README.md)
 
-Shapoclyack bridges the gap between raw network reconnaissance, asset inventory, and verifiable risk reduction. It unifies staged network discovery, distributed remote agents, an asset-centric data model that survives IP/DHCP drift, distribution-accurate endpoint patch gap analysis, dual-axis risk scoring under NIST SP 800-30 Rev. 1, and mechanical re-verification of remediated flaws — deployed as a Kubernetes application or a single all-in-one container.
+Shapoclyack bridges the gap between raw network reconnaissance, asset inventory, and verifiable risk reduction. It unifies staged network discovery, distributed sensors (remote scanning nodes), an asset-centric data model that survives IP/DHCP drift, distribution-accurate endpoint patch gap analysis, dual-axis risk scoring under NIST SP 800-30 Rev. 1, and mechanical re-verification of remediated flaws — deployed as a Kubernetes application or a single all-in-one container.
 
 **[Русская версия](README.ru.md)** · [Enterprise Wiki (База знаний)](docs/wiki/README.md) 🇷🇺 · [Getting Started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Web UI Guide](docs/ui.md) · [Documentation Index](docs/README.md) · [Kubernetes](k8s/README.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Security Policy](.github/SECURITY.md)
 
@@ -55,7 +55,7 @@ transcribed verbatim from **NIST SP 800-30 Rev. 1 Table I-2**:
 ### 3. Mechanical Re-Verification (No Rubber-Stamping)
 A vulnerability cannot be marked resolved on an operator's say-so or a closed task tracker ticket. 
 * **Network Findings**: Moving a finding from `FIXING` to `CLOSED` requires triggering a targeted re-scan (`POST /api/vulnerabilities/{id}/verify`). The engine dispatches a focused check against that exact host, port, and detection script. Only if the vulnerability is mechanically proven gone does it close with `machine_verified = true` (`closure_reason = verified_remediated`). If the flaw is re-observed, it bounces back to `FIXING` with an audit event.
-* **Endpoint Software Findings**: Closed only when the next accepted inventory snapshot from an endpoint agent confirms the vulnerable package has been upgraded to a non-vulnerable version.
+* **Endpoint Software Findings**: Closed only when the next accepted inventory snapshot from the Agent (Lariska, the in-guest endpoint inventory agent) confirms the vulnerable package has been upgraded to a non-vulnerable version.
 * **Audit Transparency**: Manual closures by administrators are explicitly marked with `machine_verified = false`, exposing unverified closures on adoption dashboards.  
 *See [Vulnerability Lifecycle & SLA](docs/vulnerability-lifecycle.md).*
 
@@ -72,8 +72,8 @@ Technical findings and estate metadata are evaluated against a closed vocabulary
 * **FSTEC of Russia orders 117 (state systems), 21 (personal data) and 239 (critical infrastructure)** and **GOST R 57580.1-2017** (financial organisations), keyed to the regulators' own measure codes (АНЗ.1, АУД.2, ЦЗИ.8, …) and to FSTEC's remediation windows (24 h / 7 d / 4 w / 4 m) rather than the tenant's SLA  
 *See [Reports and Compliance Mapping](docs/reports-and-compliance.md).*
 
-### 6. Distributed Remote Agents (NATS JetStream & Zero Inbound Ports)
-Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Remote scanner agents pull tenant-scoped jobs over **NATS JetStream** or, without a broker, by claiming them over HTTPS from the API. Both are outbound connections authenticated by a per-tenant agent JWT; NATS transport encryption is [#309](https://github.com/onixus/Shapoclyack/issues/309)/[#359](https://github.com/onixus/Shapoclyack/issues/359) and mutual TLS is on the roadmap, not in the build. Agents require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery.  
+### 6. Distributed Sensors (NATS JetStream & Zero Inbound Ports)
+Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Sensors — remote scanning nodes (API resource `agents`, `agent_kind = scanner`) — pull tenant-scoped jobs over **NATS JetStream** or, without a broker, by claiming them over HTTPS from the API. Both are outbound connections authenticated by a per-tenant agent JWT; NATS transport encryption is [#309](https://github.com/onixus/Shapoclyack/issues/309)/[#359](https://github.com/onixus/Shapoclyack/issues/359) and mutual TLS is on the roadmap, not in the build. Sensors require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery.  
 *See [Architecture](docs/architecture.md).*
 
 ### 7. Branded Multi-Tenant Report Factory
@@ -120,7 +120,7 @@ graph TD
 |---|---|
 | [**Wiki Portal & Architecture Principles**](docs/wiki/README.md) | Central entry point: concepts, asset-centric paradigm, NIST SP 800-30, mechanical verification |
 | [**Security Engineer Playbook**](docs/wiki/scenarios-security-engineer.md) | Daily operations: scan profiling, finding triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
-| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, the asset business-context REST contract (`PATCH /api/assets/{id}`) your CMDB/AD sync script drives — a packaged importer is [#350](https://github.com/onixus/Shapoclyack/issues/350) — remote agents in DMZ/VPC, CI/CD DevSecOps, compliance controls |
+| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, the asset business-context REST contract (`PATCH /api/assets/{id}`) your CMDB/AD sync script drives — a packaged importer is [#350](https://github.com/onixus/Shapoclyack/issues/350) — sensors in DMZ/VPC, CI/CD DevSecOps, compliance controls |
 | [**CISO & Executive Guide**](docs/wiki/scenarios-ciso.md) | Strategic governance: Risk Overview dashboard, estate risk score, CISA KEV tracking, SLA & MTTR metrics, adoption KPIs, board reporting |
 | [**Formal Security Processes**](docs/wiki/security-processes.md) | End-to-end VM lifecycle, continuous EASM, 0-day emergency response (KEV), and IT/DevOps SLA collaboration with 2-way ticket sync |
 | [**12-Week Implementation Roadmap**](docs/wiki/implementation-plan.md) | 4-phase rollout (Pilot → Production Scale), deployment topologies, RACI responsibility matrix, and measurable KPIs |
@@ -144,7 +144,7 @@ flowchart TD
     end
 
     subgraph Workers ["Distributed Execution Fleet"]
-        G["Remote Agents (outbound-only, DMZ/VPC)"]
+        G["Sensors (outbound-only, DMZ/VPC)"]
         S["Scanner Engine (Pulse / Nuclei / Discovery)"]
     end
 
@@ -188,14 +188,14 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 |---|---|
 | **External Attack Surface (EASM)** | CIDR, IP, and FQDN discovery; passive Certificate Transparency (CT) monitoring, DNS hygiene, ASN mapping, cloud-resource enumeration, and domain takeover detection. |
 | **Cyber Asset Management (CAASM)** | Persistent asset inventory keyed to canonical assets; tracks IP drift, ownership metadata, environment tags, business criticality, and hardware/OS lifecycle. |
-| **Risk-Based VM (RBVM)** | Full lifecycle state machine (`OPEN` → `FIXING` → `VERIFYING` → `CLOSED`); SLA timers by severity; NIST SP 800-30 Rev. 1 risk scoring with exploit maturity ceilings. |
+| **Risk-Based VM (RBVM)** | Full lifecycle state machine (`OPEN` → `ACKNOWLEDGED` → `PLANNED` → `FIXING` → `VERIFYING` → `CLOSED`); SLA timers by severity; NIST SP 800-30 Rev. 1 risk scoring with exploit maturity ceilings. |
 | **Mechanical Verification** | Automated re-scans via `POST /api/vulnerabilities/{id}/verify` validate that network flaws are remediated before closing. Prevents unverified ticket closures. |
 | **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker) and Windows hosts against Microsoft's Security Update Guide; generates actionable package upgrade commands. |
 | **Threat Intelligence** | Integrated feeds for CISA KEV (Known Exploited Vulnerabilities), EPSS (Exploit Prediction Scoring System), CVSS v4/v3.1, GeoIP, and autonomous system data. |
 | **Compliance Signals** | Continuous posture monitoring and audit-ready evidence for **PCI DSS 4.0**, **CIS Controls v8**, **ISO/IEC 27001:2022**, **FSTEC orders 117 / 21 / 239** and **GOST R 57580.1-2017**. |
 | **Adoption & Outcome Metrics** | Telemetry on verified closures, SLA compliance, Mean Time to Remediation (MTTR), scan coverage, and false-positive suppression rates. |
 | **Branded Report Factory** | Automated generation of Executive, Technical, and Compliance reports in PDF, HTML, and JSON, with scheduled email and webhook delivery. |
-| **Distributed Fleet** | Scalable worker fleet managed over NATS JetStream; agents require zero inbound ports and operate securely across DMZs and private VPCs. |
+| **Distributed Fleet** | Scalable sensor fleet fed over NATS JetStream or HTTPS claim polling; sensors require zero inbound ports and operate securely across DMZs and private VPCs. |
 | **Enterprise Platform** | Multi-tenancy with strict data isolation, role-based access control (RBAC), OIDC single sign-on, non-interactive service tokens, PostgreSQL OLTP, and ClickHouse analytics. |
 
 ---
@@ -246,9 +246,9 @@ The Next.js operations console provides specialized operational surfaces for ope
 | **Risk Overview** | `/` | Estate risk index (NIST SP 800-30), SLA health, active CISA KEV threats, unassigned findings | Viewer |
 | **Vulnerability Center** | `/vulnerabilities` | Searchable finding inventory, lifecycle filters, ownership, SLA countdown, and export | Viewer |
 | **Finding Detail** | `/vulnerabilities/view` | Technical evidence, exploit maturity, ticket links, risk acceptance, mechanical verify button | Operator |
-| **Remediation Kanban** | `/remediation` | Visual lifecycle board (`OPEN` → `TRIAGED` → `FIXING` → `VERIFYING` → `CLOSED`) | Operator |
+| **Remediation Kanban** | `/remediation` | Visual lifecycle board (`OPEN` → `ACKNOWLEDGED` → `PLANNED` → `FIXING` → `VERIFYING` → `CLOSED`) | Operator |
 | **Asset Inventory** | `/assets` | Persistent asset registry, business context, criticality, IP drift history, open risk count | Viewer |
-| **Endpoint Software** | `/endpoints` | Managed devices, installed software packages, distro CVE matches, and patch gap commands | Viewer |
+| **Endpoint Software** | `/endpoints` | Endpoints (hosts running the Agent), installed software packages, distro CVE matches, and patch gap commands | Viewer |
 | **Attack Surface Graph** | `/attack-surface` | Interactive domain → host → IP → port → service topology visualization | Viewer |
 | **Threat Center** | `/threats` | Real-time overview of actively exploited vulnerabilities in your estate (CISA KEV) | Viewer |
 | **Scan Operations** | `/scans` | External and internal scan launchers, scheduled profiles, active jobs, and execution logs | Operator |
@@ -256,7 +256,7 @@ The Next.js operations console provides specialized operational surfaces for ope
 | **Compliance Posture** | `/compliance` | Control pass/fail evidence mapping for PCI DSS 4.0, CIS Controls v8, ISO 27001, FSTEC orders 117 / 21 / 239 and GOST R 57580.1 | Viewer |
 | **Adoption & Noise** | `/adoption` | Verification rates, MTTR, SLA adherence, scanner noise analytics, detector suppression tracking | Viewer |
 | **Integrations** | `/integrations` | Outbound HMAC webhooks and two-way ticket synchronization — transitions pushed to the tracker, the tracker's status polled back onto findings (Jira, ServiceNow, DefectDojo) | Operator |
-| **Agent Fleet** | `/agents` | Health tiles and management for distributed remote scanner workers across VPCs and DMZs | Operator |
+| **Agents page (sensors)** | `/agents` | Health tiles and management for the sensor fleet across VPCs and DMZs; the page title still reads "Distributed Agent Fleet" | Operator |
 
 For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.md).
 
@@ -269,7 +269,7 @@ For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.m
 | **All-in-One Local (`kind-dev`)** | Local evaluation, testing, CI | Single pod or container with embedded API, Web UI, and scanner engine; includes PostgreSQL, NATS, and ClickHouse. |
 | **Production Kubernetes (`overlays/prod`)** | Single-site production deployments | One API replica, in-cluster PostgreSQL on a PVC, nightly `pg_dump`; NATS and ClickHouse are switched off by empty URLs. A node drain is an outage. |
 | **High availability (`overlays/prod-ha`)** | Deployments that must survive a node loss | API ≥ 2 replicas spread across nodes with an HPA and a PDB, 3-node NATS JetStream with R3 streams, ClickHouse enabled, external managed PostgreSQL. Requires a managed database and somewhere both API pods can reach the artifacts — either object storage (`OCTO_ARTIFACT_BACKEND=s3`, [#336](https://github.com/onixus/Shapoclyack/issues/336)) or a ReadWriteMany storage class — see [high-availability.md](docs/high-availability.md). |
-| **Distributed Remote Agents** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only agent workers, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on agents. NATS TLS is opt-in (`tls://` plus `OCTO_NATS_TLS_*`, see [configuration.md](docs/configuration.md)); enable it before crossing an untrusted segment. Client certificates for agents (mTLS) are not implemented. |
+| **Distributed Sensors** | Segmented networks, DMZs, multi-VPC, multi-cloud | Outbound-only sensors, pulling from NATS JetStream or claiming over HTTPS; zero inbound open ports required on sensors. NATS TLS is opt-in (`tls://` plus `OCTO_NATS_TLS_*`, see [configuration.md](docs/configuration.md)); enable it before crossing an untrusted segment. Client certificates for sensors (mTLS) are not implemented. |
 | **Standalone Scanner CLI** | Ad-hoc audits, single-shot scans, pipeline automation | Headless container execution outputting structured JSON, CSV, and PDF artifacts directly to local disk. |
 
 Detailed guides:
@@ -313,7 +313,7 @@ See [API and RBAC Documentation](docs/api-and-rbac.md) for endpoint details and 
 ```text
 ├── scanner/               # Staged discovery, scanning, enrichment, diff, and reporting engine
 ├── api/                   # FastAPI control plane: auth, RBAC, inventory, jobs, SLA, and lifecycle
-├── agent/                 # Remote worker daemon claiming jobs over NATS JetStream
+├── agent/                 # Sensor daemon: claims scan jobs over NATS JetStream or HTTPS, runs the scanner
 ├── web-next/              # Next.js 14 operations console (static export served by API)
 ├── recon/                 # High-performance Go discovery worker foundation
 ├── k8s/shapoclyack/       # Kubernetes manifests, Kustomize base, and environment overlays
@@ -378,7 +378,7 @@ Documented release: [`shapoclyack-0.44-0907`](https://github.com/onixus/Shapocly
 |---|---|
 | `ghcr.io/onixus/shapoclyack-aio` | All-in-one container: FastAPI, Web UI, and Scanner engine |
 | `ghcr.io/onixus/shapoclyack-api` | Control plane container: FastAPI backend and Web UI console |
-| `ghcr.io/onixus/shapoclyack-scanner` | Worker container: Scanner engine and remote agent runtime |
+| `ghcr.io/onixus/shapoclyack-scanner` | Sensor container: Scanner engine and sensor (`python -m agent`) runtime |
 
 Pin explicit release tags in production. Do not use `latest` in mission-critical environments.
 
