@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, History, Laptop } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
+import { useRelativeTime } from "@/lib/i18n/datetime";
 import {
   Select,
   SelectContent,
@@ -36,28 +36,29 @@ function assetHref(assetId: string, tenantId: string): string {
  * Endpoint/Software tab. */
 function RecentChangesFeed({ tenantId }: { tenantId: string }) {
   const t = useT();
+  const ago = useRelativeTime();
   const changesQuery = useRecentSoftwareChanges(tenantId, 30);
   const changes = changesQuery.data || [];
 
   return (
-    <div className="rounded-xl border border-slate-800/80 bg-slate-950/40">
-      <div className="flex items-center gap-2 border-b border-slate-800/80 px-4 py-3">
-        <History className="h-4 w-4 text-slate-500" />
-        <h2 className="text-sm font-bold text-slate-200">{t("page.endpoints.recent")}</h2>
+    <div className="rounded-xl border border-border bg-card text-card-foreground">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <History className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-bold text-foreground">{t("page.endpoints.recent")}</h2>
       </div>
       <div className="max-h-72 overflow-y-auto">
         {changesQuery.isLoading ? (
-          <p className="px-4 py-4 text-xs text-slate-500">{t("common.loading")}</p>
+          <p className="px-4 py-4 text-xs text-muted-foreground">{t("common.loading")}</p>
         ) : changesQuery.error ? (
-          <p className="px-4 py-4 text-xs text-rose-400">
+          <p className="px-4 py-4 text-xs text-destructive">
             {(changesQuery.error as Error).message}
           </p>
         ) : changes.length === 0 ? (
-          <p className="px-4 py-4 text-xs text-slate-500">
+          <p className="px-4 py-4 text-xs text-muted-foreground">
             {t("page.endpoints.noChanges")}
           </p>
         ) : (
-          <ul className="divide-y divide-slate-800/60">
+          <ul className="divide-y divide-border">
             {changes.map((change, idx) => (
               <li
                 key={`${change.device_id}-${change.snapshot_id}-${change.display_name}-${idx}`}
@@ -65,26 +66,24 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
               >
                 <div className="flex min-w-0 items-center gap-2">
                   <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
-                  <span className="truncate font-mono text-slate-300">{change.display_name}</span>
-                  <span className="shrink-0 text-slate-600">on</span>
+                  <span className="truncate font-mono text-foreground">{change.display_name}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {t("page.endpoints.changeOn")}
+                  </span>
                   {change.asset_id ? (
                     <Link
                       href={assetHref(change.asset_id, tenantId)}
-                      className="shrink-0 truncate font-mono text-sky-400 hover:text-sky-300 hover:underline"
+                      className="shrink-0 truncate font-mono text-primary hover:underline"
                     >
                       {change.hostname}
                     </Link>
                   ) : (
-                    <span className="shrink-0 truncate font-mono text-slate-400">
+                    <span className="shrink-0 truncate font-mono text-muted-foreground">
                       {change.hostname}
                     </span>
                   )}
                 </div>
-                <span className="shrink-0 text-slate-500">
-                  {change.observed_at
-                    ? formatDistanceToNow(new Date(change.observed_at), { addSuffix: true })
-                    : "—"}
-                </span>
+                <span className="shrink-0 text-muted-foreground">{ago(change.observed_at)}</span>
               </li>
             ))}
           </ul>
@@ -118,6 +117,8 @@ export default function EndpointsPage() {
     });
   }, [raw, reconFilter, staleOnly]);
 
+  const ago = useRelativeTime();
+
   const columns = useMemo<ColumnDef<EndpointDeviceInfo>[]>(
     () => [
       {
@@ -126,8 +127,8 @@ export default function EndpointsPage() {
         header: t("col.hostname"),
         cell: ({ row }) => (
           <div className="space-y-0.5">
-            <p className="font-mono font-bold text-slate-100">{row.original.hostname || "—"}</p>
-            <p className="font-mono text-[10px] text-slate-500">{row.original.device_id}</p>
+            <p className="font-mono font-bold text-foreground">{row.original.hostname || "—"}</p>
+            <p className="font-mono text-[10px] text-muted-foreground">{row.original.device_id}</p>
           </div>
         ),
       },
@@ -140,8 +141,8 @@ export default function EndpointsPage() {
           const label = [d.os_name, d.os_version].filter(Boolean).join(" ") || "—";
           return (
             <div className="space-y-0.5">
-              <p className="text-sm text-slate-200">{label}</p>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-sm text-foreground">{label}</p>
+              <p className="text-[10px] text-muted-foreground">
                 {[d.os_family, d.os_arch].filter(Boolean).join(" · ") || "—"}
               </p>
             </div>
@@ -165,12 +166,12 @@ export default function EndpointsPage() {
         cell: ({ row }) => {
           const id = row.original.asset_id;
           if (!id) {
-            return <span className="text-xs text-slate-500">{t("common.notLinked")}</span>;
+            return <span className="text-xs text-muted-foreground">{t("common.notLinked")}</span>;
           }
           return (
             <Link
               href={assetHref(id, tenantId)}
-              className="group inline-flex items-center gap-1 font-mono text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
+              className="group inline-flex items-center gap-1 font-mono text-xs font-semibold text-primary hover:underline"
             >
               <span className="max-w-[10rem] truncate">{id}</span>
               <ArrowUpRight className="h-3 w-3 opacity-70 group-hover:opacity-100" />
@@ -182,7 +183,7 @@ export default function EndpointsPage() {
         accessorKey: "agent_version",
         header: t("col.lariska"),
         cell: ({ getValue }) => (
-          <code className="rounded border border-slate-800 bg-slate-950 px-1.5 py-0.5 font-mono text-[11px] text-sky-400">
+          <code className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-primary">
             {String(getValue() || "—")}
           </code>
         ),
@@ -193,12 +194,8 @@ export default function EndpointsPage() {
         sortingFn: "datetime",
         cell: ({ getValue }) => {
           const v = getValue();
-          if (!v) return <span className="text-slate-500">{t("common.never")}</span>;
-          return (
-            <span className="text-xs text-slate-300">
-              {formatDistanceToNow(new Date(String(v)), { addSuffix: true })}
-            </span>
-          );
+          if (!v) return <span className="text-muted-foreground">{t("common.never")}</span>;
+          return <span className="text-xs text-foreground">{ago(String(v))}</span>;
         },
       },
       {
@@ -213,7 +210,7 @@ export default function EndpointsPage() {
               asChild
               variant="outline"
               size="sm"
-              className="h-7 border-slate-800 bg-slate-900 text-xs text-sky-400 hover:bg-slate-800 hover:text-white"
+              className="h-7 text-xs"
             >
               <Link href={assetHref(id, tenantId)}>{t("common.openAsset")}</Link>
             </Button>
@@ -221,7 +218,7 @@ export default function EndpointsPage() {
         },
       },
     ],
-    [t, tenantId],
+    [ago, t, tenantId],
   );
 
   const linked = raw.filter((d) => d.asset_id).length;
@@ -230,55 +227,57 @@ export default function EndpointsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-400 shadow-md">
             <Laptop className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold tracking-tight text-slate-100">{t("page.endpoints.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-xl font-extrabold tracking-tight text-foreground">{t("page.endpoints.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.endpoints.lariskaHint")}
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           <span>
             {t("common.devices", { count: raw.length })}
           </span>
-          <span>
-            <span className="font-semibold text-emerald-400">{t("common.linked", { count: linked })}</span>
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+            {t("common.linked", { count: linked })}
           </span>
           {conflicts > 0 ? (
-            <span>
-              <span className="font-semibold text-rose-400">{conflicts}</span> conflict
+            <span className="font-semibold text-destructive">
+              {t("page.endpoints.conflicts", { count: conflicts })}
             </span>
           ) : null}
           {stale > 0 ? (
-            <span>
-              <span className="font-semibold text-amber-400">{stale}</span> stale
+            <span className="font-semibold text-amber-600 dark:text-amber-400">
+              {t("page.endpoints.staleCount", { count: stale })}
             </span>
           ) : null}
           <Button
             variant="outline"
             size="sm"
             onClick={() => setStaleOnly((v) => !v)}
-            className={`h-8 border-slate-800 bg-slate-900 text-xs ${
-              staleOnly ? "text-amber-300 border-amber-500/40" : "text-slate-300"
+            className={`h-8 text-xs ${
+              staleOnly ? "border-amber-500/60 text-amber-600 dark:text-amber-300" : ""
             }`}
           >
-            {staleOnly ? `Stale only (>${staleHours}h)` : "Show stale only"}
+            {staleOnly
+              ? t("page.endpoints.staleOnly", { hours: staleHours })
+              : t("page.endpoints.showStaleOnly")}
           </Button>
           <Select value={reconFilter} onValueChange={setReconFilter}>
-            <SelectTrigger className="h-8 w-[140px] border-slate-800 bg-slate-900 text-xs">
-              <SelectValue placeholder="Filter" />
+            <SelectTrigger className="h-8 w-[160px] text-xs">
+              <SelectValue placeholder={t("page.endpoints.filter")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={FILTER_ALL}>All statuses</SelectItem>
+              <SelectItem value={FILTER_ALL}>{t("page.endpoints.filterAllStatuses")}</SelectItem>
               {(Object.keys(ENDPOINT_RECONCILIATION_STATUS) as EndpointReconciliationStatus[]).map(
-                (s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
+                (status) => (
+                  <SelectItem key={status} value={status}>
+                    {t.label(ENDPOINT_RECONCILIATION_STATUS[status].label)}
                   </SelectItem>
                 ),
               )}
@@ -287,10 +286,8 @@ export default function EndpointsPage() {
         </div>
       </div>
 
-      <p className="max-w-3xl text-xs leading-relaxed text-slate-500">
-        Each row is a Lariska-managed host. <strong className="text-slate-400">linked</strong> means
-        inventory is attached to a network-scan asset (by hostname / identifiers). Open the asset to
-        see Pulse vulns, ports, and installed software together.
+      <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
+        {t("page.endpoints.note", { linked: t.label("linked") })}
       </p>
 
       <PatchGapPanel tenantId={tenantId} />

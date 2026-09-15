@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { differenceInDays, formatDistanceToNowStrict } from "date-fns";
+import { differenceInDays } from "date-fns";
 import { ArrowUpRight, Globe2, Layers, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useJobCounts } from "@/hooks/use-jobs";
@@ -10,6 +10,7 @@ import { useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
 import { useAuthStore } from "@/lib/auth-store";
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { useT } from "@/lib/i18n";
+import { useRelativeTime } from "@/lib/i18n/datetime";
 import { runDetailHref } from "@/lib/run-data";
 import { surfaceHref, type ScanSurface } from "@/lib/scan-surface";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ const STALE_DAYS = 30;
 
 function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
   const t = useT();
+  const ago = useRelativeTime();
   const { canOperate } = useAuthStore();
   const runs = useRuns(POLL_INTERVALS.dashboard, { limit: 1 }, { surface });
   const jobs = useJobCounts(canOperate, { surface });
@@ -70,7 +72,7 @@ function SurfaceCard({ surface }: { surface: Exclude<ScanSurface, "mixed"> }) {
             {runs.isLoading
               ? "…"
               : last?.started_at
-                ? formatDistanceToNowStrict(new Date(last.started_at), { addSuffix: true })
+                ? ago(last.started_at)
                 : t("kpi.scans.noneYet")}
           </dd>
         </div>

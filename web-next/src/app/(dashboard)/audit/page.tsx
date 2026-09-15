@@ -11,6 +11,8 @@ import { usePagination } from "@/hooks/use-pagination";
 import { type AuditEventInfo, type AuditFilters } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
+import { useAbsoluteTime } from "@/lib/i18n/datetime";
+import { changeShape, changedFields } from "@/lib/audit-change";
 
 const INPUT_CLASS = "h-9 w-40";
 
@@ -61,8 +63,76 @@ function instant(value: string): string | undefined {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
+/** How many changed fields a row shows before it says "+N more". The row is a
+ * summary; the whole document is one click away. */
+const FIELDS_IN_SUMMARY = 3;
+
+/** One row's change: the fields that differ, and the document behind them. */
+function ChangeCell({ event }: { event: AuditEventInfo }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const fields = changedFields(event.before, event.after);
+
+  // A creation has no `before` and a deletion no `after`. Saying which is more
+  // use than listing every field of the document as "changed".
+  const kind = changeShape(event.before, event.after);
+  const shape = kind === "created" ? t("audit.change.created") : kind === "removed" ? t("audit.change.removed") : null;
+
+  return (
+    <div className="w-[17rem] max-w-[17rem] space-y-1">
+      {shape ? (
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {shape}
+        </p>
+      ) : null}
+      {fields.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">{t("audit.change.none")}</p>
+      ) : (
+        <ul className="space-y-0.5">
+          {fields.slice(0, FIELDS_IN_SUMMARY).map((field) => (
+            <li
+              key={field.key}
+              // One line per field, clipped rather than wrapped: a row whose
+              // height depends on how long somebody's note was is the problem
+              // this cell had. The title carries the untruncated pair, and the
+              // document below carries all of it.
+              className="flex items-baseline gap-1 truncate text-[11px]"
+              title={`${field.key}: ${field.from} → ${field.to}`}
+            >
+              <span className="font-mono font-semibold text-foreground">{field.key}</span>
+              <span className="font-mono text-muted-foreground line-through">{field.from}</span>
+              <span className="text-muted-foreground">→</span>
+              <span className="truncate font-mono text-foreground">{field.to}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-baseline gap-2 text-[11px]">
+        {fields.length > FIELDS_IN_SUMMARY ? (
+          <span className="text-muted-foreground">
+            {t("audit.change.more", { count: fields.length - FIELDS_IN_SUMMARY })}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          className="font-medium text-primary hover:underline"
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? t("audit.change.hide") : t("audit.change.show")}
+        </button>
+      </div>
+      {open ? (
+        <pre className="max-h-64 overflow-auto rounded-md border border-border bg-muted p-2 font-mono text-[11px] text-foreground">
+          {JSON.stringify({ before: event.before, after: event.after }, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 export default function AuditPage() {
   const t = useT();
+  const when = useAbsoluteTime();
   const { activeTenant } = useAuthStore();
   const pagination = usePagination();
   const [action, setAction] = useState("");
@@ -102,8 +172,11 @@ export default function AuditPage() {
         header: t("audit.column.time"),
         enableSorting: false,
         cell: ({ row }) => (
-          <span className="font-mono text-xs text-muted-foreground">
-            {row.original.occurred_at ?? "—"}
+          // Formatted, and not wrapped: the raw ISO instant broke across three
+          // lines in a column this narrow, so the one column every audit row is
+          // read by was the hardest to read.
+          <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+            {when(row.original.occurred_at)}
           </span>
         ),
       },
@@ -160,17 +233,19 @@ export default function AuditPage() {
         id: "change",
         header: t("audit.column.change"),
         enableSorting: false,
-        // The whole document, in the row, rather than behind a dialog: the
-        // before/after is the answer this page exists for, and it is already
-        // redacted server-side.
-        cell: ({ row }) => (
-          <pre className="max-w-md overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
-            {JSON.stringify({ before: row.original.before, after: row.original.after })}
-          </pre>
-        ),
+        // The changed fields, in the row; the whole document a click away.
+        //
+        // This used to be `JSON.stringify({before, after})` in a `break-all`
+        // <pre>, which is the answer this page exists for rendered as an
+        // unreadable ribbon: one row grew to a quarter of the screen and
+        // squeezed every other column, including the timestamp, into a
+        // wrapping sliver. The summary keeps the answer in the row and the
+        // table legible; the document is still there for the reader who needs
+        // the exact text, and is still redacted server-side either way.
+        cell: ({ row }) => <ChangeCell event={row.original} />,
       },
     ],
-    [t],
+    [t, when],
   );
 
   return (

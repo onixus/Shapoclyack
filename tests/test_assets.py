@@ -310,6 +310,34 @@ def test_update_asset_rejects_non_decommissioned_status(tmp_path):
 
 
 @requires_postgres
+def test_an_asset_with_no_domain_name_is_still_headed_by_its_address(tmp_path):
+    """The fallback, which is most of an internal estate.
+
+    Preferring the FQDN must not blank the row for a host that has none —
+    a bare IP is still the only name that asset has, and an inventory row with
+    nothing in its first column is worse than one headed by an address.
+    """
+    from api.services import assets as assets_service
+
+    settings, tenant_id = _settings_with_tenant(tmp_path)
+    _write_run(
+        settings.output_dir,
+        "run-mixed",
+        [{"host": "10.0.3.1"}, {"host": "10.0.3.2", "names": ["named.example.com"]}],
+    )
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-mixed")
+
+    page, _total = assets_service.list_assets(settings, tenant_id, limit=20)
+    by_primary = {row["primary_identifier"] for row in page}
+    assert "named.example.com" in by_primary
+    assert "10.0.3.1" in by_primary
+
+    nameless = next(row for row in page if row["primary_identifier"] == "10.0.3.1")
+    assert nameless["primary_fqdn"] is None
+    assert nameless["primary_ip"] == "10.0.3.1"
+
+
+@requires_postgres
 def test_list_assets_fetches_page_identifiers_in_one_query(tmp_path):
     """ROADMAP P3.8: identifiers used to be fetched per asset, so a page of N
     cost N+2 statements — invisible on a local socket, dominant over a network
@@ -343,7 +371,13 @@ def test_list_assets_fetches_page_identifiers_in_one_query(tmp_path):
     assert len(page) == 20
     # Every asset still resolves both of its identifiers.
     assert all(row["identifier_count"] == 2 for row in page)
-    assert all(row["primary_identifier"].startswith("10.0.2.") for row in page)
+    # And the name is what heads the row. These hosts have both an address and
+    # a domain; an inventory headed by "10.0.2.7" asks the operator to remember
+    # which host that is, where "h7.example.com" says what is at risk. The
+    # address is still there, in its own field.
+    assert all(row["primary_identifier"].endswith(".example.com") for row in page)
+    assert all(row["primary_fqdn"].endswith(".example.com") for row in page)
+    assert all(row["primary_ip"].startswith("10.0.2.") for row in page)
 
     identifier_selects = [
         s for s in statements if "asset_identifiers" in s and s.strip().upper().startswith("SELECT")

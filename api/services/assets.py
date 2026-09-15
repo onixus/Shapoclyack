@@ -668,7 +668,12 @@ def list_assets(
         results: list[dict] = []
         for asset in assets:
             identifiers = by_asset.get(asset.asset_id, [])
-            primary = next((i.identifier_value for i in identifiers if i.identifier_type == "ip"), None)
+            fqdn = next(
+                (i.identifier_value for i in identifiers if i.identifier_type == "fqdn"), None
+            )
+            ip = next(
+                (i.identifier_value for i in identifiers if i.identifier_type == "ip"), None
+            )
             risk = risk_by_asset.get(asset.asset_id, _EMPTY_PAGE_RISK)
             results.append(
                 {
@@ -677,7 +682,16 @@ def list_assets(
                     "status": asset.status,
                     "first_seen": asset.first_seen,
                     "last_seen": asset.last_seen,
-                    "primary_identifier": primary or (identifiers[0].identifier_value if identifiers else None),
+                    # The name first, the address second. An inventory row
+                    # headed by an IP asks the operator to remember which host
+                    # that is; headed by the domain, it says what is at risk.
+                    # The IP rides along in its own field, so nothing that
+                    # needs the address has to look it up again.
+                    "primary_identifier": fqdn
+                    or ip
+                    or (identifiers[0].identifier_value if identifiers else None),
+                    "primary_fqdn": fqdn,
+                    "primary_ip": ip,
                     "identifier_count": len(identifiers),
                     "asset_criticality": asset.asset_criticality,
                     "owner_email": asset.owner_email,

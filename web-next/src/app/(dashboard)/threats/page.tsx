@@ -35,10 +35,14 @@ export default function ThreatsPage() {
         header: t("col.finding"),
         cell: ({ row }) => (
           <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)} className="space-y-0.5">
-            <p className="font-mono font-bold text-sky-400 hover:underline">{findingLabel(row.original)}</p>
-            <p className="text-[11px] text-slate-400">
-              {row.original.exploit_maturity ? row.original.exploit_maturity.replaceAll("_", " ") : "KEV"}
-              {row.original.port ? ` · port ${row.original.port}` : ""}
+            <p className="font-mono font-bold text-primary hover:underline">
+              {findingLabel(row.original)}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {row.original.exploit_maturity
+                ? t.label(row.original.exploit_maturity.replaceAll("_", " "))
+                : t("page.threats.kevFallback")}
+              {row.original.port ? ` · ${t("page.threats.port", { port: row.original.port })}` : ""}
             </p>
           </Link>
         ),
@@ -57,7 +61,7 @@ export default function ThreatsPage() {
           row.original.risk_level && row.original.risk_level in RISK_LEVEL_STATUS ? (
             <StatusBadge value={row.original.risk_level} map={RISK_LEVEL_STATUS} />
           ) : (
-            <span className="text-xs text-slate-500">{t("common.unset")}</span>
+            <span className="text-xs text-muted-foreground">{t("common.unset")}</span>
           ),
       },
       {
@@ -76,7 +80,7 @@ export default function ThreatsPage() {
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-[11px] text-slate-300 hover:text-sky-300"
+            className="font-mono text-[11px] text-foreground hover:text-primary hover:underline"
           >
             {row.original.asset_id}
           </Link>
@@ -87,7 +91,7 @@ export default function ThreatsPage() {
         header: "",
         enableSorting: false,
         cell: ({ row }) => (
-          <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800">
+          <Button asChild variant="outline" size="sm" className="h-7 text-xs">
             <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>{t("common.act")}</Link>
           </Button>
         ),
@@ -98,17 +102,19 @@ export default function ThreatsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <Siren className="h-5 w-5 text-rose-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.threats.title")}</h1>
+            <Siren className="h-5 w-5 text-destructive" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
+              {t("page.threats.title")}
+            </h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">{t("page.threats.subtitle")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("page.threats.subtitle")}</p>
         </div>
       </div>
 
-      <Alert className="border-rose-500/30 bg-rose-950/20 text-rose-100">
+      <Alert className="border-rose-500/40 bg-rose-50 text-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
         <AlertDescription className="text-xs">
           {t("page.threats.alert")}
         </AlertDescription>
@@ -120,7 +126,7 @@ export default function ThreatsPage() {
         isLoading={listQuery.isLoading}
         error={listQuery.error}
         searchPlaceholder={t("search.kev")}
-        meta={`${total.toLocaleString()} open KEV finding${total === 1 ? "" : "s"}`}
+        meta={t("page.threats.meta", { count: total.toLocaleString() })}
         loadingMessage={t("loading.kev")}
         emptyMessage={t("empty.kev")}
         serverPagination={{

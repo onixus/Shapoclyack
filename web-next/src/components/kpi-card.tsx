@@ -26,25 +26,45 @@ export function KpiCard({
 
   const gradient = gradientMap[decorationColor] || gradientMap.sky;
 
+  // A word, not a count. "requires a check" in a slot sized for "32" wraps to
+  // two or three lines and towers over its neighbours, which is what made a
+  // row of these cards look like six different components. Long text steps
+  // down a size or two instead; the numbers keep the size they had.
+  const text = typeof value === "number" ? value.toLocaleString() : String(value);
+  const valueSize =
+    typeof value === "number" || text.length <= 6
+      ? "text-3xl"
+      : text.length <= 14
+        ? "text-2xl"
+        : "text-xl";
+
   const card = (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border border-border bg-card text-card-foreground p-5 shadow-sm transition-all duration-200 hover:border-border/80 hover:shadow-md",
+        // h-full, and a column that pushes the hint to the bottom: a grid
+        // stretches its items, but the card inside the Link did not fill
+        // them, so every card was as tall as its own text and the row looked
+        // ragged. min-h keeps a card with no hint from collapsing next to one
+        // that has two lines of it.
+        "relative flex h-full min-h-[7.5rem] flex-col overflow-hidden rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm transition-all duration-200 hover:border-border/80 hover:shadow-md",
         href && "cursor-pointer",
       )}
     >
       <div className={cn("absolute top-0 left-0 right-0 h-1 bg-gradient-to-r", gradient)} />
       <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className="mt-2 text-3xl font-extrabold tracking-tight text-foreground">
-        {typeof value === "number" ? value.toLocaleString() : value}
-      </p>
-      {hint ? <p className="mt-1.5 text-xs text-muted-foreground font-medium">{hint}</p> : null}
+      <p className={cn("mt-2 font-extrabold tracking-tight text-foreground", valueSize)}>{text}</p>
+      {hint ? (
+        <p className="mt-auto pt-1.5 text-xs font-medium text-muted-foreground">{hint}</p>
+      ) : null}
     </div>
   );
 
   if (href) {
     return (
-      <Link href={href} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+      <Link
+        href={href}
+        className="block h-full rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
         {card}
       </Link>
     );

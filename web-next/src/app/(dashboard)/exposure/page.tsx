@@ -44,11 +44,11 @@ export default function ExposurePage() {
         header: t("col.asset"),
         cell: ({ row }) => (
           <Link href={assetDetailHref(row.original.asset_id)} className="group space-y-0.5">
-            <div className="flex items-center gap-1.5 font-mono font-bold text-sky-400 group-hover:underline">
+            <div className="flex items-center gap-1.5 font-mono font-bold text-primary group-hover:underline">
               <span>{row.original.primary_identifier || row.original.asset_id}</span>
               <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100" />
             </div>
-            <span className="block text-[11px] text-slate-400">
+            <span className="block text-[11px] text-muted-foreground">
               {row.original.business_service || t("common.noService")}
               {row.original.owner_email ? ` · ${row.original.owner_email}` : ` · ${t("common.noOwner")}`}
             </span>
