@@ -50,7 +50,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
-| `/agents` | Distributed worker fleet: live health tiles, agent drawer, SSH deploy dialog and on-request provisioning keys | Operator |
+| `/agents` | **Sensors** — the scanning-node fleet: live health tiles, sensor drawer, SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/agent counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
@@ -58,7 +58,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 
 The sidebar is grouped, not flat: **Overview**, **Risk & remediation**,
 **External surface** (external scans, exposure, attack surface, org profile,
-geo), **Internal surface** (internal scans, endpoints, agents), **Operations**
+geo), **Internal surface** (internal scans, endpoints, sensors), **Operations**
 (all jobs, runs, schedules, reports, wordlists), **Insights**, and
 **Administration**. Groups collapse and remember it per browser
 (`shapoclyack.nav.collapsed`); a collapsed group still shows the current page.
@@ -75,7 +75,7 @@ run report, a 12-hex job id opens that job's record on `/scans`, a
 `vuln_…` / `asset_…` id opens the detail page, anything else becomes a search
 on the Vulnerability Center or the asset inventory (`?q=`). For operators the
 header also shows the live count of running and queued jobs (from
-`GET /api/jobs/summary`, one grouped count every 15 s) and agents online, in
+`GET /api/jobs/summary`, one grouped count every 15 s) and sensors online, in
 place of the former decorative "Live System" pill. The sidebar
 footer shows the API version and the execution mode (local / agent) from
 `GET /api/system`.
@@ -191,7 +191,7 @@ renders an absent value as internal: it shows **Unclassified**.
   surface-specific tile: open findings whose network exposure matches the
   surface (`by_network_exposure_open`; a scan launched from the external page
   declares its surface, and that declaration is exposure evidence — see
-  [risk-scoring.md](risk-scoring.md)), agents online (internal), approved
+  [risk-scoring.md](risk-scoring.md)), sensors online (internal), approved
   domains and promoted related domains (external, admin);
 - the launcher, shaped by the surface: external leads with domains and offers
   `org_profile` and wordlists; internal leads with private ranges and hides
@@ -561,43 +561,43 @@ renders the OASIS SARIF v2.1.0 document — rules, `level`, message and the
 is a normal artifact, so it can be handed to GitHub Code Scanning, GitLab
 Security, DefectDojo or a SIEM unchanged.
 
-## Agent fleet and deployment
+## Sensor fleet and deployment
 
-`/agents` is the worker fleet: status, version, telemetry, deregistration and
+`/agents` is the **Sensors** page — the scanning-node fleet (`agent_kind = "scanner"`, see the Terminology section in [README.md](README.md); the Lariska endpoint agent lives on `/endpoints`): status, version, telemetry, deregistration and
 remote upgrade. The page takes `operator`; the two actions in the **Deploy
-Agent** dialog that hand out a credential — **Generate key** and the SSH push —
+Sensor** dialog that hand out a credential — **Generate key** and the SSH push —
 take tenant `admin` and answer `403` for an operator
 ([#231](https://github.com/onixus/Shapoclyack/issues/231)). The page refreshes
 on a poll, so it reads as a live view rather than one that needs reloading.
 
 The tiles above the table are `GET /api/agents/summary`: total, online, busy,
-stale and **outdated** agents, the last against the server's target version.
-A row opens a details drawer with the agent's heartbeat metrics — OS and
+stale and **outdated** sensors, the last against the server's target version.
+A row opens a details drawer with the sensor's heartbeat metrics — OS and
 architecture, CPU, memory, disk, load and uptime — its capabilities, current
-job, and an **Upgrade** action. Upgrade marks the agent (`upgrade_requested`)
+job, and an **Upgrade** action. Upgrade marks the sensor (`upgrade_requested`)
 and the button then reads as requested; it does not push anything to the host.
 The host is upgraded there — see
 [operations.md](operations.md#agent-installation-and-upgrade).
 
-**Agent State** in the drawer is the operator's verdict on the agent, and it
+**Sensor State** in the drawer is the operator's verdict on the sensor, and it
 sits apart from the status badge because the two say different things
 ([#308](https://github.com/onixus/Shapoclyack/issues/308)): the badge is what
-the agent reports about itself, the state is what an operator decided. The
+the sensor reports about itself, the state is what an operator decided. The
 **Disable** and **Quarantine** buttons take a reason, which is shown to the
-agent itself and to whoever opens the drawer next; **Re-activate** clears it.
+sensor itself and to whoever opens the drawer next; **Re-activate** clears it.
 Both take tenant `admin` and answer `403` for an operator. A non-`active`
-agent carries a second badge in the table and in the drawer header — only when
-it is not active, since a badge on every healthy agent would say nothing.
+sensor carries a second badge in the table and in the drawer header — only when
+it is not active, since a badge on every healthy sensor would say nothing.
 
 **Deregister** now offers *Also revoke its provisioning key*, off by default
 because one key commonly provisions a whole fleet. Left off, the deregistration
 is a pause: the host still holds the key and re-registers on its next poll, and
 the toast says so rather than letting the operator assume otherwise. Ticked, it
 names the size of the fleet it is about to stop — "This key also provisioned 12
-other agents" — read from the agent before the click rather than reported in the
+other sensors" — read from the sensor before the click rather than reported in the
 answer afterwards, which is too late to be a warning.
 
-The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
+The **Deploy Sensor** dialog has four tabs. **Remote SSH Push** installs onto a
 host the platform connects to itself: host, port, username, either a password or
 a private key, an expected SSH host key fingerprint, and optionally Docker. The
 dialog polls the deployment and shows the stages (connect → mint credentials →
@@ -832,7 +832,7 @@ authority lives in the membership, not in the account: a `scan-operator` is a
 global `viewer`, and the console used to compare every menu entry and half the
 page gates against that global role. The result was an account that the API
 served `GET /api/jobs` while the console hid Scan jobs, both scanning surfaces,
-Agents, Schedules and the quick-launch buttons from it. Only two entries are
+Sensors, Schedules and the quick-launch buttons from it. Only two entries are
 still on the global role, and deliberately: `/tenants` and `/users`, whose
 routes resolve their own tenant set and are gated on the `TokenUser`.
 
@@ -1014,7 +1014,7 @@ simply unchanged.
 
 ## Current versus planned UI
 
-The shell now follows the roadmap's information architecture: risk workflows first, then the two scanning surfaces, then the operations that serve both (runs, schedules, agents, reports) and administration. What is still planned — attack paths, ticket views beyond the link, role-specific dashboards — is documented in the [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.
+The shell now follows the roadmap's information architecture: risk workflows first, then the two scanning surfaces, then the operations that serve both (runs, schedules, sensors, reports) and administration. What is still planned — attack paths, ticket views beyond the link, role-specific dashboards — is documented in the [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md), not mixed into this current-state guide.
 
 ## UI development
 

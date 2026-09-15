@@ -43,9 +43,9 @@ describe("filterEntries", () => {
     {
       id: "/agents",
       group: "pages",
-      label: "Agents",
+      label: "Sensors",
       href: "/agents",
-      hint: "Distributed worker fleet",
+      hint: "Distributed sensor fleet",
     },
   ];
 

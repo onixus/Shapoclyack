@@ -319,7 +319,7 @@ export function AgentDetailsDrawer({
               <div className="space-y-2 border-t border-border/80 pt-4">
                 <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                   <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
-                  Agent State
+                  Sensor State
                 </h4>
                 {lifecycle === "active" ? (
                   <p className="text-xs text-muted-foreground">
@@ -327,7 +327,7 @@ export function AgentDetailsDrawer({
                   </p>
                 ) : (
                   <p className="text-xs text-amber-700 dark:text-amber-300">
-                    {agent.lifecycle_message || `This agent is ${lifecycle}.`}
+                    {agent.lifecycle_message || `This sensor is ${lifecycle}.`}
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-2">
@@ -337,7 +337,7 @@ export function AgentDetailsDrawer({
                   <Input
                     value={reason}
                     onChange={(event) => setReason(event.target.value)}
-                    placeholder="Reason (shown to the agent and to the next operator)"
+                    placeholder="Reason (shown to the sensor and to the next operator)"
                     className="h-8 max-w-sm text-xs"
                     aria-label="Reason"
                   />
@@ -387,7 +387,7 @@ export function AgentDetailsDrawer({
                     className="gap-1.5 border-rose-500/40 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 dark:hover:text-rose-600 dark:text-rose-300"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    Deregister Agent
+                    Deregister Sensor
                   </Button>
                 ) : (
                   <div className="flex flex-wrap items-center gap-2">
@@ -413,7 +413,7 @@ export function AgentDetailsDrawer({
                         className="w-full text-xs font-semibold text-rose-600 dark:text-rose-400"
                       >
                         This key also provisioned {otherAgentsOnKey} other{" "}
-                        {otherAgentsOnKey === 1 ? "agent" : "agents"} — revoking it stops{" "}
+                        {otherAgentsOnKey === 1 ? "sensor" : "sensors"} — revoking it stops{" "}
                         {otherAgentsOnKey === 1 ? "that one" : "all of them"} too.
                       </span>
                     ) : null}

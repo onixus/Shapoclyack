@@ -105,7 +105,7 @@ describe("Sidebar", () => {
     renderSidebar();
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).queryByText("External scans")).not.toBeInTheDocument();
-    expect(within(nav).queryByText("Agents")).not.toBeInTheDocument();
+    expect(within(nav).queryByText("Sensors")).not.toBeInTheDocument();
     expect(within(nav).getByText("Vulnerabilities")).toBeInTheDocument();
     expect(screen.queryByTestId("quick-launch")).not.toBeInTheDocument();
   });
@@ -158,6 +158,6 @@ describe("Sidebar", () => {
     signIn({ role: "viewer" });
     renderSidebar();
     expect(await screen.findByText("v0.45")).toBeInTheDocument();
-    expect(screen.getByText("Agent execution")).toBeInTheDocument();
+    expect(screen.getByText("Sensor execution")).toBeInTheDocument();
   });
 });

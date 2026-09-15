@@ -46,14 +46,14 @@ describe("AgentDetailsDrawer deregistration", () => {
     const user = userEvent.setup();
     renderDrawer(agent({ other_agents_on_key: 12 }));
 
-    await user.click(await screen.findByRole("button", { name: /Deregister Agent/i }));
+    await user.click(await screen.findByRole("button", { name: /Deregister Sensor/i }));
     // The warning belongs to the checkbox, not to the delete itself: without
     // it the delete strands nothing else.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Revoke provisioning key"));
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /12 other agents .* revoking it stops all of them/i,
+      /12 other sensors .* revoking it stops all of them/i,
     );
   });
 
@@ -61,7 +61,7 @@ describe("AgentDetailsDrawer deregistration", () => {
     const user = userEvent.setup();
     renderDrawer(agent({ other_agents_on_key: 0 }));
 
-    await user.click(await screen.findByRole("button", { name: /Deregister Agent/i }));
+    await user.click(await screen.findByRole("button", { name: /Deregister Sensor/i }));
     await user.click(screen.getByLabelText("Revoke provisioning key"));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });

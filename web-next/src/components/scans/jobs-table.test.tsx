@@ -101,7 +101,7 @@ describe("JobsTable", () => {
     ]);
     expect(screen.getAllByRole("button", { name: "Cancel job" })).toHaveLength(2);
     expect(
-      screen.getByLabelText("Stopping: waiting for the agent to confirm"),
+      screen.getByLabelText("Stopping: waiting for the sensor to confirm"),
     ).toBeInTheDocument();
   });
 
@@ -177,12 +177,12 @@ describe("JobsTable", () => {
         exit_code: null,
       }),
     ]);
-    expect(screen.getByLabelText("no agent online in this group")).toBeInTheDocument();
+    expect(screen.getByLabelText("no sensor online in this group")).toBeInTheDocument();
   });
 
   it("does not mark a job whose group has an agent online", () => {
     renderTable([job({ status: "queued", agent_group: "pci-segment" })]);
-    expect(screen.queryByLabelText("no agent online in this group")).toBeNull();
+    expect(screen.queryByLabelText("no sensor online in this group")).toBeNull();
   });
 
   it("names the agent group in the drawer", async () => {
@@ -194,7 +194,7 @@ describe("JobsTable", () => {
     await user.click(screen.getByRole("button", { name: "abc123def456" }));
     const drawer = await screen.findByRole("dialog");
     await waitFor(() => expect(drawer).toHaveTextContent("pci-segment"));
-    expect(drawer).toHaveTextContent("no agent online in this group");
+    expect(drawer).toHaveTextContent("no sensor online in this group");
   });
 
   it("opens the full record from the job id", async () => {

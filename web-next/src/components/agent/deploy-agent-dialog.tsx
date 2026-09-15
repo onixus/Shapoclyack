@@ -195,7 +195,7 @@ export function DeployAgentDialog() {
       <DialogTrigger asChild>
         <Button className="gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 font-semibold text-foreground shadow-md shadow-sky-950/20 hover:from-sky-400 hover:to-indigo-500">
           <Server className="h-4 w-4" />
-          Deploy Agent
+          Deploy Sensor
         </Button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden p-0 bg-card text-card-foreground border-border shadow-2xl">
