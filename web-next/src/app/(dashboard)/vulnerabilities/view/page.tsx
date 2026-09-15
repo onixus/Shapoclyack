@@ -87,10 +87,10 @@ function BackToVulnerabilities() {
       asChild
       variant="ghost"
       size="sm"
-      className="gap-2 px-0 text-slate-400 hover:text-slate-100 hover:bg-transparent"
+      className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
     >
       <Link href="/vulnerabilities">
-        <ArrowLeft className="h-4 w-4 text-sky-400" />
+        <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
         Back to Vulnerability Center
       </Link>
     </Button>
@@ -99,7 +99,7 @@ function BackToVulnerabilities() {
 
 export default function VulnerabilityDetailPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-slate-400">Loading vulnerability…</p>}>
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading vulnerability…</p>}>
       <VulnerabilityDetailInner />
     </Suspense>
   );
@@ -186,7 +186,7 @@ function VulnerabilityDetailInner() {
         </div>
       );
     }
-    return <p className="text-sm text-slate-400">Loading tracked finding…</p>;
+    return <p className="text-sm text-muted-foreground">Loading tracked finding…</p>;
   }
 
   const assetName =
@@ -196,24 +196,24 @@ function VulnerabilityDetailInner() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-3 border-b border-slate-800/80 pb-5">
+      <div className="space-y-3 border-b border-border pb-5">
         <BackToVulnerabilities />
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-slate-100">
+              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-foreground">
                 {findingLabel(vuln)}
               </h1>
               <StatusBadge value={normalizeSeverity(vuln.severity)} map={SEVERITY_STATUS} />
               <StatusBadge value={vuln.state} map={VULN_LIFECYCLE_STATUS} />
               <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
               {vuln.machine_verified ? (
-                <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 flex items-center gap-1 text-xs">
+                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 flex items-center gap-1 text-xs">
                   <ShieldCheck className="h-3 w-3" /> {t("vuln.machineVerified")}
                 </Badge>
               ) : null}
               {vuln.closure_reason ? (
-                <Badge variant="outline" className="border-slate-700 text-slate-300 text-xs">
+                <Badge variant="outline" className="border-border text-foreground text-xs">
                   {t("vuln.closureReason")}: {closureReasonLabel(t, vuln.closure_reason)}
                 </Badge>
               ) : null}
@@ -221,16 +221,16 @@ function VulnerabilityDetailInner() {
                   closure reason in place but stops holding the finding down, and
                   the difference is the whole point of the expiry. */}
               {vuln.fp_suppressed ? (
-                <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/40 flex items-center gap-1 text-xs">
+                <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40 flex items-center gap-1 text-xs">
                   <EyeOff className="h-3 w-3" />
                   {t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })}
                 </Badge>
               ) : null}
             </div>
             {vuln.title && vuln.title !== findingLabel(vuln) ? (
-              <p className="text-sm text-slate-300">{vuln.title}</p>
+              <p className="text-sm text-foreground">{vuln.title}</p>
             ) : null}
-            <p className="font-mono text-xs text-slate-400">
+            <p className="font-mono text-xs text-muted-foreground">
               {vuln.vuln_id}
               {vuln.port ? ` · port ${vuln.port}` : ""}
             </p>
@@ -257,15 +257,15 @@ function VulnerabilityDetailInner() {
           ) : null}
           {isAdmin ? <FalsePositiveCard vuln={vuln} /> : null}
           {!canOperate && !isAdmin && !canApproveException ? (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted-foreground">
               Viewer role: lifecycle, assignment and risk-acceptance actions are hidden.
             </p>
           ) : null}
         </div>
 
         <div className="lg:col-span-2 space-y-6">
-          <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-slate-100">Finding</h2>
+          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <h2 className="text-sm font-semibold text-foreground">Finding</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
               <Field label="CVE" value={vuln.cve || "—"} mono />
               <Field
@@ -315,13 +315,13 @@ function VulnerabilityDetailInner() {
                 value={
                   <Link
                     href={assetDetailHref(vuln.asset_id, vuln.tenant_id)}
-                    className="font-mono text-sky-400 hover:underline"
+                    className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
                   >
                     {assetName}
                   </Link>
                 }
               />
-              <Field label="Owner" value={vuln.assignee || "Unassigned"} />
+              <Field label={t("select.owner")} value={vuln.assignee || "Unassigned"} />
               <Field label="Team" value={vuln.owner_team || "—"} />
               <Field
                 label="Ticket"
@@ -331,7 +331,7 @@ function VulnerabilityDetailInner() {
                       href={vuln.ticket_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="font-mono text-sky-400 hover:underline"
+                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
                     >
                       {vuln.ticket_key || vuln.ticket_url}
                     </a>
@@ -348,7 +348,7 @@ function VulnerabilityDetailInner() {
               {vuln.closure_reason ? <Field label="Closure reason" value={vuln.closure_reason} /> : null}
               {vuln.last_verified_at ? <Field label="Last verified" value={formatWhen(vuln.last_verified_at)} /> : null}
               <Field
-                label="SLA"
+                label={t("select.sla")}
                 value={`${vuln.sla_days ?? "—"} days${vuln.sla_source ? ` · ${vuln.sla_source}` : ""}`}
               />
               <Field label="Due" value={formatWhen(vuln.due_at)} />
@@ -358,7 +358,7 @@ function VulnerabilityDetailInner() {
                   vuln.first_seen_run_id ? (
                     <Link
                       href={runDetailHref(vuln.first_seen_run_id)}
-                      className="font-mono text-sky-400 hover:underline"
+                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
                     >
                       {vuln.first_seen_run_id}
                     </Link>
@@ -373,7 +373,7 @@ function VulnerabilityDetailInner() {
                   vuln.last_seen_run_id ? (
                     <Link
                       href={runDetailHref(vuln.last_seen_run_id)}
-                      className="font-mono text-sky-400 hover:underline"
+                      className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
                     >
                       {vuln.last_seen_run_id}
                     </Link>
@@ -385,19 +385,19 @@ function VulnerabilityDetailInner() {
             </dl>
           </section>
 
-          <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-slate-100">Evidence</h2>
+          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <h2 className="text-sm font-semibold text-foreground">Evidence</h2>
             {observation?.risk_explanation ? (
-              <p className="mt-3 text-sm text-slate-200">{observation.risk_explanation}</p>
+              <p className="mt-3 text-sm text-foreground">{observation.risk_explanation}</p>
             ) : (
-              <p className="mt-3 text-xs text-slate-500">
+              <p className="mt-3 text-xs text-muted-foreground">
                 No risk explanation on the last observation
                 {vuln.last_seen_run_id ? (
                   <>
                     . Open the{" "}
                     <Link
                       href={runDetailHref(vuln.last_seen_run_id)}
-                      className="text-sky-400 hover:underline"
+                      className="text-sky-600 dark:text-sky-400 hover:underline"
                     >
                       last seeing run
                     </Link>{" "}
@@ -409,20 +409,20 @@ function VulnerabilityDetailInner() {
               </p>
             )}
             {observation?.cisa_decision ? (
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-muted-foreground">
                 CISA decision:{" "}
-                <span className="font-semibold text-slate-200">{observation.cisa_decision}</span>
+                <span className="font-semibold text-foreground">{observation.cisa_decision}</span>
               </p>
             ) : null}
           </section>
 
-          <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-            <h2 className="text-sm font-semibold text-slate-100">Audit trail</h2>
+          <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+            <h2 className="text-sm font-semibold text-foreground">Audit trail</h2>
             <div className="mt-4">
               {eventsQuery.isLoading ? (
-                <p className="text-xs text-slate-500">Loading events…</p>
+                <p className="text-xs text-muted-foreground">Loading events…</p>
               ) : eventsQuery.error ? (
-                <p className="text-xs text-rose-300">{(eventsQuery.error as Error).message}</p>
+                <p className="text-xs text-rose-600 dark:text-rose-300">{(eventsQuery.error as Error).message}</p>
               ) : (
                 <VulnerabilityTimeline events={eventsQuery.data?.items ?? []} />
               )}
@@ -447,8 +447,8 @@ function Field({
 }) {
   return (
     <div>
-      <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</dt>
-      <dd className={mono ? "mt-1 font-mono text-slate-200" : "mt-1 text-slate-200"} title={hint}>
+      <dt className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</dt>
+      <dd className={mono ? "mt-1 font-mono text-foreground" : "mt-1 text-foreground"} title={hint}>
         {value}
       </dd>
     </div>
@@ -474,22 +474,22 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
   if (options.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg space-y-4">
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg space-y-4">
       <div>
-        <h2 className="text-sm font-semibold text-slate-100">Move lifecycle</h2>
+        <h2 className="text-sm font-semibold text-foreground">Move lifecycle</h2>
         <form onSubmit={onSubmit} className="mt-3 space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="vuln-next-state" className="text-xs text-slate-400">
+            <Label htmlFor="vuln-next-state" className="text-xs text-muted-foreground">
               Next state
             </Label>
             <Select value={target} onValueChange={(value) => setTarget(value as VulnLifecycleState)}>
               <SelectTrigger
                 id="vuln-next-state"
-                className="bg-slate-950 border-slate-800 text-slate-200"
+                className="bg-muted border-border text-foreground"
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+              <SelectContent className="bg-card border-border text-foreground">
                 {options.map((state) => (
                   <SelectItem key={state} value={state}>
                     {VULN_TRANSITION_LABEL[state]} ({state})
@@ -499,7 +499,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="vuln-note" className="text-xs text-slate-400">
+            <Label htmlFor="vuln-note" className="text-xs text-muted-foreground">
               Note {target === "CLOSED" ? "(recommended)" : "(optional)"}
             </Label>
             <Textarea
@@ -507,7 +507,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
               value={note}
               onChange={(event) => setNote(event.target.value)}
               rows={3}
-              className="bg-slate-950 border-slate-800 text-slate-200"
+              className="bg-muted border-border text-foreground"
               placeholder={
                 target === "CLOSED"
                   ? "Why this is closed — false positive, fixed, decommissioned…"
@@ -531,17 +531,17 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
           refuses the dispatch with a 409 for exactly that reason. Offering a
           button that cannot work is worse than offering none. */}
       {vuln.source === "endpoint_software" ? (
-        <div className="border-t border-slate-800/80 pt-3 space-y-1">
-          <h3 className="text-xs font-semibold text-slate-300">Automated verification</h3>
-          <p className="text-[11px] text-slate-400">{t("vuln.software.noVerify")}</p>
-          <p className="text-[11px] text-slate-500">
+        <div className="border-t border-border pt-3 space-y-1">
+          <h3 className="text-xs font-semibold text-foreground">Automated verification</h3>
+          <p className="text-[11px] text-muted-foreground">{t("vuln.software.noVerify")}</p>
+          <p className="text-[11px] text-muted-foreground">
             {t("vuln.software.lastSnapshot")}: {formatWhen(vuln.last_seen_at)}
           </p>
         </div>
       ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
-        <div className="border-t border-slate-800/80 pt-3 space-y-2">
-          <h3 className="text-xs font-semibold text-slate-300">Automated verification</h3>
-          <p className="text-[11px] text-slate-400">
+        <div className="border-t border-border pt-3 space-y-2">
+          <h3 className="text-xs font-semibold text-foreground">Automated verification</h3>
+          <p className="text-[11px] text-muted-foreground">
             Dispatch a targeted re-scan against this asset to verify remediation.
           </p>
           <Button
@@ -550,7 +550,7 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
             variant="outline"
             disabled={verifyMutation.isPending}
             onClick={() => verifyMutation.mutate()}
-            className="w-full border-sky-500/40 bg-sky-950/30 text-sky-300 hover:bg-sky-900/40 gap-1.5"
+            className="w-full border-sky-500/40 bg-sky-950/30 text-sky-600 dark:text-sky-300 hover:bg-sky-900/40 gap-1.5"
           >
             <ShieldCheck className="h-4 w-4" />
             {verifyMutation.isPending
@@ -577,30 +577,30 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
   }
 
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">Ownership</h2>
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-foreground">Ownership</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-assignee" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-assignee" className="text-xs text-muted-foreground">
             Assignee
           </Label>
           <Input
             id="vuln-assignee"
             value={assignee}
             onChange={(event) => setAssignee(event.target.value)}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             placeholder="username or email"
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-team" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-team" className="text-xs text-muted-foreground">
             Owner team
           </Label>
           <Input
             id="vuln-team"
             value={ownerTeam}
             onChange={(event) => setOwnerTeam(event.target.value)}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             placeholder="queue or team name"
           />
         </div>
@@ -609,7 +609,7 @@ function AssignCard({ vuln }: { vuln: TrackedVulnerability }) {
           size="sm"
           variant="outline"
           disabled={mutation.isPending}
-          className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+          className="border-border bg-muted text-foreground hover:bg-muted"
         >
           {mutation.isPending ? "Saving…" : "Save owner"}
         </Button>
@@ -627,14 +627,14 @@ function CommentCard({ vulnId }: { vulnId: string }) {
     mutation.mutate(note.trim(), { onSuccess: () => setNote("") });
   }
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">Comment</h2>
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-foreground">Comment</h2>
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Textarea
           value={note}
           onChange={(event) => setNote(event.target.value)}
           rows={3}
-          className="bg-slate-950 border-slate-800 text-slate-200"
+          className="bg-muted border-border text-foreground"
           required
         />
         <Button type="submit" size="sm" disabled={mutation.isPending} className="bg-indigo-600 hover:bg-indigo-500">
@@ -658,9 +658,9 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
     setMutation.mutate({ system, key: key.trim() || null, url: url.trim() || null });
   }
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-100">Ticket link</h2>
+        <h2 className="text-sm font-semibold text-foreground">Ticket link</h2>
         {vuln.ticket_key ? (
           <Button
             type="button"
@@ -668,14 +668,14 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
             variant="ghost"
             disabled={syncMutation.isPending}
             onClick={() => syncMutation.mutate()}
-            className="text-xs text-sky-400 hover:text-sky-300 gap-1 h-7 px-2"
+            className="text-xs text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 gap-1 h-7 px-2"
           >
             <RefreshCw className={`h-3 w-3 ${syncMutation.isPending ? "animate-spin" : ""}`} />
             {t("vuln.syncTicketBtn")}
           </Button>
         ) : null}
       </div>
-      <p className="mt-1 text-[11px] text-slate-500">
+      <p className="mt-1 text-[11px] text-muted-foreground">
         Records where the work lives. Transitions are pushed to the ticket immediately; the
         ticket&apos;s own status is read back on a cadence, and Sync reads it now.
       </p>
@@ -683,16 +683,16 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
         // A link that has stopped working — a renamed key, a revoked token —
         // is otherwise only in the worker's log, which is where "why is this
         // finding not updating?" goes unanswered.
-        <p className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300">
+        <p className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-300">
           Last read failed: {vuln.ticket_sync_error}
         </p>
       ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <Select value={system} onValueChange={(value) => setSystem(value as TicketSystem)}>
-          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+          <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+          <SelectContent className="bg-card border-border text-foreground">
             {TICKET_SYSTEMS.map((item) => (
               <SelectItem key={item.value} value={item.value}>
                 {item.label}
@@ -704,13 +704,13 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
           value={key}
           onChange={(event) => setKey(event.target.value)}
           placeholder="SEC-123"
-          className="bg-slate-950 border-slate-800 text-slate-200"
+          className="bg-muted border-border text-foreground"
         />
         <Input
           value={url}
           onChange={(event) => setUrl(event.target.value)}
           placeholder="https://…"
-          className="bg-slate-950 border-slate-800 text-slate-200"
+          className="bg-muted border-border text-foreground"
         />
         <div className="flex flex-wrap gap-2">
           <Button type="submit" size="sm" disabled={setMutation.isPending} className="bg-sky-600 hover:bg-sky-500">
@@ -723,7 +723,7 @@ function TicketCard({ vuln }: { vuln: TrackedVulnerability }) {
               variant="outline"
               disabled={clearMutation.isPending}
               onClick={() => clearMutation.mutate()}
-              className="border-slate-700 bg-slate-950 text-slate-200"
+              className="border-border bg-muted text-foreground"
             >
               Unlink
             </Button>
@@ -787,56 +787,56 @@ function ExceptionCard({
   }
 
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">Accepted risk</h2>
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-foreground">Accepted risk</h2>
       {inForce ? (
-        <p className="mt-2 text-xs text-slate-400">
-          In force until <span className="text-slate-200">{formatWhen(vuln.exception_until)}</span>
+        <p className="mt-2 text-xs text-muted-foreground">
+          In force until <span className="text-foreground">{formatWhen(vuln.exception_until)}</span>
           {vuln.exception_by ? (
             <>
               {" "}
-              · by <span className="font-mono text-slate-300">{vuln.exception_by}</span>
+              · by <span className="font-mono text-foreground">{vuln.exception_by}</span>
             </>
           ) : null}
         </p>
       ) : lapsed ? (
-        <p className="mt-2 text-xs text-amber-300">
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
           The acceptance lapsed on {formatWhen(vuln.exception_until)} and the finding is back
           under its deadline.
         </p>
       ) : vuln.exception_state === "exception_rejected" ? (
-        <p className="mt-2 text-xs text-amber-300">
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
           Last request rejected
           {vuln.exception_decided_by ? (
             <>
               {" "}
-              by <span className="font-mono text-slate-300">{vuln.exception_decided_by}</span>
+              by <span className="font-mono text-foreground">{vuln.exception_decided_by}</span>
             </>
           ) : null}
           . The deadline never moved.
         </p>
       ) : (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-muted-foreground">
           No exception. Both expiry and reason are required, and a second person has to approve.
         </p>
       )}
       {pending ? (
-        <p className="mt-2 text-xs text-sky-300">
+        <p className="mt-2 text-xs text-sky-600 dark:text-sky-300">
           Requested by <span className="font-mono">{vuln.exception_requested_by ?? "—"}</span>{" "}
           until {formatWhen(vuln.exception_requested_until)} · waiting for approval. The SLA
           clock is still running.
         </p>
       ) : null}
       {vuln.exception_reason ? (
-        <p className="mt-2 text-xs text-slate-300">{vuln.exception_reason}</p>
+        <p className="mt-2 text-xs text-foreground">{vuln.exception_reason}</p>
       ) : null}
       {/* What is being asked for now, kept apart from the justification that
           was approved — they are different texts while an extension waits. */}
       {pending && vuln.exception_requested_reason ? (
-        <p className="mt-2 text-xs text-slate-400">{vuln.exception_requested_reason}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{vuln.exception_requested_reason}</p>
       ) : null}
       {pending && !canDecide ? (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-muted-foreground">
           {ownRequest
             ? "Your own request: it needs a second pair of eyes, so somebody holding vulnerability.exception.approve has to answer it."
             : "Waiting for somebody holding vulnerability.exception.approve."}
@@ -859,7 +859,7 @@ function ExceptionCard({
             variant="outline"
             disabled={decideMutation.isPending}
             onClick={() => decideMutation.mutate({ decision: "reject" })}
-            className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+            className="border-border bg-muted text-foreground hover:bg-muted"
           >
             Reject
           </Button>
@@ -868,7 +868,7 @@ function ExceptionCard({
       {canRequest ? (
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-until" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-until" className="text-xs text-muted-foreground">
             Until
           </Label>
           <Input
@@ -876,12 +876,12 @@ function ExceptionCard({
             type="datetime-local"
             value={until}
             onChange={(event) => setUntil(event.target.value)}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             required
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-reason" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-reason" className="text-xs text-muted-foreground">
             Reason
           </Label>
           <Textarea
@@ -889,7 +889,7 @@ function ExceptionCard({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={3}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             required
           />
         </div>
@@ -914,7 +914,7 @@ function ExceptionCard({
               variant="outline"
               disabled={withdrawMutation.isPending}
               onClick={() => withdrawMutation.mutate()}
-              className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+              className="border-border bg-muted text-foreground hover:bg-muted"
             >
               {withdrawMutation.isPending ? "Withdrawing…" : "Withdraw request"}
             </Button>
@@ -927,10 +927,10 @@ function ExceptionCard({
           because undoing a signature is a decision of the same weight as
           making one. */}
       {inForce && canApprove ? (
-        <div className="mt-4 border-t border-slate-800/80 pt-3">
+        <div className="mt-4 border-t border-border pt-3">
           {confirmRevoke ? (
             <div className="space-y-2">
-              <p className="text-xs text-amber-300">
+              <p className="text-xs text-amber-600 dark:text-amber-300">
                 Revoking the acceptance signed by{" "}
                 <span className="font-mono">{vuln.exception_by ?? "—"}</span> until{" "}
                 {formatWhen(vuln.exception_until)} puts this finding back under its original
@@ -952,7 +952,7 @@ function ExceptionCard({
                   size="sm"
                   variant="outline"
                   onClick={() => setConfirmRevoke(false)}
-                  className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+                  className="border-border bg-muted text-foreground hover:bg-muted"
                 >
                   Keep it
                 </Button>
@@ -964,7 +964,7 @@ function ExceptionCard({
               size="sm"
               variant="outline"
               onClick={() => setConfirmRevoke(true)}
-              className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+              className="border-border bg-muted text-foreground hover:bg-muted"
             >
               Revoke acceptance
             </Button>
@@ -1001,17 +1001,17 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
   }
 
   return (
-    <section className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg">
-      <h2 className="text-sm font-semibold text-slate-100">{t("vuln.fp.title")}</h2>
+    <section className="rounded-xl border border-border bg-card p-5 shadow-lg">
+      <h2 className="text-sm font-semibold text-foreground">{t("vuln.fp.title")}</h2>
       {marked ? (
-        <p className="mt-2 text-xs text-slate-400">
+        <p className="mt-2 text-xs text-muted-foreground">
           {vuln.fp_suppressed
             ? t("vuln.fp.suppressedUntil", { when: formatWhen(vuln.fp_suppress_until) })
             : t("vuln.fp.lapsed")}
           {vuln.fp_marked_by ? (
             <>
               {" "}
-              · <span className="font-mono text-slate-300">{vuln.fp_marked_by}</span>
+              · <span className="font-mono text-foreground">{vuln.fp_marked_by}</span>
             </>
           ) : null}
           {vuln.fp_observations ? (
@@ -1019,14 +1019,14 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
           ) : null}
         </p>
       ) : (
-        <p className="mt-2 text-xs text-slate-500">{t("vuln.fp.hint")}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("vuln.fp.hint")}</p>
       )}
       {marked && vuln.fp_reason ? (
-        <p className="mt-2 text-xs text-slate-300">{vuln.fp_reason}</p>
+        <p className="mt-2 text-xs text-foreground">{vuln.fp_reason}</p>
       ) : null}
       <form onSubmit={onSubmit} className="mt-3 space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-fp-reason" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-fp-reason" className="text-xs text-muted-foreground">
             {t("vuln.fp.reason")}
           </Label>
           <Textarea
@@ -1034,12 +1034,12 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={3}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             required
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="vuln-fp-days" className="text-xs text-slate-400">
+          <Label htmlFor="vuln-fp-days" className="text-xs text-muted-foreground">
             {t("vuln.fp.suppressDays")}
           </Label>
           <Input
@@ -1049,7 +1049,7 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
             max={365}
             value={days}
             onChange={(event) => setDays(event.target.value)}
-            className="bg-slate-950 border-slate-800 text-slate-200"
+            className="bg-muted border-border text-foreground"
             required
           />
         </div>
@@ -1069,7 +1069,7 @@ function FalsePositiveCard({ vuln }: { vuln: TrackedVulnerability }) {
               variant="outline"
               disabled={clearMutation.isPending}
               onClick={() => clearMutation.mutate()}
-              className="border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+              className="border-border bg-muted text-foreground hover:bg-muted"
             >
               {clearMutation.isPending ? t("vuln.fp.saving") : t("vuln.fp.clearBtn")}
             </Button>

@@ -316,7 +316,7 @@ export function JobsTable({
         searchPlaceholder={t("search.scans")}
         loadingMessage={t("loading.jobs")}
         emptyMessage={t("empty.jobs")}
-        meta={`${(page?.total ?? 0).toLocaleString()} jobs${isFetching ? t("common.refreshing") : ""}`}
+        meta={`${t("meta.jobs", { count: (page?.total ?? 0).toLocaleString() })}${isFetching ? t("common.refreshing") : ""}`}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,
@@ -363,7 +363,7 @@ export function JobsTable({
           <AlertDialogFooter>
             <AlertDialogCancel>{t("jobs.keepJob")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-white hover:bg-rose-500"
+              className="bg-rose-600 text-foreground hover:bg-rose-500"
               onClick={() => {
                 if (cancelTarget) cancel.mutate(cancelTarget.job_id);
                 setCancelTarget(null);

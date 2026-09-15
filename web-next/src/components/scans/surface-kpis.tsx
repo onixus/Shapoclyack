@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo } from "react";
-import { formatDistanceToNowStrict } from "date-fns";
 import { KpiCard } from "@/components/kpi-card";
 import { useAgentSummary } from "@/hooks/use-agents";
 import { useJobCounts, useJobs } from "@/hooks/use-jobs";
@@ -13,6 +12,7 @@ import { POLL_INTERVALS } from "@/lib/config/constants";
 import { useAuthStore } from "@/lib/auth-store";
 import { holdsPermission, isTenantAdmin } from "@/lib/authz";
 import { useT } from "@/lib/i18n";
+import { useRelativeTime } from "@/lib/i18n/datetime";
 import { runDetailHref } from "@/lib/run-data";
 import { type ScanSurface } from "@/lib/scan-surface";
 import { vulnListHref } from "@/lib/vuln-lifecycle";
@@ -43,6 +43,7 @@ export function SurfaceKpis({
   surface: ScanSurface | null;
   canOperate: boolean;
 }) {
+  const ago = useRelativeTime();
   const t = useT();
   const { user, activeTenant } = useAuthStore();
   const tenantId = activeTenant ?? user?.default_tenant ?? "default";
@@ -83,7 +84,7 @@ export function SurfaceKpis({
 
   const last = stats.lastCompleted;
   const lastValue = last?.finished_at
-    ? formatDistanceToNowStrict(new Date(last.finished_at), { addSuffix: true })
+    ? ago(last.finished_at)
     : t("kpi.scans.noneYet");
 
   return (

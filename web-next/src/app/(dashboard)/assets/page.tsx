@@ -231,7 +231,7 @@ function AssetsInner() {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <Server className="h-5 w-5 text-sky-400" />
+            <Server className="h-5 w-5 text-sky-600 dark:text-sky-400" />
             <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
               {t("page.assets.title")}
             </h1>

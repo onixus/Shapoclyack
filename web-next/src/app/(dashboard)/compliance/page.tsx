@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { ClipboardCheck, ShieldCheck, ShieldX, MinusCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -14,9 +15,9 @@ import { useComplianceFrameworks, useCompliancePosture } from "@/hooks/use-compl
 import type { ComplianceControlStatus } from "@/lib/api";
 
 const STATUS_STYLE: Record<ComplianceControlStatus["status"], string> = {
-  passed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
-  failed: "border-rose-500/30 bg-rose-500/10 text-rose-400",
-  not_assessed: "border-slate-500/30 bg-slate-500/10 text-slate-400",
+  passed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  failed: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  not_assessed: "border-slate-500/30 bg-slate-500/10 text-muted-foreground",
 };
 
 const STATUS_LABEL: Record<ComplianceControlStatus["status"], string> = {
@@ -26,9 +27,9 @@ const STATUS_LABEL: Record<ComplianceControlStatus["status"], string> = {
 };
 
 function StatusIcon({ status }: { status: ComplianceControlStatus["status"] }) {
-  if (status === "passed") return <ShieldCheck className="h-4 w-4 text-emerald-400" />;
-  if (status === "failed") return <ShieldX className="h-4 w-4 text-rose-400" />;
-  return <MinusCircle className="h-4 w-4 text-slate-500" />;
+  if (status === "passed") return <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />;
+  if (status === "failed") return <ShieldX className="h-4 w-4 text-rose-600 dark:text-rose-400" />;
+  return <MinusCircle className="h-4 w-4 text-muted-foreground" />;
 }
 
 function ControlRow({ control }: { control: ComplianceControlStatus }) {
@@ -52,12 +53,12 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
         </span>
         <span className="flex shrink-0 items-center gap-2">
           {control.failing_count > 0 ? (
-            <Badge variant="outline" className="border-rose-500/30 text-rose-400">
+            <Badge variant="outline" className="border-rose-500/30 text-rose-600 dark:text-rose-400">
               {control.failing_count} failing
             </Badge>
           ) : null}
           {control.accepted_count > 0 ? (
-            <Badge variant="outline" className="border-amber-500/30 text-amber-400">
+            <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
               {control.accepted_count} accepted
             </Badge>
           ) : null}
@@ -96,6 +97,7 @@ function ControlRow({ control }: { control: ComplianceControlStatus }) {
 }
 
 export default function CompliancePage() {
+  const t = useT();
   const frameworksQuery = useComplianceFrameworks();
   const frameworks = useMemo(() => frameworksQuery.data ?? [], [frameworksQuery.data]);
   const [frameworkId, setFrameworkId] = useState<string | null>(null);
@@ -122,7 +124,7 @@ export default function CompliancePage() {
         </div>
         <Select value={frameworkId ?? ""} onValueChange={setFrameworkId}>
           <SelectTrigger className="w-72">
-            <SelectValue placeholder="Framework" />
+            <SelectValue placeholder={t("select.framework")} />
           </SelectTrigger>
           <SelectContent>
             {frameworks.map((framework) => (
@@ -137,7 +139,7 @@ export default function CompliancePage() {
       {postureQuery.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : postureQuery.error ? (
-        <p className="text-sm text-rose-400">{(postureQuery.error as Error).message}</p>
+        <p className="text-sm text-rose-600 dark:text-rose-400">{(postureQuery.error as Error).message}</p>
       ) : posture ? (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -156,11 +158,11 @@ export default function CompliancePage() {
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Failing</p>
-              <p className="mt-1 text-2xl font-bold text-rose-400">{posture.controls_failed}</p>
+              <p className="mt-1 text-2xl font-bold text-rose-600 dark:text-rose-400">{posture.controls_failed}</p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Not assessed</p>
-              <p className="mt-1 text-2xl font-bold text-slate-400">
+              <p className="mt-1 text-2xl font-bold text-muted-foreground">
                 {posture.controls_not_assessed}
               </p>
             </div>

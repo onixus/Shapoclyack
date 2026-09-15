@@ -228,7 +228,7 @@ function RunsInner() {
         searchPlaceholder={t("search.runs")}
         loadingMessage={t("loading.runs")}
         emptyMessage={t("empty.runs")}
-        meta={`${data?.total ?? 0} runs`}
+        meta={t("meta.runs", { count: data?.total ?? 0 })}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,

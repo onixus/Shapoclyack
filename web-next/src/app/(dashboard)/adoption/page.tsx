@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { KpiCard } from "@/components/kpi-card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -101,6 +102,7 @@ function Analysts({ rows }: { rows: AdoptionMetrics["analysts"] }) {
 }
 
 export default function AdoptionPage() {
+  const t = useT();
   const [windowDays, setWindowDays] = useState<number>(90);
   const { data, isLoading, error } = useAdoption(windowDays);
 
@@ -118,7 +120,7 @@ export default function AdoptionPage() {
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
           Window
           <Select value={String(windowDays)} onValueChange={(value) => setWindowDays(Number(value))}>
-            <SelectTrigger className="w-28" aria-label="Window in days">
+            <SelectTrigger className="w-28" aria-label={t("adoption.windowDays")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -133,7 +135,7 @@ export default function AdoptionPage() {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
           {(error as Error).message}
         </p>
       ) : null}
@@ -147,14 +149,14 @@ export default function AdoptionPage() {
             </h2>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <KpiCard
-                label="Closed"
+                label={t("adoption.closed")}
                 value={data.findings.closed_in_window}
                 hint={`${data.findings.open} still open (${data.findings.accepted_open} risk-accepted). Remediation only — ${data.findings.false_positive_in_window} closed as noise are counted under Noise, not here`}
                 href="/vulnerabilities"
                 decorationColor="blue"
               />
               <KpiCard
-                label="Confirmed by a scan"
+                label={t("adoption.confirmedByScan")}
                 value={share(data.findings.machine_verified_share)}
                 hint={`${data.findings.machine_verified_closed} of ${data.findings.closed_in_window} closures were verified mechanically`}
                 decorationColor={
@@ -166,13 +168,13 @@ export default function AdoptionPage() {
                 }
               />
               <KpiCard
-                label="Closed within SLA"
+                label={t("adoption.closedWithinSla")}
                 value={share(data.findings.closed_within_sla_share)}
                 hint="Of closures that had a deadline"
                 decorationColor="emerald"
               />
               <KpiCard
-                label="Median time to fix"
+                label={t("adoption.medianTimeToFix")}
                 value={hours(data.findings.mttr_hours)}
                 hint="From SLA start to closure"
                 decorationColor="orange"
@@ -187,7 +189,7 @@ export default function AdoptionPage() {
               </h2>
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <KpiCard
-                  label="Closed as noise"
+                  label={t("adoption.closedAsNoise")}
                   value={data.false_positives.in_window}
                   hint={`Of everything closed in the window, ${share(
                     data.false_positives.share_of_closures,
@@ -195,7 +197,7 @@ export default function AdoptionPage() {
                   decorationColor="amber"
                 />
                 <KpiCard
-                  label="Suppressions in force"
+                  label={t("adoption.suppressions")}
                   value={data.false_positives.suppressions_active}
                   hint={`${data.false_positives.suppressions_lapsed} have expired and are waiting for a second look`}
                   decorationColor={
@@ -203,7 +205,7 @@ export default function AdoptionPage() {
                   }
                 />
                 <KpiCard
-                  label="Broken by evidence"
+                  label={t("adoption.brokenByEvidence")}
                   value={data.false_positives.overridden_in_window}
                   hint="Verdicts the scanner overrode because the assessment got worse — the number that says whether one was hiding something"
                   decorationColor={
@@ -211,7 +213,7 @@ export default function AdoptionPage() {
                   }
                 />
                 <KpiCard
-                  label="Median time to a verdict"
+                  label={t("adoption.medianTimeToVerdict")}
                   value={hours(data.false_positives.median_hours_to_verdict)}
                   hint="How long noise sat in the queue before someone ruled on it. Triage speed, not fix speed — it is deliberately not part of MTTR"
                   decorationColor="sky"
@@ -279,7 +281,7 @@ export default function AdoptionPage() {
                   decorationColor={data.coverage.vuln_scanned_share === null ? "slate" : "sky"}
                 />
                 <KpiCard
-                  label="Approved ranges reached"
+                  label={t("adoption.rangesReached")}
                   value={share(data.coverage.scope_covered_share)}
                   hint={
                     scopeReason(data.coverage.scope_unbounded_reason) ??
@@ -288,7 +290,7 @@ export default function AdoptionPage() {
                   decorationColor={data.coverage.scope_covered_share === null ? "slate" : "emerald"}
                 />
                 <KpiCard
-                  label="Approved entries"
+                  label={t("adoption.approvedEntries")}
                   value={data.coverage.approved_entries}
                   hint={`Allow rows in this tenant's scan scope${
                     data.coverage.denied_entries > 0
@@ -337,14 +339,14 @@ export default function AdoptionPage() {
             </h2>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <KpiCard
-                label="Assets with an owner"
+                label={t("adoption.assetsWithOwner")}
                 value={share(data.assets.with_owner_share)}
                 hint={`${data.assets.unowned} of ${data.assets.active} active assets have nobody to hand a finding to`}
                 href="/assets"
                 decorationColor={data.assets.unowned > 0 ? "amber" : "emerald"}
               />
               <KpiCard
-                label="Assets with business context"
+                label={t("adoption.assetsWithContext")}
                 value={share(data.assets.with_context_share)}
                 hint="Service, environment or classification set"
                 decorationColor="sky"
@@ -356,7 +358,7 @@ export default function AdoptionPage() {
                 decorationColor="blue"
               />
               <KpiCard
-                label="Network + agent"
+                label={t("adoption.networkAndAgent")}
                 value={share(data.assets.dual_source_share)}
                 hint="Assets also reporting an endpoint inventory"
                 href="/endpoints"
@@ -427,15 +429,15 @@ export default function AdoptionPage() {
                     <li key={dataset.name} className="flex items-center justify-between">
                       <span className="font-mono text-foreground">{dataset.name}</span>
                       {!dataset.present ? (
-                        <Badge variant="outline" className="border-slate-500/30 text-slate-400">
+                        <Badge variant="outline" className="border-slate-500/30 text-muted-foreground">
                           missing
                         </Badge>
                       ) : dataset.stale ? (
-                        <Badge variant="outline" className="border-amber-500/30 text-amber-400">
+                        <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
                           {dataset.age_days} d, stale
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="border-emerald-500/30 text-emerald-400">
+                        <Badge variant="outline" className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
                           {dataset.age_days} d
                         </Badge>
                       )}

@@ -134,20 +134,20 @@ export default function LoginPage() {
   const localLogin = sso?.enabled ? sso.local_login : "enabled";
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-4">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-muted px-4">
       <div className="login-wash pointer-events-none absolute inset-0" aria-hidden />
       <div className="absolute right-4 top-4 z-20">
         <AppearanceControls />
       </div>
-      <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-slate-100 shadow-2xl backdrop-blur">
+      <section className="relative z-10 w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 text-foreground shadow-2xl backdrop-blur">
         <div className="space-y-2">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-400">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
             {t("login.kicker")}
           </p>
           <h1 className="text-2xl font-semibold tracking-tight">
             {challenge ? t("login.mfa.title") : t("login.title")}
           </h1>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-muted-foreground">
             {!challenge
               ? t("login.subtitle")
               : challenge.username
@@ -161,7 +161,7 @@ export default function LoginPage() {
             <label className="grid gap-2 text-sm">
               {useRecovery ? t("login.mfa.recovery") : t("login.mfa.code")}
               <Input
-                className="border-slate-700 bg-slate-950 text-slate-100"
+                className="border-border bg-muted text-foreground"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 inputMode={useRecovery ? "text" : "numeric"}
@@ -170,14 +170,14 @@ export default function LoginPage() {
                 required
               />
             </label>
-            {error ? <p className="text-sm text-rose-400">{error}</p> : null}
+            {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>
             <div className="flex items-center justify-between text-xs">
               <button
                 type="button"
-                className="text-sky-400 hover:underline"
+                className="text-sky-600 dark:text-sky-400 hover:underline"
                 onClick={() => {
                   setUseRecovery((value) => !value);
                   setCode("");
@@ -185,7 +185,7 @@ export default function LoginPage() {
               >
                 {useRecovery ? t("login.mfa.useCode") : t("login.mfa.useRecovery")}
               </button>
-              <button type="button" className="text-slate-400 hover:underline" onClick={restart}>
+              <button type="button" className="text-muted-foreground hover:underline" onClick={restart}>
                 {t("login.mfa.back")}
               </button>
             </div>
@@ -206,7 +206,7 @@ export default function LoginPage() {
               <label className="grid gap-2 text-sm">
                 {t("login.username")}
                 <Input
-                  className="border-slate-700 bg-slate-950 text-slate-100"
+                  className="border-border bg-muted text-foreground"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
@@ -216,7 +216,7 @@ export default function LoginPage() {
               <label className="grid gap-2 text-sm">
                 {t("login.password")}
                 <Input
-                  className="border-slate-700 bg-slate-950 text-slate-100"
+                  className="border-border bg-muted text-foreground"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -224,7 +224,7 @@ export default function LoginPage() {
                   required
                 />
               </label>
-              {error ? <p className="text-sm text-rose-400">{error}</p> : null}
+              {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
               <Button type="submit" className="w-full" disabled={submitting}>
                 {submitting ? t("login.submitting") : t("login.submit")}
               </Button>

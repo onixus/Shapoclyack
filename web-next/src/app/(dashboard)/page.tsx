@@ -124,17 +124,17 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.risk.title")}</h1>
-            <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-400 border border-sky-500/20">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.risk.title")}</h1>
+            <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-600 dark:text-sky-400 border border-sky-500/20">
               {t("page.risk.badge")}
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t("page.risk.subtitle")}{" "}
-            <Link href="/vulnerabilities" className="text-sky-400 hover:underline">
+            <Link href="/vulnerabilities" className="text-sky-600 dark:text-sky-400 hover:underline">
               {t("page.risk.centerLink")}
             </Link>
           </p>
@@ -150,15 +150,15 @@ export default function DashboardPage() {
               void topRisksQuery.refetch();
               void runsQuery.refetch();
             }}
-            className="gap-2 border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white"
+            className="gap-2 border-border bg-card text-foreground hover:bg-muted hover:text-foreground"
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-sky-400" : ""}`}
+              className={`h-3.5 w-3.5 ${summaryQuery.isFetching || assetsQuery.isFetching ? "animate-spin text-sky-600 dark:text-sky-400" : ""}`}
             />
             {t("common.refresh")}
           </Button>
           <Link href="/scans">
-            <Button size="sm" className="gap-2 bg-sky-600 text-white hover:bg-sky-500 shadow-lg shadow-sky-950">
+            <Button size="sm" className="gap-2 bg-sky-600 text-foreground hover:bg-sky-500 shadow-lg shadow-sky-950">
               <Play className="h-3.5 w-3.5 fill-current" />
               {t("page.risk.launch")}
             </Button>
@@ -173,10 +173,10 @@ export default function DashboardPage() {
       ) : null}
 
       {!isLoading && (summary?.total ?? 0) === 0 ? (
-        <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-8 text-center backdrop-blur">
-          <ShieldAlert className="mx-auto h-10 w-10 text-slate-500" />
-          <h3 className="mt-3 text-sm font-semibold text-slate-200">{t("page.risk.emptyTitle")}</h3>
-          <p className="mt-1 text-xs text-slate-400">{t("page.risk.emptyBody")}</p>
+        <div className="rounded-xl border border-border bg-card p-8 text-center backdrop-blur">
+          <ShieldAlert className="mx-auto h-10 w-10 text-muted-foreground" />
+          <h3 className="mt-3 text-sm font-semibold text-foreground">{t("page.risk.emptyTitle")}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{t("page.risk.emptyBody")}</p>
           <Link href="/scans" className="mt-4 inline-block">
             <Button size="sm" className="bg-sky-600 hover:bg-sky-500">
               {t("page.risk.emptyCta")}
@@ -233,28 +233,28 @@ export default function DashboardPage() {
 
       <ScanOpsPanel />
 
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-        <Link href={vulnListHref()} className="text-sky-400 hover:underline">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <Link href={vulnListHref()} className="text-sky-600 dark:text-sky-400 hover:underline">
           {t("page.risk.allOpen")}
         </Link>
-        <Link href={vulnListHref({ sla: "breached" })} className="text-sky-400 hover:underline">
+        <Link href={vulnListHref({ sla: "breached" })} className="text-sky-600 dark:text-sky-400 hover:underline">
           {t("page.risk.slaBreaches")}
         </Link>
-        <Link href={vulnListHref({ unassigned: true })} className="text-sky-400 hover:underline">
+        <Link href={vulnListHref({ unassigned: true })} className="text-sky-600 dark:text-sky-400 hover:underline">
           {t("page.risk.unassignedLink")}
         </Link>
-        <Link href="/assets?unowned=1" className="text-sky-400 hover:underline">
+        <Link href="/assets?unowned=1" className="text-sky-600 dark:text-sky-400 hover:underline">
           {t("page.risk.unownedLink")}
         </Link>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+        <Card className="xl:col-span-3 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.byNist")}
           </Title>
           {riskData.every((row) => row.value === 0) ? (
-            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRiskLevels")}</p>
+            <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noRiskLevels")}</p>
           ) : (
             <>
               <DonutChart
@@ -265,14 +265,14 @@ export default function DashboardPage() {
                 colors={RISK_DONUT_COLORS}
                 showAnimation={false}
               />
-              <ul className="mt-4 space-y-1.5 text-xs text-slate-300">
+              <ul className="mt-4 space-y-1.5 text-xs text-foreground">
                 {[...riskData].reverse().map((row) => (
                   <li
                     key={row.level}
-                    className="flex items-center justify-between border-b border-slate-800/60 py-1.5"
+                    className="flex items-center justify-between border-b border-border py-1.5"
                   >
                     <StatusBadge value={row.level} map={RISK_LEVEL_STATUS} />
-                    <span className="font-semibold tabular-nums text-slate-100">
+                    <span className="font-semibold tabular-nums text-foreground">
                       {row.value.toLocaleString()}
                     </span>
                   </li>
@@ -282,12 +282,12 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
-          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+        <Card className="xl:col-span-2 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
+          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.bySeverity")}
           </Title>
           {severityData.every((row) => row.value === 0) ? (
-            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noFindings")}</p>
+            <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noFindings")}</p>
           ) : (
             <>
               <DonutChart
@@ -298,14 +298,14 @@ export default function DashboardPage() {
                 colors={SEVERITY_DONUT_COLORS}
                 showAnimation={false}
               />
-              <ul className="mt-4 space-y-1.5 text-xs text-slate-300">
+              <ul className="mt-4 space-y-1.5 text-xs text-foreground">
                 {severityData.map((row) => (
                   <li
                     key={row.sev}
-                    className="flex items-center justify-between border-b border-slate-800/60 py-1.5"
+                    className="flex items-center justify-between border-b border-border py-1.5"
                   >
                     <StatusBadge value={row.sev} map={SEVERITY_STATUS} />
-                    <span className="font-semibold tabular-nums text-slate-100">
+                    <span className="font-semibold tabular-nums text-foreground">
                       {row.value.toLocaleString()}
                     </span>
                   </li>
@@ -317,21 +317,21 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+        <Card className="xl:col-span-3 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               {t("page.risk.topRisksTitle")}
             </Title>
-            <span className="text-xs text-slate-400">Open, worst NIST score first</span>
+            <span className="text-xs text-muted-foreground">Open, worst NIST score first</span>
           </div>
           {topRisksQuery.isLoading ? (
-            <p className="mt-6 text-xs text-slate-400">Loading tracked findings…</p>
+            <p className="mt-6 text-xs text-muted-foreground">Loading tracked findings…</p>
           ) : topRisks.length === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">No open tracked findings.</p>
+            <p className="mt-6 text-xs text-muted-foreground">No open tracked findings.</p>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-bold uppercase tracking-wider">
+                <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
                   <tr>
                     <th className="py-2.5 px-2">Finding</th>
                     <th className="py-2.5 px-2">Asset</th>
@@ -340,13 +340,13 @@ export default function DashboardPage() {
                     <th className="py-2.5 px-2">Owner</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/60">
+                <tbody className="divide-y divide-border">
                   {topRisks.map((row) => (
-                    <tr key={row.vuln_id} className="hover:bg-slate-800/40 transition-colors">
+                    <tr key={row.vuln_id} className="hover:bg-muted transition-colors">
                       <td className="py-2.5 px-2">
                         <Link
                           href={vulnDetailHref(row.vuln_id, row.tenant_id)}
-                          className="inline-flex items-center gap-1 font-mono font-semibold text-sky-400 hover:underline"
+                          className="inline-flex items-center gap-1 font-mono font-semibold text-sky-600 dark:text-sky-400 hover:underline"
                         >
                           {findingLabel(row)}
                           <ArrowUpRight className="h-3 w-3" />
@@ -355,7 +355,7 @@ export default function DashboardPage() {
                       <td className="py-2.5 px-2">
                         <Link
                           href={assetDetailHref(row.asset_id, row.tenant_id)}
-                          className="font-mono text-slate-300 hover:text-sky-300 hover:underline"
+                          className="font-mono text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
                         >
                           {row.asset_id}
                         </Link>
@@ -373,8 +373,8 @@ export default function DashboardPage() {
                       <td className="py-2.5 px-2">
                         <SlaIndicator slaState={row.sla_state} dueAt={row.due_at} showDue={false} />
                       </td>
-                      <td className="py-2.5 px-2 text-slate-300">
-                        {row.assignee || <span className="text-slate-500">{t("page.risk.unassignedCell")}</span>}
+                      <td className="py-2.5 px-2 text-foreground">
+                        {row.assignee || <span className="text-muted-foreground">{t("page.risk.unassignedCell")}</span>}
                       </td>
                     </tr>
                   ))}
@@ -384,37 +384,37 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        <Card className="xl:col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+        <Card className="xl:col-span-2 rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
-            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               {t("page.risk.assetPosture")}
             </Title>
-            <Link href="/assets" className="text-xs text-sky-400 hover:underline">
+            <Link href="/assets" className="text-xs text-sky-600 dark:text-sky-400 hover:underline">
               {t("page.risk.viewAssets")}
             </Link>
           </div>
           {!assets || assets.total === 0 ? (
-            <p className="mt-6 text-xs text-slate-400">{t("page.risk.noAssets")}</p>
+            <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noAssets")}</p>
           ) : (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-semibold text-slate-300">
+                <span className="font-semibold text-foreground">
                   {t("page.risk.assetsCount", { count: assets.total.toLocaleString() })}
                 </span>
                 {(["active", "stale", "decommissioned"] as const).map((s) =>
                   assets.by_status[s] ? (
                     <span key={s} className="flex items-center gap-1">
                       <StatusBadge value={s} map={ASSET_STATUS} />
-                      <span className="tabular-nums font-semibold text-slate-200">
+                      <span className="tabular-nums font-semibold text-foreground">
                         {assets.by_status[s]}
                       </span>
                     </span>
                   ) : null,
                 )}
               </div>
-              <p className="mt-3 text-xs text-slate-400">
+              <p className="mt-3 text-xs text-muted-foreground">
                 Internet-facing exposure is not counted yet — that input is{" "}
-                <span className="text-slate-300">#171 / #146</span>, not a zero.
+                <span className="text-foreground">#171 / #146</span>, not a zero.
               </p>
               {criticalityData.length > 0 ? (
                 <BarChart
@@ -433,11 +433,11 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+      <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-sky-400" />
-            <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+            <TrendingUp className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+            <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
               Estate Risk & Vulnerability Trend (#144)
             </Title>
           </div>
@@ -452,12 +452,12 @@ export default function DashboardPage() {
             {triggerSnapshot.isPending ? "Recording…" : "Capture Snapshot"}
           </Button>
         </div>
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mt-1 text-xs text-muted-foreground">
           Historical timeline of active vulnerabilities, high/critical items, and SLA breaches.
         </p>
         {riskHistoryTrend.length === 0 ? (
-          <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-slate-800 rounded-lg text-center">
-            <p className="text-xs text-slate-400">No historical risk snapshots recorded yet.</p>
+          <div className="mt-6 flex flex-col items-center justify-center p-6 border border-dashed border-border rounded-lg text-center">
+            <p className="text-xs text-muted-foreground">No historical risk snapshots recorded yet.</p>
             <Button
               size="sm"
               variant="secondary"
@@ -482,26 +482,26 @@ export default function DashboardPage() {
         )}
       </Card>
 
-      <Card className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur">
+      <Card className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Title className="text-sm font-bold text-slate-200 uppercase tracking-wider">
+          <Title className="text-sm font-bold text-foreground uppercase tracking-wider">
             {t("page.risk.scanActivity")}
           </Title>
           {latest ? (
             <Link
               href={runDetailHref(latest.run_id)}
-              className="inline-flex items-center gap-1 font-mono text-xs text-sky-400 hover:underline"
+              className="inline-flex items-center gap-1 font-mono text-xs text-sky-600 dark:text-sky-400 hover:underline"
             >
               latest {latest.run_id}
               <ArrowUpRight className="h-3 w-3" />
             </Link>
           ) : null}
         </div>
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mt-1 text-xs text-muted-foreground">
           {t("page.risk.scanActivityHint")}
         </p>
         {trend.length === 0 ? (
-          <p className="mt-6 text-xs text-slate-400">{t("page.risk.noRuns")}</p>
+          <p className="mt-6 text-xs text-muted-foreground">{t("page.risk.noRuns")}</p>
         ) : (
           <AreaChart
             className="mt-4 h-64"

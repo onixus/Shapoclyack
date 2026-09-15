@@ -193,7 +193,7 @@ export function DeployAgentDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 font-semibold text-white shadow-md shadow-sky-950/20 hover:from-sky-400 hover:to-indigo-500">
+        <Button className="gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 font-semibold text-foreground shadow-md shadow-sky-950/20 hover:from-sky-400 hover:to-indigo-500">
           <Server className="h-4 w-4" />
           Deploy Agent
         </Button>
@@ -495,7 +495,7 @@ export function DeployAgentDialog() {
                   </div>
 
                   {/* Log Console */}
-                  <div className="terminal-console h-64 overflow-y-auto custom-scrollbar rounded-lg border border-slate-800 p-3.5 font-mono text-xs">
+                  <div className="terminal-console h-64 overflow-y-auto custom-scrollbar rounded-lg border border-border p-3.5 font-mono text-xs">
                     <div className="space-y-1">
                       {deployStatus?.logs?.map((line, idx) => (
                         <div
@@ -530,24 +530,24 @@ export function DeployAgentDialog() {
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border overflow-hidden bg-slate-950 dark:bg-black shadow-inner">
-                <div className="flex items-center justify-between px-3.5 py-2 border-b border-slate-800 bg-slate-900/90 text-xs text-slate-300">
-                  <span className="font-mono text-xs font-semibold text-slate-300">Bash Command</span>
+              <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
+                <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
+                  <span className="font-mono text-xs font-semibold text-foreground">Bash Command</span>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => handleCopy(snippets?.systemd_oneliner || "", "systemd")}
-                    className="h-7 border-slate-700 bg-slate-800 text-xs text-slate-200 hover:bg-slate-700"
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
                   >
                     {copiedKey === "systemd" ? (
-                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
                     ) : (
                       <Copy className="mr-1.5 h-3.5 w-3.5" />
                     )}
                     {copiedKey === "systemd" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
-                <pre className="p-4 font-mono text-xs text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
                   {snippets?.systemd_oneliner || "curl -sSL https://.../api/agent/install.sh | sudo bash"}
                 </pre>
               </div>
@@ -564,38 +564,38 @@ export function DeployAgentDialog() {
               </div>
 
               <div className="space-y-4">
-                <div className="rounded-lg border border-border overflow-hidden bg-slate-950 dark:bg-black shadow-inner">
-                  <div className="flex items-center justify-between px-3.5 py-2 border-b border-slate-800 bg-slate-900/90 text-xs text-slate-300">
-                    <span className="font-mono text-xs font-semibold text-slate-300">Docker CLI Command</span>
+                <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
+                  <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
+                    <span className="font-mono text-xs font-semibold text-foreground">Docker CLI Command</span>
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => handleCopy(snippets?.docker_run || "", "docker")}
-                      className="h-7 border-slate-700 bg-slate-800 text-xs text-slate-200 hover:bg-slate-700"
+                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
                     >
-                      {copiedKey === "docker" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                      {copiedKey === "docker" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "docker" ? "Copied!" : "Copy"}
                     </Button>
                   </div>
-                  <pre className="p-4 font-mono text-xs text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                  <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
                     {snippets?.docker_run || "docker run -d ..."}
                   </pre>
                 </div>
 
-                <div className="rounded-lg border border-border overflow-hidden bg-slate-950 dark:bg-black shadow-inner">
-                  <div className="flex items-center justify-between px-3.5 py-2 border-b border-slate-800 bg-slate-900/90 text-xs text-slate-300">
-                    <span className="font-mono text-xs font-semibold text-slate-300">docker-compose.yml</span>
+                <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
+                  <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
+                    <span className="font-mono text-xs font-semibold text-foreground">docker-compose.yml</span>
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => handleCopy(snippets?.docker_compose || "", "compose")}
-                      className="h-7 border-slate-700 bg-slate-800 text-xs text-slate-200 hover:bg-slate-700"
+                      className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
                     >
-                      {copiedKey === "compose" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                      {copiedKey === "compose" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                       {copiedKey === "compose" ? "Copied!" : "Copy"}
                     </Button>
                   </div>
-                  <pre className="p-4 font-mono text-xs text-slate-200 overflow-x-auto custom-scrollbar whitespace-pre">
+                  <pre className="p-4 font-mono text-xs text-foreground overflow-x-auto custom-scrollbar whitespace-pre">
                     {snippets?.docker_compose || "version: '3.8'..."}
                   </pre>
                 </div>
@@ -612,20 +612,20 @@ export function DeployAgentDialog() {
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border overflow-hidden bg-slate-950 dark:bg-black shadow-inner">
-                <div className="flex items-center justify-between px-3.5 py-2 border-b border-slate-800 bg-slate-900/90 text-xs text-slate-300">
-                  <span className="font-mono text-xs font-semibold text-slate-300">kubernetes.yaml</span>
+              <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
+                <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
+                  <span className="font-mono text-xs font-semibold text-foreground">kubernetes.yaml</span>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => handleCopy(snippets?.kubernetes_yaml || "", "k8s")}
-                    className="h-7 border-slate-700 bg-slate-800 text-xs text-slate-200 hover:bg-slate-700"
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
                   >
-                    {copiedKey === "k8s" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                    {copiedKey === "k8s" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
                     {copiedKey === "k8s" ? "Copied!" : "Copy"}
                   </Button>
                 </div>
-                <pre className="p-4 font-mono text-xs text-slate-200 max-h-64 overflow-y-auto custom-scrollbar whitespace-pre">
+                <pre className="p-4 font-mono text-xs text-foreground max-h-64 overflow-y-auto custom-scrollbar whitespace-pre">
                   {snippets?.kubernetes_yaml || "apiVersion: apps/v1..."}
                 </pre>
               </div>

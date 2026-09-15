@@ -179,8 +179,8 @@ export default function SchedulesPage() {
         header: t("col.schedule"),
         cell: ({ row }) => (
           <div>
-            <p className="font-semibold text-slate-100">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-slate-400">{row.original.schedule_id}</p>
+            <p className="font-semibold text-foreground">{row.original.name}</p>
+            <p className="font-mono text-[10px] text-muted-foreground">{row.original.schedule_id}</p>
           </div>
         ),
       },
@@ -200,13 +200,13 @@ export default function SchedulesPage() {
         id: "cadence",
         header: t("col.cadence"),
         enableSorting: false,
-        cell: ({ row }) => <span className="font-mono text-xs text-slate-300">{cadenceSummary(row.original)}</span>,
+        cell: ({ row }) => <span className="font-mono text-xs text-foreground">{cadenceSummary(row.original)}</span>,
       },
       {
         id: "targets",
         header: t("col.targets"),
         enableSorting: false,
-        cell: ({ row }) => <span className="text-xs text-slate-300">{targetsSummary(row.original)}</span>,
+        cell: ({ row }) => <span className="text-xs text-foreground">{targetsSummary(row.original)}</span>,
       },
       {
         accessorKey: "last_run_at",
@@ -214,9 +214,9 @@ export default function SchedulesPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.last_run_at ? (
-            <span className="font-mono text-xs text-slate-400">{format(new Date(row.original.last_run_at), "yyyy-MM-dd HH:mm")}</span>
+            <span className="font-mono text-xs text-muted-foreground">{format(new Date(row.original.last_run_at), "yyyy-MM-dd HH:mm")}</span>
           ) : (
-            <span className="text-slate-500">—</span>
+            <span className="text-muted-foreground">—</span>
           ),
       },
       {
@@ -225,9 +225,9 @@ export default function SchedulesPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.next_run_at ? (
-            <span className="font-mono text-xs text-slate-400">{format(new Date(row.original.next_run_at), "yyyy-MM-dd HH:mm")}</span>
+            <span className="font-mono text-xs text-muted-foreground">{format(new Date(row.original.next_run_at), "yyyy-MM-dd HH:mm")}</span>
           ) : (
-            <span className="text-slate-500">—</span>
+            <span className="text-muted-foreground">—</span>
           ),
       },
       {
@@ -242,7 +242,7 @@ export default function SchedulesPage() {
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 border-slate-800 bg-slate-950 text-xs text-slate-300 hover:bg-slate-800"
+                className="h-7 border-border bg-muted text-xs text-foreground hover:bg-muted"
                 disabled={updateMutation.isPending}
                 onClick={() =>
                   updateMutation.mutate({ scheduleId: schedule.schedule_id, body: { enabled: !schedule.enabled } })
@@ -254,7 +254,7 @@ export default function SchedulesPage() {
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 w-7 border-slate-800 bg-slate-950 p-0 text-slate-300 hover:bg-slate-800"
+                className="h-7 w-7 border-border bg-muted p-0 text-foreground hover:bg-muted"
                 onClick={() => openEdit(schedule)}
                 aria-label="Edit schedule"
               >
@@ -265,7 +265,7 @@ export default function SchedulesPage() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-7 w-7 border-rose-900/50 bg-slate-950 p-0 text-rose-400 hover:bg-rose-950"
+                  className="h-7 w-7 border-rose-900/50 bg-muted p-0 text-rose-600 dark:text-rose-400 hover:bg-rose-950"
                   onClick={() => setDeleteTarget(schedule)}
                   aria-label="Delete schedule"
                 >
@@ -282,9 +282,9 @@ export default function SchedulesPage() {
 
   if (!canOperate) {
     return (
-      <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-8 text-center">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-100">{t("page.schedules.title")}</h1>
-        <p className="text-xs text-slate-400">
+      <div className="space-y-2 rounded-xl border border-border bg-card p-8 text-center">
+        <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("page.schedules.title")}</h1>
+        <p className="text-xs text-muted-foreground">
           {t("page.schedules.denied")}
         </p>
       </div>
@@ -293,14 +293,14 @@ export default function SchedulesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
             <Timer className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.schedules.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.schedules.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.schedules.subtitle")}
               {isFetching ? t("common.refreshing") : ""}
             </p>
@@ -318,42 +318,42 @@ export default function SchedulesPage() {
           }}
         >
           <DialogTrigger asChild>
-            <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-white shadow-md" onClick={openCreate}>
+            <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-foreground shadow-md" onClick={openCreate}>
               <Plus className="h-4 w-4" />
               Create Schedule
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-2xl">
+          <DialogContent className="bg-card border-border text-foreground max-w-2xl">
             <DialogHeader>
-              <DialogTitle className="text-slate-100">{editing ? "Edit Schedule" : "Create Schedule"}</DialogTitle>
-              <DialogDescription className="text-xs text-slate-400">
+              <DialogTitle className="text-foreground">{editing ? "Edit Schedule" : "Create Schedule"}</DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground">
                 Recurring scans run through the existing job dispatcher on the configured cadence.
               </DialogDescription>
             </DialogHeader>
 
             <form onSubmit={onSubmit} className="space-y-4 py-2">
               <div className="grid gap-2">
-                <Label htmlFor="schedule-name" className="text-xs font-semibold text-slate-300">Name</Label>
+                <Label htmlFor="schedule-name" className="text-xs font-semibold text-foreground">Name</Label>
                 <Input
                   id="schedule-name"
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   placeholder="Nightly external sweep"
-                  className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
                 />
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-slate-300">Cadence</Label>
+                  <Label className="text-xs font-semibold text-foreground">Cadence</Label>
                   <Select
                     value={form.cadenceKind}
                     onValueChange={(value) => setForm((f) => ({ ...f, cadenceKind: value as CadenceKind }))}
                   >
-                    <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+                    <SelectTrigger className="bg-muted border-border text-foreground">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    <SelectContent className="bg-card border-border text-foreground">
                       <SelectItem value="cron">Cron expression</SelectItem>
                       <SelectItem value="interval">Fixed interval</SelectItem>
                     </SelectContent>
@@ -362,25 +362,25 @@ export default function SchedulesPage() {
 
                 {form.cadenceKind === "cron" ? (
                   <div className="grid gap-2">
-                    <Label htmlFor="schedule-cron" className="text-xs font-semibold text-slate-300">Cron Expression</Label>
+                    <Label htmlFor="schedule-cron" className="text-xs font-semibold text-foreground">Cron Expression</Label>
                     <Input
                       id="schedule-cron"
                       value={form.cron}
                       onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
                       placeholder="0 * * * *"
-                      className="bg-slate-950 border-slate-800 font-mono text-xs text-slate-100"
+                      className="bg-muted border-border font-mono text-xs text-foreground"
                     />
                   </div>
                 ) : (
                   <div className="grid gap-2">
-                    <Label htmlFor="schedule-interval" className="text-xs font-semibold text-slate-300">Interval (seconds)</Label>
+                    <Label htmlFor="schedule-interval" className="text-xs font-semibold text-foreground">Interval (seconds)</Label>
                     <Input
                       id="schedule-interval"
                       type="number"
                       min={60}
                       value={form.intervalSeconds}
                       onChange={(e) => setForm((f) => ({ ...f, intervalSeconds: e.target.value }))}
-                      className="bg-slate-950 border-slate-800 font-mono text-xs text-slate-100"
+                      className="bg-muted border-border font-mono text-xs text-foreground"
                     />
                   </div>
                 )}
@@ -388,7 +388,7 @@ export default function SchedulesPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2 md:col-span-2">
-                  <Label className="text-xs font-semibold text-slate-300">{t("surface.filterLabel")}</Label>
+                  <Label className="text-xs font-semibold text-foreground">{t("surface.filterLabel")}</Label>
                   <Select
                     value={form.surface || "__auto__"}
                     onValueChange={(value) =>
@@ -406,7 +406,7 @@ export default function SchedulesPage() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-slate-300">Scan Intent</Label>
+                  <Label className="text-xs font-semibold text-foreground">Scan Intent</Label>
                   <Select
                     value={form.intent || "__none__"}
                     onValueChange={(value) =>
@@ -416,10 +416,10 @@ export default function SchedulesPage() {
                       }))
                     }
                   >
-                    <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+                    <SelectTrigger className="bg-muted border-border text-foreground">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    <SelectContent className="bg-card border-border text-foreground">
                       <SelectItem value="inventory">inventory — ports only</SelectItem>
                       <SelectItem value="vuln">vuln — probe + high nuclei</SelectItem>
                       <SelectItem value="full">full — assessment</SelectItem>
@@ -429,12 +429,12 @@ export default function SchedulesPage() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label className="text-xs font-semibold text-slate-300">Speed Profile</Label>
+                  <Label className="text-xs font-semibold text-foreground">Speed Profile</Label>
                   <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value as CreateScheduleBody["mode"] }))}>
-                    <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+                    <SelectTrigger className="bg-muted border-border text-foreground">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    <SelectContent className="bg-card border-border text-foreground">
                       <SelectItem value="safe">safe (500 pps · low load)</SelectItem>
                       <SelectItem value="balanced">balanced (2,000 pps · standard)</SelectItem>
                       <SelectItem value="fast">fast (5,000 pps · aggressive)</SelectItem>
@@ -442,29 +442,29 @@ export default function SchedulesPage() {
                   </Select>
                 </div>
 
-                <div className="flex flex-wrap items-end gap-4 text-xs text-slate-300 md:col-span-2">
+                <div className="flex flex-wrap items-end gap-4 text-xs text-foreground md:col-span-2">
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
                     <Checkbox
                       checked={form.intent === "delta" ? true : form.delta}
                       disabled={form.intent === "delta"}
                       onCheckedChange={(c) => setForm((f) => ({ ...f, delta: c === true }))}
-                      className="border-slate-700"
+                      className="border-border"
                     />
                     Delta discovery
                   </Label>
                   {!form.intent ? (
                     <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                      <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-slate-700" />
+                      <Checkbox checked={form.skipNse} onCheckedChange={(c) => setForm((f) => ({ ...f, skipNse: c === true }))} className="border-border" />
                       Ports only (no service/OS/CVE probe)
                     </Label>
                   ) : null}
                   <Label className="flex items-center gap-2 font-semibold cursor-pointer">
-                    <Checkbox checked={form.notify} onCheckedChange={(c) => setForm((f) => ({ ...f, notify: c === true }))} className="border-slate-700" />
+                    <Checkbox checked={form.notify} onCheckedChange={(c) => setForm((f) => ({ ...f, notify: c === true }))} className="border-border" />
                     Notify
                   </Label>
                   {serviceBackend ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] font-mono text-slate-400">
-                      Full probe uses <span className="text-sky-400">{serviceBackend}</span> backend
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-[11px] font-mono text-muted-foreground">
+                      Full probe uses <span className="text-sky-600 dark:text-sky-400">{serviceBackend}</span> backend
                     </span>
                   ) : null}
                 </div>
@@ -472,10 +472,10 @@ export default function SchedulesPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-ranges" className="text-xs font-semibold text-slate-300">Target CIDR Ranges (Optional)</Label>
+                  <Label htmlFor="schedule-ranges" className="text-xs font-semibold text-foreground">Target CIDR Ranges (Optional)</Label>
                   <Textarea
                     id="schedule-ranges"
-                    className="min-h-[72px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
+                    className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
                     value={form.ranges}
                     onChange={(e) => setForm((f) => ({ ...f, ranges: e.target.value }))}
                     placeholder={"10.0.0.0/24\n192.168.1.0/28"}
@@ -483,10 +483,10 @@ export default function SchedulesPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-domains" className="text-xs font-semibold text-slate-300">Target Domains (Optional)</Label>
+                  <Label htmlFor="schedule-domains" className="text-xs font-semibold text-foreground">Target Domains (Optional)</Label>
                   <Textarea
                     id="schedule-domains"
-                    className="min-h-[72px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
+                    className="min-h-[72px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
                     value={form.domains}
                     onChange={(e) => setForm((f) => ({ ...f, domains: e.target.value }))}
                     placeholder={"api.example.com\nportal.internal"}
@@ -494,10 +494,10 @@ export default function SchedulesPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-ports" className="text-xs font-semibold text-slate-300">TCP Ports Override (Optional)</Label>
+                  <Label htmlFor="schedule-ports" className="text-xs font-semibold text-foreground">TCP Ports Override (Optional)</Label>
                   <Textarea
                     id="schedule-ports"
-                    className="min-h-[60px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
+                    className="min-h-[60px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
                     value={form.ports}
                     onChange={(e) => setForm((f) => ({ ...f, ports: e.target.value }))}
                     placeholder={"22,80,443"}
@@ -505,10 +505,10 @@ export default function SchedulesPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="schedule-ports-udp" className="text-xs font-semibold text-slate-300">UDP Ports Override (Optional)</Label>
+                  <Label htmlFor="schedule-ports-udp" className="text-xs font-semibold text-foreground">UDP Ports Override (Optional)</Label>
                   <Textarea
                     id="schedule-ports-udp"
-                    className="min-h-[60px] bg-slate-950 border-slate-800 font-mono text-xs text-slate-100 placeholder:text-slate-600"
+                    className="min-h-[60px] bg-muted border-border font-mono text-xs text-foreground placeholder:text-muted-foreground"
                     value={form.portsUdp}
                     onChange={(e) => setForm((f) => ({ ...f, portsUdp: e.target.value }))}
                     placeholder={"53,123,161"}
@@ -520,7 +520,7 @@ export default function SchedulesPage() {
               <DialogFooter>
                 <Button
                   type="submit"
-                  className="bg-sky-600 hover:bg-sky-500 text-white"
+                  className="bg-sky-600 hover:bg-sky-500 text-foreground"
                   disabled={
                     !form.name.trim() ||
                     (form.cadenceKind === "cron" ? !form.cron.trim() : !Number(form.intervalSeconds)) ||
@@ -553,9 +553,9 @@ export default function SchedulesPage() {
         isLoading={isLoading}
         error={error}
         searchPlaceholder={t("search.schedules")}
-        meta={`${scheduleTotal} schedule${scheduleTotal === 1 ? "" : "s"}`}
-        loadingMessage="Retrieving scan schedules…"
-        emptyMessage="No continuous schedules configured yet."
+        meta={t("meta.schedules", { count: scheduleTotal })}
+        loadingMessage={t("loading.schedules")}
+        emptyMessage={t("empty.schedules")}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,
@@ -571,17 +571,17 @@ export default function SchedulesPage() {
       />
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(next) => !next && setDeleteTarget(null)}>
-        <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-100">
+        <AlertDialogContent className="bg-card border-border text-foreground">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-slate-100">Delete schedule &quot;{deleteTarget?.name}&quot;?</AlertDialogTitle>
-            <AlertDialogDescription className="text-slate-400 text-xs">
+            <AlertDialogTitle className="text-foreground">Delete schedule &quot;{deleteTarget?.name}&quot;?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground text-xs">
               This stops future automatic runs. Past runs and reports are unaffected. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800">Cancel</AlertDialogCancel>
+            <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-white hover:bg-rose-500"
+              className="bg-rose-600 text-foreground hover:bg-rose-500"
               onClick={() => {
                 if (deleteTarget) deleteMutation.mutate(deleteTarget.schedule_id);
                 setDeleteTarget(null);

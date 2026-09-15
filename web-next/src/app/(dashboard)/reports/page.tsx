@@ -54,7 +54,7 @@ export default function ReportsPage() {
         cell: ({ row }) => (
           <Link
             href={`${runDetailHref(row.original.run_id)}&tab=reports`}
-            className="font-mono text-xs text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline"
+            className="font-mono text-xs text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 underline-offset-2 hover:underline"
           >
             {row.original.run_id}
           </Link>
@@ -63,7 +63,7 @@ export default function ReportsPage() {
       {
         accessorKey: "profile",
         header: t("col.profile"),
-        cell: ({ getValue }) => <Badge variant="secondary" className="bg-slate-800 text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
+        cell: ({ getValue }) => <Badge variant="secondary" className="bg-muted text-sky-600 dark:text-sky-300 font-mono text-[11px]">{String(getValue() || "—")}</Badge>,
       },
       {
         accessorKey: "started_at",
@@ -71,7 +71,7 @@ export default function ReportsPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.started_at ? (
-            <span className="font-mono text-xs text-slate-300">
+            <span className="font-mono text-xs text-foreground">
               {format(new Date(row.original.started_at), "yyyy-MM-dd HH:mm")}
             </span>
           ) : (
@@ -88,11 +88,11 @@ export default function ReportsPage() {
           const unconfirmed = row.original.unconfirmed_findings ?? 0;
           return (
             <span className="flex items-baseline gap-1.5">
-              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-400" : "text-slate-400"}`}>
+              <span className={`font-mono text-xs font-bold ${val > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}>
                 {val.toLocaleString()}
               </span>
               {unconfirmed > 0 ? (
-                <span className="font-mono text-[10px] text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
+                <span className="font-mono text-[10px] text-amber-600 dark:text-amber-300/80" title="Unconfirmed — reachable-service exposures and unverified keyword CVE hits, included in the total">
                   {unconfirmed.toLocaleString()} unconf.
                 </span>
               ) : null}
@@ -110,7 +110,7 @@ export default function ReportsPage() {
               <Button
                 variant="outline"
                 size="sm"
-                className="gap-1.5 border-sky-500/30 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 text-xs font-semibold"
+                className="gap-1.5 border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300 hover:bg-sky-500/20 text-xs font-semibold"
                 onClick={() => downloadPdf(row.original.run_id)}
                 disabled={busyRun === row.original.run_id}
               >
@@ -118,19 +118,19 @@ export default function ReportsPage() {
                 {busyRun === row.original.run_id ? t("common.downloading") : t("common.downloadPdf")}
               </Button>
             ) : (
-              <Badge variant="outline" className="border-slate-800 text-slate-500 font-normal">{t("common.noSummary")}</Badge>
+              <Badge variant="outline" className="border-border text-muted-foreground font-normal">{t("common.noSummary")}</Badge>
             )}
             <Button
               variant="outline"
               size="sm"
-              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              className="gap-1.5 border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
               onClick={() => downloadSarif(row.original.run_id)}
               disabled={busyRun === `sarif-${row.original.run_id}`}
             >
               <Download className="h-3.5 w-3.5" />
               {busyRun === `sarif-${row.original.run_id}` ? "Downloading…" : "SARIF"}
             </Button>
-            <Button asChild variant="ghost" size="sm" className="text-slate-400 hover:text-slate-100 hover:bg-slate-800 text-xs">
+            <Button asChild variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground hover:bg-muted text-xs">
               <Link href={`${runDetailHref(row.original.run_id)}&tab=reports`}>{t("common.artifacts")}</Link>
             </Button>
           </div>
@@ -142,14 +142,14 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
             <FileText className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.reports.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.reports.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.reports.subtitle")}
               {isFetching ? t("common.refreshing") : ""}
             </p>
@@ -162,7 +162,7 @@ export default function ReportsPage() {
           the raw material it is built from. */}
       <ReportFactoryPanel />
 
-      <h2 className="border-b border-slate-800/80 pb-2 text-sm font-bold text-slate-200">
+      <h2 className="border-b border-border pb-2 text-sm font-bold text-foreground">
         {t("page.reports.runArtifacts")}
       </h2>
 
@@ -174,7 +174,7 @@ export default function ReportsPage() {
         searchPlaceholder={t("search.reports")}
         loadingMessage={t("loading.reports")}
         emptyMessage={t("empty.reports")}
-        meta={`${data?.total ?? 0} runs`}
+        meta={t("meta.reports", { count: data?.total ?? 0 })}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,

@@ -57,14 +57,14 @@ const TONE_TEXT: Record<UsageTone, string> = {
 function ToneBadge({ tone, t }: { tone: UsageTone; t: Translate }) {
   if (tone === "over") {
     return (
-      <Badge variant="outline" className="border-rose-500/30 text-rose-400">
+      <Badge variant="outline" className="border-rose-500/30 text-rose-600 dark:text-rose-400">
         {t("page.usage.overLimit")}
       </Badge>
     );
   }
   if (tone === "near") {
     return (
-      <Badge variant="outline" className="border-amber-500/30 text-amber-400">
+      <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
         {t("page.usage.nearLimit")}
       </Badge>
     );
@@ -152,7 +152,7 @@ function QuotaEditor({
   const { data, isLoading, error } = useTenantQuota(row.tenant_id);
 
   if (error) {
-    return <p className="text-xs text-rose-400">{(error as Error).message}</p>;
+    return <p className="text-xs text-rose-600 dark:text-rose-400">{(error as Error).message}</p>;
   }
   if (isLoading || !data) {
     return <p className="text-xs text-muted-foreground">{t("page.usage.loading")}</p>;
@@ -335,7 +335,7 @@ export default function UsagePage() {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+        <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
           {(error as Error).message}
         </p>
       ) : null}
@@ -466,7 +466,7 @@ export default function UsagePage() {
           </h2>
           <p className="text-xs text-muted-foreground">{t("page.usage.fleetHint")}</p>
           {fleet.error ? (
-            <p className="text-sm text-rose-400">{(fleet.error as Error).message}</p>
+            <p className="text-sm text-rose-600 dark:text-rose-400">{(fleet.error as Error).message}</p>
           ) : fleet.isLoading ? (
             <p className="text-sm text-muted-foreground">{t("page.usage.loading")}</p>
           ) : fleetRows.length === 0 ? (

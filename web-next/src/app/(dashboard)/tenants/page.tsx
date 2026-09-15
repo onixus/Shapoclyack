@@ -59,8 +59,8 @@ export default function TenantsPage() {
         header: t("col.customer"),
         cell: ({ row }) => (
           <div>
-            <p className="font-semibold text-slate-100">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-slate-400">{row.original.tenant_id}</p>
+            <p className="font-semibold text-foreground">{row.original.name}</p>
+            <p className="font-mono text-[10px] text-muted-foreground">{row.original.tenant_id}</p>
           </div>
         ),
       },
@@ -71,39 +71,39 @@ export default function TenantsPage() {
           row.original.estate_risk && row.original.estate_risk in RISK_LEVEL_STATUS ? (
             <StatusBadge value={row.original.estate_risk} map={RISK_LEVEL_STATUS} />
           ) : (
-            <span className="text-xs text-slate-500">{row.original.open_total === 0 ? t("common.none") : t("common.unset")}</span>
+            <span className="text-xs text-muted-foreground">{row.original.open_total === 0 ? t("common.none") : t("common.unset")}</span>
           ),
       },
       {
         accessorKey: "open_total",
         header: t("col.open"),
-        cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.open_total}</span>,
+        cell: ({ row }) => <span className="tabular-nums text-foreground">{row.original.open_total}</span>,
       },
       {
         accessorKey: "breached",
         header: t("col.sla"),
-        cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.breached}</span>,
+        cell: ({ row }) => <span className="tabular-nums text-foreground">{row.original.breached}</span>,
       },
       {
         accessorKey: "unassigned",
         header: t("col.unassigned"),
-        cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.unassigned}</span>,
+        cell: ({ row }) => <span className="tabular-nums text-foreground">{row.original.unassigned}</span>,
       },
       {
         accessorKey: "in_kev_open",
         header: t("col.kev"),
-        cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.in_kev_open}</span>,
+        cell: ({ row }) => <span className="tabular-nums text-foreground">{row.original.in_kev_open}</span>,
       },
       {
         accessorKey: "unowned_assets",
         header: t("col.unowned"),
-        cell: ({ row }) => <span className="tabular-nums text-slate-200">{row.original.unowned_assets}</span>,
+        cell: ({ row }) => <span className="tabular-nums text-foreground">{row.original.unowned_assets}</span>,
       },
       {
         accessorKey: "declared_internet_assets",
         header: t("col.declaredInternet"),
         cell: ({ row }) => (
-          <span className="tabular-nums text-slate-200">{row.original.declared_internet_assets}</span>
+          <span className="tabular-nums text-foreground">{row.original.declared_internet_assets}</span>
         ),
       },
       {
@@ -114,7 +114,7 @@ export default function TenantsPage() {
           <Button
             variant="outline"
             size="sm"
-            className="h-7 text-xs border-slate-800"
+            className="h-7 text-xs border-border"
             onClick={() => {
               selectTenant(row.original.tenant_id);
               queryClient.clear();
@@ -137,8 +137,8 @@ export default function TenantsPage() {
         header: t("col.tenant"),
         cell: ({ row }) => (
           <div>
-            <p className="font-semibold text-slate-100">{row.original.name}</p>
-            <p className="font-mono text-[10px] text-slate-400">{row.original.tenant_id}</p>
+            <p className="font-semibold text-foreground">{row.original.name}</p>
+            <p className="font-mono text-[10px] text-muted-foreground">{row.original.tenant_id}</p>
           </div>
         ),
       },
@@ -153,7 +153,7 @@ export default function TenantsPage() {
         sortingFn: "datetime",
         cell: ({ row }) =>
           row.original.created_at ? (
-            <span className="font-mono text-xs text-slate-300">
+            <span className="font-mono text-xs text-foreground">
               {format(new Date(row.original.created_at), "yyyy-MM-dd HH:mm")}
             </span>
           ) : (
@@ -170,7 +170,7 @@ export default function TenantsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 gap-1.5 border-slate-800 text-xs"
+                  className="h-7 gap-1.5 border-border text-xs"
                   onClick={() => setScopeTenant(row.original)}
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
@@ -187,8 +187,8 @@ export default function TenantsPage() {
   if (!canList) {
     return (
       <div className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-100">{t("page.tenants.title")}</h1>
-        <p className="text-xs text-slate-400">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{t("page.tenants.title")}</h1>
+        <p className="text-xs text-muted-foreground">
           {t("page.tenants.denied")}
         </p>
       </div>
@@ -197,14 +197,14 @@ export default function TenantsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 shadow-md">
             <Building className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.tenants.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.tenants.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.tenants.subtitle")}
               {isFetching ? t("common.refreshing") : ""}
             </p>
@@ -223,44 +223,44 @@ export default function TenantsPage() {
             }}
           >
             <DialogTrigger asChild>
-              <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-white shadow-md">
+              <Button className="gap-2 bg-sky-600 hover:bg-sky-500 text-foreground shadow-md">
                 <Plus className="h-4 w-4" />
                 {t("common.createTenant")}
               </Button>
             </DialogTrigger>
-            <DialogContent className="bg-slate-900 border-slate-800 text-slate-100">
+            <DialogContent className="bg-card border-border text-foreground">
               <DialogHeader>
-                <DialogTitle className="text-slate-100">Provision New Tenant</DialogTitle>
-                <DialogDescription className="text-xs text-slate-400">
+                <DialogTitle className="text-foreground">Provision New Tenant</DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
                   Creates a tenant environment and issues a one-time agent provisioning key.
                 </DialogDescription>
               </DialogHeader>
               {!generatedKey ? (
                 <div className="space-y-3 py-2">
                   <div className="grid gap-2">
-                    <Label htmlFor="tenant-name" className="text-xs font-semibold text-slate-300">Tenant Name</Label>
+                    <Label htmlFor="tenant-name" className="text-xs font-semibold text-foreground">Tenant Name</Label>
                     <Input
                       id="tenant-name"
                       value={name}
                       onChange={(event) => setName(event.target.value)}
                       placeholder="e.g. Contoso External Attack Surface"
-                      className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+                      className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
                     />
                   </div>
                 </div>
               ) : (
-                <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950 p-3.5 text-xs">
-                  <p className="font-semibold text-slate-200">
-                    Provisioning key for <code className="text-sky-400">{createdTenantId}</code>
+                <div className="space-y-3 rounded-lg border border-border bg-muted p-3.5 text-xs">
+                  <p className="font-semibold text-foreground">
+                    Provisioning key for <code className="text-sky-600 dark:text-sky-400">{createdTenantId}</code>
                   </p>
-                  <code className="block break-all rounded bg-slate-900 border border-slate-800 p-2 font-mono text-[11px] text-amber-300">
+                  <code className="block break-all rounded bg-card border border-border p-2 font-mono text-[11px] text-amber-600 dark:text-amber-300">
                     {generatedKey}
                   </code>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="gap-2 border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                    className="gap-2 border-border bg-card text-foreground hover:bg-muted"
                     onClick={() => void navigator.clipboard.writeText(generatedKey)}
                   >
                     <Copy className="h-3.5 w-3.5" />
@@ -272,7 +272,7 @@ export default function TenantsPage() {
                 {!generatedKey ? (
                   <Button
                     type="button"
-                    className="bg-sky-600 hover:bg-sky-500 text-white"
+                    className="bg-sky-600 hover:bg-sky-500 text-foreground"
                     onClick={() =>
                       createMutation.mutate(name.trim(), {
                         onSuccess: ({ tenant, key }) => {
@@ -286,7 +286,7 @@ export default function TenantsPage() {
                     {createMutation.isPending ? "Generating…" : "Generate Provisioning Key"}
                   </Button>
                 ) : (
-                  <Button type="button" className="bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => setOpen(false)}>
+                  <Button type="button" className="bg-muted text-foreground hover:bg-slate-700" onClick={() => setOpen(false)}>
                     Done
                   </Button>
                 )}
@@ -297,10 +297,10 @@ export default function TenantsPage() {
       </div>
 
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Customer posture
         </p>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[11px] text-muted-foreground">
           Worst open NIST risk first. Declared internet is operator-set exposure, not a scan
           measurement.
         </p>
@@ -310,9 +310,9 @@ export default function TenantsPage() {
           isLoading={postureQuery.isLoading}
           error={postureQuery.error}
           searchPlaceholder={t("search.tenants")}
-          meta={`${posture.length} customer${posture.length === 1 ? "" : "s"}`}
-          loadingMessage="Comparing tenant posture…"
-          emptyMessage="No tenants in scope."
+          meta={t("meta.customers", { count: posture.length })}
+          loadingMessage={t("loading.tenantPosture")}
+          emptyMessage={t("empty.tenantsInScope")}
         />
       </div>
 
@@ -322,18 +322,18 @@ export default function TenantsPage() {
         isLoading={isLoading}
         error={error}
         searchPlaceholder={t("search.tenants")}
-        meta={`${data.length} tenant${data.length === 1 ? "" : "s"}`}
-        loadingMessage="Retrieving tenant telemetry…"
-        emptyMessage="No tenant organizations provisioned."
+        meta={t("meta.tenants", { count: data.length })}
+        loadingMessage={t("loading.tenantTelemetry")}
+        emptyMessage={t("empty.tenants")}
       />
 
       <Dialog open={scopeTenant !== null} onOpenChange={(next) => (next ? null : setScopeTenant(null))}>
-        <DialogContent className="max-w-4xl border-slate-800 bg-slate-900 text-slate-100">
+        <DialogContent className="max-w-4xl border-border bg-card text-foreground">
           <DialogHeader>
-            <DialogTitle className="text-slate-100">
+            <DialogTitle className="text-foreground">
               {t("scanScope.dialogTitle", { tenant: scopeTenant?.name ?? "" })}
             </DialogTitle>
-            <DialogDescription className="text-xs text-slate-400">
+            <DialogDescription className="text-xs text-muted-foreground">
               {t("scanScope.dialogDescription")}
             </DialogDescription>
           </DialogHeader>
@@ -346,7 +346,7 @@ export default function TenantsPage() {
       </Dialog>
 
       {!isAdmin ? (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-muted-foreground">
           Provisioning new tenants and issuing security keys requires admin privilege.
           {" "}
           {t("scanScope.denied")}

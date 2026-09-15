@@ -414,7 +414,7 @@ export default function RemediationPage() {
           {/* Severity Filter */}
           <Select value={selectedSeverity} onValueChange={setSelectedSeverity}>
             <SelectTrigger className="h-9 w-[130px] text-xs">
-              <SelectValue placeholder="Severity" />
+              <SelectValue placeholder={t("select.severity")} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Severities</SelectItem>
@@ -428,7 +428,7 @@ export default function RemediationPage() {
           {/* SLA Filter */}
           <Select value={selectedSla} onValueChange={setSelectedSla}>
             <SelectTrigger className="h-9 w-[130px] text-xs">
-              <SelectValue placeholder="SLA Status" />
+              <SelectValue placeholder={t("select.slaStatus")} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All SLAs</SelectItem>
@@ -441,7 +441,7 @@ export default function RemediationPage() {
           {/* Assignee Filter */}
           <Select value={selectedAssignee} onValueChange={setSelectedAssignee}>
             <SelectTrigger className="h-9 w-[140px] text-xs">
-              <SelectValue placeholder="Assignee" />
+              <SelectValue placeholder={t("select.assignee")} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Assignees</SelectItem>
@@ -548,7 +548,7 @@ export default function RemediationPage() {
             ) : (
               <VulnerabilityTimeline
                 events={activityQuery.data?.items ?? []}
-                emptyMessage="No remediation activity yet."
+                emptyMessage={t("empty.remediation")}
               />
             )}
           </div>
@@ -824,6 +824,7 @@ function VulnerabilityDrawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useT();
   const { canOperate } = useAuthStore();
   const eventsQuery = useVulnerabilityEvents(vuln?.vuln_id ?? "", { limit: 20 });
 
@@ -951,7 +952,7 @@ function VulnerabilityDrawer({
             <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
               <VulnerabilityTimeline
                 events={eventsQuery.data?.items ?? []}
-                emptyMessage="No audit trail events recorded yet."
+                emptyMessage={t("empty.auditEvents")}
               />
             </div>
           </div>

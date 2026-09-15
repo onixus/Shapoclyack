@@ -86,7 +86,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
 
   return (
     <div className="space-y-3">
-      <div className="relative overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/60">
+      <div className="relative overflow-hidden rounded-xl border border-border bg-muted">
         <svg
           viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
           className="h-auto w-full"
@@ -165,9 +165,9 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
         </svg>
 
         {active ? (
-          <div className="pointer-events-none absolute bottom-3 left-3 max-w-xs rounded-lg border border-slate-700 bg-slate-900/95 p-3 text-xs shadow-xl">
-            <p className="font-semibold text-slate-100">{active.label}</p>
-            <p className="mt-1 text-slate-400">
+          <div className="pointer-events-none absolute bottom-3 left-3 max-w-xs rounded-lg border border-border bg-card p-3 text-xs shadow-xl">
+            <p className="font-semibold text-foreground">{active.label}</p>
+            <p className="mt-1 text-muted-foreground">
               {active.hostCount === 1
                 ? t("geo.hostOne", { count: active.hostCount })
                 : t("geo.hosts", { count: active.hostCount })}{" "}
@@ -176,7 +176,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
                 ? t("geo.findingOne", { count: active.findingCount })
                 : t("geo.findings", { count: active.findingCount })}
             </p>
-            <p className="mt-1 text-slate-500">
+            <p className="mt-1 text-muted-foreground">
               {t("geo.worst")}: {t.label(STATE_LABEL[active.state])} ·{" "}
               {active.precision === "country"
                 ? t("geo.countryLevel")
@@ -186,7 +186,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
         {statesPresent.map((state) => (
           <span key={state} className="flex items-center gap-1.5">
             <span
@@ -200,7 +200,7 @@ export function GeoMap({ locations, selectedKey, onSelect }: GeoMapProps) {
           <span className="inline-block h-2.5 w-2.5 rounded-full border border-dashed border-slate-400" />
           {t("geo.countryLevel")}
         </span>
-        <span className={cn("text-slate-500")}>{t("geo.markerArea")}</span>
+        <span className={cn("text-muted-foreground")}>{t("geo.markerArea")}</span>
       </div>
     </div>
   );

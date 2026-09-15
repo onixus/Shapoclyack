@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { format } from "date-fns";
 import { Download, FileBarChart, Palette, Plus, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -62,6 +63,7 @@ function deliverySummary(report: GeneratedReportInfo) {
 }
 
 export function ReportFactoryPanel() {
+  const t = useT();
   const branding = useBranding();
   const saveBranding = useUpdateBranding();
   const templates = useReportTemplates();
@@ -182,7 +184,7 @@ export function ReportFactoryPanel() {
               <Label>Framework</Label>
               <Select value={generateFramework} onValueChange={setGenerateFramework}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select" />
+                  <SelectValue placeholder={t("select.choose")} />
                 </SelectTrigger>
                 <SelectContent>
                   {(frameworks.data ?? []).map((framework) => (
@@ -233,7 +235,7 @@ export function ReportFactoryPanel() {
           {templateKind === "compliance" ? (
             <Select value={templateFramework} onValueChange={setTemplateFramework}>
               <SelectTrigger>
-                <SelectValue placeholder="Framework" />
+                <SelectValue placeholder={t("select.framework")} />
               </SelectTrigger>
               <SelectContent>
                 {(frameworks.data ?? []).map((framework) => (
@@ -293,7 +295,7 @@ export function ReportFactoryPanel() {
         <div className="grid gap-3 sm:grid-cols-2">
           <Select value={scheduleTemplate} onValueChange={setScheduleTemplate}>
             <SelectTrigger>
-              <SelectValue placeholder="Template" />
+              <SelectValue placeholder={t("select.template")} />
             </SelectTrigger>
             <SelectContent>
               {(templates.data ?? []).map((template) => (
@@ -412,7 +414,7 @@ export function ReportFactoryPanel() {
                     : "—"}
                 </span>{" "}
                 {report.status === "failed" ? (
-                  <span className="text-rose-400">{report.error}</span>
+                  <span className="text-rose-600 dark:text-rose-400">{report.error}</span>
                 ) : (
                   <span className="text-muted-foreground">{deliverySummary(report)}</span>
                 )}

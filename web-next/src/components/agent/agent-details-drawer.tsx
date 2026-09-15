@@ -165,7 +165,7 @@ export function AgentDetailsDrawer({
                     size="sm"
                     disabled={upgradeMutation.isPending || agent.upgrade_requested}
                     onClick={handleUpgrade}
-                    className="h-7 bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-500"
+                    className="h-7 bg-amber-600 px-3 text-xs font-semibold text-foreground hover:bg-amber-500"
                   >
                     {upgradeMutation.isPending ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -384,7 +384,7 @@ export function AgentDetailsDrawer({
                     size="sm"
                     variant="outline"
                     onClick={() => setConfirmDelete(true)}
-                    className="gap-1.5 border-rose-500/40 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 dark:hover:text-rose-300"
+                    className="gap-1.5 border-rose-500/40 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 dark:hover:text-rose-600 dark:text-rose-300"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Deregister Agent
@@ -421,7 +421,7 @@ export function AgentDetailsDrawer({
                       size="sm"
                       disabled={deleteMutation.isPending}
                       onClick={handleDelete}
-                      className="h-7 bg-rose-600 px-2.5 text-xs text-white hover:bg-rose-500"
+                      className="h-7 bg-rose-600 px-2.5 text-xs text-foreground hover:bg-rose-500"
                     >
                       {deleteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Yes, Delete"}
                     </Button>

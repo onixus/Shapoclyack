@@ -194,31 +194,31 @@ export default function AgentsPage() {
       {/* Fleet KPIs Banner */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard
-          label="Total Agents"
+          label={t("kpi.totalAgents")}
           value={summary?.total_agents ?? data?.total ?? 0}
           hint="Registered scan nodes"
           decorationColor="sky"
         />
         <KpiCard
-          label="Online / Active"
+          label={t("kpi.onlineActive")}
           value={summary?.online_agents ?? 0}
           hint="Sending heartbeats"
           decorationColor="emerald"
         />
         <KpiCard
-          label="Scanning (Busy)"
+          label={t("kpi.scanningBusy")}
           value={summary?.busy_agents ?? 0}
           hint="Executing scan tasks"
           decorationColor="blue"
         />
         <KpiCard
-          label="Stale / Offline"
+          label={t("kpi.staleOffline")}
           value={summary?.stale_agents ?? 0}
           hint="Heartbeat timed out"
           decorationColor="rose"
         />
         <KpiCard
-          label="Updates Available"
+          label={t("kpi.updatesAvailable")}
           value={summary?.outdated_agents ?? 0}
           hint={`Target: v${summary?.latest_version || "—"}`}
           decorationColor="amber"
@@ -234,7 +234,7 @@ export default function AgentsPage() {
         searchPlaceholder={t("search.agents")}
         loadingMessage={t("loading.agents")}
         emptyMessage={t("empty.agents")}
-        meta={`${data?.total ?? 0} agents`}
+        meta={t("meta.agents", { count: data?.total ?? 0 })}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,

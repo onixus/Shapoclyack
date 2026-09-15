@@ -574,7 +574,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("users.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-amber-600 text-white hover:bg-amber-500"
+              className="bg-amber-600 text-foreground hover:bg-amber-500"
               onClick={() => {
                 if (mfaTarget) resetMfa.mutate(mfaTarget.username);
                 setMfaTarget(null);
@@ -600,7 +600,7 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("users.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-rose-600 text-white hover:bg-rose-500"
+              className="bg-rose-600 text-foreground hover:bg-rose-500"
               onClick={() => {
                 if (deleteTarget) remove.mutate(deleteTarget.username);
                 setDeleteTarget(null);

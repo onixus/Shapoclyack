@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useT } from "@/lib/i18n";
 import type { AliveHost, PortAggregate } from "@/lib/api";
 import { ownershipGroup, type GraphGroupBy } from "@/lib/attack-surface";
 
@@ -50,6 +51,7 @@ export function AttackSurfaceGraph({
   ownerKey?: string;
   caps?: AttackSurfaceCaps;
 }) {
+  const t = useT();
   const model = useMemo(() => {
     const col = groupBy === "owner" ? OWNER_X : TOPOLOGY_X;
     const svgW = groupBy === "owner" ? SVG_W_OWNER : SVG_W_TOPOLOGY;
@@ -256,8 +258,8 @@ export function AttackSurfaceGraph({
 
   if (hosts.length === 0) {
     return (
-      <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-8 text-center text-xs text-slate-400 backdrop-blur">
-        No alive hosts detected in this scan run — nothing to graph.
+      <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground backdrop-blur">
+        {t("graph.empty")}
       </div>
     );
   }
@@ -267,37 +269,37 @@ export function AttackSurfaceGraph({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-slate-800/80 bg-slate-900/80 px-4 py-2.5 text-xs backdrop-blur">
-        <span className="font-bold text-slate-200 uppercase tracking-wider text-[11px]">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs backdrop-blur">
+        <span className="font-bold text-foreground uppercase tracking-wider text-[11px]">
           {model.clusterMode === "owner"
-            ? "Owners:"
+            ? t("graph.legend.owners")
             : model.clusterMode === "asn"
-              ? "Networks (ASN):"
-              : "Countries:"}
+              ? t("graph.legend.networks")
+              : t("graph.legend.countries")}
         </span>
         {legend.length === 0 ? (
-          <span className="text-slate-400">
+          <span className="text-muted-foreground">
             {model.clusterMode === "owner"
-              ? "No owner or domain to group by"
+              ? t("graph.legend.noOwner")
               : model.clusterMode === "asn"
-                ? "No ASN telemetry"
-                : "No GeoIP telemetry"}
+                ? t("graph.legend.noAsn")
+                : t("graph.legend.noGeo")}
           </span>
         ) : (
           legend.map(([key, color, label]) => (
-            <span key={key} className="flex items-center gap-1.5 font-medium text-slate-300">
+            <span key={key} className="flex items-center gap-1.5 font-medium text-foreground">
               <span className="inline-block h-2.5 w-2.5 rounded-sm shadow-sm" style={{ backgroundColor: color }} />
               {truncate(label, 28)}
             </span>
           ))
         )}
-        <span className="flex items-center gap-1.5 font-medium text-slate-400">
+        <span className="flex items-center gap-1.5 font-medium text-muted-foreground">
           <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: NO_GEO }} />
-          {model.clusterMode === "owner" ? "Unowned" : "Unknown"}
+          {model.clusterMode === "owner" ? t("graph.legend.unowned") : t("graph.legend.unknown")}
         </span>
       </div>
 
-      <div className="max-h-[72vh] overflow-auto rounded-xl border border-slate-800/80 bg-slate-950 p-4 shadow-xl">
+      <div className="max-h-[72vh] overflow-auto rounded-xl border border-border bg-muted p-4 shadow-xl">
         <svg
           viewBox={`0 0 ${model.svgW} ${model.height}`}
           width="100%"
@@ -306,8 +308,8 @@ export function AttackSurfaceGraph({
           role="img"
           aria-label={
             model.clusterMode === "owner"
-              ? "Ownership graph: owners to hostnames to IPs to ports to services"
-              : "Attack surface graph: hostnames to IPs to ports to services"
+              ? t("graph.aria.ownership")
+              : t("graph.aria.surface")
           }
         >
           {/* Column headers */}
@@ -448,11 +450,11 @@ export function AttackSurfaceGraph({
         </svg>
       </div>
 
-      <p className="text-xs text-slate-400">
-        Rendering <span className="font-semibold text-slate-200">{model.hostnames.length}/{model.totals.hostnames}</span> hostnames ·{" "}
-        <span className="font-semibold text-slate-200">{model.ipHosts.length}/{model.totals.hosts}</span> IP hosts ·{" "}
-        <span className="font-semibold text-slate-200">{model.ports.length}/{model.totals.ports}</span> ports ·{" "}
-        <span className="font-semibold text-slate-200">{model.services.length}/{model.totals.services}</span> services.
+      <p className="text-xs text-muted-foreground">
+        Rendering <span className="font-semibold text-foreground">{model.hostnames.length}/{model.totals.hostnames}</span> hostnames ·{" "}
+        <span className="font-semibold text-foreground">{model.ipHosts.length}/{model.totals.hosts}</span> IP hosts ·{" "}
+        <span className="font-semibold text-foreground">{model.ports.length}/{model.totals.ports}</span> ports ·{" "}
+        <span className="font-semibold text-foreground">{model.services.length}/{model.totals.services}</span> services.
       </p>
     </div>
   );

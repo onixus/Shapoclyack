@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useT } from "@/lib/i18n";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -86,7 +87,7 @@ const CONTEXT_UNSET = "unset";
 
 export default function AssetDetailPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-slate-400">Loading asset posture details…</p>}>
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading asset posture details…</p>}>
       <AssetDetailInner />
     </Suspense>
   );
@@ -94,9 +95,9 @@ export default function AssetDetailPage() {
 
 function BackToAssets() {
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-slate-400 hover:text-slate-100 hover:bg-transparent">
+    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
       <Link href="/assets">
-        <ArrowLeft className="h-4 w-4 text-sky-400" />
+        <ArrowLeft className="h-4 w-4 text-sky-600 dark:text-sky-400" />
         Back to Assets
       </Link>
     </Button>
@@ -104,6 +105,7 @@ function BackToAssets() {
 }
 
 function AssetDetailInner() {
+  const t = useT();
   const searchParams = useSearchParams();
   const assetId = (searchParams.get("assetId") || "").trim();
   const tenantId = searchParams.get("tenantId") || "default";
@@ -161,7 +163,7 @@ function AssetDetailInner() {
         </div>
       );
     }
-    return <p className="text-sm text-slate-400">Loading asset security view…</p>;
+    return <p className="text-sm text-muted-foreground">Loading asset security view…</p>;
   }
 
   const risk = asset.risk;
@@ -172,12 +174,12 @@ function AssetDetailInner() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-3 border-b border-slate-800/80 pb-5">
+      <div className="space-y-3 border-b border-border pb-5">
         <BackToAssets />
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-slate-100">
+              <h1 className="text-2xl font-extrabold font-mono tracking-tight text-foreground">
                 {asset.identifiers.find((i) => i.identifier_type === "ip")?.identifier_value ||
                   asset.asset_id}
               </h1>
@@ -185,7 +187,7 @@ function AssetDetailInner() {
               {asset.asset_criticality != null ? (
                 <StatusBadge value={String(asset.asset_criticality)} map={ASSET_CRITICALITY} />
               ) : (
-                <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-400">
+                <Badge variant="outline" className="border-border bg-card text-muted-foreground">
                   Criticality Unset
                 </Badge>
               )}
@@ -197,7 +199,7 @@ function AssetDetailInner() {
               ) : null}
               {estateLevel ? <StatusBadge value={estateLevel} map={RISK_LEVEL_STATUS} /> : null}
             </div>
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 text-xs text-muted-foreground">
               {asset.business_service || "No business service"}
               {" · "}
               {asset.owner_email || "No owner"}
@@ -216,7 +218,7 @@ function AssetDetailInner() {
           decorationColor={estateLevel === "very_high" || estateLevel === "high" ? "rose" : "sky"}
         />
         <KpiCard
-          label="Open findings"
+          label={t("kpi.openFindings")}
           value={risk?.open_total ?? 0}
           hint={`${untriaged} untriaged`}
           href={vulnListHref({ assetId })}
@@ -229,7 +231,7 @@ function AssetDetailInner() {
           decorationColor={unassigned ? "amber" : "slate"}
         />
         <KpiCard
-          label="SLA breached"
+          label={t("kpi.slaBreached")}
           value={breached}
           hint="Act on these first"
           href={breached ? vulnListHref({ assetId, sla: "breached" }) : undefined}
@@ -270,17 +272,17 @@ function AssetDetailInner() {
 
         <div className="lg:col-span-2 space-y-4">
           <Tabs defaultValue="findings">
-            <TabsList className="bg-slate-900/90 border border-slate-800">
-              <TabsTrigger value="findings" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+            <TabsList className="bg-card border border-border">
+              <TabsTrigger value="findings" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 Findings ({trackedOpen})
               </TabsTrigger>
-              <TabsTrigger value="software" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+              <TabsTrigger value="software" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 Software ({software.length})
               </TabsTrigger>
-              <TabsTrigger value="evidence" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+              <TabsTrigger value="evidence" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 Scan evidence
               </TabsTrigger>
-              <TabsTrigger value="history" className="data-[state=active]:bg-slate-800 data-[state=active]:text-sky-300">
+              <TabsTrigger value="history" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 History
               </TabsTrigger>
             </TabsList>
@@ -327,12 +329,12 @@ function AssetDetailInner() {
             </TabsContent>
 
             <TabsContent value="evidence" className="space-y-4 pt-3">
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-muted-foreground">
                 Last scan correlation
                 {latest ? (
                   <>
                     {" "}
-                    from run <code className="font-mono text-sky-400">{latest.run_id}</code>
+                    from run <code className="font-mono text-sky-600 dark:text-sky-400">{latest.run_id}</code>
                   </>
                 ) : (
                   " — no run on disk"
@@ -346,9 +348,9 @@ function AssetDetailInner() {
               ) : vulns.length === 0 ? (
                 <EmptyNote>No vulnerability findings detected for this asset in the latest scan run.</EmptyNote>
               ) : (
-                <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+                <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
                   <table className="w-full text-left text-xs">
-                    <thead className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-bold uppercase tracking-wider">
+                    <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
                       <tr>
                         <th className="px-3.5 py-3">CVE / Script ID</th>
                         <th className="px-3.5 py-3">Port</th>
@@ -356,18 +358,18 @@ function AssetDetailInner() {
                         <th className="px-3.5 py-3">Severity</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/60">
+                    <tbody className="divide-y divide-border">
                       {vulns.map((v, idx) => (
                         <tr
                           key={`${v.cve || v.script_id}-${v.port}-${idx}`}
-                          className="hover:bg-slate-800/40 transition-colors"
+                          className="hover:bg-muted transition-colors"
                         >
-                          <td className="px-3.5 py-3 font-mono font-semibold text-sky-400">
+                          <td className="px-3.5 py-3 font-mono font-semibold text-sky-600 dark:text-sky-400">
                             {v.cve || v.script_id || "—"}
                           </td>
-                          <td className="px-3.5 py-3 font-mono text-slate-300">{v.port || "—"}</td>
+                          <td className="px-3.5 py-3 font-mono text-foreground">{v.port || "—"}</td>
                           <td className="px-3.5 py-3">
-                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-300 border border-rose-500/30">
+                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 font-bold tabular-nums text-rose-600 dark:text-rose-300 border border-rose-500/30">
                               {v.cvss4 ?? v.cvss ?? "—"}
                             </span>
                           </td>
@@ -390,14 +392,14 @@ function AssetDetailInner() {
                   subtitle: row.vulnerability_count
                     ? `${row.vulnerability_count} vulnerability findings`
                     : "clean",
-                  meta: <span className="font-semibold text-slate-200">{row.host_count} hosts</span>,
+                  meta: <span className="font-semibold text-foreground">{row.host_count} hosts</span>,
                 }))}
                 activeKey={null}
                 onSelect={() => {}}
                 emptyMessage={ip ? "No open ports recorded for this asset in the latest run." : "No IP to correlate."}
               />
               {hostRow ? (
-                <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
+                <div className="grid grid-cols-2 gap-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
                   <Field label="Hostname (Reverse PTR)" value={hostRow.hostname || hostRow.names[0] || "—"} />
                   <Field label="GeoIP Location" value={formatLocation(hostRow) || "—"} />
                   <Field
@@ -447,7 +449,7 @@ function TrackedFindingsPanel({
     return (
       <EmptyNote>
         No open tracked findings on this asset. Closed history lives in the{" "}
-        <Link href={vulnListHref({ assetId })} className="text-sky-400 underline underline-offset-2">
+        <Link href={vulnListHref({ assetId })} className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
           Vulnerability Center
         </Link>
         .
@@ -456,20 +458,20 @@ function TrackedFindingsPanel({
   }
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-muted-foreground">
         Working set of tracked findings — lifecycle, owner and the next required action.
         {total > findings.length ? ` Showing ${findings.length} of ${total}.` : ""}{" "}
-        <Link href={vulnListHref({ assetId })} className="text-sky-400 underline underline-offset-2">
+        <Link href={vulnListHref({ assetId })} className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
           Open in Vulnerability Center
         </Link>
         {" · "}
-        <Link href="/remediation" className="text-sky-400 underline underline-offset-2">
+        <Link href="/remediation" className="text-sky-600 dark:text-sky-400 underline underline-offset-2">
           Remediation board
         </Link>
       </p>
-      <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-bold uppercase tracking-wider">
+          <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
             <tr>
               <th className="px-3.5 py-3">Finding</th>
               <th className="px-3.5 py-3">Severity</th>
@@ -479,17 +481,17 @@ function TrackedFindingsPanel({
               <th className="px-3.5 py-3" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60">
+          <tbody className="divide-y divide-border">
             {findings.map((vuln) => (
-              <tr key={vuln.vuln_id} className="hover:bg-slate-800/40 transition-colors">
+              <tr key={vuln.vuln_id} className="hover:bg-muted transition-colors">
                 <td className="px-3.5 py-3">
                   <Link
                     href={vulnDetailHref(vuln.vuln_id, tenantId)}
-                    className="font-mono font-semibold text-sky-400 hover:underline"
+                    className="font-mono font-semibold text-sky-600 dark:text-sky-400 hover:underline"
                   >
                     {findingLabel(vuln)}
                   </Link>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {vuln.port ? `port ${vuln.port}` : "no port"}
                     {vuln.assignee ? ` · ${vuln.assignee}` : " · unassigned"}
                   </p>
@@ -503,13 +505,13 @@ function TrackedFindingsPanel({
                 <td className="px-3.5 py-3">
                   <SlaIndicator slaState={vuln.sla_state} dueAt={vuln.due_at} />
                 </td>
-                <td className="px-3.5 py-3 font-semibold text-slate-200">{requiredAction(vuln)}</td>
+                <td className="px-3.5 py-3 font-semibold text-foreground">{requiredAction(vuln)}</td>
                 <td className="px-3.5 py-3 text-right">
                   <Button
                     asChild
                     variant="outline"
                     size="sm"
-                    className="h-7 text-xs border-slate-800 bg-slate-900 text-sky-400"
+                    className="h-7 text-xs border-border bg-card text-sky-600 dark:text-sky-400"
                   >
                     <Link href={vulnDetailHref(vuln.vuln_id, tenantId)}>Act</Link>
                   </Button>
@@ -525,8 +527,8 @@ function TrackedFindingsPanel({
 
 function OverviewCard({ asset }: { asset: AssetDetail }) {
   return (
-    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-slate-200 border-b border-slate-800 pb-2">Business context</p>
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">Business context</p>
       <div className="grid grid-cols-2 gap-3">
         <Field label="First Discovered" value={new Date(asset.first_seen).toLocaleString()} />
         <Field label="Last Telemetry" value={new Date(asset.last_seen).toLocaleString()} />
@@ -534,68 +536,68 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
         <Field label="Business Unit" value={asset.business_unit || "Unassigned"} />
         <Field label="Business Service" value={asset.business_service || "Unassigned"} />
         <div>
-          <p className="text-[11px] font-medium text-slate-400">Environment</p>
+          <p className="text-[11px] font-medium text-muted-foreground">Environment</p>
           <div className="mt-0.5">
             {asset.environment ? (
               <StatusBadge value={asset.environment} map={ASSET_ENVIRONMENT} />
             ) : (
-              <p className="text-xs font-semibold text-slate-200">Unset</p>
+              <p className="text-xs font-semibold text-foreground">Unset</p>
             )}
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-slate-400">Data Classification</p>
+          <p className="text-[11px] font-medium text-muted-foreground">Data Classification</p>
           <div className="mt-0.5">
             {asset.data_classification ? (
               <StatusBadge value={asset.data_classification} map={ASSET_DATA_CLASSIFICATION} />
             ) : (
-              <p className="text-xs font-semibold text-slate-200">Unset</p>
+              <p className="text-xs font-semibold text-foreground">Unset</p>
             )}
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-medium text-slate-400">Exposure</p>
+          <p className="text-[11px] font-medium text-muted-foreground">Exposure</p>
           <div className="mt-0.5">
             {asset.exposure_level ? (
               <StatusBadge value={asset.exposure_level} map={ASSET_EXPOSURE} />
             ) : (
-              <p className="text-xs font-semibold text-slate-200">Unset</p>
+              <p className="text-xs font-semibold text-foreground">Unset</p>
             )}
           </div>
         </div>
       </div>
       {asset.context_source ? (
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[11px] text-muted-foreground">
           Context last written by{" "}
           <StatusBadge value={asset.context_source} map={ASSET_CONTEXT_SOURCE} />
           {" — "}
           exposure is an operator decision, not a scan measurement.
         </p>
       ) : null}
-      <div className="pt-2 border-t border-slate-800">
-        <p className="mb-2 text-xs font-semibold text-slate-400">
+      <div className="pt-2 border-t border-border">
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">
           Identifiers ({asset.identifiers.length})
         </p>
         <ul className="space-y-1.5">
           {asset.identifiers.map((identifier) => (
             <li
               key={`${identifier.identifier_type}:${identifier.identifier_value}`}
-              className="flex items-center justify-between rounded-lg bg-slate-950/60 p-2 border border-slate-800/60"
+              className="flex items-center justify-between rounded-lg bg-muted p-2 border border-border"
             >
-              <Badge variant="secondary" className="uppercase font-semibold text-[10px] bg-slate-800 text-sky-400">
+              <Badge variant="secondary" className="uppercase font-semibold text-[10px] bg-muted text-sky-600 dark:text-sky-400">
                 {identifier.identifier_type}
               </Badge>
-              <span className="font-mono font-bold text-slate-200">{identifier.identifier_value}</span>
+              <span className="font-mono font-bold text-foreground">{identifier.identifier_value}</span>
             </li>
           ))}
         </ul>
       </div>
       {Object.keys(asset.tags).length > 0 ? (
-        <div className="pt-2 border-t border-slate-800">
-          <p className="mb-1.5 text-xs font-semibold text-slate-400">Asset Tags</p>
+        <div className="pt-2 border-t border-border">
+          <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Asset Tags</p>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(asset.tags).map(([key, value]) => (
-              <Badge key={key} variant="outline" className="border-slate-700 bg-slate-950 text-slate-300 text-[11px]">
+              <Badge key={key} variant="outline" className="border-border bg-muted text-foreground text-[11px]">
                 {key}={value}
               </Badge>
             ))}
@@ -608,17 +610,17 @@ function OverviewCard({ asset }: { asset: AssetDetail }) {
 
 function NoEndpointCard({ loading }: { loading: boolean }) {
   return (
-    <div className="space-y-3 rounded-xl border border-dashed border-slate-700/80 bg-slate-900/40 p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-slate-300">Endpoint (Lariska)</p>
+    <div className="space-y-3 rounded-xl border border-dashed border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint (Lariska)</p>
       {loading ? (
-        <p className="text-slate-500">Checking for linked agent…</p>
+        <p className="text-muted-foreground">Checking for linked agent…</p>
       ) : (
         <>
-          <p className="leading-relaxed text-slate-400">
+          <p className="leading-relaxed text-muted-foreground">
             No Lariska agent is correlated to this network asset yet. Install the endpoint agent with a
             tenant provisioning key; inventory links here by hostname / platform identifiers.
           </p>
-          <Button asChild variant="outline" size="sm" className="h-7 border-slate-700 text-xs text-sky-400">
+          <Button asChild variant="outline" size="sm" className="h-7 border-border text-xs text-sky-600 dark:text-sky-400">
             <Link href="/endpoints">Browse endpoints</Link>
           </Button>
         </>
@@ -633,11 +635,11 @@ function EndpointCard({ device }: { device: EndpointDeviceInfo }) {
   const isStale = device.status === "stale" && device.last_inventory_at != null;
 
   return (
-    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
-      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+      <div className="flex items-center justify-between border-b border-border pb-2">
         <div>
-          <p className="text-sm font-bold uppercase tracking-wider text-slate-200">Endpoint (Lariska)</p>
-          <p className="mt-0.5 font-mono text-[10px] text-slate-500">{device.hostname}</p>
+          <p className="text-sm font-bold uppercase tracking-wider text-foreground">Endpoint (Lariska)</p>
+          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{device.hostname}</p>
         </div>
         <StatusBadge value={device.reconciliation_status} map={ENDPOINT_RECONCILIATION_STATUS} />
       </div>
@@ -695,11 +697,11 @@ function SoftwareTab({
     <div className="space-y-3">
       {recentChanges.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold text-slate-400">Since previous snapshot:</span>
+          <span className="text-xs font-semibold text-muted-foreground">Since previous snapshot:</span>
           {recentChanges.map((change, idx) => (
             <span key={`${change.event_type}-${change.display_name}-${idx}`} className="inline-flex items-center gap-1">
               <StatusBadge value={change.event_type} map={SOFTWARE_CHANGE_STATUS} />
-              <span className="font-mono text-slate-300">{change.display_name}</span>
+              <span className="font-mono text-foreground">{change.display_name}</span>
             </span>
           ))}
         </div>
@@ -709,7 +711,7 @@ function SoftwareTab({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search installed software…"
-        className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+        className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
       />
 
       {isLoading ? (
@@ -717,14 +719,14 @@ function SoftwareTab({
       ) : filtered.length === 0 ? (
         <EmptyNote>No installed software recorded for this endpoint.</EmptyNote>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-900/80 shadow-lg backdrop-blur">
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-lg backdrop-blur">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-bold uppercase tracking-wider">
+            <thead className="border-b border-border bg-muted text-muted-foreground font-bold uppercase tracking-wider">
               <tr>
                 {(["name", "version", "publisher", "source"] as const).map((col) => (
                   <th
                     key={col}
-                    className="cursor-pointer px-3.5 py-3 hover:text-sky-300"
+                    className="cursor-pointer px-3.5 py-3 hover:text-sky-600 dark:text-sky-300"
                     onClick={() => setSortKey(col)}
                   >
                     {col}
@@ -733,14 +735,14 @@ function SoftwareTab({
                 <th className="px-3.5 py-3">Architecture</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className="divide-y divide-border">
               {filtered.map((item, idx) => (
-                <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-slate-800/40 transition-colors">
-                  <td className="px-3.5 py-3 font-semibold text-slate-200">{item.name}</td>
-                  <td className="px-3.5 py-3 font-mono text-slate-300">{item.version || "—"}</td>
-                  <td className="px-3.5 py-3 text-slate-300">{item.publisher || "—"}</td>
-                  <td className="px-3.5 py-3 text-slate-300">{item.source}</td>
-                  <td className="px-3.5 py-3 text-slate-300">{item.architecture || "—"}</td>
+                <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-muted transition-colors">
+                  <td className="px-3.5 py-3 font-semibold text-foreground">{item.name}</td>
+                  <td className="px-3.5 py-3 font-mono text-foreground">{item.version || "—"}</td>
+                  <td className="px-3.5 py-3 text-foreground">{item.publisher || "—"}</td>
+                  <td className="px-3.5 py-3 text-foreground">{item.source}</td>
+                  <td className="px-3.5 py-3 text-foreground">{item.architecture || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -797,49 +799,49 @@ function EditCard({ asset }: { asset: AssetDetail }) {
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-slate-200 border-b border-slate-800 pb-2">Asset Posture Configurator</p>
+    <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">Asset Posture Configurator</p>
 
       <div className="space-y-1.5">
-        <Label htmlFor="owner" className="text-slate-300 font-semibold">Owner Email</Label>
+        <Label htmlFor="owner" className="text-foreground font-semibold">Owner Email</Label>
         <Input
           id="owner"
           value={owner}
           onChange={(e) => setOwner(e.target.value)}
           placeholder="sec-ops@enterprise.com"
-          className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+          className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="unit" className="text-slate-300 font-semibold">Business Unit</Label>
+        <Label htmlFor="unit" className="text-foreground font-semibold">Business Unit</Label>
         <Input
           id="unit"
           value={unit}
           onChange={(e) => setUnit(e.target.value)}
           placeholder="e.g. Core Infrastructure"
-          className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+          className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="service" className="text-slate-300 font-semibold">Business Service</Label>
+        <Label htmlFor="service" className="text-foreground font-semibold">Business Service</Label>
         <Input
           id="service"
           value={service}
           onChange={(e) => setService(e.target.value)}
           placeholder="e.g. payments-api"
-          className="bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600"
+          className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-slate-300 font-semibold">Environment</Label>
+        <Label className="text-foreground font-semibold">Environment</Label>
         <Select value={environment} onValueChange={setEnvironment}>
-          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+          <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+          <SelectContent className="bg-card border-border text-foreground">
             <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
             {ASSET_ENVIRONMENTS.map((value) => (
               <SelectItem key={value} value={value}>
@@ -851,12 +853,12 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-slate-300 font-semibold">Data Classification</Label>
+        <Label className="text-foreground font-semibold">Data Classification</Label>
         <Select value={classification} onValueChange={setClassification}>
-          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+          <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+          <SelectContent className="bg-card border-border text-foreground">
             <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
             {ASSET_DATA_CLASSIFICATIONS.map((value) => (
               <SelectItem key={value} value={value}>
@@ -868,12 +870,12 @@ function EditCard({ asset }: { asset: AssetDetail }) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-slate-300 font-semibold">Exposure</Label>
+        <Label className="text-foreground font-semibold">Exposure</Label>
         <Select value={exposure} onValueChange={setExposure}>
-          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+          <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+          <SelectContent className="bg-card border-border text-foreground">
             <SelectItem value={CONTEXT_UNSET}>Unset</SelectItem>
             {ASSET_EXPOSURE_LEVELS.map((value) => (
               <SelectItem key={value} value={value}>
@@ -882,18 +884,18 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             ))}
           </SelectContent>
         </Select>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[11px] text-muted-foreground">
           A decision about how this asset is treated — not inferred from scan IPs.
         </p>
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-slate-300 font-semibold">Asset Criticality (0 - 4)</Label>
+        <Label className="text-foreground font-semibold">Asset Criticality (0 - 4)</Label>
         <Select value={crit} onValueChange={setCrit}>
-          <SelectTrigger className="bg-slate-950 border-slate-800 text-slate-200">
+          <SelectTrigger className="bg-muted border-border text-foreground">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+          <SelectContent className="bg-card border-border text-foreground">
             <SelectItem value={CRIT_UNSET}>Unset (Heuristic Evaluation)</SelectItem>
             {[0, 1, 2, 3, 4].map((n) => (
               <SelectItem key={n} value={String(n)}>
@@ -904,30 +906,30 @@ function EditCard({ asset }: { asset: AssetDetail }) {
         </Select>
       </div>
 
-      <div className="flex items-center justify-between pt-3 border-t border-slate-800">
-        <Button onClick={save} disabled={update.isPending} size="sm" className="bg-sky-600 hover:bg-sky-500 text-white font-semibold">
+      <div className="flex items-center justify-between pt-3 border-t border-border">
+        <Button onClick={save} disabled={update.isPending} size="sm" className="bg-sky-600 hover:bg-sky-500 text-foreground font-semibold">
           {update.isPending ? "Updating…" : "Save Changes"}
         </Button>
 
         {!decommissioned ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-400 hover:bg-rose-950/60">
+              <Button variant="outline" size="sm" className="border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-950/60">
                 Decommission
               </Button>
             </AlertDialogTrigger>
-            <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-100">
+            <AlertDialogContent className="bg-card border-border text-foreground">
               <AlertDialogHeader>
-                <AlertDialogTitle className="text-slate-100">Decommission this asset?</AlertDialogTitle>
-                <AlertDialogDescription className="text-slate-400 text-xs">
+                <AlertDialogTitle className="text-foreground">Decommission this asset?</AlertDialogTitle>
+                <AlertDialogDescription className="text-muted-foreground text-xs">
                   Marks the asset as decommissioned. Decommissioning is logged into Postgres state.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800">Cancel</AlertDialogCancel>
+                <AlertDialogCancel className="border-border bg-muted text-foreground hover:bg-muted">Cancel</AlertDialogCancel>
                 <AlertDialogAction 
                   onClick={() => update.mutate({ status: "decommissioned" })}
-                  className="bg-rose-600 text-white hover:bg-rose-500"
+                  className="bg-rose-600 text-foreground hover:bg-rose-500"
                 >
                   Decommission Asset
                 </AlertDialogAction>
@@ -935,7 +937,7 @@ function EditCard({ asset }: { asset: AssetDetail }) {
             </AlertDialogContent>
           </AlertDialog>
         ) : (
-          <Badge variant="secondary" className="bg-slate-800 text-slate-400">Decommissioned</Badge>
+          <Badge variant="secondary" className="bg-muted text-muted-foreground">Decommissioned</Badge>
         )}
       </div>
     </div>
@@ -947,14 +949,14 @@ function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: 
   const events = eventsQuery.data?.items ?? [];
 
   return (
-    <div className="space-y-3 rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 text-xs shadow-lg backdrop-blur">
-      <p className="text-sm font-bold uppercase tracking-wider text-slate-200 border-b border-slate-800 pb-2">
+    <div className="space-y-3 rounded-xl border border-border bg-card p-5 text-xs shadow-lg backdrop-blur">
+      <p className="text-sm font-bold uppercase tracking-wider text-foreground border-b border-border pb-2">
         Context history
       </p>
       {eventsQuery.isLoading ? (
-        <p className="text-slate-500">Loading context changes…</p>
+        <p className="text-muted-foreground">Loading context changes…</p>
       ) : events.length === 0 ? (
-        <p className="text-slate-500">No business-context changes recorded yet.</p>
+        <p className="text-muted-foreground">No business-context changes recorded yet.</p>
       ) : (
         <ol className="space-y-3" aria-label="Asset context audit trail">
           {events.map((event) => (
@@ -968,12 +970,12 @@ function ContextHistoryCard({ assetId, tenantId }: { assetId: string; tenantId: 
 
 function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
   return (
-    <li className="relative border-l border-slate-800 pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-sky-500/70">
-      <p className="font-semibold text-slate-200">{describeContextEvent(event)}</p>
-      <p className="mt-0.5 text-[11px] text-slate-400">
+    <li className="relative border-l border-border pl-4 before:absolute before:-left-1 before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-sky-500/70">
+      <p className="font-semibold text-foreground">{describeContextEvent(event)}</p>
+      <p className="mt-0.5 text-[11px] text-muted-foreground">
         {event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "—"}
         {" · "}
-        {event.actor ? <span className="font-mono text-slate-300">{event.actor}</span> : <span>platform</span>}
+        {event.actor ? <span className="font-mono text-foreground">{event.actor}</span> : <span>platform</span>}
         {event.source ? (
           <>
             {" · "}
@@ -988,15 +990,15 @@ function ContextHistoryItem({ event }: { event: AssetContextEvent }) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-[11px] font-medium text-slate-400">{label}</p>
-      <p className="text-xs font-semibold text-slate-200 mt-0.5">{value}</p>
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      <p className="text-xs font-semibold text-foreground mt-0.5">{value}</p>
     </div>
   );
 }
 
 function EmptyNote({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-8 text-center text-xs text-slate-400 backdrop-blur">
+    <div className="rounded-xl border border-border bg-card px-4 py-8 text-center text-xs text-muted-foreground backdrop-blur">
       {children}
     </div>
   );

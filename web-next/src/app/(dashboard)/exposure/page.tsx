@@ -62,7 +62,7 @@ export default function ExposurePage() {
           row.original.exposure_level ? (
             <StatusBadge value={row.original.exposure_level} map={ASSET_EXPOSURE} />
           ) : (
-            <span className="text-xs text-slate-500">{t.label("unset")}</span>
+            <span className="text-xs text-muted-foreground">{t.label("unset")}</span>
           ),
       },
       {
@@ -74,7 +74,7 @@ export default function ExposurePage() {
             return <StatusBadge value={level} map={RISK_LEVEL_STATUS} />;
           }
           return (
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-muted-foreground">
               {assetRiskLabel({
                 estate_risk: row.original.estate_risk,
                 open_total: row.original.open_findings,
@@ -87,7 +87,7 @@ export default function ExposurePage() {
         accessorKey: "open_findings",
         header: t("col.open"),
         cell: ({ row }) => (
-          <span className="tabular-nums text-slate-200">{row.original.open_findings}</span>
+          <span className="tabular-nums text-foreground">{row.original.open_findings}</span>
         ),
       },
       {
@@ -102,7 +102,7 @@ export default function ExposurePage() {
           row.original.asset_criticality != null ? (
             <StatusBadge value={String(row.original.asset_criticality)} map={ASSET_CRITICALITY} />
           ) : (
-            <span className="text-xs text-slate-500">{t.label("unset")}</span>
+            <span className="text-xs text-muted-foreground">{t.label("unset")}</span>
           ),
       },
       {
@@ -110,7 +110,7 @@ export default function ExposurePage() {
         header: "",
         enableSorting: false,
         cell: ({ row }) => (
-          <Button asChild variant="outline" size="sm" className="h-7 text-xs border-slate-800">
+          <Button asChild variant="outline" size="sm" className="h-7 text-xs border-border">
             <Link href={assetDetailHref(row.original.asset_id)}>{t("common.open")}</Link>
           </Button>
         ),
@@ -121,13 +121,13 @@ export default function ExposurePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <Radar className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.exposure.title")}</h1>
+            <Radar className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.exposure.title")}</h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">{t("page.exposure.subtitle")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("page.exposure.subtitle")}</p>
         </div>
       </div>
 
@@ -151,10 +151,10 @@ export default function ExposurePage() {
               pagination.reset();
             }}
           >
-            <SelectTrigger className="w-48 bg-slate-900 border-slate-800 text-slate-200">
+            <SelectTrigger className="w-48 bg-card border-border text-foreground">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+            <SelectContent className="bg-card border-border text-foreground">
               {ASSET_EXPOSURE_LEVELS.map((value) => (
                 <SelectItem key={value} value={value}>
                   {ASSET_EXPOSURE[value].label}
@@ -163,9 +163,12 @@ export default function ExposurePage() {
             </SelectContent>
           </Select>
         }
-        meta={`${total.toLocaleString()} asset${total === 1 ? "" : "s"} with ${ASSET_EXPOSURE[exposure].label} exposure`}
-        loadingMessage="Loading declared exposure…"
-        emptyMessage="No assets marked with this exposure yet. Set it on the asset card."
+        meta={t("meta.assetsWithExposure", {
+          count: total.toLocaleString(),
+          exposure: t.label(ASSET_EXPOSURE[exposure].label),
+        })}
+        loadingMessage={t("loading.exposure")}
+        emptyMessage={t("empty.exposure")}
         serverPagination={{
           offset: pagination.offset,
           limit: pagination.limit,
