@@ -177,7 +177,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
   return (
     <section className="space-y-6">
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("scanScope.current")}
         </p>
         {error ? (
@@ -221,10 +221,10 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
       </div>
 
       <div className="space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("scanScope.editor")}
         </p>
-        <ul className="space-y-1 text-[11px] text-slate-500">
+        <ul className="space-y-1 text-[11px] text-muted-foreground">
           <li>{t("scanScope.ruleDeny")}</li>
           <li>{t("scanScope.ruleAllow")}</li>
           <li>{t("scanScope.ruleEmpty")}</li>
@@ -278,7 +278,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="border-slate-800"
+                    className="border-border"
                     aria-label={`${t("scanScope.removeRow")} ${index + 1}`}
                     onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
                   >
@@ -299,7 +299,7 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
           type="button"
           variant="outline"
           size="sm"
-          className="gap-2 border-slate-800"
+          className="gap-2 border-border"
           onClick={addRow}
         >
           <Plus className="h-3.5 w-3.5" />
@@ -319,11 +319,11 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
             ))}
           </ul>
         ) : null}
-        <p className="text-[11px] text-slate-500">{t("scanScope.serverAuthority")}</p>
+        <p className="text-[11px] text-muted-foreground">{t("scanScope.serverAuthority")}</p>
 
         <Button
           type="button"
-          className="gap-2 bg-sky-600 text-white hover:bg-sky-500"
+          className="gap-2 bg-sky-600 text-foreground hover:bg-sky-500"
           disabled={!dirty || errors.length > 0 || replaceMutation.isPending}
           onClick={approve}
         >
@@ -333,10 +333,10 @@ export function ScanScopePanel({ tenantId }: { tenantId: string }) {
       </div>
 
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("scanScope.promoted")}
         </p>
-        <p className="text-[11px] text-slate-500">{t("scanScope.promotedHint")}</p>
+        <p className="text-[11px] text-muted-foreground">{t("scanScope.promotedHint")}</p>
         {promotedQuery.error ? (
           <p className="text-sm text-rose-500" role="alert">
             {promotedQuery.error instanceof Error

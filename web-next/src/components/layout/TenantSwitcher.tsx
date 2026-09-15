@@ -52,10 +52,10 @@ export function TenantSwitcher() {
   // tenant as a plain chip instead of a dead dropdown.
   if (!isPlatformAdmin && tenants.length <= 1) {
     return (
-      <div className="hidden items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-300 sm:flex">
-        <Building2 className="h-3.5 w-3.5 text-sky-400" />
-        <span className="text-slate-400">{t("tenant.label")}</span>
-        <span className="font-semibold text-slate-200">{current}</span>
+      <div className="hidden items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-foreground sm:flex">
+        <Building2 className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+        <span className="text-muted-foreground">{t("tenant.label")}</span>
+        <span className="font-semibold text-foreground">{current}</span>
       </div>
     );
   }
@@ -65,41 +65,41 @@ export function TenantSwitcher() {
       <DropdownMenuTrigger asChild>
         <Button
           variant="outline"
-          className="hidden gap-1.5 border-slate-800 bg-slate-900/60 px-2.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white sm:flex"
+          className="hidden gap-1.5 border-border bg-card px-2.5 text-xs text-foreground hover:bg-muted hover:text-foreground sm:flex"
         >
-          <Building2 className="h-3.5 w-3.5 text-sky-400" />
-          <span className="text-slate-400">{t("tenant.label")}</span>
-          <span className="font-semibold text-slate-200">{current}</span>
-          <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+          <Building2 className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+          <span className="text-muted-foreground">{t("tenant.label")}</span>
+          <span className="font-semibold text-foreground">{current}</span>
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="max-h-80 w-56 overflow-y-auto border-slate-800 bg-slate-900 text-slate-100 shadow-xl shadow-slate-950"
+        className="max-h-80 w-56 overflow-y-auto border-border bg-card text-foreground shadow-xl shadow-slate-950"
       >
-        <DropdownMenuLabel className="text-xs font-normal text-slate-400">
+        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
           {t("tenant.actIn")}
         </DropdownMenuLabel>
         <DropdownMenuItem
           onClick={() => choose(null)}
-          className="cursor-pointer text-xs text-slate-300 focus:bg-slate-800 focus:text-slate-100"
+          className="cursor-pointer text-xs text-foreground focus:bg-muted focus:text-foreground"
         >
           <Check
-            className={cn("mr-2 h-3.5 w-3.5", activeTenant ? "opacity-0" : "text-sky-400")}
+            className={cn("mr-2 h-3.5 w-3.5", activeTenant ? "opacity-0" : "text-sky-600 dark:text-sky-400")}
           />
           {fallbackLabel(isPlatformAdmin, defaultTenant, t("tenant.all"))}
         </DropdownMenuItem>
-        {tenants.length > 0 && <DropdownMenuSeparator className="bg-slate-800" />}
+        {tenants.length > 0 && <DropdownMenuSeparator className="bg-muted" />}
         {tenants.map((tenantId) => (
           <DropdownMenuItem
             key={tenantId}
             onClick={() => choose(tenantId)}
-            className="cursor-pointer text-xs text-slate-300 focus:bg-slate-800 focus:text-slate-100"
+            className="cursor-pointer text-xs text-foreground focus:bg-muted focus:text-foreground"
           >
             <Check
               className={cn(
                 "mr-2 h-3.5 w-3.5",
-                activeTenant === tenantId ? "text-sky-400" : "opacity-0",
+                activeTenant === tenantId ? "text-sky-600 dark:text-sky-400" : "opacity-0",
               )}
             />
             <span className="truncate font-mono">{tenantId}</span>

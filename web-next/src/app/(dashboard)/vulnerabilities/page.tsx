@@ -4,7 +4,6 @@ import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
-import { formatDistanceToNow, isValid, parseISO } from "date-fns";
 import { ArrowUpRight, Filter, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +16,7 @@ import {
 import { DataTable } from "@/components/data-table";
 import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
 import { useT } from "@/lib/i18n";
+import { useRelativeTime } from "@/lib/i18n/datetime";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
@@ -49,15 +49,9 @@ const FILTER_ALL = "all";
 const OPEN_WORKING_SET = "open";
 const ALL_STATES = "any";
 
-function relativeTime(value: string | null): string {
-  if (!value) return "—";
-  const parsed = parseISO(value);
-  if (!isValid(parsed)) return value;
-  return formatDistanceToNow(parsed, { addSuffix: true });
-}
-
 function VulnerabilitiesInner() {
   const t = useT();
+  const ago = useRelativeTime();
   const searchParams = useSearchParams();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
   const initialSla = (searchParams.get("sla") || "") as SlaState | "";
@@ -115,17 +109,17 @@ function VulnerabilitiesInner() {
             href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}
             className="group space-y-0.5"
           >
-            <div className="flex items-center gap-1.5 font-mono font-bold text-sky-400 group-hover:text-sky-300 group-hover:underline">
+            <div className="flex items-center gap-1.5 font-mono font-bold text-sky-600 dark:text-sky-400 group-hover:text-sky-600 dark:text-sky-300 group-hover:underline">
               <span>{findingLabel(row.original)}</span>
               <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
             </div>
-            <span className="block text-[11px] text-slate-400">
+            <span className="block text-[11px] text-muted-foreground">
               {/* A software finding has no port by construction: its locator is
                   the installed package and the version that closes it. */}
               {row.original.source === "endpoint_software"
                 ? row.original.title || "installed package"
                 : row.original.port
-                  ? `port ${row.original.port}`
+                  ? t("vulns.port", { port: row.original.port })
                   : "no port"}
               {row.original.script_id && row.original.cve ? ` · ${row.original.script_id}` : ""}
             </span>
@@ -166,13 +160,13 @@ function VulnerabilitiesInner() {
         cell: ({ row }) =>
           row.original.assignee || row.original.owner_team ? (
             <div className="space-y-0.5">
-              <p className="text-xs text-slate-200">{row.original.assignee || "—"}</p>
+              <p className="text-xs text-foreground">{row.original.assignee || "—"}</p>
               {row.original.owner_team ? (
-                <p className="text-[11px] text-slate-400">{row.original.owner_team}</p>
+                <p className="text-[11px] text-muted-foreground">{row.original.owner_team}</p>
               ) : null}
             </div>
           ) : (
-            <span className="text-xs text-slate-500">{t("common.unassigned")}</span>
+            <span className="text-xs text-muted-foreground">{t("common.unassigned")}</span>
           ),
       },
       {
@@ -182,7 +176,7 @@ function VulnerabilitiesInner() {
         cell: ({ row }) => (
           <Link
             href={assetDetailHref(row.original.asset_id, row.original.tenant_id)}
-            className="font-mono text-[11px] text-slate-300 hover:text-sky-300 hover:underline"
+            className="font-mono text-[11px] text-foreground hover:text-sky-600 dark:text-sky-300 hover:underline"
           >
             {row.original.asset_id}
           </Link>
@@ -192,7 +186,7 @@ function VulnerabilitiesInner() {
         accessorKey: "last_seen_at",
         header: t("col.lastSeen"),
         cell: ({ row }) => (
-          <span className="text-xs text-slate-400">{relativeTime(row.original.last_seen_at)}</span>
+          <span className="text-xs text-muted-foreground">{ago(row.original.last_seen_at)}</span>
         ),
       },
       {
@@ -204,27 +198,27 @@ function VulnerabilitiesInner() {
             asChild
             variant="outline"
             size="sm"
-            className="h-7 text-xs border-slate-800 bg-slate-900 text-sky-400 hover:bg-slate-800 hover:text-white"
+            className="h-7 text-xs border-border bg-card text-sky-600 dark:text-sky-400 hover:bg-muted hover:text-foreground"
           >
             <Link href={vulnDetailHref(row.original.vuln_id, row.original.tenant_id)}>{t("common.view")}</Link>
           </Button>
         ),
       },
     ],
-    [t],
+    [ago, t],
   );
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <ShieldAlert className="h-5 w-5 text-sky-400" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">
+            <ShieldAlert className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
               {t("page.vulns.title")}
             </h1>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t("page.vulns.subtitle")}
             {listQuery.isFetching ? t("common.refreshing") : ""}
             {assetId ? (
@@ -233,7 +227,7 @@ function VulnerabilitiesInner() {
                 Filtered to asset{" "}
                 <Link
                   href={assetDetailHref(assetId)}
-                  className="font-mono text-sky-400 hover:underline"
+                  className="font-mono text-sky-600 dark:text-sky-400 hover:underline"
                 >
                   {assetId}
                 </Link>
@@ -246,13 +240,13 @@ function VulnerabilitiesInner() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Open findings"
+          label={t("kpi.openFindings")}
           value={summaryQuery.isLoading ? "…" : (summary?.open_total ?? 0)}
-          hint={summary ? `${summary.untriaged} still untriaged` : undefined}
+          hint={summary ? t("vulns.hint.untriaged", { count: summary.untriaged }) : undefined}
           decorationColor="sky"
         />
         <KpiCard
-          label="Critical / high (open)"
+          label={t("kpi.critHighOpen")}
           value={
             summaryQuery.isLoading
               ? "…"
@@ -260,25 +254,30 @@ function VulnerabilitiesInner() {
           }
           hint={
             summary
-              ? `${summary.by_severity_open.critical ?? 0} critical · ${summary.by_severity_open.high ?? 0} high`
+              ? t("vulns.hint.critHigh", {
+                  critical: summary.by_severity_open.critical ?? 0,
+                  high: summary.by_severity_open.high ?? 0,
+                })
               : undefined
           }
           decorationColor="orange"
         />
         <KpiCard
-          label="SLA breached"
+          label={t("kpi.slaBreached")}
           value={summaryQuery.isLoading ? "…" : (summary?.breached ?? 0)}
           hint={
             summary?.worst_breached_severity
-              ? `worst open: ${summary.worst_breached_severity}`
-              : "no open breaches"
+              ? t("vulns.hint.worstOpen", {
+                  severity: t.label(summary.worst_breached_severity),
+                })
+              : t("vulns.hint.noBreaches")
           }
           decorationColor="rose"
         />
         <KpiCard
-          label="Due soon"
+          label={t("kpi.dueSoon")}
           value={summaryQuery.isLoading ? "…" : (summary?.by_sla.due_soon ?? 0)}
-          hint="within 7 days"
+          hint={t("vulns.hint.withinSeven")}
           decorationColor="amber"
         />
       </div>
@@ -289,10 +288,10 @@ function VulnerabilitiesInner() {
         isLoading={listQuery.isLoading}
         error={listQuery.error}
         initialSorting={[{ id: "contextual_score", desc: true }]}
-        searchPlaceholder="Filter by CVE, script, asset or assignee…"
+        searchPlaceholder={t("search.vulns")}
         toolbar={
           <div className="flex flex-wrap items-center gap-2">
-            <Filter className="h-4 w-4 text-slate-400" />
+            <Filter className="h-4 w-4 text-muted-foreground" />
             <Select
               value={scope}
               onValueChange={(value) => {
@@ -301,12 +300,12 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
+              <SelectTrigger className="w-auto min-w-[10rem]">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={OPEN_WORKING_SET}>Open only</SelectItem>
-                <SelectItem value="all">All findings</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={OPEN_WORKING_SET}>{t("vulns.filter.openOnly")}</SelectItem>
+                <SelectItem value="all">{t("ui.allFindings")}</SelectItem>
               </SelectContent>
             </Select>
             <Select
@@ -316,11 +315,11 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-44 bg-slate-900 border-slate-800 text-slate-200">
-                <SelectValue placeholder="Any state" />
+              <SelectTrigger className="w-auto min-w-[11rem]">
+                <SelectValue placeholder={t("select.anyState")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={ALL_STATES}>Any state</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={ALL_STATES}>{t("vulns.filter.anyState")}</SelectItem>
                 {VULN_STATES.map((item) => (
                   <SelectItem key={item} value={item}>
                     {VULN_LIFECYCLE_STATUS[item].label}
@@ -335,10 +334,10 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-44 bg-slate-900 border-slate-800 text-slate-200">
+              <SelectTrigger className="w-auto min-w-[11rem]">
                 <SelectValue placeholder={t("vuln.source")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+              <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>{t("vuln.source.any")}</SelectItem>
                 <SelectItem value="scan">{t("vuln.source.scan")}</SelectItem>
                 <SelectItem value="endpoint_software">
@@ -353,10 +352,10 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-44 bg-slate-900 border-slate-800 text-slate-200" aria-label={t("vuln.exposure")}>
+              <SelectTrigger className="w-auto min-w-[11rem]" aria-label={t("vuln.exposure")}>
                 <SelectValue placeholder={t("vuln.exposure")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+              <SelectContent className="bg-card border-border text-foreground">
                 <SelectItem value={FILTER_ALL}>{t("vuln.exposure.any")}</SelectItem>
                 <SelectItem value="external">{t("vuln.exposure.external")}</SelectItem>
                 <SelectItem value="internal">{t("vuln.exposure.internal")}</SelectItem>
@@ -370,11 +369,11 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-36 bg-slate-900 border-slate-800 text-slate-200">
-                <SelectValue placeholder="Severity" />
+              <SelectTrigger className="w-auto min-w-[9rem]">
+                <SelectValue placeholder={t("select.severity")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={FILTER_ALL}>Any severity</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySeverity")}</SelectItem>
                 {SEVERITIES.map((item) => (
                   <SelectItem key={item} value={item}>
                     {item}
@@ -389,11 +388,11 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
-                <SelectValue placeholder="SLA" />
+              <SelectTrigger className="w-auto min-w-[10rem]">
+                <SelectValue placeholder={t("select.sla")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={FILTER_ALL}>Any SLA</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anySla")}</SelectItem>
                 {SLA_STATES.map((item) => (
                   <SelectItem key={item} value={item}>
                     {item.replace("_", " ")}
@@ -408,11 +407,11 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
-                <SelectValue placeholder="Owner" />
+              <SelectTrigger className="w-auto min-w-[10rem]">
+                <SelectValue placeholder={t("select.owner")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={FILTER_ALL}>Any owner</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyOwner")}</SelectItem>
                 <SelectItem value="unassigned">{t("common.unassigned")}</SelectItem>
               </SelectContent>
             </Select>
@@ -423,11 +422,11 @@ function VulnerabilitiesInner() {
                 pagination.reset();
               }}
             >
-              <SelectTrigger className="w-40 bg-slate-900 border-slate-800 text-slate-200">
-                <SelectValue placeholder="Stale" />
+              <SelectTrigger className="w-auto min-w-[10rem]">
+                <SelectValue placeholder={t("select.stale")} />
               </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
-                <SelectItem value={FILTER_ALL}>Any recency</SelectItem>
+              <SelectContent className="bg-card border-border text-foreground">
+                <SelectItem value={FILTER_ALL}>{t("vulns.filter.anyRecency")}</SelectItem>
                 <SelectItem value="14">Stale 14+ days</SelectItem>
                 <SelectItem value="30">Stale 30+ days</SelectItem>
                 <SelectItem value="90">Stale 90+ days</SelectItem>
@@ -435,9 +434,9 @@ function VulnerabilitiesInner() {
             </Select>
           </div>
         }
-        meta={`${total.toLocaleString()} finding${total === 1 ? "" : "s"}`}
-        loadingMessage="Retrieving tracked vulnerabilities…"
-        emptyMessage="No tracked findings match these filters. Findings appear here after a scan observes them against an asset."
+        meta={t("vulns.meta", { count: total.toLocaleString() })}
+        loadingMessage={t("loading.trackedVulns")}
+        emptyMessage={t("empty.trackedFindings")}
         selection={{
           rowId: (row) => row.vuln_id,
           selected,
@@ -480,7 +479,7 @@ function VulnerabilitiesInner() {
 
 export default function VulnerabilitiesPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-slate-400">Loading Vulnerability Center…</p>}>
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading Vulnerability Center…</p>}>
       <VulnerabilitiesInner />
     </Suspense>
   );

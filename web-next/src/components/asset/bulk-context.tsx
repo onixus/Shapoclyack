@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -44,7 +45,7 @@ const ENVIRONMENTS: readonly AssetEnvironment[] = [
 const EXPOSURES: readonly AssetExposureLevel[] = ["internet", "partner", "internal", "unknown"];
 
 const BUTTON_CLASS =
-  "h-7 text-xs border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 hover:text-white";
+  "h-7 text-xs border-border bg-card text-foreground hover:bg-muted hover:text-foreground";
 
 export function AssetBulkContext({
   ids,
@@ -54,6 +55,7 @@ export function AssetBulkContext({
   /** Given the ids that failed, so the page can leave them selected. */
   onApplied: (remaining: string[], report: BulkActionReport) => void;
 }) {
+  const t = useT();
   const bulk = useBulkAssetAction();
   const [open, setOpen] = useState(false);
   const [ownerEmail, setOwnerEmail] = useState("");
@@ -98,10 +100,10 @@ export function AssetBulkContext({
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100">
+        <DialogContent className="bg-card border-border text-foreground">
           <DialogHeader>
-            <DialogTitle className="text-slate-100">Set asset context</DialogTitle>
-            <DialogDescription className="text-xs text-slate-400">
+            <DialogTitle className="text-foreground">{t("ui.setAssetContext")}</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
               {ids.length} asset{ids.length === 1 ? "" : "s"} selected. Blank fields are left
               untouched on every one of them.
             </DialogDescription>
@@ -109,7 +111,7 @@ export function AssetBulkContext({
 
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="bulk-owner-email" className="text-xs text-slate-300">
+              <Label htmlFor="bulk-owner-email" className="text-xs text-foreground">
                 Owner email
               </Label>
               <Input
@@ -120,7 +122,7 @@ export function AssetBulkContext({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="bulk-business-unit" className="text-xs text-slate-300">
+              <Label htmlFor="bulk-business-unit" className="text-xs text-foreground">
                 Business unit
               </Label>
               <Input
@@ -131,7 +133,7 @@ export function AssetBulkContext({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="bulk-criticality" className="text-xs text-slate-300">
+              <Label htmlFor="bulk-criticality" className="text-xs text-foreground">
                 Criticality (0–4)
               </Label>
               <Input
@@ -144,7 +146,7 @@ export function AssetBulkContext({
               />
             </div>
             <div className="space-y-1.5">
-              <span className="text-xs text-slate-300">Environment</span>
+              <span className="text-xs text-foreground">{t("ui.environment")}</span>
               <div className="flex flex-wrap gap-1.5">
                 {ENVIRONMENTS.map((value) => (
                   <Button
@@ -161,7 +163,7 @@ export function AssetBulkContext({
               </div>
             </div>
             <div className="space-y-1.5">
-              <span className="text-xs text-slate-300">Exposure</span>
+              <span className="text-xs text-foreground">{t("ui.exposure")}</span>
               <div className="flex flex-wrap gap-1.5">
                 {EXPOSURES.map((value) => (
                   <Button
@@ -186,7 +188,7 @@ export function AssetBulkContext({
               onClick={() => setOpen(false)}
               disabled={bulk.isPending}
             >
-              Cancel
+              {t("ui.cancel")}
             </Button>
             <Button size="sm" disabled={bulk.isPending || !filled} onClick={apply}>
               {bulk.isPending ? "Applying…" : `Apply to ${ids.length}`}

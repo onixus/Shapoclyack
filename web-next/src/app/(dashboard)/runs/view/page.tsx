@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useT } from "@/lib/i18n";
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -23,7 +24,7 @@ import { formatLocation } from "@/lib/run-data";
 export default function RunDetailPage() {
   return (
     <Suspense fallback={
-      <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+      <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
         <span className="text-sm">Loading run telemetry…</span>
       </div>
@@ -34,17 +35,19 @@ export default function RunDetailPage() {
 }
 
 function BackToRuns() {
+  const t = useT();
   return (
-    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-slate-400 hover:text-slate-100 hover:bg-transparent">
+    <Button asChild variant="ghost" size="sm" className="gap-2 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent">
       <Link href="/runs">
         <ArrowLeft className="h-4 w-4" />
-        Back to Runs Catalog
+        {t("prose.backToRunsCatalog")}
       </Link>
     </Button>
   );
 }
 
 function RunDetailInner() {
+  const t = useT();
   const searchParams = useSearchParams();
   const runId = (searchParams.get("runId") || "").trim();
   const initialTab = searchParams.get("tab") || "vulns";
@@ -56,8 +59,8 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
-          <AlertDescription>Missing runId query parameter.</AlertDescription>
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
+          <AlertDescription>{t("ui.missingRunidQueryParameter")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -67,7 +70,7 @@ function RunDetailInner() {
     return (
       <div className="space-y-4">
         <BackToRuns />
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>
             {report.error instanceof Error ? report.error.message : "Failed to load run"}
           </AlertDescription>
@@ -78,7 +81,7 @@ function RunDetailInner() {
 
   if (report.isLoading || !report.detail) {
     return (
-      <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+      <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
         <span className="text-sm">Retrieving run telemetry artifacts…</span>
       </div>
@@ -87,12 +90,12 @@ function RunDetailInner() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2 border-b border-slate-800/80 pb-4">
+      <div className="space-y-2 border-b border-border pb-4">
         <BackToRuns />
-        <h1 className="text-2xl font-extrabold tracking-tight text-slate-100 font-mono">
-          Run <span className="text-sky-400">{report.detail.run_id}</span>
+        <h1 className="text-2xl font-extrabold tracking-tight text-foreground font-mono">
+          Run <span className="text-sky-600 dark:text-sky-400">{report.detail.run_id}</span>
         </h1>
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-muted-foreground">
           Explored hosts, open ports, and security findings for this execution.
           {(filters.host || filters.port) && (
             <>
@@ -101,7 +104,7 @@ function RunDetailInner() {
               {filters.host ? ` · host ${filters.host}` : ""}
               {filters.port ? ` · port ${filters.port}` : ""}
               {report.isFilterFetching ? " · updating…" : ""}.{" "}
-              <button type="button" className="text-sky-400 hover:text-sky-300 font-semibold underline" onClick={report.clearFilters}>
+              <button type="button" className="text-sky-600 dark:text-sky-400 hover:text-sky-600 dark:text-sky-300 font-semibold underline" onClick={report.clearFilters}>
                 Clear Filter
               </button>
             </>
@@ -126,15 +129,15 @@ function RunDetailInner() {
       />
 
       <Tabs defaultValue={initialTab} className="space-y-4">
-        <TabsList className="bg-slate-900 border border-slate-800 p-1">
-          <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
-          <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
-          <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
-          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Controls</TabsTrigger>
-          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Org Profile</TabsTrigger>
-          <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
+        <TabsList className="bg-card border border-border p-1">
+          <TabsTrigger value="vulns" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Findings ({report.vulns.length})</TabsTrigger>
+          <TabsTrigger value="hosts" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Hosts ({report.hosts.length})</TabsTrigger>
+          <TabsTrigger value="ports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Ports ({report.ports.length})</TabsTrigger>
+          <TabsTrigger value="controls" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.controls")}</TabsTrigger>
+          <TabsTrigger value="org-profile" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">{t("ui.orgProfile")}</TabsTrigger>
+          <TabsTrigger value="reports" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">Artifacts ({report.detail.artifacts.length})</TabsTrigger>
           {canOperate ? (
-            <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-300">
+            <TabsTrigger value="screenshots" className="text-xs font-semibold data-[state=active]:bg-sky-500/20 data-[state=active]:text-sky-600 dark:text-sky-300">
               Screenshots
             </TabsTrigger>
           ) : null}
@@ -164,15 +167,15 @@ function RunDetailInner() {
             }))}
             activeKey={filters.host}
             onSelect={report.toggleHost}
-            emptyMessage="No alive hosts recorded for this run."
+            emptyMessage={t("empty.aliveHosts")}
           />
           {report.hosts.some((h) => h.country || h.city) ? (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted-foreground">
               <a
                 href="https://db-ip.com"
                 target="_blank"
                 rel="noreferrer"
-                className="underline-offset-2 hover:underline hover:text-slate-400"
+                className="underline-offset-2 hover:underline hover:text-muted-foreground"
               >
                 IP Geolocation by DB-IP
               </a>
@@ -189,11 +192,11 @@ function RunDetailInner() {
               subtitle: `${row.host_count} hosts${
                 row.vulnerability_count ? ` · ${row.vulnerability_count} vulns` : ""
               }`,
-              meta: <span className="font-mono font-bold text-slate-200">{row.host_count}</span>,
+              meta: <span className="font-mono font-bold text-foreground">{row.host_count}</span>,
             }))}
             activeKey={filters.port}
             onSelect={report.togglePort}
-            emptyMessage="No open ports recorded for this run."
+            emptyMessage={t("empty.openPorts")}
           />
         </TabsContent>
 

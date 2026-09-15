@@ -26,7 +26,7 @@ export function AppearanceControls({ className }: { className?: string }) {
         type="button"
         variant="outline"
         size="icon"
-        className="h-9 w-9 border-slate-800 bg-slate-900/90 text-slate-200 hover:bg-slate-800 hover:text-white"
+        className="h-9 w-9 border-border bg-card text-foreground hover:bg-muted hover:text-foreground"
         aria-label={theme === "dark" ? t("appearance.light") : t("appearance.dark")}
         title={t("appearance.theme")}
         onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -40,7 +40,7 @@ export function AppearanceControls({ className }: { className?: string }) {
             type="button"
             variant="outline"
             size="icon"
-            className="h-9 w-9 border-slate-800 bg-slate-900/90 text-slate-200 hover:bg-slate-800 hover:text-white"
+            className="h-9 w-9 border-border bg-card text-foreground hover:bg-muted hover:text-foreground"
             aria-label={t("appearance.language")}
             title={t("appearance.language")}
           >
@@ -49,19 +49,19 @@ export function AppearanceControls({ className }: { className?: string }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="end"
-          className="w-40 border-slate-800 bg-slate-900 text-slate-100"
+          className="w-40 border-border bg-card text-foreground"
         >
-          <DropdownMenuLabel className="text-xs font-normal text-slate-400">
+          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
             {t("appearance.language")}
           </DropdownMenuLabel>
           <DropdownMenuItem
-            className={cn("cursor-pointer text-xs", locale === "en" && "text-sky-300")}
+            className={cn("cursor-pointer text-xs", locale === "en" && "text-sky-600 dark:text-sky-300")}
             onClick={() => setLocale("en")}
           >
             {t("appearance.english")}
           </DropdownMenuItem>
           <DropdownMenuItem
-            className={cn("cursor-pointer text-xs", locale === "ru" && "text-sky-300")}
+            className={cn("cursor-pointer text-xs", locale === "ru" && "text-sky-600 dark:text-sky-300")}
             onClick={() => setLocale("ru")}
           >
             {t("appearance.russian")}

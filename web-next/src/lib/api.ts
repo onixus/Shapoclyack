@@ -699,7 +699,13 @@ export type AssetSummary = {
   status: AssetStatus;
   first_seen: string;
   last_seen: string;
+  /** What to call this asset in a list: the domain name where it has one,
+   * otherwise the address. The API decides, so every list agrees. */
   primary_identifier: string | null;
+  /** The two components behind that choice, so a row can show the name and the
+   * address together. Absent from an API older than this field. */
+  primary_fqdn?: string | null;
+  primary_ip?: string | null;
   identifier_count: number;
   asset_criticality: number | null;
   owner_email: string | null;

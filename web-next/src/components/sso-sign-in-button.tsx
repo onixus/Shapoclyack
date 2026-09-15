@@ -41,7 +41,7 @@ export function SsoSignInButton({ status: given }: { status?: SsoStatus | null }
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-slate-500">
+      <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-muted-foreground">
         <span className="h-px flex-1 bg-slate-700" />
         {t("login.or")}
         <span className="h-px flex-1 bg-slate-700" />
@@ -49,7 +49,7 @@ export function SsoSignInButton({ status: given }: { status?: SsoStatus | null }
       <Button
         type="button"
         variant="outline"
-        className="w-full border-slate-700 bg-slate-950 text-slate-100"
+        className="w-full border-border bg-muted text-foreground"
         // A full navigation, not a fetch: the provider answers with its own
         // login page, and an XHR cannot show it to the user.
         onClick={() => {

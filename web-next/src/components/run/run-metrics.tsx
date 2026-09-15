@@ -1,4 +1,5 @@
 import { KpiCard } from "@/components/kpi-card";
+import { useT } from "@/lib/i18n";
 import type { AliveHost, PortAggregate } from "@/lib/api";
 
 export function RunMetrics({
@@ -12,6 +13,7 @@ export function RunMetrics({
   ports: PortAggregate[];
   vulnCount: number;
 }) {
+  const t = useT();
   const aliveHosts = summary.alive_hosts as number | undefined;
   const openPairs = summary.open_host_port_pairs as number | undefined;
   const totalVulns = summary.potential_vulnerabilities as number | undefined;
@@ -31,17 +33,17 @@ export function RunMetrics({
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <KpiCard
-        label="Alive hosts"
+        label={t("kpi.aliveHosts")}
         value={aliveHosts ?? hosts.length}
         hint={hosts.some((h) => h.country || h.city) ? "GeoIP available" : undefined}
       />
       <KpiCard
-        label="Open ports"
+        label={t("kpi.openPorts")}
         value={openPairs ?? ports.reduce((n, p) => n + p.host_count, 0)}
-        hint={`${ports.length} distinct`}
+        hint={t("hint.distinct", { count: ports.length })}
       />
-      <KpiCard label="Vulnerabilities" value={totalVulns ?? vulnCount} hint={vulnHint} />
-      <KpiCard label="OS detected" value={osDetected ?? "—"} />
+      <KpiCard label={t("kpi.vulnerabilities")} value={totalVulns ?? vulnCount} hint={vulnHint} />
+      <KpiCard label={t("kpi.osDetected")} value={osDetected ?? "—"} />
     </div>
   );
 }

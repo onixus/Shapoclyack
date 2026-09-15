@@ -234,7 +234,15 @@ class AssetSummary(BaseModel):
     status: str
     first_seen: datetime
     last_seen: datetime
+    # What to call this asset in a list. The domain name where it has one,
+    # because that is what an operator recognises -- "www.example.com" says
+    # which service is at risk, where "203.0.113.10" is a lookup they have to
+    # perform themselves. Falls back to the IP, then to any identifier at all.
     primary_identifier: str | None = None
+    # The two components behind the choice, so a console can show the name and
+    # the address together without a second request.
+    primary_fqdn: str | None = None
+    primary_ip: str | None = None
     identifier_count: int = 0
     asset_criticality: int | None = None
     owner_email: str | None = None

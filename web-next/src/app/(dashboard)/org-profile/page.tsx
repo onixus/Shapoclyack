@@ -24,7 +24,7 @@ export default function OrgProfilePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center py-16 gap-2 text-slate-400">
+        <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
           <span className="text-sm">Loading organization profile…</span>
         </div>
@@ -53,22 +53,22 @@ function OrgProfileInner() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">
+          <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
             {t("page.orgProfile.title")}
           </h1>
-          <p className="mt-1 text-xs text-slate-400">{t("page.orgProfile.subtitle")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("page.orgProfile.subtitle")}</p>
         </div>
 
         {runs.length > 0 ? (
           <div className="flex items-end gap-3">
-            <label className="text-xs text-slate-400">
+            <label className="text-xs text-muted-foreground">
               <span className="mb-1 block font-semibold uppercase tracking-wider">
                 {t("page.orgProfile.runPicker")}
               </span>
               <select
-                className="rounded-md border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-200"
+                className="rounded-md border border-border bg-card px-2 py-1.5 font-mono text-xs text-foreground"
                 value={runId}
                 // The run stays in the URL, so the view is shareable and
                 // survives a reload.
@@ -84,7 +84,7 @@ function OrgProfileInner() {
             {runId ? (
               <Link
                 href={runDetailHref(runId)}
-                className="inline-flex items-center gap-1 pb-2 font-mono text-xs text-sky-400 hover:underline"
+                className="inline-flex items-center gap-1 pb-2 font-mono text-xs text-sky-600 dark:text-sky-400 hover:underline"
               >
                 open run
                 <ArrowUpRight className="h-3 w-3" />
@@ -95,14 +95,14 @@ function OrgProfileInner() {
       </div>
 
       {!isLoading && !runId ? (
-        <Alert className="border-slate-800 bg-slate-900/60 text-slate-300">
+        <Alert className="border-border bg-card text-foreground">
           <AlertDescription>{t("page.orgProfile.noRuns")}</AlertDescription>
         </Alert>
       ) : null}
 
       {runId ? (
         <>
-          <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             {t("page.orgProfile.disclaimer")}
           </p>

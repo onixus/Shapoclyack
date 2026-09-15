@@ -52,14 +52,14 @@ export default function GeoPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 shadow-md">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-md">
             <Globe2 className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-100">{t("page.geo.title")}</h1>
-            <p className="text-xs text-slate-400">
+            <h1 className="text-2xl font-extrabold tracking-tight text-foreground">{t("page.geo.title")}</h1>
+            <p className="text-xs text-muted-foreground">
               {t("page.geo.subtitle")}
             </p>
           </div>
@@ -72,10 +72,10 @@ export default function GeoPage() {
             setSelectedLocation(null);
           }}
         >
-          <SelectTrigger className="w-72 border-slate-800 bg-slate-900 text-slate-200">
+          <SelectTrigger className="w-72 border-border bg-card text-foreground">
             <SelectValue placeholder={t("page.geo.selectRun")} />
           </SelectTrigger>
-          <SelectContent className="border-slate-800 bg-slate-900 text-slate-200">
+          <SelectContent className="border-border bg-card text-foreground">
             {runs.map((run) => (
               <SelectItem key={run.run_id} value={run.run_id} className="font-mono text-xs">
                 {run.run_id}
@@ -86,20 +86,20 @@ export default function GeoPage() {
       </div>
 
       {error ? (
-        <Alert variant="destructive" className="border-rose-500/40 bg-rose-950/40 text-rose-200">
+        <Alert variant="destructive" className="border-rose-500/40 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200">
           <AlertDescription>{(error as Error).message}</AlertDescription>
         </Alert>
       ) : null}
 
       {!runId && !isLoading ? (
-        <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 p-8 text-center backdrop-blur">
-          <p className="text-sm font-semibold text-slate-300">{t("page.geo.noRuns")}</p>
-          <p className="mt-1 text-xs text-slate-400">
+        <div className="rounded-xl border border-border bg-card p-8 text-center backdrop-blur">
+          <p className="text-sm font-semibold text-foreground">{t("page.geo.noRuns")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
             {t("page.geo.noRunsBody")}
           </p>
         </div>
       ) : isLoading ? (
-        <div className="flex items-center justify-center gap-2 py-16 text-slate-400">
+        <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
           <span className="text-sm">{t("loading.geo")}</span>
         </div>
@@ -127,7 +127,7 @@ export default function GeoPage() {
           </div>
 
           {hostsTruncated || findingsTruncated ? (
-            <Alert className="border-amber-500/40 bg-amber-950/30 text-amber-200">
+            <Alert className="border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200">
               <AlertDescription className="text-xs">
                 This run is larger than one page of the run API.{" "}
                 {hostsTruncated
@@ -142,7 +142,7 @@ export default function GeoPage() {
           ) : null}
 
           {geo.countryPrecisionHostCount > 0 ? (
-            <Alert className="border-slate-700 bg-slate-900/60 text-slate-300">
+            <Alert className="border-border bg-card text-foreground">
               <AlertDescription className="text-xs">
                 {geo.countryPrecisionHostCount} host
                 {geo.countryPrecisionHostCount === 1 ? " is" : "s are"} plotted at a country
@@ -161,14 +161,14 @@ export default function GeoPage() {
             />
 
             <div className="space-y-3">
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
-                <div className="border-b border-slate-800/80 px-4 py-3">
-                  <h2 className="text-sm font-semibold text-slate-200">{t("page.geo.locations")}</h2>
-                  <p className="text-xs text-slate-500">{t("page.geo.locationsHint")}</p>
+              <div className="rounded-xl border border-border bg-card">
+                <div className="border-b border-border px-4 py-3">
+                  <h2 className="text-sm font-semibold text-foreground">{t("page.geo.locations")}</h2>
+                  <p className="text-xs text-muted-foreground">{t("page.geo.locationsHint")}</p>
                 </div>
                 <ul className="max-h-72 overflow-y-auto">
                   {geo.locations.length === 0 ? (
-                    <li className="px-4 py-6 text-center text-xs text-slate-500">
+                    <li className="px-4 py-6 text-center text-xs text-muted-foreground">
                       {t("page.geo.noGeo")}
                     </li>
                   ) : (
@@ -182,8 +182,8 @@ export default function GeoPage() {
                             )
                           }
                           className={cn(
-                            "flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-xs transition-colors hover:bg-slate-800/60",
-                            location.key === selectedLocation && "bg-slate-800/80",
+                            "flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-xs transition-colors hover:bg-muted",
+                            location.key === selectedLocation && "bg-muted",
                           )}
                         >
                           <span className="flex min-w-0 items-center gap-2">
@@ -191,14 +191,14 @@ export default function GeoPage() {
                               className="h-2.5 w-2.5 shrink-0 rounded-full"
                               style={{ backgroundColor: STATE_FILL[location.state] }}
                             />
-                            <span className="truncate text-slate-200">{location.label}</span>
+                            <span className="truncate text-foreground">{location.label}</span>
                             {location.precision === "country" ? (
-                              <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
+                              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
                                 country
                               </span>
                             ) : null}
                           </span>
-                          <span className="shrink-0 font-mono text-slate-400">
+                          <span className="shrink-0 font-mono text-muted-foreground">
                             {location.hostCount}
                           </span>
                         </button>
@@ -208,12 +208,12 @@ export default function GeoPage() {
                 </ul>
               </div>
 
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
-                <div className="border-b border-slate-800/80 px-4 py-3">
-                  <h2 className="text-sm font-semibold text-slate-200">
+              <div className="rounded-xl border border-border bg-card">
+                <div className="border-b border-border px-4 py-3">
+                  <h2 className="text-sm font-semibold text-foreground">
                     {selected ? selected.label : t("geo.hostsTitle")}
                   </h2>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-muted-foreground">
                     {selected
                       ? `${selected.hostCount === 1 ? t("geo.hostOne", { count: selected.hostCount }) : t("geo.hosts", { count: selected.hostCount })} · ${selected.findingCount === 1 ? t("geo.findingOne", { count: selected.findingCount }) : t("geo.findings", { count: selected.findingCount })}`
                       : t("page.geo.selectLocation")}
@@ -226,14 +226,14 @@ export default function GeoPage() {
                       className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
                     >
                       <span className="min-w-0">
-                        <span className="block truncate font-mono text-slate-200">{host.host}</span>
+                        <span className="block truncate font-mono text-foreground">{host.host}</span>
                         {host.hostname ? (
-                          <span className="block truncate text-slate-500">{host.hostname}</span>
+                          <span className="block truncate text-muted-foreground">{host.hostname}</span>
                         ) : null}
                       </span>
                       <Badge
                         variant="outline"
-                        className="shrink-0 border-slate-700 text-[10px] text-slate-300"
+                        className="shrink-0 border-border text-[10px] text-foreground"
                       >
                         {t.label(STATE_LABEL[host.state])}
                         {host.findingCount > 0 ? ` · ${host.findingCount}` : ""}
@@ -241,7 +241,7 @@ export default function GeoPage() {
                     </li>
                   ))}
                   {selected && selected.hosts.length === 0 ? (
-                    <li className="px-4 py-6 text-center text-xs text-slate-500">{t("geo.noHosts")}</li>
+                    <li className="px-4 py-6 text-center text-xs text-muted-foreground">{t("geo.noHosts")}</li>
                   ) : null}
                 </ul>
               </div>
@@ -249,12 +249,12 @@ export default function GeoPage() {
           </div>
 
           {geo.unlocated.length > 0 ? (
-            <div className="rounded-xl border border-slate-800/80 bg-slate-900/60">
-              <div className="border-b border-slate-800/80 px-4 py-3">
-                <h2 className="text-sm font-semibold text-slate-200">
+            <div className="rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-3">
+                <h2 className="text-sm font-semibold text-foreground">
                   {t("page.geo.unlocatedTitle", { count: geo.unlocated.length })}
                 </h2>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-muted-foreground">
                   {t("page.geo.unlocatedHint")}
                 </p>
               </div>
@@ -262,11 +262,11 @@ export default function GeoPage() {
                 {geo.unlocated.map((host) => (
                   <li
                     key={host.host}
-                    className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1 font-mono text-[11px] text-slate-300"
+                    className="rounded border border-border bg-muted px-2 py-1 font-mono text-[11px] text-foreground"
                   >
                     {host.host}
                     {host.findingCount > 0 ? (
-                      <span className="ml-1.5 text-rose-400">{host.findingCount}</span>
+                      <span className="ml-1.5 text-rose-600 dark:text-rose-400">{host.findingCount}</span>
                     ) : null}
                   </li>
                 ))}

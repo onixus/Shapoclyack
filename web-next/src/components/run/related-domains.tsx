@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
@@ -49,11 +50,12 @@ function CandidateRow({
   isPromoting: boolean;
   canOperate: boolean;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const isConfirmed = candidate.status === "confirmed";
 
   return (
-    <div className="border-b border-slate-800/60 last:border-0 hover:bg-slate-900/40 transition-colors">
+    <div className="border-b border-border last:border-0 hover:bg-card transition-colors">
       <div
         className="flex flex-col sm:flex-row sm:items-center justify-between p-4 gap-3 cursor-pointer"
         onClick={() => setExpanded(!expanded)}
@@ -62,7 +64,7 @@ function CandidateRow({
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 w-6 p-0 text-slate-400 hover:text-slate-100 shrink-0 mt-0.5 sm:mt-0"
+            className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground shrink-0 mt-0.5 sm:mt-0"
             onClick={(e) => {
               e.stopPropagation();
               setExpanded(!expanded);
@@ -73,34 +75,34 @@ function CandidateRow({
 
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-slate-100 text-sm font-mono">{candidate.domain}</span>
+              <span className="font-semibold text-foreground text-sm font-mono">{candidate.domain}</span>
               {isConfirmed ? (
-                <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 gap-1 font-mono text-[11px]">
+                <Badge className="bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40 gap-1 font-mono text-[11px]">
                   <CheckCircle2 className="h-3 w-3" />
                   CONFIRMED
                 </Badge>
               ) : (
-                <Badge variant="outline" className="text-slate-400 border-slate-700 bg-slate-800/40 gap-1 font-mono text-[11px]">
+                <Badge variant="outline" className="text-muted-foreground border-border bg-muted gap-1 font-mono text-[11px]">
                   <HelpCircle className="h-3 w-3" />
                   CANDIDATE
                 </Badge>
               )}
-              <Badge variant="outline" className="text-[11px] border-slate-700 text-sky-400 font-mono">
+              <Badge variant="outline" className="text-[11px] border-border text-sky-600 dark:text-sky-400 font-mono">
                 {Math.round(candidate.confidence * 100)}% confidence
               </Badge>
               {isPromoted && (
-                <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/40 text-[11px] font-mono">
+                <Badge className="bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/40 text-[11px] font-mono">
                   PROMOTED
                 </Badge>
               )}
             </div>
 
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <span className="text-slate-500 text-xs">Sources:</span>
+              <span className="text-muted-foreground text-xs">Sources:</span>
               {candidate.sources.map((s) => (
                 <span
                   key={s}
-                  className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300 border border-slate-700"
+                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground border border-border"
                 >
                   {s}
                 </span>
@@ -121,7 +123,7 @@ function CandidateRow({
                   : "Add to the targets of every later scan of this tenant (starts nothing)"
               }
               className={`h-7 text-xs font-mono gap-1.5 ${
-                isPromoted ? "hover:border-rose-500 hover:text-rose-300" : "hover:border-sky-500 hover:text-sky-300"
+                isPromoted ? "hover:border-rose-500 hover:text-rose-600 dark:text-rose-300" : "hover:border-sky-500 hover:text-sky-600 dark:text-sky-300"
               }`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -131,12 +133,12 @@ function CandidateRow({
             >
               {isPromoted ? (
                 <>
-                  <MinusCircle className="h-3.5 w-3.5 text-rose-400" />
-                  Withdraw from Scope
+                  <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
+                  {t("prose.withdrawFromScope")}
                 </>
               ) : (
                 <>
-                  <PlusCircle className="h-3.5 w-3.5 text-sky-400" />
+                  <PlusCircle className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
                   Promote to Scope
                 </>
               )}
@@ -146,18 +148,18 @@ function CandidateRow({
       </div>
 
       {expanded && (
-        <div className="px-6 pb-4 pt-2 bg-slate-950/40 space-y-2.5 text-xs border-t border-slate-800/40">
-          <span className="font-semibold text-slate-300 block">Attribution Evidence Trail:</span>
+        <div className="px-6 pb-4 pt-2 bg-muted space-y-2.5 text-xs border-t border-border">
+          <span className="font-semibold text-foreground block">Attribution Evidence Trail:</span>
           <div className="space-y-1.5">
             {candidate.evidence?.map((ev, i) => (
               <div
                 key={i}
-                className="flex items-start gap-2 bg-slate-900/60 p-2 rounded border border-slate-800 font-mono text-xs"
+                className="flex items-start gap-2 bg-card p-2 rounded border border-border font-mono text-xs"
               >
-                <Badge variant="outline" className="text-[10px] uppercase border-slate-700 py-0 px-1 shrink-0 text-slate-300">
+                <Badge variant="outline" className="text-[10px] uppercase border-border py-0 px-1 shrink-0 text-foreground">
                   {ev.source}
                 </Badge>
-                <span className="text-slate-300 grow">{ev.detail}</span>
+                <span className="text-foreground grow">{ev.detail}</span>
               </div>
             ))}
           </div>
@@ -168,6 +170,7 @@ function CandidateRow({
 }
 
 export function RelatedDomainsPanel({ runId }: { runId: string }) {
+  const t = useT();
   const user = useAuthStore((s) => s.user);
   // Promoting a related domain is a tenant-scoped write, so the rank that
   // decides is the one held in this tenant, not the account's (#318).
@@ -202,9 +205,9 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
 
   if (isLoading) {
     return (
-      <Card className="border-slate-800 bg-slate-900/60">
-        <CardContent className="py-8 text-center text-slate-400 text-xs">
-          Loading organization profile and related domains…
+      <Card className="border-border bg-card">
+        <CardContent className="py-8 text-center text-muted-foreground text-xs">
+          {t("prose.loadingOrganizationProfileAndRelated")}
         </CardContent>
       </Card>
     );
@@ -212,10 +215,10 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
 
   if (error || !data) {
     return (
-      <Card className="border-slate-800 bg-slate-900/60">
-        <CardContent className="py-8 text-center text-slate-400 text-xs">
-          <HelpCircle className="h-8 w-8 text-slate-500 mx-auto mb-2" />
-          Organization profile telemetry is not available for this run.
+      <Card className="border-border bg-card">
+        <CardContent className="py-8 text-center text-muted-foreground text-xs">
+          <HelpCircle className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+          {t("prose.organizationProfileTelemetryIsNot")}
         </CardContent>
       </Card>
     );
@@ -243,23 +246,23 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
   return (
     <div className="space-y-6">
       {/* Registrant / Ownership Overview Card */}
-      <div className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-lg backdrop-blur space-y-4">
+      <div className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur space-y-4">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-sky-400" />
-              <h2 className="text-base font-bold text-slate-100">
+              <Building2 className="h-5 w-5 text-sky-600 dark:text-sky-400" />
+              <h2 className="text-base font-bold text-foreground">
                 {primaryOwner?.org_name || primaryOwner?.registrant_organization || "Organization Profile"}
               </h2>
             </div>
-            <p className="text-xs text-slate-400 font-mono">
+            <p className="text-xs text-muted-foreground font-mono">
               Seed Scope: {data.seed_domains?.join(", ") || "No seed domains recorded"}
             </p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             {primaryOwner?.registrar && (
-              <Badge variant="outline" className="border-slate-700 text-slate-300 text-xs">
+              <Badge variant="outline" className="border-border text-foreground text-xs">
                 Registrar: {primaryOwner.registrar}
               </Badge>
             )}
@@ -267,8 +270,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               <Badge
                 className={
                   primaryOwner.dnssec
-                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-                    : "bg-slate-800 text-slate-400 border-slate-700"
+                    ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border-emerald-500/40"
+                    : "bg-muted text-muted-foreground border-border"
                 }
               >
                 DNSSEC: {primaryOwner.dnssec ? "Signed" : "Unsigned"}
@@ -278,59 +281,59 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </div>
 
         {primaryOwner?.nameservers && primaryOwner.nameservers.length > 0 && (
-          <div className="pt-2 border-t border-slate-800/60 flex items-center gap-2 text-xs text-slate-400 flex-wrap">
-            <span className="text-slate-500 font-semibold">Authoritative NS:</span>
-            <span className="font-mono text-slate-300">{primaryOwner.nameservers.join(", ")}</span>
+          <div className="pt-2 border-t border-border flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+            <span className="text-muted-foreground font-semibold">Authoritative NS:</span>
+            <span className="font-mono text-foreground">{primaryOwner.nameservers.join(", ")}</span>
           </div>
         )}
       </div>
 
       {/* Promoted scope: tenant-wide, survives the run that proposed each domain */}
-      <Card className="border-slate-800/80 bg-slate-900/80 shadow-md">
-        <CardHeader className="py-3.5 px-4 border-b border-slate-800/80">
-          <CardTitle className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-            <PlusCircle className="h-4 w-4 text-purple-400" />
+      <Card className="border-border bg-card shadow-md">
+        <CardHeader className="py-3.5 px-4 border-b border-border">
+          <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
+            <PlusCircle className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             Promoted Scope ({promoted.length})
           </CardTitle>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Every ordinary scan of this tenant carries these domains in addition to its own targets.
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {t("prose.everyOrdinaryScanOfThis")}
           </p>
         </CardHeader>
         <CardContent className="p-0">
           {promoted.length > 0 ? (
-            <ul className="divide-y divide-slate-800/60" data-testid="promoted-scope">
+            <ul className="divide-y divide-border" data-testid="promoted-scope">
               {promoted.map((domain) => (
                 <li key={domain} className="flex items-center justify-between px-4 py-2.5 gap-3">
-                  <span className="font-mono text-sm text-slate-100">{domain}</span>
+                  <span className="font-mono text-sm text-foreground">{domain}</span>
                   {canOperate && (
                     <Button
                       size="sm"
                       variant="secondary"
                       disabled={scopeMutation.isPending}
-                      className="h-7 text-xs font-mono gap-1.5 hover:border-rose-500 hover:text-rose-300"
+                      className="h-7 text-xs font-mono gap-1.5 hover:border-rose-500 hover:text-rose-600 dark:text-rose-300"
                       onClick={() => withdraw(domain)}
                     >
-                      <MinusCircle className="h-3.5 w-3.5 text-rose-400" />
-                      Withdraw from Scope
+                      <MinusCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
+                      {t("prose.withdrawFromScope")}
                     </Button>
                   )}
                 </li>
               ))}
             </ul>
           ) : (
-            <div className="py-5 text-center text-slate-500 text-xs">
-              Nothing promoted yet. Promote a discovered domain below to add it to every later scan.
+            <div className="py-5 text-center text-muted-foreground text-xs">
+              {t("prose.nothingPromotedYetPromoteA")}
             </div>
           )}
         </CardContent>
       </Card>
 
       {/* Related Domains Card */}
-      <Card className="border-slate-800/80 bg-slate-900/80 shadow-md">
-        <CardHeader className="py-3.5 px-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <Card className="border-border bg-card shadow-md">
+        <CardHeader className="py-3.5 px-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Globe className="h-4 w-4 text-sky-400" />
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            <Globe className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+            <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
               Discovered Co-Owned Domains ({candidates.length})
             </CardTitle>
           </div>
@@ -364,8 +367,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
         </CardHeader>
 
         {/* Disclaimer banner */}
-        <div className="px-4 py-2 bg-amber-950/20 border-b border-amber-900/30 flex items-center gap-2 text-[11px] text-amber-300/80">
-          <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-300 dark:border-amber-900/30 flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-300/80">
+          <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
           <span>
             {related?.disclaimer ||
               "Attribution is probabilistic. The operator is responsible for verifying domain authorization prior to active scanning."}
@@ -376,14 +379,14 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
           {actionError && (
             <div
               role="alert"
-              className="px-4 py-2 bg-rose-950/30 border-b border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-300"
+              className="px-4 py-2 bg-rose-50 dark:bg-rose-950/30 border-b border-rose-300 dark:border-rose-900/40 flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300"
             >
-              <AlertCircle className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+              <AlertCircle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
               <span>{actionError}</span>
             </div>
           )}
           {filteredCandidates.length > 0 ? (
-            <div className="divide-y divide-slate-800/60">
+            <div className="divide-y divide-border">
               {filteredCandidates.map((cand) => (
                 <CandidateRow
                   key={cand.domain}
@@ -397,8 +400,8 @@ export function RelatedDomainsPanel({ runId }: { runId: string }) {
               ))}
             </div>
           ) : (
-            <div className="py-8 text-center text-slate-500 text-xs">
-              No related domain candidates match the selected filter.
+            <div className="py-8 text-center text-muted-foreground text-xs">
+              {t("prose.noRelatedDomainCandidatesMatch")}
             </div>
           )}
         </CardContent>
