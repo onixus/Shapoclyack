@@ -259,3 +259,89 @@ def test_full_endpoint_inventory_lifecycle(tmp_path: Path, monkeypatch):
     assert isinstance(sweep_res, dict)
     assert sweep_res["tenants"] >= 1
     assert sweep_res["errors"] == 0
+
+
+def test_runtime_ecosystem_sources_are_accepted_whole(tmp_path: Path, monkeypatch):
+    """A snapshot carrying pip/npm/java entries is stored, not rejected (#358).
+
+    The agent's runtime collectors report these sources, and the request model
+    used to allow only distro/OS package managers — so a single Node or Python
+    install made the request fail validation and the endpoint disappeared from
+    the inventory entirely rather than arriving with unmatchable rows. The
+    guarantee under test is "all or nothing, and it is all": every item lands,
+    including the ones no advisory provider can speak about.
+    """
+    settings = make_settings(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "output",
+    )
+    client = configured_client(tmp_path, monkeypatch)
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    endpoint_inventory.configure(settings)
+    endpoint_inventory.reset_for_tests()
+
+    tenants_service.create_tenant(tenant_id="runtime-corp", name="Runtime Corp")
+    key = tenants_service.create_provisioning_key(
+        tenant_id="runtime-corp",
+        label="Lariska",
+    )["key"]
+
+    token_resp = client.post(
+        "/api/auth/agent/token",
+        json={"provisioning_key": key, "agent_id": "lariska-runtime-01"},
+    )
+    assert token_resp.status_code == 200, token_resp.text
+    agent_headers = {"Authorization": f"Bearer {token_resp.json()['access_token']}"}
+
+    now = datetime.now(UTC)
+    payload = {
+        "schema_version": 1,
+        "snapshot_id": "snap-runtime-001",
+        "agent_id": "lariska-runtime-01",
+        "collected_at": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+        "hostname": "dev-box.runtime.local",
+        "os_family": "windows",
+        "os_name": "Windows 11 Pro",
+        "os_version": "10.0.22631.4169",
+        "os_arch": "x86_64",
+        "agent_version": "0.2.0",
+        "identifiers": [{"identifier_type": "mac_hash", "value_hash": _hash_id("aa:bb:cc")}],
+        "software": [
+            {"name": "Google Chrome", "version": "126.0", "source": "winreg"},
+            {"name": "requests", "version": "2.32.3", "source": "pip"},
+            {"name": "express", "version": "4.19.2", "source": "npm"},
+            {"name": "log4j-core", "version": "2.17.1", "source": "java"},
+        ],
+        "collector_warnings": [],
+    }
+
+    resp = client.post("/api/endpoint/inventory", json=payload, headers=agent_headers)
+    assert resp.status_code == 201, resp.text
+    device_id = resp.json()["device_id"]
+
+    admin = auth_headers(client, username="admin")
+    device = client.get(
+        f"/api/endpoint/devices/{device_id}",
+        headers=admin,
+        params={"tenant_id": "runtime-corp"},
+    )
+    assert device.status_code == 200, device.text
+    asset_id = device.json()["asset_id"]
+    assert asset_id, "the device should have reconciled to an asset"
+
+    software = client.get(
+        f"/api/assets/{asset_id}/software",
+        headers=admin,
+        params={"tenant_id": "runtime-corp"},
+    )
+    assert software.status_code == 200, software.text
+    by_source = {item["name"]: item["source"] for item in software.json()}
+    assert by_source == {
+        "Google Chrome": "winreg",
+        "requests": "pip",
+        "express": "npm",
+        "log4j-core": "java",
+    }

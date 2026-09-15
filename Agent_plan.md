@@ -594,7 +594,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 | Item | Why it is open |
 |---|---|
 | **More distributions** | RHEL, Rocky, AlmaLinux, Fedora, Amazon Linux, SUSE are *recognised* but have no provider, so their packages are `unknown` with `unsupported_distro`. The rpm comparison already exists and is tested — each one is a normalizer plus a small provider subclass. |
-| **Language ecosystems** | npm, PyPI, RubyGems, Go modules, Maven, Cargo are neither collected by the agent nor covered by vendor advisories. A large share of real application risk lives here. |
+| **Language ecosystems** | npm, PyPI and Java packages *are* collected — the agent's runtime collectors report them as `npm`/`pip`/`java` — but no advisory provider covers them, so they match as `non_distro_source`. RubyGems, Go modules and Cargo are not collected at all. A large share of real application risk lives here. |
 | **Windows and macOS** | Registry/MSI and Homebrew inventory is collected but not matched — neither patch model maps onto the distribution advisory model. Reported as `unknown`. |
 | **Findings lifecycle** | A match is not yet a tracked finding: it carries no SLA, owner, state machine or remediation-verification path, so the closed loop (#183) does not apply to it. |
 | **Scheduled matching** | Matching runs only on `POST .../cve-matches/refresh`. Nothing re-runs it when a new snapshot arrives or when the advisory feed is updated, so a device's matches can be older than its inventory. |

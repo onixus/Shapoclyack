@@ -1551,7 +1551,16 @@ class EndpointSoftwareItem(BaseModel):
     version: str | None = Field(default=None, max_length=128)
     publisher: str | None = Field(default=None, max_length=256)
     architecture: str | None = Field(default=None, max_length=32)
-    source: Literal["apt", "dpkg", "rpm", "winreg", "msi", "brew", "other"] = "other"
+    # Every source the Lariska collector can report. ``pip``/``npm``/``java``
+    # come from its runtime collectors (#358): the agent has emitted them since
+    # it grew those, and this literal refusing them rejected the *whole*
+    # snapshot with 422 — one Node install made a host invisible rather than
+    # partially inventoried. Widening is backward compatible (the column is
+    # plain text) and does not make them matchable: anything outside
+    # ``_SOURCE_FLAVORS`` matches as ``non_distro_source``.
+    source: Literal[
+        "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "other"
+    ] = "other"
     install_location: str | None = Field(default=None, max_length=1024)
 
 

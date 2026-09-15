@@ -611,6 +611,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **One Node or Python install no longer makes an endpoint vanish from the
+  inventory** ([#358](https://github.com/onixus/Shapoclyack/issues/358)). The
+  Lariska agent's runtime collectors report packages with `source` `pip`, `npm`
+  and `java`; the inventory request model accepted only distro and OS package
+  managers, so the API answered **422 for the entire snapshot** — not for the
+  offending rows. A host with Node installed submitted nothing at all, on every
+  interval, and appeared as a device that had simply stopped reporting. The
+  three sources are now accepted and stored. They are still not *matchable*: no
+  advisory provider covers them, so they carry reason `non_distro_source`, the
+  same answer `winreg`, `msi` and `brew` already get. The column is plain text,
+  so there is no migration; `docs/software-cve-matching.md` and `Agent_plan.md`
+  claimed these ecosystems were not collected at all, which stopped being true
+  when the agent grew the collectors.
+
 - **`agent_offline` now means the agent is gone, not that it is busy or that a
   packet was lost** ([#349](https://github.com/onixus/Shapoclyack/issues/349)).
   Two ways the same false alarm was reached. The escalation worker claimed each
