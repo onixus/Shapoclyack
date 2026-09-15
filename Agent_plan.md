@@ -10,7 +10,7 @@ The inventory is no longer the end of the line. Two **ROADMAP Track E** mileston
 - **M1 — software→CVE matching.** Installed packages are matched against offline-first Debian and Ubuntu vendor advisories with purl/CPE identity and real dpkg/rpm EVR comparison, persisted to `software_cve_matches` (migration `0027_software_cve_matches`). `unknown` is a first-class result, never silently "clean". See [docs/software-cve-matching.md](docs/software-cve-matching.md).
 - **M2 — patch-gap analysis.** The matcher's `vulnerable` rows are regrouped, on read, by the package an operator actually upgrades, with the target version and the command that applies it. No table of its own — a gap cannot outlive the snapshot behind it.
 
-What Track D deliberately does **not** do is unchanged: it does not reuse the scan-result path, and Lariska does not become an EDR (ROADMAP, *Not doing, and why*). What is still open is listed in [16.3 Remaining scope](#163-remaining-scope-m3).
+What Track D deliberately does **not** do is unchanged: it does not reuse the scan-result path, and Lariska does not become an EDR (ROADMAP, *Not doing, and why*). What is still open is listed in [16.4 Remaining scope](#164-remaining-scope-m3).
 
 ---
 
@@ -48,7 +48,8 @@ What Track D deliberately does **not** do is unchanged: it does not reuse the sc
 - [16. Implementation Phases](#16-implementation-phases)
   - [16.1 Track D — Integration contract (S1–S10)](#161-track-d--integration-contract-s1s10)
   - [16.2 Track E — Assessment over the inventory (M1–M2)](#162-track-e--assessment-over-the-inventory-m1m2)
-  - [16.3 Remaining scope (M3+)](#163-remaining-scope-m3)
+  - [16.3 Track F — Windows, and managing the fleet (#358)](#163-track-f--windows-and-managing-the-fleet-358)
+  - [16.4 Remaining scope (M3+)](#164-remaining-scope-m3)
 - [17. Architecture Decision Records (ADRs)](#17-architecture-decision-records-adrs)
 - [18. Implementation Guidelines](#18-implementation-guidelines)
 
@@ -587,7 +588,25 @@ Tracked in [ROADMAP.md](ROADMAP.md#track-e--product-direction); recorded here be
 | **M1e** | Console Integration | Endpoint CVE match panel on the asset Software tab; feed provenance on the System page | **Done** |
 | **M2** | Patch-Gap Analysis | Per-package upgrades, target version, runnable command; `unfixed` counted separately ([api/services/patch_gap.py](api/services/patch_gap.py)) | **Done** |
 
-### 16.3 Remaining scope (M3+)
+### 16.3 Track F — Windows, and managing the fleet (#358)
+
+Added when the agent was first brought up on real Windows hardware. Two halves
+that turned out to need each other: a Windows host could be inventoried and not
+assessed, and every fix to the agent meant walking to the machine.
+
+| Item | What it is |
+|---|---|
+| **Windows matching** | On the operating system's *build*, not on packages — `10.0.<build>.<ubr>` against each remediation's `FixedBuild`. Cumulative servicing makes the revision the whole answer; an installed `KB` is consulted too and can only move a verdict toward fixed. The unit of assessment is the OS, so the products are reported once, in aggregate. See docs/software-cve-matching.md |
+| **Windows collection** | MSI entries separated from `winreg`, per-user installs from the loaded profiles under `HKEY_USERS` (not `HKEY_CURRENT_USER` — under a SYSTEM service that is the service's own hive), and applied `KB` updates from Component Based Servicing in state 112 only |
+| **`agents.agent_kind`** | Endpoint agents stopped being judged against the scanning agent's release line, escalated as missing scanners, or eligible to claim scan work. Migration `0057` |
+| **Remote management** | Collection settings and the build an agent should run travel in the heartbeat response. A policy cannot carry `server_url`, the provisioning key or `allow_plain_http`: an agent that can be told where to report can be told to report somewhere else. A build is verified against a digest the same authenticated channel published, and an upgrade over plain HTTP is refused |
+| **TLS at the edge** | `OCTO_API_TLS_CERT`/`_KEY` — the precondition for the above, and what a stand without an ingress needs to speak HTTPS at all. Half a configuration refuses to start |
+
+Not closed by it: the endpoint agent still registers through the scanning
+agents' door (`POST /api/agent/register`) rather than a door of its own, and
+the datastore links behind the API remain plaintext (#309).
+
+### 16.4 Remaining scope (M3+)
 
 Not started; listed so the two sections above are not misread as coverage of the estate.
 
@@ -595,7 +614,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 |---|---|
 | **More distributions** | RHEL, Rocky, AlmaLinux, Fedora, Amazon Linux, SUSE are *recognised* but have no provider, so their packages are `unknown` with `unsupported_distro`. The rpm comparison already exists and is tested — each one is a normalizer plus a small provider subclass. |
 | **Language ecosystems** | npm, PyPI and Java packages *are* collected — the agent's runtime collectors report them as `npm`/`pip`/`java` — but no advisory provider covers them, so they match as `non_distro_source`. RubyGems, Go modules and Cargo are not collected at all. A large share of real application risk lives here. |
-| **Windows and macOS** | Registry/MSI and Homebrew inventory is collected but not matched — neither patch model maps onto the distribution advisory model. Reported as `unknown`. |
+| **macOS** | Homebrew inventory is collected but not matched: Apple's patch model does not map onto the distribution advisory model. Reported as `unknown`. Windows *is* matched now (#358) — on the operating system's build against Microsoft's remediations, which is a different axis from the package-and-release question every distribution provider answers; the Windows products in the uninstall registry remain unmatched, and are reported once in aggregate as `windows_product`. See docs/software-cve-matching.md. |
 | **Findings lifecycle** | A match is not yet a tracked finding: it carries no SLA, owner, state machine or remediation-verification path, so the closed loop (#183) does not apply to it. |
 | **Scheduled matching** | Matching runs only on `POST .../cve-matches/refresh`. Nothing re-runs it when a new snapshot arrives or when the advisory feed is updated, so a device's matches can be older than its inventory. |
 | **Offline enrichment bundle** | The advisory datasets ship in the image, but there is no air-gapped bundle covering them together with the EPSS/KEV/CVSS4 overlays. |
@@ -616,7 +635,7 @@ Not started; listed so the two sections above are not misread as coverage of the
 7. **Endpoint Staleness:** Server-side staleness evaluated at 48 hours (`OCTO_ENDPOINT_STALE_HOURS = 48`) via [api/services/endpoint_inventory.py](api/services/endpoint_inventory.py).
 8. **Unified Asset Presence:** Endpoint-backed assets appear in all asset views with prefix `ep_...` and are queryable identically to network-scanned assets.
 9. **Tenant Deletion Cascades:** Migration `0006_endpoint_fk_cascade` establishes `ON DELETE CASCADE` across all child endpoint tables and `ON DELETE SET NULL` on `asset_id`.
-10. **Schema & Agent Versioning:** Schema version is strictly enforced as `Literal[1]`. Agent version remains informational metadata until a future schema v2 is defined.
+10. **Schema & Agent Versioning:** Schema version is strictly enforced as `Literal[1]`. The agent version in a *snapshot* remains informational metadata until a future schema v2 is defined — but the version an agent reports at registration is no longer only that: since #358 it is what a remote upgrade is decided against (`endpoint_agent_policies.desired_version`, migration `0057`), together with the target triple the agent reports on its heartbeat. A version alone does not identify a binary, which is why a release is keyed by both.
 
 *Decisions added with the assessment layer (2026-08-30 → 2026-09-01):*
 

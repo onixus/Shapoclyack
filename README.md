@@ -61,7 +61,7 @@ A vulnerability cannot be marked resolved on an operator's say-so or a closed ta
 
 ### 4. Distro-Aware Vendor Advisory Matching (Zero Upstream False Positives)
 Debian, Ubuntu, and enterprise Linux distributions backport security fixes into stable package versions without updating the upstream version number (e.g., OpenSSL `1.1.1f-1ubuntu2.16` on Ubuntu 20.04 retains `1.1.1f`). Naive NVD CPE matching marks every host permanently vulnerable to every historical CVE.  
-Shapoclyack matches installed packages against **official vendor security trackers** (Ubuntu USN, Debian Security Tracker) using native distribution Epoch-Version-Release (EVR) logic. It aggregates vulnerabilities into **Patch Gaps** providing copy-paste remediation commands (`apt-get install --only-upgrade <pkg>=<version>`), saving hundreds of hours of manual triage.  
+Shapoclyack matches installed packages against **official vendor security trackers** (Ubuntu USN, Debian Security Tracker) using native distribution Epoch-Version-Release (EVR) logic. Windows hosts are assessed on a different axis — the **operating system build** (`10.0.<build>.<ubr>`) against Microsoft's Security Update Guide remediations, because a Microsoft advisory is written about a build rather than a package version; third-party Windows products are reported as inventory and explicitly not matched. It aggregates vulnerabilities into **Patch Gaps** providing copy-paste remediation commands (`apt-get install --only-upgrade <pkg>=<version>`), saving hundreds of hours of manual triage.  
 *See [Software → CVE Matching](docs/software-cve-matching.md).*
 
 ### 5. Auditor-Ready Compliance Signals (PCI DSS 4.0, CIS v8, ISO 27001)
@@ -189,7 +189,7 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 | **Cyber Asset Management (CAASM)** | Persistent asset inventory keyed to canonical assets; tracks IP drift, ownership metadata, environment tags, business criticality, and hardware/OS lifecycle. |
 | **Risk-Based VM (RBVM)** | Full lifecycle state machine (`OPEN` → `FIXING` → `VERIFYING` → `CLOSED`); SLA timers by severity; NIST SP 800-30 Rev. 1 risk scoring with exploit maturity ceilings. |
 | **Mechanical Verification** | Automated re-scans via `POST /api/vulnerabilities/{id}/verify` validate that network flaws are remediated before closing. Prevents unverified ticket closures. |
-| **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker); generates actionable package upgrade commands. |
+| **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker) and Windows hosts against Microsoft's Security Update Guide; generates actionable package upgrade commands. |
 | **Threat Intelligence** | Integrated feeds for CISA KEV (Known Exploited Vulnerabilities), EPSS (Exploit Prediction Scoring System), CVSS v4/v3.1, GeoIP, and autonomous system data. |
 | **Compliance Signals** | Continuous posture monitoring and audit-ready evidence for **PCI DSS 4.0**, **CIS Controls v8**, and **ISO/IEC 27001:2022**. |
 | **Adoption & Outcome Metrics** | Telemetry on verified closures, SLA compliance, Mean Time to Remediation (MTTR), scan coverage, and false-positive suppression rates. |
