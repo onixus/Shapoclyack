@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from api.services import software_cve_match as matcher
-from api.services.advisories import debian, ubuntu
+from api.services.advisories import debian, msrc, ubuntu
 
 FIXTURES = Path(__file__).parent / "fixtures" / "advisories"
 
@@ -176,7 +176,23 @@ def test_a_recognised_but_uncovered_distro_says_so(providers) -> None:
     assert result.candidates[0].distro == "rocky"
 
 
-def test_windows_software_is_unknown_not_a_match(providers) -> None:
+def test_a_windows_product_is_never_matched_as_a_package(providers, monkeypatch) -> None:
+    """The guarantee this test has always been about, restated for #358.
+
+    It used to say "a Windows host produces one unknown row and nothing else",
+    because nothing could assess Windows at all. Now the *operating system* is
+    assessed, against Microsoft's remediations and on a different axis entirely
+    (``tests/test_windows_cve_match.py``) — but the products are still not, and
+    that is the half worth guarding. A `DisplayVersion` from the uninstall
+    registry is not a package version, and comparing it to anything would be
+    confidently wrong rather than honestly silent.
+
+    The dataset is emptied for this test so the OS half is a fixed, boring
+    ``no_msrc_data`` and the assertion is about the products.
+    """
+    empty = msrc.MsrcDataset()
+    monkeypatch.setattr(msrc, "get_dataset", lambda: empty)
+
     device = {
         "device_id": "dev_win",
         "os_family": "windows",
@@ -189,8 +205,14 @@ def test_windows_software_is_unknown_not_a_match(providers) -> None:
         software=[_pkg("Google Chrome", "126.0.6478.126", source="winreg", arch="x64")],
         provider_for=providers,
     )
-    assert [c.status for c in result.candidates] == [matcher.UNKNOWN]
-    assert result.candidates[0].unknown_reason == "non_distro_source"
+
+    assert {c.status for c in result.candidates} == {matcher.UNKNOWN}
+    reasons = {c.unknown_reason for c in result.candidates}
+    assert "windows_product" in reasons
+    # And the products are one aggregate row, not one row each.
+    product_rows = [c for c in result.candidates if c.unknown_reason == "windows_product"]
+    assert len(product_rows) == 1
+    assert product_rows[0].evidence["package_count"] == 1
 
 
 def test_unknown_rows_are_grouped_by_reason_and_bounded(providers) -> None:
