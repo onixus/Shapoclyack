@@ -1602,7 +1602,7 @@ class EndpointSoftwareItem(BaseModel):
     # plain text) and does not make them matchable: anything outside
     # ``_SOURCE_FLAVORS`` matches as ``non_distro_source``.
     source: Literal[
-        "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "other"
+        "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "kb", "other"
     ] = "other"
     install_location: str | None = Field(default=None, max_length=1024)
 

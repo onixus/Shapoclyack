@@ -149,6 +149,7 @@ def test_cpe_has_a_wildcard_vendor_when_the_distro_is_unknown() -> None:
         ("requests", "2.32.3", "pip", pi.REASON_NON_DISTRO_SOURCE),
         ("express", "4.19.2", "npm", pi.REASON_NON_DISTRO_SOURCE),
         ("org.apache.logging.log4j:log4j-core", "2.17.1", "java", pi.REASON_NON_DISTRO_SOURCE),
+        ("KB5034123", None, "kb", pi.REASON_NON_DISTRO_SOURCE),
         ("some-agent", "1.0", "other", pi.REASON_NON_DISTRO_SOURCE),
         # A distro package with no usable version cannot be compared.
         ("openssl", None, "dpkg", pi.REASON_NO_VERSION),

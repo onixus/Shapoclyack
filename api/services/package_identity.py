@@ -52,9 +52,9 @@ REASON_UNKNOWN_RELEASE = "unknown_release"
 REASON_UNSUPPORTED_DISTRO = "unsupported_distro"
 
 #: Package-manager source (``EndpointSoftwareItem.source``) → version grammar.
-#: ``winreg``/``msi``/``brew``/``pip``/``npm``/``java``/``other`` are deliberately
-#: absent: they are real inventory, they are simply not things a Debian or Ubuntu
-#: advisory talks about. Everything missing here matches as
+#: ``winreg``/``msi``/``brew``/``pip``/``npm``/``java``/``kb``/``other`` are
+#: deliberately absent: they are real inventory, they are simply not things a
+#: Debian or Ubuntu advisory talks about. Everything missing here matches as
 #: ``non_distro_source`` rather than being dropped.
 _SOURCE_FLAVORS: dict[str, str] = {
     "apt": version_compare.DEB,

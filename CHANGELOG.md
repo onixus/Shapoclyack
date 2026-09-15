@@ -609,7 +609,58 @@ All notable changes to Shapoclyack are documented in this file.
   adds the server-side `tls {}` block and the cert-manager `Certificate` to
   copy. Base is unchanged — the kind stand has no CA and stays plaintext.
 
+### Added
+
+- **Endpoint agents can be managed from the console instead of from the
+  machine** ([#358](https://github.com/onixus/Shapoclyack/issues/358)).
+  Changing an endpoint agent's collection interval or log level, or putting a
+  new build on it, previously meant visiting the host. Both now travel in the
+  heartbeat response — the only channel that reaches a running agent — under a
+  new `endpoint_agent.manage` permission held by the tenant admin.
+
+  A **policy** (migration `0057`) is a tenant-wide default plus per-agent
+  overrides, merged field by field. It carries the intervals, the request
+  timeout, the spool size and the log level, and deliberately **cannot** carry
+  `server_url`, the provisioning key or `allow_plain_http`: an agent that can
+  be told where to report is an agent that can be told to report somewhere
+  else, and this channel is exactly what an attacker who reached the API would
+  use to say it. An unknown key is refused rather than dropped, so nobody
+  believes they moved a fleet that did not move. Out-of-range values are
+  refused too — the agent would reject them and keep its previous
+  configuration, which is indistinguishable from the policy never arriving.
+
+  A **release** is the binary itself, stored in the database with the sha256
+  the API computes from the stored bytes rather than accepting from the
+  uploader: it is what an endpoint checks a download against before executing
+  it. An upgrade is remote code execution by construction, so the digest and
+  the bytes come from one authenticated channel — the heartbeat names the
+  digest, the download is the same API with the same agent token. An agent is
+  never told to move to a build that is not stored for its platform; the reason
+  travels instead, so it lands in the agent's own log rather than only in a
+  policy nobody is reading. The agent refuses the whole mechanism over plain
+  HTTP unless its local configuration opts in.
+
+  Nothing is on by default: an installation that sets no policy and uploads no
+  build answers every heartbeat exactly as before.
+
 ### Fixed
+
+- **An endpoint agent is no longer told it is an out-of-date scanner**
+  ([#358](https://github.com/onixus/Shapoclyack/issues/358)). Two different
+  programs register through `POST /api/agent/register` — the scanning agent
+  that claims jobs, and the Lariska endpoint agent that only submits inventory
+  — and the platform could not tell them apart. On a live stand that showed as
+  an endpoint agent sitting in the scan fleet with `is_outdated: true` and an
+  offer to upgrade it from its own `0.2.0` to the API's `0.44-0907`, a version
+  from a different release line for a different binary. It was also a candidate
+  for the `agent_offline` escalation, which for a laptop that sleeps is a fleet
+  incident every night, while its real liveness is already measured as
+  endpoint-device staleness in hours rather than minutes. `agents.agent_kind`
+  separates them, and an endpoint agent is refused on `jobs/claim` as well — it
+  would never ask, but a workstation agent that *could* claim a scan would be a
+  workstation scanning the customer's network on the platform's instruction.
+  The correction runs one way only: a row may be corrected from scanner to
+  endpoint, never back.
 
 - **One Node or Python install no longer makes an endpoint vanish from the
   inventory** ([#358](https://github.com/onixus/Shapoclyack/issues/358)). The
