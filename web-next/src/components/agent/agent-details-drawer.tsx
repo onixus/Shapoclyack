@@ -413,7 +413,8 @@ export function AgentDetailsDrawer({
                         className="w-full text-xs font-semibold text-rose-600 dark:text-rose-400"
                       >
                         This key also provisioned {otherAgentsOnKey} other{" "}
-                        {otherAgentsOnKey === 1 ? "sensor" : "sensors"} — revoking it stops{" "}
+                        {otherAgentsOnKey === 1 ? "registration" : "registrations"} (sensors or
+                        endpoint agents) — revoking it stops{" "}
                         {otherAgentsOnKey === 1 ? "that one" : "all of them"} too.
                       </span>
                     ) : null}

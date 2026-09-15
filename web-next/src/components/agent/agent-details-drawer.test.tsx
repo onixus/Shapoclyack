@@ -53,7 +53,7 @@ describe("AgentDetailsDrawer deregistration", () => {
 
     await user.click(screen.getByLabelText("Revoke provisioning key"));
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /12 other sensors .* revoking it stops all of them/i,
+      /12 other registrations .* revoking it stops all of them/i,
     );
   });
 
