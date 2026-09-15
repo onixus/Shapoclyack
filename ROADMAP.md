@@ -30,7 +30,7 @@ The **Agent** is the Lariska endpoint agent installed on a managed host (`agent_
 it submits inventory to `POST /api/endpoint/inventory` and never claims jobs. The bare word
 "agent" below means the Lariska Agent. Identifiers are unchanged: the `agents` table, `/api/agents`,
 `OCTO_AGENT_*`, the `agent/` package, the k8s `agents` overlay and the console route `/agents`
-(whose page is still titled "Distributed Agent Fleet"; it lists sensors).
+(its page is titled "Sensor Fleet"; it lists sensors).
 
 Track A is capability; Track B is operability; Track C is product framing; Track D is a
 separate integration contract that deliberately does not reuse the scan-result path. They
