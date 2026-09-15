@@ -60,12 +60,16 @@ FastAPI routes.
 | `/vulnerabilities` and `/vulnerabilities/view` | Vulnerability Center (lifecycle, owner, SLA) |
 | `/remediation` | Remediation Kanban (move, assign, comment, ticket link) |
 | `/assets` and `/assets/view` | Persistent inventory and asset detail |
-| `/attack-surface` | Hostname/IP/port/service graph |
-| `/jobs` | Scan job creation and status |
+| `/endpoints` | Endpoints (hosts running the Agent, Lariska): inventory, CVE matches, patch gaps |
+| `/attack-surface`, `/exposure`, `/geo` | Hostname/IP/port/service graph, exposure view, GeoIP map |
+| `/threats` | Actively exploited vulnerabilities (CISA KEV) in the estate |
+| `/scans`, `/jobs`, `/schedules` | Scan launchers, job creation and status, schedules |
 | `/runs` and `/runs/view` | Run history, findings, diff, and artifacts |
 | `/reports` | Report discovery and download |
-| `/agents` | Remote worker fleet |
-| `/tenants` | Tenant provisioning |
+| `/compliance`, `/adoption`, `/usage` | Compliance posture, adoption and noise metrics, usage |
+| `/agents` | Agents page (sensors; the title still reads "Distributed Agent Fleet"): the sensor fleet, deploy dialog, provisioning keys |
+| `/integrations`, `/org-profile`, `/wordlists` | Webhooks and ticket sync, organisation profile, wordlists |
+| `/tenants`, `/users`, `/service-tokens`, `/security`, `/audit` | Tenant provisioning, console accounts, service tokens, security settings, audit trail |
 | `/system` | Component status and validated config overrides |
 
 Query-string detail routes are intentional because static export cannot produce

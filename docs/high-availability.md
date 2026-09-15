@@ -222,15 +222,17 @@ roughly 340). Before raising either number — or `maxReplicas` — raise
 `OCTO_DB_POOL_TIMEOUT` (default 30s) bounds the wait for a free connection: a
 saturated pool then fails a request with a cause instead of hanging it.
 
-Not every connection in that pool is available to a request. Three of them are
-held for the life of the process: the schedule dispatcher, the report
-dispatcher and the software-match worker each keep one open for a session-scoped
-Postgres advisory lock (`api/services/leader_lock.py`), because that is what
-makes leadership end the instant the leader does. So the useful width of the
-pool is `pool_size + max_overflow - 3`, and a total below four leaves the third
-worker unable to take its lock at all — it would simply never run, in every
-replica, with nothing in the logs. `api/settings.py` floors the total at four
-for that reason; size it well above the floor, not at it.
+Not every connection in that pool is available to a request. Each leader-elected
+worker holds one for the life of the process: the schedule dispatcher, the
+report dispatcher, the software-match worker, the SLA escalation worker and the
+inbound ticket-sync poller each keep one open for a session-scoped Postgres
+advisory lock (`api/services/leader_lock.py`), because that is what makes
+leadership end the instant the leader does. So the useful width of the pool is
+`pool_size + max_overflow` minus the number of those workers that are enabled,
+and a total that small leaves a worker unable to take its lock at all — it
+would simply never run, in every replica, with nothing in the logs.
+`api/settings.py` floors the total at four (`MIN_DB_CONNECTIONS`) for that
+reason; size it well above the floor, not at it.
 
 The values are read in `api/settings.py` and applied in `api/db/engine.py`,
 which `create_app()` configures before the first session is opened — the engine
@@ -279,8 +281,8 @@ What is still a brief interruption:
   than resumes.
 
 Background workers are safe across replicas by construction, not by luck: the
-scheduler dispatcher, the report dispatcher, the software-match worker and the
-inbound ticket-sync poller take a
+scheduler dispatcher, the report dispatcher, the software-match worker, the SLA
+escalation worker and the inbound ticket-sync poller take a
 Postgres advisory lock (`api/services/leader_lock.py`), webhook delivery claims
 rows `FOR UPDATE`, and the ClickHouse ingest worker is a durable JetStream
 consumer. `tests/test_multi_replica_load.py` is the regression suite for that.
@@ -312,10 +314,14 @@ Naming these is the point of the page.
 * **No multi-cluster or multi-region story.** Zone spread is best-effort
   (`whenUnsatisfiable: ScheduleAnyway`) because a single-zone cluster would
   otherwise leave every pod after the first unschedulable.
-* **NATS transport is not encrypted.** Still
-  [#309](https://github.com/onixus/Shapoclyack/issues/309) /
-  [#359](https://github.com/onixus/Shapoclyack/issues/359); a 3-node cluster
-  does not change it. Keep `:4222` and `:6222` on the cluster network.
+* **NATS transport is not encrypted by this overlay.** TLS on the client port
+  exists ([#309](https://github.com/onixus/Shapoclyack/issues/309) /
+  [#359](https://github.com/onixus/Shapoclyack/issues/359):
+  `examples/nats-tls-configmap-patch.yaml`, `OCTO_NATS_TLS_*` on the API and
+  the sensors — see [operations.md § NATS TLS](operations.md#nats-tls)), but
+  it is opt-in and this overlay does not enable it; the route port `:6222` has
+  no TLS at all. Without that patch keep `:4222` and `:6222` on the cluster
+  network.
 * **The scan Job and CronJob are unchanged, relative to `base`.** They are batch
   work with their own retry semantics; running two of them is not availability.
   Note that this overlay is **not** a superset of `overlays/prod`: it does not

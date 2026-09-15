@@ -4,6 +4,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Documentation distinguishes sensors from the Agent.** A **sensor** is a
+  remote scanning node — it runs `agent/worker.py`, claims scan jobs from the
+  API, executes the scanner and uploads results; it is registered in the
+  `agents` table with `agent_kind = scanner`. The **Agent** is the Lariska
+  endpoint agent installed on a managed host (`agent_kind = endpoint`); it
+  submits inventory to `POST /api/endpoint/inventory` and never claims jobs.
+  From this entry upward the bare word "agent" means the Lariska Agent;
+  entries below this point, and every released section, use the old wording
+  "remote agent" (also "scanning agent", "scan worker") for what is now called
+  a sensor, and are left as written. Identifiers are unchanged: the `agents`
+  table and `agent_kind` column, `/api/agents/*`, `/api/auth/agent/token`,
+  `/api/agent/jobs/claim`, `OCTO_AGENT_*`, the `agent/` package and
+  `python -m agent`, the k8s `agents` overlay, the console route `/agents`
+  (its page is still titled "Distributed Agent Fleet"). The GitHub label
+  `epic:agents-scanner` was renamed to `epic:sensors-agent` and the open
+  issues under it were reworded the same way.
+
 ### Added
 
 - **Compliance catalogues for the Russian regulators**

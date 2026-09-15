@@ -13,21 +13,23 @@
 | Инструмент | Версия | Лицензия | Назначение в Shapoclyack | Файлы реализации |
 |---|---|---|---|---|
 | **Naabu** | `2.6.1` | MIT | Быстрый SYN/CONNECT скан портов, probe ladder (alive detection) | [`scanner/pipeline/ports.py`](../scanner/pipeline/ports.py), [`scanner/pipeline/probe_ladder.py`](../scanner/pipeline/probe_ladder.py) |
-| **Nuclei** | `3.11.1` | MIT | Шаблонное сканирование уязвимостей и мисконфигураций веб-сервисов | [`scanner/pipeline/nuclei_scan.py`](../scanner/pipeline/nuclei_scan.py), [`Dockerfile`](../Dockerfile#L133-L146) |
-| **DNSx** | `1.2.3` | MIT | Резолвинг DNS, PTR lookup, поиск dangling CNAME / takeover | [`scanner/pipeline/domain_monitor.py`](../scanner/pipeline/domain_monitor.py), [`scanner/pipeline/resolve.py`](../scanner/pipeline/resolve.py) |
+| **Nuclei** | `3.11.1` | MIT | Шаблонное сканирование уязвимостей и мисконфигураций веб-сервисов | [`scanner/pipeline/nuclei_scan.py`](../scanner/pipeline/nuclei_scan.py), [`Dockerfile`](../Dockerfile) (стадия `go-tools`, шаблоны `NUCLEI_TEMPLATES_REF=v9.9.4`) |
+| **DNSx** | `1.2.3` | MIT | Резолвинг DNS, PTR lookup, поиск dangling CNAME / takeover, DNS/почтовая гигиена | [`scanner/pipeline/dnsx.py`](../scanner/pipeline/dnsx.py) (общая обёртка), [`scanner/pipeline/domain_monitor.py`](../scanner/pipeline/domain_monitor.py), [`scanner/pipeline/resolve.py`](../scanner/pipeline/resolve.py), [`scanner/pipeline/dns_hygiene.py`](../scanner/pipeline/dns_hygiene.py), [`scanner/pipeline/mail_posture.py`](../scanner/pipeline/mail_posture.py) |
 
-Все инструменты собираются из исходников или верифицируются по SHA-256 в [`Dockerfile`](../Dockerfile) и [`Dockerfile.allinone`](../Dockerfile.allinone), запускаются в непривилегированном режиме с минимально необходимыми Linux Capabilities (`cap_net_raw,cap_net_admin` для Naabu).
+Все три инструмента **собираются из исходников** на стадии `go-tools` в [`Dockerfile`](../Dockerfile) и [`Dockerfile.allinone`](../Dockerfile.allinone) (Go 1.26, `GO_SECURITY_PINS` поверх их `go.mod`); SHA-256-пины релизных архивов ушли вместе с самими архивами, модули проверяются через `GOSUMDB`. Бинарники запускаются в непривилегированном режиме с минимально необходимыми Linux Capabilities (`cap_net_raw,cap_net_admin` для Naabu, Pulse и, если установлен, Nmap).
 
 ---
 
 ## 2. Лицензионная чистота и безопасность
 
 * **Лицензирование:** Все рассматриваемые CLI-инструменты ProjectDiscovery распространяются под пермиссивной лицензией **MIT License**. Они полностью совместимы с коммерческим и открытым использованием, не накладывают copyleft-ограничений (в отличие от GPLv3 у Nmap) и безопасны для включения в базовые образы контейнеров.
-* **Безопасность поставок (Supply Chain):** Бинарные файлы легко пинятся по фиксированным тегам версий (`ARG`) и контрольным суммам SHA-256 (для amd64/arm64) или компилируются через `go install` с фиксированным Go toolchain, проверяясь статическими анализаторами (Trivy).
+* **Безопасность поставок (Supply Chain):** Бинарные файлы пинятся по фиксированным тегам версий (`ARG`) и компилируются из исходников с фиксированным Go toolchain и проверкой модулей через `GOSUMDB` (так уже сделано для `naabu`, `nuclei`, `dnsx`), после чего проверяются статическими анализаторами (Trivy).
 
 ---
 
 ## 3. Обзор компонентов для расширения
+
+Ни один из перечисленных ниже инструментов в конвейере пока **не реализован**; это кандидаты.
 
 | Утилита | Лицензия | Роль в конвейере безопасности |
 |---|---|---|
@@ -149,7 +151,7 @@
 
 ## 6. Рекомендуемые этапы реализации
 
-1. **Этап 1: Интеграция `httpx`** — дополнение / ускорение модуля `scanner/pipeline/fingerprint.py`, сбор favicon hash и точное определение веб-стека.
+1. **Этап 1: Интеграция `httpx`** — дополнение / ускорение модуля `scanner/pipeline/fingerprint.py`, сбор favicon hash и точное определение веб-стека. (Сегодня fingerprint использует Python-библиотеку `httpx`, а не CLI ProjectDiscovery — это разные вещи.)
 2. **Этап 2: Интеграция `subfinder` и `asnmap`** — расширение скоупинга в модуле организации [`docs/org-profile-module.ru.md`](org-profile-module.ru.md).
 3. **Этап 3: Подключение `interactsh` к `nuclei`** — включение безопасного OOB-тестирования в `scanner/pipeline/nuclei_scan.py`.
 4. **Этап 4: Интеграция `katana`** — опциональный режим глубокого DAST-сканирования веб-ресурсов.

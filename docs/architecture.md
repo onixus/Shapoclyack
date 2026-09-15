@@ -9,8 +9,9 @@ Shapoclyack separates control-plane state, scan execution, analytical results, a
 | Web UI | Operator workflows, tenant selection, and visualization | Browser JWT only |
 | FastAPI API | Auth, tenant scope, jobs, schedules, assets, reports, webhooks, config | PostgreSQL and run artifacts |
 | Scanner | Discovery, probing, enrichment, diff, and report generation | Run and checkpoint directories |
-| Remote agent | Claim jobs, execute scanner, upload results | Local temporary work |
-| PostgreSQL | OLTP state, tenants, memberships, jobs, agents, inventory, schedules, webhook queue/audit, overrides | Database volume |
+| Sensor(s) | Claim scan jobs, execute the scanner, upload results (API resource `agents`, `agent_kind = scanner`) | Local temporary work |
+| Agent (Lariska) | In-guest endpoint inventory agent on managed hosts; submits snapshots to `POST /api/endpoint/inventory`, never claims jobs (`agent_kind = endpoint`) | None on the control plane beyond the registry row and its snapshots |
+| PostgreSQL | OLTP state, tenants, memberships, jobs, sensor/Agent registry (`agents`), endpoint inventory, schedules, webhook queue/audit, overrides | Database volume |
 | NATS JetStream | Job, ingest, asset-event, and integration messaging with durable delivery | JetStream volume |
 | ClickHouse | Vulnerability and port analytics across runs | ClickHouse volume |
 
@@ -22,7 +23,7 @@ flowchart TD
     W --> A["FastAPI control plane"]
     A --> P["PostgreSQL"]
     A --> N["NATS JetStream"]
-    N --> G["Remote agents"]
+    N --> G["Sensor(s)"]
     G --> S["Scanner pipeline"]
     S --> R["Run artifacts"]
     S --> N
@@ -37,11 +38,11 @@ flowchart TD
     D --> X["External receiver"]
 ```
 
-In local execution mode, the API launches the scanner without the NATS job path. In agent mode, a worker claims the tenant-scoped job and reports completion through the API or configured broker.
+In local execution mode (`OCTO_JOB_EXECUTION_MODE=local`, the default), the API launches the scanner without the NATS job path. In agent mode (`OCTO_JOB_EXECUTION_MODE=agent`), a sensor claims the tenant-scoped job — pulled from NATS JetStream or polled over `POST /api/agent/jobs/claim` — and reports completion through the API.
 
 ## Control-plane state
 
-Jobs and the agent registry are rows in PostgreSQL (`jobs`, `agents`), not process memory. Any API replica therefore sees the same queue and fleet, and a restart does not lose persisted control-plane state. Claims are serialized with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent agents receive different jobs across replicas.
+Jobs and the sensor registry are rows in PostgreSQL (`jobs`, `agents`), not process memory. Sensors and Agents (Lariska) share the same `agents` registry and are told apart by `agent_kind` (`scanner` vs `endpoint`); only `scanner` rows may claim jobs. Any API replica therefore sees the same queue and fleet, and a restart does not lose persisted control-plane state. Claims are serialized with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent sensors receive different jobs across replicas.
 
 ### Job lifecycle
 
@@ -53,15 +54,15 @@ queued ─┬─→ claimed ─┬─→ running ──→ succeeded | failed
         ├─→ running ──→ succeeded | failed        (local execution)
         └─→ cancelled                             (nothing has taken it yet)
 
-claimed | running ──→ cancelling ──→ cancelled    (agent confirmed, or grace expired)
+claimed | running ──→ cancelling ──→ cancelled    (sensor confirmed, or grace expired)
                           └────────→ succeeded | failed   (finished before the stop landed)
 
-claimed | running ──→ queued                      (eligible expired agent lease)
+claimed | running ──→ queued                      (eligible expired sensor lease)
 ```
 
-- `claimed` means an agent has taken the job but has not yet reported active work.
+- `claimed` means a sensor has taken the job but has not yet reported active work.
 - `cancelled` straight from `queued` is a stop nothing had to be told about: the job is simply never handed out.
-- `cancelling` is an operator asking an agent to put a running scan down. The request travels on the agent's next heartbeat response; the agent signals its scanner's process group and uploads whatever the run produced as a cancelled result. If no confirmation arrives within `OCTO_JOB_CANCEL_GRACE_SECONDS` the job is finished as `cancelled` anyway, with the silence recorded in `error`. A `cancelling` job is deliberately outside the lease set, so the reaper never hands it to a second agent while the first is stopping — and asking for the same job again while it is there is a no-op, not a second decision: terminalizing it would report a stop no agent has confirmed and clear the flag before it was read.
+- `cancelling` is an operator asking a sensor to put a running scan down. The request travels on the sensor's next heartbeat response; the sensor signals its scanner's process group and uploads whatever the run produced as a cancelled result. If no confirmation arrives within `OCTO_JOB_CANCEL_GRACE_SECONDS` the job is finished as `cancelled` anyway, with the silence recorded in `error`. A `cancelling` job is deliberately outside the lease set, so the reaper never hands it to a second sensor while the first is stopping — and asking for the same job again while it is there is a no-op, not a second decision: terminalizing it would report a stop no sensor has confirmed and clear the flag before it was read.
 - a local scan that has already started cannot be cancelled: it is a subprocess inside one API replica, which is not necessarily the replica answering the request, so the API refuses rather than reporting a stop that did not happen.
 - terminal outcomes are not rewritten by late retries.
 
@@ -69,17 +70,17 @@ claimed | running ──→ queued                      (eligible expired agent 
 
 `POST /api/jobs` accepts `Idempotency-Key`, scoped per tenant. Repeating a successful creation request returns the existing job rather than creating another one.
 
-Agent result uploads can carry both an idempotency key and the claim `attempt`. The attempt acts as a fencing token: a stale worker cannot overwrite the result of a later lease/claim after its own lease expired.
+Sensor result uploads can carry both an idempotency key and the claim `attempt`. The attempt acts as a fencing token: a stale worker cannot overwrite the result of a later lease/claim after its own lease expired.
 
 Scheduled dispatch also uses deterministic idempotency keys derived from the schedule due time. This remains a defense-in-depth control even though dispatcher leadership is now implemented.
 
 ### Leases and orphan recovery
 
-Jobs handed to executors carry `claimed_until`. Agents renew through heartbeats; local-mode jobs renew from the API process that owns the scan.
+Jobs handed to executors carry `claimed_until`. Sensors renew through heartbeats; local-mode jobs renew from the API process that owns the scan.
 
 The reaper acts on expired leases:
 
-- agent jobs can be requeued until the configured maximum number of attempts is reached;
+- sensor jobs can be requeued until the configured maximum number of attempts is reached;
 - local jobs are failed because no other replica owns their in-process executor.
 
 The reaper runs on every replica and coordinates through row locking rather than leader election.
@@ -92,7 +93,7 @@ The advisory lock is intentionally not treated as a fencing token. A brief overl
 
 SQLite fallback deployments do not provide distributed advisory locking and are treated as single-process execution environments.
 
-Installations upgrading from older file-backed job/agent state import the legacy JSON state once and rename it to `*.imported`.
+Installations upgrading from older file-backed job/sensor state import the legacy JSON state once and rename it to `*.imported`.
 
 ## Scanner stages
 
@@ -129,9 +130,9 @@ are tracked in `docs/ui-ux-redesign-roadmap.md`.
 - Console credentials are configured separately from tenant memberships.
 - Server-side membership rows determine which tenants a console user may act in and the role inside each tenant.
 - Platform admins may use fleet-wide views where the API explicitly permits them.
-- Agent JWTs carry agent identity and tenant context.
+- Agent JWTs (issued to sensors and Agents alike by `POST /api/auth/agent/token`) carry the node's identity and tenant context.
 - The API is authoritative for tenant scope; a client-provided `tenant_id` is only a selector among tenants already granted to the principal.
-- Jobs, assets, schedules, runs, provisioning keys, endpoint inventory, agent claims, webhook subscriptions, and webhook deliveries are tenant-bound.
+- Jobs, assets, schedules, runs, provisioning keys, endpoint inventory, sensor claims, webhook subscriptions, and webhook deliveries are tenant-bound.
 - Direct lookup of another tenant's resource returns `404` where revealing existence would leak information.
 - The Web UI exposes a global tenant switcher and clears cached query data when tenant context changes.
 
@@ -145,7 +146,7 @@ See [API and RBAC](api-and-rbac.md) for endpoint-level authorization behavior.
 
 A finished run's `diff.json` carries normalized asset-level changes: `new_asset`, `new_open_port`, `new_cve`, and `cert_expiring`. The API also emits `decommissioned_host` when an operator moves an asset to the decommissioned state.
 
-The API publishes these events to JetStream on `events.asset.{tenant_token}.{kind}`. Publishing belongs in the control plane rather than the scanner because tenant identity is a property of the authorized job; remote scanner workers do not need broker authority merely to produce findings.
+The API publishes these events to JetStream on `events.asset.{tenant_token}.{kind}`. Publishing belongs in the control plane rather than the scanner because tenant identity is a property of the authorized job; sensors do not need broker authority merely to produce findings.
 
 Publishing is best-effort and does not turn an otherwise successful scan into a failed job when the broker is unavailable. The full change set remains in `diff.json`, while `octo_asset_events_published_total{kind,outcome}` records published, errored, or skipped notifications.
 
@@ -159,7 +160,7 @@ Outbound webhooks are the first consumer of the asset-event stream. A tenant sub
 
 Since [#328](https://github.com/onixus/Shapoclyack/issues/328) the same subscription may also route the administrative audit trail, published to `events.audit.{tenant_token}` after the change it describes commits. Its kinds are `audit.<action>`, with `audit.*` meaning every action — a wildcard rather than an enumeration, because the action list grows and a subscription naming today's actions would silently stop covering tomorrow's. A minimum severity does not apply to them: severity is a statement about vulnerabilities.
 
-Since [#349](https://github.com/onixus/Shapoclyack/issues/349) the same subscription may also route the remediation *workflow*: `sla_due_soon`, `sla_breached`, `exception_expiring`, `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`, `agent_offline`. These are produced inside the API rather than by the scanner, so their emitter writes the delivery queue directly and publishes to `events.workflow.{tenant_token}.{kind}` only for consumers that are not webhooks — an installation with no broker therefore still gets them, and no third fan-out consumer has to be deployed. The four that are predicates over the clock rather than observed changes (`sla_*`, `exception_expiring`, `agent_offline`) come from a leader-locked worker and are claimed once in `workflow_event_markers`, keyed on the deadline they are about, so a repeated tick does not repeat the notification and a restarted clock does produce a new one. `agent_offline` has no deadline to be keyed on, so its claim is keyed on the agent and released when the agent is heartbeating properly again — one event per episode of silence, rather than one per missed beat. Like the audit trail, they are opt-in per subscription.
+Since [#349](https://github.com/onixus/Shapoclyack/issues/349) the same subscription may also route the remediation *workflow*: `sla_due_soon`, `sla_breached`, `exception_expiring`, `vuln_state_changed`, `vuln_assigned`, `scan_failed`, `report_generated`, `agent_offline`. These are produced inside the API rather than by the scanner, so their emitter writes the delivery queue directly and publishes to `events.workflow.{tenant_token}.{kind}` only for consumers that are not webhooks — an installation with no broker therefore still gets them, and no third fan-out consumer has to be deployed. The four that are predicates over the clock rather than observed changes (`sla_*`, `exception_expiring`, `agent_offline`) come from a leader-locked worker and are claimed once in `workflow_event_markers`, keyed on the deadline they are about, so a repeated tick does not repeat the notification and a restarted clock does produce a new one. `agent_offline` has no deadline to be keyed on, so its claim is keyed on the sensor and released when the sensor is heartbeating properly again — one event per episode of silence, rather than one per missed beat. Like the audit trail, they are opt-in per subscription.
 
 Two workers deliberately separate broker consumption from network delivery:
 
@@ -226,7 +227,7 @@ container and does not depend on the API package.
 
 ## Storage boundaries
 
-PostgreSQL is the primary transactional store. ClickHouse is an analytical projection, not the source of truth for users, memberships, jobs, webhook state, or asset lifecycle. Run artifacts remain on filesystem/PVC storage so operators can inspect raw tool output and downloadable reports.
+PostgreSQL is the primary transactional store. ClickHouse is an analytical projection, not the source of truth for users, memberships, jobs, webhook state, or asset lifecycle. Run artifacts live on filesystem/PVC storage by default (`OCTO_ARTIFACT_BACKEND=local`) or in S3-compatible object storage (`OCTO_ARTIFACT_BACKEND=s3`, [#336](https://github.com/onixus/Shapoclyack/issues/336)) so operators can inspect raw tool output and downloadable reports.
 
 NATS JetStream is a messaging layer, not the authoritative database for job or delivery state. Durable streams carry asynchronous work and asset events; business state remains persisted in PostgreSQL or run artifacts as appropriate.
 
@@ -235,7 +236,8 @@ NATS JetStream is a messaging layer, not the authoritative database for job or d
 | Boundary | Main controls |
 |---|---|
 | Browser → API | JWT, server-side tenant/role checks, TLS at ingress, no secret values in status responses |
-| Agent → API/broker | Provisioning exchange, short-lived agent JWT, tenant match, claim fencing |
+| Sensor → API/broker | Provisioning exchange, short-lived agent JWT, tenant match, claim fencing |
+| Agent (Lariska) → API | Same provisioning exchange and agent JWT; inventory-only routes, no job claim |
 | API → databases | Dedicated credentials, network policy, least privilege |
 | API → external integrations | Tenant-admin authorization for writes, signed payloads, bounded retries/timeouts, write-only secrets, destination validation |
 | Scanner → targets | Explicit scope, rate caps, timeouts, isolated workers |
@@ -244,6 +246,6 @@ NATS JetStream is a messaging layer, not the authoritative database for job or d
 
 ## Deployment topology
 
-The all-in-one image packages scanner tools, API, and static Web UI. The thin API image excludes scanner execution tools and is appropriate for results-only or remote-agent deployments. Kubernetes overlays add agents, enrichment storage, read-only API behavior, and production resource settings without changing the base manifests.
+The all-in-one image packages scanner tools, API, and static Web UI. The thin API image excludes scanner execution tools and is appropriate for results-only deployments or as the control plane of a sensor fleet. Kubernetes overlays add sensors (`overlays/agents`), enrichment storage, read-only API behavior, and production resource settings without changing the base manifests.
 
 For deployable topology and exact manifest behavior, [k8s/README.md](../k8s/README.md) and rendered Kustomize output are authoritative.
