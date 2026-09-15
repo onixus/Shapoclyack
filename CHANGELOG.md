@@ -637,8 +637,13 @@ All notable changes to Shapoclyack are documented in this file.
   one silence would render each as a clean host.
 
   The feed is `scripts/fetch-advisories.py msrc`, merging twelve monthly
-  Security Update Guide documents, and the file shipped in the image is a seed
-  of ten statements that says so in its own `note`. A CVRF month covers
+  Security Update Guide documents, and the image build now fetches it
+  (`ADVISORY_FETCH=1`) rather than shipping the committed seed: ten statements
+  cover five build families and a fraction of their history, so a real Windows
+  host matched against them reads as far cleaner than it is. The seed remains
+  in the repository for an offline checkout and says what it is in its own
+  `note`; `ADVISORY_FETCH=0` builds without the fetch, and the System page
+  then reports a seed rather than coverage. A CVRF month covers
   everything Microsoft ships, so only genuine NT builds are kept: Visual
   Studio's `15.9.83.0` matches the shape of a Windows build exactly and is not
   one.
