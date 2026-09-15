@@ -174,7 +174,10 @@ def _worker(settings: Settings) -> sla_escalation.SlaEscalationWorker:
 #: raising ValueError the moment that day arrived — on every branch at once,
 #: hours after the code it tests had stopped changing. Truncated to the hour so
 #: a run is still reproducible from its logs.
-_NOW = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+# Pinned to midday so the +1 h / +15 min ticks below stay inside one calendar
+# day: the digest is claimed per day, and a run between 23:00 and 23:59 UTC
+# used to see two days and two digests (Jenkins main #46).
+_NOW = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
 
 
 # --------------------------------------------------------------------------
