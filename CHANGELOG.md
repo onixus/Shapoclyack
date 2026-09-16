@@ -4,6 +4,10 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+_Nothing yet._
+
+## [0.45-0916] — 2026-09-16
+
 ### Changed
 
 - **Documentation distinguishes sensors from the Agent.** A **sensor** is a
