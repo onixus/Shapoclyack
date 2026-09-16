@@ -8,4 +8,4 @@
 # the previous pair (``0.3.2.1`` here against ``0.42.0`` in
 # ``api/services/agents.py``) was allowed to sit for whole releases and report
 # every agent in every installation as outdated.
-__version__ = "0.44-0907"  # keep in sync with api/__init__.py
+__version__ = "0.45-0916"  # keep in sync with api/__init__.py
