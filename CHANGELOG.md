@@ -19,9 +19,17 @@ All notable changes to Shapoclyack are documented in this file.
   table and `agent_kind` column, `/api/agents/*`, `/api/auth/agent/token`,
   `/api/agent/jobs/claim`, `OCTO_AGENT_*`, the `agent/` package and
   `python -m agent`, the k8s `agents` overlay, the console route `/agents`
-  (its page is still titled "Distributed Agent Fleet"). The GitHub label
+  (its page is titled "Sensor Fleet" since the console rename below). The GitHub label
   `epic:agents-scanner` was renamed to `epic:sensors-agent` and the open
   issues under it were reworded the same way.
+- **The console calls scanning nodes Sensors.** The `/agents` page is titled
+  "Sensor Fleet" (RU «Флот сенсоров»), the navigation entry, command palette,
+  scan launcher, jobs table, deploy dialog and details drawer say sensor where
+  they said agent, and the `/endpoints` empty state says "endpoint agent" for
+  Lariska. Routes, API paths, query keys and i18n key names are unchanged. The
+  key-revocation warning in the drawer counts *registrations* rather than
+  sensors, because `other_agents_on_key` counts every row on the key, endpoint
+  Agents included.
 
 ### Added
 

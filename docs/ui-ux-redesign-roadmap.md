@@ -338,7 +338,7 @@ Focus:
 Focus:
 
 - scans;
-- sensors (the Agents page, `/agents`);
+- sensors (the Sensors page, `/agents`);
 - jobs;
 - schedules.
 

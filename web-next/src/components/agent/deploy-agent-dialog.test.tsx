@@ -31,7 +31,7 @@ async function openDialog(user: Me) {
       <DeployAgentDialog />
     </QueryClientProvider>,
   );
-  await userEvent.click(screen.getByRole("button", { name: /Deploy Agent/i }));
+  await userEvent.click(screen.getByRole("button", { name: /Deploy Sensor/i }));
 }
 
 const REFUSED = /takes tenant admin/i;

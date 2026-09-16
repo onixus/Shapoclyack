@@ -256,7 +256,7 @@ The Next.js operations console provides specialized operational surfaces for ope
 | **Compliance Posture** | `/compliance` | Control pass/fail evidence mapping for PCI DSS 4.0, CIS Controls v8, ISO 27001, FSTEC orders 117 / 21 / 239 and GOST R 57580.1 | Viewer |
 | **Adoption & Noise** | `/adoption` | Verification rates, MTTR, SLA adherence, scanner noise analytics, detector suppression tracking | Viewer |
 | **Integrations** | `/integrations` | Outbound HMAC webhooks and two-way ticket synchronization — transitions pushed to the tracker, the tracker's status polled back onto findings (Jira, ServiceNow, DefectDojo) | Operator |
-| **Agents page (sensors)** | `/agents` | Health tiles and management for the sensor fleet across VPCs and DMZs; the page title still reads "Distributed Agent Fleet" | Operator |
+| **Sensors** | `/agents` | Health tiles and management for the sensor fleet across VPCs and DMZs (page title "Sensor Fleet"; the route keeps its historic name) | Operator |
 
 For UI screenshots and walkthroughs, see [Web Interface Documentation](docs/ui.md).
 

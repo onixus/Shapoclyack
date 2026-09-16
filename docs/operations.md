@@ -1030,7 +1030,7 @@ standing claims make quiet.
 
 There is still **no `agent_recovered` event**: the platform closes its own
 claim, but a receiver that opened an alert on `agent_offline` has to close it
-from the Agents page (sensors; route `/agents`) or from `GET /api/agents`. Until that kind exists, treat
+from the Sensors page (route `/agents`) or from `GET /api/agents`. Until that kind exists, treat
 `agent_offline` as "a new episode of silence started", not as a state that will
 be retracted.
 
@@ -1399,7 +1399,7 @@ A registered node has two states at once, and they answer different questions
 - **What you decided** — `lifecycle_status`: `active`, `disabled` or
   `quarantined`. Written only by a tenant **admin**, through
   `PATCH /api/agents/{id}` or the **Agent State** controls in the node's
-  drawer on the Agents page (sensors; route `/agents`).
+  drawer on the Sensors page (route `/agents`).
 
 A `disabled` or `quarantined` node is refused job claims, result uploads and
 inventory submissions with `403` and the reason you typed. Its **heartbeat is
@@ -1589,7 +1589,7 @@ and reports exactly that. There is no self-update: nothing polls the server for 
 new version. For a Docker install, pull the new image and re-run the installer
 with `--docker` (or roll the Kubernetes deployment).
 
-**Removing a sensor** from the Agents page (`DELETE /api/agents/{id}`) only
+**Removing a sensor** from the Sensors page (`DELETE /api/agents/{id}`) only
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
 

@@ -51,7 +51,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
-| `/agents` | The Agents page (sensors; the UI title is still "Distributed Agent Fleet"): the fleet of sensors (API resource `agents`, `agent_kind = scanner`) with live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys | Operator |
+| `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
@@ -59,7 +59,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 
 The sidebar is grouped, not flat: **Overview**, **Risk & remediation**,
 **External surface** (external scans, exposure, attack surface, org profile,
-geo), **Internal surface** (internal scans, endpoints, sensors — the Agents entry), **Operations**
+geo), **Internal surface** (internal scans, endpoints, sensors), **Operations**
 (all jobs, runs, schedules, reports, wordlists), **Insights**, and
 **Administration**. Groups collapse and remember it per browser
 (`shapoclyack.nav.collapsed`); a collapsed group still shows the current page.
@@ -566,13 +566,13 @@ Security, DefectDojo or a SIEM unchanged.
 
 ## Sensor fleet and deployment
 
-The Agents page (sensors; route `/agents`) is the fleet of **sensors** — the
-remote scanning nodes that run `agent/worker.py`, claim scan jobs and upload
-results (API resource `agents`, `agent_kind = scanner`). The UI title still
-reads "Distributed Agent Fleet"; it is not the place for the Lariska endpoint
-Agent, which lives on `/endpoints`. The page shows status, version, telemetry,
+`/agents` is the **Sensors** page — the fleet of sensors, the remote scanning
+nodes that run `agent/worker.py`, claim scan jobs and upload results (API
+resource `agents`, `agent_kind = scanner`; see the Terminology section in
+[README.md](README.md)). It is not the place for the Lariska endpoint Agent,
+which lives on `/endpoints`. The page shows status, version, telemetry,
 deregistration and remote upgrade. It takes `operator`; the two actions in the
-**Deploy Agent** dialog that hand out a credential — **Generate key** and the
+**Deploy Sensor** dialog that hand out a credential — **Generate key** and the
 SSH push — take tenant `admin` and answer `403` for an operator
 ([#231](https://github.com/onixus/Shapoclyack/issues/231)). The page refreshes
 on a poll, so it reads as a live view rather than one that needs reloading.
@@ -587,7 +587,7 @@ and the button then reads as requested; it does not push anything to the host.
 The host is upgraded there — see
 [operations.md](operations.md#sensor-installation-and-upgrade).
 
-**Agent State** in the drawer is the operator's verdict on the sensor, and it
+**Sensor State** in the drawer is the operator's verdict on the sensor, and it
 sits apart from the status badge because the two say different things
 ([#308](https://github.com/onixus/Shapoclyack/issues/308)): the badge is what
 the sensor reports about itself, the state is what an operator decided. The
@@ -602,10 +602,11 @@ because one key commonly provisions a whole fleet. Left off, the deregistration
 is a pause: the host still holds the key and re-registers on its next poll, and
 the toast says so rather than letting the operator assume otherwise. Ticked, it
 names the size of the fleet it is about to stop — "This key also provisioned 12
-other agents" — read from the sensor before the click rather than reported in
-the answer afterwards, which is too late to be a warning.
+other registrations" — the count is every agent row on the key, sensors and
+endpoint Agents alike — read from the sensor before the click rather than
+reported in the answer afterwards, which is too late to be a warning.
 
-The **Deploy Agent** dialog has four tabs. **Remote SSH Push** installs onto a
+The **Deploy Sensor** dialog has four tabs. **Remote SSH Push** installs onto a
 host the platform connects to itself: host, port, username, either a password or
 a private key, an expected SSH host key fingerprint, and optionally Docker. The
 dialog polls the deployment and shows the stages (connect → mint credentials →
@@ -840,7 +841,7 @@ authority lives in the membership, not in the account: a `scan-operator` is a
 global `viewer`, and the console used to compare every menu entry and half the
 page gates against that global role. The result was an account that the API
 served `GET /api/jobs` while the console hid Scan jobs, both scanning surfaces,
-Agents (sensors), Schedules and the quick-launch buttons from it. Only two entries are
+Sensors, Schedules and the quick-launch buttons from it. Only two entries are
 still on the global role, and deliberately: `/tenants` and `/users`, whose
 routes resolve their own tenant set and are gated on the `TokenUser`.
 

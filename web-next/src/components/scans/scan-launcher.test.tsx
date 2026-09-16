@@ -142,7 +142,7 @@ describe("ScanLauncher", () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText(/Domains \/ FQDNs/), "api.example.com");
-    await user.click(await screen.findByRole("combobox", { name: /Agent group/ }));
+    await user.click(await screen.findByRole("combobox", { name: /Sensor group/ }));
     await user.click(await screen.findByRole("option", { name: "pci-segment" }));
     await user.click(screen.getByRole("button", { name: /Start scan/ }));
     await user.click(await screen.findByRole("button", { name: /Confirm & launch/ }));
@@ -157,9 +157,9 @@ describe("ScanLauncher", () => {
     renderLauncher("external");
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("combobox", { name: /Agent group/ }));
+    await user.click(await screen.findByRole("combobox", { name: /Sensor group/ }));
     await user.click(await screen.findByRole("option", { name: "pci-segment" }));
-    expect(await screen.findByText(/no agent online/)).toBeInTheDocument();
+    expect(await screen.findByText(/no sensor online/)).toBeInTheDocument();
   });
 
   it("does not offer an agent group when scans run locally", async () => {

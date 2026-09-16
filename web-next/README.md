@@ -67,7 +67,7 @@ FastAPI routes.
 | `/runs` and `/runs/view` | Run history, findings, diff, and artifacts |
 | `/reports` | Report discovery and download |
 | `/compliance`, `/adoption`, `/usage` | Compliance posture, adoption and noise metrics, usage |
-| `/agents` | Agents page (sensors; the title still reads "Distributed Agent Fleet"): the sensor fleet, deploy dialog, provisioning keys |
+| `/agents` | Sensors page (title "Sensor Fleet"; the route keeps its historic name): the sensor fleet, deploy dialog, provisioning keys |
 | `/integrations`, `/org-profile`, `/wordlists` | Webhooks and ticket sync, organisation profile, wordlists |
 | `/tenants`, `/users`, `/service-tokens`, `/security`, `/audit` | Tenant provisioning, console accounts, service tokens, security settings, audit trail |
 | `/system` | Component status and validated config overrides |

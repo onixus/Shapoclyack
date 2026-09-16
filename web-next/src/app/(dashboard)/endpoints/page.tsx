@@ -302,7 +302,7 @@ export default function EndpointsPage() {
         emptyMessage={
           raw.length > 0
             ? "No endpoints match the current filters."
-            : "No Lariska endpoints yet. Install the agent with a tenant provisioning key."
+            : "No Lariska endpoints yet. Install the endpoint agent with a tenant provisioning key."
         }
         searchPlaceholder={t("search.endpoints")}
         meta={

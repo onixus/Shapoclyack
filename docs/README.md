@@ -12,7 +12,7 @@ Three words are used precisely throughout these guides:
 - **Agent** — the Lariska in-guest endpoint inventory agent installed on a managed host. It submits inventory snapshots to `POST /api/endpoint/inventory` and never claims scan jobs. Registered in the same `agents` table with `agent_kind = "endpoint"`.
 - **Endpoint** — a managed host that has the Agent installed.
 
-The bare word "agent" always means the Lariska endpoint Agent; anything that claims jobs and runs scans is a sensor. Code identifiers were not renamed: the Python package `agent/`, the `agents` table and `/api/agents/*` routes, the `OCTO_AGENT_*` variables, the k8s `agents` overlay and the console page at `/agents` (still titled "Distributed Agent Fleet") all keep their names and are described as "the sensor (API resource `agents`)" in prose.
+The bare word "agent" always means the Lariska endpoint Agent; anything that claims jobs and runs scans is a sensor. Code identifiers were not renamed: the Python package `agent/`, the `agents` table and `/api/agents/*` routes, the `OCTO_AGENT_*` variables, the k8s `agents` overlay and the console page at `/agents` (titled "Sensor Fleet") all keep their names and are described as "the sensor (API resource `agents`)" in prose.
 
 ## Start here
 
