@@ -23,7 +23,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: scanner
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.44-0907@sha256:d5dee841f44057c56a68750fffed49f970af85fe0e5419af160b6d0ccd9873ba
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.45-0916@sha256:a19ae5c1f516c62d573e24271d4099ee1c3e705948f7f03cb7d7415b039a39a3
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "scanner.main"]
           args:

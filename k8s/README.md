@@ -3,24 +3,24 @@
 This guide deploys Shapoclyack with Kustomize. For architecture, configuration,
 and operational context, start at [../docs/README.md](../docs/README.md).
 
-Primary cluster runtime for **shapoclyack-0.44-0907+**. Default control plane is the **all-in-one**
+Primary cluster runtime for **shapoclyack-0.45-0916+**. Default control plane is the **all-in-one**
 image with Web UI scan start enabled.
 
 | Image | Tag | Digest | Role |
 |-------|-----|--------|------|
-| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.44-0907` | `sha256:d5dee841…9873ba` | API + UI + scanner (**default** Deployment / Job / CronJob) |
-| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.44-0907` | `sha256:9a516e84…49a394` | Scanner-only (lighter Job/CronJob alternative) |
-| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.44-0907` | `sha256:121a857f…5b6df4` | Thin API + UI (results-only overlay) |
+| `ghcr.io/onixus/shapoclyack-aio` | `shapoclyack-0.45-0916` | `sha256:a19ae5c1…9a39a3` | API + UI + scanner (**default** Deployment / Job / CronJob) |
+| `ghcr.io/onixus/shapoclyack-scanner` | `shapoclyack-0.45-0916` | `sha256:31462637…9260d9` | Scanner-only (lighter Job/CronJob alternative) |
+| `ghcr.io/onixus/shapoclyack-api` | `shapoclyack-0.45-0916` | `sha256:b7c5b78d…8620ea` | Thin API + UI (results-only overlay) |
 
 Manifests reference these as `name:tag@sha256:…`. A GHCR tag is mutable — the
-publish job can move `shapoclyack-0.44-0907` onto a different build, and every
+publish job can move `shapoclyack-0.45-0916` onto a different build, and every
 pod that restarts afterwards would silently run something other than what was
 reviewed. The tag stays in the reference so the manifests remain readable; the
 digest is what is actually pulled. When bumping a release, replace both halves
 together: `docker manifest inspect ghcr.io/onixus/shapoclyack-aio:<tag>` or
 
 ```bash
-crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.44-0907
+crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.45-0916
 ```
 
 Never hand-edit one half. The `kind-dev` / `kind-restore` overlays override the
