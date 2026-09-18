@@ -4,7 +4,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
-_Nothing yet._
+### Documentation
+
+- Add a dated architecture review of the `b12df58` source tree with ingestion,
+  fencing, projection recovery, readiness, and worker-isolation priorities.
+  Clarify completion fencing limits and PostgreSQL-dependent test skips;
+  document that Jenkins and the reference GitHub workflow can drift.
 
 ## [0.45-0916] — 2026-09-16
 

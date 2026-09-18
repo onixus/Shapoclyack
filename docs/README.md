@@ -84,6 +84,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
+| [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
 | [Scan performance](scan-performance.md) | Faster scans without more hardware: stage timings, intents, delta |
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
