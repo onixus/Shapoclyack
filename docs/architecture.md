@@ -78,6 +78,13 @@ archive processing happens outside that transaction, and the final status write
 does not recheck the attempt. See the dated [architecture review](architecture-review-2026-09-18.ru.md)
 for the concurrent lease-expiry scenario and proposed validation.
 
+Result ingestion itself runs on a worker thread, not on the API's event loop,
+and behind an admission gate (`api/services/ingest_gate.py`): a bounded number
+of uploads are ingested at once and a bounded number may queue, with anything
+beyond that answered `503` + `Retry-After` for the sensor to retry. The gate is
+per replica and holds no state — it rations threads, database connections and
+buffered archives, and it does not make ingestion resumable across a restart.
+
 Scheduled dispatch also uses deterministic idempotency keys derived from the schedule due time. This remains a defense-in-depth control even though dispatcher leadership is now implemented.
 
 ### Leases and orphan recovery

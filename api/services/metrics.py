@@ -47,6 +47,26 @@ JOBS_RUNNING = Gauge(
     registry=REGISTRY,
 )
 
+AGENT_INGEST_IN_FLIGHT = Gauge(
+    "octo_agent_ingest_in_flight",
+    "Sensor result uploads being ingested on a worker thread right now.",
+    registry=REGISTRY,
+)
+AGENT_INGEST_WAITING = Gauge(
+    "octo_agent_ingest_waiting",
+    "Sensor result uploads queued for an ingest slot. Each one is holding its "
+    "archive in memory, so this is a memory figure as much as a queue depth.",
+    registry=REGISTRY,
+)
+AGENT_INGEST_REJECTED_TOTAL = Counter(
+    "octo_agent_ingest_rejected_total",
+    "Result uploads answered 503 because no ingest slot was available, by "
+    "reason (queue_full, timeout). A rising count means the sensors are "
+    "uploading faster than this replica ingests.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
 JOB_LEASE_EXPIRED_TOTAL = Counter(
     "octo_job_lease_expired_total",
     "Jobs whose executor stopped renewing its lease, by what the reaper did "

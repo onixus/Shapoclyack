@@ -231,6 +231,20 @@ class Settings:
     # magnitude above endpoint_inventory_max_body_bytes because, unlike a bounded
     # JSON document, the archive has no per-field ceiling to fall back on.
     agent_results_max_body_bytes: int = 128 * 1024 * 1024
+    # Result uploads ingested at once per replica. `complete_job` is
+    # synchronous — SQL, NATS, archive extraction, artifact writes, projection
+    # updates — and now runs on a worker thread, so this is the bound on
+    # threads, database connections and concurrent extractions it may take.
+    agent_results_max_concurrent_ingests: int = 4
+    # Uploads allowed to queue for one of those slots. This is the memory
+    # bound, not a fairness knob: a waiter holds its whole archive in RAM, so
+    # the worst case in flight is (concurrent + waiting) *
+    # agent_results_max_body_bytes. Redo that arithmetic before raising either.
+    agent_results_ingest_max_waiting: int = 8
+    # How long an upload may wait for a slot before it is told 503. Shorter
+    # than the sensor's own request timeout on purpose: the answer should reach
+    # the agent while it is still listening. 0 disables the deadline.
+    agent_results_ingest_wait_seconds: float = 25.0
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
     # ClickHouse HTTP URL (e.g. http://shapoclyack-clickhouse-client:8123). Empty disables CH.
@@ -1280,6 +1294,15 @@ def load_settings() -> Settings:
         ),
         agent_results_max_body_bytes=int(
             os.environ.get("OCTO_AGENT_RESULTS_MAX_BODY_BYTES", str(128 * 1024 * 1024))
+        ),
+        agent_results_max_concurrent_ingests=max(
+            1, int(os.environ.get("OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS", "4") or 4)
+        ),
+        agent_results_ingest_max_waiting=max(
+            0, int(os.environ.get("OCTO_AGENT_RESULTS_INGEST_MAX_WAITING", "8") or 0)
+        ),
+        agent_results_ingest_wait_seconds=max(
+            0.0, float(os.environ.get("OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS", "25") or 0.0)
         ),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),

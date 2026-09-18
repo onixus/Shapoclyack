@@ -1171,6 +1171,25 @@ the transport cap for a legitimately large run; the expansion ceiling is a
 constant (`api/services/results_ingest.MAX_UNCOMPRESSED_BYTES`) because the
 shared `output_dir` is what it protects.
 
+Sensor results upload answered `503`: the replica is at its ingest ceiling.
+Ingestion is synchronous work — SQL, the NATS publish, archive extraction,
+artifact writes that are network calls when the store is S3, projection updates
+— and runs on a worker thread, bounded by
+`OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS` with a queue bounded by
+`OCTO_AGENT_RESULTS_INGEST_MAX_WAITING`. `octo_agent_ingest_rejected_total`
+separates `queue_full` (refused at the door) from `timeout` (queued, never got
+a slot within `OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS`), and
+`octo_agent_ingest_in_flight` / `octo_agent_ingest_waiting` show which of the
+two numbers is the binding one. The sensor retries `503` with backoff and its
+upload carries a derived idempotency key, so a retry that lands is answered as
+a replay rather than ingesting the run twice — a steady trickle here costs
+bandwidth, not results. Sustained rejections mean the fleet uploads faster than
+this installation ingests: add API replicas, or raise the concurrency after
+checking the database pool (`OCTO_DB_POOL_SIZE` + `OCTO_DB_MAX_OVERFLOW`) can
+serve the extra ingests. Raising the *queue* instead only buys memory time —
+redo the `(concurrent + waiting) × OCTO_AGENT_RESULTS_MAX_BODY_BYTES`
+arithmetic before doing it.
+
 Tenant offboarding: endpoint data has no bespoke delete/export flow and follows
 whatever general tenant-deletion mechanism the platform adopts. The endpoint FK
 chain cascades from `tenants` (migration `0006_endpoint_fk_cascade`), so
