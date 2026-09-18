@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from pathlib import Path
@@ -47,6 +48,7 @@ from api.services import agent_deployer
 from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import endpoint_agent_mgmt
+from api.services import ingest_gate
 from api.services import audit as audit_service
 from api.services import jobs as jobs_service
 from api.services import scan_policy
@@ -321,20 +323,42 @@ async def upload_results(
         archive_bytes = await archive.read()
         if not archive_bytes:
             archive_bytes = None
+    # Ingestion is synchronous and long — SQL, a NATS publish, archive
+    # extraction, artifact writes that are network I/O on S3, projection
+    # updates — so it runs on a worker thread instead of on the event loop this
+    # replica also serves heartbeats and probes from. The gate bounds how many
+    # of those threads exist at once, and how many uploads may queue holding
+    # their archive in memory; see api/services/ingest_gate.py.
+    #
+    # The slot is taken *after* the body is read, not before: a sensor on a
+    # slow uplink would otherwise hold an ingest slot for the length of its
+    # upload, which is exactly the resource this is rationing.
     try:
-        return jobs_service.complete_job(
-            settings,
-            job_id,
-            agent_id=agent_id,
-            exit_code=exit_code,
-            error=error,
-            run_id=run_id,
-            archive_bytes=archive_bytes,
-            tenant_id=principal.tenant_id,
-            idempotency_key=(idempotency_key or "").strip()[:200] or None,
-            attempt=attempt,
-            cancelled=cancelled,
-        )
+        async with ingest_gate.slot(settings):
+            return await asyncio.to_thread(
+                jobs_service.complete_job,
+                settings,
+                job_id,
+                agent_id=agent_id,
+                exit_code=exit_code,
+                error=error,
+                run_id=run_id,
+                archive_bytes=archive_bytes,
+                tenant_id=principal.tenant_id,
+                idempotency_key=(idempotency_key or "").strip()[:200] or None,
+                attempt=attempt,
+                cancelled=cancelled,
+            )
+    except ingest_gate.IngestOverloaded as exc:
+        # Deliberately 503 and not 429: the agent did nothing wrong and is not
+        # over a quota — this replica is full. Its retry carries the same
+        # derived idempotency key, so a slot that frees up answers the replay
+        # rather than ingesting the run twice.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Result ingestion is saturated: {exc}",
+            headers={"Retry-After": "5"},
+        ) from exc
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:

@@ -4,6 +4,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Sensor result ingestion no longer runs on the API's event loop. `complete_job`
+  — SQL, the NATS publish, archive extraction, artifact writes, projection
+  updates — now runs on a worker thread behind an admission gate, so a slow
+  upload stops delaying heartbeats, probes and every other request the replica
+  is serving. Bounded by `OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS` (default
+  4) with a queue bounded by `OCTO_AGENT_RESULTS_INGEST_MAX_WAITING` (default
+  8) and `OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS` (default 25); an upload
+  beyond that is answered `503` with `Retry-After`, which the sensor already
+  retries, and its idempotency key makes the retry a replay. New metrics:
+  `octo_agent_ingest_in_flight`, `octo_agent_ingest_waiting`,
+  `octo_agent_ingest_rejected_total{reason}`.
+
 ### Documentation
 
 - Add a dated architecture review of the `b12df58` source tree with ingestion,
