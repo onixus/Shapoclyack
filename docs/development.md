@@ -37,8 +37,14 @@ python -m compileall scanner api tests agent   # `agent/` is the sensor package 
 python -m pytest
 ```
 
-Two suites are live and skip themselves unless their target is present: the
-NATS tests need `OCTO_NATS_URL`, and `tests/test_ssh_deploy_live.py` needs a
+Infrastructure-dependent suites skip tests when their targets are absent.
+PostgreSQL-dependent tests use `requires_postgres` from `tests/conftest.py`
+and need `OCTO_POSTGRES_URL` (or `POSTGRES_URL`) pointing to a dedicated test
+database migrated with `alembic -c api/db/alembic.ini upgrade head`. Test
+fixtures delete stored data: never use a production or shared development
+database. Inspect pytest's skipped-test summary; a green run without Postgres
+does not validate tenant isolation, job concurrency, or database-backed APIs.
+The NATS tests need `OCTO_NATS_URL`, and `tests/test_ssh_deploy_live.py` needs a
 real `sshd`. For the latter, `tests/e2e/ssh-deploy.sh` starts one in a
 container (docker and a local OpenSSH client required), reads its host key
 off the server's own files, and runs the suite against it — the same thing
@@ -192,8 +198,8 @@ The screenshot process is documented in [ui.md](ui.md).
 ## Continuous integration
 
 CI runs on a **local Jenkins**, not on GitHub Actions — `.github/workflows/ci.yml`
-is kept as the reference the Jenkinsfile is ported from, and the stage list and
-thresholds are the same in both. The jobs build from the working copy on disk,
+is kept as a manually runnable reference. The two pipelines can drift; compare
+their actual stages and pinned tools before treating their results as equivalent. The jobs build from the working copy on disk,
 so they do not depend on anything being pushed to GitHub.
 
 | Job | Builds | Notes |

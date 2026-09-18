@@ -70,7 +70,13 @@ claimed | running ──→ queued                      (eligible expired sensor
 
 `POST /api/jobs` accepts `Idempotency-Key`, scoped per tenant. Repeating a successful creation request returns the existing job rather than creating another one.
 
-Sensor result uploads can carry both an idempotency key and the claim `attempt`. The attempt acts as a fencing token: a stale worker cannot overwrite the result of a later lease/claim after its own lease expired.
+Sensor result uploads can carry both an idempotency key and the claim `attempt`.
+The API checks the attempt against the current claim when completion starts;
+uploads arriving with an already superseded attempt are rejected. The field is
+optional for legacy sensors. This entry check does not fence the entire ingest:
+archive processing happens outside that transaction, and the final status write
+does not recheck the attempt. See the dated [architecture review](architecture-review-2026-09-18.ru.md)
+for the concurrent lease-expiry scenario and proposed validation.
 
 Scheduled dispatch also uses deterministic idempotency keys derived from the schedule due time. This remains a defense-in-depth control even though dispatcher leadership is now implemented.
 
