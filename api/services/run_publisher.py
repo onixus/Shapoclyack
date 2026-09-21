@@ -90,6 +90,7 @@ from api.db.engine import get_session
 from api.services import metrics as metrics_service
 from api.services import nats_outbox
 from api.services import results_ingest
+from api.services import run_completion
 from api.services import runs as runs_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
@@ -633,12 +634,7 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
             publication.job_id,
             publication.attempts + 1,
         )
-    # Imported here rather than at module scope: ``jobs`` owns the projections
-    # and calls this module for every upload it accepts, so the two would be a
-    # cycle at import time.
-    from api.services import jobs as jobs_service
-
-    jobs_service.on_run_published(
+    run_completion.on_run_published(
         settings,
         publication.job_id,
         run_id=publication.run_id,
@@ -702,9 +698,7 @@ def _record_failure(
     # On the job as well as in the table: the operator looking at a scan that
     # says ``succeeded`` with no artifacts behind it is looking at the job,
     # and the row is the thing they have not been told about yet.
-    from api.services import jobs as jobs_service
-
-    jobs_service.note_publication_failed(
+    run_completion.note_publication_failed(
         settings, publication.job_id, publication_id=publication.publication_id, reason=reason
     )
 
