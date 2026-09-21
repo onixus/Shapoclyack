@@ -708,3 +708,94 @@ def test_the_grace_period_cannot_be_set_below_what_an_agent_can_answer_in(monkey
     # Anything above the floor is the administrator's business.
     monkeypatch.setenv("OCTO_JOB_CANCEL_GRACE_SECONDS", "900")
     assert load_settings().job_cancel_grace_seconds == 900
+
+
+def test_the_grace_period_does_not_expire_under_a_confirming_upload(tmp_path, monkeypatch):
+    """The obedient agent that is confirming *right now*.
+
+    `cancelling` is the one state neither timer covers on its own: the lease
+    reaper stays out of it deliberately, and the grace period is measured from
+    the operator's click, not from the agent's answer. So an agent that
+    signalled its scanner and spent the grace period pushing the partial
+    archive up a narrow link used to have the row written off underneath it —
+    its terminal write then refused as `cancelled -> cancelled`, and the
+    partial run it carried dropped. An upload that arrived *later* is kept by
+    `_accepts_late_archive`, which made the fast confirmation the one that
+    lost everything.
+
+    An open ingest lease is the agent answering, so the reaper passes the row
+    over while one is in flight."""
+    from api.schemas import StartScanRequest
+    from api.services import results_ingest
+    from api.services.artifact_store import workspace as artifact_workspace
+
+    settings = _service_settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="safe"), username="operator")
+    claim = jobs_service.claim_job(settings, "agent-1")
+    run_id = str(jobs_service.get_job(settings, job.job_id).run_id)
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+    jobs_service.cancel_job(settings, job.job_id, username="operator")
+
+    real_extract = results_ingest.extract_run_archive
+    swept: dict[str, int] = {}
+
+    def _outlast_the_grace_period(archive_bytes: bytes, dest: Path, **kwargs):
+        # The transfer and the extraction together take longer than the grace
+        # period — which is the whole scenario, not an unlucky one.
+        _age_cancellation(settings, job.job_id, 300)
+        swept["reaped"] = jobs_service.reap_stale_cancellations(settings)
+        return real_extract(archive_bytes, dest, **kwargs)
+
+    monkeypatch.setattr(results_ingest, "extract_run_archive", _outlast_the_grace_period)
+    stopped = jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=143,
+        run_id=run_id,
+        archive_bytes=_archive("partial.json", "summary.json"),
+        attempt=claim.attempt,
+        idempotency_key="confirm-1",
+        cancelled=True,
+    )
+
+    assert swept["reaped"] == 0
+    assert stopped.status == job_states.CANCELLED
+    # The confirmation, not the reaper's write-off: the operator is still named
+    # and the agent is not accused of staying silent.
+    assert "Cancellation requested by operator" in (stopped.error or "")
+    assert "did not confirm" not in (stopped.error or "")
+    # And what the scan had produced before the signal is on disk.
+    run_dir = artifact_workspace.run_dir(settings, run_id, refresh=False)
+    assert sorted(p.name for p in run_dir.iterdir()) == [
+        "partial.json",
+        "summary.json",
+        "tenant.json",
+    ]
+
+
+def test_an_ingest_lease_from_a_dead_replica_does_not_hold_a_stop_open(tmp_path):
+    """The other end of the rule above: a lease is the agent answering only
+    while it is fresh. A replica killed mid-ingest leaves one on the row, and
+    reading it as "an answer is coming" would keep the job `cancelling` for
+    good — the one state nothing else moves."""
+    settings = _service_settings(tmp_path)
+    settings.job_cancel_grace_seconds = 1
+    settings.job_ingest_lease_seconds = 60
+    job_id = _cancelling_job(settings)
+    _age_cancellation(settings, job_id, 300)
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        row.ingest_token = "abandoned"
+        row.ingest_started_at = jobs_service._now() - timedelta(seconds=30)  # noqa: SLF001
+
+    assert jobs_service.reap_stale_cancellations(settings) == 0
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        row.ingest_started_at = jobs_service._now() - timedelta(seconds=600)  # noqa: SLF001
+
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+    assert jobs_service.get_job(settings, job_id).status == job_states.CANCELLED

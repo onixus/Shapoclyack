@@ -1394,3 +1394,70 @@ def test_a_409_on_the_results_upload_is_its_own_exception(monkeypatch):
         client._request(  # noqa: SLF001
             "POST", "/api/agent/jobs/job-1/results", max_retries=0
         )
+
+
+def test_the_three_409s_on_the_results_route_are_not_one_exception(monkeypatch):
+    """`409` is the API's answer to a straggler, to a second completion that
+    disagrees with the first, and to this agent's *own* upload still being
+    ingested. Read as one, the last of the three made the agent log "the API
+    rejected the result" for a result the API was in the middle of keeping —
+    which is what an ingest longer than the client timeout produces, since the
+    resend meets the first copy's reservation."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    answers = iter(
+        [
+            ({"X-Result-Rejection": "in-flight"}, b'{"detail":"already being processed"}'),
+            ({"X-Result-Rejection": "stale-attempt"}, b'{"detail":"on attempt 2"}'),
+            ({}, b'{"detail":"an API too old to say"}'),
+        ]
+    )
+
+    def fake_urlopen(req, timeout):
+        headers, body = next(answers)
+        raise urllib.error.HTTPError(
+            url=req.full_url, code=409, msg="conflict", hdrs=headers, fp=io.BytesIO(body)
+        )
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+
+    with pytest.raises(worker.AgentResultInFlight):
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+    with pytest.raises(worker.AgentResultRejected) as rejected:
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+    assert not isinstance(rejected.value, worker.AgentResultInFlight)
+    # An API that does not send the header is read the way it always was.
+    with pytest.raises(worker.AgentResultRejected):
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+
+
+def test_the_results_upload_waits_as_long_as_the_api_takes_to_ingest(monkeypatch):
+    """The API answers this call when the *ingest* is done, which it is allowed
+    to spend OCTO_JOB_INGEST_LEASE_SECONDS on. At the 60s socket timeout every
+    ingest longer than a minute read as a dead connection, and `_request`
+    answered it by sending the whole archive again."""
+    seen: list[float] = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(timeout)
+        raise AssertionError("not reached")
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=60.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+    assert client.upload_timeout >= 900.0
+
+    for call in (
+        lambda: client._request("GET", "/api/ping", max_retries=0),  # noqa: SLF001
+        lambda: client._request(  # noqa: SLF001
+            "POST", "/api/x", max_retries=0, timeout=client.upload_timeout
+        ),
+    ):
+        try:
+            call()
+        except AssertionError:
+            pass
+    assert seen == [60.0, client.upload_timeout]

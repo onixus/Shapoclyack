@@ -19,13 +19,54 @@ All notable changes to Shapoclyack are documented in this file.
   `ingest_started_at`; migration `0058_job_ingest_lease`) and the terminal
   write is conditional on `(job_id, attempt, owner, ingest token)`. A stale
   result is refused with `409` and the sensor logs a rejected result rather
-  than a failed upload — nothing it carried is published.
+  than a failed upload.
 - Uploaded artifacts are extracted into a staging directory named after the
-  ingest lease and promoted into the run — object store, latest-run pointer,
-  tenant marker, projections, notifications — only after that conditional write
-  succeeds. A refused ingest discards its staging tree. A store failure *after*
-  the write is logged and recorded in the job's `error` instead of being
-  answered to a sensor whose result was in fact accepted.
+  ingest lease, and nothing leaves that tree until the lease has been checked
+  again — so a refused upload reaches neither the run directory nor
+  `ingest.results.{tenant}`. The gateway publish used to run at the top of the
+  ingest, before anything had asked whether the upload was still current: a
+  straggler's archive went to the bus and ClickHouse inserted it under the run
+  id the *new* attempt owns, where the `archive_sha256` dedup cannot catch it
+  because two attempts produce two different archives.
+- **A scan is no longer reported as kept when the store refused it.** The run
+  is published — tenant marker, object store, run directory, latest-run
+  pointer — *before* the terminal status write, so a store or disk failure
+  costs the upload its outcome: the job stays non-terminal, the reaper requeues
+  it, the scan is redone. Published after the write, a failure was permanent
+  (the sensor's retry is answered as a replay of `succeeded`), a promotion that
+  hit `ENOSPC` deleted the extracted upload on its way out, and a run whose
+  `tenant.json` never got written stayed readable as the **default tenant** —
+  one tenant's scan in every tenant's run list. The extracted tree is now left
+  on disk when the store fails, and collected after an hour of inactivity by
+  the next ingest on that replica, which is also what finally cleans up after a
+  replica killed mid-upload.
+- Nothing after the terminal write can fail the request: the projections and
+  notifications are wrapped, and a failure there is recorded in the job's
+  `error`. A non-`OSError` from the publication used to escape after the
+  outcome was committed — `succeeded` with `error=NULL`, `500` to the sensor,
+  and the sensor left marked busy on a job that had finished.
+- A failed ingest gives the job back on the ordinary `OCTO_JOB_LEASE_SECONDS`
+  instead of holding it for the full `OCTO_JOB_INGEST_LEASE_SECONDS`. The
+  sensor does not resend a refused upload, so the reaper is the only thing that
+  moves the job on, and it was waiting out a window reserved for an ingest that
+  had already ended.
+- **A cancellation being confirmed is no longer written off underneath the
+  sensor.** `cancelling` is covered by neither timer — the lease reaper stays
+  out of it deliberately, and the grace period runs from the operator's click —
+  so a sensor that signalled its scanner and spent the grace period pushing the
+  partial archive up a narrow link had `reap_stale_cancellations` close the row
+  mid-ingest: its terminal write refused as `cancelled → cancelled`, and the
+  partial run dropped, while an upload arriving *later* was kept. The reaper
+  now passes over a job with an ingest lease open inside
+  `OCTO_JOB_INGEST_LEASE_SECONDS`; a stale lease from a dead replica still does
+  not hold a stop open.
+- The `409` on `POST /api/agent/jobs/{job_id}/results` carries
+  `X-Result-Rejection`: `stale-attempt`, `conflict`, or `in-flight` for the
+  sensor's own earlier upload still being ingested. The sensor used to read all
+  three as "the API rejected the result" and drop the run — reached by its own
+  60s client timeout on an ingest the API is allowed to spend 900s on, which
+  also made it resend the whole archive. The upload now waits
+  `OCTO_AGENT_UPLOAD_TIMEOUT` (default `900`) for the answer.
 - The sensor keeps heartbeating (`stage=uploading`) while the result is
   transferred and ingested; it used to go silent for the whole of it. The API
   side matches: reserving the ingest pushes `claimed_until` out by

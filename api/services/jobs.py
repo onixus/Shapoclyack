@@ -2428,11 +2428,23 @@ def reap_stale_cancellations(settings: Settings) -> int:
     A late upload from such an agent then meets a terminal job and is refused
     by ``complete_job``, the same way a result for any cancelled job is.
 
+    A job whose *confirming* upload is being ingested right now is passed over:
+    an open ingest lease is the agent answering, several minutes into the
+    transfer of a partial archive, and closing the job under it would make the
+    confirming upload lose the race it has already won — its terminal write
+    refused as ``cancelled -> cancelled``, and the partial run it carried
+    thrown away, while a confirmation arriving *later* would be kept by
+    :func:`_accepts_late_archive`. Stale leases are not: one from a replica
+    that died mid-ingest would otherwise hold the job in ``cancelling``
+    forever, so the lease only counts while it is inside
+    ``job_ingest_lease_seconds``.
+
     Safe in every replica, like the lease sweep beside it: rows are taken with
     ``FOR UPDATE SKIP LOCKED``.
     """
     now = _now()
     deadline = now - timedelta(seconds=max(settings.job_cancel_grace_seconds, 1))
+    ingest_deadline = now - timedelta(seconds=max(settings.job_ingest_lease_seconds, 1))
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.Job)
@@ -2440,6 +2452,10 @@ def reap_stale_cancellations(settings: Settings) -> int:
                 models.Job.status == job_states.CANCELLING,
                 models.Job.cancel_requested_at.is_not(None),
                 models.Job.cancel_requested_at < deadline,
+                or_(
+                    models.Job.ingest_started_at.is_(None),
+                    models.Job.ingest_started_at < ingest_deadline,
+                ),
             )
             .with_for_update(skip_locked=True)
         ).scalars().all()
@@ -2664,9 +2680,21 @@ def _release_ingest_lease(settings: Settings, fence: _IngestLease) -> None:
 
     Only our own, and only while it is still ours: a lease the reaper has
     already cleared, or one a later upload has taken, is not this caller's to
-    tidy up. ``claimed_until`` is deliberately left where the reservation put
-    it — the agent whose upload just failed is about to retry it, and pulling
-    the deadline back in would hand its job away in the middle of that.
+    tidy up.
+
+    ``claimed_until`` goes back to the ordinary ``job_lease_seconds`` it would
+    have had without this ingest. :func:`_open_ingest_lease` pushed it out by
+    the much longer ``job_ingest_lease_seconds`` to keep the reaper out of an
+    ingest in progress; once the ingest has failed there is no ingest to
+    protect, and leaving the long deadline in place would hold the job
+    ``claimed`` for the whole of it — the agent does not resend a refused
+    upload (``_run_job`` gives up on it), so the only thing that moves the job
+    on is the reaper, and this is what lets it. Pulled in by assignment rather
+    than through :func:`_extend_lease`, which only ever pushes out.
+
+    A job on its way down (``cancelling``) keeps its cleared deadline: it is
+    not the reaper's to requeue, and giving it one back would hand a stopping
+    scan to a second agent.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, fence.job_id, with_for_update=True)
@@ -2676,6 +2704,24 @@ def _release_ingest_lease(settings: Settings, fence: _IngestLease) -> None:
         row.ingest_attempt = None
         row.ingest_agent_id = None
         row.ingest_started_at = None
+        if row.status in job_states.IN_FLIGHT:
+            row.claimed_until = _lease_deadline(settings)
+
+
+def _assert_fence_current(settings: Settings, fence: _IngestLease) -> None:
+    """Refuse a straggler *before* it publishes anything. Reads, writes nothing.
+
+    The fence proper is taken under the same lock as the terminal write, which
+    is what makes an outcome unforgeable. This is the cheap read in front of
+    the publication, so an upload the job has already moved on from does not
+    get as far as the run directory or the ingest bus — the write below would
+    refuse it, but by then the archive would be out.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, fence.job_id)
+        if row is None:
+            raise StaleAttempt(f"Job {fence.job_id} no longer exists; the result was rejected")
+        _check_ingest_fence(row, fence)
 
 
 def _publish_ingested_run(
@@ -2686,43 +2732,79 @@ def _publish_ingested_run(
     staging: Path,
     tenant_id: str,
     surface: str | None,
+    agent_id: str,
+    exit_code: int,
+    error: str | None,
+    archive_bytes: bytes,
+    fence: _IngestLease,
+) -> None:
+    """Make this upload the installation's copy of the run, before its outcome.
+
+    Ordering is the whole subject here, and there are only two honest places
+    for it. *After* the terminal write, the job is already ``succeeded`` when
+    the store is asked to take the run, so a store that refuses leaves an
+    installation claiming a scan it does not have — and since the agent's
+    retry is then answered as a replay, that state is permanent. *Before* it,
+    a store failure costs the job its terminal write instead: the row stays
+    non-terminal, the reaper requeues it, and the scan is run again. A repeated
+    scan is a cost; a scan reported as kept and not kept is a lie, so this
+    runs first and raises.
+
+    Inside, the order is the tenant marker, the store, then the local
+    directory. The marker goes into the *staging* tree rather than being
+    written afterwards, so the run carries its owner into both copies at the
+    moment it becomes visible: a run directory with no ``tenant.json`` reads
+    back as the default tenant everywhere (:func:`runs.read_run_tenant`), which
+    would put one tenant's scan in every tenant's run list until somebody
+    noticed.
+
+    The bus publish is last and inside the fence for the same reason the rest
+    is (#413 review): ``ingest.results.{tenant}`` feeds ClickHouse under this
+    run id, so a straggler published there lands beside the rows of the attempt
+    that replaced it, where no ``archive_sha256`` dedup can tell them apart.
+    """
+    _assert_fence_current(settings, fence)
+    runs_service.stage_run_tenant(staging, tenant_id, job_id=job_id, surface=surface)
+    # Into the store from staging: the copy the other replicas read is complete
+    # and marked the first time they can see it.
+    artifact_workspace.publish_run(settings, run_id, source=staging)
+    # The marker cache on a remote backend may hold a "no marker" answer from a
+    # listing that asked about this run before it existed, and reading that back
+    # is the default-tenant leak the marker is there to prevent.
+    artifact_workspace.forget_run_marker(run_id)
+    artifact_workspace.promote_staging(settings, run_id, staging)
+    results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
+    if settings.nats_url:
+        try:
+            results_ingest.publish_raw_results(
+                nats_url=settings.nats_url,
+                job_id=job_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                exit_code=exit_code,
+                archive_bytes=archive_bytes,
+                error=error,
+                tenant_id=tenant_id,
+            )
+        except results_ingest.IngestError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+def _project_ingested_run(
+    settings: Settings,
+    job_id: str,
+    *,
+    run_id: str,
+    tenant_id: str,
     status: str,
 ) -> None:
-    """Make an *accepted* result the installation's copy of the run.
+    """Feed a published run to everything derived from it. Best-effort.
 
-    Called only after the terminal write went through under the ingest lease,
-    which is the whole point of the split: until that write, this upload might
-    still have been a straggler from a replaced attempt, and everything here —
-    the run directory, the store, the latest-run pointer, the projections — is
-    visible to operators and to the rest of the platform.
-
-    Failures are recorded on the job rather than raised, which is a change from
-    when this ran *before* the status was written: the outcome is committed and
-    the agent's retry would be answered as a replay, so raising would tell an
-    agent its upload failed when what failed is this replica's copy of the run
-    reaching the store. The job carries the note, and the log carries the
-    exception, so the gap is visible to an operator instead of silent.
+    Runs after the outcome is written, and only for an upload that produced
+    one: these are projections of a scan the installation has accepted, and a
+    straggler refused at the terminal write must not reach the vulnerability
+    tracker or the asset stream on its way out.
     """
-    try:
-        artifact_workspace.promote_staging(settings, run_id, staging)
-        results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
-        # Into the store before the marker is written, so the marker is never
-        # the only part of the run the other replicas can see.
-        artifact_workspace.publish_run(settings, run_id)
-        runs_service.write_run_tenant(
-            settings, run_id, tenant_id, job_id=job_id, surface=surface
-        )
-    except (OSError, artifact_store.ArtifactStoreError) as exc:
-        _log.error(
-            "Job %s finished but its run %s could not be published to the artifact store",
-            job_id,
-            run_id,
-            exc_info=True,
-        )
-        _append_job_error(settings, job_id, f"; run artifacts were not published: {exc}")
-        return
-    finally:
-        artifact_workspace.discard_staging(staging)
     _upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
     # Ungated, matching the local path: this is where the agent's copy of the
     # run reaches disk, and a refusal the scanner made is a decision to journal
@@ -2801,8 +2883,13 @@ def complete_job(
     that lease, and the terminal write happens only if the row is still on the
     same (attempt, owner, token). A result that is no longer current is refused
     as :class:`StaleAttempt` — the agent is told its result was rejected, which
-    is not the same thing as its upload having failed — and nothing it carried
-    is published.
+    is not the same thing as its upload having failed.
+
+    The publication in between is checked against the same lease before it
+    runs (:func:`_assert_fence_current`), so a straggler reaches neither the
+    run directory nor ``ingest.results.{tenant}``; and it runs *before* the
+    terminal write, so a job is never reported finished with a run the store
+    refused to take. See :func:`_publish_ingested_run` for why round that way.
 
     ``cancelled`` is the agent confirming it put the scan down because the API
     asked it to (#360), and it decides the outcome on its own: the scanner was
@@ -2918,25 +3005,11 @@ def complete_job(
 
     assert fence is not None  # every non-replay path takes one above
     staging: Path | None = None
+    staging_published = False
     try:
         if archive_bytes:
             if not resolved_run_id:
                 raise ValueError("run_id required when uploading results")
-            # Gateway: validate + publish to ingest.raw_results (idempotent Msg-Id).
-            if settings.nats_url:
-                try:
-                    results_ingest.publish_raw_results(
-                        nats_url=settings.nats_url,
-                        job_id=job_id,
-                        run_id=str(resolved_run_id),
-                        agent_id=agent_id,
-                        exit_code=exit_code,
-                        archive_bytes=archive_bytes,
-                        error=error,
-                        tenant_id=job_tenant,
-                    )
-                except results_ingest.IngestError as exc:
-                    raise ValueError(str(exc)) from exc
             # Into staging named after this ingest lease, never straight into
             # the run directory: a job keeps its run id across attempts, so
             # extracting there would publish a straggler's archive over the
@@ -2953,6 +3026,23 @@ def complete_job(
         # The fence. Everything above this line is work on a copy nobody can
         # see; everything below it acts on the installation's record of the
         # scan, and may only run for the attempt the job is still on.
+        if staging is not None:
+            _publish_ingested_run(
+                settings,
+                job_id,
+                run_id=str(resolved_run_id),
+                staging=staging,
+                tenant_id=job_tenant,
+                surface=job_surface,
+                agent_id=agent_id,
+                exit_code=exit_code,
+                error=error,
+                archive_bytes=archive_bytes or b"",
+                fence=fence,
+            )
+            # Renamed into place by the publication above; whatever is left is
+            # the copy it merged from, which nobody reads again.
+            staging_published = True
         if late_archive:
             _record_late_cancellation_archive(
                 settings,
@@ -2975,11 +3065,27 @@ def complete_job(
                 # from the one that produced it.
                 results_idempotency_key=(idempotency_key or None),
             )
-    except Exception:
-        # A refused or failed ingest publishes nothing, so its staging tree is
-        # rubbish rather than a partial run somebody might find.
-        if staging is not None:
-            artifact_workspace.discard_staging(staging)
+    except Exception as exc:
+        if staging is not None and not staging_published:
+            if isinstance(exc, (OSError, artifact_store.ArtifactStoreError)):
+                # The store, not the upload, is what failed: this tree is a
+                # complete run that nothing else holds a copy of on this side,
+                # and deleting it here is how a full disk turns into a lost
+                # scan. Left where it is — the job stays non-terminal, so the
+                # scan is redone, and the sweep in ``staging_run_dir`` collects
+                # the tree if no operator gets to it first.
+                _log.error(
+                    "Job %s: run %s could not be published; the extracted upload is kept at %s",
+                    job_id,
+                    resolved_run_id,
+                    staging,
+                    exc_info=True,
+                )
+            else:
+                # A refused or malformed ingest publishes nothing, so its
+                # staging tree is rubbish rather than a partial run somebody
+                # might find.
+                artifact_workspace.discard_staging(staging)
         # The reservation above is only meaningful while this upload is in
         # flight. Releasing it lets the agent retry with the same key — or, on
         # the late path, with no key at all — instead of meeting its own
@@ -2990,16 +3096,29 @@ def complete_job(
         _release_ingest_lease(settings, fence)
         raise
 
-    if staging is not None:
-        _publish_ingested_run(
-            settings,
-            job_id,
-            run_id=str(resolved_run_id),
-            staging=staging,
-            tenant_id=job_tenant,
-            surface=job_surface,
-            status=status,
-        )
+    if staging_published:
+        try:
+            _project_ingested_run(
+                settings,
+                job_id,
+                run_id=str(resolved_run_id),
+                tenant_id=job_tenant,
+                status=status,
+            )
+        except Exception as exc:  # pragma: no cover - each projection guards itself
+            # Nothing below the terminal write may escape this function. The
+            # outcome is committed and the agent's retry is answered as a
+            # replay, so raising here would tell an agent its upload failed
+            # when what failed is a projection of a run the API has kept — and
+            # it would skip the lines below, leaving the agent marked busy on a
+            # job that is finished.
+            _log.error(
+                "Job %s finished but its run %s could not be projected",
+                job_id,
+                resolved_run_id,
+                exc_info=True,
+            )
+            _append_job_error(settings, job_id, f"; run projections did not complete: {exc}")
     if status == job_states.CANCELLED:
         # Counted apart from a confirmation, because it is not one: the scan was
         # written off unconfirmed and only its archive arrived afterwards. A

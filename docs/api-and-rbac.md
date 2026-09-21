@@ -805,10 +805,33 @@ The attempt is checked twice: when the upload is accepted for ingest, and again
 at the final status write, which happens only if the job is still on the same
 attempt, with the same owner, under the ingest lease this upload reserved. A
 lease that lapses mid-ingest therefore costs the straggler its result and not
-the new attempt its run: the upload answers **409**, nothing it carried is
-published, and the sensor logs a rejected result rather than a failed upload.
-The ingest itself holds the lease open for `OCTO_JOB_INGEST_LEASE_SECONDS`, so
-an ordinary large upload is not refused for being slow.
+the new attempt its run: the upload answers **409**, nothing it carried reaches
+the run directory or the ingest bus, and the sensor logs a rejected result
+rather than a failed upload. The ingest itself holds the lease open for
+`OCTO_JOB_INGEST_LEASE_SECONDS`, so an ordinary large upload is not refused for
+being slow.
+
+That **409** carries `X-Result-Rejection`, because the status covers three
+unrelated answers and a sensor cannot tell them apart from the status alone:
+
+| `X-Result-Rejection` | What it means | What the sensor does |
+| --- | --- | --- |
+| `stale-attempt` | The job has moved on to another attempt or another sensor | Gives up; the result was declined |
+| `conflict` | The job already has results from a different upload | Gives up |
+| `in-flight` | This sensor's *own* earlier upload is still being ingested | Stops resending; the first copy decides the job |
+
+`in-flight` is the one the sensor causes itself, by resending after its client
+timeout while the API is still ingesting the first copy — which is why the
+sensor waits `OCTO_AGENT_UPLOAD_TIMEOUT` (default `900`, matching the ingest
+lease) for the answer rather than the ordinary request timeout. An API too old
+to send the header is read as a plain rejection, as before.
+
+The run is published — tenant marker first, then the object store, the run
+directory and the latest-run pointer — *before* that status write, so a store
+failure answers **500** and leaves the job non-terminal for the reaper to
+requeue, rather than reporting a scan the installation does not have. Only the
+projections run afterwards, and a failure there is recorded in the job's
+`error` instead of being answered to a sensor whose result was accepted.
 
 `POST /api/endpoint/inventory` — the Agent (Lariska) submitting a snapshot —
 is the only agent-JWT-authenticated write in that group and carries contract-specific limits: `411` when `Content-Length` is

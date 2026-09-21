@@ -94,8 +94,19 @@ def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
     uploaded with the run and listed by ``GET /api/runs/{id}`` as one of the
     scan's own artifacts, and a plain name in the cache root would be read as
     a run of its own by :func:`run_ids`.
+
+    Taking one is also when the abandoned ones are collected. An ingest killed
+    with its pod -- or one whose store failed, which leaves its tree on purpose
+    -- has nobody else to clean up after it: the cache eviction that sweeps
+    these runs only on a remote backend, and a dotted directory is invisible to
+    every listing there is, so on the local backend a full extracted run would
+    sit in ``output_dir/runs`` for good and grow the disk where nothing reports
+    it. Hung off this call rather than a timer because it is the one moment the
+    directory is known and an ingest is already paying for I/O.
     """
     destination = scratch_run_dir(settings, run_id)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_abandoned(destination.parent)
     return destination.parent / f".ingest-{destination.name}-{token[:12]}"
 
 

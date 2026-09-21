@@ -88,14 +88,38 @@ rejected result rather than a failed upload.
 
 Artifacts follow the same boundary. An upload is extracted into a staging
 directory named after its ingest token, beside the run directory rather than
-inside it, and is promoted into the run — object store, latest-run pointer,
-tenant marker, asset/vulnerability projections, notifications — only after the
-conditional status write succeeds. A refused ingest discards its staging tree
-and publishes nothing. Publishing after that write is no longer able to fail
-the request: the outcome is committed, so a store failure is logged and
-recorded in the job's `error` instead of being answered to a sensor whose
-upload was in fact accepted. The concurrent lease-expiry scenario this replaced
-is in the dated [architecture review](architecture-review-2026-09-18.ru.md).
+inside it, and nothing leaves that tree until the lease has been checked again.
+The order after that check is: the tenant marker into the staging tree, the
+tree into the object store, the tree into the run directory, the latest-run
+pointer, then `ingest.results.{tenant}` — and only then the conditional status
+write. So a run is never visible without the marker that says whose it is (a
+run with no `tenant.json` reads as the *default* tenant, i.e. as one tenant's
+scan in every tenant's run list), and a refused upload reaches neither the run
+directory nor the ingest bus.
+
+Publishing ahead of the status write is deliberate: a store that refuses the
+run costs the upload its terminal write, so the job stays non-terminal, the
+reaper requeues it and the scan is redone. Written the other way round, the job
+read `succeeded` while the artifacts were nowhere, and because the sensor's
+retry is answered as a replay of that outcome, the gap was permanent. The
+extracted tree is left on disk when the store fails, for the same reason. Only
+the projections — assets, vulnerabilities, asset events, notifications — run
+after the status write, and they cannot fail the request: a failure there is
+recorded in the job's `error`. The concurrent lease-expiry scenario this
+replaced is in the dated
+[architecture review](architecture-review-2026-09-18.ru.md).
+
+A staging tree an ingest never finished — a replica killed mid-upload, or a
+store failure — is collected the next time this replica takes a staging
+directory, past one hour of inactivity.
+
+The `409` on the results route carries `X-Result-Rejection`, because three
+different things share the status: `stale-attempt` (the job moved on),
+`conflict` (a second completion that disagrees with the first) and `in-flight`
+(the sensor's own earlier upload is still being ingested). Only the first two
+mean the result was declined. A sensor waits `OCTO_AGENT_UPLOAD_TIMEOUT` for
+the answer, which must cover an ingest — the API replies when the ingest is
+done, not when the bytes are in.
 
 Result ingestion itself runs on a worker thread, not on the API's event loop,
 and behind an admission gate (`api/services/ingest_gate.py`): a bounded number

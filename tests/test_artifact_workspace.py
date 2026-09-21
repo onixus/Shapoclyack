@@ -11,6 +11,7 @@ first one's runs.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -260,3 +261,37 @@ def test_eviction_is_off_when_the_budget_is_zero(tmp_path: Path) -> None:
         if path.is_dir() and not path.name.startswith(".")
     )
     assert cached == ["r1", "r2"]
+
+
+def test_a_staging_tree_an_ingest_never_finished_is_collected(tmp_path):
+    """Nobody else cleans up after a killed ingest on the local backend.
+
+    The sweep that collects these trees was reachable only through the cache
+    eviction, which runs on a remote backend and nowhere else; and a staging
+    directory is dotted, so no listing, no retention pass and no run id ever
+    names it. A pod killed mid-ingest therefore left a fully extracted run in
+    ``output_dir/runs`` for good — invisible growth on the disk the scans are
+    written to. Taking a staging directory is when the old ones go."""
+    settings = make_settings(tmp_path, output_dir=tmp_path / "output")
+    runs = Path(settings.output_dir) / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+
+    abandoned = runs / ".ingest-20260101T000000Z-deadbeefcafe"
+    abandoned.mkdir()
+    (abandoned / "summary.json").write_text("{}", encoding="utf-8")
+    old = time.time() - 7200
+    os.utime(abandoned, (old, old))
+
+    fresh = runs / ".ingest-20260101T000000Z-0badc0ffee11"
+    fresh.mkdir()
+    real_run = runs / "20260101T000000Z"
+    real_run.mkdir()
+
+    staging = workspace.staging_run_dir(settings, "20260102T000000Z", "feedfacefeedface")
+
+    assert not abandoned.exists()
+    # Only the abandoned one: a fresh tree may be an ingest in progress in this
+    # process or in another pod sharing the volume, and a run is not staging.
+    assert fresh.is_dir()
+    assert real_run.is_dir()
+    assert staging.name.startswith(".ingest-20260102T000000Z-")
