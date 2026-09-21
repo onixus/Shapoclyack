@@ -505,3 +505,21 @@ PY
               set -e
               naabu -version
               dnsx -version
+              pulse --version
+              nmap --version | head -n 1
+              test -f /usr/share/nmap/scripts/nmap-vulners/vulners.nse
+              test -f /usr/share/nmap/scripts/vulscan/vulscan.nse
+              python -m compileall scanner
+            '
+          '''
+        }
+        }
+      }
+      post {
+        always {
+          sh "docker rmi -f ${IMAGE_TAG}-nmap || true"
+        }
+      }
+    }
+  }
+}
