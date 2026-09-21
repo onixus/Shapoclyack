@@ -37,6 +37,14 @@ def main() -> None:
     identity = doc.get("identity", {})
     if identity.get("trust_unsigned_role_header") is not False:
         fail("unsigned role headers must never be trusted")
+    if identity.get("owning_service_authorizes_mutations") is not True:
+        fail("Shapoclyack must authorize its own mutations")
+
+    ownership = doc.get("ownership", {})
+    if ownership.get("gateway_is_source_of_truth") is not False:
+        fail("APEX Gateway must not own Shapoclyack domain state")
+    if ownership.get("clickhouse_is_transactional_source") is not False:
+        fail("ClickHouse must remain an analytics projection")
 
     for item in doc.get("native_contracts", []):
         path = ROOT / item["path"]
