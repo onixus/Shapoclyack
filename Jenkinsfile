@@ -34,6 +34,13 @@ pipeline {
   }
 
   stages {
+    stage('APEX contract') {
+      agent { docker { image 'python:3.12-slim'; reuseNode true } }
+      steps {
+        sh 'python apex-contract/validate.py'
+      }
+    }
+
     stage('Lint (ruff)') {
       agent { docker { image 'python:3.12-slim'; args PIP_CACHE; reuseNode true } }
       steps {

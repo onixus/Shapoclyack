@@ -219,7 +219,7 @@ def create_app() -> FastAPI:
         app.add_middleware(
             BodySizeLimitMiddleware,
             max_bytes=settings.endpoint_inventory_max_body_bytes,
-            paths=("/api/endpoint/inventory",),
+            paths=("/api/endpoint/inventory", "/api/v1/endpoint/inventory"),
         )
     # Same reasoning for the agent results upload (#222): the archive part is a
     # whole run directory, and the route buffered it in full before deciding
@@ -229,7 +229,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         BodySizeLimitMiddleware,
         max_bytes=settings.agent_results_max_body_bytes,
-        path_patterns=(r"^/api/agent/jobs/[^/]+/results/?$",),
+        path_patterns=(r"^/api/(?:v1/)?agent/jobs/[^/]+/results/?$",),
         count_endpoint_submissions=False,
     )
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=settings.hsts_enabled)
@@ -321,10 +321,17 @@ def create_app() -> FastAPI:
             sso=SsoStatus.model_validate(oidc_service.public_config(settings)),
         )
 
+    # Legacy /api routes remain for deployed agents and console clients.
     app.include_router(auth_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")
+
+    # APEX Architecture Contract v1: stable versioned aliases for machine-to-
+    # machine agent boundaries. The same handlers and authorization checks are
+    # mounted twice intentionally; /api remains a compatibility alias.
+    app.include_router(auth_routes.router, prefix="/api/v1")
+    app.include_router(agents_routes.router, prefix="/api/v1")
     app.include_router(assets_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
@@ -355,6 +362,7 @@ def create_app() -> FastAPI:
         app.include_router(notification_channels_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
         app.include_router(endpoint_inventory_routes.router, prefix="/api")
+        app.include_router(endpoint_inventory_routes.router, prefix="/api/v1")
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():
