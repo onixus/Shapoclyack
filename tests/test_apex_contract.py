@@ -23,7 +23,7 @@ def test_apex_contract_identity_and_ownership_boundary():
     )
 
     identity = manifest["identity"]
-    assert identity["production_trusts_unsigned_role_header"] is False
+    assert identity["trust_unsigned_role_header"] is False
     assert identity["owning_service_authorizes_mutations"] is True
 
 
