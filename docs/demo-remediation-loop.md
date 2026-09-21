@@ -32,6 +32,34 @@ The important distinction is the last step: a ticket or an operator can say that
 work is done, but only the verification scan can produce
 `machine_verified = true` for a network finding.
 
+## Visual demo capture plan
+
+The repository does not ship fabricated UI screenshots. When recording the live
+demo, capture these four frames from one synthetic/authorized lab tenant so the
+README, release notes, articles and video all tell the same story:
+
+| Frame | UI surface | What must be visible | Suggested file |
+|---|---|---|---|
+| **1. Finding** | `/vulnerabilities/view?vulnId=…` | network finding identity, affected asset/service, risk context and current lifecycle state | `01-finding.png` |
+| **2. Remediation** | `/remediation` or finding detail | the same finding in `FIXING`, with owner/SLA context; no unrelated customer data | `02-remediation.png` |
+| **3. Verify** | finding detail | the **Verify** action and the transition to `VERIFYING` after a targeted re-scan is dispatched | `03-verifying.png` |
+| **4. Proof** | finding detail + event timeline | `CLOSED`, `machine_verified = true`, `closure_reason = verified_remediated`, and the `verification_passed` event | `04-machine-verified.png` |
+
+Capture rules:
+
+- use only synthetic tenant names, users, domains and addresses;
+- do not show API tokens, cookies, private IP inventories from real customers,
+  ticket-system secrets or browser developer tools;
+- keep the same finding visible across all four frames;
+- crop tightly enough that the lifecycle change is legible at GitHub README width;
+- use the default dark theme for consistency with the documented UI;
+- if verification fails, keep that capture too — `verification_failed → FIXING`
+  is useful evidence that the workflow does not rubber-stamp closure.
+
+A short GIF/video should use the same sequence:
+**Finding → FIXING → Verify → machine-verified closure**. Do not cut away during
+the verification state; that transition is the product claim being demonstrated.
+
 ## 1. Start a local evaluation environment
 
 Follow [Getting started](getting-started.md) through the first authorized scan.
