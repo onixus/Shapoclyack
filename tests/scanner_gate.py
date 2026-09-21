@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
+from pathlib import Path
 
 #: What a scan looks like in a process listing. The command is built by
 #: ``jobs._build_command`` and ``agent/worker.py``, both of which run the
@@ -42,22 +42,72 @@ SCANNER_MARKER = "scanner.main"
 
 _PS_ARGS = ("ps", "-A", "-o", "pid=,ppid=,command=")
 
+#: How the process table was read, for the summary to report. ``None`` means it
+#: could not be read at all, which is not the same answer as "nothing leaked".
+_source: str | None = None
 
-def _process_table() -> list[tuple[int, int, str]]:
-    """``(pid, ppid, command)`` for every process on the machine, or nothing.
 
-    A gate that cannot look must not fail the run: an unreadable ``ps`` is an
-    unanswered question, not a leak, and reporting it as one would make the
-    suite red for a reason that has nothing to do with the code under test.
+def _procfs_table() -> list[tuple[int, int, str]] | None:
+    """The process table from ``/proc``, or ``None`` where there is no ``/proc``.
+
+    Tried before ``ps`` because the CI container has no ``ps`` at all: the gate
+    read an empty table there and passed every run without looking at anything
+    (shapoclyack-branches #2 found this the hard way, through a test that used
+    ``ps`` for something else).
     """
-    if sys.platform == "win32":  # pragma: no cover - the suite does not run there
-        return []
+    proc = Path("/proc")
+    if not (proc / "self" / "stat").exists():
+        return None
+    rows: list[tuple[int, int, str]] = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            # Exited between the listing and the read. Not an error: a process
+            # that is already gone is not a leak.
+            continue
+        ppid = _ppid_from_stat(stat)
+        if ppid is None:
+            continue
+        # NUL-separated argv; a kernel thread has an empty one and keeps the
+        # comm from stat, which never matches the marker anyway.
+        command = cmdline.decode("utf-8", errors="replace").replace("\0", " ").strip()
+        rows.append((int(entry.name), ppid, command))
+    return rows
+
+
+def _ppid_from_stat(stat: str) -> int | None:
+    """The parent pid out of one ``/proc/<pid>/stat`` line.
+
+    Split after the last ``)`` rather than on whitespace: the second field is
+    the executable name in parentheses and may contain both spaces and
+    parentheses of its own, which is the classic way to misparse this file.
+    """
+    close = stat.rfind(")")
+    if close == -1:
+        return None
+    fields = stat[close + 1 :].split()
+    if len(fields) < 2:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
+
+
+def _ps_table() -> list[tuple[int, int, str]] | None:
+    """The process table from ``ps``, or ``None`` where there is none to run."""
     try:
         completed = subprocess.run(
             _PS_ARGS, capture_output=True, text=True, check=False, timeout=30
         )
-    except (OSError, subprocess.SubprocessError):  # pragma: no cover - defensive
-        return []
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
     rows: list[tuple[int, int, str]] = []
     for line in completed.stdout.splitlines():
         fields = line.split(None, 2)
@@ -69,6 +119,64 @@ def _process_table() -> list[tuple[int, int, str]]:
             continue
         rows.append((pid, ppid, fields[2]))
     return rows
+
+
+def _process_table() -> list[tuple[int, int, str]]:
+    """``(pid, ppid, command)`` for every process, or nothing if it cannot be read.
+
+    A gate that cannot look must not fail the run -- an unreadable process
+    table is an unanswered question, not a leak -- but it must not pass
+    silently either, so which source answered is recorded for the summary.
+    """
+    global _source
+    for name, reader in (("procfs", _procfs_table), ("ps", _ps_table)):
+        rows = reader()
+        if rows is not None:
+            _source = name
+            return rows
+    _source = None
+    return []
+
+
+def process_state(pid: int) -> str:
+    """The process's state letter: ``""`` if it is gone, ``"?"`` if unknowable.
+
+    Exported because ``os.kill(pid, 0)`` is the obvious way to ask whether a
+    process is still there and is the wrong one: it succeeds for a zombie, and
+    a scan whose parent has just been killed leaves exactly that behind
+    wherever pid 1 does not reap (a container's pid 1 is the pipeline's shell,
+    which reaps nothing; macOS init reaps in milliseconds, so the difference
+    shows up only in CI).
+    """
+    stat_file = Path(f"/proc/{pid}/stat")
+    if stat_file.exists():
+        try:
+            stat = stat_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        close = stat.rfind(")")
+        fields = stat[close + 1 :].split() if close != -1 else []
+        return fields[0] if fields else "?"
+    if Path("/proc/self/stat").exists():
+        # There is a /proc and this pid is not in it.
+        return ""
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+    return completed.stdout.strip()
+
+
+def is_running(pid: int) -> bool:
+    """Whether ``pid`` is a live process. A zombie is not one."""
+    state = process_state(pid)
+    return bool(state) and not state.startswith("Z") and state != "?"
 
 
 def scanner_descendants(
@@ -93,7 +201,7 @@ def scanner_descendants(
     while stack:
         pid = stack.pop()
         if pid in seen:
-            # ``ps`` is sampled, not a snapshot, so a recycled pid could
+            # The table is sampled, not a snapshot, so a recycled pid could
             # otherwise walk in a circle.
             continue
         seen.add(pid)
@@ -151,6 +259,18 @@ def _sample() -> list[tuple[int, str]]:
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ARG001
     problems = leak_report(_sample())
+    if _source is None:
+        # Said out loud rather than passed over. A check that quietly skips
+        # wherever its tooling is missing proves nothing while looking exactly
+        # like a check that passed -- which is how this gate spent two CI runs
+        # reading an empty table in a container with no ``ps``.
+        terminalreporter.section("scanner processes")
+        terminalreporter.write_line(
+            "could not read the process table (no /proc, no ps): this run says "
+            "nothing about scans left running",
+            yellow=True,
+        )
+        return
     if not problems:
         return
     terminalreporter.section("scanner processes")

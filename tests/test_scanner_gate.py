@@ -9,6 +9,11 @@ not something a test may create on purpose.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
+
 from tests import scanner_gate
 
 SCANNER = "/usr/bin/python3 -m scanner.main --config /tmp/pytest-of-x/test_something0/c.yaml"
@@ -68,3 +73,39 @@ def test_the_report_names_the_test_that_started_the_scan():
 
 def test_a_clean_session_reports_nothing():
     assert scanner_gate.leak_report([]) == []
+
+
+def test_a_reaped_corpse_is_not_a_running_process():
+    """The distinction ``os.kill(pid, 0)`` cannot make, and the whole of why
+    this helper exists.
+
+    A scan whose parent has just been killed is left unreaped wherever pid 1
+    does not reap -- a container's pid 1 is the pipeline's shell, which reaps
+    nothing, while macOS init does it in milliseconds. So the question "is it
+    still running" answered differently on the two, and the local run could not
+    have told us (shapoclyack-branches #1).
+    """
+    child = subprocess.Popen([sys.executable, "-c", ""])
+    try:
+        # Deliberately not ``child.poll()``: that reaps it, which is exactly
+        # what must not happen before the state is read.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and scanner_gate.process_state(child.pid) not in {"Z", ""}:
+            time.sleep(0.01)
+        assert scanner_gate.process_state(child.pid) == "Z", "the corpse was reaped too early"
+        assert not scanner_gate.is_running(child.pid)
+    finally:
+        child.wait()
+
+
+def test_this_process_is_running():
+    assert scanner_gate.is_running(os.getpid())
+
+
+def test_the_gate_can_read_the_process_table_here():
+    """Not a tautology: the check that failed silently in CI is the one that
+    could not read the table at all, and it looked exactly like a pass."""
+    scanner_gate.scanner_descendants(os.getpid())
+    assert scanner_gate._source is not None, (  # noqa: SLF001
+        "neither /proc nor ps answered: the gate would pass every run without looking"
+    )

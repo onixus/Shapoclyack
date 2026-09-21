@@ -19,7 +19,6 @@ thread is finished writing before the call returns.
 from __future__ import annotations
 
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -33,6 +32,7 @@ from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
 from api.services.integrations import webhooks as webhooks_service
 from api.services.jobs import get_job
+from tests import scanner_gate
 from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 
 pytestmark = requires_postgres
@@ -89,22 +89,6 @@ def _wait_for_the_file(path: Path, timeout: float = 30.0) -> None:
     raise AssertionError(f"the stand-in never wrote {path}")
 
 
-def _alive(pid: int) -> bool:
-    """Whether ``pid`` is a process that is still running.
-
-    Asked of ``ps`` rather than of ``os.kill(pid, 0)``, which succeeds for a
-    zombie -- and a zombie is exactly what the grandchild becomes here. Its
-    parent is the scanner this test has just killed, so nobody is left to reap
-    it: on macOS init does that within milliseconds, but the CI container's pid
-    1 is the pipeline's shell and reaps nothing, so the test read a corpse as a
-    survivor and failed there and only there.
-    """
-    state = subprocess.run(
-        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    return bool(state) and not state.startswith("Z")
-
-
 def test_a_started_local_scan_can_be_stopped(settings, monkeypatch):
     """The whole of the bug in one test: a scan that outlives its caller, and
     a caller that can now end it."""
@@ -144,13 +128,13 @@ def test_the_tools_the_scan_started_go_down_with_it(settings, monkeypatch, tmp_p
     _wait_for_the_scan(started.job_id)
     _wait_for_the_file(marker)
     grandchild = int(marker.read_text())
-    assert _alive(grandchild)
+    assert scanner_gate.is_running(grandchild)
 
     assert jobs_service.stop_local_scans(timeout=30.0)
     deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline and _alive(grandchild):
+    while time.monotonic() < deadline and scanner_gate.is_running(grandchild):
         time.sleep(0.05)
-    assert not _alive(grandchild), (
+    assert not scanner_gate.is_running(grandchild), (
         f"pid {grandchild} survived the stop: the scanner was signalled, its tools were not"
     )
 
