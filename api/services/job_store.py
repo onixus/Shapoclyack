@@ -7,7 +7,7 @@ atomic policy instead of being reimplemented by every workflow.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -24,9 +24,11 @@ from api.settings import Settings
 
 
 def _iso(dt: datetime | None) -> str | None:
-    if dt is None:
-        return None
-    return dt.isoformat() + ("Z" if dt.tzinfo is None else "")
+    return (
+        dt.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+        if dt
+        else None
+    )
 
 
 def to_info(
