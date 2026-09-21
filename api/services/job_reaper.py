@@ -20,6 +20,7 @@ from api.services import job_dispatch
 from api.services import job_states
 from api.services import job_store
 from api.services import metrics as metrics_service
+from api.services import workflow_events
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.job-reaper")
