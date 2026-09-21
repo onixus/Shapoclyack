@@ -385,9 +385,11 @@ def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, 
 
     ``ingest.results.{tenant}`` feeds ClickHouse under the run id, so a
     republish that produced a second message would insert the same scan twice.
-    The archive is kept beside the staging tree exactly so a retry can send
-    the bytes the first attempt would have — same digest, same ``Msg-Id``,
-    dropped by the stream.
+    What is asserted here is the half that is this module's to keep: the row is
+    gone once the message lands, so no later tick sends a second one. (The
+    other half — a retry carrying the *same* ``Msg-Id``, for the broker to drop
+    — is the archive kept beside the staging tree, and it is JetStream's
+    duplicate window that acts on it; see ``nats_bus``.)
     """
     settings.nats_url = "nats://127.0.0.1:4222"
     published: list[dict] = []
