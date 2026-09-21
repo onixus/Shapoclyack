@@ -1,0 +1,67 @@
+{
+  "contract": {
+    "version": "1.0",
+    "canonical_repo": "onixus/unified-platform",
+    "canonical_commit": "878d138c560cd4106ab0d6cccde804ddc3e5ae1d"
+  },
+  "system": {
+    "id": "shapoclyack",
+    "namespace": "shapoclyack",
+    "role": "easm-rbvm"
+  },
+  "ownership": {
+    "authoritative_domains": [
+      "assets",
+      "findings",
+      "remediation-lifecycle",
+      "exposure-risk-evidence"
+    ],
+    "gateway_is_source_of_truth": false,
+    "clickhouse_is_transactional_source": false
+  },
+  "identity": {
+    "accepts_apex_identity": true,
+    "production_trusts_unsigned_role_header": false,
+    "owning_service_authorizes_mutations": true
+  },
+  "resources": [
+    {
+      "kind": "asset",
+      "local_id_field": "asset_id",
+      "urn_prefix": "urn:apex:asset:shapoclyack:"
+    },
+    {
+      "kind": "finding",
+      "local_id_field": "finding_id",
+      "urn_prefix": "urn:apex:finding:shapoclyack:"
+    },
+    {
+      "kind": "evidence",
+      "local_id_field": "evidence_id",
+      "urn_prefix": "urn:apex:evidence:shapoclyack:"
+    }
+  ],
+  "integration": {
+    "consumes": [
+      "pulse.scan-observation",
+      "lariska.inventory-snapshot"
+    ],
+    "produces": [
+      "asset",
+      "finding",
+      "evidence",
+      "remediation-state"
+    ]
+  },
+  "observability": {
+    "w3c_trace_context": true,
+    "otel_resource_attribute": "apex.system",
+    "apex_system_value": "shapoclyack"
+  },
+  "supply_chain": {
+    "sbom_required": true,
+    "sha256_required": true,
+    "signature_required_for_production_promotion": true,
+    "provenance_required_for_production_promotion": true
+  }
+}
