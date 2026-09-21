@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sys
 import threading
 import uuid
 from collections.abc import Callable
@@ -147,6 +148,41 @@ def find_by_idempotency_key(
         if stored and stored != idempotency_digest(request):
             raise IdempotencyMismatch(info)
     return info
+
+
+def build_command(
+    settings: Settings,
+    *,
+    mode: str,
+    delta: bool,
+    skip_nse: bool,
+    notify: bool,
+    export_defectdojo: bool,
+    run_id: str | None,
+    target_args: list[str],
+    config_path: str,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "scanner.main",
+        "--config",
+        config_path,
+        "--mode",
+        mode,
+    ]
+    if delta:
+        command.append("--delta")
+    if skip_nse:
+        command.append("--skip-nse")
+    if notify:
+        command.append("--notify")
+    if export_defectdojo:
+        command.append("--export-defectdojo")
+    if run_id:
+        command.extend(["--run-id", run_id])
+    command.extend(target_args)
+    return command
 
 
 def start_scan(
