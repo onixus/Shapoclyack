@@ -44,8 +44,6 @@ from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
 from api.services import agents as agents_service
 from api.services import artifact_store
-from api.services import asset_events
-from api.services import assets as assets_service
 from api.services import audit as audit_service
 from api.services import config_override as config_override_service
 from api.services.artifact_store import workspace as artifact_workspace
@@ -56,9 +54,7 @@ from api.services import metrics as metrics_service
 from api.services import nats_bus
 from api.services import pagination
 from api.services import promoted_domains
-from api.services import auth_audit
 from api.services import results_ingest
-from api.services.integrations import channels as channels_service
 from api.services import run_completion
 from api.services import run_publisher
 from api.services import runs as runs_service
@@ -68,10 +64,8 @@ from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
 from api.services import scan_surface
-from api.services import vulnerabilities as vulns_service
 from api.services import workflow_events
 from api.settings import Settings
-from scanner.pipeline import scan_scope
 
 _log = logging.getLogger(__name__)
 
