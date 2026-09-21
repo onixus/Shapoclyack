@@ -9,7 +9,8 @@
   "namespace": "shapoclyack",
   "identity": {
     "mode": "owning-service",
-    "trust_unsigned_role_header": false
+    "trust_unsigned_role_header": false,
+    "owning_service_authorizes_mutations": true
   },
   "boundaries": [
     {
@@ -70,9 +71,19 @@
   "coverage": {
     "identity": "native",
     "api_versioning": "enforced",
-    "canonical_refs": "declared",
+    "canonical_refs": "adapter",
     "event_envelope": "adapter",
     "observability": "partial",
     "supply_chain": "partial"
+  },
+  "ownership": {
+    "authoritative_domains": [
+      "assets",
+      "findings",
+      "remediation-lifecycle",
+      "exposure-risk-evidence"
+    ],
+    "gateway_is_source_of_truth": false,
+    "clickhouse_is_transactional_source": false
   }
 }
