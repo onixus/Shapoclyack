@@ -86,6 +86,25 @@ JOB_CANCELLATIONS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RUN_PUBLICATIONS_TOTAL = Counter(
+    "octo_run_publications_total",
+    "Publications of an accepted run — store, run directory, latest_run.json, "
+    "ingest.results.{tenant} — by outcome (published, deferred, dead, "
+    "adopted). Anything but published means the run was accepted and is not "
+    "visible yet; dead means it will not become visible without an operator.",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
+RUN_PUBLICATION_BACKLOG = Gauge(
+    "octo_run_publication_backlog",
+    "Accepted runs whose publication is still owed, by status (pending, "
+    "dead). Cluster-wide (every replica reports the same query), so aggregate "
+    "with max(), not sum().",
+    ["status"],
+    registry=REGISTRY,
+)
+
 JOB_IDEMPOTENT_REPLAYS_TOTAL = Counter(
     "octo_job_idempotent_replays_total",
     "Requests recognised as a replay of one already applied, by operation "

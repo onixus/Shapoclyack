@@ -15,6 +15,7 @@ first one run to the end.
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 from datetime import timedelta
 from pathlib import Path
@@ -27,6 +28,7 @@ from api.schemas import StartScanRequest
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 from api.services import results_ingest
+from api.services import run_publisher
 from api.services import artifact_store
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
@@ -53,6 +55,10 @@ def settings(tmp_path: Path):
     approve_scan_scope(base)
     agents_service.configure(base)
     agents_service.register_agent(agent_id="agent-1", tenant_id="default")
+    # Publications are counted installation-wide by ``backlog``, so a run owed
+    # by an earlier test would be read here as this one's.
+    jobs_service.reset_for_tests(base)
+    run_publisher.reset_for_tests(base)
     return base
 
 
@@ -66,6 +72,19 @@ def _archive(marker: str) -> bytes:
             info.size = len(payload)
             tf.addfile(info, io.BytesIO(payload))
     return buf.getvalue()
+
+
+def _later():
+    """A moment past any backoff a failed publication can have earned."""
+    return jobs_service._now() + timedelta(hours=1)  # noqa: SLF001
+
+
+def _ingest_leftovers(settings) -> list[str]:
+    """Whatever an ingest left beside the runs: staging trees and archives."""
+    root = Path(settings.output_dir) / "runs"
+    if not root.is_dir():
+        return []
+    return sorted(child.name for child in root.iterdir() if child.name.startswith(".ingest-"))
 
 
 def _expire_lease(settings, job_id: str) -> None:
@@ -250,17 +269,81 @@ def test_an_ingest_in_flight_holds_the_lease_open(settings, monkeypatch):
         assert session.get(models.Job, job.job_id).ingest_token is None
 
 
-def test_a_store_failure_does_not_report_a_scan_the_installation_does_not_have(
+def test_a_store_failure_leaves_the_run_owed_rather_than_lost(settings, monkeypatch):
+    """A store that refuses does not make the scan disappear, and does not lie.
+
+    Both orders that were tried before got this wrong in opposite directions:
+    publishing after the outcome left the job ``succeeded`` with nothing behind
+    it and the agent's retry answered as a replay, and publishing before it
+    cost the upload its outcome, so the whole scan was run again. The
+    publication is recorded with the outcome instead — the sensor is answered,
+    the extracted run stays on disk, and the reconciler finishes it when the
+    store is back.
+    """
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(settings, "agent-1")
+    run_id = get_job(settings, job.job_id).run_id
+    down = {"store": True}
+
+    real_promote = artifact_workspace.promote_staging
+
+    def _store_is_down(settings_, run_id_, staging, *args, **kwargs):
+        if down["store"]:
+            raise artifact_store.ArtifactStoreError("bucket unreachable")
+        return real_promote(settings_, run_id_, staging, *args, **kwargs)
+
+    monkeypatch.setattr(artifact_workspace, "promote_staging", _store_is_down)
+
+    done = jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive("fresh"),
+        attempt=claim.attempt,
+        idempotency_key="upload-fresh",
+    )
+
+    # The upload is accepted: the sensor is not asked for these bytes again.
+    assert done.status == "succeeded"
+    # The run is not visible yet, and the installation says so rather than
+    # offering an empty scan.
+    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    owed = run_publisher.pending_publications(settings, job.job_id)
+    assert [row.status for row in owed] == ["pending"]
+    assert "bucket unreachable" in (owed[0].last_error or "")
+    assert run_publisher.backlog(settings) == {"pending": 1, "dead": 0}
+    # And the only copy of the scan on this side is still on disk, with the
+    # archive the ingest bus is still owed beside it.
+    staging = Path(owed[0].staging_path)
+    assert (staging / "fresh.json").is_file()
+    assert Path(owed[0].archive_path).is_file()
+
+    # Past the backoff the failed attempt earned, which is what keeps a
+    # refusing store from being retried in a tight loop.
+    assert owed[0].next_attempt_at > jobs_service._now()  # noqa: SLF001
+    down["store"] = False
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+
+    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    assert (run_dir / "fresh.json").is_file()
+    assert run_publisher.pending_publications(settings, job.job_id) == []
+    assert not staging.exists()
+
+
+def test_a_publication_nobody_can_finish_ends_visibly_instead_of_retrying_forever(
     settings, monkeypatch
 ):
-    """The job may not go terminal on a run the store refused to take.
+    """The bound on the retries, and what an operator is left holding.
 
-    Publishing after the terminal write made a store outage permanent: the job
-    read ``succeeded``, the artifacts were nowhere, and the agent's retry was
-    answered as a replay of that outcome, so nothing would ever fetch the scan
-    again. Ahead of it, the same outage costs the upload its terminal write —
-    the job stays claimed, the reaper requeues it, and the scan is redone.
+    A reconciler that never gives up is a queue that grows while every health
+    check stays green. Past ``run_publication_max_attempts`` the row is
+    ``dead``: the job that claims to have succeeded says why, ``/api/health``
+    stops being green, and the extracted run is still on disk for whoever
+    decides between publishing it by hand and re-scanning.
     """
+    settings.run_publication_max_attempts = 2
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
     claim = jobs_service.claim_job(settings, "agent-1")
     run_id = get_job(settings, job.job_id).run_id
@@ -268,72 +351,109 @@ def test_a_store_failure_does_not_report_a_scan_the_installation_does_not_have(
     def _store_is_down(*_args, **_kwargs):
         raise artifact_store.ArtifactStoreError("bucket unreachable")
 
-    monkeypatch.setattr(artifact_workspace, "publish_run", _store_is_down)
+    monkeypatch.setattr(artifact_workspace, "promote_staging", _store_is_down)
+    jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive("fresh"),
+        attempt=claim.attempt,
+        idempotency_key="upload-fresh",
+    )
+    # The first attempt was the request's; this one spends the last of them.
+    assert run_publisher.reconcile_once(settings, now=_later()) == {
+        "published": 0,
+        "failed": 1,
+        "skipped": 0,
+    }
 
-    with pytest.raises(artifact_store.ArtifactStoreError):
-        jobs_service.complete_job(
-            settings,
-            job.job_id,
-            agent_id="agent-1",
-            exit_code=0,
-            run_id=run_id,
-            archive_bytes=_archive("fresh"),
-            attempt=claim.attempt,
-            idempotency_key="upload-fresh",
-        )
-
-    row = get_job(settings, job.job_id)
-    assert row.status == "claimed"
-    assert row.finished_at is None
-    # And the extracted upload is still on disk: it is the only copy this side
-    # of the sensor, and a full disk must not turn into a deleted scan.
-    leftovers = sorted(p.name for p in (Path(settings.output_dir) / "runs").iterdir())
-    assert any(name.startswith(".ingest-") for name in leftovers), leftovers
+    owed = run_publisher.pending_publications(settings, job.job_id)
+    assert [row.status for row in owed] == ["dead"]
+    assert run_publisher.backlog(settings) == {"pending": 0, "dead": 1}
+    assert run_publisher.is_backlogged(settings)
+    # Said on the job itself, which is where an operator looks first.
+    assert "run not published" in (get_job(settings, job.job_id).error or "")
+    # A dead row is not retried again by the next tick.
+    assert run_publisher.reconcile_once(settings, now=_later())["failed"] == 0
+    assert Path(owed[0].staging_path).is_dir()
 
 
-def test_a_promote_failure_keeps_the_extracted_upload(settings, monkeypatch):
-    """The disk filling up mid-promotion is the other half of the same rule.
+def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, monkeypatch):
+    """A retried publication is the same message, not a second run.
 
-    ``promote_staging`` raising used to be caught beside the store errors and
-    a ``finally`` then removed the staging tree — an ENOSPC deleted the one
-    copy of the scan and the job still reported ``succeeded``."""
+    ``ingest.results.{tenant}`` feeds ClickHouse under the run id, so a
+    republish that produced a second message would insert the same scan twice.
+    The archive is kept beside the staging tree exactly so a retry can send
+    the bytes the first attempt would have — same digest, same ``Msg-Id``,
+    dropped by the stream.
+    """
+    settings.nats_url = "nats://127.0.0.1:4222"
+    published: list[dict] = []
+    broker = {"up": False}
+
+    def _publish(**kwargs):
+        if not broker["up"]:
+            return {"published": False, "msg_id": "m", "archive_sha256": "d"}
+        published.append(kwargs)
+        return {"published": True, "msg_id": "m", "archive_sha256": "d"}
+
+    monkeypatch.setattr(results_ingest, "publish_raw_results", _publish)
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
     claim = jobs_service.claim_job(settings, "agent-1")
     run_id = get_job(settings, job.job_id).run_id
 
-    def _disk_is_full(*_args, **_kwargs):
-        raise OSError("No space left on device")
+    done = jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive("fresh"),
+        attempt=claim.attempt,
+        idempotency_key="upload-fresh",
+    )
 
-    monkeypatch.setattr(artifact_workspace, "promote_staging", _disk_is_full)
-
-    with pytest.raises(OSError, match="No space left"):
-        jobs_service.complete_job(
-            settings,
-            job.job_id,
-            agent_id="agent-1",
-            exit_code=0,
-            run_id=run_id,
-            archive_bytes=_archive("fresh"),
-            attempt=claim.attempt,
-            idempotency_key="upload-fresh",
-        )
-
-    assert get_job(settings, job.job_id).status == "claimed"
-    staged = [
-        child
-        for child in (Path(settings.output_dir) / "runs").iterdir()
-        if child.name.startswith(".ingest-")
+    # The broker is down, so the run is published on disk and in the store and
+    # the message is owed. The scan is not failed over a projection.
+    assert done.status == "succeeded"
+    assert (
+        artifact_workspace.run_dir(settings, str(run_id), refresh=False) / "fresh.json"
+    ).is_file()
+    assert published == []
+    assert [row.status for row in run_publisher.pending_publications(settings, job.job_id)] == [
+        "pending"
     ]
-    assert staged and (staged[0] / "fresh.json").exists()
+
+    broker["up"] = True
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+    assert [p["run_id"] for p in published] == [str(run_id)]
+    # Nothing is owed any more, so no later tick can publish it a second time.
+    assert run_publisher.pending_publications(settings, job.job_id) == []
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 0
+    assert [p["run_id"] for p in published] == [str(run_id)]
 
 
 def test_a_run_is_never_visible_without_its_tenant_marker(settings, monkeypatch):
     """A run with no ``tenant.json`` reads back as the *default* tenant — i.e.
-    as one tenant's scan in every tenant's run list. Written after the run was
-    published, a failed marker left that state behind for good; written into
-    staging, it travels with the run into both copies at once."""
-    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
-    claim = jobs_service.claim_job(settings, "agent-1")
+    as one tenant's scan in every tenant's run list.
+
+    Deliberately scanned for a tenant that is **not** the default: the marker
+    and its absence are indistinguishable for a ``default`` run, so a test on
+    one proves nothing about the leak it is named after. The marker is written
+    into staging, which is what makes it travel into the store copy and the
+    run directory at the moment either becomes readable — written after the
+    publication, a failure between the two would leave this run in every
+    tenant's list for good.
+    """
+    tenant = tenants_service.create_tenant(tenant_id="ten_acme", name="Acme")["tenant_id"]
+    approve_scan_scope(settings, tenant_id=tenant)
+    agents_service.register_agent(agent_id="agent-acme", tenant_id=tenant)
+    job = jobs_service.start_scan(
+        settings, StartScanRequest(mode="balanced", tenant_id=tenant), username="admin"
+    )
+    claim = jobs_service.claim_job(settings, "agent-acme")
     run_id = get_job(settings, job.job_id).run_id
     seen: dict[str, bool] = {}
 
@@ -347,28 +467,36 @@ def test_a_run_is_never_visible_without_its_tenant_marker(settings, monkeypatch)
     jobs_service.complete_job(
         settings,
         job.job_id,
-        agent_id="agent-1",
+        agent_id="agent-acme",
         exit_code=0,
         run_id=run_id,
         archive_bytes=_archive("fresh"),
         attempt=claim.attempt,
         idempotency_key="upload-fresh",
+        tenant_id=tenant,
     )
 
     assert seen["marked_before_promotion"]
     run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
-    assert (run_dir / "tenant.json").is_file()
-    assert runs_service.run_tenant_of(settings, str(run_id)) == "default"
+    marker = json.loads((run_dir / "tenant.json").read_text(encoding="utf-8"))
+    assert marker["tenant_id"] == tenant
+    assert marker["job_id"] == job.job_id
+    # The listing's own reader, which is what puts a run in a tenant's drawer.
+    assert runs_service.run_tenant_of(settings, str(run_id)) == tenant
+    assert runs_service.read_run_tenant(run_dir) == tenant
 
 
 def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, monkeypatch):
-    """``ingest.results.{tenant}`` is the run's other publication.
+    """Everything a refused straggler carried stays where nobody can see it.
 
-    The gateway publish used to run at the top of the ingest, before anything
-    had asked whether this upload was still the current one: a straggler's
-    archive went to the bus, the ClickHouse worker inserted it under the run id
-    the *new* attempt owns, and the Msg-Id dedup cannot catch it because two
-    attempts produce two different archives.
+    ``ingest.results.{tenant}`` is the run's other publication: the ClickHouse
+    worker inserts it under the run id the *new* attempt owns, and the Msg-Id
+    dedup cannot catch it because two attempts produce two different archives.
+    The run directory and the store are the same statement in the other two
+    places a scan is visible from.
+
+    The reap fires inside ``extract_run_archive`` — before the terminal write,
+    which is the only place a straggler can still be refused.
     """
     settings.nats_url = "nats://127.0.0.1:4222"
     published: list[dict] = []
@@ -403,8 +531,15 @@ def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, 
         )
 
     assert published == []
+    # Not in the run directory, not in the store's listing, and not owed a
+    # publication that would put it in either later.
+    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    assert artifact_workspace.run_ids(settings) == []
+    assert run_publisher.pending_publications(settings, job.job_id) == []
+    # And nothing of it is left on disk to be swept, promoted or found.
+    assert _ingest_leftovers(settings) == []
 
-    # The attempt that owns the job does reach it, with its own archive.
+    # The attempt that owns the job does reach all of it, with its own archive.
     jobs_service.complete_job(
         settings,
         job.job_id,
@@ -416,6 +551,115 @@ def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, 
         idempotency_key="upload-fresh",
     )
     assert [p["run_id"] for p in published] == [str(run_id)]
+    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    assert sorted(p.name for p in run_dir.iterdir()) == [
+        "fresh.json",
+        "summary.json",
+        "tenant.json",
+    ]
+
+
+def test_a_reap_during_the_publication_cannot_mix_two_attempts(settings, monkeypatch):
+    """The window the previous fix opened, in the place it opened it.
+
+    Publishing *before* the terminal write left the whole publication —
+    ``upload_tree`` into the store, ``promote_staging`` into the run
+    directory, the pointer, the bus — outside the fence. A lease that lapsed
+    inside it (an archive of a large scan is minutes of store writes) got the
+    job requeued, the terminal write refused, and nothing rolled back: the run
+    directory held the files of *both* attempts, because ``promote_staging``
+    merges, and the bus held two messages under one run id.
+
+    So the reap is fired from inside ``promote_staging``, which is the latest
+    moment it can do damage. The publication is downstream of the outcome now,
+    and a reaper cannot take a job that is already terminal.
+    """
+    settings.nats_url = "nats://127.0.0.1:4222"
+    published: list[dict] = []
+    monkeypatch.setattr(
+        results_ingest,
+        "publish_raw_results",
+        lambda **kwargs: published.append(kwargs) or {"published": True},
+    )
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    first = jobs_service.claim_job(settings, "agent-1")
+    run_id = get_job(settings, job.job_id).run_id
+
+    real_promote = artifact_workspace.promote_staging
+    reaped: dict[str, int] = {}
+
+    def _reap_then_promote(settings_, run_id_, staging, *args, **kwargs):
+        if not reaped:
+            # What the reaper does to a job whose lease lapsed mid-publication.
+            _expire_lease(settings, job.job_id)
+            reaped["requeued"] = jobs_service.reap_expired_leases(settings)["requeued"]
+        return real_promote(settings_, run_id_, staging, *args, **kwargs)
+
+    monkeypatch.setattr(artifact_workspace, "promote_staging", _reap_then_promote)
+    done = jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive("first"),
+        attempt=first.attempt,
+        idempotency_key="upload-first",
+    )
+
+    # The outcome was written before the publication began, so there was no
+    # in-flight job left for the reaper to hand out.
+    assert reaped["requeued"] == 0
+    assert done.status == "succeeded"
+    assert jobs_service.claim_job(settings, "agent-1") is None
+
+    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    assert sorted(p.name for p in run_dir.iterdir()) == [
+        "first.json",
+        "summary.json",
+        "tenant.json",
+    ]
+    assert [p["run_id"] for p in published] == [str(run_id)]
+
+
+def test_a_replica_killed_after_the_outcome_still_publishes_the_run(settings, monkeypatch):
+    """The crash the two previous orders could not survive either way.
+
+    A process that dies between the terminal write and the publication used to
+    leave a job ``succeeded`` with no run anywhere, an agent retry answered as
+    a replay of that outcome, and nothing that remembered the difference. The
+    publication is a row written in the same transaction as the outcome, so
+    the death is a retry: another replica — or this one, after its restart —
+    finds the run owed and finishes it.
+    """
+    monkeypatch.setattr(run_publisher, "publish_now", lambda *_a, **_k: False)
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(settings, "agent-1")
+    run_id = get_job(settings, job.job_id).run_id
+
+    done = jobs_service.complete_job(
+        settings,
+        job.job_id,
+        agent_id="agent-1",
+        exit_code=0,
+        run_id=run_id,
+        archive_bytes=_archive("fresh"),
+        attempt=claim.attempt,
+        idempotency_key="upload-fresh",
+    )
+    assert done.status == "succeeded"
+    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    assert [row.status for row in run_publisher.pending_publications(settings, job.job_id)] == [
+        "pending"
+    ]
+
+    # The reconciler in this or any other replica that can see the tree.
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    assert (run_dir / "fresh.json").is_file()
+    assert (run_dir / "tenant.json").is_file()
+    assert run_publisher.pending_publications(settings, job.job_id) == []
+    assert _ingest_leftovers(settings) == []
 
 
 def test_a_projection_that_throws_cannot_undo_a_finished_job(settings, monkeypatch):

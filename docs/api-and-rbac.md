@@ -805,9 +805,13 @@ The attempt is checked twice: when the upload is accepted for ingest, and again
 at the final status write, which happens only if the job is still on the same
 attempt, with the same owner, under the ingest lease this upload reserved. A
 lease that lapses mid-ingest therefore costs the straggler its result and not
-the new attempt its run: the upload answers **409**, nothing it carried reaches
-the run directory or the ingest bus, and the sensor logs a rejected result
-rather than a failed upload. The ingest itself holds the lease open for
+the new attempt its run: the upload answers **409** and the sensor logs a
+rejected result rather than a failed upload. Nothing it carried is anywhere to
+undo — the upload is extracted into a staging tree named after its ingest
+token, and the run reaches the run directory, the object store and the ingest
+bus only from the `run_publications` row that the terminal write inserts,
+which a refused upload never gets (see
+[architecture.md](architecture.md#idempotency-and-fencing)). The ingest itself holds the lease open for
 `OCTO_JOB_INGEST_LEASE_SECONDS`, so an ordinary large upload is not refused for
 being slow.
 

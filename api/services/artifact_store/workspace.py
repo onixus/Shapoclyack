@@ -96,8 +96,9 @@ def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
     a run of its own by :func:`run_ids`.
 
     Taking one is also when the abandoned ones are collected. An ingest killed
-    with its pod -- or one whose store failed, which leaves its tree on purpose
-    -- has nobody else to clean up after it: the cache eviction that sweeps
+    with its pod -- or one whose publication is recorded as owed and has run
+    out of retries, which leaves its tree on purpose -- has nobody else to
+    clean up after it: the cache eviction that sweeps
     these runs only on a remote backend, and a dotted directory is invisible to
     every listing there is, so on the local backend a full extracted run would
     sit in ``output_dir/runs`` for good and grow the disk where nothing reports
@@ -108,6 +109,33 @@ def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _sweep_abandoned(destination.parent)
     return destination.parent / f".ingest-{destination.name}-{token[:12]}"
+
+
+def staged_archive_path(staging: Path) -> Path:
+    """Where the upload's own archive is kept while its publication is owed.
+
+    A *sibling* of the staging tree, not a file inside it: inside, it would be
+    uploaded with the run and offered to an operator as one of the scan's
+    artifacts — a 300 MB tarball of the directory it sits in.
+
+    It is kept at all because the publication of a run outlives the request
+    that accepted it (``api/services/run_publisher.py``). The bus message for
+    ``ingest.results.{tenant}`` is built from these bytes and its ``Msg-Id``
+    is their digest, so a republish after a broker outage — or after the
+    replica was killed between the outcome and the publication — has to send
+    *the same* archive. Re-packing the run directory would produce a different
+    digest, which is a second message for one run rather than a retry of one.
+    """
+    staging = Path(staging)
+    return staging.parent / f"{staging.name}.upload"
+
+
+def stage_upload_archive(staging: Path, archive_bytes: bytes) -> Path:
+    """Put the accepted upload's archive beside its staging tree."""
+    path = staged_archive_path(staging)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(archive_bytes)
+    return path
 
 
 def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
@@ -129,13 +157,21 @@ def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
             # check and the rename. Copying is the same outcome, slower.
             LOG.debug("Could not rename staged run %s into place", run_id, exc_info=True)
     shutil.copytree(staging, destination, dirs_exist_ok=True)
-    discard_staging(staging)
+    # The tree only. The archive beside it is still owed to the ingest bus,
+    # and the publisher drops it when the whole publication is done.
+    shutil.rmtree(staging, ignore_errors=True)
     return destination
 
 
 def discard_staging(staging: Path) -> None:
-    """Drop a staged upload that was refused, or one already promoted."""
+    """Drop a staged upload that was refused, or one already promoted.
+
+    The archive kept beside the tree (:func:`staged_archive_path`) goes with
+    it: both belong to one upload, and leaving the tarball behind would keep
+    the larger half of it on the disk for nobody.
+    """
     shutil.rmtree(staging, ignore_errors=True)
+    staged_archive_path(staging).unlink(missing_ok=True)
 
 
 def run_dir(settings: Settings, run_id: str, *, refresh: bool = True) -> Path:
@@ -407,22 +443,44 @@ def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
 #: enough that a pod killed mid-fetch does not carry the debris for a day.
 _ABANDONED_AFTER_SECONDS = 3600
 
+#: The same, for an *ingest* staging tree and the archive beside it. Much
+#: longer, because these two are not transfer debris: they are a complete run
+#: an agent uploaded and a publication that is recorded as owed
+#: (``run_publications``). A publication that has exhausted its retries stays
+#: ``dead`` for an operator to decide about, and an hour is not a shift — a
+#: day is long enough to be told and short enough that a disk does not carry
+#: a failed installation's scans into next week.
+_ABANDONED_INGEST_AFTER_SECONDS = 24 * 3600
+
+#: Prefix :func:`staging_run_dir` gives an ingest's tree, and — with
+#: ``.upload`` appended — its archive.
+_INGEST_PREFIX = ".ingest-"
+
 
 def _sweep_abandoned(root: Path) -> None:
-    """Remove staging trees a killed fetch left behind.
+    """Remove staging trees a killed fetch or a lost ingest left behind.
 
     They are hidden names, so eviction skips them and they would otherwise be
     the one thing in this directory that grows without a bound. Old ones only:
     a fresh one may be a transfer in progress, here or in another pod sharing
-    the volume.
+    the volume — or an ingest whose publication this installation still owes,
+    which is why those get :data:`_ABANDONED_INGEST_AFTER_SECONDS` instead.
     """
-    cutoff = time.time() - _ABANDONED_AFTER_SECONDS
+    now = time.time()
     for child in root.iterdir():
-        if not child.is_dir() or child.name == SYNC_DIR or not child.name.startswith("."):
+        if child.name == SYNC_DIR or not child.name.startswith("."):
             continue
+        ingest = child.name.startswith(_INGEST_PREFIX)
+        if not child.is_dir() and not (ingest and child.name.endswith(".upload")):
+            continue
+        cutoff = now - (_ABANDONED_INGEST_AFTER_SECONDS if ingest else _ABANDONED_AFTER_SECONDS)
         try:
-            if child.stat().st_mtime < cutoff:
+            if child.stat().st_mtime >= cutoff:
+                continue
+            if child.is_dir():
                 shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
         except OSError:
             continue
 

@@ -20,26 +20,48 @@ All notable changes to Shapoclyack are documented in this file.
   write is conditional on `(job_id, attempt, owner, ingest token)`. A stale
   result is refused with `409` and the sensor logs a rejected result rather
   than a failed upload.
-- Uploaded artifacts are extracted into a staging directory named after the
-  ingest lease, and nothing leaves that tree until the lease has been checked
-  again — so a refused upload reaches neither the run directory nor
-  `ingest.results.{tenant}`. The gateway publish used to run at the top of the
-  ingest, before anything had asked whether the upload was still current: a
-  straggler's archive went to the bus and ClickHouse inserted it under the run
-  id the *new* attempt owns, where the `archive_sha256` dedup cannot catch it
-  because two attempts produce two different archives.
-- **A scan is no longer reported as kept when the store refused it.** The run
-  is published — tenant marker, object store, run directory, latest-run
-  pointer — *before* the terminal status write, so a store or disk failure
-  costs the upload its outcome: the job stays non-terminal, the reaper requeues
-  it, the scan is redone. Published after the write, a failure was permanent
-  (the sensor's retry is answered as a replay of `succeeded`), a promotion that
-  hit `ENOSPC` deleted the extracted upload on its way out, and a run whose
-  `tenant.json` never got written stayed readable as the **default tenant** —
-  one tenant's scan in every tenant's run list. The extracted tree is now left
-  on disk when the store fails, and collected after an hour of inactivity by
-  the next ingest on that replica, which is also what finally cleans up after a
-  replica killed mid-upload.
+- **An accepted run is published from a durable record, not in a call order.**
+  Uploaded artifacts are extracted into a staging directory named after the
+  ingest lease — invisible to every listing, key prefix and subject — and the
+  terminal write inserts one `run_publications` row in the *same* transaction
+  (migration `0058_job_ingest_lease`). Everything that makes the run visible
+  (object store, run directory, `latest_run.json`, `ingest.results.{tenant}`)
+  is then done from that row: in the request that accepted the upload, and by
+  a reconciler in every replica if that does not succeed. Tested: an upload
+  the fence refuses leaves no run directory, no entry in the store listing, no
+  message on the ingest bus, no publication row and nothing on disk; a reaper
+  that fires in the middle of the publication can neither mix two attempts'
+  files in one run directory nor put two messages on the bus under one run id.
+
+  Both orders shipped earlier were wrong in opposite directions. Publishing
+  *before* the terminal write left the whole publication outside the fence: a
+  lease that lapsed during a large `upload_tree` had the job requeued, the
+  terminal write refused, and nothing rolled back — the run directory held
+  both attempts' files (`promote_staging` merges) and ClickHouse got two
+  inserts under one run id. Publishing *after* it left a store outage
+  permanent: the job read `succeeded`, the artifacts were nowhere, and the
+  sensor's retry was answered as a replay of that outcome.
+- **A store or broker failure now costs the run its visibility, not its
+  existence.** The upload is accepted, the extracted tree and the archive stay
+  on the accepting replica's disk, and the publication is retried with
+  exponential backoff up to `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (default 5,
+  about eight minutes). Past that the row stays `dead` and says so in three
+  places: `/api/health` (`run_publications`, advisory — `/readyz` is
+  unaffected), `octo_run_publication_backlog{status}` /
+  `octo_run_publications_total{outcome}`, and a note on the job's own `error`.
+  The extracted tree is kept for 24 hours rather than the hour a killed
+  fetch's debris gets, so the choice between publishing it by hand and
+  re-scanning is an operator's. A replica killed between the outcome and the
+  publication is the same case: the row is due, and the next tick finishes it.
+- A retried publication is the same bus message, not a second run: the archive
+  is kept beside the staging tree so the republish carries the digest the
+  `Msg-Id` is derived from. Re-packing the run directory would have produced a
+  different one, i.e. a second ClickHouse insert for one scan.
+- The run's `tenant.json` is written into the staging tree, so both copies
+  carry their owner from the moment either can be read. A run without it reads
+  back as the **default tenant** — one tenant's scan in every tenant's run
+  list — and the marker used to be written after the run was published, where
+  a failure in between left that state for good.
 - Nothing after the terminal write can fail the request: the projections and
   notifications are wrapped, and a failure there is recorded in the job's
   `error`. A non-`OSError` from the publication used to escape after the
@@ -60,6 +82,17 @@ All notable changes to Shapoclyack are documented in this file.
   now passes over a job with an ingest lease open inside
   `OCTO_JOB_INGEST_LEASE_SECONDS`; a stale lease from a dead replica still does
   not hold a stop open.
+- **A stop is no longer held for 15 minutes by an ingest nobody is running.**
+  Passing a stopping job over while an ingest is open means a replica killed
+  mid-upload holds it for the whole `OCTO_JOB_INGEST_LEASE_SECONDS` (900s)
+  rather than the `OCTO_JOB_CANCEL_GRACE_SECONDS` (300s) the operator was
+  promised — nothing clears that marker for a row in `cancelling`, because the
+  lease reaper takes in-flight rows only. Pressing stop a second time past the
+  grace period now drops the hold (audited, and an upload still in flight for
+  it is then refused as stale); inside the grace period it is left alone, so a
+  slow branch office does not lose the partial archive it is delivering.
+  Before this, the second press was a no-op with nothing in the answer to say
+  why the scan would not die.
 - The `409` on `POST /api/agent/jobs/{job_id}/results` carries
   `X-Result-Rejection`: `stale-attempt`, `conflict`, or `in-flight` for the
   sensor's own earlier upload still being ingested. The sensor used to read all

@@ -86,32 +86,52 @@ token)` still matching; if the lease lapsed and the reaper gave the job to
 another attempt, the upload is refused with `409` and the sensor reports a
 rejected result rather than a failed upload.
 
-Artifacts follow the same boundary. An upload is extracted into a staging
-directory named after its ingest token, beside the run directory rather than
-inside it, and nothing leaves that tree until the lease has been checked again.
-The order after that check is: the tenant marker into the staging tree, the
-tree into the object store, the tree into the run directory, the latest-run
-pointer, then `ingest.results.{tenant}` — and only then the conditional status
-write. So a run is never visible without the marker that says whose it is (a
-run with no `tenant.json` reads as the *default* tenant, i.e. as one tenant's
-scan in every tenant's run list), and a refused upload reaches neither the run
-directory nor the ingest bus.
+Artifacts follow the same boundary, and they do not cross it at all. An upload
+is extracted into a staging directory named after its ingest token, beside the
+run directory rather than inside it, and nothing there is visible to any
+listing, key prefix or subject. The terminal write is the commit point: it
+records the outcome **and**, in the same transaction, one `run_publications`
+row saying this run is accepted and owed its publication. So an upload the
+fence refuses leaves nothing behind — no run directory, no store keys, no bus
+message, no row — and an upload that is accepted cannot be forgotten.
 
-Publishing ahead of the status write is deliberate: a store that refuses the
-run costs the upload its terminal write, so the job stays non-terminal, the
-reaper requeues it and the scan is redone. Written the other way round, the job
-read `succeeded` while the artifacts were nowhere, and because the sensor's
-retry is answered as a replay of that outcome, the gap was permanent. The
-extracted tree is left on disk when the store fails, for the same reason. Only
-the projections — assets, vulnerabilities, asset events, notifications — run
-after the status write, and they cannot fail the request: a failure there is
-recorded in the job's `error`. The concurrent lease-expiry scenario this
-replaced is in the dated
+Everything that makes the run visible is then done from that row by
+`api/services/run_publisher.py`: the tenant marker into the staging tree, the
+tree into the object store, the tree into the run directory, the latest-run
+pointer, then `ingest.results.{tenant}`. It runs first in the request that
+accepted the upload, so an ordinary upload is answered with the run already
+published; a failure there does not fail the request, because the outcome is
+committed and what is left undone is a row. A reconciler in every replica
+retries it with exponential backoff up to `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS`,
+and each step is idempotent and resumable from what is on disk, so a replica
+killed halfway is a retry rather than a repair. The archive is kept beside the
+staging tree because the bus message's `Msg-Id` is its digest: a republish has
+to be the same message, not a second ClickHouse insert for one scan.
+
+Two things this is deliberately *not*. It is not the publication ordered
+before the status write — that left the whole publication outside the fence,
+so a lease lapsing during a large `upload_tree` produced a run directory with
+two attempts' files in it (`promote_staging` merges) and two bus messages under
+one run id. And it is not the publication ordered after it — that left a store
+outage permanent, since the job read `succeeded` while the artifacts were
+nowhere and the sensor's retry is answered as a replay of that outcome. Both
+were shipped in turn; the record is in the dated
 [architecture review](architecture-review-2026-09-18.ru.md).
 
-A staging tree an ingest never finished — a replica killed mid-upload, or a
-store failure — is collected the next time this replica takes a staging
-directory, past one hour of inactivity.
+A run that cannot be published at all is the bounded end of this. Past
+`OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` the row stays `dead`: `/api/health` reports
+`run_publications` (advisory — `/readyz` is unaffected),
+`octo_run_publication_backlog{status="dead"}` rises, the job's `error` says the
+run was not published, and the extracted tree stays on the accepting replica's
+disk for 24 hours so an operator can publish it by hand or re-scan. The
+projections that read a published run — assets, vulnerabilities, asset events,
+notifications — run when the publication lands, not when the job finishes, and
+they cannot fail it: a failure there is recorded in the job's `error`.
+
+A staging tree an ingest never finished is collected the next time this
+replica takes a staging directory: past one hour of inactivity for a killed
+fetch's debris, and past 24 hours for an ingest tree, which is a complete run
+somebody may still want rather than a partial transfer.
 
 The `409` on the results route carries `X-Result-Rejection`, because three
 different things share the status: `stale-attempt` (the job moved on),

@@ -799,3 +799,53 @@ def test_an_ingest_lease_from_a_dead_replica_does_not_hold_a_stop_open(tmp_path)
 
     assert jobs_service.reap_stale_cancellations(settings) == 1
     assert jobs_service.get_job(settings, job_id).status == job_states.CANCELLED
+
+
+def test_a_second_stop_drops_an_ingest_hold_a_dead_replica_left_behind(tmp_path):
+    """The escalation an operator had no way to ask for.
+
+    ``reap_stale_cancellations`` passes a stopping job over while an ingest is
+    open, and nothing clears that marker for a row in ``cancelling``: the lease
+    reaper takes IN_FLIGHT rows only, and the process that would have cleared
+    it is the one that died. So a replica killed in the middle of a confirming
+    upload held the stop for ``job_ingest_lease_seconds`` — three times the
+    grace the operator was promised — and pressing stop again was a no-op with
+    nothing in the response to say why.
+
+    A second press past the grace period drops the hold. A fresher one is left
+    alone: that is a confirmation still inside its window, and the partial
+    archive it is delivering is what #360 exists to keep.
+    """
+    settings = _service_settings(tmp_path)
+    settings.job_cancel_grace_seconds = 60
+    settings.job_ingest_lease_seconds = 900
+    job_id = _cancelling_job(settings)
+    _age_cancellation(settings, job_id, 300)
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        row.ingest_token = "in-flight"
+        row.ingest_started_at = jobs_service._now() - timedelta(seconds=10)  # noqa: SLF001
+
+    # Inside the grace period: still an upload, still protected, and the stop
+    # waits for it exactly as it did before.
+    jobs_service.cancel_job(settings, job_id, username="operator")
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.Job, job_id).ingest_token == "in-flight"
+    assert jobs_service.reap_stale_cancellations(settings) == 0
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        row.ingest_started_at = jobs_service._now() - timedelta(seconds=120)  # noqa: SLF001
+
+    # Past it, the second press is the operator saying "I know, kill it".
+    assert (
+        jobs_service.cancel_job(settings, job_id, username="operator").status
+        == job_states.CANCELLING
+    )
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        assert row.ingest_token is None
+        assert row.ingest_started_at is None
+    assert jobs_service.reap_stale_cancellations(settings) == 1
+    assert jobs_service.get_job(settings, job_id).status == job_states.CANCELLED

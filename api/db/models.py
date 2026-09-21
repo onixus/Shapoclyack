@@ -1767,6 +1767,62 @@ class Job(Base):
     )
 
 
+class RunPublication(Base):
+    """One accepted upload that still owes the installation its visible copy.
+
+    The row is written in the *same transaction* as the job's terminal write,
+    which is what makes the publication of a run a decision rather than a race
+    (``api/services/run_publisher.py``). Before that transaction an upload is
+    a staging tree nobody can see; after it, everything that makes the run
+    visible — the object store, the run directory, ``latest_run.json``,
+    ``ingest.results.{tenant}`` — is redone from this row until it is done.
+
+    ``publication_id`` *is* the ingest lease token that authorised the
+    outcome, so there is exactly one row per accepted upload without a second
+    unique constraint, and a straggler refused by the fence cannot have one at
+    all: it never reached the write that inserts it.
+
+    ``staging_path`` and ``archive_path`` are paths on ``replica``'s disk. A
+    remote backend caches per pod and a local backend need not share a volume,
+    so a peer that claims the row and cannot see the tree gives it back rather
+    than declaring it lost — see the reconciler.
+    """
+
+    __tablename__ = "run_publications"
+
+    publication_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    job_id: Mapped[str] = mapped_column(index=True)
+    run_id: Mapped[str] = mapped_column(index=True)
+    agent_id: Mapped[str | None] = mapped_column(default=None)
+    # The outcome that was committed beside this row. The projections a
+    # published run feeds are gated on it (a partial sweep read as a complete
+    # one reports hosts as gone), so it travels with the publication rather
+    # than being re-read from a job row that may since have been retried.
+    job_status: Mapped[str] = mapped_column(default="succeeded")
+    exit_code: Mapped[int | None] = mapped_column(default=None)
+    # The scanner's error string, for the bus payload only. Not the job's
+    # ``error``: that one also carries who asked for a cancellation.
+    scan_error: Mapped[str | None] = mapped_column(default=None)
+    surface: Mapped[str | None] = mapped_column(default=None)
+    staging_path: Mapped[str] = mapped_column(default="")
+    archive_path: Mapped[str | None] = mapped_column(default=None)
+    replica: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="pending")  # pending | dead
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        # The reconciler's predicate: due pending rows, oldest first. It runs
+        # on every replica on a timer, so it must not scan the table.
+        Index("ix_run_publications_due", "status", "next_attempt_at"),
+        Index("ix_run_publications_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
 class RiskScoreSnapshot(Base):
     """Historical snapshot of a tenant's risk posture (#144, Track C).
 

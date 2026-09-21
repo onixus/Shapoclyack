@@ -608,6 +608,20 @@ class Settings:
     job_cancel_grace_seconds: int = 300
     job_reaper_enabled: bool = True
     job_reaper_interval_seconds: int = 60
+    # Publishing a run the API has already accepted (``run_publications``).
+    # The work is done in the request that accepted the upload; these govern
+    # what happens when it does not succeed there — a store that is refusing,
+    # a broker that is down, a replica killed between the outcome and the
+    # publication. Retries are the reconciler's, and they are bounded: past
+    # ``run_publication_max_attempts`` the row stays ``dead`` for an operator,
+    # because a publication that has failed for an hour is a decision, not a
+    # slower timer. Five attempts on the default backoff is about eight
+    # minutes.
+    run_publication_max_attempts: int = 5
+    run_publication_retry_base_seconds: int = 15
+    run_publication_retry_max_seconds: int = 900
+    run_publication_worker_enabled: bool = True
+    run_publication_interval_seconds: int = 30
     # Login brute-force protection (#157). The counter is the auth_events table,
     # so the limit holds across replicas; see api/services/auth_audit.py.
     login_rate_limit_enabled: bool = True
@@ -1587,6 +1601,24 @@ def load_settings() -> Settings:
         job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         job_reaper_interval_seconds=job_reaper_interval_seconds,
+        run_publication_max_attempts=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_MAX_ATTEMPTS", "5"))
+        ),
+        run_publication_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_RETRY_BASE_SECONDS", "15"))
+        ),
+        run_publication_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_RETRY_MAX_SECONDS", "900"))
+        ),
+        run_publication_worker_enabled=os.environ.get(
+            "OCTO_RUN_PUBLICATION_WORKER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        # Floored: the reconciler is a timer in every replica, and a zero here
+        # would spin it against Postgres.
+        run_publication_interval_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_INTERVAL_SECONDS", "30"))
+        ),
         login_rate_limit_enabled=os.environ.get("OCTO_LOGIN_RATE_LIMIT_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         login_rate_limit_max_failures=max(

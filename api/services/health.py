@@ -43,6 +43,7 @@ from api.db import engine as db_engine
 from api.services import artifact_store
 from api.services import clickhouse_client
 from api.services import nats_bus
+from api.services import run_publisher
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.health")
@@ -90,6 +91,14 @@ def check_readiness(settings: Settings) -> Readiness:
         )
     if artifact_store.is_remote(settings):
         checks["artifacts"] = STATUS_OK if _artifacts_ok(settings) else STATUS_ERROR
+    # Advisory, and deliberately not on the pending rows: a publication in
+    # flight is the ordinary state for the length of one ingest, and unreadying
+    # a replica for it would flicker on every scan. What this reports is a run
+    # the installation accepted, answered the sensor 200 for, and has given up
+    # on publishing — which is invisible everywhere else until somebody opens
+    # the scan and finds no artifacts.
+    if run_publisher.is_backlogged(settings):
+        checks["run_publications"] = STATUS_ERROR
     return Readiness(
         ready=all(
             status == STATUS_OK for name, status in checks.items() if name in BLOCKING_CHECKS

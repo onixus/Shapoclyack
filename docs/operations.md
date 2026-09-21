@@ -1067,6 +1067,60 @@ stream still retains. That is safe to repeat: both ClickHouse tables are
 `ReplacingMergeTree` keyed on what the transform emits, and every publish
 carries a `Nats-Msg-Id`.
 
+### Runs accepted but not published (`run_publications`)
+
+An upload from a sensor becomes visible in four places: the object store, the
+run directory, `state/latest_run.json` and `ingest.results.{tenant}`. Since the
+ingest fencing change, none of that happens before the job's terminal write.
+That write records the outcome and, in the same transaction, one
+`run_publications` row saying the run is accepted and owed its publication;
+everything visible is then done from that row — first in the request that
+accepted the upload, then by a reconciler in every replica.
+
+So a store outage, an unreachable broker or a replica killed mid-publication no
+longer costs the scan. It costs its *visibility*, for as long as the row says
+`pending`. What an operator has to act on is a row that says `dead`:
+
+- `/api/health` reports `run_publications: error` (advisory — `/readyz` and the
+  replica's place in the Service are unaffected);
+- `octo_run_publication_backlog{status="dead"}` is non-zero;
+- the job itself carries `; run not published (publication <id>): <reason>` in
+  its `error`, which is what the console shows on a scan that says it succeeded
+  and has no artifacts.
+
+What is owed, and where it is:
+
+```bash
+python -c '
+from api.settings import get_settings
+from api.services import run_publisher
+s = get_settings()
+print(run_publisher.backlog(s))
+for row in run_publisher.pending_publications(s, "<job_id>"):
+    print(row.status, row.attempts, row.replica, row.staging_path, row.last_error)
+'
+```
+
+`staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
+row is normally finished by the replica that accepted the upload. A peer picks
+one up only after that replica has been silent for ten reconciler ticks, and
+gives it back untouched if it cannot see the tree.
+
+The extracted run and the archive beside it are kept for 24 hours after the
+last attempt, then swept by the next ingest on that replica. Inside that window
+there are two ways out, and both are decisions rather than retries:
+
+- **Publish it by hand.** Copy `staging_path` into the run directory
+  (`OCTO_OUTPUT_DIR/runs/<run_id>` on the local backend) or upload it under
+  `runs/<run_id>/` in the bucket, then delete the row. The analytical
+  projection stays behind for that run unless the archive is replayed as well.
+- **Re-scan.** Delete the row and start the scan again; the run id will be a
+  new one.
+
+A `pending` row that is not draining is the same problem one step earlier:
+check the store and the broker first (`/api/health`), because the reconciler is
+retrying something that is still refusing.
+
 ### Risk snapshot retention (#229)
 
 `risk_score_snapshots` (migration `0023`) gains one row per tenant on every

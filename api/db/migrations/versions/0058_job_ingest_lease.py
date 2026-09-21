@@ -1,4 +1,4 @@
-"""Ingest lease: fence the result upload at the final write, not only at the door
+"""Ingest lease and run publications: fence the upload, then owe its publication
 
 Revision ID: 0058_job_ingest_lease
 Revises: 0057_endpoint_agent_management
@@ -31,6 +31,23 @@ ingested at this instant:
     nor idle; the deadline is ``claimed_until``, which the reservation pushes
     forward because an upload in flight is proof of life.
 
+``run_publications`` is the other half, and it is what makes the ordering
+question answerable at all. Publishing a run *before* the terminal write lets
+a straggler's archive into the run directory, the store and the ingest bus
+before anything refused it; publishing it *after* lets a store outage leave a
+job reported ``succeeded`` with no scan behind it. Neither order is right,
+because the publication is not an ordering problem: it is work that must
+happen exactly once, after a decision, and survive the process that decided.
+So the terminal write and one row here are the same transaction, and
+``api/services/run_publisher.py`` redoes that row's publication — store, run
+directory, ``latest_run.json``, ``ingest.results.{tenant}`` — until it is done
+or until ``run_publication_max_attempts`` is spent, at which point the row
+stays ``dead`` where an operator and ``/api/health`` can see it.
+
+``publication_id`` is the ingest lease token from the columns above, so the
+two are one mechanism: exactly one publication per accepted upload, and none
+at all for an upload the fence refused.
+
 Rolling deploy: a replica still running the old code never writes these and
 never reads them, so it keeps ingesting exactly as unfenced as it is today,
 while a replica on the new code fences its own uploads. No backfill — an
@@ -55,9 +72,57 @@ def upgrade() -> None:
     op.add_column("jobs", sa.Column("ingest_attempt", sa.Integer(), nullable=True))
     op.add_column("jobs", sa.Column("ingest_agent_id", sa.String(), nullable=True))
     op.add_column("jobs", sa.Column("ingest_started_at", sa.DateTime(), nullable=True))
+    op.create_table(
+        "run_publications",
+        # The ingest lease token of the upload this publication is owed for.
+        sa.Column("publication_id", sa.String(), nullable=False),
+        sa.Column("tenant_id", sa.String(), nullable=False),
+        sa.Column("job_id", sa.String(), nullable=False),
+        sa.Column("run_id", sa.String(), nullable=False),
+        sa.Column("agent_id", sa.String(), nullable=True),
+        sa.Column("job_status", sa.String(), nullable=False, server_default="succeeded"),
+        sa.Column("exit_code", sa.Integer(), nullable=True),
+        sa.Column("scan_error", sa.String(), nullable=True),
+        sa.Column("surface", sa.String(), nullable=True),
+        # Paths on ``replica``'s disk: the extracted tree, and the archive the
+        # bus message is built from. Not the payload itself — one ingest body
+        # is megabytes of base64 and this table is read on a timer.
+        sa.Column("staging_path", sa.String(), nullable=False, server_default=""),
+        sa.Column("archive_path", sa.String(), nullable=True),
+        sa.Column("replica", sa.String(), nullable=True),
+        sa.Column("status", sa.String(), nullable=False, server_default="pending"),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
+        # Naive UTC like every other timestamp in this schema.
+        sa.Column("next_attempt_at", sa.DateTime(), nullable=True),
+        sa.Column("last_error", sa.String(), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.PrimaryKeyConstraint("publication_id"),
+    )
+    op.create_index("ix_run_publications_tenant_id", "run_publications", ["tenant_id"])
+    op.create_index("ix_run_publications_job_id", "run_publications", ["job_id"])
+    op.create_index("ix_run_publications_run_id", "run_publications", ["run_id"])
+    # The reconciler's predicate, running on every replica on a timer.
+    op.create_index(
+        "ix_run_publications_due", "run_publications", ["status", "next_attempt_at"]
+    )
+    op.create_index(
+        "ix_run_publications_tenant_status",
+        "run_publications",
+        ["tenant_id", "status", "created_at"],
+    )
 
 
 def downgrade() -> None:
+    # Drain the table first (``status='pending'`` empty): a row dropped here is
+    # a run that was accepted, is on a replica's disk and will never be
+    # published — the job says ``succeeded`` and nothing else remembers.
+    op.drop_index("ix_run_publications_tenant_status", table_name="run_publications")
+    op.drop_index("ix_run_publications_due", table_name="run_publications")
+    op.drop_index("ix_run_publications_run_id", table_name="run_publications")
+    op.drop_index("ix_run_publications_job_id", table_name="run_publications")
+    op.drop_index("ix_run_publications_tenant_id", table_name="run_publications")
+    op.drop_table("run_publications")
     # An upload being processed at this moment loses its fence and finishes the
     # way it did before this revision. Nothing else reads these columns.
     op.drop_column("jobs", "ingest_started_at")

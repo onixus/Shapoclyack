@@ -790,6 +790,11 @@ Job leases and the reaper (see [architecture.md](architecture.md#leases-and-orph
 | `OCTO_BULK_ACTION_BUDGET_SECONDS` | `45` | How long `POST /api/{vulnerabilities,assets}/bulk` may spend applying ids before it stops and answers with a partial report ([#346](https://github.com/onixus/Shapoclyack/issues/346)). Each id is its own transaction and, for a finding with a tracker key, its own outbound call, so a batch against a slow Jira outruns the proxy in front of the API — and a `504` there leaves work half applied with no statement of which half. Past the budget the ids the batch never reached come back with outcome `deadline` and the caller sends them again. Keep it **below** the read timeout of that proxy (nginx defaults to 60s); `0` turns the budget off |
 | `OCTO_JOB_REAPER_ENABLED` | `true` | Run the expiry sweep in this replica. Safe in all replicas; disabling it everywhere means abandoned jobs stay in flight forever |
 | `OCTO_JOB_REAPER_INTERVAL_SECONDS` | `60` | Sweep interval |
+| `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` | `5` | How many times an accepted run's publication — object store, run directory, `latest_run.json`, `ingest.results.{tenant}` — is retried before the `run_publications` row stays `dead` for an operator. The upload is already accepted and the extracted run is on the accepting replica's disk, so this is not a bound on losing data: it is the point at which a store or broker that has been refusing for minutes becomes somebody's decision instead of a timer's. A `dead` row turns `/api/health` degraded (advisory — `/readyz` is unaffected), raises `octo_run_publication_backlog{status="dead"}` and puts a note on the job's `error` |
+| `OCTO_RUN_PUBLICATION_RETRY_BASE_SECONDS` | `15` | First backoff after a failed publication; doubles per attempt |
+| `OCTO_RUN_PUBLICATION_RETRY_MAX_SECONDS` | `900` | Ceiling for that backoff |
+| `OCTO_RUN_PUBLICATION_WORKER_ENABLED` | `true` | Run the publication reconciler in this replica. Safe in all replicas (rows are claimed with `FOR UPDATE SKIP LOCKED`); disabling it everywhere means a publication a request could not finish is never finished |
+| `OCTO_RUN_PUBLICATION_INTERVAL_SECONDS` | `30` | Reconciler tick |
 
 Recurring-scan dispatcher (see
 [architecture.md](architecture.md#schedule-dispatcher-leadership)):
