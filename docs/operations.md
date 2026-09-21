@@ -2078,10 +2078,21 @@ on serving everything that does not need the bus (the matrix is in
 The one thing that would otherwise be lost silently is the `ingest.results.*`
 message that feeds the ClickHouse projection: the upload is accepted, the
 artifacts are written, the job succeeds — and analytics never hear about the
-run. That message is now written to the `nats_outbox` table instead (migration
-`0059`) and republished by a reconciler thread in every API replica.
+run. The `nats_outbox` table (migration `0059`) and the reconciler thread in
+every API replica exist to hold that message and republish it.
 
-What an operator sees:
+> **Status: the recording half is not wired up.** `jobs.complete_job` still
+> calls `results_ingest.publish_raw_results` directly, so nothing reaches
+> `nats_outbox.publish_ingest_or_record` and the table stays empty. The table,
+> the reconciler, the `ingest_backlog` check and the metrics below are all in
+> place and exercised; what is missing is the one call site that feeds them.
+> Until it is switched, a broker outage loses the ingest message exactly as it
+> did before this change — and NATS no longer fails `/readyz`, so nothing
+> catches the loss. The switch waits on the job-fencing change that is
+> rewriting `api/services/jobs.py`. Treat `ingest_backlog: ok` and
+> `octo_nats_outbox_backlog == 0` as "not measured", not as "nothing is owed".
+
+What an operator sees, once the call site is switched:
 
 * `/readyz` and `/api/health` carry an `ingest_backlog` check next to `nats`.
   It is `error` when something has been owed for longer than
@@ -2108,11 +2119,32 @@ longer than that, not a flaky publish.
 
 Inspecting and replaying the dead end:
 
+The API image has no `psql` (`Dockerfile.api` installs `openssh-client` and the
+DejaVu fonts, nothing else), and `OCTO_POSTGRES_URL` is a SQLAlchemy DSN —
+`psql` does not recognise the `postgresql+psycopg://` prefix and reads the whole
+string as a database name. So the outbox is inspected the way the rest of this
+runbook reaches the database: `python -c` in the API container.
+
 ```bash
-# What is owed, oldest first. Payloads are megabytes of base64 — do not SELECT *.
-kubectl -n network-scan exec deploy/shapoclyack-api -- \
-  psql "$OCTO_POSTGRES_URL" -c \
-  "SELECT status, count(*), min(created_at) FROM nats_outbox GROUP BY status"
+# What is owed, oldest first. Payloads are megabytes of base64 — never SELECT *.
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from sqlalchemy import func, select
+from api.db import models
+from api.db.engine import get_session
+from api.services import nats_outbox
+from api.settings import load_settings
+settings = load_settings()
+print(nats_outbox.backlog(settings))
+with get_session(settings.postgres_url) as session:
+    for row in session.execute(
+        select(
+            models.NatsOutboxEntry.status,
+            func.count(),
+            func.min(models.NatsOutboxEntry.created_at),
+        ).group_by(models.NatsOutboxEntry.status)
+    ):
+        print(row)
+"
 
 # Put the dead entries back on the due queue (all tenants, or one).
 kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
@@ -2121,6 +2153,14 @@ from api.settings import load_settings
 settings = load_settings()
 print(nats_outbox.requeue_dead(settings), 'requeued')
 print(nats_outbox.reconcile_once(settings))
+"
+
+# Give up on the ones that are not coming back, after re-scanning those runs.
+# Only 'dead' rows can be discarded; a pending row is still the reconciler's.
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from api.services import nats_outbox
+from api.settings import load_settings
+print(nats_outbox.discard_dead(load_settings()), 'discarded')
 "
 ```
 
@@ -2131,7 +2171,17 @@ Bounds worth knowing before an incident:
   `archive_inline: false` and replaying it gives ClickHouse nothing to
   transform. That limitation predates the outbox and is unchanged by it: for
   those runs the artifacts are the record, and the analytics gap needs a
-  re-scan or a manual load.
+  re-scan or a manual load. Such an entry is recorded `dead` immediately rather
+  than queued, and `requeue_dead` skips it with a log line. Requeueing one is
+  how the health signal gets to lie in the cheerful direction: the broker
+  accepts a body-less message, the republish counts as a success, the row is
+  deleted and the backlog reads zero over a ClickHouse that received nothing.
+* `dead` is the only status that needs a human, and it has exactly two exits:
+  `requeue_dead` for entries that failed because the outage outlasted the
+  retries, and `discard_dead` for entries an operator has decided against.
+  Until one of them is used, `ingest_backlog` stays `error` and
+  `octo_nats_outbox_backlog{status="dead"}` stays non-zero — the degraded
+  signal does not expire on its own, by design.
 * Only ingest messages are recorded. A job offer is not (the job row is in
   Postgres and a sensor claims over HTTP), and asset/audit events are not —
   those are skipped and counted, see the matrix.

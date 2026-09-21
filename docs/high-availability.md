@@ -299,7 +299,7 @@ every caller of it — `jobs._publish_job_offer`, `results_ingest`,
 | A sensor picking up work | **Works, slower** | `POST /api/agent/jobs/claim` is HTTP and takes the job under a row lock; JetStream only tells a sensor to claim *sooner*. A sensor with `OCTO_NATS_URL` set falls back to that claim every `NATS_FALLBACK_CLAIM_SECONDS` (60s, `agent/worker.py`), so with the broker gone dispatch latency is bounded by one minute rather than by the poll interval |
 | Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
 | Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |
-| The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The ingest publish is refused and recorded in `nats_outbox`; the reconciler republishes it when the broker returns. Until then the run is complete everywhere *except* in analytics |
+| The analytical (ClickHouse) projection of a new run | **Degrades — not recovered** | The ingest publish is refused and the run never reaches analytics. `nats_outbox` and its reconciler are built to hold and replay that message, but `jobs.complete_job` does not call them yet (see the note below), so nothing is recorded and there is nothing to replay |
 | Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — not recovered** | `asset_events.publish_events` counts the failure as `skipped` and moves on. The changes are in `diff.json` and in Postgres; the notifications for that run are not sent later |
 | Audit events to a SIEM over `events.audit.>` | **Degrades — recovered by the other source** | The rows are committed and readable via `GET /api/audit`; the publish is skipped. `OCTO_AUDIT_SYSLOG_SOURCE=db` forwards without the broker at all |
 | Endpoint inventory submissions | **Works, event skipped** | The snapshot is stored; the `endpoint_inventory_accepted` event is fail-soft |
@@ -313,20 +313,30 @@ and what the installation lost was not "dispatch" but sign-in, the console, the
 sensor fleet's heartbeats and the ability to see that anything was wrong.
 
 The row that made the old policy defensible is the ingest one: a publish lost
-with the broker used to be lost for good, and availability would then have been
-hiding a permanent hole in analytics. That is what `nats_outbox` (migration
-`0059`) is for, and the two are a single decision — **do not put NATS back into
-`BLOCKING_CHECKS` without also removing the outbox, and do not remove the
-outbox while NATS is advisory.** The unrecovered backlog is reported as the
-`ingest_backlog` check on `/readyz` and `/api/health`, and as
-`octo_nats_outbox_backlog`; draining it is
-[operations.md § NATS outbox](operations.md#nats-outbox).
+with the broker is lost for good, and availability then hides a permanent hole
+in analytics. That is what `nats_outbox` (migration `0059`) is for, and the two
+are a single decision — **do not put NATS back into `BLOCKING_CHECKS` without
+also removing the outbox, and do not remove the outbox while NATS is
+advisory.** The unrecovered backlog is reported as the `ingest_backlog` check
+on `/readyz` and `/api/health`, and as `octo_nats_outbox_backlog`; draining it
+is [operations.md § NATS outbox](operations.md#nats-outbox).
 
-The two rows that are still *not* recovered — asset events and the
-notifications they feed — are P1 of the same review ("успешное задание не
-гарантирует актуальность всех проекций") and are deliberately out of scope
-here; this section is the honest statement of what a broker outage costs today,
-not a claim that it costs nothing.
+> **The two halves are not both in place.** Readiness is relaxed; the recording
+> is not connected. `jobs.complete_job` still publishes through
+> `results_ingest.publish_raw_results`, so no refused publish is written down,
+> the table stays empty and every `recovered` claim about ingest is false
+> today. The relaxation is therefore currently wider than the recovery it was
+> traded for: with the broker down, a run's ingest message is lost and neither
+> `/readyz` nor `ingest_backlog` shows it. Switching that call site is blocked
+> on the job-fencing change rewriting `api/services/jobs.py`; until it lands,
+> an installation that cannot accept a silent analytics hole should either run
+> with the broker highly available or put NATS back into `BLOCKING_CHECKS`.
+
+Three rows are *not* recovered: asset events and the notifications they feed —
+P1 of the same review ("успешное задание не гарантирует актуальность всех
+проекций"), deliberately out of scope here — and, for now, the ingest row
+above. This section is the honest statement of what a broker outage costs
+today, not a claim that it costs nothing.
 
 Background workers are safe across replicas by construction, not by luck: the
 scheduler dispatcher, the report dispatcher, the software-match worker, the SLA

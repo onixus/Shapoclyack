@@ -6,20 +6,34 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
-- **Ingest publications the broker refused are kept and replayed.**
-  `results_ingest.publish_raw_results` returned `published=false` when NATS was
-  unreachable and nobody checked the flag: the sensor's upload was answered
-  `200`, the artifacts were written, the job succeeded, and the message that
-  feeds the ClickHouse projection was gone with nothing left to replay it from.
-  It is now recorded in the new `nats_outbox` table (migration `0059`) and
-  republished by a reconciler thread running in every replica — rows are
-  claimed `FOR UPDATE SKIP LOCKED`, retried with capped exponential backoff,
-  and deleted once the stream has them. An entry that exhausts
-  `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` goes `dead` and waits for an operator
-  (`nats_outbox.requeue_dead`). New variables `OCTO_NATS_OUTBOX_ENABLED`,
-  `_INTERVAL_SECONDS`, `_BATCH_SIZE`, `_MAX_ATTEMPTS`, `_RETRY_BASE_SECONDS`,
-  `_RETRY_MAX_SECONDS`, `_BACKLOG_ALERT_SECONDS`; new metrics
-  `octo_nats_outbox_backlog{status}` and `octo_nats_outbox_total{kind,outcome}`.
+- **An outbox for ingest publications the broker refuses — built, not yet
+  connected.** `results_ingest.publish_raw_results` returns `published=false`
+  when NATS is unreachable and nobody checks the flag: the sensor's upload is
+  answered `200`, the artifacts are written, the job succeeds, and the message
+  that feeds the ClickHouse projection is gone with nothing left to replay it
+  from. The new `nats_outbox` table (migration `0059`) and its reconciler
+  thread — rows claimed `FOR UPDATE SKIP LOCKED`, retried with capped
+  exponential backoff, deleted once the stream has them — are the machinery to
+  fix that, and are covered by tests. **`jobs.complete_job` does not call them
+  yet**: switching that call site is blocked on the job-fencing change
+  rewriting `api/services/jobs.py`, so today the table stays empty and a broker
+  outage still loses the message. An entry that exhausts
+  `OCTO_NATS_OUTBOX_MAX_ATTEMPTS`, or whose archive was over the inline cap and
+  so has no body to replay, goes `dead` and waits for an operator
+  (`nats_outbox.requeue_dead`, `nats_outbox.discard_dead`). New variables
+  `OCTO_NATS_OUTBOX_ENABLED`, `_INTERVAL_SECONDS`, `_BATCH_SIZE`,
+  `_MAX_ATTEMPTS`, `_RETRY_BASE_SECONDS`, `_RETRY_MAX_SECONDS`,
+  `_BACKLOG_ALERT_SECONDS`, `OCTO_NATS_INGEST_DEDUPE_SECONDS`; new metrics
+  `octo_nats_outbox_backlog{status}` and `octo_nats_outbox_total{kind,outcome}`;
+  new alerts `ShapoclyackNatsOutboxBacklog`, `ShapoclyackNatsOutboxDead` and
+  `ShapoclyackNatsOutboxDropping` in the shipped SLO rules.
+
+- The `INGEST` JetStream stream now sets a `duplicate_window`
+  (`OCTO_NATS_INGEST_DEDUPE_SECONDS`, default 24h, clamped to the stream's
+  retention), as `EVENTS` already did. JetStream's 2-minute default is shorter
+  than a single outbox backoff, so a publish whose ack timed out after the
+  server had stored it would have been accepted a second time on replay and
+  ingested twice.
 
 ### Changed
 
@@ -34,7 +48,17 @@ All notable changes to Shapoclyack are documented in this file.
   publications the outbox above has not recovered — because availability must
   not hide analytics falling behind. The two are one decision: NATS must not go
   back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not
-  be removed while NATS is advisory.
+  be removed while NATS is advisory. **Note the ordering risk in this
+  release:** the relaxation is in effect while the outbox's call site is not,
+  so an ingest message refused during a broker outage is currently lost with no
+  probe reporting it. An installation that cannot accept that should keep NATS
+  highly available, or put it back into `BLOCKING_CHECKS`, until
+  `jobs.complete_job` is switched over.
+
+- `nats_bus.publish_ingest` now reports success only when both the tenant
+  subject and the legacy `ingest.raw_results` subject accepted the message. The
+  legacy result was discarded, so a partial publish read as a full one — which
+  the outbox would have taken as "nothing to record".
 
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`
   — SQL, the NATS publish, archive extraction, artifact writes, projection

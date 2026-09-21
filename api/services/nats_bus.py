@@ -19,6 +19,7 @@ JetStream ``update_stream``, so changing them takes effect on redeploy):
   - OCTO_NATS_JOBS_MAX_AGE_SECONDS      (default 86400 / 24h)
   - OCTO_NATS_INGEST_MAX_AGE_SECONDS    (default 604800 / 7d)
   - OCTO_NATS_INGEST_MAX_BYTES          (default 10GiB)
+  - OCTO_NATS_INGEST_DEDUPE_SECONDS     (default 86400 / 24h, clamped to max age)
   - OCTO_NATS_EVENTS_MAX_AGE_SECONDS    (default 2592000 / 30d)
   - OCTO_NATS_EVENTS_MAX_BYTES          (default 1GiB)
   - OCTO_NATS_EVENTS_DEDUPE_SECONDS     (default 86400 / 24h)
@@ -82,6 +83,18 @@ _DEFAULT_EVENTS_MAX_BYTES = 1024 * 1024 * 1024  # 1GB
 # case the Phase 10.1 event ids exist to collapse. 24h covers a replayed
 # results upload without keeping the dedupe table alive for the stream's life.
 _DEFAULT_EVENTS_DEDUPE_SECONDS = 24 * 3600
+# INGEST needs the same treatment and for a sharper reason than EVENTS: since
+# the outbox (``api/services/nats_outbox.py``) a refused ingest publish is
+# retried with capped exponential backoff for up to ``OCTO_NATS_OUTBOX_
+# MAX_ATTEMPTS`` attempts — close to four hours at the defaults. ``publish_json``
+# reports False on an ack timeout, which the server may well have written
+# anyway, so the retry is a genuine duplicate. Against JetStream's 2-minute
+# default every one of those retries past the first is accepted twice and the
+# ingest worker transforms the run twice: ClickHouse collapses it eventually
+# (ReplacingMergeTree) but not before a SELECT without FINAL sees both, and the
+# worker's counters double unconditionally. 24h covers the outbox's whole
+# retry window with room for an operator's requeue on top.
+_DEFAULT_INGEST_DEDUPE_SECONDS = 24 * 3600
 # JetStream replication factor (R). 1 = single node (default/dev). Set to 3 on
 # a 3+ node NATS cluster (e.g. prod overlay) for stream-level HA.
 _DEFAULT_STREAM_REPLICAS = 1
@@ -265,6 +278,19 @@ class NatsBus:
                 # or is disabled; oldest raw results are discarded past this.
                 max_age=float(ingest_max_age),
                 max_bytes=ingest_max_bytes,
+                # Clamped to the retention: JetStream refuses a duplicate
+                # window longer than the stream's max_age, and an operator who
+                # shortens OCTO_NATS_INGEST_MAX_AGE_SECONDS should get a
+                # shorter dedupe window, not a stream that fails to reconcile.
+                duplicate_window=float(
+                    min(
+                        _int_env(
+                            "OCTO_NATS_INGEST_DEDUPE_SECONDS",
+                            _DEFAULT_INGEST_DEDUPE_SECONDS,
+                        ),
+                        ingest_max_age,
+                    )
+                ),
                 num_replicas=stream_replicas,
             )
         )
@@ -541,19 +567,36 @@ class NatsBus:
         )
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
-        """Publish to ``ingest.results.{tenant_id}`` (and legacy ``ingest.raw_results``)."""
+        """Publish to ``ingest.results.{tenant_id}`` (and legacy ``ingest.raw_results``).
+
+        True only when *both* subjects took the message. The legacy result used
+        to be discarded, so a broker that accepted the tenant subject and
+        refused the legacy one reported success: the outbox recorded nothing
+        and a consumer still bound to ``ingest.raw_results`` never saw the run.
+        Since the outbox builds its recovery guarantee on this flag, a partial
+        publish has to read as a failure — the replay sends both subjects again
+        under the same message ids, and the INGEST stream's duplicate window
+        drops whichever half already landed.
+        """
         tenant_id = str(payload.get("tenant_id") or "default")
         subject = ingest_results_subject(tenant_id)
         extra = {"tenant_id": tenant_id}
         ok = self.publish_json(subject, payload, msg_id=msg_id, headers=extra)
         # Keep legacy subject for older consumers / tests.
-        self.publish_json(
+        legacy_ok = self.publish_json(
             SUBJECT_INGEST_RAW,
             payload,
             msg_id=f"{msg_id}-legacy" if msg_id else None,
             headers=extra,
         )
-        return ok
+        if ok and not legacy_ok:
+            LOG.warning(
+                "Ingest published on %s but refused on the legacy %s; reporting the "
+                "publish as failed so the outbox keeps it",
+                subject,
+                SUBJECT_INGEST_RAW,
+            )
+        return ok and legacy_ok
 
     def publish_asset_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:
         """Publish one asset event to ``events.asset.{tenant_id}.{kind}``."""

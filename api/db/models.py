@@ -2467,7 +2467,15 @@ class NatsOutboxEntry(Base):
     ``(subject, msg_id)`` is unique, which is the same key JetStream dedupes
     on: two replicas that fail to publish the same message record it once, and
     a republish of a message the broker did in fact accept is dropped by the
-    stream rather than doubled in ClickHouse.
+    stream rather than doubled in ClickHouse. That second half holds only
+    within the stream's ``duplicate_window``, which ``nats_bus`` sets on
+    ``INGEST`` (24h by default) precisely to cover the reconciler's retry
+    schedule — JetStream's own default is two minutes, shorter than one backoff.
+
+    Nothing writes rows here yet: ``jobs.complete_job`` still publishes through
+    ``results_ingest.publish_raw_results`` rather than
+    ``nats_outbox.publish_ingest_or_record``, pending the job-fencing rewrite
+    of that module.
 
     A row is deleted once it is published — unlike ``webhook_deliveries``,
     which keeps its history, because that history is an audit trail and this
@@ -2503,4 +2511,9 @@ class NatsOutboxEntry(Base):
         # The reconciler's predicate: due pending rows, oldest first. It runs on
         # every replica on a timer, so it must not scan the table.
         Index("ix_nats_outbox_due", "status", "next_attempt_at"),
+        # The health probe's predicate: pending rows older than the alert
+        # window. ``/readyz`` asks for it on every replica on the kubelet's
+        # period, and without this index that is a scan of every pending row —
+        # growing precisely during the outage it is there to measure.
+        Index("ix_nats_outbox_stale", "status", "created_at"),
     )

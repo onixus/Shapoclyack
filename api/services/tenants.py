@@ -176,6 +176,11 @@ def reset_for_tests() -> None:
         # but listed here with its siblings so the order stays readable.
         session.query(models.MaintenanceWindow).delete()
         session.query(models.WebhookDelivery).delete()
+        # No FK to tenants, so nothing cascades into it: without this line a
+        # test that uploads a result with OCTO_NATS_URL set leaves a row, and
+        # the next test to read /readyz gets an ``ingest_backlog: error`` it
+        # never created — an order-dependent flake.
+        session.query(models.NatsOutboxEntry).delete()
         session.query(models.WebhookSubscription).delete()
         session.query(models.Wordlist).delete()
         session.query(models.ProvisioningKey).delete()

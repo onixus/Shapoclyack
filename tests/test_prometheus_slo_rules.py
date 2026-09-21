@@ -23,6 +23,8 @@ _EXPORTED = {
     metrics.ENDPOINT_SUBMISSIONS_TOTAL._original_name,
     metrics.AUTH_ATTEMPTS_TOTAL._original_name,
     metrics.SCHEDULER_IS_LEADER._original_name,
+    metrics.NATS_OUTBOX_BACKLOG._original_name,
+    metrics.NATS_OUTBOX_TOTAL._original_name,
 }
 
 _SERIES = re.compile(r"octo_[a-z0-9_]+")
@@ -49,6 +51,9 @@ def test_rules_file_has_every_slo_and_both_scheduler_invariants():
         "ShapoclyackLoginFailuresElevated",
         "ShapoclyackSchedulerSplitBrain",
         "ShapoclyackSchedulerNoLeader",
+        "ShapoclyackNatsOutboxBacklog",
+        "ShapoclyackNatsOutboxDead",
+        "ShapoclyackNatsOutboxDropping",
     ):
         assert name in alerts, name
 

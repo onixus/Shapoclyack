@@ -14,6 +14,7 @@ Two defects at once, and the tests are split the same way:
 from __future__ import annotations
 
 import io
+import os
 import tarfile
 from datetime import UTC, datetime, timedelta
 
@@ -22,7 +23,7 @@ import pytest
 from api.db import models
 from api.db.engine import get_session
 from api.services import nats_bus, nats_outbox, results_ingest
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -63,6 +64,33 @@ def _clean_outbox(tmp_path):
     yield
     with get_session(settings.postgres_url) as session:
         session.query(models.NatsOutboxEntry).delete()
+
+
+_AGENT_HEADERS = {"Authorization": "Bearer test-agent-token"}
+
+
+def _claimed_job(client) -> tuple[str, str, str]:
+    """Register a sensor, queue a job and claim it — the state before an upload."""
+    agent_id = client.post(
+        "/api/agent/register", headers=_AGENT_HEADERS, json={"hostname": "worker"}
+    ).json()["agent_id"]
+    operator = {"Authorization": f"Bearer {login(client, 'operator')}"}
+    job = client.post(
+        "/api/jobs",
+        headers=operator,
+        json={
+            "mode": "safe",
+            "skip_nse": True,
+            "ranges": "127.0.0.1\n",
+            "domains": "\n",
+            "ports": "80\n",
+        },
+    ).json()
+    claimed = client.post(
+        f"/api/agent/jobs/claim?agent_id={agent_id}", headers=_AGENT_HEADERS
+    )
+    assert claimed.status_code == 200
+    return agent_id, job["job_id"], job["run_id"]
 
 
 def _entries(settings) -> list[models.NatsOutboxEntry]:
@@ -341,3 +369,297 @@ def test_an_invalid_archive_still_raises_before_anything_is_recorded(tmp_path, m
             tenant_id="default",
         )
     assert _entries(settings) == []
+
+
+# --------------------------------------------------------------------------
+# The production path.
+#
+# Everything above calls ``publish_ingest_or_record`` itself with the bus
+# monkeypatched away, which proves the function works and says nothing about
+# whether anything calls it. That gap is why the branch's central defect —
+# ``jobs.complete_job`` still publishing through ``results_ingest`` — went
+# green through ten tests. The three below go through the real callers as far
+# as they exist: the HTTP probe, the reconciler thread the app starts, and the
+# upload route (which is the xfail, because that call site is not switched).
+# --------------------------------------------------------------------------
+
+
+def _record_one(settings, *, job_id: str, age: timedelta | None = None) -> str:
+    """One recorded refusal, optionally backdated past the alert window."""
+    outbox_id = nats_outbox.record_failed_publish(
+        settings,
+        kind=nats_outbox.KIND_INGEST,
+        subject=nats_bus.ingest_results_subject("default"),
+        msg_id=f"msg-{job_id}",
+        payload={"job_id": job_id, "tenant_id": "default", "archive_b64": "x"},
+        tenant_id="default",
+        job_id=job_id,
+        run_id=f"run-{job_id}",
+    )
+    if age is not None:
+        with get_session(settings.postgres_url) as session:
+            row = session.get(models.NatsOutboxEntry, outbox_id)
+            row.created_at = datetime.now(UTC).replace(tzinfo=None) - age
+    return outbox_id
+
+
+@requires_postgres
+def test_readyz_reports_a_backlog_that_is_actually_in_the_table(tmp_path, monkeypatch):
+    """The probe, over HTTP, reading rows — not a patched ``_backlogged``.
+
+    ``test_an_unrecovered_publish_backlog_is_its_own_check`` patches the
+    detector out and so checks only that the check is wired into the report.
+    This one leaves every layer in place: route → ``health.check_readiness`` →
+    ``nats_outbox.backlog`` → Postgres. The broker is honestly unreachable, so
+    ``nats`` is ``error`` too, and the reply is still 200 — that is the policy.
+    """
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+    client = configured_client(tmp_path, monkeypatch, nats_url=NATS_URL)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+
+    clean = client.get("/readyz")
+    assert clean.status_code == 200
+    assert clean.json()["checks"]["ingest_backlog"] == "ok"
+
+    # Older than nats_outbox_backlog_alert_seconds: a broker restart is not a
+    # backlog, an hour of unrecovered publications is.
+    _record_one(settings, job_id="job-probe", age=timedelta(hours=1))
+
+    response = client.get("/readyz")
+    assert response.status_code == 200, "a backlog must not empty the Service"
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["ingest_backlog"] == "error"
+    assert body["checks"]["postgres"] == "ok"
+
+
+@requires_postgres
+def test_the_reconciler_thread_the_app_starts_drains_the_backlog(tmp_path, monkeypatch):
+    """Through ``OutboxReconciler``, which is what ``api/app.py`` runs.
+
+    ``reconcile_once`` is covered above; this is the object around it — the
+    tick counting, the stats an operator reads, and the fact that a tick with
+    the broker back deletes the row rather than merely reporting it.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    _record_one(settings, job_id="job-reconciler")
+
+    bus = FakeBus(accepts=True)
+    monkeypatch.setattr(nats_outbox.nats_bus, "get_bus", lambda url: bus)
+    reconciler = nats_outbox.OutboxReconciler(settings=settings, poll_interval_seconds=1.0)
+    reconciler._tick()  # noqa: SLF001 - the timer body, without waiting for a timer
+
+    assert reconciler.stats["ticks"] == 1
+    assert reconciler.stats["republished"] == 1
+    assert _entries(settings) == []
+
+
+@requires_postgres
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "jobs.complete_job still calls results_ingest.publish_raw_results directly "
+        "instead of nats_outbox.publish_ingest_or_record, so a refused ingest publish "
+        "is lost and nothing is recorded. The call site is blocked on the job-fencing "
+        "rewrite of api/services/jobs.py; when it lands this test goes green and the "
+        "marker comes off (strict=True makes an unnoticed XPASS fail the run)."
+    ),
+)
+def test_a_refused_publish_at_upload_time_leaves_a_row_in_the_outbox(tmp_path, monkeypatch):
+    """The whole point of the module, over the route a sensor actually uses.
+
+    ``POST /api/agent/jobs/{id}/results`` with the broker down: the upload is
+    answered 200 and the job succeeds — that part is the policy and is correct
+    — and the ingest message must be in ``nats_outbox``, because otherwise the
+    analytical projection has a permanent hole that no probe reports.
+    """
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    client = configured_client(
+        tmp_path, monkeypatch, job_execution_mode="agent", nats_url=NATS_URL
+    )
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    agent_id, job_id, run_id = _claimed_job(client)
+
+    upload = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_AGENT_HEADERS,
+        data={"agent_id": agent_id, "exit_code": "0", "run_id": run_id},
+        files={"archive": ("run.tar.gz", _archive(), "application/gzip")},
+    )
+    assert upload.status_code == 200
+
+    rows = _entries(settings)
+    assert len(rows) == 1, (
+        f"a refused ingest publish left {len(rows)} outbox rows: the run is complete "
+        "everywhere except analytics, and nothing will replay it"
+    )
+    assert rows[0].job_id == job_id
+
+
+# --------------------------------------------------------------------------
+# The dead end, the claim window and the partial publish.
+# --------------------------------------------------------------------------
+
+
+def _big_archive() -> bytes:
+    """An archive past ``results_ingest``'s inline cap, so no body is carried.
+
+    Random bytes on purpose: the cap is on the *compressed* archive, and a
+    repetitive 5 MB payload gzips down to a few kilobytes.
+    """
+    archive = _archive(os.urandom(5 * 1024 * 1024))
+    # ``build_gateway_payload``'s max_inline_bytes default.
+    assert len(archive) > 4_000_000
+    return archive
+
+
+@requires_postgres
+def test_an_archive_too_large_to_replay_is_dead_on_arrival(tmp_path, monkeypatch):
+    """The health signal that lies in the cheerful direction.
+
+    Over the 4 MB cap ``build_gateway_payload`` sets ``archive_inline: false``
+    and carries no body. Queued as ``pending``, such a row is republished, the
+    broker accepts the body-less message, the republish counts as a success and
+    the row is deleted — backlog zero, ``/api/health`` green, ClickHouse empty.
+    Recorded ``dead`` instead: it needs a decision, not a retry.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+
+    result = nats_outbox.publish_ingest_or_record(
+        settings,
+        job_id="job-big",
+        run_id="run-big",
+        agent_id="agent-1",
+        exit_code=0,
+        archive_bytes=_big_archive(),
+        tenant_id="default",
+    )
+
+    rows = _entries(settings)
+    assert len(rows) == 1
+    assert rows[0].payload.get("archive_inline") is False
+    assert rows[0].status == nats_outbox.STATUS_DEAD
+    assert rows[0].next_attempt_at is None
+    assert result["outbox_id"] == rows[0].outbox_id
+    # Dead counts as a backlog, so the operator is told rather than reassured.
+    assert nats_outbox.is_backlogged(settings) is True
+
+
+@requires_postgres
+def test_requeue_leaves_a_body_it_cannot_replay_alone(tmp_path, monkeypatch):
+    """...and the reconciler is never handed it either, so it cannot be
+    'recovered' into a green check over an empty projection."""
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    nats_outbox.publish_ingest_or_record(
+        settings,
+        job_id="job-big-2",
+        run_id="run-big-2",
+        agent_id="agent-1",
+        exit_code=0,
+        archive_bytes=_big_archive(),
+        tenant_id="default",
+    )
+
+    assert nats_outbox.requeue_dead(settings) == 0
+
+    bus = FakeBus(accepts=True)
+    monkeypatch.setattr(nats_outbox.nats_bus, "get_bus", lambda url: bus)
+    assert nats_outbox.reconcile_once(settings) == {
+        "republished": 0,
+        "failed": 0,
+        "dead": 0,
+    }
+    assert bus.published == []
+    assert [row.status for row in _entries(settings)] == [nats_outbox.STATUS_DEAD]
+
+
+@requires_postgres
+def test_discard_is_the_only_other_way_out_of_dead(tmp_path, monkeypatch):
+    """``dead`` had one exit and it did not always work.
+
+    ``is_backlogged`` is True while any row is ``dead``, nothing deletes such a
+    row, and ``requeue_dead`` cannot help the ones with no body — so
+    ``/api/health`` stayed degraded forever with no command to end it. An
+    operator who has decided the run is not coming back needs to say so; a
+    pending row is still the reconciler's and must survive.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    _record_one(settings, job_id="job-pending")
+    nats_outbox.publish_ingest_or_record(
+        settings,
+        job_id="job-big-3",
+        run_id="run-big-3",
+        agent_id="agent-1",
+        exit_code=0,
+        archive_bytes=_big_archive(),
+        tenant_id="default",
+    )
+    assert nats_outbox.backlog(settings) == {"pending": 1, "dead": 1, "stale": 0}
+
+    assert nats_outbox.discard_dead(settings) == 1
+
+    assert nats_outbox.backlog(settings) == {"pending": 1, "dead": 0, "stale": 0}
+    assert [row.job_id for row in _entries(settings)] == ["job-pending"]
+    assert nats_outbox.is_backlogged(settings) is False
+
+
+@requires_postgres
+def test_the_claim_window_covers_the_whole_batch_not_one_row(tmp_path, monkeypatch):
+    """Two replicas must not publish the same megabytes at once.
+
+    ``reconcile_once`` commits the claim — releasing the locks — and only then
+    publishes the rows one at a time, so the last row of a batch waits out
+    every row before it. A flat 30 s window expired mid-batch and a peer
+    claimed the same rows: doubled traffic, doubled ``attempts``, duplicates on
+    the stream. Asserted on the window rather than by racing two reconcilers,
+    because the defect needs a batch slower than 30 s to show up in wall time.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    for index in range(3):
+        _record_one(settings, job_id=f"job-batch-{index}")
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        claimed = nats_outbox._claim_due(  # noqa: SLF001 - the claim is the subject
+            session, now=now, limit=10, settings=settings
+        )
+        deadlines = [row.next_attempt_at for row in claimed]
+
+    assert len(claimed) == 3
+    per_row = max(30, settings.nats_outbox_retry_base_seconds)
+    assert deadlines == [now + timedelta(seconds=per_row * 3)] * 3
+
+
+def test_an_ingest_publish_only_half_accepted_is_not_a_publish(monkeypatch):
+    """The legacy subject's result was discarded.
+
+    ``publish_ingest`` returned the tenant subject's result alone, so a broker
+    that took ``ingest.results.{tenant}`` and refused ``ingest.raw_results``
+    reported success — the outbox recorded nothing and a consumer still bound
+    to the legacy subject never saw the run. The outbox builds its guarantee on
+    this flag, so a partial publish has to read as a failure.
+    """
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+    attempted: list[str] = []
+
+    def _publish_json(subject, payload, *, msg_id=None, headers=None, retries=3):
+        attempted.append(subject)
+        return subject != nats_bus.SUBJECT_INGEST_RAW
+
+    bus.publish_json = _publish_json
+
+    ok = bus.publish_ingest({"tenant_id": "default", "job_id": "job-legacy"}, msg_id="m")
+
+    assert ok is False
+    # Both were tried: the tenant subject is not abandoned because the legacy
+    # one failed, and the replay sends both again under the same message ids.
+    assert attempted == [
+        nats_bus.ingest_results_subject("default"),
+        nats_bus.SUBJECT_INGEST_RAW,
+    ]

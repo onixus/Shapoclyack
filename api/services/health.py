@@ -33,14 +33,25 @@ accepts result uploads. Failing readiness on it therefore traded a degraded
 installation for an unavailable one, in every replica simultaneously, since
 they share one broker.
 
-What made that trade defensible before was that a publish lost with the broker
-was lost for good. It is not any more: ``api/services/nats_outbox.py`` records
-the refused ingest message and republishes it when NATS returns, and the
-backlog it has not recovered is reported here as ``ingest_backlog``. That check
-is advisory on purpose and for the same reason as ClickHouse — a shared backlog
-that unreadied every replica would be the outage this change removed, wearing a
-different name. It degrades ``/api/health``, raises ``octo_nats_outbox_backlog``
-and is the operator's signal that availability is now ahead of analytics.
+What made that trade defensible is that a publish lost with the broker need not
+be lost for good: ``api/services/nats_outbox.py`` records a refused ingest
+message and republishes it when NATS returns, and the backlog it has not
+recovered is reported here as ``ingest_backlog``. That check is advisory on
+purpose and for the same reason as ClickHouse — a shared backlog that unreadied
+every replica would be the outage this change removed, wearing a different
+name. It degrades ``/api/health``, raises ``octo_nats_outbox_backlog`` and is
+the operator's signal that availability is ahead of analytics.
+
+**The trade is not settled yet.** ``jobs.complete_job`` still publishes through
+``results_ingest.publish_raw_results`` and never reaches
+``nats_outbox.publish_ingest_or_record``, so nothing is recorded, the table is
+empty and ``ingest_backlog`` currently reports on a queue nothing writes to.
+Readiness is relaxed ahead of the recovery that justifies it: during a broker
+outage the ingest message is lost exactly as before, and no probe says so.
+Wiring that call site is blocked on the job-fencing change rewriting
+``api/services/jobs.py``. Whoever finishes it should delete this paragraph —
+and whoever revisits ``BLOCKING_CHECKS`` before then should read it as the
+argument for putting NATS back.
 
 Object storage (#336) is checked on the same terms as ClickHouse, and for the
 same reason rather than a weaker one: every replica shares one bucket, so a

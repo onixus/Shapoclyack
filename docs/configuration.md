@@ -492,17 +492,28 @@ Core deployment variables:
 
 A broker outage no longer unreadies an API replica (P2 of the 2026-09-18
 architecture review). What it must not do instead is hide the analytical
-projection falling behind, so the ingest message NATS refused is written to the
-`nats_outbox` table and republished when the broker returns.
+projection falling behind, which is what the `nats_outbox` table and its
+reconciler are for: the ingest message NATS refused is written down and
+republished when the broker returns.
+
+> **Not connected yet.** `jobs.complete_job` still publishes through
+> `results_ingest.publish_raw_results`, so no refused publish is recorded and
+> the table stays empty. Every variable below is live and every default is
+> real, but with nothing feeding the table they currently govern an empty
+> queue, and a broker outage loses the ingest message as it did before. The
+> call site is switched once the job-fencing change to `api/services/jobs.py`
+> lands; see
+> [high-availability.md § What a NATS outage costs](high-availability.md#what-a-nats-outage-costs).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_NATS_OUTBOX_ENABLED` | `true` | Record a publication the broker refused in the `nats_outbox` table and republish it when NATS returns. **This is what lets NATS be a non-blocking readiness check**: with it off, a broker outage means ingest messages that are logged and lost while the API keeps answering 200, and only a re-scan produces them again. See [operations.md § NATS outbox](operations.md#nats-outbox) |
+| `OCTO_NATS_OUTBOX_ENABLED` | `true` | Record a publication the broker refused in the `nats_outbox` table and republish it when NATS returns. **This is what is meant to let NATS be a non-blocking readiness check**: with it off, a broker outage means ingest messages that are logged and lost while the API keeps answering 200, and only a re-scan produces them again — which, until the call site above is switched, is also what `true` gets you. See [operations.md § NATS outbox](operations.md#nats-outbox) |
 | `OCTO_NATS_OUTBOX_INTERVAL_SECONDS` | `30` | How often this replica drains the due end of the outbox. Floored at 1 |
 | `OCTO_NATS_OUTBOX_BATCH_SIZE` | `10` | Entries republished per tick. Small on purpose, unlike the webhook dispatcher's 50: one ingest entry carries a run archive, so a batch is megabytes held in the process at once |
 | `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` | `20` | Republish attempts before an entry goes `dead` and waits for an operator (`nats_outbox.requeue_dead`). At the default backoff that is close to four hours of retrying |
 | `OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` | `15` | First backoff after a failed republish; doubles per attempt |
 | `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS` | `900` | Cap on that backoff |
+| `OCTO_NATS_INGEST_DEDUPE_SECONDS` | `86400` | JetStream duplicate window on the `INGEST` stream, clamped to `OCTO_NATS_INGEST_MAX_AGE_SECONDS`. Wide enough to cover the whole retry schedule above: a publish whose ack timed out after the server stored it is a genuine duplicate on replay, and JetStream's own 2-minute default is shorter than a single backoff |
 | `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `ingest_backlog: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
 
 The unrecovered backlog is the `ingest_backlog` check on `/readyz` and

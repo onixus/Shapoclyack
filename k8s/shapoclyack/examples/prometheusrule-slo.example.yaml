@@ -107,6 +107,37 @@ spec:
         summary: ClickHouse ingest lag gauge is stale
         description: The ingest worker has not refreshed octo_nats_consumer_pending for more than 5 minutes.
           A stopped poller leaves a stale value rather than a rising one.
+    - alert: ShapoclyackNatsOutboxBacklog
+      expr: max(octo_nats_outbox_backlog{status="stale"}) > 0
+      for: 10m
+      labels:
+        severity: ticket
+        slo: '5'
+      annotations:
+        summary: Ingest publications have been unrecovered past the alert window
+        description: "Publications the broker refused have been waiting longer than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS.\
+          \ HTTP is healthy while the analytical projection is behind, which is what the relaxed NATS\
+          \ readiness check must not be allowed to hide. Drain per docs/operations.md \xA7 NATS outbox."
+    - alert: ShapoclyackNatsOutboxDead
+      expr: max(octo_nats_outbox_backlog{status="dead"}) > 0
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Ingest publications have exhausted their retries
+        description: "An entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS (close to four hours of retrying\
+          \ at the defaults) or was recorded with no replayable body. Nothing retries it again: it needs\
+          \ an operator decision \u2014 nats_outbox.requeue_dead, a re-scan, or discard_dead."
+    - alert: ShapoclyackNatsOutboxDropping
+      expr: sum(rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Refused ingest publications are being dropped, not recorded
+        description: "OCTO_NATS_OUTBOX_ENABLED=false, so a refused publish is logged and lost and only\
+          \ a re-scan produces the run again \u2014 the one supported configuration that still loses messages\
+          \ while the API answers 200."
     - alert: ShapoclyackClickHouseIngestErrors
       expr: "(\n  1 - (\n    sum(rate(octo_ch_ingest_messages_total{result=\"ok\"}[6h]))\n    /\n    sum(rate(octo_ch_ingest_messages_total[6h]))\n\
         \  )\n) > 0.001\nand\nsum(rate(octo_ch_ingest_messages_total[6h])) > 0\n"

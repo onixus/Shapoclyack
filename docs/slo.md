@@ -204,7 +204,11 @@ customer-facing SLA.
 The consumer's lag is only the half of freshness that *reached* the stream.
 Since NATS stopped deciding readiness, a run whose ingest publish the broker
 refused is held in the outbox instead, and that backlog is invisible to the
-gauge above — the message is not on the stream to be pending. Alert on both:
+gauge above — the message is not on the stream to be pending. Both halves are
+alerted on: `ShapoclyackNatsOutboxBacklog` and `ShapoclyackNatsOutboxDead` ship
+in `k8s/shapoclyack/examples/prometheus-slo.rules.yaml` alongside the consumer
+rules, with `ShapoclyackNatsOutboxDropping` for the `OCTO_NATS_OUTBOX_ENABLED=false`
+configuration that loses messages outright. The expressions are:
 
 ```promql
 max(octo_nats_outbox_backlog{status="stale"}) > 0
@@ -217,6 +221,10 @@ non-zero value means the HTTP control plane is healthy while the analytical
 projection is behind, which is precisely what the relaxed readiness check must
 not be allowed to hide — see
 [operations.md § NATS outbox](operations.md#nats-outbox).
+
+Read a zero here as "not measured" for now: `jobs.complete_job` does not yet
+record refused publishes, so the gauge reports on an empty table
+([high-availability.md](high-availability.md#what-a-nats-outage-costs)).
 
 ### 6. Ingest correctness
 

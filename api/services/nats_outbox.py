@@ -2,6 +2,15 @@
 
 P2 of ``docs/architecture-review-2026-09-18.ru.md``, both halves of it.
 
+**Not connected yet.** ``jobs.complete_job`` still calls
+``results_ingest.publish_raw_results`` directly, so ``publish_ingest_or_record``
+below has no production caller and the table stays empty. The module is
+complete and tested; the call site is blocked on the job-fencing change
+rewriting ``api/services/jobs.py``. Until it is switched, the readiness
+relaxation described below is in force without the recovery that pays for it —
+``tests/test_nats_outbox.py`` carries an ``xfail`` that goes green the moment
+someone wires it up.
+
 **The defect.** ``results_ingest.publish_raw_results`` returns
 ``published=false`` when NATS is unreachable, and ``jobs.complete_job`` never
 looked at the flag: the sensor's upload was answered 200, the artifacts were
@@ -41,10 +50,11 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
@@ -60,10 +70,34 @@ KIND_INGEST = "ingest"
 STATUS_PENDING = "pending"
 STATUS_DEAD = "dead"
 
+# Why a row was dead before it was ever tried. Read by ``requeue_dead``, which
+# must not put such a row back on the due queue (``_is_replayable``).
+_UNREPLAYABLE_ERROR = "archive was over the inline cap; there is no body to republish"
+
 
 def _now() -> datetime:
     """Naive UTC, matching ``jobs`` and every timestamp column in this schema."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _is_replayable(kind: str, payload: Mapping[str, Any]) -> bool:
+    """Whether republishing this body would actually deliver the run.
+
+    An ingest payload for an archive over ``results_ingest``'s 4 MB inline cap
+    carries ``archive_inline: false`` and no body at all. The broker accepts
+    such a message, so a republish reports success, the row is deleted and the
+    backlog drops to zero — while ClickHouse received nothing it can transform.
+    That is a health signal that lies, and the worse half of the two ``dead``
+    problems, because the green one is the one nobody investigates.
+
+    A row that cannot be replayed is therefore recorded ``dead`` from the
+    start: "an operator has to decide about this" is exactly what ``dead``
+    means here, and for these runs the decision is a re-scan or a manual load,
+    never a retry.
+    """
+    if kind != KIND_INGEST:
+        return True
+    return payload.get("archive_inline") is not False
 
 
 def publish_ingest_or_record(
@@ -79,8 +113,9 @@ def publish_ingest_or_record(
 ) -> dict[str, Any]:
     """Publish one run's raw results, recording the message if the broker refuses.
 
-    The single entry point ``complete_job`` calls in place of
-    ``results_ingest.publish_raw_results``: same arguments, same
+    The single entry point ``complete_job`` is to call in place of
+    ``results_ingest.publish_raw_results`` — it does not yet, see the module
+    docstring — with the same arguments, the same
     :class:`results_ingest.IngestError` for an archive that does not validate
     (so the caller's translation to a 400 is unchanged), and the same result
     dict with an ``outbox_id`` added when the message was written down instead
@@ -154,6 +189,7 @@ def record_failed_publish(
         return None
     now = _now()
     outbox_id = uuid.uuid4().hex
+    replayable = _is_replayable(kind, payload)
     row = models.NatsOutboxEntry(
         outbox_id=outbox_id,
         tenant_id=tenant_id,
@@ -163,12 +199,14 @@ def record_failed_publish(
         payload=payload,
         job_id=job_id,
         run_id=run_id,
-        status=STATUS_PENDING,
+        status=STATUS_PENDING if replayable else STATUS_DEAD,
         attempts=0,
         # Due immediately: the reconciler's own backoff starts after the first
         # failed retry, and a broker that came back a second ago should not
-        # keep the backlog waiting.
-        next_attempt_at=now,
+        # keep the backlog waiting. A body that cannot be replayed is never
+        # due — see ``_is_replayable``.
+        next_attempt_at=now if replayable else None,
+        last_error=None if replayable else _UNREPLAYABLE_ERROR,
         created_at=now,
         updated_at=now,
     )
@@ -188,6 +226,19 @@ def record_failed_publish(
                 existing,
             )
             return existing
+    if not replayable:
+        metrics_service.NATS_OUTBOX_TOTAL.labels(kind=kind, outcome="unreplayable").inc()
+        LOG.error(
+            "Recorded refused %s publish job=%s run=%s as %s and marked it dead on "
+            "arrival: %s. Republishing it would be accepted by the broker and deliver "
+            "no results, so this run needs a re-scan or a manual load, not a retry",
+            subject,
+            job_id,
+            run_id,
+            outbox_id,
+            _UNREPLAYABLE_ERROR,
+        )
+        return outbox_id
     metrics_service.NATS_OUTBOX_TOTAL.labels(kind=kind, outcome="recorded").inc()
     LOG.warning(
         "Recorded refused %s publish job=%s run=%s as %s; the analytical projection "
@@ -208,27 +259,31 @@ def backlog(settings: Settings, *, now: datetime | None = None) -> dict[str, int
     """
     moment = now or _now()
     cutoff = moment - timedelta(seconds=settings.nats_outbox_backlog_alert_seconds)
+    # One pass, not two. ``/readyz`` runs this on every replica on the kubelet's
+    # period, so a second full aggregate over the same table doubled a cost that
+    # grows exactly when the database is already having a bad day. The stale
+    # count rides along as a conditional aggregate over the same GROUP BY, and
+    # ``ix_nats_outbox_stale`` (``status, created_at``) covers the predicate,
+    # which nothing indexed before.
+    stale_count = func.count(
+        case((models.NatsOutboxEntry.created_at < cutoff, 1), else_=None)
+    )
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
-            select(models.NatsOutboxEntry.status, func.count()).group_by(
+            select(models.NatsOutboxEntry.status, func.count(), stale_count).group_by(
                 models.NatsOutboxEntry.status
             )
         ).all()
-        stale = session.execute(
-            select(func.count())
-            .select_from(models.NatsOutboxEntry)
-            .where(
-                models.NatsOutboxEntry.status == STATUS_PENDING,
-                models.NatsOutboxEntry.created_at < cutoff,
-            )
-        ).scalar_one()
     counts = {STATUS_PENDING: 0, STATUS_DEAD: 0}
-    for status, count in rows:
+    stale = 0
+    for status, count, older_than_cutoff in rows:
         counts[str(status)] = int(count)
+        if str(status) == STATUS_PENDING:
+            stale = int(older_than_cutoff)
     return {
         "pending": counts.get(STATUS_PENDING, 0),
         "dead": counts.get(STATUS_DEAD, 0),
-        "stale": int(stale),
+        "stale": stale,
     }
 
 
@@ -280,7 +335,20 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
             .with_for_update(skip_locked=True)
         ).scalars().all()
     )
-    visibility = timedelta(seconds=max(30, settings.nats_outbox_retry_base_seconds))
+    # The window has to cover the *whole* batch, not one row. ``reconcile_once``
+    # commits this transaction — releasing the locks — and only then publishes
+    # the claimed rows one by one, so the last row of a batch sits claimed for
+    # as long as every row before it takes. One ingest body is up to ~5.3 MB of
+    # base64 and ``publish_json`` retries three times on the way, so a batch of
+    # ``nats_outbox_batch_size`` is tens of megabytes: a flat 30 s expired
+    # mid-batch and a peer replica claimed and republished the same rows in
+    # parallel — doubled traffic, doubled ``attempts`` (so a false ``dead``
+    # sooner) and duplicates on the stream.
+    # Being generous costs the reverse case: a replica that dies mid-batch
+    # leaves its rows waiting one window rather than 30 s. That is the cheaper
+    # mistake — the backlog is already behind, and duplicate publishes are not.
+    per_row = max(30, settings.nats_outbox_retry_base_seconds)
+    visibility = timedelta(seconds=per_row * max(1, len(rows)))
     for row in rows:
         row.attempts += 1
         row.next_attempt_at = now + visibility
@@ -395,21 +463,27 @@ def _record_attempt(settings: Settings, *, outbox_id: str, ok: bool, now: dateti
 
 
 def requeue_dead(settings: Settings, *, tenant_id: str | None = None) -> int:
-    """Put dead rows back on the due queue. Returns how many were requeued.
+    """Put replayable dead rows back on the due queue. Returns how many.
 
     The operator's half of the DLQ, same idea as ``webhooks.requeue_delivery``:
     a broker that was down for longer than ``nats_outbox_max_attempts`` covers
     leaves rows nobody will retry, and the fix is a decision, not a timer.
+
+    Rows whose body cannot be replayed (``_is_replayable``) are skipped rather
+    than requeued. Requeueing one used to be the fastest way to a green health
+    check over an empty ClickHouse: the broker accepts a body-less ingest
+    message, the republish counts as success, the row is deleted and the
+    backlog reads zero. They are logged and left ``dead``; ``discard_dead`` is
+    how an operator gets rid of them once the run has been re-scanned.
     """
     now = _now()
     requeued = 0
+    skipped = 0
     with get_session(settings.postgres_url) as session:
-        query = select(models.NatsOutboxEntry).where(
-            models.NatsOutboxEntry.status == STATUS_DEAD
-        )
-        if tenant_id:
-            query = query.where(models.NatsOutboxEntry.tenant_id == tenant_id)
-        for row in session.execute(query).scalars().all():
+        for row in _dead_rows(session, tenant_id=tenant_id):
+            if not _is_replayable(row.kind, dict(row.payload or {})):
+                skipped += 1
+                continue
             row.status = STATUS_PENDING
             row.attempts = 0
             row.next_attempt_at = now
@@ -418,7 +492,66 @@ def requeue_dead(settings: Settings, *, tenant_id: str | None = None) -> int:
         session.flush()
     if requeued:
         LOG.info("Requeued %s dead outbox entries", requeued)
+    if skipped:
+        LOG.warning(
+            "Left %s dead outbox entries alone: %s. Republishing them would report "
+            "success and deliver nothing; re-scan those runs, then discard_dead()",
+            skipped,
+            _UNREPLAYABLE_ERROR,
+        )
     return requeued
+
+
+def discard_dead(
+    settings: Settings, *, tenant_id: str | None = None, outbox_id: str | None = None
+) -> int:
+    """Delete dead rows for good. Returns how many were removed.
+
+    The exit ``dead`` had no other door to. ``is_backlogged`` is True while any
+    row is ``dead``, so ``/api/health`` stayed degraded and
+    ``octo_nats_outbox_backlog{status="dead"}`` stayed non-zero forever unless
+    a republish eventually succeeded — and for a body that cannot be replayed
+    at all, no republish ever will. An operator who has decided the run is not
+    coming back (re-scanned, or no longer interesting) needs to say so.
+
+    Only ``dead`` rows: a pending row is still the reconciler's, and deleting
+    one would be the silent loss this whole module exists to prevent.
+    """
+    removed = 0
+    with get_session(settings.postgres_url) as session:
+        for row in _dead_rows(session, tenant_id=tenant_id, outbox_id=outbox_id):
+            LOG.warning(
+                "Discarding dead outbox entry %s (subject=%s job=%s run=%s attempts=%s); "
+                "this run is not reaching the analytical projection",
+                row.outbox_id,
+                row.subject,
+                row.job_id,
+                row.run_id,
+                row.attempts,
+            )
+            session.delete(row)
+            removed += 1
+        session.flush()
+    if removed:
+        metrics_service.NATS_OUTBOX_TOTAL.labels(kind=KIND_INGEST, outcome="discarded").inc(
+            removed
+        )
+        _refresh_backlog_gauge(settings)
+    return removed
+
+
+def _dead_rows(
+    session, *, tenant_id: str | None = None, outbox_id: str | None = None
+) -> list[Any]:
+    """The dead end of the table, narrowed the two ways an operator narrows it."""
+    query = select(models.NatsOutboxEntry).where(
+        models.NatsOutboxEntry.status == STATUS_DEAD
+    )
+    if tenant_id:
+        query = query.where(models.NatsOutboxEntry.tenant_id == tenant_id)
+    if outbox_id:
+        query = query.where(models.NatsOutboxEntry.outbox_id == outbox_id)
+    return list(session.execute(query).scalars().all())
 
 
 def _refresh_backlog_gauge(settings: Settings) -> None:
