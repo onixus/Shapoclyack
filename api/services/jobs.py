@@ -39,10 +39,8 @@ from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
-from api.services import artifact_store
 from api.services import audit as audit_service
 from api.services import config_override as config_override_service
-from api.services.artifact_store import workspace as artifact_workspace
 from api.services import job_states
 from api.services import job_control
 from api.services import job_dispatch
@@ -52,12 +50,12 @@ from api.services import job_reaper
 from api.services import job_repository
 from api.services import job_results
 from api.services import job_store
+from api.services import local_job_runner
 from api.services import local_scan_executor
 from api.services import metrics as metrics_service
 from api.services import pagination
 from api.services import run_completion
 from api.services import run_ids
-from api.services import runs as runs_service
 from api.services import scan_admission
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -301,119 +299,10 @@ def stop_local_scans(timeout: float = 30.0) -> bool:
     return local_scan_executor.stop_all(timeout)
 
 
-def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
-    try:
-        # A local job goes queued → running with no claim step: this process is
-        # the worker. If it was cancelled while the thread was still starting,
-        # the transition is rejected and the scan never launches.
-        _update_job(
-            settings,
-            job_id,
-            status=job_states.RUNNING,
-            started_at=_now(),
-            claimed_until=_lease_deadline(settings),
-            attempts=1,
-        )
-    except job_states.InvalidJobTransition as exc:
-        _log.info("Not starting job %s: %s", job_id, exc)
-        # Cancelled between the insert and this thread getting scheduled: the
-        # scan never launches, so nothing will ever read the wordlist copy or
-        # the input files.
-        _discard_job_wordlist(settings, job_id)
-        _discard_job_inputs(settings, job_id)
-        return
-    try:
-        with _renewing_lease(settings, job_id):
-            completed = local_scan_executor.run_scanner(job_id, command)
-        # Best-effort: read latest_run.json after completion.
-        run_id = None
-        pointer = settings.state_dir / "latest_run.json"
-        if pointer.exists():
-            try:
-                run_id = json.loads(pointer.read_text(encoding="utf-8")).get("run_id")
-            except json.JSONDecodeError:
-                run_id = None
-        status = job_states.SUCCEEDED if completed.returncode == 0 else job_states.FAILED
-        error = None
-        if completed.returncode != 0:
-            error = (completed.stderr or completed.stdout or f"exit {completed.returncode}")[:2000]
-        _update_job(
-            settings,
-            job_id,
-            status=status,
-            finished_at=_now(),
-            exit_code=completed.returncode,
-            run_id=str(run_id) if run_id else None,
-            error=error,
-        )
-        job = get_job(settings, job_id)
-        tenant_id = job.tenant_id if job else tenants_service.DEFAULT_TENANT_ID
-        # Outside the success gate: a target the scanner refused was refused
-        # whether or not the scan that followed it finished cleanly.
-        _record_scope_denials_best_effort(
-            settings,
-            tenant_id=tenant_id,
-            run_id=str(run_id) if run_id else None,
-            requested_by=job.requested_by if job else "",
-        )
-        if run_id:
-            # The scanner chose the run id and wrote the directory itself, so
-            # this is the first moment the run can be put in the artifact
-            # store (#336). Before the tagging below, and before the hooks:
-            # they all read the run back through the workspace.
-            try:
-                artifact_workspace.adopt_local_run(
-                    settings, str(run_id), settings.output_dir / "runs" / str(run_id)
-                )
-            except artifact_store.ArtifactStoreError:
-                logging.exception(
-                    "Could not publish run %s to the artifact store", run_id
-                )
-        if status == job_states.SUCCEEDED:
-            # Tag the run before the asset upsert: an untagged run reads back as
-            # the default tenant, which would leak it to every tenant's run list.
-            if run_id:
-                runs_service.write_run_tenant(
-                    settings,
-                    str(run_id),
-                    tenant_id,
-                    job_id=job_id,
-                    surface=(job.scan_options or {}).get("surface") if job else None,
-                )
-            _upsert_assets_best_effort(
-                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
-            )
-            _track_vulnerabilities_best_effort(
-                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
-            )
-            _publish_asset_events_best_effort(
-                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
-            )
-            # Last of the post-run hooks: the summary it sends describes the
-            # tracker and the registry as they are *after* the folds above.
-            _notify_channels_best_effort(
-                settings, tenant_id=tenant_id, run_id=str(run_id) if run_id else None, job_id=job_id
-            )
-    except Exception as exc:  # noqa: BLE001
-        logging.exception("Scan job %s failed", job_id)
-        try:
-            _update_job(
-                settings,
-                job_id,
-                status=job_states.FAILED,
-                finished_at=_now(),
-                error=str(exc)[:2000],
-            )
-        except job_states.InvalidJobTransition:
-            # The scan itself finished and the job is already terminal — this
-            # is post-completion bookkeeping (run tagging) blowing up. Record it
-            # without rewriting the outcome the scan actually had.
-            _update_job(settings, job_id, error=str(exc)[:2000])
-    finally:
-        # The scanner has exited either way, so its copy of the wordlist and
-        # its input files have been read for the last time.
-        _discard_job_wordlist(settings, job_id)
-        _discard_job_inputs(settings, job_id)
+def _run_job(
+    settings: Settings, job_id: str, command: list[str]
+) -> None:
+    local_job_runner.run_job(settings, job_id, command)
 
 
 #: Request fields that define *which scan* a start asks for. ``tenant_id`` is
