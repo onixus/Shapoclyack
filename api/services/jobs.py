@@ -28,7 +28,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +39,6 @@ from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import agent_groups as agent_groups_service
-from api.services import agents as agents_service
 from api.services import artifact_store
 from api.services import audit as audit_service
 from api.services import config_override as config_override_service
@@ -59,7 +58,6 @@ from api.services import run_completion
 from api.services import run_ids
 from api.services import runs as runs_service
 from api.services import scan_admission
-from api.services import scan_policy
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services import scan_intents
