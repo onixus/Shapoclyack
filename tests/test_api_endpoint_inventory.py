@@ -47,6 +47,21 @@ def test_valid_snapshot_returns_201(tmp_path, monkeypatch):
     assert data["changes"] == {"installed": 0, "removed": 0, "updated": 0}
 
 
+def test_apex_v1_inventory_alias_shares_the_same_idempotent_contract(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v1_valid.json")
+
+    versioned = client.post("/api/v1/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert versioned.status_code == 201
+    assert versioned.json()["snapshot_id"] == body["snapshot_id"]
+
+    # The legacy path is a compatibility alias of the same owning-service
+    # state, not a second ingestion surface with separate semantics.
+    legacy_replay = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert legacy_replay.status_code == 200
+    assert legacy_replay.json()["snapshot_id"] == body["snapshot_id"]
+
+
 def test_replay_same_payload_returns_200(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     body = _load_fixture("endpoint_inventory_v1_valid.json")
