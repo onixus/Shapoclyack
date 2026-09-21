@@ -32,6 +32,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,6 +79,100 @@ def scratch_run_dir(settings: Settings, run_id: str) -> Path:
     if run_id == FLAT_RUN_ID:
         return Path(settings.output_dir)
     return Path(settings.output_dir) / "runs" / run_id
+
+
+def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
+    """Where one *attempt's* upload is extracted before it is accepted.
+
+    A run directory is named after the run, and a job keeps its run id across
+    attempts, so extracting an upload straight into it publishes whatever
+    arrived -- including a straggler from an attempt whose lease has already
+    been given to somebody else. Staging is named after that upload's ingest
+    token instead, and :func:`promote_staging` moves it into place only once
+    the outcome has been written under the same token.
+
+    A *sibling* of the run directory, and a dotted name: inside it would be
+    uploaded with the run and listed by ``GET /api/runs/{id}`` as one of the
+    scan's own artifacts, and a plain name in the cache root would be read as
+    a run of its own by :func:`run_ids`.
+
+    Taking one is also when the abandoned ones are collected. An ingest killed
+    with its pod -- or one whose publication is recorded as owed and has run
+    out of retries, which leaves its tree on purpose -- has nobody else to
+    clean up after it: the cache eviction that sweeps
+    these runs only on a remote backend, and a dotted directory is invisible to
+    every listing there is, so on the local backend a full extracted run would
+    sit in ``output_dir/runs`` for good and grow the disk where nothing reports
+    it. Hung off this call rather than a timer because it is the one moment the
+    directory is known and an ingest is already paying for I/O.
+    """
+    destination = scratch_run_dir(settings, run_id)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_abandoned(destination.parent)
+    return destination.parent / f".ingest-{destination.name}-{token[:12]}"
+
+
+def staged_archive_path(staging: Path) -> Path:
+    """Where the upload's own archive is kept while its publication is owed.
+
+    A *sibling* of the staging tree, not a file inside it: inside, it would be
+    uploaded with the run and offered to an operator as one of the scan's
+    artifacts — a 300 MB tarball of the directory it sits in.
+
+    It is kept at all because the publication of a run outlives the request
+    that accepted it (``api/services/run_publisher.py``). The bus message for
+    ``ingest.results.{tenant}`` is built from these bytes and its ``Msg-Id``
+    is their digest, so a republish after a broker outage — or after the
+    replica was killed between the outcome and the publication — has to send
+    *the same* archive. Re-packing the run directory would produce a different
+    digest, which is a second message for one run rather than a retry of one.
+    """
+    staging = Path(staging)
+    return staging.parent / f"{staging.name}.upload"
+
+
+def stage_upload_archive(staging: Path, archive_bytes: bytes) -> Path:
+    """Put the accepted upload's archive beside its staging tree."""
+    path = staged_archive_path(staging)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(archive_bytes)
+    return path
+
+
+def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
+    """Move an accepted upload into the run's own directory. Answers where.
+
+    Renamed when the run has no directory yet, which is every first upload and
+    costs nothing however large the run is. Merged when it has one -- a run
+    the local executor or an earlier partial upload already wrote -- because
+    the alternative is deleting artifacts this upload did not carry.
+    """
+    destination = scratch_run_dir(settings, run_id)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        try:
+            staging.rename(destination)
+            return destination
+        except OSError:
+            # Across filesystems, or a directory that appeared between the
+            # check and the rename. Copying is the same outcome, slower.
+            LOG.debug("Could not rename staged run %s into place", run_id, exc_info=True)
+    shutil.copytree(staging, destination, dirs_exist_ok=True)
+    # The tree only. The archive beside it is still owed to the ingest bus,
+    # and the publisher drops it when the whole publication is done.
+    shutil.rmtree(staging, ignore_errors=True)
+    return destination
+
+
+def discard_staging(staging: Path) -> None:
+    """Drop a staged upload that was refused, or one already promoted.
+
+    The archive kept beside the tree (:func:`staged_archive_path`) goes with
+    it: both belong to one upload, and leaving the tarball behind would keep
+    the larger half of it on the disk for nobody.
+    """
+    shutil.rmtree(staging, ignore_errors=True)
+    staged_archive_path(staging).unlink(missing_ok=True)
 
 
 def run_dir(settings: Settings, run_id: str, *, refresh: bool = True) -> Path:
@@ -131,13 +226,23 @@ def run_ids(settings: Settings) -> list[str]:
     return sorted((name for name in children if not name.startswith(".")), reverse=True)
 
 
-def publish_run(settings: Settings, run_id: str, *, source: Path | None = None) -> int:
+def publish_run(
+    settings: Settings,
+    run_id: str,
+    *,
+    source: Path | None = None,
+    written: list[str] | None = None,
+) -> int:
     """Put a finished run in the store. Answers how many files went.
 
     A no-op on the local backend, where the run was written in its final place
     to begin with. Loud on failure, unlike most of the hooks around it: a run
     that is not in the store is a run the *other* replicas cannot see, and
     silently keeping it on one pod's disk is the failure mode #336 is about.
+
+    ``written`` is handed to :meth:`ArtifactStore.upload_tree` and collects the
+    keys that landed, so a caller that has to undo a transfer which raised
+    halfway knows exactly what to undo -- see :func:`unpublish_run`.
     """
     if not is_remote(settings):
         return 0
@@ -145,7 +250,7 @@ def publish_run(settings: Settings, run_id: str, *, source: Path | None = None) 
     if not directory.is_dir():
         return 0
     store = get_store(settings)
-    count = store.upload_tree(keys.run_prefix(run_id), directory)
+    count = store.upload_tree(keys.run_prefix(run_id), directory, written=written)
     _mark_synced(settings, run_id)
     LOG.info("Published run %s to the artifact store (%d files)", run_id, count)
     return count
@@ -201,6 +306,46 @@ def publish_run_file(settings: Settings, run_id: str, relative_path: str, data: 
     local.write_bytes(data)
     if is_remote(settings):
         get_store(settings).put_bytes(keys.run_artifact(run_id, relative_path), data)
+
+
+def unpublish_run(settings: Settings, run_id: str, *, only: Sequence[str]) -> int:
+    """Take back the keys one failed upload wrote. Answers how many went.
+
+    For an upload that failed partway: ``upload_tree`` writes a key at a time,
+    and a listing is the children of ``runs/``, so a tree that went up by
+    halves is a run every replica can see and open with files missing from it.
+    The publisher removes its half before recording the failure, so a retry
+    starts from nothing and a publication that never succeeds leaves no run
+    rather than a partial one.
+
+    ``only`` is not optional and the run's *prefix* is never removed here.
+    Taking the prefix was the shape this had first, and it is a run deleter
+    wearing a rollback's name: the prefix can hold keys this transfer never
+    wrote -- a concurrent attempt at the same run that succeeded, or, while
+    run ids are minted from a one-second clock, another job's run altogether --
+    and a publication that failed then deleted a scan that was published and
+    whole. So a rollback removes exactly what it put there, and an empty
+    ``only`` removes nothing.
+
+    Best-effort and never raises: the store refusing this is the same outage
+    that refused the upload, and the caller is already on its way to recording
+    that failure. A no-op on the local backend, where nothing was uploaded.
+    """
+    named = [key for key in only if key]
+    if not is_remote(settings) or not named:
+        return 0
+    try:
+        removed = get_store(settings).delete_keys(named)
+    except ArtifactStoreError:
+        LOG.warning(
+            "Could not remove the partial upload of run %s from the artifact store; "
+            "it may be listed with files missing until the next attempt",
+            run_id,
+            exc_info=True,
+        )
+        return 0
+    _forget_synced(settings, run_id)
+    return removed
 
 
 def delete_run(settings: Settings, run_id: str) -> int:
@@ -349,22 +494,44 @@ def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
 #: enough that a pod killed mid-fetch does not carry the debris for a day.
 _ABANDONED_AFTER_SECONDS = 3600
 
+#: The same, for an *ingest* staging tree and the archive beside it. Much
+#: longer, because these two are not transfer debris: they are a complete run
+#: an agent uploaded and a publication that is recorded as owed
+#: (``run_publications``). A publication that has exhausted its retries stays
+#: ``dead`` for an operator to decide about, and an hour is not a shift — a
+#: day is long enough to be told and short enough that a disk does not carry
+#: a failed installation's scans into next week.
+_ABANDONED_INGEST_AFTER_SECONDS = 24 * 3600
+
+#: Prefix :func:`staging_run_dir` gives an ingest's tree, and — with
+#: ``.upload`` appended — its archive.
+_INGEST_PREFIX = ".ingest-"
+
 
 def _sweep_abandoned(root: Path) -> None:
-    """Remove staging trees a killed fetch left behind.
+    """Remove staging trees a killed fetch or a lost ingest left behind.
 
     They are hidden names, so eviction skips them and they would otherwise be
     the one thing in this directory that grows without a bound. Old ones only:
     a fresh one may be a transfer in progress, here or in another pod sharing
-    the volume.
+    the volume — or an ingest whose publication this installation still owes,
+    which is why those get :data:`_ABANDONED_INGEST_AFTER_SECONDS` instead.
     """
-    cutoff = time.time() - _ABANDONED_AFTER_SECONDS
+    now = time.time()
     for child in root.iterdir():
-        if not child.is_dir() or child.name == SYNC_DIR or not child.name.startswith("."):
+        if child.name == SYNC_DIR or not child.name.startswith("."):
             continue
+        ingest = child.name.startswith(_INGEST_PREFIX)
+        if not child.is_dir() and not (ingest and child.name.endswith(".upload")):
+            continue
+        cutoff = now - (_ABANDONED_INGEST_AFTER_SECONDS if ingest else _ABANDONED_AFTER_SECONDS)
         try:
-            if child.stat().st_mtime < cutoff:
+            if child.stat().st_mtime >= cutoff:
+                continue
+            if child.is_dir():
                 shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
         except OSError:
             continue
 

@@ -198,6 +198,39 @@ def run_surface_of(settings: Settings, run_id: str) -> str | None:
     return _surface_from_marker(workspace.read_run_marker(settings, run_id))
 
 
+def _run_tenant_marker(
+    tenant_id: str, *, job_id: str | None = None, surface: str | None = None
+) -> bytes:
+    payload: dict[str, Any] = {"tenant_id": tenant_id}
+    if job_id:
+        payload["job_id"] = job_id
+    if surface:
+        payload["surface"] = surface
+    return (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+
+
+def stage_run_tenant(
+    staging: Path,
+    tenant_id: str,
+    *,
+    job_id: str | None = None,
+    surface: str | None = None,
+) -> None:
+    """Tag an upload that has not been published yet, in its staging tree.
+
+    The counterpart of :func:`write_run_tenant` for the agent ingest, and not
+    best-effort: the marker goes in *before* the run is promoted and uploaded,
+    so both copies carry their owner from the moment anything can read them.
+    Written afterwards, a failure would leave a published run with no marker —
+    and :func:`read_run_tenant` reads that as the default tenant, i.e. as one
+    tenant's scan sitting in every tenant's run list. The caller lets an error
+    here cost the upload its outcome instead.
+    """
+    (Path(staging) / RUN_TENANT_FILE).write_bytes(
+        _run_tenant_marker(tenant_id, job_id=job_id, surface=surface)
+    )
+
+
 def write_run_tenant(
     settings: Settings,
     run_id: str,
@@ -218,11 +251,6 @@ def write_run_tenant(
     run_dir = workspace.scratch_run_dir(settings, run_id)
     if not run_dir.is_dir():
         return False
-    payload: dict[str, Any] = {"tenant_id": tenant_id}
-    if job_id:
-        payload["job_id"] = job_id
-    if surface:
-        payload["surface"] = surface
     try:
         # Through the workspace, so the marker reaches the artifact store and
         # not only this pod: a run whose owner is recorded on one replica's
@@ -232,7 +260,7 @@ def write_run_tenant(
             settings,
             run_id,
             RUN_TENANT_FILE,
-            (json.dumps(payload, indent=2) + "\n").encode("utf-8"),
+            _run_tenant_marker(tenant_id, job_id=job_id, surface=surface),
         )
     except (OSError, artifact_store.ArtifactStoreError):
         LOG.warning("Could not tag run %s with tenant %s", run_id, tenant_id, exc_info=True)

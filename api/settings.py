@@ -580,6 +580,17 @@ class Settings:
     # the dead process). The default is deliberately several times the agent's
     # heartbeat interval so an ordinary hiccup does not steal a live job.
     job_lease_seconds: int = 300
+    # How long the lease is held open while a *result* is being ingested. The
+    # scan is over by then and the agent's heartbeat says "uploading" rather
+    # than a stage, but the job is not finished: the archive still has to be
+    # extracted and its artifacts written, and a lease that lapses in that
+    # window has the reaper hand the job to a second attempt while the first
+    # one's result is being written. Longer than ``job_lease_seconds`` because
+    # this covers a transfer over a branch office's uplink plus the ingest,
+    # where the ordinary lease only has to cover the gap between heartbeats.
+    # A stale result is refused at the terminal write either way — this is what
+    # keeps the refusal rare instead of routine.
+    job_ingest_lease_seconds: int = 900
     # How many times a job may be handed out before the reaper stops requeueing
     # it and fails it instead. Counted per claim, so a target that reliably
     # kills its worker cannot cycle forever.
@@ -597,6 +608,29 @@ class Settings:
     job_cancel_grace_seconds: int = 300
     job_reaper_enabled: bool = True
     job_reaper_interval_seconds: int = 60
+    # Publishing a run the API has already accepted (``run_publications``).
+    # The work is done in the request that accepted the upload; these govern
+    # what happens when it does not succeed there — a store that is refusing,
+    # a broker that is down, a replica killed between the outcome and the
+    # publication. Retries are the reconciler's, and they are bounded: past
+    # ``run_publication_max_attempts`` the row stays ``dead`` for an operator,
+    # because a publication that has failed for an hour is a decision, not a
+    # slower timer. Five attempts on the default backoff is about eight
+    # minutes.
+    run_publication_max_attempts: int = 5
+    run_publication_retry_base_seconds: int = 15
+    run_publication_retry_max_seconds: int = 900
+    run_publication_worker_enabled: bool = True
+    run_publication_interval_seconds: int = 30
+    # How long a publication whose tree no replica can reach is offered around
+    # before it is declared dead. The paths in the row are on the disk of the
+    # replica that accepted the upload, and in the HA overlay that disk is an
+    # ``emptyDir`` — a row left by a pod the autoscaler removed is one nobody
+    # can ever publish. Without this it would be claimed and given back every
+    # adoption window forever, with the job saying ``succeeded`` and no health
+    # check saying otherwise. Floored at two adoption windows in the publisher
+    # so it cannot land before a peer has had a chance to adopt the row.
+    run_publication_orphan_deadline_seconds: int = 3600
     # Login brute-force protection (#157). The counter is the auth_events table,
     # so the limit holds across replicas; see api/services/auth_audit.py.
     login_rate_limit_enabled: bool = True
@@ -1565,6 +1599,9 @@ def load_settings() -> Settings:
         ),
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
+        job_ingest_lease_seconds=int(
+            os.environ.get("OCTO_JOB_INGEST_LEASE_SECONDS", "900")
+        ),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
         job_cancel_grace_seconds=_cancel_grace_seconds(
             agent_stale_seconds=agent_stale_seconds,
@@ -1573,6 +1610,27 @@ def load_settings() -> Settings:
         job_reaper_enabled=os.environ.get("OCTO_JOB_REAPER_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         job_reaper_interval_seconds=job_reaper_interval_seconds,
+        run_publication_max_attempts=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_MAX_ATTEMPTS", "5"))
+        ),
+        run_publication_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_RETRY_BASE_SECONDS", "15"))
+        ),
+        run_publication_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_RETRY_MAX_SECONDS", "900"))
+        ),
+        run_publication_worker_enabled=os.environ.get(
+            "OCTO_RUN_PUBLICATION_WORKER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        # Floored: the reconciler is a timer in every replica, and a zero here
+        # would spin it against Postgres.
+        run_publication_interval_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_INTERVAL_SECONDS", "30"))
+        ),
+        run_publication_orphan_deadline_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS", "3600"))
+        ),
         login_rate_limit_enabled=os.environ.get("OCTO_LOGIN_RATE_LIMIT_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         login_rate_limit_max_failures=max(

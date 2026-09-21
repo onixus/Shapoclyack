@@ -60,6 +60,7 @@ from api.services import sla_escalation
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
+from api.services import run_publisher
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
@@ -114,6 +115,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
+    # Same reasoning again, and the same claim discipline: a publication owed
+    # for an accepted run is due by the row's own clock. It is started even on
+    # a replica that never ingests, because the rows it finishes may be the
+    # ones a killed peer left behind (``run_publisher._claim_due``).
+    run_publisher.start_worker(settings)
     # Same reasoning as the reaper: due-ness is a property of the delivery row
     # and claims are taken with FOR UPDATE SKIP LOCKED, so every replica may
     # dispatch (ROADMAP Phase 10.3).
@@ -127,6 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
+        run_publisher.stop_worker()
         job_reaper.stop_worker()
         sla_escalation.stop_worker()
         report_dispatcher.stop_worker()

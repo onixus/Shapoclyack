@@ -243,6 +243,56 @@ def test_s3_delete_prefix_batches() -> None:
     assert client.objects == {}
 
 
+def test_s3_delete_keys_takes_the_named_objects_and_leaves_their_neighbours() -> None:
+    """The rollback of a half-finished upload, which is not a prefix delete.
+
+    A run prefix can hold keys the failed transfer never wrote — an attempt in
+    another replica that succeeded, or an operator's hand-loaded artifact — and
+    ``delete_prefix`` on that prefix is a run deleter, not a rollback. Batched
+    like the prefix delete, because a run that failed late wrote thousands of
+    screenshots.
+    """
+    store, client = _s3()
+    for index in range(1005):
+        store.put_bytes(f"runs/r1/screenshots/{index}.png", b"x")
+    store.put_bytes("runs/r1/not-ours.json", b"{}")
+
+    mine = [f"runs/r1/screenshots/{index}.png" for index in range(1005)]
+    assert store.delete_keys(mine) == 1005
+    assert [len(batch) for batch in client.deleted_batches] == [1000, 5]
+    assert list(client.objects) == ["runs/r1/not-ours.json"]
+
+
+def test_local_delete_keys_takes_the_named_objects_only(tmp_path: Path) -> None:
+    store = _local(tmp_path)
+    store.put_bytes("runs/r1/summary.json", b"{}")
+    store.put_bytes("runs/r1/not-ours.json", b"{}")
+    assert store.delete_keys(["runs/r1/summary.json", "runs/r1/gone.json"]) == 1
+    assert not store.exists("runs/r1/summary.json")
+    assert store.exists("runs/r1/not-ours.json")
+
+
+def test_s3_upload_tree_reports_the_keys_it_wrote_before_it_failed(tmp_path: Path) -> None:
+    """What a rollback has to know, and what the return value cannot carry.
+
+    ``upload_tree`` raises when the store refuses a file halfway, so its count
+    is lost; the source directory describes the keys it *would* have written,
+    not the ones it did. The collector is how the caller learns the difference.
+    """
+    store, client = _s3()
+    source = tmp_path / "run"
+    source.mkdir()
+    (source / "a.json").write_bytes(b"{}")
+    (source / "b.json").write_bytes(b"{}")
+    (source / "c.json").write_bytes(b"{}")
+    client.refuse_keys = {"runs/r1/b.json", "runs/r1/c.json"}
+
+    written: list[str] = []
+    with pytest.raises(artifact_store.ArtifactStoreError):
+        store.upload_tree("runs/r1", source, written=written)
+    assert written == ["runs/r1/a.json"]
+
+
 def test_s3_presign_carries_the_filename_and_the_expiry() -> None:
     store, client = _s3(presign_enabled=True)
     store.put_bytes("reports/acme/rpt_1.pdf", b"%PDF")

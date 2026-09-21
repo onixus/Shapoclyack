@@ -56,6 +56,21 @@ from api.settings import Settings
 
 router = APIRouter(tags=["agents"])
 
+#: Why a result upload was answered 409, for the agent to act on.
+#:
+#: Three unrelated things share that status on this one route — a straggler
+#: from a replaced attempt, a second completion that disagrees with the first,
+#: and the agent's own upload still being ingested — and an agent that reads
+#: only the status treats all three as "the API rejected the result", drops a
+#: run it is holding and writes the wrong reason in its journal. The detail
+#: string is prose for an operator and not something to branch on, so the
+#: reason travels as its own header. Absent from an older API, which the agent
+#: reads as the rejection it has always assumed.
+RESULT_REJECTION_HEADER = "X-Result-Rejection"
+REJECTION_STALE = "stale-attempt"
+REJECTION_IN_FLIGHT = "in-flight"
+REJECTION_CONFLICT = "conflict"
+
 
 def _server_url(settings: Settings, request: Request) -> str:
     """The URL this installation is reached at, for embedding in install snippets.
@@ -366,10 +381,30 @@ async def upload_results(
     except jobs_service.StaleAttempt as exc:
         # The lease for that attempt expired and the job was handed out again;
         # this result belongs to a scan that has since been replaced.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+            headers={RESULT_REJECTION_HEADER: REJECTION_STALE},
+        ) from exc
+    except jobs_service.ResultsInFlight as exc:
+        # Not a refusal at all: the agent's *own* earlier upload is still being
+        # ingested, which is what a client that timed out waiting for the
+        # response and resent the archive meets. Named apart from the two
+        # rejections beside it so the agent can say so in its journal and stop
+        # resending, instead of reporting a result the API has in fact kept —
+        # it cannot tell the three apart from the status alone.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+            headers={RESULT_REJECTION_HEADER: REJECTION_IN_FLIGHT},
+        ) from exc
     except jobs_service.ResultsConflict as exc:
-        # Same job, different completion — or the same one still being ingested.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        # Same job, a different completion.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+            headers={RESULT_REJECTION_HEADER: REJECTION_CONFLICT},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

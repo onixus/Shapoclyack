@@ -1305,3 +1305,159 @@ def test_the_nats_path_still_asks_the_api_when_no_offer_arrives(monkeypatch):
 
     assert worker.run_loop(args) == 0
     assert claims == 1, "the NATS path never fell back to the API"
+
+
+def test_the_upload_keeps_beating_while_the_result_is_transferred(monkeypatch, tmp_path):
+    """The scan is over but the job is not: the archive is still going up and
+    the API is still ingesting it, and the lease is renewed from the heartbeat.
+    A silent upload is a job the reaper may hand to a second agent while its
+    result is being written (architecture review P1)."""
+    client = _FakeClient()
+    real_upload = client.upload_results
+
+    def _slow_upload(job_id: str, **kwargs: Any):
+        time.sleep(0.35)
+        return real_upload(job_id, **kwargs)
+
+    client.upload_results = _slow_upload  # type: ignore[method-assign]
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+        config=tmp_path / "config.yaml",
+        output_dir=tmp_path,
+        heartbeat_interval=0.05,
+    )
+
+    uploading = [
+        hb
+        for hb in client.heartbeats
+        if hb["current_job_id"] == "job-1" and "uploading" in (hb["detail"] or "")
+    ]
+    assert uploading, "no heartbeat named the upload as the stage it was in"
+    assert all(hb["status"] == "busy" for hb in uploading)
+
+
+def test_a_rejected_result_is_reported_as_a_rejection_not_an_upload_failure(
+    monkeypatch, tmp_path, caplog
+):
+    """The API fenced this result off: the lease expired mid-ingest and the job
+    now belongs to another attempt. Nothing about the transfer went wrong, and
+    retrying it would only be refused again — so the loop is told the result
+    was rejected rather than being handed a transport error."""
+    client = _FakeClient()
+
+    def _rejected(job_id: str, **kwargs: Any):
+        raise worker.AgentResultRejected(
+            f"POST /api/agent/jobs/{job_id}/results -> 409: job is on attempt 2"
+        )
+
+    client.upload_results = _rejected  # type: ignore[method-assign]
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    with caplog.at_level("WARNING"):
+        worker._execute_job(  # noqa: SLF001
+            client,
+            agent_id="agent-1",
+            job={"job_id": "job-1", "run_id": "run-1", "attempt": 1},
+            config=tmp_path / "config.yaml",
+            output_dir=tmp_path,
+            heartbeat_interval=60.0,
+        )
+
+    assert any("rejected" in record.message.lower() for record in caplog.records)
+
+
+def test_a_409_on_the_results_upload_is_its_own_exception(monkeypatch):
+    """Otherwise a fenced-off result arrives in the run loop as a bare
+    RuntimeError, indistinguishable from a 500 worth retrying."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=409,
+            msg="conflict",
+            hdrs={},
+            fp=io.BytesIO(b'{"detail":"Job job-1 is on attempt 2"}'),
+        )
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+
+    with pytest.raises(worker.AgentResultRejected):
+        client._request(  # noqa: SLF001
+            "POST", "/api/agent/jobs/job-1/results", max_retries=0
+        )
+
+
+def test_the_three_409s_on_the_results_route_are_not_one_exception(monkeypatch):
+    """`409` is the API's answer to a straggler, to a second completion that
+    disagrees with the first, and to this agent's *own* upload still being
+    ingested. Read as one, the last of the three made the agent log "the API
+    rejected the result" for a result the API was in the middle of keeping —
+    which is what an ingest longer than the client timeout produces, since the
+    resend meets the first copy's reservation."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    answers = iter(
+        [
+            ({"X-Result-Rejection": "in-flight"}, b'{"detail":"already being processed"}'),
+            ({"X-Result-Rejection": "stale-attempt"}, b'{"detail":"on attempt 2"}'),
+            ({}, b'{"detail":"an API too old to say"}'),
+        ]
+    )
+
+    def fake_urlopen(req, timeout):
+        headers, body = next(answers)
+        raise urllib.error.HTTPError(
+            url=req.full_url, code=409, msg="conflict", hdrs=headers, fp=io.BytesIO(body)
+        )
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+
+    with pytest.raises(worker.AgentResultInFlight):
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+    with pytest.raises(worker.AgentResultRejected) as rejected:
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+    assert not isinstance(rejected.value, worker.AgentResultInFlight)
+    # An API that does not send the header is read the way it always was.
+    with pytest.raises(worker.AgentResultRejected):
+        client._request("POST", "/api/agent/jobs/j/results", max_retries=0)  # noqa: SLF001
+
+
+def test_the_results_upload_waits_as_long_as_the_api_takes_to_ingest(monkeypatch):
+    """The API answers this call when the *ingest* is done, which it is allowed
+    to spend OCTO_JOB_INGEST_LEASE_SECONDS on. At the 60s socket timeout every
+    ingest longer than a minute read as a dead connection, and `_request`
+    answered it by sending the whole archive again."""
+    seen: list[float] = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(timeout)
+        raise AssertionError("not reached")
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=60.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+    assert client.upload_timeout >= 900.0
+
+    for call in (
+        lambda: client._request("GET", "/api/ping", max_retries=0),  # noqa: SLF001
+        lambda: client._request(  # noqa: SLF001
+            "POST", "/api/x", max_retries=0, timeout=client.upload_timeout
+        ),
+    ):
+        try:
+            call()
+        except AssertionError:
+            pass
+    assert seen == [60.0, client.upload_timeout]

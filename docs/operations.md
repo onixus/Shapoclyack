@@ -1067,6 +1067,113 @@ stream still retains. That is safe to repeat: both ClickHouse tables are
 `ReplacingMergeTree` keyed on what the transform emits, and every publish
 carries a `Nats-Msg-Id`.
 
+### Runs accepted but not published (`run_publications`)
+
+An upload from a sensor becomes visible in four places: the object store, the
+run directory, `state/latest_run.json` and `ingest.results.{tenant}`. Since the
+ingest fencing change, none of that happens before the job's terminal write.
+That write records the outcome and, in the same transaction, one
+`run_publications` row saying the run is accepted and owed its publication;
+everything visible is then done from that row — first in the request that
+accepted the upload, then by a reconciler in every replica.
+
+So a store outage, an unreachable broker or a replica killed mid-publication no
+longer costs the scan. It costs its *visibility*, for as long as the row says
+`pending`. What an operator has to act on is a row that says `dead`:
+
+- `/api/health` reports `run_publications: error` (advisory — `/readyz` and the
+  replica's place in the Service are unaffected);
+- `octo_run_publication_backlog{status="dead"}` is non-zero;
+- the job itself carries `; run not published (publication <id>): <reason>` in
+  its `error`, which is what the console shows on a scan that says it succeeded
+  and has no artifacts.
+
+What is owed, and where it is:
+
+```bash
+python -c '
+from api.settings import load_settings
+from api.services import run_publisher
+s = load_settings()
+print(run_publisher.backlog(s))
+for row in run_publisher.pending_publications(s, "<job_id>"):
+    print(row.publication_id, row.status, row.attempts, row.claims, row.stored_at, row.replica, row.staging_path, row.last_error)
+'
+```
+
+`stored_at` says the run's whole tree reached the object store: a row that
+carries it is owed only `latest_run.json` and the message on
+`ingest.results.{tenant}`, so the scan is readable in the console and it is the
+analytical projection that is behind. It is also half of the fence that keeps a
+publication which loses a race from taking the winner's keys back off; `claims`
+is the other half, because the stamp goes on only once the winner's whole tree
+is up and the race is lost long before that.
+
+`staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
+row is normally finished by the replica that accepted the upload. A peer picks
+one up only after that replica has been silent for ten reconciler ticks, and
+gives it back untouched if it cannot see the tree. Silence means the row has
+not been touched: a publication in flight renews its hold every few seconds,
+and a recorded failure writes the row too, so a replica that is alive and
+retrying keeps its own rows.
+
+That giving back is bounded, which is the other way a row reaches `dead`: with
+the artifact cache on an `emptyDir` — the HA overlay's default — the staging
+tree dies with its pod, so a row left by a pod the autoscaler removed is one no
+replica can ever publish. After `OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS`
+(1h) of that silence it is `dead` with *the replica that accepted this upload
+is gone* on it. Usually that means a re-scan and nothing to load by hand —
+usually, not always: **check `staging_path` before you believe it**. In an
+installation that runs the reconciler in only some replicas
+(`OCTO_RUN_PUBLICATION_WORKER_ENABLED=false` elsewhere), or where the cache is
+a volume that outlived the pod, the extracted tree can still be on a disk you
+can reach, and then the manual load below applies. A deployment that wants
+those rows adopted rather than condemned needs the cache on an RWX volume, not
+a longer deadline.
+
+A third reason, rarer: *claimed far more often than it may be attempted*. The
+publication keeps killing the replica that takes it — a tree large enough to
+reach the pod's memory limit is the case this was written for — so no attempt
+ever records an outcome. Check the API pods for OOM kills before re-scanning;
+the tree is on the accepting replica's disk and can be loaded by hand.
+
+One more thing a `dead` row can say: *the keys already written could not be
+taken back*. The store refused the upload halfway and then refused the cleanup
+as well, so the run **is** listed by every replica, short the files that never
+arrived. Remove `runs/<run_id>/` from the bucket by hand (or finish the upload
+from `staging_path`) before deciding between a manual load and a re-scan —
+until then an operator reading that run cannot tell it from a scan that found
+nothing.
+
+The extracted run and the archive beside it are kept for 24 hours after the
+last attempt, then swept by the next ingest on that replica. Inside that window
+there are two ways out, and both are decisions rather than retries:
+
+- **Publish it by hand.** Copy `staging_path` into the run directory
+  (`OCTO_OUTPUT_DIR/runs/<run_id>` on the local backend) or upload it under
+  `runs/<run_id>/` in the bucket, then discard the row. The analytical
+  projection stays behind for that run unless the archive is replayed as well.
+- **Re-scan.** Discard the row and start the scan again; the run id will be a
+  new one.
+
+Discarding a row is one call, and it is the only thing that clears the health
+check and the note on the job — nothing else deletes these rows:
+
+```bash
+python -c '
+from api.settings import load_settings
+from api.services import run_publisher
+print(run_publisher.discard_publication(load_settings(), "<publication_id>"))
+'
+```
+
+The row is all that goes: the extracted tree and the archive beside it stay
+until the ordinary sweep takes them, so the decision is recoverable for a day.
+
+A `pending` row that is not draining is the same problem one step earlier:
+check the store and the broker first (`/api/health`), because the reconciler is
+retrying something that is still refusing.
+
 ### Risk snapshot retention (#229)
 
 `risk_score_snapshots` (migration `0023`) gains one row per tenant on every
