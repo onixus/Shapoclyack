@@ -1097,23 +1097,45 @@ from api.services import run_publisher
 s = load_settings()
 print(run_publisher.backlog(s))
 for row in run_publisher.pending_publications(s, "<job_id>"):
-    print(row.publication_id, row.status, row.attempts, row.replica, row.staging_path, row.last_error)
+    print(row.publication_id, row.status, row.attempts, row.claims, row.replica, row.staging_path, row.last_error)
 '
 ```
 
 `staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
 row is normally finished by the replica that accepted the upload. A peer picks
 one up only after that replica has been silent for ten reconciler ticks, and
-gives it back untouched if it cannot see the tree.
+gives it back untouched if it cannot see the tree. Silence means the row has
+not been touched: a publication in flight renews its hold every few seconds,
+and a recorded failure writes the row too, so a replica that is alive and
+retrying keeps its own rows.
 
 That giving back is bounded, which is the other way a row reaches `dead`: with
 the artifact cache on an `emptyDir` — the HA overlay's default — the staging
 tree dies with its pod, so a row left by a pod the autoscaler removed is one no
-replica can ever publish. After
-`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` (1h) it is `dead` with *the
-replica that accepted this upload is gone* on it, and the run needs a re-scan:
-there is nothing left to load by hand. A deployment that wants those rows
-adoptable instead needs the cache on an RWX volume, not a longer deadline.
+replica can ever publish. After `OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS`
+(1h) of that silence it is `dead` with *the replica that accepted this upload
+is gone* on it. Usually that means a re-scan and nothing to load by hand —
+usually, not always: **check `staging_path` before you believe it**. In an
+installation that runs the reconciler in only some replicas
+(`OCTO_RUN_PUBLICATION_WORKER_ENABLED=false` elsewhere), or where the cache is
+a volume that outlived the pod, the extracted tree can still be on a disk you
+can reach, and then the manual load below applies. A deployment that wants
+those rows adopted rather than condemned needs the cache on an RWX volume, not
+a longer deadline.
+
+A third reason, rarer: *claimed far more often than it may be attempted*. The
+publication keeps killing the replica that takes it — a tree large enough to
+reach the pod's memory limit is the case this was written for — so no attempt
+ever records an outcome. Check the API pods for OOM kills before re-scanning;
+the tree is on the accepting replica's disk and can be loaded by hand.
+
+One more thing a `dead` row can say: *the keys already written could not be
+taken back*. The store refused the upload halfway and then refused the cleanup
+as well, so the run **is** listed by every replica, short the files that never
+arrived. Remove `runs/<run_id>/` from the bucket by hand (or finish the upload
+from `staging_path`) before deciding between a manual load and a re-scan —
+until then an operator reading that run cannot tell it from a scan that found
+nothing.
 
 The extracted run and the archive beside it are kept for 24 hours after the
 last attempt, then swept by the next ingest on that replica. Inside that window

@@ -12,9 +12,15 @@ against one bucket:
   exotic one) has to end somewhere an operator can see;
 * the accepting request and a reconciler tick must not publish the same row at
   once — two bus messages, two projections, two notifications for one scan, and
-  an ``upload_tree`` racing the ``rmtree`` that promotes the tree;
+  an ``upload_tree`` racing the ``rmtree`` that promotes the tree. Not for the
+  first minute: for as long as the publication actually takes, which is why the
+  race tests below drive the clock rather than trusting a constant;
+* and when that race happens anyway, the side that loses must not take the
+  published run with it: a rollback removes the keys *it* wrote, and only
+  while the run is still owed;
 * a store that starts refusing halfway through a tree must not leave a run that
-  every other replica lists and opens with files missing from it.
+  every other replica lists and opens with files missing from it — and when the
+  same outage refuses the cleanup too, the operator has to be told.
 
 Each test therefore reads through a second ``Settings`` sharing the bucket and
 nothing else, the way ``test_runs_on_object_storage`` does.
@@ -25,6 +31,7 @@ from __future__ import annotations
 import io
 import tarfile
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -40,6 +47,7 @@ from api.services import results_ingest
 from api.services import run_publisher
 from api.services import tenants as tenants_service
 from api.services.artifact_store import keys
+from api.services.artifact_store import s3 as s3_store
 from api.services.artifact_store import workspace as artifact_workspace
 from tests.conftest import approve_scan_scope, make_settings, requires_postgres
 from tests.fake_s3 import FakeS3Client
@@ -161,8 +169,44 @@ def _leave_it_to_a_pod_that_is_gone(settings, job_id: str, *, age_seconds: int) 
         row.staging_path = str(Path(settings.output_dir) / "runs" / ".ingest-gone")
         row.archive_path = str(Path(settings.output_dir) / "runs" / ".ingest-gone.upload")
         row.created_at = now - timedelta(seconds=age_seconds)
+        # And nothing has touched it since, which is what a pod that is gone
+        # looks like: a publication in flight renews ``updated_at`` every few
+        # seconds, and that — not the age of the upload — is what the orphan
+        # deadline runs from.
+        row.updated_at = now - timedelta(seconds=age_seconds)
         row.next_attempt_at = now
     return publication_id
+
+
+class _Clock:
+    """A clock the test moves, shared by the publisher and its lease.
+
+    A publication that outlives its hold cannot be staged by handing
+    ``reconcile_once`` a ``now`` from the future alone: the lease renewing the
+    hold reads the same clock, and a test that moves one side only is testing
+    the constant rather than the mechanism. So both sides read this.
+    """
+
+    def __init__(self) -> None:
+        self._at = jobs_service._now()  # noqa: SLF001
+        self._lock = threading.Lock()
+
+    def now(self):
+        with self._lock:
+            return self._at
+
+    def advance(self, seconds: int) -> None:
+        with self._lock:
+            self._at = self._at + timedelta(seconds=seconds)
+
+
+def _wait_until(predicate, *, timeout: float = 30.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def test_a_row_whose_replica_is_gone_is_given_back_while_adoption_can_still_work(
@@ -274,8 +318,9 @@ def test_a_row_no_replica_can_ever_publish_ends_dead_instead_of_circulating(
     assert run_publisher.backlog(settings) == {"pending": 0, "dead": 0}
 
 
+@pytest.mark.parametrize("tick_after_seconds", [0, 61, 600])
 def test_the_accepting_request_and_a_reconciler_tick_do_not_both_publish(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, tick_after_seconds
 ):
     """One accepted upload is one publication, not one per replica that looks.
 
@@ -287,10 +332,24 @@ def test_the_accepting_request_and_a_reconciler_tick_do_not_both_publish(
     messages on ``ingest.results``, two projections, two notifications for one
     scan, and an ``upload_tree`` racing the ``rmtree`` that promotes the tree,
     with whichever side lost swallowed silently.
+
+    Parametrised by *when* that tick lands, because the first version of this
+    test only ever ticked at the moment of the claim: the hold was a 60-second
+    constant, and a tick one second past it published the run a second time
+    while the request was still uploading it — which is the case the docstring
+    ("minutes") describes and the constant did not cover. The hold is renewed
+    while the work runs, so a publication that takes ten minutes is held for
+    ten minutes; the clock below is shared by the renewal and the tick,
+    because moving only one of them would test the constant again.
     """
     settings = _replica(tmp_path, "pod-a")
     settings.nats_url = "nats://stub:4222"
     _serve(settings)
+    clock = _Clock()
+    monkeypatch.setattr(run_publisher, "_now", clock.now)
+    # Renewed far more often than in production, so the test does not wait out
+    # a real horizon to observe one.
+    monkeypatch.setattr(run_publisher, "_LEASE_RENEW_SECONDS", 0.05)
 
     on_the_bus: list[str] = []
     notified: list[str] = []
@@ -323,17 +382,30 @@ def test_the_accepting_request_and_a_reconciler_tick_do_not_both_publish(
 
     request = threading.Thread(target=_accept, name="accepting-request")
     request.start()
-    assert publishing.wait(30)
+    try:
+        assert publishing.wait(30)
 
-    # A tick in any replica, while the accepting request is still mid-publication.
-    assert run_publisher.reconcile_once(settings) == {
-        "published": 0,
-        "failed": 0,
-        "skipped": 0,
-    }
+        # The publication is still running this far into it, and has said so by
+        # renewing its hold — which is what the tick below must see.
+        clock.advance(tick_after_seconds)
+        assert _wait_until(
+            lambda: run_publisher.pending_publications(settings, job.job_id)[0].next_attempt_at
+            > clock.now()
+        ), "the running publication never renewed its hold"
 
-    release.set()
-    request.join(30)
+        # A tick in any replica, while the accepting request is still mid-publication.
+        assert run_publisher.reconcile_once(settings) == {
+            "published": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+    finally:
+        # Always, including on a failed assertion: an accepting request left
+        # blocked in the broker stub finishes its publication after pytest has
+        # undone the monkeypatches, i.e. against the real notification
+        # channels, and the run hangs rather than failing.
+        release.set()
+        request.join(30)
     assert "error" not in accepted, accepted.get("error")
     assert on_the_bus == [run_id]
     assert notified == [run_id]
@@ -437,3 +509,275 @@ def test_a_tree_that_went_up_by_halves_is_not_left_in_the_bucket(tmp_path, monke
     owed = run_publisher.pending_publications(writer, job.job_id)[0]
     assert (Path(owed.staging_path) / "summary.json").is_file()
     assert "run not published" in (jobs_service.get_job(writer, job.job_id).error or "")
+
+
+def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
+    tmp_path, monkeypatch
+):
+    """A rollback takes back this attempt's upload, never a finished one.
+
+    The hold above makes this race rare; it cannot make it impossible, because
+    a hold is renewed by a process that may stop renewing. So the losing side
+    has to be harmless. It was not: ``unpublish_run`` removed the run's whole
+    prefix, so a second attempt that failed after a first one had published the
+    whole run deleted it — every key, for every replica — while the job stayed
+    ``succeeded`` with an empty ``error``, the row was gone (the winner had
+    deleted it) and ``/api/health`` stayed green. Nothing said anything.
+
+    Here the tick publishes the run and promotes the staging tree out from
+    under the request, whose own upload then fails on a file that is no longer
+    on disk.
+    """
+    shared = FakeS3Client()
+    writer = _remote_replica(tmp_path, "pod-a", shared)
+    reader = _remote_replica(tmp_path, "pod-b", shared)
+    _serve(writer)
+    # One key at a time, so "halfway through the tree" is a place the test can
+    # stand rather than a race between eight threads.
+    monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
+    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+
+    store = artifact_store.get_store(writer)
+    real_put = store.put_bytes
+    at_the_store = threading.Event()
+    go_on = threading.Event()
+    first = {"key": True}
+
+    def _stalls_on_the_first_key(key, data, **kwargs):
+        if first["key"] and key.startswith(f"{keys.RUNS}/"):
+            first["key"] = False
+            at_the_store.set()
+            go_on.wait(60)
+        return real_put(key, data, **kwargs)
+
+    monkeypatch.setattr(store, "put_bytes", _stalls_on_the_first_key)
+    job = jobs_service.start_scan(writer, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(writer, "agent-1")
+    run_id = str(jobs_service.get_job(writer, job.job_id).run_id)
+    accepted: dict[str, object] = {}
+
+    def _accept() -> None:
+        try:
+            accepted["job"] = _upload(writer, job.job_id, claim.attempt, run_id)
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            accepted["error"] = exc
+
+    request = threading.Thread(target=_accept, name="accepting-request")
+    request.start()
+    try:
+        assert at_the_store.wait(30), "the request never reached the store"
+
+        # A tick that finds the row due anyway — a renewal that never landed, a
+        # clock the pods do not share — and publishes the whole run.
+        winner = run_publisher.reconcile_once(
+            writer, now=jobs_service._now() + timedelta(seconds=61)  # noqa: SLF001
+        )
+        assert winner["published"] == 1
+        artifact_workspace.reset_marker_cache()
+        assert artifact_workspace.run_ids(reader) == [run_id]
+    finally:
+        # Always: a request left blocked in the store stub would finish its
+        # publication after pytest undid the monkeypatches around it.
+        go_on.set()
+        request.join(60)
+    assert "error" not in accepted, accepted.get("error")
+
+    # The run the winner published is still there, whole, for every replica.
+    artifact_workspace.reset_marker_cache()
+    assert artifact_workspace.run_ids(reader) == [run_id]
+    landed = sorted(
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+    )
+    assert landed == ["fresh.json", "summary.json", "tenant.json"]
+    assert run_publisher.pending_publications(writer, job.job_id) == []
+    assert not run_publisher.is_backlogged(writer)
+
+
+def test_a_rollback_removes_the_keys_this_attempt_wrote_and_no_others(
+    tmp_path, monkeypatch
+):
+    """Only this upload's keys, and the operator is told when a half is left.
+
+    Run ids are minted per second, and until this release two jobs claimed in
+    the same one shared a prefix — so "delete everything under
+    ``runs/<run_id>``" was a cross-tenant delete waiting for a bad second. The
+    rollback now removes the keys this transfer actually wrote, which is also
+    the only set it can know: the return value of ``upload_tree`` is gone with
+    the exception that raised, and the staging tree describes the keys it
+    *would* have written, not the ones it did.
+
+    The stranger's key left behind is the other half of the bargain: the run is
+    still listable, so ``a dead row never leaves a half of a run`` is not
+    something this can promise, and the job says so instead of pretending.
+    """
+    shared = FakeS3Client()
+    writer = _remote_replica(tmp_path, "pod-a", shared)
+    writer.run_publication_max_attempts = 1
+    _serve(writer)
+
+    job = jobs_service.start_scan(writer, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(writer, "agent-1")
+    run_id = str(jobs_service.get_job(writer, job.job_id).run_id)
+
+    store = artifact_store.get_store(writer)
+    # Somebody else's key under this prefix: the run of a job that shared the
+    # run id, or a hand-loaded artifact an operator put there.
+    store.put_bytes(keys.run_artifact(run_id, "not-ours.json"), b"{}\n")
+    real_put = store.put_bytes
+
+    def _refuses_halfway(key, data, **kwargs):
+        if key.endswith("summary.json"):
+            raise artifact_store.ArtifactStoreError("bucket started refusing")
+        return real_put(key, data, **kwargs)
+
+    monkeypatch.setattr(store, "put_bytes", _refuses_halfway)
+    done = _upload(writer, job.job_id, claim.attempt, run_id)
+
+    assert done.status == "succeeded"
+    left = sorted(entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(
+        keys.run_prefix(run_id)
+    ))
+    assert left == ["not-ours.json"]
+    owed = run_publisher.pending_publications(writer, job.job_id)[0]
+    assert owed.status == "dead"
+    assert "listed by every replica with files missing" in (owed.last_error or "")
+    assert "run not published" in (jobs_service.get_job(writer, job.job_id).error or "")
+
+
+def test_a_store_that_refuses_the_cleanup_too_says_so_on_the_job(tmp_path, monkeypatch):
+    """The outage that refused the upload refuses the rollback as well.
+
+    Taking the half back off is best-effort by construction — the store is
+    already refusing — so ``dead`` can leave a run other replicas list and open
+    with files missing from it. That is not a promise this module can keep, and
+    the honest version of keeping it is telling the operator: the reason on the
+    row, and the note on the job, both say the run may be listed short.
+    """
+    shared = FakeS3Client()
+    writer = _remote_replica(tmp_path, "pod-a", shared)
+    reader = _remote_replica(tmp_path, "pod-b", shared)
+    writer.run_publication_max_attempts = 1
+    _serve(writer)
+
+    store = artifact_store.get_store(writer)
+    real_put = store.put_bytes
+
+    def _refuses_halfway(key, data, **kwargs):
+        if key.endswith("summary.json"):
+            raise artifact_store.ArtifactStoreError("bucket started refusing")
+        return real_put(key, data, **kwargs)
+
+    monkeypatch.setattr(store, "put_bytes", _refuses_halfway)
+    shared.fail_deletes_with = RuntimeError("bucket started refusing")
+
+    job = jobs_service.start_scan(writer, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(writer, "agent-1")
+    run_id = str(jobs_service.get_job(writer, job.job_id).run_id)
+    _upload(writer, job.job_id, claim.attempt, run_id)
+
+    owed = run_publisher.pending_publications(writer, job.job_id)[0]
+    assert owed.status == "dead"
+    assert "could not be taken back" in (owed.last_error or "")
+    # And it is a half — said out loud rather than asserted away.
+    artifact_workspace.reset_marker_cache()
+    assert artifact_workspace.run_ids(reader) == [run_id]
+    assert run_publisher.is_backlogged(writer)
+
+
+def test_a_publisher_that_dies_before_it_records_anything_does_not_loop_forever(
+    tmp_path, monkeypatch
+):
+    """The bound on the other end of "a claim is not an attempt".
+
+    Counting an attempt at the claim was wrong (five OOM restarts must not
+    condemn a batch the store never refused), and removing it left the
+    symmetric hole: a tree large enough to kill the replica publishing it — the
+    example that motivated the change — is claimed, kills the replica before
+    anything is recorded, and is claimed again one horizon later. Nothing
+    counted it: ``attempts`` stayed where it was, ``_is_orphaned`` only ever
+    looks at another replica's rows, and ``is_backlogged`` counts only ``dead``.
+    Fifty such cycles left ``attempts=1``, a green ``/api/health`` and an empty
+    ``jobs.error``.
+
+    Claims are counted now, given back when a peer hands a row back untouched,
+    and reset by any attempt that reaches an outcome.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _ = _owed_run(settings, monkeypatch)
+    budget = run_publisher._claim_budget(settings)  # noqa: SLF001
+    now = jobs_service._now()  # noqa: SLF001
+
+    for _ in range(budget):
+        now = now + timedelta(seconds=300)
+        with get_session(settings.postgres_url) as session:
+            assert len(
+                run_publisher._claim_due(  # noqa: SLF001
+                    session, now=now, limit=10, settings=settings
+                )
+            ) == 1
+    row = run_publisher.pending_publications(settings, job_id)[0]
+    assert (row.status, row.attempts) == ("pending", 1), "written off too early"
+
+    outcome = run_publisher.reconcile_once(settings, now=now + timedelta(seconds=300))
+    assert outcome["failed"] == 1
+    row = run_publisher.pending_publications(settings, job_id)[0]
+    assert row.status == "dead"
+    assert "dying mid-publication" in (row.last_error or "")
+    assert run_publisher.is_backlogged(settings)
+    assert "run not published" in (jobs_service.get_job(settings, job_id).error or "")
+
+
+def test_a_peer_does_not_condemn_a_row_its_owner_is_still_working_on(tmp_path, monkeypatch):
+    """The orphan deadline runs from the last sign of life, not from the upload.
+
+    It was measured from ``created_at``, i.e. from the moment the upload was
+    accepted — so an installation that raised
+    ``OCTO_RUN_PUBLICATION_MAX_ATTEMPTS`` to ride out a long store outage had
+    its rows declared *dead, the replica is gone* by a peer that cannot see
+    the tree, while the owner was retrying and had touched the row
+    milliseconds earlier. The extracted tree was on a running pod's disk and
+    the runbook told the operator to re-scan.
+    """
+    owner = _replica(tmp_path, "pod-a")
+    _serve(owner)
+    owner.run_publication_max_attempts = 50
+    job_id, _ = _owed_run(owner, monkeypatch)
+    owed = run_publisher.pending_publications(owner, job_id)[0]
+    now = jobs_service._now()  # noqa: SLF001
+    with get_session(owner.postgres_url) as session:
+        row = session.get(models.RunPublication, owed.publication_id)
+        row.replica = "pod-a"
+        row.created_at = now - timedelta(hours=2)  # accepted two hours ago
+        row.updated_at = now  # ...and being published right now
+        row.next_attempt_at = now
+        row.staging_path = str(tmp_path / "pod-a" / "not-visible-from-pod-b")
+
+    peer = _replica(tmp_path, "pod-b")
+    assert run_publisher.reconcile_once(peer) == {"published": 0, "failed": 0, "skipped": 1}
+
+    with get_session(owner.postgres_url) as session:
+        row = session.get(models.RunPublication, owed.publication_id)
+        assert row.status == "pending"
+    assert not run_publisher.is_backlogged(peer)
+
+
+def test_two_jobs_claimed_in_the_same_second_get_different_run_ids(tmp_path):
+    """A run id is a prefix, and a shared prefix is a shared run.
+
+    ``%Y%m%dT%H%M%SZ`` is not unique, and two agents claiming inside one second
+    got the same id: two scans merged into one run directory and one key
+    prefix — across tenants, since the prefix carries no owner yet (#311) — and
+    the loser of a publication took the winner's keys with it. The clock still
+    leads, so the listing's ordering is unchanged.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    agents_service.register_agent(agent_id="agent-2", tenant_id="default")
+    jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+
+    first = jobs_service.claim_job(settings, "agent-1")
+    second = jobs_service.claim_job(settings, "agent-2")
+    assert first.run_id != second.run_id
+    assert first.run_id.split("-")[0] == second.run_id.split("-")[0]

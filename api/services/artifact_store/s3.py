@@ -271,7 +271,14 @@ class S3ArtifactStore(ArtifactStore):
         return present
 
     def delete_prefix(self, prefix: str) -> int:
-        keys = [entry.key for entry in self.list_prefix(prefix)]
+        return self._delete_batched([entry.key for entry in self.list_prefix(prefix)], prefix)
+
+    def delete_keys(self, keys: Iterable[str]) -> int:
+        """The named objects only, in the same batches as a prefix delete."""
+        named = [normalize_key(key) for key in keys]
+        return self._delete_batched(named, f"{len(named)} named key(s)")
+
+    def _delete_batched(self, keys: list[str], what: str) -> int:
         removed = 0
         # delete_objects takes a thousand keys per call; a long-retained run
         # can exceed that on screenshots alone.
@@ -286,11 +293,11 @@ class S3ArtifactStore(ArtifactStore):
                     },
                 )
             except Exception as exc:  # noqa: BLE001
-                raise ArtifactStoreError(f"could not delete {prefix}: {exc}") from exc
+                raise ArtifactStoreError(f"could not delete {what}: {exc}") from exc
             errors = response.get("Errors") or []
             if errors:
                 raise ArtifactStoreError(
-                    f"could not delete {len(errors)} object(s) under {prefix}: "
+                    f"could not delete {len(errors)} object(s) under {what}: "
                     f"{errors[0].get('Code')} {errors[0].get('Key')}"
                 )
             removed += len(batch)
@@ -298,7 +305,7 @@ class S3ArtifactStore(ArtifactStore):
 
     # -- trees ------------------------------------------------------------
 
-    def upload_tree(self, prefix: str, source: Path) -> int:
+    def upload_tree(self, prefix: str, source: Path, *, written: list[str] | None = None) -> int:
         source = Path(source)
         if not source.is_dir():
             return 0
@@ -313,7 +320,13 @@ class S3ArtifactStore(ArtifactStore):
 
         def send(path: Path) -> None:
             relative = path.relative_to(source).as_posix()
-            self.put_bytes(f"{normalized}/{relative}", path.read_bytes())
+            key = f"{normalized}/{relative}"
+            self.put_bytes(key, path.read_bytes())
+            if written is not None:
+                # Appended from several worker threads. ``list.append`` is the
+                # atomic operation this relies on, which is why the collector
+                # is a list and not a set being updated read-modify-write.
+                written.append(normalize_key(key))
 
         with ThreadPoolExecutor(max_workers=_TREE_CONCURRENCY) as pool:
             # list() so an exception in any worker is raised here rather than

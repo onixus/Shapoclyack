@@ -165,13 +165,39 @@ class ArtifactStore(abc.ABC):
     def delete_prefix(self, prefix: str) -> int:
         """Remove every object under ``prefix``; answer how many went."""
 
+    def delete_keys(self, keys: Iterable[str]) -> int:
+        """Remove exactly these objects; answer how many were there.
+
+        Not :meth:`delete_prefix` with extra steps. A caller that knows which
+        keys *it* wrote must be able to take those back without touching a
+        neighbour's: the one caller that needs it is the rollback of a partly
+        uploaded run (:func:`workspace.unpublish_run`), and a run prefix can
+        hold keys this transfer never wrote -- another publication's, or an
+        earlier upload's -- where removing them is data loss, not cleanup.
+
+        One round trip per key by default; a backend that deletes in batches
+        overrides it.
+        """
+        removed = 0
+        for key in keys:
+            if self.delete(key):
+                removed += 1
+        return removed
+
     @abc.abstractmethod
-    def upload_tree(self, prefix: str, source: Path) -> int:
+    def upload_tree(self, prefix: str, source: Path, *, written: list[str] | None = None) -> int:
         """Copy a local directory to ``prefix``; answer how many files went.
 
         Trees exist because a run is produced as a directory by a scanner that
         knows nothing about object storage, and is consumed by API code that
         reads two dozen JSON files out of it.
+
+        ``written`` collects the key of each file as it lands. A caller passes
+        one when it must be able to undo a transfer that raised halfway: the
+        return value is gone with the exception, and the source directory is
+        not the answer either -- a tree that went up by halves wrote some of
+        those keys and not others, and a rollback that assumes the whole set
+        removes keys this transfer never touched.
         """
 
     @abc.abstractmethod

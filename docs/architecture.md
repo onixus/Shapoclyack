@@ -120,25 +120,51 @@ were shipped in turn; the record is in the dated
 
 One accepted upload is one publication. The row is inserted due immediately,
 so the accepting request claims it with `FOR UPDATE SKIP LOCKED` and holds it
-out of the due window for the length of the work, exactly as a reconciler tick
-holds the batch it claimed — otherwise the next tick in any replica would find
-the row due and publish it alongside the request. Attempts are counted where a
-publication fails, not where its row is claimed, so a replica killed mid-batch
-does not write one off for every row it was holding.
+out of the due window, exactly as a reconciler tick holds the batch it claimed
+— otherwise the next tick in any replica would find the row due and publish it
+alongside the request. The hold is a floor and not a guess at the work: a
+running publication **renews** it every few seconds, so a tree that takes ten
+minutes is held for ten minutes, and a replica that dies stops renewing and
+gives the row up one horizon later. That renewal is also the row's proof of
+life — see the orphan deadline below.
+
+Should the race happen anyway (a renewal that never reached the database, two
+pods whose clocks disagree), the side that loses is harmless rather than
+destructive: a failed upload rolls back **the keys it wrote itself**, and only
+while the run is still owed. Taking the run's whole `runs/<run_id>/` prefix, as
+this first did, deletes a run somebody else has just published — and while run
+ids were minted from a one-second clock, somebody else's run entirely. Run ids
+minted by the API now carry a random suffix as well as the timestamp.
+
+Attempts are counted where a publication fails, not where its row is claimed,
+so a replica killed mid-batch does not write one off for every row it was
+holding. Claims are counted separately, for the other end of the same
+argument: a tree large enough to kill the replica publishing it would
+otherwise be claimed, die, and be claimed again forever, with nothing counting
+anything. Past twice the permitted attempts in claims without one of them
+reaching an outcome, the row is `dead` like any other.
 
 A run that cannot be published at all is the bounded end of this. Past
 `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` the row stays `dead` — as it does past
-`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` for a row whose staging tree is
-on a replica that is gone, which with the artifact cache on an `emptyDir` is
-what a scaled-down pod leaves behind. Either way: `/api/health` reports
+`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` of *silence* for a row whose
+staging tree is on a replica that is gone, which with the artifact cache on an
+`emptyDir` is what a scaled-down pod leaves behind. Silence, not age: the
+deadline runs from the last time some replica was demonstrably working on the
+row (a renewal, or a recorded failure), so a pod that is alive and retrying a
+slow store is not condemned by a peer that cannot see its disk. Either way:
+`/api/health` reports
 `run_publications` (advisory — `/readyz` is unaffected),
 `octo_run_publication_backlog{status="dead"}` rises, the job's `error` says the
 run was not published, and the extracted tree stays on the accepting replica's
 disk for 24 hours so an operator can publish it by hand or re-scan (a run whose
 replica is gone has only the second of those, and the runbook says so). A
 publication that failed partway through the object store takes its own keys
-back off before the failure is recorded, so a `dead` row never leaves a half of
-a run for the other replicas to list and open. The
+back off before the failure is recorded, so a `dead` row does not normally
+leave a half of a run for the other replicas to list and open. *Normally*: the
+store that refused the upload can refuse the cleanup too, and then the half
+stays. It is not silent — the row's reason and the note on the job both say the
+run may be listed with files missing from it — but it is a case an operator
+has to finish by hand. The
 projections that read a published run — assets, vulnerabilities, asset events,
 notifications — run when the publication lands, not when the job finishes, and
 they cannot fail it: a failure there is recorded in the job's `error`.

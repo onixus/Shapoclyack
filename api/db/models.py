@@ -1810,6 +1810,11 @@ class RunPublication(Base):
     replica: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="pending")  # pending | dead
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Claims that never reached an outcome. ``attempts`` counts refusals the
+    # store or the broker gave; this counts the publications that killed the
+    # replica before it could record one, which is the only way an accepted
+    # run could otherwise be retried forever in silence.
+    claims: Mapped[int] = mapped_column(default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]

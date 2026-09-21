@@ -64,12 +64,22 @@ class FakeS3Client:
         self.buckets_headed: list[str] = []
         #: Set to raise from the next mutating call, to test error handling.
         self.fail_with: Exception | None = None
+        #: Set to raise from deletes only. A store outage refuses the cleanup
+        #: of a half-finished upload exactly as it refused the upload, and a
+        #: fake that puts badly but always deletes proves the rollback against
+        #: a kindness the real thing does not offer.
+        self.fail_deletes_with: Exception | None = None
+        #: Keys this client refuses to accept, to stop a tree halfway without
+        #: having to monkeypatch the store the code under test is holding.
+        self.refuse_keys: set[str] = set()
 
     # -- objects ----------------------------------------------------------
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, ContentType: str = "") -> dict:
         if self.fail_with is not None:
             raise self.fail_with
+        if Key in self.refuse_keys:
+            raise FakeClientError("AccessDenied", status=403)
         self.objects[Key] = (bytes(Body), datetime.now(UTC))
         self.content_types[Key] = ContentType
         return {}
@@ -89,12 +99,16 @@ class FakeS3Client:
     def delete_object(self, *, Bucket: str, Key: str) -> dict:
         if self.fail_with is not None:
             raise self.fail_with
+        if self.fail_deletes_with is not None:
+            raise self.fail_deletes_with
         self.objects.pop(Key, None)
         return {}
 
     def delete_objects(self, *, Bucket: str, Delete: dict) -> dict:
         if self.fail_with is not None:
             raise self.fail_with
+        if self.fail_deletes_with is not None:
+            raise self.fail_deletes_with
         keys = [item["Key"] for item in Delete["Objects"]]
         self.deleted_batches.append(keys)
         for key in keys:

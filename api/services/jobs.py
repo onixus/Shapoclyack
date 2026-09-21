@@ -1569,12 +1569,27 @@ def find_by_idempotency_key(
     return info
 
 
-# A run id names one directory under ``output_dir/runs``. The scanner mints
-# them as ``%Y%m%dT%H%M%SZ``; operators may supply their own for a local run.
+# A run id names one directory under ``output_dir/runs``. This module mints
+# them as ``%Y%m%dT%H%M%SZ-<6 hex>`` (:func:`_mint_run_id`), the scanner's own
+# CLI as the timestamp alone; operators may supply their own for a local run.
 # Either way it must stay a single path segment: it is joined onto the output
 # directory unescaped, so anything with a separator or ``..`` in it would name
 # a directory the caller was never given.
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def _mint_run_id() -> str:
+    """A run id for a scan this server starts: the clock, and enough to be unique.
+
+    It was ``%Y%m%dT%H%M%SZ`` alone, and a second is not a lot: two jobs
+    claimed inside the same one were handed the *same* run id, so their
+    artifacts merged into one directory and one key prefix — across tenants,
+    since the prefix carries no owner (#311) — and a publication of either
+    that failed partway took the other's keys with it. The suffix goes after
+    the timestamp so that the ordering a run listing depends on (ids sorted
+    descending, which is the clock) is exactly as it was.
+    """
+    return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
 
 
 def validate_run_id(value: str) -> str:
@@ -1646,7 +1661,7 @@ def start_scan(
     if run_id:
         validate_run_id(run_id)
     if execution == "agent" and not run_id:
-        run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        run_id = _mint_run_id()
 
     # Loaded once here and handed to both barriers below: the scope cannot
     # change inside this call frame, and each load is a round trip.
@@ -2266,7 +2281,7 @@ def claim_job(
         row.attempts = (row.attempts or 0) + 1
         attempt = row.attempts
         if not row.run_id:
-            row.run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            row.run_id = _mint_run_id()
         session.flush()
 
         opts = dict(row.scan_options or {})

@@ -86,6 +86,17 @@ way it is the sensors, not the clock: `OCTO_JOB_CANCEL_GRACE_SECONDS` is floored
 `OCTO_AGENT_STALE_SECONDS` + `OCTO_JOB_REAPER_INTERVAL_SECONDS`, so it can no
 longer be set shorter than the heartbeat the instruction travels on.
 
+A `cancelling` job that outlives the grace period and is *still* there is
+usually one whose result is being ingested. The reaper passes over a job with
+an open ingest lease: finishing it would refuse the upload at the fence and
+drop the partial archive the sensor spent the grace period pushing up. So the
+clock on such a job is `OCTO_JOB_INGEST_LEASE_SECONDS` (900s by default), not
+the 300s of the grace period, and the wait is deliberate. Pressing stop a
+second time is the way out — it drops an ingest marker that is already older
+than that lease, which is what a replica killed mid-upload leaves behind, and
+finishes the job. A marker younger than the lease is a live upload, and a
+second stop will not take it.
+
 Jobs that bounce between `queued` and `claimed` and then fail with *"Lease
 expired after N attempt(s)"* are killing whichever sensor picks them up. Check
 the sensor pod for OOM kills or crashes before raising `OCTO_JOB_MAX_ATTEMPTS`.

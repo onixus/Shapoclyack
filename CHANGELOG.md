@@ -71,22 +71,76 @@ All notable changes to Shapoclyack are documented in this file.
   made permanent and silent. Past
   `OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` (1h) the row is `dead` with
   the reason on it and the usual three-way visibility.
+- **A publication that loses a race no longer deletes the run that won it.**
+  The rollback of a half-finished upload took the run's whole
+  `runs/<run_id>/` prefix, so a second attempt failing after a first one had
+  published the whole run deleted every key of it — for every replica, with the
+  job still `succeeded`, the row already gone, `/api/health` green and nothing
+  said anywhere. A rollback now removes **the keys that attempt wrote itself**
+  (collected as they land, because the return value of `upload_tree` is lost
+  with the exception that raised), and only while the run is still owed: a row
+  another attempt has already closed means the run is published and there is
+  nothing to clean up.
+- **A publication holds its row for as long as it takes, not for a minute.**
+  The claim pushed the row 60 seconds out of the due window while the docstring
+  beside it called the work "minutes of store and broker work" — so a tree that
+  took longer was found due by the next tick in any replica and published a
+  second time alongside the first: two messages on `ingest.results`, two
+  notifications, two projections. The hold is now renewed every few seconds
+  while the work runs, so the constant only has to cover the gap between two
+  renewals, and a replica that dies stops renewing and gives the row up one
+  horizon later. The race test is parametrised by how far into the publication
+  the tick lands (it only ever tested the first instant).
+- **A run id is unique again.** `%Y%m%dT%H%M%SZ` is one second wide, so two
+  jobs claimed inside the same second were handed the same id: their artifacts
+  merged into one run directory and one key prefix — across tenants, since the
+  prefix carries no owner yet (#311) — and a failed publication of either could
+  take the other's keys with it. Ids minted by the API now carry a six-hex
+  suffix after the timestamp; the clock still leads, so the run listing's
+  ordering is unchanged. (`scanner.main` run outside the API still mints the
+  bare timestamp.)
+- **A publication that keeps killing the replica publishing it now ends
+  `dead`.** Counting an attempt at the claim was wrong — five OOM restarts must
+  not condemn a batch the store never refused — and removing it left the
+  symmetric hole: a tree large enough to reach the pod's memory limit was
+  claimed, killed the replica before anything was recorded, and was claimed
+  again one horizon later, forever, with `attempts` unmoved, `/api/health`
+  green and `jobs.error` empty. Claims are counted now (`run_publications.claims`,
+  migration `0058_job_ingest_lease`); past twice the permitted attempts without
+  one of them reaching an outcome the row is `dead` with the reason on it. A
+  claim a peer hands straight back is given back, and any recorded outcome
+  resets the count.
+- **A peer no longer condemns a row its owner is still publishing.** The orphan
+  deadline ran from `created_at` — from the acceptance of the upload — so an
+  installation that raised `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` to ride out a
+  long store outage had its rows declared *the replica that accepted this
+  upload is gone* by a peer that cannot see the tree, milliseconds after the
+  owner last touched them, and the runbook then told the operator to re-scan a
+  run whose tree was on a running pod's disk. The deadline runs from
+  `updated_at` — the last renewal or recorded failure — and the runbook says to
+  check `staging_path` before believing there is nothing to load by hand.
 - **A tree that went up by halves no longer stays in the bucket.**
   `upload_tree` writes a key at a time and a run listing is the children of
   `runs/`, so a store that started refusing mid-tree left a run every replica
   could list and open with files missing from it — while the job said the run
   was not published. The partial prefix is now removed before the failure is
   recorded, so a retry starts from nothing and a `dead` row costs the run its
-  visibility rather than leaving a half of one that reads as whole.
+  visibility rather than leaving a half of one that reads as whole. When the
+  outage that refused the upload refuses the cleanup as well, the half does
+  stay — the row's reason and the note on the job now say so, rather than the
+  architecture document claiming it cannot happen.
 - An attempt is now counted where a publication fails, not where its row is
   claimed. A tick claims up to ten rows in one transaction and publishes them
   afterwards, so a replica the OOM killer took down mid-batch used to write off
   one attempt per row per restart: five restarts left a batch `dead`, blaming a
   store that had never been asked.
-- A retried publication is the same bus message, not a second run: the archive
-  is kept beside the staging tree so the republish carries the digest the
-  `Msg-Id` is derived from. Re-packing the run directory would have produced a
-  different one, i.e. a second ClickHouse insert for one scan.
+- A retried publication carries the same `Msg-Id`, not a new one: the archive
+  is kept beside the staging tree so the republish sends the digest the id is
+  derived from. Re-packing the run directory would have produced a different
+  one, i.e. a second ClickHouse insert for one scan with nothing able to tell.
+  Whether JetStream then *drops* the duplicate is the `INGEST` stream's
+  business, and that stream still has no `duplicate_window` set — so until it
+  does, this makes the duplicate recognisable rather than impossible.
 - The run's `tenant.json` is written into the staging tree, so both copies
   carry their owner from the moment either can be read. A run without it reads
   back as the **default tenant** — one tenant's scan in every tenant's run

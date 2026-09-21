@@ -37,9 +37,14 @@ replica killed anywhere in the middle is a retry rather than a repair:
 the pointer is a file, and the bus message carries a ``Msg-Id`` derived from
 the archive digest — which is why the archive is kept beside the staging tree
 rather than re-derived (:func:`artifact_store.workspace.staged_archive_path`).
-A republish of the same run is the same message, so JetStream drops it; two
-*different* attempts could never both get here, because only one of them was
-ever accepted.
+A republish of the same run is therefore the same message, which JetStream
+drops *if* the ``INGEST`` stream's duplicate window is longer than the gap
+between an upload and its retry — it is not today: the stream is declared in
+``nats_bus`` without one, so the default two minutes is shorter than this
+module's own backoff. Until that window is set, a republish after a broker
+outage is a second message for one run, and the digest is what will make it a
+duplicate rather than a new insert once it is. Two *different* attempts could
+never both get here, because only one of them was ever accepted.
 
 **The bound.** Retries stop at ``run_publication_max_attempts`` and the row
 stays ``dead``. That is the honest end: an installation whose store has been
@@ -49,6 +54,13 @@ note on the job's ``error`` — and its tree is kept on disk for a day (see the
 sweep in ``workspace``), so the decision is "publish it by hand or re-scan",
 never "the scan is gone and nothing said so".
 
+A claimed row is held out of the due window, and the hold is *renewed* while
+the work runs (:class:`_Lease`): a publication is minutes of store and broker
+work and a horizon is a guess, so the guess only has to cover the gap between
+two renewals rather than the whole transfer. A replica that dies stops renewing
+and the row falls due one horizon later. That renewal is also the row's proof
+of life for a peer that cannot see its tree.
+
 Safe in every replica without leader election, like the job reaper: due-ness
 is a property of the row and rows are claimed with ``FOR UPDATE SKIP LOCKED``.
 The paths in a row are on one replica's disk, though, so a peer that claims a
@@ -57,7 +69,11 @@ row it cannot see gives it back instead of declaring the run lost — see
 staging trees with it, so a row offered around for
 ``run_publication_orphan_deadline_seconds`` with nobody able to see the tree
 ends ``dead`` like any other publication that cannot be finished, rather than
-circulating silently forever (:func:`_give_back`).
+circulating silently forever (:func:`_give_back`). The symmetric end is bounded
+too: a row claimed over and over by a replica that dies before it can record
+anything — the large tree and the OOM killer, which is the example the attempt
+counter was moved out of the claim for — ends ``dead`` on its claims rather
+than crash-looping in silence (:func:`_claims_spent`).
 """
 
 from __future__ import annotations
@@ -104,6 +120,19 @@ _REPLICA_IS_GONE = (
     "tree; this run needs a re-scan"
 )
 
+#: Why a publication is dead with no attempt behind it: every replica that took
+#: it died before it could record anything. See :func:`_claims_spent`.
+_NEVER_ATTEMPTED = (
+    "this publication has been claimed far more often than it may be attempted, without "
+    "one attempt reaching an outcome, so whichever replica takes it is dying "
+    "mid-publication; this run needs a re-scan or a manual load"
+)
+
+#: Ceiling on how often a running publication pushes its row's hold forward.
+#: The period is the smaller of this and a third of the horizon, so one missed
+#: renewal still leaves two more before the row falls due.
+_LEASE_RENEW_SECONDS = 15.0
+
 
 def _now() -> datetime:
     """Naive UTC, matching ``jobs`` and every timestamp column in this schema."""
@@ -132,7 +161,9 @@ class _Publication:
     archive_path: str | None
     replica: str | None
     created_at: datetime | None
+    updated_at: datetime | None
     attempts: int
+    claims: int
 
 
 def _snapshot(row: models.RunPublication) -> _Publication:
@@ -150,7 +181,9 @@ def _snapshot(row: models.RunPublication) -> _Publication:
         archive_path=row.archive_path,
         replica=row.replica,
         created_at=row.created_at,
+        updated_at=row.updated_at,
         attempts=row.attempts or 0,
+        claims=row.claims or 0,
     )
 
 
@@ -195,6 +228,7 @@ def new_publication(
         replica=settings.instance_id,
         status=STATUS_PENDING,
         attempts=0,
+        claims=0,
         # Due immediately: the accepting request publishes it inline, and a
         # row that outlives that request is one the reconciler should pick up
         # on its next tick rather than after a backoff nothing has earned yet.
@@ -216,8 +250,10 @@ def publish_now(settings: Settings, publication_id: str) -> bool:
     broker work, so a tick — in this replica or any other — would otherwise
     find it due and publish it a second time alongside this call. That costs
     the operator a duplicate notification, the projections a second pass, and
-    the tree a ``rmtree`` racing an ``upload_tree``. A row a peer is already
-    holding is left to it: ``False`` here is "not published by me".
+    the tree a ``rmtree`` racing an ``upload_tree``. The claim is a floor and
+    the work renews it as it goes (:class:`_Lease`), so "minutes" is what the
+    hold actually covers rather than what it was rounded to. A row a peer is
+    already holding is left to it: ``False`` here is "not published by me".
 
     Never raises for a failed publication. The outcome is committed, the
     agent's retry is answered as a replay, and raising here would report a
@@ -241,18 +277,105 @@ class _TreeIsGone(RuntimeError):
     """Neither the staging tree nor the run directory is on this disk."""
 
 
+class _HalfPublished(RuntimeError):
+    """The upload failed and the keys it wrote could not be taken back.
+
+    Carries its own message rather than a type name, because this one is read
+    by an operator on the job: the run may be listed by every replica with
+    files missing from it until an attempt succeeds, and that is worth saying
+    where they are looking.
+    """
+
+
 def _attempt(settings: Settings, publication: _Publication) -> bool:
-    """One publication attempt, with its outcome written back."""
+    """One publication attempt, with its outcome written back.
+
+    Under a renewing lease: the claim held the row for one horizon, and this
+    is the work that horizon was a guess at. See :class:`_Lease`.
+    """
     try:
-        _publish(settings, publication)
+        with _Lease(settings, publication):
+            _publish(settings, publication)
     except _TreeIsGone:
         _record_failure(settings, publication, _TREE_IS_GONE, final=True)
+        return False
+    except _HalfPublished as exc:
+        _record_failure(settings, publication, str(exc))
         return False
     except Exception as exc:  # noqa: BLE001 - every failure here is a retry
         _record_failure(settings, publication, f"{type(exc).__name__}: {exc}")
         return False
     _record_success(settings, publication)
     return True
+
+
+class _Lease:
+    """Keeps a claimed row out of the due window for as long as the work runs.
+
+    A claim pushes ``next_attempt_at`` out by one horizon, and the horizon is a
+    constant — while the docstrings around it, correctly, call a publication
+    "minutes of store and broker work". A tree that outlived the constant was
+    found due by the next tick in any replica and published a second time
+    alongside the first: two messages on the bus, two notifications, two
+    projections, and an ``upload_tree`` racing the ``rmtree`` that promotes the
+    same staging tree.
+
+    So the hold is renewed from a thread of its own while the work runs, and
+    the constant only has to cover the gap between two renewals. A replica that
+    dies stops renewing and the row falls due one horizon later, which is what
+    the claim was reaching for to begin with.
+
+    The renewal stamps ``updated_at`` as well, and that is the second thing it
+    is for: to a peer holding a row whose tree it cannot see, that stamp is the
+    difference between "the replica that accepted this upload is gone" and "it
+    is still working on it" (:func:`_is_orphaned`).
+    """
+
+    def __init__(self, settings: Settings, publication: _Publication) -> None:
+        self._settings = settings
+        self._publication_id = publication.publication_id
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_Lease":
+        period = min(_LEASE_RENEW_SECONDS, _lease_horizon_seconds(self._settings) / 3)
+        self._thread = threading.Thread(
+            target=self._run, args=(period,), name="octo-publication-lease", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        return False
+
+    def _run(self, period: float) -> None:
+        while not self._stop.wait(period):
+            self._renew()
+
+    def _renew(self) -> None:
+        now = _now()
+        horizon = timedelta(seconds=_lease_horizon_seconds(self._settings))
+        try:
+            with get_session(self._settings.postgres_url) as session:
+                row = session.get(models.RunPublication, self._publication_id)
+                if row is None or row.status != STATUS_PENDING:
+                    # Finished, or ended by somebody else. Nothing to hold.
+                    self._stop.set()
+                    return
+                row.next_attempt_at = now + horizon
+                row.updated_at = now
+        except Exception:  # noqa: BLE001 - a lost renewal is not a failed publication
+            # The work goes on. Losing a renewal costs at worst the duplicate
+            # publication this class exists to prevent, which is what the code
+            # did before it existed; failing the publication over a database
+            # hiccup would cost the run instead.
+            LOG.warning(
+                "Could not renew the publication lease for %s", self._publication_id,
+                exc_info=True,
+            )
 
 
 def _publish(settings: Settings, publication: _Publication) -> None:
@@ -280,9 +403,10 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         )
         # Into the store from staging: the copy the other replicas read is
         # complete and marked the first time they can see it.
+        written: list[str] = []
         try:
-            artifact_workspace.publish_run(settings, run_id, source=staging)
-        except Exception:
+            artifact_workspace.publish_run(settings, run_id, source=staging, written=written)
+        except Exception as exc:
             # A remote backend uploads the tree file by file, and a store that
             # starts refusing halfway leaves keys under ``runs/<run_id>/``. A
             # run listing is the children of ``runs/``, so those keys are a
@@ -291,8 +415,13 @@ def _publish(settings: Settings, publication: _Publication) -> None:
             # is recorded, so a retry starts from nothing and a row that ends
             # ``dead`` costs the run its visibility rather than leaving a
             # partial one that reads as complete.
-            artifact_workspace.unpublish_run(settings, run_id)
-            raise
+            if _roll_back_upload(settings, publication, written):
+                raise
+            raise _HalfPublished(
+                f"{type(exc).__name__}: {exc} — and the {len(written)} key(s) this "
+                "attempt had already written could not be taken back, so the run may "
+                "be listed by every replica with files missing from it"
+            ) from exc
         # The marker cache on a remote backend may hold a "no marker" answer
         # from a listing that asked about this run before it existed, and
         # reading that back is the default-tenant leak the marker prevents.
@@ -302,6 +431,53 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         raise _TreeIsGone(_TREE_IS_GONE)
     results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
     _publish_to_bus(settings, publication)
+
+
+def _roll_back_upload(
+    settings: Settings, publication: _Publication, written: list[str]
+) -> bool:
+    """Undo what this attempt put in the store. Answers whether the store is clean.
+
+    Two things it must not do, both of them silent loss of a published scan:
+
+    * **remove the run's prefix.** ``delete_prefix("runs/<run_id>")`` is a run
+      deleter wearing a rollback's name. The prefix can hold keys this attempt
+      never wrote — an attempt in another replica that succeeded, or, while run
+      ids are minted from a one-second clock, a different job's run — and a
+      failed publication then deleted a scan that was complete, across tenants.
+      So the keys this transfer actually wrote are collected as they land and
+      those are what goes.
+    * **run at all after another attempt has finished this row.** The keys are
+      the *same* keys then, so removing "only what this attempt wrote" would
+      still take the published run apart file by file. The row is the fence:
+      ``_record_success`` deletes it, so a row that is gone means the run is
+      published and this attempt has nothing to clean up. The lease above is
+      what makes that race rare; this is what makes it harmless.
+    """
+    if not written:
+        return True
+    if not _still_owed(settings, publication):
+        LOG.warning(
+            "Run %s was published by another attempt while this one was uploading; "
+            "leaving the %d key(s) this attempt wrote where they are",
+            publication.run_id,
+            len(written),
+        )
+        return True
+    artifact_workspace.unpublish_run(settings, publication.run_id, only=written)
+    artifact_workspace.forget_run_marker(publication.run_id)
+    try:
+        return not artifact_workspace.run_exists(settings, publication.run_id)
+    except Exception:  # noqa: BLE001 - the outage that refused the upload, again
+        # Asked rather than assumed, because the answer is what the operator is
+        # told: a store too broken to list is too broken to have been cleaned.
+        return False
+
+
+def _still_owed(settings: Settings, publication: _Publication) -> bool:
+    """Whether this publication is still owed. ``False`` once somebody finished it."""
+    with get_session(settings.postgres_url) as session:
+        return session.get(models.RunPublication, publication.publication_id) is not None
 
 
 def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
@@ -394,6 +570,9 @@ def _record_failure(
             return
         row.attempts += 1
         row.updated_at = now
+        # An attempt that reached an outcome is what ``claims`` was counting
+        # the absence of, so it starts over.
+        row.claims = 0
         row.last_error = reason[:2000]
         spent = final or row.attempts >= settings.run_publication_max_attempts
         if spent:
@@ -462,23 +641,68 @@ def _adoption_seconds(settings: Settings) -> int:
     return max(300, 10 * settings.run_publication_interval_seconds)
 
 
+def _lease_horizon_seconds(settings: Settings) -> int:
+    """How far one hold pushes a row, and how far each renewal pushes it again.
+
+    Not the length of the work — that is unbounded by anything this process
+    controls — but the gap a renewal has to cover, plus the margin a replica
+    that died gets before a peer may take its row (:class:`_Lease`).
+    """
+    return max(60, settings.run_publication_interval_seconds)
+
+
 def _hold(row: models.RunPublication, *, now: datetime, rows: int, settings: Settings) -> None:
-    """Push one claimed row out of the due window for the length of the work.
+    """Push one claimed row out of the due window, and count the claim.
 
     The window covers the whole batch rather than one row, because the rows
     are published after the claiming transaction commits and a batch of runs
     is minutes of work: a peer must not claim the tail of a batch that is
-    still being published.
+    still being published. It is a floor, not the whole horizon — the work
+    renews it as it runs.
 
     Attempts are *not* counted here. A claim is not an attempt: a replica the
     OOM killer takes down while publishing a large run would otherwise write
     off one attempt per restart for every row it was holding, and five
     restarts would leave a batch ``dead`` without the store having refused
-    once. They are counted where a failure is recorded instead.
+    once. They are counted where a failure is recorded instead. Claims are
+    counted here, because the same replica dying every time is the one thing
+    an attempt counter cannot see (:func:`_claims_spent`).
+
+    ``updated_at`` is deliberately left alone. It means "some replica was
+    demonstrably working on this row at that moment", which a claim is not yet
+    and a claim a peer hands straight back never was; a peer's orphan deadline
+    reads it, and a claim that stamped it would keep pushing that deadline out
+    of reach every adoption window.
     """
-    per_row = max(60, settings.run_publication_interval_seconds)
+    per_row = _lease_horizon_seconds(settings)
     row.next_attempt_at = now + timedelta(seconds=per_row * max(1, rows))
-    row.updated_at = now
+    row.claims = (row.claims or 0) + 1
+
+
+def _claim_budget(settings: Settings) -> int:
+    """How often a row may be claimed before it is written off unattempted."""
+    return max(2 * settings.run_publication_max_attempts, 4)
+
+
+def _claims_spent(settings: Settings, publication: _Publication) -> bool:
+    """Whether this row has been taken far more often than it has been tried.
+
+    The other bound here counts *attempts*, and an attempt is something that
+    was tried and refused — deliberately, so a replica the OOM killer takes
+    down mid-batch does not write one off per restart. That left the symmetric
+    end open: a publication whose tree is large enough to kill the replica
+    every time is claimed, dies before it can record anything, and is claimed
+    again one horizon later, forever. ``_is_orphaned`` never looks at it (the
+    row is not foreign), ``is_backlogged`` counts only ``dead``, the job says
+    ``succeeded`` with an empty ``error`` — the exact silence this module was
+    written to end, on the very example the attempt counter was moved for.
+
+    Twice the permitted attempts is the margin: an ordinary retry spends one
+    claim per attempt, so nothing that reaches an outcome can come near it.
+    Reaching an outcome resets the count, and a claim handed straight back to
+    its owner is given back too (:func:`_give_back`).
+    """
+    return publication.claims > _claim_budget(settings)
 
 
 def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> list[Any]:
@@ -556,16 +780,30 @@ def _give_back(settings: Settings, publication: _Publication) -> bool:
         if row is None:  # pragma: no cover - finished by its own replica
             return True
         row.next_attempt_at = now + timedelta(seconds=_adoption_seconds(settings))
-        row.updated_at = now
+        # Neither this claim nor this hand-back was work on the row: the claim
+        # counter is given back so a row offered around every adoption window
+        # cannot exhaust it, and ``updated_at`` is left alone so the orphan
+        # deadline keeps running from the last time somebody really published.
+        row.claims = max(0, (row.claims or 0) - 1)
     return True
 
 
 def _is_orphaned(settings: Settings, publication: _Publication, *, now: datetime) -> bool:
-    """Whether a row this replica cannot see has waited past its deadline."""
-    created = publication.created_at
-    if created is None:  # pragma: no cover - the column is written with the row
+    """Whether a row this replica cannot see has gone untouched past its deadline.
+
+    Measured from ``updated_at``: the last moment some replica was
+    demonstrably working on this row — a running publication renews it every
+    few seconds (:class:`_Lease`) and a recorded failure writes it. Measured
+    from ``created_at``, as it was, the clock ran from the *acceptance of the
+    upload*, so a replica that is alive and has been retrying a slow store for
+    an hour had its row condemned by a peer that cannot see its tree, four
+    milliseconds after the owner last touched it — and the run was then
+    reported as needing a re-scan while its tree sat on a running pod's disk.
+    """
+    touched = publication.updated_at or publication.created_at
+    if touched is None:  # pragma: no cover - both columns are written with the row
         return False
-    return (now - created) > timedelta(seconds=_orphan_deadline_seconds(settings))
+    return (now - touched) > timedelta(seconds=_orphan_deadline_seconds(settings))
 
 
 def _orphan_deadline_seconds(settings: Settings) -> int:
@@ -597,6 +835,12 @@ def reconcile_once(settings: Settings, *, now: datetime | None = None) -> dict[s
                 outcome["skipped"] += 1
             else:
                 outcome["failed"] += 1
+            continue
+        if _claims_spent(settings, publication):
+            # Before the attempt, not after: the attempt is what has been
+            # killing the replica that takes this row.
+            _record_failure(settings, publication, _NEVER_ATTEMPTED, final=True)
+            outcome["failed"] += 1
             continue
         if publication.replica != settings.instance_id:
             metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="adopted").inc()

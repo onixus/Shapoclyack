@@ -48,6 +48,11 @@ stays ``dead`` where an operator and ``/api/health`` can see it.
 two are one mechanism: exactly one publication per accepted upload, and none
 at all for an upload the fence refused.
 
+The table is created here rather than altered by a later revision because it
+is born in this release: no installation has one to migrate, and a column
+added by ``0059`` to a table ``0058`` had just created would be expand/contract
+theatre over an empty table.
+
 Rolling deploy: a replica still running the old code never writes these and
 never reads them, so it keeps ingesting exactly as unfenced as it is today,
 while a replica on the new code fences its own uploads. No backfill — an
@@ -92,6 +97,11 @@ def upgrade() -> None:
         sa.Column("replica", sa.String(), nullable=True),
         sa.Column("status", sa.String(), nullable=False, server_default="pending"),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
+        # Claims that reached no outcome. ``attempts`` counts refusals from the
+        # store or the broker; a replica that dies mid-publication records
+        # neither, and without this a row it keeps taking is retried forever
+        # with nothing to see it (see ``_claims_spent`` in the publisher).
+        sa.Column("claims", sa.Integer(), nullable=False, server_default="0"),
         # Naive UTC like every other timestamp in this schema.
         sa.Column("next_attempt_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.String(), nullable=True),
