@@ -300,7 +300,7 @@ every caller of it — `jobs._publish_job_offer`, `results_ingest`,
 | Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
 | Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |
 | The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The refused publish is written to `nats_outbox` by the last step of the run's publication (`run_publisher._publish_to_bus`) and republished when the broker returns. The run itself, its artifacts and its Postgres projections are published without waiting for that. The backlog is the `ingest_backlog` check and `octo_nats_outbox_backlog` |
-| Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — recovered** | The envelopes the broker refused go to the same `nats_outbox` (`kind="asset_event"`) and are published when it returns, so the webhooks are late rather than missing. With `OCTO_NATS_OUTBOX_ENABLED=false` they are counted `octo_asset_events_published_total{outcome="skipped"}` and not sent later — `ShapoclyackAssetEventsSkipped` |
+| Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — recovered, out of order** | The envelopes the broker refused go to the same `nats_outbox` (`kind="asset_event"`) — from a scan's diff and from the operator's `decommissioned_host` alike — and are published when it returns, so the webhooks are late rather than missing. Late means *reordered*: a replayed event arrives after events published live after the outage, so a consumer that cares about the order of two events on one asset must sort by the envelope's `occurred_at`, which is stamped when the event is built, not when it is published. With `OCTO_NATS_OUTBOX_ENABLED=false` they are counted `octo_asset_events_published_total{outcome="skipped"}` and not sent later — `ShapoclyackAssetEventsSkipped` |
 | Audit events to a SIEM over `events.audit.>` | **Degrades — recovered by the other source** | The rows are committed and readable via `GET /api/audit`; the publish is skipped. `OCTO_AUDIT_SYSLOG_SOURCE=db` forwards without the broker at all |
 | Endpoint inventory submissions | **Works, event skipped** | The snapshot is stored; the `endpoint_inventory_accepted` event is fail-soft |
 | Webhook delivery of already-queued events, including DLQ replay | **Works** | The queue is Postgres rows and the dispatcher needs no broker |
@@ -341,11 +341,13 @@ missing instead, for exactly the runs an operator most wants to hear about. So
 `asset_events.publish_events` records what it could not deliver
 (`kind="asset_event"`) and the same reconciler lands it.
 
-What is still not recovered is the same events with the outbox switched off,
-and the operator-initiated `decommissioned_host` publish from `PATCH
-/api/assets/{id}`, which has no durable intent behind it and answers the
-operator directly. This section is the honest statement of what a broker outage
-costs today, not a claim that it costs nothing.
+The operator-initiated `decommissioned_host` publish from `PATCH
+/api/assets/{id}` is recorded the same way, and for the same reason: its
+transaction is committed before the publish is attempted, so the broker being
+down must cost the webhook its latency and not its existence. What is still not
+recovered is those events with the outbox switched off. This section is the
+honest statement of what a broker outage costs today, not a claim that it costs
+nothing.
 
 Background workers are safe across replicas by construction, not by luck: the
 scheduler dispatcher, the report dispatcher, the software-match worker, the SLA

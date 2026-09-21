@@ -218,9 +218,19 @@ def _report_stream_drift(config: Any, info: Any) -> list[str]:
 
     So every drift becomes a metric as well as a log line: the settings that
     matter are gauged on ``octo_nats_stream_config_drift{stream,setting}``,
-    which is 0 for a stream that matches and stays 1 until a later connect
-    reconciles it. Returns the settings that drifted, for the tests and the
-    caller's log.
+    which stays 1 until a later connect reconciles it. Returns the settings
+    that drifted, for the tests and the caller's log.
+
+    Read only on the fail-soft branch of :meth:`_ensure_stream`, and that is
+    the whole reach of this check: ``STREAM.CREATE`` on nats-server 2.10 is a
+    create-*or-update*, so on an installation whose account may write the
+    stream ``add_stream`` applies the requested config itself and never raises
+    — there is nothing to compare and no series in ``/metrics`` at all. The
+    comparison is for the installation where it cannot: an account without
+    rights to change an existing stream, where both ``add_stream`` and
+    ``update_stream`` fail and the stream keeps settings nobody could see.
+    Absence of the series therefore means "never had to compare", not "no
+    drift"; the log line is what an operator reads either way.
     """
     running = getattr(info, "config", None)
     name = str(getattr(config, "name", "?"))

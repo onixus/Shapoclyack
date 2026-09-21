@@ -300,9 +300,11 @@ ASSET_EVENTS_PUBLISHED_TOTAL = Counter(
     "Asset-level events by kind and publish outcome (ROADMAP Phase 10.2). "
     "outcome=deferred means the broker did not take the event and it is in "
     "nats_outbox, to be published — and to feed its webhooks — when the broker "
-    "is back. outcome=skipped is the same event with nowhere to wait: no "
-    "database-backed caller or OCTO_NATS_OUTBOX_ENABLED=false, so the event "
-    "exists only in the run's diff.json and its notification is never sent.",
+    "is back. outcome=skipped is the same event with nowhere to wait: "
+    "OCTO_NATS_OUTBOX_ENABLED=false, or a database that refused the rows, so "
+    "the event exists only in the run's diff.json (or, for the operator's "
+    "decommissioned_host, in the asset row and the audit log) and its "
+    "notification is never sent.",
     ["kind", "outcome"],
     registry=REGISTRY,
 )

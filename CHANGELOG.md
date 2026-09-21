@@ -45,17 +45,26 @@ All notable changes to Shapoclyack are documented in this file.
   broker is back; `octo_asset_events_published_total{outcome="deferred"}` is
   that case, and `outcome="skipped"` is now only the event with nowhere to wait
   (`OCTO_NATS_OUTBOX_ENABLED=false` or a database that refused the rows), which
-  the new `ShapoclyackAssetEventsSkipped` alert covers.
+  the new `ShapoclyackAssetEventsSkipped` alert covers. The operator's
+  `decommissioned_host` from `PATCH /api/assets/{id}` takes the same route: its
+  write is committed before the publish is tried, so a broker that is down
+  makes that webhook late rather than lost. A replayed event arrives after
+  events published live in the meantime — consumers that compare two events on
+  one asset order them by the envelope's `occurred_at`, not by arrival.
 
 - The `INGEST` JetStream stream now sets a `duplicate_window`
   (`OCTO_NATS_INGEST_DEDUPE_SECONDS`, default 24h, clamped to the stream's
   retention — except at `OCTO_NATS_INGEST_MAX_AGE_SECONDS=0`, JetStream's idiom
   for unbounded retention, where the clamp would have switched dedupe off
   entirely), as `EVENTS` already did. A stream that already existed and could
-  not be reconciled keeps its own window, which is fail-soft on purpose and was
-  invisible; both it and the replica count are now compared against the
-  requested config on every connect and reported as
-  `octo_nats_stream_config_drift{stream,setting}`. JetStream's 2-minute default is shorter
+  neither be created over nor updated — an account without the rights to change
+  it — keeps its own window, which is fail-soft on purpose and was invisible;
+  on that branch both it and the replica count are now compared against the
+  requested config and reported as
+  `octo_nats_stream_config_drift{stream,setting}` alongside the existing log
+  line. On an installation that may write its streams nats-server 2.10 applies
+  the requested config through `STREAM.CREATE` itself, so there is nothing to
+  compare and the series is absent. JetStream's 2-minute default is shorter
   than a single outbox backoff, so a publish whose ack timed out after the
   server had stored it would have been accepted a second time on replay and
   ingested twice. A run's `Msg-Id` is derived from its archive digest, so the

@@ -267,10 +267,12 @@ def test_a_stream_that_appears_late_still_comes_up(monkeypatch):
 class _ExistingStream:
     """A JetStream that already holds the stream and refuses to reconcile it.
 
-    The shape a 3-node rollout meets: ``add_stream`` says the stream is there,
-    ``update_stream`` refuses (a cluster with fewer peers than the requested
-    replicas is the usual reason), and ``stream_info`` answers with whatever
-    the stream actually is — R1.
+    Not the shape of a healthy 2.10 server: there ``STREAM.CREATE`` is a
+    create-*or-update* and ``add_stream`` applies the requested config without
+    raising, which is why the drift comparison is unreachable on such an
+    installation. This is the one where it is reachable — an account that may
+    read the stream but not write it, so ``add_stream`` and ``update_stream``
+    both fail and ``stream_info`` answers with whatever the stream actually is.
     """
 
     def __init__(self, num_replicas: int = 1, duplicate_window: float = 86400.0) -> None:
@@ -278,10 +280,10 @@ class _ExistingStream:
         self.duplicate_window = duplicate_window
 
     async def add_stream(self, config=None):
-        raise RuntimeError("stream name already in use")
+        raise RuntimeError("permissions violation for JetStream API $JS.API.STREAM.CREATE.INGEST")
 
     async def update_stream(self, config=None):
-        raise RuntimeError("replicas > 1 not supported in non-clustered mode")
+        raise RuntimeError("permissions violation for JetStream API $JS.API.STREAM.UPDATE.INGEST")
 
     async def stream_info(self, name):
         import types

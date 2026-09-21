@@ -368,6 +368,7 @@ def publish_asset_status_event(
     asset_id: str,
     host: str | None = None,
     data: dict[str, Any] | None = None,
+    settings: Settings | None = None,
 ) -> bool:
     """Publish a single non-run event (the 10.1 ``decommissioned_host`` case).
 
@@ -380,6 +381,12 @@ def publish_asset_status_event(
     consumer two tickets. The 24h duplicate window is also why a decommission,
     reversal and second decommission inside one day collapses to one event; a
     status that flaps that fast is not a change worth paging on twice.
+
+    ``settings`` is passed for the same reason the run path passes it: the
+    caller has just committed the operator's write to Postgres, so a broker
+    that is down must cost this event its latency and not its existence. The
+    content-derived id is what makes that safe — a replay of this envelope is
+    the same message, not a second transition.
     """
     if not nats_url or kind not in EVENT_KINDS:
         return False
@@ -398,4 +405,4 @@ def publish_asset_status_event(
     envelope["event_id"] = hashlib.sha256(
         f"{tenant_id}|{asset_id}|{kind}".encode("utf-8")
     ).hexdigest()[:48]
-    return publish_events(nats_url, [envelope]) == 1
+    return publish_events(nats_url, [envelope], settings=settings) == 1

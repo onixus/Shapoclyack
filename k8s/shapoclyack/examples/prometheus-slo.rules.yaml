@@ -203,7 +203,8 @@ groups:
           description: >-
             An asset event was neither published nor recorded in nats_outbox,
             so the webhook it feeds — including a new critical CVE — will not
-            be sent at all. The events are still in the run's diff.json.
+            be sent at all. A run's events are still in its diff.json, and an
+            operator's decommission in the asset row — but nothing resends them.
             outcome="deferred" is the healthy version of the same outage and is
             covered by the outbox alerts above.
 

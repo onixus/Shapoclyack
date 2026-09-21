@@ -2223,9 +2223,16 @@ What an operator sees:
   waiting in this table, `skipped` one that is not waiting anywhere and whose
   webhook is never sent (`ShapoclyackAssetEventsSkipped`).
 * `octo_nats_stream_config_drift{stream,setting}` — 1 when a stream runs with a
-  setting other than the one the API asked for. Reconciling an existing stream
-  is fail-soft on purpose, so this is the only signal that
-  `OCTO_NATS_INGEST_DEDUPE_SECONDS` or `OCTO_NATS_STREAM_REPLICAS` never took.
+  setting other than the one the API asked for. **Do not build a panel that
+  expects this series to exist.** It is written only on the fail-soft branch of
+  the stream setup: nats-server 2.10 treats `STREAM.CREATE` as a
+  create-or-update, so an installation whose account may write the stream
+  applies `OCTO_NATS_INGEST_DEDUPE_SECONDS` and `OCTO_NATS_STREAM_REPLICAS` on
+  every connect and never compares anything — the series is absent, which is
+  the healthy case. It appears when the API could neither create nor update an
+  existing stream (an account without the rights to change it) and the stream
+  kept settings of its own. To check what a stream actually runs with, ask the
+  server: `nats stream info INGEST`.
   A stale `duplicate_window` matters here specifically: a republish from this
   table relies on JetStream dropping a copy the broker already stored, and
   JetStream's own default window (2 minutes) is shorter than one backoff.

@@ -14,6 +14,7 @@ Two defects at once, and the tests are split the same way:
 from __future__ import annotations
 
 import io
+import json
 import os
 import tarfile
 from datetime import UTC, datetime, timedelta
@@ -23,7 +24,15 @@ import pytest
 from api.db import models
 from api.db.engine import get_session
 from api.services import asset_events, nats_bus, nats_outbox, results_ingest
-from tests.conftest import configured_client, login, make_settings, requires_postgres
+from api.services import jobs as jobs_service
+from api.services.artifact_store import workspace as artifact_workspace
+from scanner.pipeline.asset_identity import ip_identity_key
+from tests.conftest import (
+    configured_client,
+    login,
+    make_settings,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -836,8 +845,17 @@ def test_asset_events_a_dead_broker_refuses_are_kept_and_published_later(tmp_pat
         }
     ]
     monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+    deferred_before = _asset_event_count("new_cve", "deferred")
+    skipped_before = _asset_event_count("new_cve", "skipped")
 
     assert asset_events.publish_events(NATS_URL, envelopes, settings=settings) == 0
+
+    # The two outcomes are the difference between a late webhook and one that
+    # is never sent, and ``ShapoclyackAssetEventsSkipped`` pages on exactly one
+    # of them — so a row in the table has to move ``deferred`` and leave
+    # ``skipped`` where it was.
+    assert _asset_event_count("new_cve", "deferred") == deferred_before + 1
+    assert _asset_event_count("new_cve", "skipped") == skipped_before
 
     with get_session(settings.postgres_url) as session:
         rows = session.query(models.NatsOutboxEntry).all()
@@ -879,6 +897,8 @@ def test_asset_events_without_the_outbox_are_still_counted_as_lost(tmp_path, mon
     """
     settings = make_settings(tmp_path, nats_url=NATS_URL, nats_outbox_enabled=False)
     monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+    skipped_before = _asset_event_count("new_cve", "skipped")
+    deferred_before = _asset_event_count("new_cve", "deferred")
 
     asset_events.publish_events(
         NATS_URL,
@@ -888,6 +908,106 @@ def test_asset_events_without_the_outbox_are_still_counted_as_lost(tmp_path, mon
 
     with get_session(settings.postgres_url) as session:
         assert session.query(models.NatsOutboxEntry).count() == 0
+    assert _asset_event_count("new_cve", "skipped") == skipped_before + 1
+    assert _asset_event_count("new_cve", "deferred") == deferred_before
+
+
+def _asset_event_count(kind: str, outcome: str) -> float:
+    from api.services import metrics as metrics_service
+
+    return (
+        metrics_service.REGISTRY.get_sample_value(
+            "octo_asset_events_published_total", {"kind": kind, "outcome": outcome}
+        )
+        or 0.0
+    )
+
+
+def test_the_run_completion_path_hands_its_asset_events_to_the_outbox(tmp_path, monkeypatch):
+    """The production call site, not ``publish_events`` called by hand.
+
+    ``jobs._publish_asset_events_best_effort`` is the only place a finished
+    run's events are published from, and the whole feature is the ``settings``
+    it passes down: without that argument ``_hand_over`` counts the envelopes
+    ``skipped`` and the table stays empty, which is the behaviour this change
+    exists to end. Tested here rather than through an upload because this is
+    the seam that can be refactored away without any other test noticing.
+    """
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    run_dir = artifact_workspace.run_dir(settings, "run-jobs-ae", refresh=False)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "diff.json").write_text(
+        json.dumps(
+            {"events": [{"kind": "new_cve", "host": "10.0.0.7", "port": 443, "cve": "CVE-2024-7"}]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+
+    jobs_service._publish_asset_events_best_effort(  # noqa: SLF001
+        settings, tenant_id="default", run_id="run-jobs-ae", job_id="job-jobs-ae"
+    )
+
+    with get_session(settings.postgres_url) as session:
+        rows = session.query(models.NatsOutboxEntry).all()
+        recorded = [(r.kind, r.subject, r.run_id, r.job_id, r.status) for r in rows]
+    assert recorded == [
+        (
+            nats_outbox.KIND_ASSET_EVENT,
+            nats_bus.asset_event_subject("default", "new_cve"),
+            "run-jobs-ae",
+            "job-jobs-ae",
+            nats_outbox.STATUS_PENDING,
+        )
+    ]
+
+
+def test_an_operator_decommission_waits_in_the_outbox_too(tmp_path, monkeypatch):
+    """``PATCH /api/assets/{id}`` publishes after committing its own write.
+
+    So a broker that is down owes this webhook a delay, not a loss: the asset
+    row already says ``decommissioned`` and the subscriber that acts on it —
+    stopping the on-call rotation for a retired host, say — would otherwise
+    never hear. It used to be counted ``skipped``, which is the series that
+    means "nowhere to wait" and would have named a configuration that was not
+    the reason.
+    """
+    from api.services import assets as assets_service
+    from api.services import tenants as tenants_service
+
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    settings.state_dir.mkdir(parents=True, exist_ok=True)
+    tenants_service.load_tenants(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    tenant_id = tenants_service.DEFAULT_TENANT_ID
+    run_dir = settings.output_dir / "runs" / "run-decom"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "alive_hosts.json").write_text(
+        json.dumps([{"host": "10.0.2.11"}]), encoding="utf-8"
+    )
+    assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="run-decom")
+    asset_id = ip_identity_key(tenant_id, "10.0.2.11")
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+
+    updated = assets_service.update_asset(
+        settings, tenant_id, asset_id, {"status": "decommissioned"}
+    )
+
+    assert updated["status"] == "decommissioned"
+    with get_session(settings.postgres_url) as session:
+        recorded = [
+            (r.kind, r.subject, r.status)
+            for r in session.query(models.NatsOutboxEntry).all()
+        ]
+    assert recorded == [
+        (
+            nats_outbox.KIND_ASSET_EVENT,
+            nats_bus.asset_event_subject(tenant_id, "decommissioned_host"),
+            nats_outbox.STATUS_PENDING,
+        )
+    ]
 
 
 def test_a_row_a_peer_delivered_mid_flight_is_not_counted_as_republished(tmp_path, monkeypatch):
