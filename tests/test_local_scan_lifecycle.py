@@ -18,8 +18,8 @@ thread is finished writing before the call returns.
 
 from __future__ import annotations
 
-import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -90,13 +90,19 @@ def _wait_for_the_file(path: Path, timeout: float = 30.0) -> None:
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # pragma: no cover - not ours, but it exists
-        return True
-    return True
+    """Whether ``pid`` is a process that is still running.
+
+    Asked of ``ps`` rather than of ``os.kill(pid, 0)``, which succeeds for a
+    zombie -- and a zombie is exactly what the grandchild becomes here. Its
+    parent is the scanner this test has just killed, so nobody is left to reap
+    it: on macOS init does that within milliseconds, but the CI container's pid
+    1 is the pipeline's shell and reaps nothing, so the test read a corpse as a
+    survivor and failed there and only there.
+    """
+    state = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 def test_a_started_local_scan_can_be_stopped(settings, monkeypatch):
