@@ -5,18 +5,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _manifest() -> dict:
-    return json.loads((ROOT / "apex-contract.json").read_text(encoding="utf-8"))
+    return json.loads((ROOT / "apex-contract" / "manifest.json").read_text(encoding="utf-8"))
 
 
 def test_apex_contract_identity_and_ownership_boundary():
     manifest = _manifest()
-    assert manifest["contract"]["version"] == "1.0"
-    assert manifest["contract"]["canonical_repo"] == "onixus/unified-platform"
-    assert manifest["system"] == {
-        "id": "shapoclyack",
-        "namespace": "shapoclyack",
-        "role": "easm-rbvm",
-    }
+    assert manifest["apex_contract_version"] == "1.0"
+    assert manifest["canonical"]["repo"] == "onixus/unified-platform"
+    assert manifest["system"] == "shapoclyack"
+    assert manifest["namespace"] == "shapoclyack"
 
     ownership = manifest["ownership"]
     assert ownership["gateway_is_source_of_truth"] is False
@@ -32,12 +29,9 @@ def test_apex_contract_identity_and_ownership_boundary():
 
 def test_apex_contract_preserves_asset_and_evidence_identity():
     manifest = _manifest()
-    refs = {item["kind"]: item for item in manifest["resources"]}
-    assert refs["asset"]["local_id_field"] == "asset_id"
-    assert refs["asset"]["urn_prefix"] == "urn:apex:asset:shapoclyack:"
-    assert refs["finding"]["urn_prefix"] == "urn:apex:finding:shapoclyack:"
-    assert refs["evidence"]["urn_prefix"] == "urn:apex:evidence:shapoclyack:"
+    resources = manifest["resources"]
+    assert {"asset", "finding", "evidence"}.issubset(set(resources["owns"]))
 
-    integration = manifest["integration"]
-    assert "pulse.scan-observation" in integration["consumes"]
-    assert "lariska.inventory-snapshot" in integration["consumes"]
+    boundaries = {item["name"]: item for item in manifest["boundaries"]}
+    assert "lariska-agent-v1" in boundaries
+    assert boundaries["pulse-engine-v1"]["event_type"] == "apex.pulse.scan_report.v1"
