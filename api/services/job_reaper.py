@@ -12,7 +12,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -198,9 +198,9 @@ def reap_stale_cancellations(settings: Settings) -> int:
                     models.Job.status == job_states.CANCELLING,
                     models.Job.cancel_requested_at.is_not(None),
                     models.Job.cancel_requested_at < deadline,
-                    (
-                        models.Job.ingest_started_at.is_(None)
-                        | (models.Job.ingest_started_at < ingest_deadline)
+                    or_(
+                        models.Job.ingest_started_at.is_(None),
+                        models.Job.ingest_started_at < ingest_deadline,
                     ),
                 )
                 .with_for_update(skip_locked=True)
