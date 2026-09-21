@@ -1104,8 +1104,10 @@ for row in run_publisher.pending_publications(s, "<job_id>"):
 `stored_at` says the run's whole tree reached the object store: a row that
 carries it is owed only `latest_run.json` and the message on
 `ingest.results.{tenant}`, so the scan is readable in the console and it is the
-analytical projection that is behind. It is also the fence that keeps a
-publication which loses a race from taking the winner's keys back off.
+analytical projection that is behind. It is also half of the fence that keeps a
+publication which loses a race from taking the winner's keys back off; `claims`
+is the other half, because the stamp goes on only once the winner's whole tree
+is up and the race is lost long before that.
 
 `staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
 row is normally finished by the replica that accepted the upload. A peer picks

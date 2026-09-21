@@ -145,6 +145,21 @@ when the loser finds its staging tree gone and decides what to do with the keys
 it had written. So the transfer stamps the row before it promotes the tree, and
 a rollback that sees a stamp leaves the store alone.
 
+The stamp goes on when the winner's *whole* tree is up, so for the length of
+that upload it is honestly absent while the winner's keys — the same key names
+the loser wrote — are already landing. A loser whose own store refused it
+halfway would take those back out. So the rollback reads the claim counter as
+well: every attempt claims the row before it touches the store, which makes the
+other attempt visible from its first key rather than from its last.
+
+The same two facts answer "is this run already in the store" for a replica that
+has no staging tree of its own to upload. A listing alone says yes to the first
+key of an upload still in progress, and a stamp alone is an upload that
+finished without the local backend's promotion having moved anything, so a peer
+adopting a row mid-tree would either publish a half-written run or condemn one
+its owner is still working on. Both must be true: some attempt stamped the row,
+and the store has the result.
+
 Attempts are counted where a publication fails, not where its row is claimed,
 so a replica killed mid-batch does not write one off for every row it was
 holding. Claims are counted separately, for the other end of the same

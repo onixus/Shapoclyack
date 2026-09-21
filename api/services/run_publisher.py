@@ -164,6 +164,7 @@ class _Publication:
     updated_at: datetime | None
     attempts: int
     claims: int
+    stored_at: datetime | None
 
 
 def _snapshot(row: models.RunPublication) -> _Publication:
@@ -184,6 +185,7 @@ def _snapshot(row: models.RunPublication) -> _Publication:
         updated_at=row.updated_at,
         attempts=row.attempts or 0,
         claims=row.claims or 0,
+        stored_at=row.stored_at,
     )
 
 
@@ -390,7 +392,7 @@ def _publish(settings: Settings, publication: _Publication) -> None:
 
     A retry may find the tree already promoted — the replica died between the
     move and the bus publish — and that is not an error but the first three
-    steps' way of saying they are done.
+    steps' way of saying they are done (:func:`_tree_is_stored`).
     """
     staging = Path(publication.staging_path) if publication.staging_path else None
     run_id = publication.run_id
@@ -434,10 +436,35 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         # reading that back is the default-tenant leak the marker prevents.
         artifact_workspace.forget_run_marker(run_id)
         artifact_workspace.promote_staging(settings, run_id, staging)
-    elif not artifact_workspace.run_exists(settings, run_id):
+    elif not _tree_is_stored(settings, publication):
         raise _TreeIsGone(_TREE_IS_GONE)
     results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
     _publish_to_bus(settings, publication)
+
+
+def _tree_is_stored(settings: Settings, publication: _Publication) -> bool:
+    """Whether a *finished* attempt put this run's tree where replicas read it.
+
+    Two questions, because either alone answers yes too early:
+
+    * the store's own answer is "is there a key under ``runs/<run_id>/``",
+      which is true from the **first** key of an upload that is still running.
+      A peer that adopted a row whose owner had merely stopped renewing read
+      that as "already published", skipped the upload of a half-written tree
+      and closed the row out — a run every replica lists with most of it
+      missing, and nothing owing it any more.
+    * ``stored_at`` alone is an attempt saying it finished uploading, which on
+      the local backend is not yet a readable run: the stamp goes on before
+      ``promote_staging``, deliberately (:func:`_roll_back_upload`), and that
+      move is what makes the tree readable there. A row whose promotion failed
+      would otherwise be "published" on the strength of a tree nobody has.
+
+    Together they mean what the caller needs: some attempt carried the whole
+    tree up, and the store has the result.
+    """
+    if publication.stored_at is None:
+        return False
+    return artifact_workspace.run_exists(settings, publication.run_id)
 
 
 def _mark_stored(settings: Settings, publication: _Publication) -> None:
@@ -508,10 +535,27 @@ def _may_take_back(settings: Settings, publication: _Publication) -> bool:
     the row is gone (``_record_success``) or because it carries ``stored_at``
     and the winner is still on the bus. Either way the keys under this run are
     a published scan and the caller's job is to leave them alone.
+
+    ``stored_at`` alone left the widest window of the three open: it is
+    stamped after the winner's *whole* tree is up, so while the winner is
+    still inside ``upload_tree`` it is honestly NULL — and the keys it has
+    already written carry the same names this attempt wrote, which is what
+    makes ``only=written`` no defence at all. A loser whose own store refused
+    it halfway (the failure this rollback exists for, and one made more likely
+    by two attempts hammering one bucket) then deleted files out of the run the
+    winner was in the middle of publishing.
+
+    So the claim counter is the second condition: every attempt claims the row
+    before it touches the store (``_hold``, and ``publish_now`` claims exactly
+    as a tick does), so a claim taken since this one means somebody else has
+    been working this row — and it is visible from the first key the other
+    attempt writes rather than from its last.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id)
-        return row is not None and row.stored_at is None
+        if row is None or row.stored_at is not None:
+            return False
+        return (row.claims or 0) == publication.claims
 
 
 def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
@@ -778,13 +822,18 @@ def _is_foreign_and_absent(settings: Settings, publication: _Publication) -> boo
     the ordinary case for a cache directory that is an ``emptyDir`` — must not
     spend the row's attempts or declare the run lost on the strength of its
     own disk.
+
+    "In the store" is :func:`_tree_is_stored` and not a bare listing: a
+    listing says yes to the first key of an upload that is still running, so a
+    peer that adopted the row of an owner which had only stopped renewing took
+    it for a published run, skipped the upload and closed the row out.
     """
     if publication.replica in (None, settings.instance_id):
         return False
     staging = Path(publication.staging_path) if publication.staging_path else None
     if staging is not None and staging.is_dir():
         return False
-    return not artifact_workspace.run_exists(settings, publication.run_id)
+    return not _tree_is_stored(settings, publication)
 
 
 def _give_back(settings: Settings, publication: _Publication) -> bool:

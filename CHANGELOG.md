@@ -86,6 +86,29 @@ All notable changes to Shapoclyack are documented in this file.
   a loser reading the row would spend that whole upload believing nothing had
   been published — which is exactly the window in which it wakes up on the
   staging tree the winner has just moved away.
+
+  The stamp goes on when the winner's *whole* tree is up, so it is absent for
+  the length of that upload while the winner's keys — under the same names the
+  loser wrote — are already landing, and `only the keys this attempt wrote` is
+  no defence against that. A loser whose own store started refusing it halfway
+  through, which is the failure the rollback exists for, therefore deleted
+  files out of the run the winner was still publishing: the run came out short
+  with the job `succeeded`, no row owing it and the backlog gauge empty. The
+  rollback now also requires that the row has not been claimed since this
+  attempt claimed it — every attempt claims before it touches the store, so the
+  other one is visible from its first key rather than from its last.
+- **A replica no longer calls a run published while another is still uploading
+  it.** "Is this run's tree already in the store", asked of a replica with no
+  staging tree of its own, was answered by a listing — true from the *first*
+  key of an upload in progress. A peer that adopted the row of a replica which
+  had merely stopped renewing its hold therefore skipped the upload of a
+  half-written tree, put the run on the bus and deleted the row: every replica
+  listed a run with most of it missing, and nothing owed it any more, so the
+  owner's own failure a moment later had nowhere left to be recorded. The
+  question now needs both `stored_at` and the listing — some attempt carried
+  the whole tree up, and the store has the result — and a peer that gets `no`
+  hands the row back to the replica that is working on it instead of
+  publishing or condemning it.
 - **A publication holds its row for as long as it takes, not for a minute.**
   The claim pushed the row 60 seconds out of the due window while the docstring
   beside it called the work "minutes of store and broker work" — so a tree that

@@ -618,6 +618,205 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
     assert not run_publisher.is_backlogged(writer)
 
 
+def test_a_loser_does_not_take_keys_back_out_of_a_tree_that_is_still_going_up(
+    tmp_path, monkeypatch
+):
+    """The winner's upload is fenced from the first key, not from the last.
+
+    The fence above is ``stored_at``, and it is stamped when the winner's
+    *whole* tree is in the store — so for the length of that upload it is
+    honestly NULL, while the keys already written carry the same names the
+    loser wrote. "Only what this attempt wrote" is therefore no defence at
+    all: a loser whose own store refused it halfway — the very failure the
+    rollback exists for, and one two attempts hammering one bucket make more
+    likely, not less — deleted files out of the run the winner was in the
+    middle of publishing, and the run came out short with the job
+    ``succeeded``, no row owing it and the backlog gauge empty.
+
+    So the rollback also asks whether the row has been claimed since: every
+    attempt claims before it touches the store, which makes the other attempt
+    visible from its first key rather than from its last.
+    """
+    shared = FakeS3Client()
+    writer = _remote_replica(tmp_path, "pod-a", shared)
+    reader = _remote_replica(tmp_path, "pod-b", shared)
+    _serve(writer)
+    # One key at a time, so the two uploads interleave where the test puts
+    # them rather than across eight threads.
+    monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
+    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+
+    store = artifact_store.get_store(writer)
+    real_put = store.put_bytes
+    loser_wrote_one = threading.Event()
+    winner_mid_tree = threading.Event()
+    loser_done = threading.Event()
+    winner_keys = {"n": 0}
+
+    def _refuses_the_loser_mid_tree(key, data, **kwargs):
+        if not key.startswith(f"{keys.RUNS}/"):
+            return real_put(key, data, **kwargs)
+        # Told apart by the interleaving rather than by thread name:
+        # ``upload_tree`` runs in a pool, so the caller here is not the
+        # accepting request's own thread.
+        if winner_mid_tree.is_set() and not loser_done.is_set():
+            raise artifact_store.ArtifactStoreError("bucket started refusing")
+        if not loser_wrote_one.is_set():
+            written = real_put(key, data, **kwargs)
+            loser_wrote_one.set()
+            assert winner_mid_tree.wait(30), "the winner never got mid-tree"
+            return written
+        written = real_put(key, data, **kwargs)
+        winner_keys["n"] += 1
+        if winner_keys["n"] == 2:
+            # Half a tree up, nothing stamped, and the loser wakes to a store
+            # that has started refusing it.
+            winner_mid_tree.set()
+            assert loser_done.wait(30), "the losing attempt never finished"
+        return written
+
+    monkeypatch.setattr(store, "put_bytes", _refuses_the_loser_mid_tree)
+
+    job = jobs_service.start_scan(writer, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(writer, "agent-1")
+    run_id = str(jobs_service.get_job(writer, job.job_id).run_id)
+    accepted: dict[str, object] = {}
+
+    def _accept() -> None:
+        try:
+            accepted["job"] = _upload(writer, job.job_id, claim.attempt, run_id)
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            accepted["error"] = exc
+        finally:
+            loser_done.set()
+
+    request = threading.Thread(target=_accept, name="accepting-request")
+    request.start()
+    try:
+        assert loser_wrote_one.wait(30), "the request never wrote a key"
+        # A tick that finds the row due anyway, and uploads the same tree.
+        winner = run_publisher.reconcile_once(
+            writer, now=jobs_service._now() + timedelta(seconds=61)  # noqa: SLF001
+        )
+        assert winner["published"] == 1
+    finally:
+        # Always: a request left blocked in the store stub finishes after
+        # pytest has undone the monkeypatches around it.
+        winner_mid_tree.set()
+        loser_done.set()
+        request.join(60)
+    assert "error" not in accepted, accepted.get("error")
+
+    artifact_workspace.reset_marker_cache()
+    landed = sorted(
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+    )
+    assert landed == ["fresh.json", "summary.json", "tenant.json"]
+    assert artifact_workspace.run_ids(reader) == [run_id]
+    assert run_publisher.pending_publications(writer, job.job_id) == []
+    assert not run_publisher.is_backlogged(writer)
+
+
+def test_a_peer_does_not_call_a_run_published_while_its_owner_is_still_uploading(
+    tmp_path, monkeypatch
+):
+    """"The tree is in the store" is the stamp, not one key under the prefix.
+
+    A row a peer adopts is one whose staging tree it cannot see, so the peer
+    has nothing to upload and the only question left is whether somebody
+    already did. Asked of the store — any key under ``runs/<run_id>/`` — the
+    answer is yes from the *first* key of an upload that is still running. A
+    peer adopting the row of a pod that had merely stopped renewing therefore
+    skipped the upload of a half-written tree, put the run on the bus and
+    deleted the row: every replica listed a run with most of it missing, and
+    nothing owed it any more, so the owner's own failure a moment later had
+    nowhere left to be recorded.
+
+    ``stored_at`` is stamped for the whole tree, so the peer sees the
+    publication for what it is — unfinished, and not its own — and hands the
+    row back to the replica that is working on it.
+    """
+    shared = FakeS3Client()
+    owner = _remote_replica(tmp_path, "pod-a", shared)
+    peer = _remote_replica(tmp_path, "pod-b", shared)
+    _serve(owner)
+    monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
+    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+
+    store = artifact_store.get_store(owner)
+    real_put = store.put_bytes
+    parked = threading.Event()
+    go_on = threading.Event()
+    first = {"key": True}
+
+    def _parks_after_the_first_key(key, data, **kwargs):
+        written = real_put(key, data, **kwargs)
+        if first["key"] and key.startswith(f"{keys.RUNS}/"):
+            first["key"] = False
+            parked.set()
+            go_on.wait(60)
+        return written
+
+    monkeypatch.setattr(store, "put_bytes", _parks_after_the_first_key)
+
+    job = jobs_service.start_scan(owner, StartScanRequest(mode="balanced"), username="admin")
+    claim = jobs_service.claim_job(owner, "agent-1")
+    run_id = str(jobs_service.get_job(owner, job.job_id).run_id)
+    accepted: dict[str, object] = {}
+
+    def _accept() -> None:
+        try:
+            accepted["job"] = _upload(owner, job.job_id, claim.attempt, run_id)
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            accepted["error"] = exc
+
+    request = threading.Thread(target=_accept, name="accepting-request")
+    request.start()
+    try:
+        assert parked.wait(30), "the owner never reached the store"
+        # What the peer finds: a row whose replica has stopped renewing and
+        # whose staging tree is in that pod's ``emptyDir``, i.e. not on this
+        # disk. The owner goes on publishing from the snapshot it took.
+        owed = run_publisher.pending_publications(owner, job.job_id)[0]
+        publication_id = owed.publication_id
+        before = owed.attempts
+        now = jobs_service._now()  # noqa: SLF001
+        with get_session(owner.postgres_url) as session:
+            row = session.get(models.RunPublication, publication_id)
+            row.replica = "shapoclyack-api-7d9f-unreachable"
+            row.staging_path = str(Path(peer.output_dir) / "runs" / ".ingest-gone")
+            row.archive_path = str(Path(peer.output_dir) / "runs" / ".ingest-gone.upload")
+            row.created_at = now - timedelta(seconds=600)
+            row.updated_at = now - timedelta(seconds=600)
+            row.next_attempt_at = now
+        artifact_workspace.reset_marker_cache()
+
+        assert run_publisher.reconcile_once(peer) == {
+            "published": 0,
+            "failed": 0,
+            "skipped": 1,
+        }
+        with get_session(owner.postgres_url) as session:
+            row = session.get(models.RunPublication, publication_id)
+            assert row.status == "pending"
+            assert row.attempts == before
+            assert row.stored_at is None
+    finally:
+        go_on.set()
+        request.join(60)
+    assert "error" not in accepted, accepted.get("error")
+
+    # And the owner, left to it, puts the whole tree up and closes the row.
+    artifact_workspace.reset_marker_cache()
+    landed = sorted(
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+    )
+    assert landed == ["fresh.json", "summary.json", "tenant.json"]
+    assert artifact_workspace.run_ids(peer) == [run_id]
+    assert run_publisher.pending_publications(owner, job.job_id) == []
+    assert not run_publisher.is_backlogged(owner)
+
+
 def test_a_rollback_removes_the_keys_this_attempt_wrote_and_no_others(
     tmp_path, monkeypatch
 ):
