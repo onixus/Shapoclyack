@@ -327,6 +327,40 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture(autouse=True)
+def _stop_local_scans():
+    """Put down the scans a test started before the next test begins.
+
+    Starting a scan in local execution mode -- the default for this suite --
+    launches a real ``scanner.main`` subprocess from a daemon thread, and
+    nothing in the API ever stops one: ``cancel_job`` refuses a running local
+    job by design, because the only thing that could signal it is the thread
+    that spawned it. Most tests that start a scan are not about the scan at
+    all (they assert a 202, a tenant id, or an RBAC refusal) and are done
+    while it is still in its first stage.
+
+    Left alone, those scans kept running. A session on 2026-09-21 held seven
+    ``scanner.main`` processes at once, aged 1:37 to 5:56, belonging to tests
+    that had passed minutes earlier, and finished in 15 minutes against 13:36
+    for the same suite -- the difference being the machine scanning on behalf
+    of nobody. Some outlived pytest itself: a daemon thread is not joined at
+    exit, so its child is simply reparented.
+
+    Autouse and here rather than inside ``reset_service_state`` so it covers
+    every test, including the ones that build ``Settings`` themselves and
+    never go through :func:`configured_client`. The deliberately abandoned job
+    -- ``test_an_abandoned_local_job_is_failed_not_requeued`` and friends --
+    is unaffected: the row it examines is already written, and what this drops
+    is the process, after the assertions.
+    """
+    yield
+    from api.services import jobs as jobs_service
+
+    assert jobs_service.stop_local_scans(), (
+        f"a local scan outlived its test: {jobs_service.live_local_scans()}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Integration gate
 #
