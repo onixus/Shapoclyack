@@ -7,11 +7,46 @@
 [![Deploy](https://img.shields.io/badge/deploy-Kubernetes%20%2F%20Kustomize-326ce5)](k8s/README.md)
 [![Images](https://img.shields.io/badge/images-ghcr.io-181717)](https://github.com/onixus?tab=packages&repo_name=Shapoclyack)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Enterprise Wiki](https://img.shields.io/badge/wiki-Enterprise%20Knowledge%20Base-orange)](docs/wiki/README.md)
 
-Shapoclyack bridges the gap between raw network reconnaissance, asset inventory, and verifiable risk reduction. It unifies staged network discovery, distributed sensors (remote scanning nodes), an asset-centric data model that survives IP/DHCP drift, distribution-accurate endpoint patch gap analysis, dual-axis risk scoring under NIST SP 800-30 Rev. 1, and mechanical re-verification of remediated flaws — deployed as a Kubernetes application or a single all-in-one container.
+Shapoclyack turns external discovery into a verifiable remediation workflow. It keeps vulnerability history attached to persistent assets instead of transient IP addresses, understands distribution security backports, makes scanning scope explicit and fail-closed, and can mechanically re-check whether a remediation actually worked.
 
-**[Русская версия](README.ru.md)** · [Enterprise Wiki (База знаний)](docs/wiki/README.md) 🇷🇺 · [Getting Started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Web UI Guide](docs/ui.md) · [Documentation Index](docs/README.md) · [Kubernetes](k8s/README.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Security Policy](.github/SECURITY.md)
+**[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
+
+## Closed-loop remediation at a glance
+
+```mermaid
+flowchart LR
+    A["1. Discover<br/>authorized scan"] --> B["2. Track<br/>finding + owner + SLA"]
+    B --> C["3. Remediate<br/>patch / config / exposure"]
+    C --> D["4. Verify<br/>targeted re-scan"]
+    D -->|not observed| E["CLOSED<br/>machine_verified = true"]
+    D -->|observed again| F["FIXING<br/>keep working"]
+```
+
+Shapoclyack does not treat a closed ticket as proof that a network finding is gone. The verification step re-tests the observation that created the finding. **[Run the end-to-end demo →](docs/demo-remediation-loop.md)**
+
+## Why Shapoclyack
+
+- **Asset-centric identity** — findings and remediation history survive DHCP/IP drift.
+- **Evidence over ticket state** — network findings can be closed through targeted re-verification, not only operator assertion.
+- **Vendor-aware patch gaps** — Ubuntu and Debian package backports are evaluated with distribution-native version logic.
+- **Risk with context** — likelihood and impact are kept as separate axes rather than collapsed into a single CVSS queue.
+- **Distributed scanning** — remote sensors can claim tenant-scoped work outbound, without exposing inbound scanner ports.
+
+## Quick start
+
+For a local evaluation cluster:
+
+```bash
+git clone https://github.com/onixus/Shapoclyack.git
+cd Shapoclyack
+scripts/dev-up.sh
+curl --fail http://127.0.0.1:8080/api/health
+```
+
+Then open **http://127.0.0.1:8080**. The local `kind` setup, demo accounts, approved-scope workflow and first scan are documented step by step in [Getting Started](docs/getting-started.md).
+
+**See the differentiator end to end:** [run the closed-loop remediation demo](docs/demo-remediation-loop.md) to take a real network finding through remediation, targeted re-scan, and either `machine_verified = true` or a return to `FIXING`.
 
 > [!WARNING]
 > **Scanning touches live external systems.** Operate Shapoclyack only against networks and infrastructure you own or are explicitly authorized to assess. A fresh installation deliberately executes no scans until an administrator reviews and approves an authorized scanning scope for the tenant.
@@ -331,8 +366,8 @@ See [API and RBAC Documentation](docs/api-and-rbac.md) for endpoint details and 
 # Run unit and integration tests
 python -m pytest
 
-# Run linter and formatting checks
-ruff check .
+# Run the lint CI runs (ruff over the whole tree, version pinned in requirements-dev.txt)
+scripts/ci-lint.sh
 ```
 
 ### Next.js Operations Console

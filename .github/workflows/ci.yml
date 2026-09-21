@@ -27,10 +27,29 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install ruff
-        run: pip install ruff==0.15.20
+      # Version and scope both live in scripts/ci-lint.sh (the pin is read out
+      # of requirements-dev.txt), which the Jenkinsfile and both READMEs point
+      # at too. Spelled out here, the copies drifted to different Ruff versions
+      # and none of them linted agent/.
       - name: Ruff check
-        run: ruff check scanner api tests
+        run: ./scripts/ci-lint.sh --install
+
+  sast:
+    # Ported from the Jenkinsfile, which was the one stage docs/development.md
+    # had to call out as unmatched here. Same script, same two passes.
+    name: SAST (semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan and gate
+        run: ./scripts/ci-semgrep.sh
+      - name: Upload Semgrep report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: semgrep
+          path: semgrep.json
+          if-no-files-found: warn
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -81,14 +100,16 @@ jobs:
         env:
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
         run: alembic -c api/db/alembic.ini upgrade head
+      # scripts/ci-pytest.sh, shared with the Jenkinsfile. It sets
+      # OCTO_REQUIRE_INTEGRATION=1, so tests/integration_gate.py fails the run
+      # if the Postgres- or NATS-gated suites were skipped, deselected or never
+      # recognised — an exit code on its own does not distinguish "the gated
+      # tests passed" from "the gated tests were skipped wholesale".
       - name: Run tests
         env:
           OCTO_NATS_URL: nats://127.0.0.1:4222
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
-        run: |
-          python -m pytest -q \
-            --cov=api --cov=scanner --cov-report=xml --cov-report=term-missing \
-            --cov-fail-under=74
+        run: ./scripts/ci-pytest.sh
       - name: Upload coverage report
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v7.0.1
@@ -107,14 +128,10 @@ jobs:
           node-version: "26"
           cache: npm
           cache-dependency-path: web-next/package-lock.json
+      # No directory argument: unlike the Jenkins agent, this runner has no
+      # VirtioFS workspace, so web-next/ is built where it lies.
       - name: Install, lint, typecheck, test, and build
-        working-directory: web-next
-        run: |
-          npm ci
-          npm run lint
-          npm run typecheck
-          npm test
-          npm run build
+        run: ./scripts/ci-web.sh
 
   kustomize:
     name: Kustomize (validate)
@@ -123,6 +140,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate overlays
         run: ./k8s/scripts/validate-kustomize.sh
+      # The Jenkins stage of the same name has always run both scripts; this
+      # job ran only the first one.
+      - name: Validate Prometheus rules
+        run: ./k8s/scripts/validate-prometheus-rules.sh
 
   image:
     # Builds the actual default distributed image (INSTALL_NMAP=0, no nmap /

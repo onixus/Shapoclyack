@@ -383,6 +383,44 @@ NATS_FALLBACK_CLAIM_SECONDS = 60.0
 _DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
 
 
+#: The API's reason for a 409 on the results route, and the values it sends.
+#: Kept as literals rather than imported: this module is what ships to the
+#: sensor host and it does not have ``api`` on its path. The names are the
+#: server's (``api/routes/agents.py``), and an API too old to send the header
+#: leaves the classification where it has always been — a plain rejection.
+_REJECTION_HEADER = "X-Result-Rejection"
+_REJECTION_IN_FLIGHT = "in-flight"
+
+
+class AgentResultRejected(RuntimeError):
+    """The API refused this result — the upload itself was fine.
+
+    Since the ingest lease (architecture review P1) a completion is fenced at
+    the *final* write: a lease that lapsed while the archive was going up, and
+    a job the reaper has since handed to another attempt, make this result a
+    straggler that the API declines rather than publish over the attempt that
+    took over. A second completion that disagrees with the first is refused the
+    same way.
+
+    Its own type because neither is a transport failure: the archive arrived,
+    and resending it — which is what the loop does with a network error — only
+    spends the site's uplink on being refused again.
+    """
+
+
+class AgentResultInFlight(AgentResultRejected):
+    """The API is still ingesting *this agent's own* earlier upload.
+
+    The 409 that is not a refusal, and the one this agent causes itself: an
+    ingest may take as long as the API's ingest lease, a read timeout here
+    makes ``_request`` resend the whole archive, and the second copy meets the
+    first one's reservation. Nothing is lost — the outcome the first upload is
+    writing is the one the job gets — so the only right answer is to stop
+    resending and say so. Reported as a rejection to callers that do not care,
+    because it is still "no result came back from this call".
+    """
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -407,11 +445,20 @@ class AgentClient:
         token: str,
         *,
         timeout: float = 60.0,
+        upload_timeout: float = 0.0,
         upload_rate_limit_kbps: float = 0.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        # The results route is the one call whose response the API takes
+        # minutes to send: it answers when the ingest is done, and the ingest
+        # is allowed to run for OCTO_JOB_INGEST_LEASE_SECONDS (900s by
+        # default). At the ordinary 60s socket timeout every ingest longer than
+        # a minute looked like a dead connection, and _request answered it by
+        # resending the whole archive — a branch office's uplink spent twice
+        # over to be told the first copy is still being ingested.
+        self.upload_timeout = upload_timeout if upload_timeout > 0 else max(timeout, 900.0)
         self.upload_rate_limit_kbps = max(0.0, upload_rate_limit_kbps)
         # Built once from the base URL: the proxy decision depends on the host
         # and scheme, and every path this client opens shares both.
@@ -469,6 +516,7 @@ class AgentClient:
         content_type: str | None = "application/json",
         expect_json: bool = True,
         max_retries: int = 2,
+        timeout: float | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -479,6 +527,7 @@ class AgentClient:
             # to chunked transfer — which the results route answers 411 to,
             # because it checks Content-Length before buffering the multipart.
             headers["Content-Length"] = str(len(body))
+        deadline = timeout if timeout is not None else self.timeout
 
         for attempt in range(max_retries + 1):
             if isinstance(body, _ThrottledBody):
@@ -488,7 +537,7 @@ class AgentClient:
                 body.reset()
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             try:
-                with self._opener.open(req, timeout=self.timeout) as resp:
+                with self._opener.open(req, timeout=deadline) as resp:
                     raw = resp.read()
                     if resp.status == 204 or not raw:
                         return None
@@ -508,6 +557,17 @@ class AgentClient:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
+                if exc.code == 409:
+                    # Only the results route answers this to an agent, but it
+                    # answers it for three different reasons and only one of
+                    # them is "your result was thrown away" — the header says
+                    # which, because the status cannot.
+                    reason = (exc.headers or {}).get(_REJECTION_HEADER, "")
+                    if reason == _REJECTION_IN_FLIGHT:
+                        raise AgentResultInFlight(
+                            f"{method} {path} -> 409: {detail}"
+                        ) from exc
+                    raise AgentResultRejected(f"{method} {path} -> 409: {detail}") from exc
                 if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
                     raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
@@ -664,6 +724,9 @@ class AgentClient:
                 f"/api/agent/jobs/{job_id}/results",
                 body=body,
                 content_type=f"multipart/form-data; boundary={boundary}",
+                # The API answers this one when the ingest is finished, not
+                # when the bytes are in — see AgentClient.upload_timeout.
+                timeout=self.upload_timeout,
             )
         finally:
             body.close()
@@ -900,6 +963,7 @@ def _busy_heartbeats(
     output_dir: Path | None = None,
     interval: float,
     cancel_event: threading.Event | None = None,
+    stage: str | None = None,
 ) -> Iterator[None]:
     """Keep reporting this job for as long as the scan runs with live telemetry.
 
@@ -925,6 +989,14 @@ def _busy_heartbeats(
     for an agent that is doing exactly what it was told. So the loop keeps
     beating until the context manager stops it, saying ``cancelling`` instead
     of the stage: an agent obeying a cancellation is busy, not gone.
+
+    ``stage`` names the phase outright instead of reading it off the run
+    directory, for the phase where there is nothing left to read: the scan has
+    finished and the archive is being transferred and ingested. The job is
+    still in flight for the whole of that — the API's lease covers the ingest
+    too — so going quiet there is the same mistake as going quiet during a
+    cancellation, one interval from being requeued behind a result that is on
+    its way.
     """
     stop = threading.Event()
     t0 = time.perf_counter()
@@ -936,9 +1008,11 @@ def _busy_heartbeats(
                 cancelling = cancel_event is not None and cancel_event.is_set()
                 if cancelling:
                     detail = f"stage=cancelling elapsed={elapsed_sec}s"
+                elif stage:
+                    detail = f"stage={stage} elapsed={elapsed_sec}s"
                 else:
-                    stage = _detect_current_stage(output_dir, run_id)
-                    detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
+                    current = _detect_current_stage(output_dir, run_id)
+                    detail = f"stage={current or 'running'} elapsed={elapsed_sec}s"
                 beat = client.heartbeat(
                     agent_id, status="busy", current_job_id=job_id, detail=detail
                 )
@@ -1011,20 +1085,58 @@ def _execute_job(
                     cancel_event=cancel_event,
                 )
         cancelled = cancel_event.is_set() and exit_code != 0
-        client.upload_results(
-            job["job_id"],
+        # Under heartbeats like the scan itself: the transfer of a run archive
+        # over a branch office's uplink, plus the API's ingest of it, is minutes
+        # during which the job is in flight and its lease has to be renewed.
+        # Silent, this is the window where the reaper hands the job to a second
+        # agent and the result arriving from this one is refused as stale.
+        with _busy_heartbeats(
+            client,
             agent_id=agent_id,
-            attempt=job.get("attempt"),
-            exit_code=exit_code,
+            job_id=job["job_id"],
             run_id=str(job["run_id"]),
-            error=error,
-            archive_path=archive,
-            # ...and a clean exit is reported as one even here: the scan can
-            # finish by itself in the second between the stop being set and the
-            # wait noticing it, and calling a completed run cancelled would
-            # throw away a whole sweep's findings to match the request (#360).
-            cancelled=cancelled,
-        )
+            interval=heartbeat_interval,
+            stage="uploading",
+        ):
+            try:
+                client.upload_results(
+                    job["job_id"],
+                    agent_id=agent_id,
+                    attempt=job.get("attempt"),
+                    exit_code=exit_code,
+                    run_id=str(job["run_id"]),
+                    error=error,
+                    archive_path=archive,
+                    # ...and a clean exit is reported as one even here: the scan
+                    # can finish by itself in the second between the stop being
+                    # set and the wait noticing it, and calling a completed run
+                    # cancelled would throw away a whole sweep's findings to
+                    # match the request (#360).
+                    cancelled=cancelled,
+                )
+            except AgentResultInFlight as exc:
+                # This agent's own archive, already being ingested — a read
+                # timeout on a long ingest made _request send it twice. The
+                # first copy decides the job, so there is nothing to do and
+                # nothing was lost; logged apart from a rejection so the
+                # journal does not blame the API for keeping the result.
+                LOG.info(
+                    "Result of job %s is already being ingested from an earlier "
+                    "upload; not resending: %s",
+                    job["job_id"],
+                    exc,
+                )
+                return
+            except AgentResultRejected as exc:
+                # Not an error of this agent's making and not retried: the job
+                # belongs to another attempt now, and this result was declined
+                # rather than lost in transit. Logged as what it is so an
+                # operator reading the journal sees a rejection, not a failed
+                # upload to go hunting for on the network.
+                LOG.warning(
+                    "The API rejected the result of job %s: %s", job["job_id"], exc
+                )
+                return
     LOG.info(
         "Job %s finished exit=%s%s", job["job_id"], exit_code, " (cancelled)" if cancelled else ""
     )
@@ -1306,6 +1418,7 @@ def run_loop(args: argparse.Namespace) -> int:
         args.api_url,
         args.token or "pending",
         timeout=args.timeout,
+        upload_timeout=getattr(args, "upload_timeout", 0.0),
         upload_rate_limit_kbps=getattr(args, "upload_rate_limit_kbps", 0.0),
     )
     # Logged once at start because "the agent cannot reach the API" is answered
@@ -1631,6 +1744,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--upload-timeout",
+        type=float,
+        default=float(os.environ.get("OCTO_AGENT_UPLOAD_TIMEOUT", "900")),
+        help=(
+            "How long to wait for the API's answer to a results upload (or "
+            "OCTO_AGENT_UPLOAD_TIMEOUT); the API answers when it has finished "
+            "ingesting, so this belongs at OCTO_JOB_INGEST_LEASE_SECONDS and "
+            "not at --timeout"
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 

@@ -41,6 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 os.environ.setdefault("OCTO_ENV", "dev")
 
 POSTGRES_URL = (os.environ.get("OCTO_POSTGRES_URL") or os.environ.get("POSTGRES_URL") or "").strip()
+NATS_URL = (os.environ.get("OCTO_NATS_URL") or os.environ.get("NATS_URL") or "").strip()
 
 requires_postgres = pytest.mark.skipif(
     not POSTGRES_URL,
@@ -324,3 +325,21 @@ def auth_headers(
 
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------
+# Integration gate
+#
+# The hooks live in tests/integration_gate.py so a test can drive them through a
+# real pytest session; importing them here is what registers them for this
+# repository's own runs, and tests/test_ci_checks.py asserts that this import is
+# still the same objects. See that module for what the gate refuses and why.
+# ---------------------------------------------------------------------------
+
+from tests.integration_gate import (  # noqa: E402,F401 - imported to register the hooks
+    pytest_collection_modifyitems,
+    pytest_configure,
+    pytest_runtest_logreport,
+    pytest_sessionfinish,
+    pytest_terminal_summary,
+)

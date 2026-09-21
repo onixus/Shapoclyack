@@ -57,13 +57,20 @@ class FakeBus:
 
 @pytest.fixture(autouse=True)
 def _clean_outbox(tmp_path):
-    """The table is not in ``reset_service_state``'s sweep, so clear it here."""
+    """Empty both durable queues around each test in this module.
+
+    ``tenants.reset_for_tests`` sweeps them for a test that builds a client;
+    most of the tests here call the service directly with a ``make_settings``
+    of their own and never reach it.
+    """
     settings = make_settings(tmp_path, nats_url=NATS_URL)
     with get_session(settings.postgres_url) as session:
         session.query(models.NatsOutboxEntry).delete()
+        session.query(models.RunPublication).delete()
     yield
     with get_session(settings.postgres_url) as session:
         session.query(models.NatsOutboxEntry).delete()
+        session.query(models.RunPublication).delete()
 
 
 _AGENT_HEADERS = {"Authorization": "Bearer test-agent-token"}
@@ -96,6 +103,14 @@ def _claimed_job(client) -> tuple[str, str, str]:
 def _entries(settings) -> list[models.NatsOutboxEntry]:
     with get_session(settings.postgres_url) as session:
         rows = session.query(models.NatsOutboxEntry).all()
+        session.expunge_all()
+        return rows
+
+
+def _publications(settings) -> list[models.RunPublication]:
+    """Runs still owed a publication — empty once the bus hop has been settled."""
+    with get_session(settings.postgres_url) as session:
+        rows = session.query(models.RunPublication).all()
         session.expunge_all()
         return rows
 
@@ -377,10 +392,9 @@ def test_an_invalid_archive_still_raises_before_anything_is_recorded(tmp_path, m
 # Everything above calls ``publish_ingest_or_record`` itself with the bus
 # monkeypatched away, which proves the function works and says nothing about
 # whether anything calls it. That gap is why the branch's central defect —
-# ``jobs.complete_job`` still publishing through ``results_ingest`` — went
-# green through ten tests. The three below go through the real callers as far
-# as they exist: the HTTP probe, the reconciler thread the app starts, and the
-# upload route (which is the xfail, because that call site is not switched).
+# nothing reaching the recorder at all — went green through ten tests. The
+# ones below go through the real callers: the HTTP probe, the reconciler
+# thread the app starts, and the upload route a sensor actually uses.
 # --------------------------------------------------------------------------
 
 
@@ -456,16 +470,6 @@ def test_the_reconciler_thread_the_app_starts_drains_the_backlog(tmp_path, monke
 
 
 @requires_postgres
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "jobs.complete_job still calls results_ingest.publish_raw_results directly "
-        "instead of nats_outbox.publish_ingest_or_record, so a refused ingest publish "
-        "is lost and nothing is recorded. The call site is blocked on the job-fencing "
-        "rewrite of api/services/jobs.py; when it lands this test goes green and the "
-        "marker comes off (strict=True makes an unnoticed XPASS fail the run)."
-    ),
-)
 def test_a_refused_publish_at_upload_time_leaves_a_row_in_the_outbox(tmp_path, monkeypatch):
     """The whole point of the module, over the route a sensor actually uses.
 
@@ -473,6 +477,10 @@ def test_a_refused_publish_at_upload_time_leaves_a_row_in_the_outbox(tmp_path, m
     answered 200 and the job succeeds — that part is the policy and is correct
     — and the ingest message must be in ``nats_outbox``, because otherwise the
     analytical projection has a permanent hole that no probe reports.
+
+    The publication that owns the bus hop must close all the same: the run's
+    artifacts, its assets and its findings are not the broker's business, and
+    a ``run_publications`` row still owing this run would mean they are.
     """
     monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
     monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
@@ -496,6 +504,97 @@ def test_a_refused_publish_at_upload_time_leaves_a_row_in_the_outbox(tmp_path, m
         "everywhere except analytics, and nothing will replay it"
     )
     assert rows[0].job_id == job_id
+    assert rows[0].run_id == run_id
+    assert rows[0].status == nats_outbox.STATUS_PENDING
+    assert _publications(settings) == [], (
+        "the run's publication is still owed, so a broker outage is holding the "
+        "object store, the run directory and the job's own projections hostage"
+    )
+
+
+@requires_postgres
+def test_the_outbox_being_off_keeps_the_publication_open(tmp_path, monkeypatch):
+    """``OCTO_NATS_OUTBOX_ENABLED=false``: nothing durable, so nothing closed.
+
+    The one configuration that still loses the message. It must not lose it
+    *quietly*: with nowhere to write the refusal down, the bus hop fails, the
+    publication stays owed and retries, and the operator gets a ``dead`` row
+    and a note on the job instead of a green health check over a hole.
+    """
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    client = configured_client(
+        tmp_path,
+        monkeypatch,
+        job_execution_mode="agent",
+        nats_url=NATS_URL,
+        nats_outbox_enabled=False,
+    )
+    settings = make_settings(tmp_path, nats_url=NATS_URL, nats_outbox_enabled=False)
+    agent_id, job_id, run_id = _claimed_job(client)
+
+    upload = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=_AGENT_HEADERS,
+        data={"agent_id": agent_id, "exit_code": "0", "run_id": run_id},
+        files={"archive": ("run.tar.gz", _archive(), "application/gzip")},
+    )
+    assert upload.status_code == 200
+
+    assert _entries(settings) == []
+    owed = _publications(settings)
+    assert len(owed) == 1, (
+        "a refused publish with the outbox disabled was reported as published: "
+        "the ingest message is gone and nothing owes anybody an explanation"
+    )
+    assert owed[0].job_id == job_id
+
+
+@requires_postgres
+def test_a_recorded_message_is_dropped_when_a_later_attempt_delivers_it(
+    tmp_path, monkeypatch
+):
+    """One message on the bus, not two, when the retry beats the reconciler.
+
+    The replica that records a refusal can die before it closes the
+    publication out, and the reconciler then replays the same hop — which the
+    broker may well accept this time. Both the outbox row and that publish
+    describe one run, so leaving the row behind puts the run on the stream a
+    second time whenever the reconciler gets to it after the stream's duplicate
+    window has passed.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    first = nats_outbox.publish_ingest_or_record(
+        settings,
+        job_id="job-twice",
+        run_id="run-twice",
+        agent_id="agent-1",
+        exit_code=0,
+        archive_bytes=_archive(),
+        tenant_id="default",
+    )
+    assert first["outbox_id"] is not None
+    assert len(_entries(settings)) == 1
+
+    bus = FakeBus(accepts=True)
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: bus)
+    second = nats_outbox.publish_ingest_or_record(
+        settings,
+        job_id="job-twice",
+        run_id="run-twice",
+        agent_id="agent-1",
+        exit_code=0,
+        archive_bytes=_archive(),
+        tenant_id="default",
+    )
+
+    assert second["published"] is True
+    assert second["msg_id"] == first["msg_id"]
+    assert _entries(settings) == [], (
+        "the delivered message is still recorded, so the reconciler will put the "
+        "same run on the stream a second time"
+    )
 
 
 # --------------------------------------------------------------------------

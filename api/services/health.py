@@ -42,17 +42,6 @@ every replica would be the outage this change removed, wearing a different
 name. It degrades ``/api/health``, raises ``octo_nats_outbox_backlog`` and is
 the operator's signal that availability is ahead of analytics.
 
-**The trade is not settled yet.** ``jobs.complete_job`` still publishes through
-``results_ingest.publish_raw_results`` and never reaches
-``nats_outbox.publish_ingest_or_record``, so nothing is recorded, the table is
-empty and ``ingest_backlog`` currently reports on a queue nothing writes to.
-Readiness is relaxed ahead of the recovery that justifies it: during a broker
-outage the ingest message is lost exactly as before, and no probe says so.
-Wiring that call site is blocked on the job-fencing change rewriting
-``api/services/jobs.py``. Whoever finishes it should delete this paragraph —
-and whoever revisits ``BLOCKING_CHECKS`` before then should read it as the
-argument for putting NATS back.
-
 Object storage (#336) is checked on the same terms as ClickHouse, and for the
 same reason rather than a weaker one: every replica shares one bucket, so a
 bucket that is briefly unreachable would fail *all* of their probes at once and
@@ -74,6 +63,7 @@ from api.services import artifact_store
 from api.services import clickhouse_client
 from api.services import nats_bus
 from api.services import nats_outbox
+from api.services import run_publisher
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.health")
@@ -127,6 +117,14 @@ def check_readiness(settings: Settings) -> Readiness:
         )
     if artifact_store.is_remote(settings):
         checks["artifacts"] = STATUS_OK if _artifacts_ok(settings) else STATUS_ERROR
+    # Advisory, and deliberately not on the pending rows: a publication in
+    # flight is the ordinary state for the length of one ingest, and unreadying
+    # a replica for it would flicker on every scan. What this reports is a run
+    # the installation accepted, answered the sensor 200 for, and has given up
+    # on publishing — which is invisible everywhere else until somebody opens
+    # the scan and finds no artifacts.
+    if run_publisher.is_backlogged(settings):
+        checks["run_publications"] = STATUS_ERROR
     return Readiness(
         ready=all(
             status == STATUS_OK for name, status in checks.items() if name in BLOCKING_CHECKS

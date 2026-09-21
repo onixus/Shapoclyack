@@ -11,6 +11,7 @@ first one's runs.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -260,3 +261,59 @@ def test_eviction_is_off_when_the_budget_is_zero(tmp_path: Path) -> None:
         if path.is_dir() and not path.name.startswith(".")
     )
     assert cached == ["r1", "r2"]
+
+
+def test_a_staging_tree_an_ingest_never_finished_is_collected(tmp_path):
+    """Nobody else cleans up after a killed ingest on the local backend.
+
+    The sweep that collects these trees was reachable only through the cache
+    eviction, which runs on a remote backend and nowhere else; and a staging
+    directory is dotted, so no listing, no retention pass and no run id ever
+    names it. A pod killed mid-ingest therefore left a fully extracted run in
+    ``output_dir/runs`` for good — invisible growth on the disk the scans are
+    written to. Taking a staging directory is when the old ones go.
+
+    An ingest tree gets a day rather than the hour a half-finished *fetch*
+    gets, because the two are not the same thing: a fetch's leftovers are a
+    partial copy of something the store still has, and an ingest tree is a
+    complete run the installation has accepted and may still owe a publication
+    for (``run_publications``). Collecting it at an hour would throw away the
+    only copy of a scan while an operator is still deciding what to do about
+    a store that refused it.
+    """
+    settings = make_settings(tmp_path, output_dir=tmp_path / "output")
+    runs = Path(settings.output_dir) / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+
+    abandoned = runs / ".ingest-20260101T000000Z-deadbeefcafe"
+    abandoned.mkdir()
+    (abandoned / "summary.json").write_text("{}", encoding="utf-8")
+    archive = runs / ".ingest-20260101T000000Z-deadbeefcafe.upload"
+    archive.write_bytes(b"tar")
+    long_ago = time.time() - 25 * 3600
+    os.utime(abandoned, (long_ago, long_ago))
+    os.utime(archive, (long_ago, long_ago))
+
+    # Old enough for a fetch's debris, not for an accepted run.
+    yesterdays_ingest = runs / ".ingest-20260101T000000Z-1111deadbeef"
+    yesterdays_ingest.mkdir()
+    two_hours = time.time() - 7200
+    os.utime(yesterdays_ingest, (two_hours, two_hours))
+
+    fresh = runs / ".ingest-20260101T000000Z-0badc0ffee11"
+    fresh.mkdir()
+    real_run = runs / "20260101T000000Z"
+    real_run.mkdir()
+
+    staging = workspace.staging_run_dir(settings, "20260102T000000Z", "feedfacefeedface")
+
+    assert not abandoned.exists()
+    # The archive beside it goes with the tree: it is the other half of one
+    # upload, and it is the larger half.
+    assert not archive.exists()
+    assert yesterdays_ingest.is_dir()
+    # Only the abandoned one: a fresh tree may be an ingest in progress in this
+    # process or in another pod sharing the volume, and a run is not staging.
+    assert fresh.is_dir()
+    assert real_run.is_dir()
+    assert staging.name.startswith(".ingest-20260102T000000Z-")

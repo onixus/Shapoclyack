@@ -60,6 +60,7 @@ from api.services import sla_escalation
 from api.services import software_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
+from api.services import run_publisher
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
@@ -121,6 +122,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Needs no lock at all, unlike the dispatcher above: expiry is a property
     # of the row, and the sweep takes candidates with FOR UPDATE SKIP LOCKED.
     job_reaper.start_worker(settings)
+    # Same reasoning again, and the same claim discipline: a publication owed
+    # for an accepted run is due by the row's own clock. It is started even on
+    # a replica that never ingests, because the rows it finishes may be the
+    # ones a killed peer left behind (``run_publisher._claim_due``).
+    run_publisher.start_worker(settings)
     # Same reasoning as the reaper: due-ness is a property of the delivery row
     # and claims are taken with FOR UPDATE SKIP LOCKED, so every replica may
     # dispatch (ROADMAP Phase 10.3).
@@ -134,6 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
+        run_publisher.stop_worker()
         job_reaper.stop_worker()
         sla_escalation.stop_worker()
         report_dispatcher.stop_worker()
@@ -227,7 +234,7 @@ def create_app() -> FastAPI:
         app.add_middleware(
             BodySizeLimitMiddleware,
             max_bytes=settings.endpoint_inventory_max_body_bytes,
-            paths=("/api/endpoint/inventory",),
+            paths=("/api/endpoint/inventory", "/api/v1/endpoint/inventory"),
         )
     # Same reasoning for the agent results upload (#222): the archive part is a
     # whole run directory, and the route buffered it in full before deciding
@@ -237,7 +244,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         BodySizeLimitMiddleware,
         max_bytes=settings.agent_results_max_body_bytes,
-        path_patterns=(r"^/api/agent/jobs/[^/]+/results/?$",),
+        path_patterns=(r"^/api/(?:v1/)?agent/jobs/[^/]+/results/?$",),
         count_endpoint_submissions=False,
     )
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=settings.hsts_enabled)
@@ -329,10 +336,17 @@ def create_app() -> FastAPI:
             sso=SsoStatus.model_validate(oidc_service.public_config(settings)),
         )
 
+    # Legacy /api routes remain for deployed agents and console clients.
     app.include_router(auth_routes.router, prefix="/api")
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")
+
+    # APEX Architecture Contract v1: stable versioned aliases for machine-to-
+    # machine agent boundaries. The same handlers and authorization checks are
+    # mounted twice intentionally; /api remains a compatibility alias.
+    app.include_router(auth_routes.router, prefix="/api/v1")
+    app.include_router(agents_routes.router, prefix="/api/v1")
     app.include_router(assets_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
@@ -363,6 +377,7 @@ def create_app() -> FastAPI:
         app.include_router(notification_channels_routes.router, prefix="/api")
     if settings.endpoint_inventory_enabled:
         app.include_router(endpoint_inventory_routes.router, prefix="/api")
+        app.include_router(endpoint_inventory_routes.router, prefix="/api/v1")
 
     web_dist = settings.web_dist
     if web_dist.is_dir() and (web_dist / "index.html").exists():

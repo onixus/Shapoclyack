@@ -210,13 +210,15 @@ class LocalArtifactStore(ArtifactStore):
 
     # -- trees ------------------------------------------------------------
 
-    def upload_tree(self, prefix: str, source: Path) -> int:
+    def upload_tree(self, prefix: str, source: Path, *, written: list[str] | None = None) -> int:
         """Copy ``source`` to ``prefix``.
 
         A no-op when they are already the same directory, which is the normal
         case: the local backend's "publish this run" is the run having been
         written where it belongs in the first place. Copying it to itself would
-        be a needless doubling of every run's bytes.
+        be a needless doubling of every run's bytes -- and nothing is appended
+        to ``written`` for it, because nothing was written and a rollback that
+        removed those keys would delete the run itself.
         """
         normalized = normalize_prefix(prefix)
         target = self.path_for(normalized)
@@ -230,7 +232,10 @@ class LocalArtifactStore(ArtifactStore):
             if not path.is_file() or path.is_symlink():
                 continue
             relative = path.relative_to(source).as_posix()
-            self.put_bytes(f"{normalized}/{relative}", path.read_bytes())
+            key = f"{normalized}/{relative}"
+            self.put_bytes(key, path.read_bytes())
+            if written is not None:
+                written.append(normalize_key(key))
             count += 1
         return count
 

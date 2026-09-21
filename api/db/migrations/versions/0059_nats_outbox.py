@@ -1,7 +1,7 @@
 """NATS outbox: publications the broker refused, kept until they are on the stream
 
 Revision ID: 0059_nats_outbox
-Revises: 0057_endpoint_agent_management
+Revises: 0058_job_ingest_lease
 Create Date: 2026-09-21
 
 One new table, additive, with no backfill and no contract phase — there is no
@@ -11,17 +11,15 @@ never written down.
 The table is what is to let NATS leave ``health.BLOCKING_CHECKS`` (P2 of
 ``docs/architecture-review-2026-09-18.ru.md``). Without it, a broker outage with
 readiness relaxed means uploads answered 200 whose ingest message goes nowhere,
-with nothing to replay and nothing an operator can see;
-``results_ingest.publish_raw_results`` returns ``published=false`` and its
-caller ignores it. A row here is that refusal made durable, and the reconciler
-in ``api/services/nats_outbox.py`` drains it when the broker is back.
+with nothing to replay and nothing an operator can see. A row here is that
+refusal made durable, and the reconciler in ``api/services/nats_outbox.py``
+drains it when the broker is back.
 
-The table is created empty and, as of this revision, stays that way:
-``jobs.complete_job`` does not call the recorder yet (it is being rewritten by
-the job-fencing change), so the migration is ahead of its writer. That is
-harmless for the schema — nothing reads the table either — but it means an
-installation on this revision has the relaxed readiness policy without the
-recovery it was traded for.
+Its writer is ``run_publisher._publish_to_bus``, the last step of an accepted
+run's publication (``0058_job_ingest_lease``): the bus hop either lands or
+becomes a row here, so the publication closes either way and the run's own
+projections are not held hostage to the broker. Rows appear only while NATS is
+refusing, so an installation with a healthy broker never has one.
 
 Rolling upgrade is safe in both directions of the deploy: the migration runs
 before any replica starts, and an old replica simply never reads or writes the
@@ -55,7 +53,7 @@ revision: str = "0059_nats_outbox"
 # The predecessor guessed a revision id that does not exist, which made
 # ``alembic upgrade head`` fail on map construction — that is, no migration
 # applied, not just this one. Re-point at 0058_job_ingest_lease on the merge.
-down_revision: Union[str, None] = "0057_endpoint_agent_management"
+down_revision: Union[str, None] = "0058_job_ingest_lease"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -73,10 +73,138 @@ claimed | running ──→ queued                      (eligible expired sensor
 Sensor result uploads can carry both an idempotency key and the claim `attempt`.
 The API checks the attempt against the current claim when completion starts;
 uploads arriving with an already superseded attempt are rejected. The field is
-optional for legacy sensors. This entry check does not fence the entire ingest:
-archive processing happens outside that transaction, and the final status write
-does not recheck the attempt. See the dated [architecture review](architecture-review-2026-09-18.ru.md)
-for the concurrent lease-expiry scenario and proposed validation.
+optional for legacy sensors.
+
+The entry check is not the fence. Archive processing happens outside that
+transaction and can outlast the lease, so the first transaction also takes an
+**ingest lease** on the row: `ingest_token`, `ingest_attempt`, `ingest_agent_id`
+and `ingest_started_at`, plus `claimed_until` pushed out by
+`OCTO_JOB_INGEST_LEASE_SECONDS` — an upload being processed is proof of life,
+and the sensor keeps heartbeating (`stage=uploading`) for the whole transfer.
+The terminal status write is conditional on `(job_id, attempt, owner, ingest
+token)` still matching; if the lease lapsed and the reaper gave the job to
+another attempt, the upload is refused with `409` and the sensor reports a
+rejected result rather than a failed upload.
+
+Artifacts follow the same boundary, and they do not cross it at all. An upload
+is extracted into a staging directory named after its ingest token, beside the
+run directory rather than inside it, and nothing there is visible to any
+listing, key prefix or subject. The terminal write is the commit point: it
+records the outcome **and**, in the same transaction, one `run_publications`
+row saying this run is accepted and owed its publication. So an upload the
+fence refuses leaves nothing behind — no run directory, no store keys, no bus
+message, no row — and an upload that is accepted cannot be forgotten.
+
+Everything that makes the run visible is then done from that row by
+`api/services/run_publisher.py`: the tenant marker into the staging tree, the
+tree into the object store, the tree into the run directory, the latest-run
+pointer, then `ingest.results.{tenant}`. It runs first in the request that
+accepted the upload, so an ordinary upload is answered with the run already
+published; a failure there does not fail the request, because the outcome is
+committed and what is left undone is a row. A reconciler in every replica
+retries it with exponential backoff up to `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS`,
+and each step is idempotent and resumable from what is on disk, so a replica
+killed halfway is a retry rather than a repair. The archive is kept beside the
+staging tree because the bus message's `Msg-Id` is its digest: a republish has
+to be the same message, not a second ClickHouse insert for one scan.
+
+Two things this is deliberately *not*. It is not the publication ordered
+before the status write — that left the whole publication outside the fence,
+so a lease lapsing during a large `upload_tree` produced a run directory with
+two attempts' files in it (`promote_staging` merges) and two bus messages under
+one run id. And it is not the publication ordered after it — that left a store
+outage permanent, since the job read `succeeded` while the artifacts were
+nowhere and the sensor's retry is answered as a replay of that outcome. Both
+were shipped in turn; the record is in the dated
+[architecture review](architecture-review-2026-09-18.ru.md).
+
+One accepted upload is one publication. The row is inserted due immediately,
+so the accepting request claims it with `FOR UPDATE SKIP LOCKED` and holds it
+out of the due window, exactly as a reconciler tick holds the batch it claimed
+— otherwise the next tick in any replica would find the row due and publish it
+alongside the request. The hold is a floor and not a guess at the work: a
+running publication **renews** it every few seconds, so a tree that takes ten
+minutes is held for ten minutes, and a replica that dies stops renewing and
+gives the row up one horizon later. That renewal is also the row's proof of
+life — see the orphan deadline below.
+
+Should the race happen anyway (a renewal that never reached the database, two
+pods whose clocks disagree), the side that loses is harmless rather than
+destructive: a failed upload rolls back **the keys it wrote itself**, and only
+while nothing has yet put the run's tree in the store. Taking the run's whole
+`runs/<run_id>/` prefix, as this first did, deletes a run somebody else has
+just published — and while run ids were minted from a one-second clock,
+somebody else's run entirely. Run ids minted by the API now carry a random
+suffix as well as the timestamp.
+
+The fence for that second condition is `run_publications.stored_at` and not the
+row itself. The winner promotes the staging tree and only *then* ships the
+archive to the broker, so the row that owes the publication outlives the moment
+the run became readable by the length of that upload — and that is precisely
+when the loser finds its staging tree gone and decides what to do with the keys
+it had written. So the transfer stamps the row before it promotes the tree, and
+a rollback that sees a stamp leaves the store alone.
+
+The stamp goes on when the winner's *whole* tree is up, so for the length of
+that upload it is honestly absent while the winner's keys — the same key names
+the loser wrote — are already landing. A loser whose own store refused it
+halfway would take those back out. So the rollback reads the claim counter as
+well: every attempt claims the row before it touches the store, which makes the
+other attempt visible from its first key rather than from its last.
+
+The same two facts answer "is this run already in the store" for a replica that
+has no staging tree of its own to upload. A listing alone says yes to the first
+key of an upload still in progress, and a stamp alone is an upload that
+finished without the local backend's promotion having moved anything, so a peer
+adopting a row mid-tree would either publish a half-written run or condemn one
+its owner is still working on. Both must be true: some attempt stamped the row,
+and the store has the result.
+
+Attempts are counted where a publication fails, not where its row is claimed,
+so a replica killed mid-batch does not write one off for every row it was
+holding. Claims are counted separately, for the other end of the same
+argument: a tree large enough to kill the replica publishing it would
+otherwise be claimed, die, and be claimed again forever, with nothing counting
+anything. Past twice the permitted attempts in claims without one of them
+reaching an outcome, the row is `dead` like any other.
+
+A run that cannot be published at all is the bounded end of this. Past
+`OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` the row stays `dead` — as it does past
+`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` of *silence* for a row whose
+staging tree is on a replica that is gone, which with the artifact cache on an
+`emptyDir` is what a scaled-down pod leaves behind. Silence, not age: the
+deadline runs from the last time some replica was demonstrably working on the
+row (a renewal, or a recorded failure), so a pod that is alive and retrying a
+slow store is not condemned by a peer that cannot see its disk. Either way:
+`/api/health` reports
+`run_publications` (advisory — `/readyz` is unaffected),
+`octo_run_publication_backlog{status="dead"}` rises, the job's `error` says the
+run was not published, and the extracted tree stays on the accepting replica's
+disk for 24 hours so an operator can publish it by hand or re-scan (a run whose
+replica is gone has only the second of those, and the runbook says so). A
+publication that failed partway through the object store takes its own keys
+back off before the failure is recorded, so a `dead` row does not normally
+leave a half of a run for the other replicas to list and open. *Normally*: the
+store that refused the upload can refuse the cleanup too, and then the half
+stays. It is not silent — the row's reason and the note on the job both say the
+run may be listed with files missing from it — but it is a case an operator
+has to finish by hand. The
+projections that read a published run — assets, vulnerabilities, asset events,
+notifications — run when the publication lands, not when the job finishes, and
+they cannot fail it: a failure there is recorded in the job's `error`.
+
+A staging tree an ingest never finished is collected the next time this
+replica takes a staging directory: past one hour of inactivity for a killed
+fetch's debris, and past 24 hours for an ingest tree, which is a complete run
+somebody may still want rather than a partial transfer.
+
+The `409` on the results route carries `X-Result-Rejection`, because three
+different things share the status: `stale-attempt` (the job moved on),
+`conflict` (a second completion that disagrees with the first) and `in-flight`
+(the sensor's own earlier upload is still being ingested). Only the first two
+mean the result was declined. A sensor waits `OCTO_AGENT_UPLOAD_TIMEOUT` for
+the answer, which must cover an ingest — the API replies when the ingest is
+done, not when the bytes are in.
 
 Result ingestion itself runs on a worker thread, not on the API's event loop,
 and behind an admission gate (`api/services/ingest_gate.py`): a bounded number

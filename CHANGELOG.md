@@ -6,22 +6,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
-- **An outbox for ingest publications the broker refuses — built, not yet
-  connected.** `results_ingest.publish_raw_results` returns `published=false`
-  when NATS is unreachable and nobody checks the flag: the sensor's upload is
-  answered `200`, the artifacts are written, the job succeeds, and the message
-  that feeds the ClickHouse projection is gone with nothing left to replay it
-  from. The new `nats_outbox` table (migration `0059`) and its reconciler
-  thread — rows claimed `FOR UPDATE SKIP LOCKED`, retried with capped
-  exponential backoff, deleted once the stream has them — are the machinery to
-  fix that, and are covered by tests. **`jobs.complete_job` does not call them
-  yet**: switching that call site is blocked on the job-fencing change
-  rewriting `api/services/jobs.py`, so today the table stays empty and a broker
-  outage still loses the message. An entry that exhausts
+- **An outbox for ingest publications the broker refuses.** A run's
+  publication ends on the analytics bus (`run_publisher._publish_to_bus`), and
+  a broker that is down used to fail the whole publication: the row was
+  retried, went `dead` after `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (about eight
+  minutes of outage), and the run's own Postgres projections — assets,
+  findings, the notification — never ran either, because they are the last
+  step after the bus. The bus step now publishes *or* writes the message down
+  in the new `nats_outbox` table (migration `0059`), and its reconciler thread
+  — rows claimed `FOR UPDATE SKIP LOCKED`, retried with capped exponential
+  backoff, deleted once the stream has them — lands it when NATS comes back.
+  The publication itself closes either way, so a broker outage now costs the
+  analytical projection its latency and nothing else. The two mechanisms do not
+  overlap: `run_publications` owns the store, the run directory, the pointer
+  and the projections; `nats_outbox` owns exactly the last hop, and only for
+  messages the broker has refused. An entry that exhausts
   `OCTO_NATS_OUTBOX_MAX_ATTEMPTS`, or whose archive was over the inline cap and
   so has no body to replay, goes `dead` and waits for an operator
-  (`nats_outbox.requeue_dead`, `nats_outbox.discard_dead`). New variables
-  `OCTO_NATS_OUTBOX_ENABLED`, `_INTERVAL_SECONDS`, `_BATCH_SIZE`,
+  (`nats_outbox.requeue_dead`, `nats_outbox.discard_dead`). With
+  `OCTO_NATS_OUTBOX_ENABLED=false` there is nothing to write the message down
+  in, so the bus step fails as before and the publication carries the loss —
+  the one configuration in which a refused publish still costs a run. New
+  variables `OCTO_NATS_OUTBOX_ENABLED`, `_INTERVAL_SECONDS`, `_BATCH_SIZE`,
   `_MAX_ATTEMPTS`, `_RETRY_BASE_SECONDS`, `_RETRY_MAX_SECONDS`,
   `_BACKLOG_ALERT_SECONDS`, `OCTO_NATS_INGEST_DEDUPE_SECONDS`; new metrics
   `octo_nats_outbox_backlog{status}` and `octo_nats_outbox_total{kind,outcome}`;
@@ -33,7 +39,232 @@ All notable changes to Shapoclyack are documented in this file.
   retention), as `EVENTS` already did. JetStream's 2-minute default is shorter
   than a single outbox backoff, so a publish whose ack timed out after the
   server had stored it would have been accepted a second time on replay and
-  ingested twice.
+  ingested twice. A run's `Msg-Id` is derived from its archive digest, so the
+  window is what makes "republish the same run" a duplicate the stream drops
+  rather than a second insert.
+
+### Fixed
+
+- **A result from a replaced attempt can no longer finish somebody else's
+  scan.** `complete_job` checked the claim's `attempt` and the owning sensor in
+  its first transaction and then spent the ingest — archive extraction,
+  artifact writes over the network, projections — outside any transaction; its
+  terminal write took the row lock again but compared nothing, so a lease that
+  lapsed in that window, plus a reaper that requeued the job and a second
+  attempt that claimed it, left the first attempt free to write
+  `claimed/running → succeeded` on the new attempt's job and publish its own
+  archive over the run being produced. The first transaction now takes an
+  **ingest lease** (`jobs.ingest_token`, `ingest_attempt`, `ingest_agent_id`,
+  `ingest_started_at`; migration `0058_job_ingest_lease`) and the terminal
+  write is conditional on `(job_id, attempt, owner, ingest token)`. A stale
+  result is refused with `409` and the sensor logs a rejected result rather
+  than a failed upload.
+- **An accepted run is published from a durable record, not in a call order.**
+  Uploaded artifacts are extracted into a staging directory named after the
+  ingest lease — invisible to every listing, key prefix and subject — and the
+  terminal write inserts one `run_publications` row in the *same* transaction
+  (migration `0058_job_ingest_lease`). Everything that makes the run visible
+  (object store, run directory, `latest_run.json`, `ingest.results.{tenant}`)
+  is then done from that row: in the request that accepted the upload, and by
+  a reconciler in every replica if that does not succeed. Tested: an upload
+  the fence refuses leaves no run directory, no entry in the store listing, no
+  message on the ingest bus, no publication row and nothing on disk; a reaper
+  that fires in the middle of the publication can neither mix two attempts'
+  files in one run directory nor put two messages on the bus under one run id.
+
+  Both orders shipped earlier were wrong in opposite directions. Publishing
+  *before* the terminal write left the whole publication outside the fence: a
+  lease that lapsed during a large `upload_tree` had the job requeued, the
+  terminal write refused, and nothing rolled back — the run directory held
+  both attempts' files (`promote_staging` merges) and ClickHouse got two
+  inserts under one run id. Publishing *after* it left a store outage
+  permanent: the job read `succeeded`, the artifacts were nowhere, and the
+  sensor's retry was answered as a replay of that outcome.
+- **A store or broker failure now costs the run its visibility, not its
+  existence.** The upload is accepted, the extracted tree and the archive stay
+  on the accepting replica's disk, and the publication is retried with
+  exponential backoff up to `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (default 5,
+  about eight minutes). Past that the row stays `dead` and says so in three
+  places: `/api/health` (`run_publications`, advisory — `/readyz` is
+  unaffected), `octo_run_publication_backlog{status}` /
+  `octo_run_publications_total{outcome}`, and a note on the job's own `error`.
+  The extracted tree is kept for 24 hours rather than the hour a killed
+  fetch's debris gets, so the choice between publishing it by hand and
+  re-scanning is an operator's. A replica killed between the outcome and the
+  publication is the same case: the row is due, and the next tick finishes it.
+- **An accepted run is published once, by whichever side got there first.**
+  The row is inserted due immediately, so the accepting request now *claims*
+  it — `FOR UPDATE SKIP LOCKED` and the same due-window hold a reconciler tick
+  takes — before spending minutes on the store and the broker. Without that,
+  any replica's next tick found the row due and published it in parallel: two
+  messages on `ingest.results`, two projections, two notifications for one
+  scan, and an `upload_tree` racing the `rmtree` that promotes the tree, with
+  the loser's failure swallowed because the winner had already deleted the row.
+- **A publication nobody can finish now ends `dead` instead of circulating
+  forever.** A row's staging tree is on the accepting replica's disk, and in
+  the HA overlay that disk is an `emptyDir` — so a row left behind by a pod the
+  autoscaler removed is one *no* replica can ever publish. It was claimed and
+  given back every adoption window indefinitely, with the job saying
+  `succeeded`, no artifacts behind it, `/api/health` green (only `dead` counts)
+  and nothing in the job's `error`: the exact failure this release closes,
+  made permanent and silent. Past
+  `OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` (1h) the row is `dead` with
+  the reason on it and the usual three-way visibility.
+- **A publication that loses a race no longer deletes the run that won it.**
+  The rollback of a half-finished upload took the run's whole
+  `runs/<run_id>/` prefix, so a second attempt failing after a first one had
+  published the whole run deleted every key of it — for every replica, with the
+  job still `succeeded`, the row already gone, `/api/health` green and nothing
+  said anywhere. A rollback now removes **the keys that attempt wrote itself**
+  (collected as they land, because the return value of `upload_tree` is lost
+  with the exception that raised), and only while nothing has put the run's
+  tree in the store yet. That last condition is `run_publications.stored_at`,
+  stamped as the transfer finishes and before the staging tree is promoted
+  (migration `0058_job_ingest_lease`), rather than the existence of the row:
+  the winner deletes the row only after shipping the archive to the broker, so
+  a loser reading the row would spend that whole upload believing nothing had
+  been published — which is exactly the window in which it wakes up on the
+  staging tree the winner has just moved away.
+
+  The stamp goes on when the winner's *whole* tree is up, so it is absent for
+  the length of that upload while the winner's keys — under the same names the
+  loser wrote — are already landing, and `only the keys this attempt wrote` is
+  no defence against that. A loser whose own store started refusing it halfway
+  through, which is the failure the rollback exists for, therefore deleted
+  files out of the run the winner was still publishing: the run came out short
+  with the job `succeeded`, no row owing it and the backlog gauge empty. The
+  rollback now also requires that the row has not been claimed since this
+  attempt claimed it — every attempt claims before it touches the store, so the
+  other one is visible from its first key rather than from its last.
+- **A replica no longer calls a run published while another is still uploading
+  it.** "Is this run's tree already in the store", asked of a replica with no
+  staging tree of its own, was answered by a listing — true from the *first*
+  key of an upload in progress. A peer that adopted the row of a replica which
+  had merely stopped renewing its hold therefore skipped the upload of a
+  half-written tree, put the run on the bus and deleted the row: every replica
+  listed a run with most of it missing, and nothing owed it any more, so the
+  owner's own failure a moment later had nowhere left to be recorded. The
+  question now needs both `stored_at` and the listing — some attempt carried
+  the whole tree up, and the store has the result — and a peer that gets `no`
+  hands the row back to the replica that is working on it instead of
+  publishing or condemning it.
+- **A publication holds its row for as long as it takes, not for a minute.**
+  The claim pushed the row 60 seconds out of the due window while the docstring
+  beside it called the work "minutes of store and broker work" — so a tree that
+  took longer was found due by the next tick in any replica and published a
+  second time alongside the first: two messages on `ingest.results`, two
+  notifications, two projections. The hold is now renewed every few seconds
+  while the work runs, so the constant only has to cover the gap between two
+  renewals, and a replica that dies stops renewing and gives the row up one
+  horizon later. The race test is parametrised by how far into the publication
+  the tick lands (it only ever tested the first instant).
+- **A run id is unique again.** `%Y%m%dT%H%M%SZ` is one second wide, so two
+  jobs claimed inside the same second were handed the same id: their artifacts
+  merged into one run directory and one key prefix — across tenants, since the
+  prefix carries no owner yet (#311) — and a failed publication of either could
+  take the other's keys with it. Ids minted by the API now carry a six-hex
+  suffix after the timestamp; the clock still leads, so the run listing's
+  ordering is unchanged. (`scanner.main` run outside the API still mints the
+  bare timestamp.) The console's command palette recognises both shapes, so a
+  run id pasted from a report or a toast still offers *Open run* rather than a
+  vulnerability search.
+- **A publication that keeps killing the replica publishing it now ends
+  `dead`.** Counting an attempt at the claim was wrong — five OOM restarts must
+  not condemn a batch the store never refused — and removing it left the
+  symmetric hole: a tree large enough to reach the pod's memory limit was
+  claimed, killed the replica before anything was recorded, and was claimed
+  again one horizon later, forever, with `attempts` unmoved, `/api/health`
+  green and `jobs.error` empty. Claims are counted now (`run_publications.claims`,
+  migration `0058_job_ingest_lease`); past twice the permitted attempts without
+  one of them reaching an outcome the row is `dead` with the reason on it. A
+  claim a peer hands straight back is given back, and any recorded outcome
+  resets the count.
+- **A peer no longer condemns a row its owner is still publishing.** The orphan
+  deadline ran from `created_at` — from the acceptance of the upload — so an
+  installation that raised `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` to ride out a
+  long store outage had its rows declared *the replica that accepted this
+  upload is gone* by a peer that cannot see the tree, milliseconds after the
+  owner last touched them, and the runbook then told the operator to re-scan a
+  run whose tree was on a running pod's disk. The deadline runs from
+  `updated_at` — the last renewal or recorded failure — and the runbook says to
+  check `staging_path` before believing there is nothing to load by hand.
+- **A tree that went up by halves no longer stays in the bucket.**
+  `upload_tree` writes a key at a time and a run listing is the children of
+  `runs/`, so a store that started refusing mid-tree left a run every replica
+  could list and open with files missing from it — while the job said the run
+  was not published. The partial prefix is now removed before the failure is
+  recorded, so a retry starts from nothing and a `dead` row costs the run its
+  visibility rather than leaving a half of one that reads as whole. When the
+  outage that refused the upload refuses the cleanup as well, the half does
+  stay — the row's reason and the note on the job now say so, rather than the
+  architecture document claiming it cannot happen.
+- An attempt is now counted where a publication fails, not where its row is
+  claimed. A tick claims up to ten rows in one transaction and publishes them
+  afterwards, so a replica the OOM killer took down mid-batch used to write off
+  one attempt per row per restart: five restarts left a batch `dead`, blaming a
+  store that had never been asked.
+- A retried publication carries the same `Msg-Id`, not a new one: the archive
+  is kept beside the staging tree so the republish sends the digest the id is
+  derived from. Re-packing the run directory would have produced a different
+  one, i.e. a second ClickHouse insert for one scan with nothing able to tell.
+  Whether JetStream then *drops* the duplicate is the `INGEST` stream's
+  business, and that stream now sets a `duplicate_window` wide enough to cover
+  both retry schedules (see *Added* above), so the duplicate is dropped rather
+  than merely recognisable.
+- The run's `tenant.json` is written into the staging tree, so both copies
+  carry their owner from the moment either can be read. A run without it reads
+  back as the **default tenant** — one tenant's scan in every tenant's run
+  list — and the marker used to be written after the run was published, where
+  a failure in between left that state for good.
+- Nothing after the terminal write can fail the request: the projections and
+  notifications are wrapped, and a failure there is recorded in the job's
+  `error`. A non-`OSError` from the publication used to escape after the
+  outcome was committed — `succeeded` with `error=NULL`, `500` to the sensor,
+  and the sensor left marked busy on a job that had finished.
+- A failed ingest gives the job back on the ordinary `OCTO_JOB_LEASE_SECONDS`
+  instead of holding it for the full `OCTO_JOB_INGEST_LEASE_SECONDS`. The
+  sensor does not resend a refused upload, so the reaper is the only thing that
+  moves the job on, and it was waiting out a window reserved for an ingest that
+  had already ended.
+- **A cancellation being confirmed is no longer written off underneath the
+  sensor.** `cancelling` is covered by neither timer — the lease reaper stays
+  out of it deliberately, and the grace period runs from the operator's click —
+  so a sensor that signalled its scanner and spent the grace period pushing the
+  partial archive up a narrow link had `reap_stale_cancellations` close the row
+  mid-ingest: its terminal write refused as `cancelled → cancelled`, and the
+  partial run dropped, while an upload arriving *later* was kept. The reaper
+  now passes over a job with an ingest lease open inside
+  `OCTO_JOB_INGEST_LEASE_SECONDS`; a stale lease from a dead replica still does
+  not hold a stop open.
+- **A stop is no longer held for 15 minutes by an ingest nobody is running.**
+  Passing a stopping job over while an ingest is open means a replica killed
+  mid-upload holds it for the whole `OCTO_JOB_INGEST_LEASE_SECONDS` (900s)
+  rather than the `OCTO_JOB_CANCEL_GRACE_SECONDS` (300s) the operator was
+  promised — nothing clears that marker for a row in `cancelling`, because the
+  lease reaper takes in-flight rows only. Pressing stop a second time past the
+  **ingest lease** now drops the hold (audited, and an upload still in flight
+  for it is then refused as stale); a marker younger than the lease is left
+  alone, so a slow branch office does not lose the partial archive it is
+  delivering. The bound was the cancellation grace (300s) at first, which is
+  shorter than the lease an upload actually runs on (900s, the sensor's own
+  upload timeout): a live upload six minutes in was indistinguishable from a
+  marker a dead replica left behind, and a second press destroyed it —
+  staging tree, archive and all — with nothing on the job to say so.
+  Before this, the second press was a no-op with nothing in the answer to say
+  why the scan would not die.
+- The `409` on `POST /api/agent/jobs/{job_id}/results` carries
+  `X-Result-Rejection`: `stale-attempt`, `conflict`, or `in-flight` for the
+  sensor's own earlier upload still being ingested. The sensor used to read all
+  three as "the API rejected the result" and drop the run — reached by its own
+  60s client timeout on an ingest the API is allowed to spend 900s on, which
+  also made it resend the whole archive. The upload now waits
+  `OCTO_AGENT_UPLOAD_TIMEOUT` (default `900`) for the answer.
+- The sensor keeps heartbeating (`stage=uploading`) while the result is
+  transferred and ingested; it used to go silent for the whole of it. The API
+  side matches: reserving the ingest pushes `claimed_until` out by
+  `OCTO_JOB_INGEST_LEASE_SECONDS` (default 900), and lease renewals now only
+  ever move a deadline forward, so a heartbeat cannot shorten the window an
+  ingest reserved.
 
 ### Changed
 
@@ -48,17 +279,44 @@ All notable changes to Shapoclyack are documented in this file.
   publications the outbox above has not recovered — because availability must
   not hide analytics falling behind. The two are one decision: NATS must not go
   back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not
-  be removed while NATS is advisory. **Note the ordering risk in this
-  release:** the relaxation is in effect while the outbox's call site is not,
-  so an ingest message refused during a broker outage is currently lost with no
-  probe reporting it. An installation that cannot accept that should keep NATS
-  highly available, or put it back into `BLOCKING_CHECKS`, until
-  `jobs.complete_job` is switched over.
+  be removed while NATS is advisory.
 
 - `nats_bus.publish_ingest` now reports success only when both the tenant
   subject and the legacy `ingest.raw_results` subject accepted the message. The
   legacy result was discarded, so a partial publish read as a full one — which
   the outbox would have taken as "nothing to record".
+
+
+- **The Pulse binary is pinned by digest, and the image builds without it.**
+  `scripts/pulse-pinned.sha256` now holds the reviewed SHA-256 of each
+  platform's GenDec release tarball, and `scripts/install-pulse.sh` checks the
+  download against that committed value instead of against a `checksums.txt`
+  fetched from the same release. The old check proved a download was not
+  corrupted; it could not detect a rewritten release, which matters for a
+  binary that gets `cap_net_raw,cap_net_admin` on every sensor host.
+  `PULSE_SKIP_CHECKSUM=1` no longer applies to a pinned version, and
+  `tests/test_pulse_supply_chain.py` fails a `PULSE_VERSION` bump that does not
+  bump the pins or that lands in only some of the four files declaring it.
+  `--build-arg INSTALL_PULSE=0` builds `Dockerfile` / `Dockerfile.allinone`
+  with no Pulse and no GitHub token at all, for anyone without access to the
+  private `onixus/GenDec`; such an image must run `service_probe.backend:
+  nmap`, and the scanner now says exactly that (and how) when the binary is
+  missing rather than failing with a bare install hint. `docs/third-party.md`
+  states that GenDec is private and what that costs a supply-chain review.
+  Signed releases and the public-releases-vs-vendoring decision stay open in
+  #340.
+
+- **Release provenance is checked when a Pulse digest is pinned.** GenDec now
+  signs each release's `checksums.txt` with cosign in keyless mode, and
+  `scripts/pulse-pin.sh` verifies that signature — against GenDec's release
+  workflow on that exact tag, not merely against "somebody" — before printing
+  the lines to paste into `scripts/pulse-pinned.sha256`. An unsigned release is
+  refused unless `PULSE_PIN_ALLOW_UNSIGNED=1`, which is how the `v1.1.0` pins
+  were taken, since signing landed in GenDec after that release. The install
+  path deliberately does not check a signature: on the pinned path the digest
+  committed here already beats anything fetched from the release being
+  installed, and the images carry no cosign. The GitHub-release plumbing shared
+  by the installer and the helper moved to `scripts/pulse-release-lib.sh`.
 
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`
   — SQL, the NATS publish, archive extraction, artifact writes, projection
@@ -71,6 +329,29 @@ All notable changes to Shapoclyack are documented in this file.
   retries, and its idempotency key makes the retry a replay. New metrics:
   `octo_agent_ingest_in_flight`, `octo_agent_ingest_waiting`,
   `octo_agent_ingest_rejected_total{reason}`.
+
+- **CI runs one set of checks, not two that drift.** Lint, the test run, the
+  web-next gate and the Semgrep scan moved into `scripts/ci-lint.sh`,
+  `scripts/ci-pytest.sh`, `scripts/ci-web.sh` and `scripts/ci-semgrep.sh`,
+  which the `Jenkinsfile` and `.github/workflows/ci.yml` both call. The Ruff
+  version is now read out of `requirements-dev.txt` instead of being pinned in
+  each pipeline (they had drifted to `0.15.22` and `0.15.20`), and the script
+  refuses to lint with a different one, so "clean locally" means "clean in CI"
+  rather than "probably". Lint covers the whole tree instead of a package list
+  that had already lost `agent/` and every `scripts/*.py`; both READMEs now
+  name the same script rather than a `ruff check .` of their own. The reference
+  workflow gained the Semgrep job and the Prometheus-rules validation it was
+  missing, `scripts/ci-semgrep.sh` takes the host path to mount and refuses to
+  scan a mount that does not hold the repository, and `tests/test_ci_checks.py`
+  fails if a pipeline or a README goes back to spelling any of this out itself.
+- **A green test run has to have run the integration suites.** With
+  `OCTO_REQUIRE_INTEGRATION=1` (set by `scripts/ci-pytest.sh`),
+  `tests/integration_gate.py` refuses a session that has no
+  `OCTO_POSTGRES_URL` / `OCTO_NATS_URL` before collection, and fails one where
+  a gated suite was recognised in no test, was skipped anyway, or had tests
+  collected and never executed — a `-k` or `-m` selection included. The
+  Postgres-gated suites are most of what proves tenant isolation and row
+  locking, and until now exit code 0 said nothing about either.
 
 ### Documentation
 

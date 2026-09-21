@@ -1,0 +1,33 @@
+# Pinned SHA-256 of the GenDec Pulse release tarballs this repository builds
+# against. This is the provenance anchor that `checksums.txt` on the release
+# cannot be: that file travels over the same connection from the same release
+# as the tarball, so it catches a corrupted download, not a rewritten release.
+# These values are committed here, reviewed in a pull request, and verified by
+# scripts/install-pulse.sh before anything is unpacked.
+#
+# The binary this pins receives cap_net_raw,cap_net_admin in the images
+# (Dockerfile), so a swapped pulse is root-equivalent on a sensor host. Treat a
+# change to this file as a security review, not a version bump.
+#
+# Bumping PULSE_VERSION means bumping these in the same commit:
+#
+#   GITHUB_TOKEN=... scripts/pulse-pin.sh v1.2.0
+#
+# That verifies GenDec's cosign signature over the release's checksums.txt
+# before printing anything, and prints the lines to paste here. It refuses a
+# release with no signature unless PULSE_PIN_ALLOW_UNSIGNED=1.
+#
+# The v1.1.0 lines below were taken with that override: v1.1.0 predates signing
+# in GenDec, so they rest on the download plus a cross-check between the
+# release's own checksums.txt and the digests GitHub computed on upload (two
+# independently computed values that agreed). The next bump should land on a
+# signed release.
+#
+# tests/test_pulse_supply_chain.py fails if this file and the PULSE_VERSION
+# defaults in install-pulse.sh / Dockerfile / Dockerfile.allinone drift apart.
+#
+# Format: <version> <platform> <sha256>   (# and blank lines ignored)
+v1.1.0  linux-amd64   25f2f24ecd77d62640776fdcab23ff8cfd2faf2b04ed621f4695da988bf5b2c9
+v1.1.0  linux-arm64   9d711b599815703d8198b70ff39d40327b3ab940e00ad9f2714ad99125e48c73
+v1.1.0  darwin-amd64  c344b11813ad46d6d43cf24bf74bfceec3df472fc47bcd821ca215fbf8e7f85b
+v1.1.0  darwin-arm64  2a82c4ad4841d18c871b4015a991ec7ca26d784972bd3542216a86fc45eab8dd

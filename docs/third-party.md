@@ -40,13 +40,47 @@ is the scanner image, so the same choice applies to every sensor host.
 | Nmap | Debian package | Nmap Public Source License v0.95 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; review commercial/OEM redistribution restrictions before redistributing that tag |
 | Naabu | `v2.6.1` (`NAABU_VERSION`) | MIT | ProjectDiscovery |
 | DNSx | `v1.2.3` (`DNSX_VERSION`) | MIT | ProjectDiscovery |
-| Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.1.0`) | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image |
+| Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.1.0`) + per-platform sha256 pinned in `scripts/pulse-pinned.sha256` | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image. **`onixus/GenDec` is a private repository** — see the note below |
 | Nuclei | `NUCLEI_VERSION` build argument (currently `v3.11.1`) | MIT | Pin tool and templates |
 | DejaVu Sans | Debian package `fonts-dejavu-core` (API and all-in-one images); a 27 KB Latin+Cyrillic subset in `tests/fixtures/fonts/` | Bitstream Vera licence + public domain (DejaVu changes) | Unicode face for PDF reports (`api/services/reports/render.py`); without it the renderer falls back to fpdf2's Latin-1 core fonts. The subset is a test fixture only, not shipped in any image |
 | Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
 | nuclei-templates | Git reference (`NUCLEI_TEMPLATES_REF`, currently `v9.9.4`) | MIT | Template content has its own provenance |
 | nmap-vulners | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE vulnerability lookup |
 | Vulscan | Git reference (`VULSCAN_REF`, pinned commit) | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE scripts and local data |
+
+**Pulse comes from a private repository.** `onixus/GenDec` is not public, so
+a `docker build` of `Dockerfile` or `Dockerfile.allinone` needs a GitHub token
+with `contents:read` on it (`--secret id=github_token,…`), and a reviewer
+outside this organisation cannot read the source of the component that does
+service, OS and CVE detection on the default path. Two things reduce, but do
+not remove, what that costs:
+
+- The tarball is verified against a sha256 committed in this repository
+  (`scripts/pulse-pinned.sha256`), not against a checksum file fetched from the
+  same release. Bumping `PULSE_VERSION` without bumping the pin fails
+  `tests/test_pulse_supply_chain.py`, and `PULSE_SKIP_CHECKSUM=1` cannot turn
+  the check off for a pinned version.
+- Each GenDec release ships an SPDX SBOM (`pulse-<version>.spdx.json`) covering
+  Pulse's own dependency tree.
+- GenDec signs each release's `checksums.txt` with cosign in keyless mode.
+  `scripts/pulse-pin.sh` verifies that signature against GenDec's release
+  workflow on that tag before printing a digest to pin, so provenance is
+  checked at the moment a new version enters this repository. The `v1.1.0`
+  pins predate signing and were taken with `PULSE_PIN_ALLOW_UNSIGNED=1`.
+
+What that still does not give: the signature proves the release came out of
+GenDec's release workflow, not that the code that went into it was reviewed by
+anyone outside the organisation. For a reviewer who cannot read the repository,
+that remains the gap.
+`--build-arg INSTALL_PULSE=0` builds an image without Pulse and without a
+token; that image has no service-probe backend of its own and must be run with
+`service_probe.backend: nmap` on an `INSTALL_NMAP=1` build — the scanner fails
+the run with an explicit error rather than scanning without services.
+
+Whether to publish GenDec's binary releases publicly (with the SBOM already
+being built) or to vendor the sources into this repository is an open decision,
+tracked in #340; until it is taken, a customer's supply-chain review of the
+default image ends at a repository they cannot read.
 
 **Vulscan's CVE databases no longer come from computec.ch.** Vulscan's own
 `update.sh` downloads its eight CSV databases from `www.computec.ch`, which now

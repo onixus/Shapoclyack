@@ -19,6 +19,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Goal | Authoritative guide |
 |---|---|
 | Evaluate the platform and run a first scan | [Getting started](getting-started.md) |
+| Demonstrate scan → remediation → mechanical re-verification | [Closed-loop remediation demo](demo-remediation-loop.md) |
 | Read the Enterprise Wiki & role scenarios | [Enterprise Wiki (База знаний)](wiki/README.md) 🇷🇺 |
 | Understand components, trust boundaries, and data flow | [Architecture](architecture.md) |
 | Configure scanning, enrichment, and runtime settings | [Configuration](configuration.md) |
@@ -55,6 +56,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | Guide | Scope |
 |---|---|
 | [Getting started](getting-started.md) | Local deployment, target preparation, first scan, validation |
+| [Closed-loop remediation demo](demo-remediation-loop.md) | Promotion/evaluation path from tracked finding to targeted re-scan and verified closure |
 | [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, safe overrides |
 | [Web interface](ui.md) | Current UI routes, tenant context, workflows, screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |

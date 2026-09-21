@@ -4,6 +4,17 @@ The Next.js 14 interface is built as a static export and served by FastAPI in th
 
 This guide documents **current UI behavior**. Planned VM/Exposure Management screens are tracked separately in [ui-ux-redesign-roadmap.md](ui-ux-redesign-roadmap.md).
 
+## Demo screenshot hygiene
+
+Promotion and documentation screenshots must come from a synthetic or explicitly
+authorized lab tenant. For the canonical four-frame remediation story and the
+exact fields that should remain visible, use
+[Closed-loop remediation demo → Visual demo capture plan](demo-remediation-loop.md#visual-demo-capture-plan).
+
+Do not manufacture UI states for documentation. In particular, a screenshot
+claiming a verified closure should show the real finding state/event data produced
+by a completed verification run.
+
 ## Tenant context
 
 The console has a global tenant switcher for users with more than one allowed tenant. The selected tenant is attached to tenant-scoped API requests and changing it clears cached query data so one customer's data is not reused in another tenant view.

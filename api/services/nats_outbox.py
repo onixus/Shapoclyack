@@ -2,21 +2,23 @@
 
 P2 of ``docs/architecture-review-2026-09-18.ru.md``, both halves of it.
 
-**Not connected yet.** ``jobs.complete_job`` still calls
-``results_ingest.publish_raw_results`` directly, so ``publish_ingest_or_record``
-below has no production caller and the table stays empty. The module is
-complete and tested; the call site is blocked on the job-fencing change
-rewriting ``api/services/jobs.py``. Until it is switched, the readiness
-relaxation described below is in force without the recovery that pays for it —
-``tests/test_nats_outbox.py`` carries an ``xfail`` that goes green the moment
-someone wires it up.
-
 **The defect.** ``results_ingest.publish_raw_results`` returns
-``published=false`` when NATS is unreachable, and ``jobs.complete_job`` never
-looked at the flag: the sensor's upload was answered 200, the artifacts were
-written, the job went ``succeeded`` — and the message that feeds the analytical
+``published=false`` when NATS is unreachable, and the upload path never looked
+at the flag: the sensor's upload was answered 200, the artifacts were written,
+the job went ``succeeded`` — and the message that feeds the analytical
 projection was gone, with nothing left to replay it from. The next scan is not
 a recovery: it produces its own run, not the one that was dropped.
+
+**Where it is called from.** ``run_publisher._publish_to_bus``, the last step
+of an accepted run's publication, and nowhere else. That module owns the
+durable intent to publish a run (``run_publications``, migration ``0058``) —
+the store, the run directory, the pointer, the projections — and this one owns
+exactly the hop it ends on. The split is what keeps a broker outage from
+costing the run itself: failing the publication on a refused bus message spent
+its attempts, ended the row ``dead`` and left the run without its assets,
+findings and notification, over a message for ClickHouse. So the hop hands the
+message here and the publication closes. The two reconcilers retry disjoint
+work and never the same row.
 
 **The policy it unblocks.** NATS used to fail ``/readyz`` (``health``'s
 ``BLOCKING_CHECKS``), so a broker outage emptied the Service of every API
@@ -113,9 +115,8 @@ def publish_ingest_or_record(
 ) -> dict[str, Any]:
     """Publish one run's raw results, recording the message if the broker refuses.
 
-    The single entry point ``complete_job`` is to call in place of
-    ``results_ingest.publish_raw_results`` — it does not yet, see the module
-    docstring — with the same arguments, the same
+    The single entry point ``run_publisher`` calls in place of
+    ``results_ingest.publish_raw_results``: the same arguments, the same
     :class:`results_ingest.IngestError` for an archive that does not validate
     (so the caller's translation to a 400 is unchanged), and the same result
     dict with an ``outbox_id`` added when the message was written down instead
@@ -137,6 +138,7 @@ def publish_ingest_or_record(
         tenant_id=tenant_id,
     )
     if result.get("published"):
+        _forget_recorded(settings, subject=str(result["subject"]), msg_id=str(result["msg_id"]))
         return result
 
     payload = results_ingest.build_gateway_payload(
@@ -159,6 +161,46 @@ def publish_ingest_or_record(
         run_id=run_id,
     )
     return {**result, "outbox_id": outbox_id}
+
+
+def _forget_recorded(settings: Settings, *, subject: str, msg_id: str) -> None:
+    """Drop a pending row for a message that has just been delivered anyway.
+
+    The caller of :func:`publish_ingest_or_record` may reach it twice for one
+    message: ``run_publisher`` records the refusal, dies before it can close
+    the publication row out, and the reconciler replays the same hop — which
+    this time the broker accepts. Without this, the row left by the first pass
+    is republished later and the run is on the stream twice. The stream's
+    ``duplicate_window`` would drop the second copy, but only for as long as
+    the window is, and "the same run is published once" should not rest on a
+    broker setting alone.
+
+    Pending rows only. A ``dead`` row is a decision an operator has not made
+    yet, and deleting it here would take the question away rather than answer
+    it — a delivered ``dead`` row is the unreplayable kind, whose body never
+    reached ClickHouse to begin with.
+    """
+    if not settings.nats_outbox_enabled:
+        return
+    with get_session(settings.postgres_url) as session:
+        row = session.execute(
+            select(models.NatsOutboxEntry).where(
+                models.NatsOutboxEntry.subject == subject,
+                models.NatsOutboxEntry.msg_id == msg_id,
+                models.NatsOutboxEntry.status == STATUS_PENDING,
+            )
+        ).scalars().first()
+        if row is None:
+            return
+        outbox_id = row.outbox_id
+        session.delete(row)
+    metrics_service.NATS_OUTBOX_TOTAL.labels(kind=KIND_INGEST, outcome="superseded").inc()
+    LOG.info(
+        "Recorded %s publish %s was delivered by a later attempt of the same message; "
+        "dropping the row rather than republishing it",
+        subject,
+        outbox_id,
+    )
 
 
 def record_failed_publish(
@@ -650,3 +692,4 @@ def reconciler_stats() -> dict[str, int] | None:
     if _RECONCILER is None:
         return None
     return _RECONCILER.stats
+
