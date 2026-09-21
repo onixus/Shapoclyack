@@ -253,6 +253,35 @@ def test_the_shared_scripts_are_executable(name: str):
     assert mode & stat.S_IXUSR, f"scripts/{name} is not executable"
 
 
+# Directories ruff itself never descends into (build output, caches, vendored
+# trees). Everything else is walked, so a `.py` in a new top-level directory
+# counts against the lint scope the moment it appears.
+_WALK_PRUNE = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        "htmlcov",
+    }
+)
+
+
+def _python_files_in_tree() -> list[str]:
+    """Every .py under the repository root, as forward-slash relative paths."""
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [
+            name for name in dirnames if name not in _WALK_PRUNE and not name.startswith(".")
+        ]
+        for filename in filenames:
+            if filename.endswith(".py"):
+                found.append(str(Path(dirpath, filename).relative_to(REPO_ROOT)))
+    return sorted(found)
+
+
 def _ruff_pin() -> str:
     return next(
         line.strip()
@@ -309,16 +338,18 @@ def test_the_lint_scope_leaves_no_tracked_python_file_out(tmp_path: Path):
     targets = [Path(target) for target in argv[1:]]
     assert targets, "ci-lint.sh passed ruff no targets"
 
-    tracked = subprocess.run(
-        ["git", "ls-files", "*.py"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    present = _python_files_in_tree()
+    # Not `git ls-files`: this test has to run in the same containers the suite
+    # runs in, and the one Jenkins uses for the Tests stage has no usable git
+    # (the first version of it died there with returncode 255). A check that
+    # quietly skips wherever its tooling is missing is the exact defect this
+    # branch is about, so it walks the tree itself instead.
+    assert any(path.startswith("scripts/") for path in present), (
+        "the walk found no scripts/*.py — _WALK_PRUNE is pruning too much"
+    )
     uncovered = [
         path
-        for path in tracked
+        for path in present
         if not any(target == Path(".") or Path(path).is_relative_to(target) for target in targets)
     ]
     assert not uncovered, f"outside the lint scope {argv[1:]}: {uncovered}"
