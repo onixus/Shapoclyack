@@ -80,7 +80,7 @@ def prepare_target_inputs(
     counts: dict[str, int] = {}
 
     if policy is not None:
-        extra.extend(["--scan-policy", str(_write_policy_input(inputs_dir, policy))])
+        extra.extend(["--scan-policy", str(write_policy_input(inputs_dir, policy))])
 
     if promoted:
         promoted_path = inputs_dir / PROMOTED_DOMAINS_INPUT
@@ -115,7 +115,7 @@ def prepare_target_inputs(
     return inputs_dir, counts or None, extra
 
 
-def _write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
+def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
     inputs_dir.mkdir(parents=True, exist_ok=True)
     path = inputs_dir / SCAN_POLICY_INPUT
     path.write_text(
