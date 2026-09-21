@@ -53,7 +53,6 @@ from api.services import job_reaper
 from api.services import local_scan_executor
 from api.services import metrics as metrics_service
 from api.services import pagination
-from api.services import promoted_domains
 from api.services import results_ingest
 from api.services import run_completion
 from api.services import run_publisher
