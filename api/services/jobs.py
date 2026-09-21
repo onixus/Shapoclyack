@@ -21,26 +21,17 @@ slices (ROADMAP P1.4-P1.5).
 
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
 import sys
 import threading
-import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
 
 from api.db import models
-from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
-from api.services import agent_groups as agent_groups_service
 from api.services import audit as audit_service
-from api.services import config_override as config_override_service
 from api.services import job_states
 from api.services import job_control
 from api.services import job_dispatch
@@ -53,18 +44,10 @@ from api.services import job_store
 from api.services import job_submission
 from api.services import local_job_runner
 from api.services import local_scan_executor
-from api.services import metrics as metrics_service
 from api.services import pagination
 from api.services import run_completion
 from api.services import run_ids
-from api.services import scan_admission
-from api.services import scan_scopes
-from api.services import tenants as tenants_service
-from api.services import scan_intents
-from api.services import scan_surface
 from api.settings import Settings
-
-_log = logging.getLogger(__name__)
 
 # Compatibility names for the scanner input contract. Layout ownership lives
 # in job_inputs; keeping aliases here avoids breaking existing callers while
