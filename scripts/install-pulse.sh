@@ -11,7 +11,15 @@
 #   PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
 #   GITHUB_TOKEN=… scripts/install-pulse.sh      # private GenDec (GH_TOKEN also works)
 #   PULSE_DEST=$HOME/.local/bin/pulse scripts/install-pulse.sh
-#   PULSE_SKIP_CHECKSUM=1 scripts/install-pulse.sh  # only for a release without checksums.txt
+#   PULSE_SKIP_CHECKSUM=1 scripts/install-pulse.sh  # only for an UNPINNED release
+#
+# Integrity comes from scripts/pulse-pinned.sha256: a digest committed in this
+# repository and reviewed here, not fetched from the release being installed.
+# When the version is pinned there, the tarball is checked against that value
+# and PULSE_SKIP_CHECKSUM cannot turn the check off. A version with no pin (a
+# one-off tag someone is trying out) falls back to the release's own
+# checksums.txt, which is the weaker, download-integrity-only check.
+#   PULSE_PINS=/path/to/pins scripts/install-pulse.sh  # override the pin file
 #
 # Fallback: build from a local clone or from git.
 #   PULSE_REPO=/path/to/GenDec scripts/install-pulse.sh
@@ -27,6 +35,9 @@ FROM_SOURCE="${PULSE_FROM_SOURCE:-0}"
 LOCAL_REPO="${PULSE_REPO:-}"
 REPO_URL="${PULSE_GIT_URL:-https://github.com/${REPO}.git}"
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+# Ships next to this script; the image stage copies both into the same dir.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PINS="${PULSE_PINS:-${SCRIPT_DIR}/pulse-pinned.sha256}"
 
 install_bin() {
   local bin="$1"
@@ -175,19 +186,55 @@ verify_checksum() {  # verify_checksum <file> <checksums.txt>
   echo "==> sha256 verified: ${base}"
 }
 
-# checksums.txt first: it is a few hundred bytes and decides whether the
-# multi-MB tarball is worth downloading at all.
-if [[ "${PULSE_SKIP_CHECKSUM:-0}" == "1" ]]; then
-  echo "==> WARNING: PULSE_SKIP_CHECKSUM=1, installing an unverified tarball" >&2
+# The sha256 this repository pins for <version, platform>, or "" when the
+# version is not pinned here. Comments and blank lines are skipped; the file is
+# read with awk so a stray CR or extra whitespace cannot produce a partial hash
+# that then fails to match for the wrong reason.
+pinned_sha() {  # pinned_sha <version> <platform>
+  [[ -r "$PINS" ]] || return 0
+  awk -v v="$1" -v p="$2" '
+    { sub(/\r$/, "") }
+    /^[[:space:]]*(#|$)/ { next }
+    $1 == v && $2 == p { print tolower($3); exit }
+  ' "$PINS"
+}
+
+verify_pin() {  # verify_pin <file> <expected sha256>
+  local actual
+  actual="$(sha256_of "$1")"
+  if [[ "$2" != "$actual" ]]; then
+    echo "sha256 mismatch for $(basename "$1"): ${PINS} pins $2, the downloaded file is ${actual}." >&2
+    echo "This is not a corrupted download to retry -- the bytes on the release are not the bytes this repository was reviewed against. Do not install it; check the release and the pin file." >&2
+    return 1
+  fi
+  echo "==> sha256 verified against pinned digest in $(basename "$PINS"): $(basename "$1")"
+}
+
+PIN="$(pinned_sha "$VERSION" "$asset")"
+
+if [[ -n "$PIN" ]]; then
+  # Pinned: the digest comes from this repository, so the release's own
+  # checksums.txt adds nothing and is not downloaded.
+  if [[ "${PULSE_SKIP_CHECKSUM:-0}" == "1" ]]; then
+    echo "==> PULSE_SKIP_CHECKSUM=1 ignored: ${VERSION} ${asset} is pinned in ${PINS} and that check is not optional" >&2
+  fi
+  echo "==> ${VERSION} ${asset} is pinned in $(basename "$PINS")"
 else
-  rc=0
-  fetch_asset "checksums.txt" "${tmp}/checksums.txt" || rc=$?
-  if [[ "$rc" == "$RC_NO_ASSET" ]]; then
-    echo "release ${VERSION} ships no checksums.txt (or is not reachable: check PULSE_VERSION and GITHUB_TOKEN/GH_TOKEN); refusing to install an unverified binary. PULSE_SKIP_CHECKSUM=1 overrides, only for a release you have checked by hand" >&2
-    exit 1
-  elif [[ "$rc" != 0 ]]; then
-    echo "downloading checksums.txt failed (curl exit ${rc}); this is a network/API error, not a missing file -- retry, do not skip the checksum" >&2
-    exit 1
+  echo "==> WARNING: ${VERSION} ${asset} is not pinned in ${PINS}; falling back to the release's own checksums.txt, which only proves the download was not corrupted. Pin the version there before using it in a build you ship." >&2
+  # checksums.txt first: it is a few hundred bytes and decides whether the
+  # multi-MB tarball is worth downloading at all.
+  if [[ "${PULSE_SKIP_CHECKSUM:-0}" == "1" ]]; then
+    echo "==> WARNING: PULSE_SKIP_CHECKSUM=1, installing an unverified tarball" >&2
+  else
+    rc=0
+    fetch_asset "checksums.txt" "${tmp}/checksums.txt" || rc=$?
+    if [[ "$rc" == "$RC_NO_ASSET" ]]; then
+      echo "release ${VERSION} ships no checksums.txt (or is not reachable: check PULSE_VERSION and GITHUB_TOKEN/GH_TOKEN); refusing to install an unverified binary. PULSE_SKIP_CHECKSUM=1 overrides, only for a release you have checked by hand" >&2
+      exit 1
+    elif [[ "$rc" != 0 ]]; then
+      echo "downloading checksums.txt failed (curl exit ${rc}); this is a network/API error, not a missing file -- retry, do not skip the checksum" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -201,7 +248,9 @@ elif [[ "$rc" != 0 ]]; then
   exit 1
 fi
 
-if [[ "${PULSE_SKIP_CHECKSUM:-0}" != "1" ]]; then
+if [[ -n "$PIN" ]]; then
+  verify_pin "${tmp}/${name}" "$PIN"
+elif [[ "${PULSE_SKIP_CHECKSUM:-0}" != "1" ]]; then
   verify_checksum "${tmp}/${name}" "${tmp}/checksums.txt"
 fi
 

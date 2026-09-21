@@ -93,24 +93,40 @@ ARG PULSE_GITHUB_REPO=onixus/GenDec
 # GenDec's release job treats checksums.txt as optional (docs/release.md);
 # this lets a build opt out explicitly. Same knob as the installer script.
 ARG PULSE_SKIP_CHECKSUM=0
+# GenDec is a private repository, so the default build needs a token. Set
+# INSTALL_PULSE=0 to build the image without Pulse and without a token:
+#   docker build --build-arg INSTALL_PULSE=0 …
+# The result has no service-probe backend of its own -- the scanner refuses to
+# start a run with `service_probe.backend: pulse` and no binary rather than
+# quietly producing a scan with no services (scanner/pipeline/pulse_probe.py),
+# so such an image must be configured with `backend: nmap` and INSTALL_NMAP=1.
+ARG INSTALL_PULSE=1
 # One implementation for host installs and images: the script resolves the
 # asset (via the API when a token is present -- the plain releases/download
-# URL 404s for private repos), checks it against the release's checksums.txt,
-# and installs it. Anything about how Pulse is fetched belongs in the script.
-COPY scripts/install-pulse.sh /tmp/install-pulse.sh
+# URL 404s for private repos), checks it against the sha256 pinned in
+# scripts/pulse-pinned.sha256, and installs it. Both files are copied into the
+# same directory because the script looks for the pins next to itself.
+# Anything about how Pulse is fetched belongs in the script.
+COPY scripts/install-pulse.sh scripts/pulse-pinned.sha256 /tmp/pulse/
 # No `set -x`: the token would be traced into the build log (BuildKit keeps
 # the unmasked trace in `docker buildx history logs`).
 RUN --mount=type=secret,id=github_token,required=false \
     set -eu; \
+    mkdir -p /out; \
+    if [ "${INSTALL_PULSE}" != "1" ]; then \
+      echo "INSTALL_PULSE=0: building without the Pulse CLI"; \
+      rm -rf /tmp/pulse; \
+      exit 0; \
+    fi; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq; \
     if [ -s /run/secrets/github_token ]; then \
       GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export GITHUB_TOKEN; \
     fi; \
     PULSE_DEST=/out/pulse PULSE_VERSION="${PULSE_VERSION}" \
       PULSE_GITHUB_REPO="${PULSE_GITHUB_REPO}" PULSE_SKIP_CHECKSUM="${PULSE_SKIP_CHECKSUM}" \
-      bash /tmp/install-pulse.sh; \
+      bash /tmp/pulse/install-pulse.sh; \
     test -x /out/pulse; \
-    rm -f /tmp/install-pulse.sh; \
+    rm -rf /tmp/pulse; \
     rm -rf /var/lib/apt/lists/*
 
 # Shapoclyack scanner pipeline image.
@@ -148,7 +164,10 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
-COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
+# Copied as a directory, not as /out/pulse: with --build-arg INSTALL_PULSE=0
+# the stage leaves /out empty and this copies nothing, which is how the image
+# builds at all without a token for the private GenDec repository.
+COPY --from=pulse-bin /out/ /usr/local/bin/
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
@@ -212,7 +231,9 @@ ARG INSTALL_NMAP=1
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends libcap2-bin; \
     setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu; \
-    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
+    if [ -x /usr/local/bin/pulse ]; then \
+      setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/pulse; \
+    fi; \
     if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
       setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     fi; \

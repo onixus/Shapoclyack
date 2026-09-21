@@ -134,8 +134,9 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 ```dockerfile
 # stage pulse-bin downloads:
 #   pulse-v1.1.0-linux-amd64.tar.gz from onixus/GenDec releases
-COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
-# + setcap cap_net_raw,cap_net_admin+eip
+# copied as a directory, so INSTALL_PULSE=0 (empty /out) copies nothing:
+COPY --from=pulse-bin /out/ /usr/local/bin/
+# + setcap cap_net_raw,cap_net_admin+eip when the binary is there
 ```
 
 | Arg / secret | Default | Meaning |
@@ -144,7 +145,9 @@ COPY --from=pulse-bin /out/pulse /usr/local/bin/pulse
 | `PULSE_GITHUB_REPO` | `onixus/GenDec` | release owner/repo |
 | BuildKit secret `github_token` | — | PAT for **private** GenDec releases (`GENDEC_READ_TOKEN` in CI) |
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
-| `PULSE_SKIP_CHECKSUM` | `0` | `1` installs the tarball without checking it against `checksums.txt` (warns) |
+| `INSTALL_PULSE` | `1` | set `0` to build without Pulse — and without a token for the private GenDec repo |
+| `PULSE_PINS` (script only) | `scripts/pulse-pinned.sha256` | file of reviewed per-platform digests |
+| `PULSE_SKIP_CHECKSUM` | `0` | `1` accepts a tarball unchecked — **only for a version with no pin**; ignored for a pinned one |
 
 The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
 not invoke `pulse monitor`, `pulse --server`, `--alert-*`, `--scripts`, or
@@ -157,19 +160,46 @@ writes a separate artifact, so dropping those rows would hide cert expiry on
 the default path.
 
 The image stage runs `scripts/install-pulse.sh`, so images and host installs
-share one implementation. It downloads `checksums.txt` first and refuses to
-unpack a tarball whose SHA-256 does not match it. This is an **integrity** check, not provenance: the checksum file travels
-over the same connection from the same release, so it catches a truncated,
-corrupted or swapped download, not a compromised release. Provenance for a
-binary that receives `cap_net_raw`/`cap_net_admin` would need a signature
-over `checksums.txt` (cosign/minisign in GenDec's release job) or an expected
-digest pinned in this repository next to `PULSE_VERSION`; neither exists yet.
-`PULSE_SKIP_CHECKSUM=1` (script) / `--build-arg PULSE_SKIP_CHECKSUM=1`
-(images) opt out with a warning for a release that ships no `checksums.txt`,
-which GenDec's release job treats as an optional asset. A download that
-fails for any other reason (5xx, timeout) is reported as such and does not
-suggest the override. Neither the script nor the image stage uses `set -x`:
-the token would land in the build log.
+share one implementation.
+
+**How the download is verified.** `scripts/pulse-pinned.sha256` holds the
+SHA-256 of each platform's tarball for the version this repository builds
+against. The installer looks the version up there and refuses to unpack a
+tarball that does not match. That value is committed here and reviewed in a
+pull request, so it is not something whoever serves the release can change —
+which matters because the binary is granted `cap_net_raw`/`cap_net_admin`
+(`Dockerfile`), making a swapped Pulse root-equivalent on a sensor host.
+`PULSE_SKIP_CHECKSUM=1` does **not** apply to a pinned version; the installer
+says so and keeps checking. Bumping `PULSE_VERSION` without bumping the pins
+fails `tests/test_pulse_supply_chain.py`.
+
+A version with no pin (a one-off tag someone is trying out) falls back to the
+release's own `checksums.txt` with a warning. That is the weaker check it
+always was: the checksum file travels over the same connection from the same
+release, so it catches a truncated or corrupted download, not a rewritten one.
+`PULSE_SKIP_CHECKSUM=1` opts out of *that* check for a release with no
+`checksums.txt`, which GenDec's release job treats as an optional asset. A
+download that fails for any other reason (5xx, timeout) is reported as such and
+does not suggest the override.
+
+**What is still missing is provenance.** A pin proves the bytes are the bytes
+that were reviewed; it does not prove the release was built by the pipeline it
+claims, and a fresh pin taken from a compromised release is a compromised pin.
+That needs a signature over the release (cosign in GenDec's release job), which
+does not exist yet — see #340, which also carries the open question of whether
+GenDec's releases become public (the SPDX SBOM is already built per release) or
+its sources get vendored here.
+
+Neither the script nor the image stage uses `set -x`: the token would land in
+the build log.
+
+**Building without Pulse.** `--build-arg INSTALL_PULSE=0` skips the fetch
+entirely, so the image builds with no GenDec token at all. That image has no
+service-probe backend of its own: with the default `service_probe.backend:
+pulse` the scanner aborts the run with an error naming both fixes, rather than
+silently falling back to nmap and producing a different finding set under the
+same profile. Run such an image with `OCTO_SERVICE_BACKEND=nmap` on an
+`INSTALL_NMAP=1` build.
 
 Local image build (GenDec is private, so pass a token with `contents:read`):
 
@@ -179,6 +209,12 @@ docker build -f Dockerfile \
   --secret id=github_token,src=/tmp/gh_token \
   --build-arg PULSE_VERSION=v1.1.0 \
   -t shapoclyack-scanner:local .
+```
+
+No token, no Pulse (needs `OCTO_SERVICE_BACKEND=nmap` at runtime):
+
+```bash
+docker build -f Dockerfile --build-arg INSTALL_PULSE=0 -t shapoclyack-scanner:nopulse .
 ```
 
 Host install without Docker:
