@@ -14,6 +14,11 @@ scanner/inputs/bench/.bench-net
 .ruff_cache/
 .coverage
 coverage.xml
+coverage-*.xml
+junit-*.xml
+# scripts/ci-semgrep.sh writes its full report here for CI to archive
+semgrep.json
+sbom.spdx.json
 # MaxMind GeoLite2 databases (license-restricted; fetch via scripts/fetch-geoip-db.sh)
 *.mmdb
 !tests/data/geoip/GeoIP2-City-Test.mmdb

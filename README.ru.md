@@ -271,7 +271,8 @@ scanner/inputs/ports_udp.txt   # Кастомный перечень порто�
 ```bash
 # Тестирование серверной части и сканера (Python 3.11 / 3.12)
 python -m pytest
-ruff check .
+# Тот же линт, что и в CI: ruff по всему дереву, версия — из requirements-dev.txt
+scripts/ci-lint.sh
 
 # Сборка и тестирование веб-интерфейса (Next.js 14, Node.js >= 26)
 cd web-next
