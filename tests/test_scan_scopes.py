@@ -21,6 +21,7 @@ from api.schemas import StartScanRequest
 from api.services import agents as agents_service
 from api.services import auth_audit
 from api.services import jobs as jobs_service
+from api.services import scan_admission
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
 from api.services import scan_scopes
@@ -186,15 +187,23 @@ def test_an_out_of_scope_target_does_not_start_a_scan(settings):
 def test_start_scan_refuses_out_of_scope_targets_even_with_the_first_barrier_gone(
     settings, monkeypatch
 ):
-    """The second barrier has to stand on its own.
+    """The explicit barrier has to stand on its own.
 
     ``start_scan`` is also reached from paths that never ran the input check —
     the schedule dispatcher replays targets stored days earlier — so this
-    removes the first barrier (parsing with an allow-everything scope) and
+    removes the parsing barrier (by handing it an allow-everything scope) and
     asserts the scan is still refused.
+
+    Both barriers moved into ``scan_admission`` so that a refusal costs no
+    job-scoped scratch directory, but their order is unchanged: the parse
+    answers syntax before entitlement, and ``assert_scan_allowed`` follows it.
     """
     _scope(settings, ALLOW_TEN_NET)
-    real_parse = jobs_service.parse_target_payload
+    # Patched where the parser is actually resolved. It used to be reachable
+    # through the jobs facade; scan_admission owns the barrier now, and a
+    # patch on the facade would be a no-op that let this test pass without
+    # removing the barrier it is supposed to remove.
+    real_parse = scan_admission.parse_target_payload
     permissive = scan_scopes.ScanScope(
         tenant_id="default",
         allow_networks=(scan_scopes._network("0.0.0.0/0"),),  # noqa: SLF001
@@ -202,7 +211,7 @@ def test_start_scan_refuses_out_of_scope_targets_even_with_the_first_barrier_gon
         approved=True,
     )
     monkeypatch.setattr(
-        jobs_service,
+        scan_admission,
         "parse_target_payload",
         lambda *, scope, **kwargs: real_parse(scope=permissive, **kwargs),
     )

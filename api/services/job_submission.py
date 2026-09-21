@@ -33,7 +33,6 @@ from api.services import metrics as metrics_service
 from api.services import run_ids
 from api.services import scan_admission
 from api.services import scan_intents
-from api.services import scan_scopes
 from api.services import scan_surface
 from api.settings import Settings
 
@@ -198,7 +197,26 @@ def start_scan(
     quota_exempt: bool = False,
     widen_with_promoted: bool = True,
 ) -> JobInfo:
-    """Admit, persist and dispatch one new scan job."""
+    """Admit, persist and dispatch one new scan job.
+
+    ``widen_with_promoted`` is whether this scan carries the related domains
+    the tenant's operators promoted (org_profile M4) on top of its own
+    targets. On by default — that is what promotion means — and off for a
+    dispatch that is aimed at one thing, today the verification re-scan of
+    #183. A separate switch from ``quota_exempt`` on purpose: billing and
+    targeting are different policies that happen to coincide on that one
+    caller.
+
+    ``quota_exempt`` marks a scan the platform dispatched to close its own
+    loop — today only the verification re-scan of #183. It is neither refused
+    by the tenant's monthly quota nor counted against it, and it is a property
+    of *this dispatch*: the requester's name is the analyst's on that path, so
+    recognising the exemption by username would be both wrong and forgeable.
+
+    ``build_command``, ``run_local_job`` and ``publish_offer`` are passed in
+    rather than imported so that the jobs facade stays the seam existing tests
+    replace, and so this module does not depend on the executor it starts.
+    """
     if not settings.allow_scan_start:
         raise RuntimeError(
             "Scan start disabled by OCTO_ALLOW_SCAN_START"
@@ -233,26 +251,31 @@ def start_scan(
     agent_group = admission.agent_group
     group_has_live_agent = admission.group_has_live_agent
 
+    # Admission already refused everything that can be refused, so what is
+    # left here is file writing. Anything that escapes it is a half-written
+    # scratch directory no job will ever own.
     try:
         _, target_counts, target_args = (
             job_inputs.prepare_target_inputs(
                 settings,
                 job_id,
-                request,
                 tenant_id=tenant_id,
+                parsed=admission.parsed_targets,
                 promoted=promoted_admitted,
                 scope=scope,
                 policy=policy_snapshot,
             )
         )
         job_inputs.publish(settings, job_id)
-    except scan_scopes.ScanScopeDenied as denied:
-        scan_scopes.record_denial(
-            username=username, denied=denied
-        )
+    except Exception:
         job_inputs.discard(settings, job_id)
         raise
 
+    # Local scans run in this container, so apply the installation config
+    # overrides by merging them into a job-specific config file. Agents run
+    # their own mounted config, so overrides don't reach them — they keep the
+    # base config (documented limitation). Intent nuclei/top_ports overlays
+    # are local-only for the same reason.
     resolved = scan_intents.resolve_scan_options(
         intent=request.intent,
         mode=request.mode,
@@ -282,11 +305,18 @@ def start_scan(
         )
     else:
         if request.wordlist_id:
+            # A custom wordlist lives in the API's Postgres and is
+            # materialized onto the API pod's filesystem; a remote agent runs
+            # its own mounted config and never sees it. Rather than silently
+            # ignore the request, refuse it — the same class of limitation as
+            # installation overrides not reaching agents.
             raise ValueError(
                 "wordlist_id is only supported in local execution "
                 "mode, not with remote agents"
             )
         if intent_extra:
+            # Agent workers do not receive the merged effective-config file;
+            # surface that so operators do not think nuclei floors applied.
             _log.warning(
                 "intent=%s config overlays (nuclei/top_ports) are "
                 "skipped in agent mode; CLI flags delta=%s "
@@ -297,9 +327,18 @@ def start_scan(
             )
         config_path = str(settings.config_path)
 
+    # Derived from the targets as the operator entered them, not from the
+    # widened set: a promoted related domain rides along with every scan and
+    # would turn an internal sweep into a "mixed" one it was never asked to be.
     surface = scan_surface.resolve(
         request.surface, request.ranges, request.domains
     )
+    # A fragile (OT/ICS) policy turns the service-probe stage off: nmap's NSE
+    # scripts and pulse's banner grabs are the packets that put a PLC into a
+    # fault state, and the port inventory a fragile run is really asked for
+    # does not need them. Expressed on the command line as well as in the
+    # policy document the scanner applies, so a reader of the job — and the
+    # ``--skip-nse`` the scanner sees — says the same thing.
     skip_nse = resolved.skip_nse or bool(
         (policy_snapshot or {}).get("skip_service_probe")
     )
@@ -415,8 +454,17 @@ def start_scan(
         job_inputs.discard(settings, job_id)
         raise
     except IntegrityError:
+        # Lost the race on (tenant_id, idempotency_key): another replica — or
+        # this one, serving the client's retry concurrently — already created
+        # the job. The caller wanted one scan for this key and there is one.
+        # This job_id never became a row, so its materialized wordlist (and
+        # the merged config beside it) and its input files would be read by
+        # nobody — discarded first, so the mismatch below does not leak them.
         job_inputs.discard_wordlist(settings, job_id)
         job_inputs.discard(settings, job_id)
+        # ``request=`` here too: the racing pair may not be the same scan, and
+        # the loser of the race must hear that rather than be handed a job for
+        # targets it never asked about.
         existing = find_by_idempotency_key(
             settings,
             tenant_id=tenant_id,
@@ -429,6 +477,9 @@ def start_scan(
             "Idempotent scan start: key already created job %s",
             existing.job_id,
         )
+        # Raised rather than returned so the caller can answer 200 here too:
+        # this request accepted nothing, exactly like the sequential replay
+        # the route detects before calling in.
         raise IdempotentReplay(existing) from None
 
     job_store.refresh_job_gauges(settings)

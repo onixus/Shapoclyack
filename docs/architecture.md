@@ -71,10 +71,21 @@ corresponding invariant:
   remains the queue; a broker failure cannot erase or transfer ownership of a
   job.
 
+Admission runs both scope barriers before any job-scoped file exists, and in
+this order: the target parse answers **syntax before entitlement**, and
+`assert_scan_allowed` follows it. Hoisting the entitlement check above the
+parse turns a typo into `403 outside the approved scan scope` instead of
+`422 invalid scan targets`, telling the operator to request access they already
+have. `tests/test_api_targets.py::test_api_rejects_invalid_targets_with_422`
+holds that line.
+
 The dependency direction is intentionally one-way: these services do not import
 `jobs.py`. Routes and older internal callers may continue to use the facade,
 but adding a new policy or side effect there would recreate the dependency hub
-this split removed.
+this split removed. A name on the facade is a forwarding entry, not a seam:
+the services call each other directly, so tests patch the owning module.
+`tests/test_job_architecture.py` enforces both — no facade imports in the
+services, and every facade function a single forwarding call.
 
 ### Job lifecycle
 

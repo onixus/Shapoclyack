@@ -29,6 +29,7 @@ from api.services import agents as agents_service
 from api.services import jobs as jobs_service
 from api.services import nats_outbox
 from api.services import results_ingest
+from api.services import run_completion
 from api.services import run_publisher
 from api.services import artifact_store
 from api.services import runs as runs_service
@@ -721,7 +722,11 @@ def test_a_projection_that_throws_cannot_undo_a_finished_job(settings, monkeypat
     def _boom(*_args, **_kwargs):
         raise RuntimeError("the asset table is gone")
 
-    monkeypatch.setattr(jobs_service, "_upsert_assets_best_effort", _boom)
+    # Patched on run_completion, which owns the projection and is what
+    # on_run_published calls. The jobs facade still carries a wrapper of the
+    # same name, but nothing routes through it: patching there would leave the
+    # real upsert running and this test green without ever throwing.
+    monkeypatch.setattr(run_completion, "upsert_assets_best_effort", _boom)
 
     done = jobs_service.complete_job(
         settings,

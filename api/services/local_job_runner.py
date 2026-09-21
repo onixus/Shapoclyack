@@ -27,6 +27,7 @@ _log = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
+    """Naive UTC, matching the other Postgres-backed services."""
     return datetime.now(UTC).replace(tzinfo=None)
 
 
@@ -35,6 +36,9 @@ def run_job(
 ) -> None:
     """Execute one local scan and account for its terminal outcome."""
     try:
+        # A local job goes queued → running with no claim step: this process
+        # is the worker. If it was cancelled while the thread was still
+        # starting, the transition is rejected and the scan never launches.
         job_store.update_job(
             settings,
             job_id,
@@ -45,6 +49,9 @@ def run_job(
         )
     except job_states.InvalidJobTransition as exc:
         _log.info("Not starting job %s: %s", job_id, exc)
+        # Cancelled between the insert and this thread getting scheduled: the
+        # scan never launches, so nothing will ever read the wordlist copy or
+        # the input files.
         job_inputs.discard_wordlist(settings, job_id)
         job_inputs.discard(settings, job_id)
         return
@@ -55,6 +62,7 @@ def run_job(
                 job_id, command
             )
 
+        # Best-effort: read latest_run.json after completion.
         run_id = None
         pointer = settings.state_dir / "latest_run.json"
         if pointer.exists():
@@ -94,6 +102,8 @@ def run_job(
             if job
             else tenants_service.DEFAULT_TENANT_ID
         )
+        # Outside the success gate: a target the scanner refused was refused
+        # whether or not the scan that followed it finished cleanly.
         run_completion.record_scope_denials_best_effort(
             settings,
             tenant_id=tenant_id,
@@ -102,6 +112,10 @@ def run_job(
         )
 
         if run_id:
+            # The scanner chose the run id and wrote the directory itself, so
+            # this is the first moment the run can be put in the artifact
+            # store (#336). Before the tagging below, and before the hooks:
+            # they all read the run back through the workspace.
             try:
                 artifact_workspace.adopt_local_run(
                     settings,
@@ -115,6 +129,9 @@ def run_job(
                 )
 
         if status == job_states.SUCCEEDED:
+            # Tag the run before the asset upsert: an untagged run reads back
+            # as the default tenant, which would leak it to every tenant's
+            # run list.
             if run_id:
                 runs_service.write_run_tenant(
                     settings,
@@ -146,6 +163,8 @@ def run_job(
                 run_id=str(run_id) if run_id else None,
                 job_id=job_id,
             )
+            # Last of the post-run hooks: the summary it sends describes the
+            # tracker and the registry as they are *after* the folds above.
             run_completion.notify_channels_best_effort(
                 settings,
                 tenant_id=tenant_id,
@@ -164,9 +183,14 @@ def run_job(
                 error=str(exc)[:2000],
             )
         except job_states.InvalidJobTransition:
+            # The scan itself finished and the job is already terminal — this
+            # is post-completion bookkeeping (run tagging) blowing up. Record
+            # it without rewriting the outcome the scan actually had.
             job_store.update_job(
                 settings, job_id, error=str(exc)[:2000]
             )
     finally:
+        # The scanner has exited either way, so its copy of the wordlist and
+        # its input files have been read for the last time.
         job_inputs.discard_wordlist(settings, job_id)
         job_inputs.discard(settings, job_id)

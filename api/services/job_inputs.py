@@ -13,11 +13,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from api.schemas import StartScanRequest
 from api.services import artifact_store
 from api.services import scan_scopes
+from api.services.targets import ParsedTargets
 from api.services import wordlists as wordlists_service
-from api.services.targets import parse_target_payload
 from api.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -51,23 +50,31 @@ def job_inputs_dir(settings: Settings, job_id: str) -> Path:
 def prepare_target_inputs(
     settings: Settings,
     job_id: str,
-    request: StartScanRequest,
     *,
     tenant_id: str,
+    parsed: ParsedTargets | None,
     promoted: list[str] | None = None,
     scope: scan_scopes.ScanScope | None = None,
     policy: dict[str, Any] | None = None,
 ) -> tuple[Path | None, dict[str, int] | None, list[str]]:
-    """Write target, scope and policy files for one admitted job."""
+    """Write target, scope and policy files for one already-admitted job.
+
+    Returns (inputs_dir, target_counts, extra_cli_args).
+
+    Takes the parsed targets rather than the request: deciding whether a
+    target is well-formed and in scope is admission's job (scan_admission,
+    the first of the two #226 barriers), and doing it here would mean a
+    refusal had already created this job's scratch directory.
+
+    The scope document is written for *every* job, including one that carries
+    no target overrides at all (#244). That is the case the API cannot check
+    any other way: such a run reads the installation's own target files, which
+    the API never opens, so the only thing #226 could ask was whether the
+    tenant had a scope — not whether the files agree with it. The scanner
+    opens them, and now has the scope in hand when it does.
+    """
     if scope is None:
         scope = scan_scopes.load_scope(settings, tenant_id)
-    parsed = parse_target_payload(
-        scope=scope,
-        ranges_text=request.ranges,
-        domains_text=request.domains,
-        ports_text=request.ports,
-        ports_udp_text=request.ports_udp,
-    )
 
     inputs_dir = job_inputs_dir(settings, job_id)
     inputs_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +87,11 @@ def prepare_target_inputs(
     counts: dict[str, int] = {}
 
     if policy is not None:
+        # Written for the local runner and read back for the agent's claim
+        # response by ``job_control._read_job_inputs``, so both executors are
+        # handed the same document by the same mechanism — a policy only one
+        # of the two paths applied would be a ceiling that depends on where
+        # the scan happened to run.
         extra.extend(["--scan-policy", str(write_policy_input(inputs_dir, policy))])
 
     if promoted:
@@ -159,6 +171,10 @@ def discard(settings: Settings, job_id: str) -> None:
                 artifact_store.keys.job_inputs_prefix(job_id)
             )
         except artifact_store.ArtifactStoreError:
+            # Same best-effort contract as the local removal below: a
+            # finished scan must not be reported as failed because its
+            # scratch directory outlived it. The retention sweep collects it
+            # later.
             _log.warning("Could not remove stored inputs for job %s", job_id, exc_info=True)
     try:
         shutil.rmtree(job_inputs_dir(settings, job_id), ignore_errors=False)
@@ -182,7 +198,26 @@ def discard_wordlist(settings: Settings, job_id: str) -> None:
 def wordlist_overrides(
     settings: Settings, job_id: str, tenant_id: str, wordlist_id: str | None
 ) -> tuple[dict, dict] | None:
-    """Materialize a selected tenant wordlist and return config/provenance."""
+    """Materialize a tenant's selected brute-force wordlist to a job-scoped
+    file and return ``(config_override, provenance)``.
+
+    Returns ``None`` when no wordlist was requested. Raises ``ValueError``
+    when the id is unknown or belongs to another tenant — selecting a wordlist
+    that cannot be found must fail the scan request, not run it without one.
+
+    The override is nested under ``discovery`` because that is where the
+    scanner's ``AppConfig`` actually holds these stages. A top-level ``ct``/
+    ``cloud`` key validates cleanly (the schema does not forbid extras) and is
+    then ignored, so the scan would run with the stage still disabled and
+    succeed — a silent no-op rather than an error. The scan-start tests assert
+    through ``load_config`` for exactly this reason.
+
+    Selecting a *subdomain* list turns on the CT/brute-force discovery stage
+    (``ct.enabled`` + ``ct.brute_force.enabled``) with the uploaded list; a
+    *bucket* list turns on cloud discovery. Enabling ``ct`` also lets its
+    configured providers run (default ``crtsh``, a passive third-party CT-log
+    query) — brute force is nested under that stage and cannot run without it.
+    """
     if not wordlist_id:
         return None
     resolved = wordlists_service.get_for_scan(wordlist_id, tenant_id=tenant_id)
@@ -191,6 +226,13 @@ def wordlist_overrides(
 
     dest = wordlist_file_for_job(settings, job_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Written to this pod's disk and deliberately NOT to the artifact store,
+    # unlike the job's other inputs (#336). Nothing else would ever read it:
+    # the only consumer is the scanner subprocess, started by ``start_scan``
+    # in the same process that writes this file, and a job retried after a
+    # restart comes back through here and rewrites it. The list itself is a
+    # row in Postgres, which every replica already reads. A copy in the bucket
+    # would be storage nothing fetches and the retention worker then sweeps.
     dest.write_text(resolved.content + "\n", encoding="utf-8")
     path = str(dest)
 
@@ -203,6 +245,8 @@ def wordlist_overrides(
                 "brute_force": {"enabled": True, "wordlist_file": path},
             }
         }
+    # Recorded on the job so a completed run can still answer "which
+    # dictionary produced this?" after the wordlist is renamed or deleted.
     provenance = {
         "wordlist_id": wordlist_id,
         "wordlist_name": resolved.name,
