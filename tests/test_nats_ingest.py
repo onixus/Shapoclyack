@@ -267,31 +267,48 @@ def test_a_stream_that_appears_late_still_comes_up(monkeypatch):
 class _ExistingStream:
     """A JetStream that already holds the stream and refuses to reconcile it.
 
-    The shape a 3-node rollout meets: ``add_stream`` says the stream is there,
-    ``update_stream`` refuses (a cluster with fewer peers than the requested
-    replicas is the usual reason), and ``stream_info`` answers with whatever
-    the stream actually is — R1.
+    Not the shape of a healthy 2.10 server: there ``STREAM.CREATE`` is a
+    create-*or-update* and ``add_stream`` applies the requested config without
+    raising, which is why the drift comparison is unreachable on such an
+    installation. This is the one where it is reachable — an account that may
+    read the stream but not write it, so ``add_stream`` and ``update_stream``
+    both fail and ``stream_info`` answers with whatever the stream actually is.
     """
 
-    def __init__(self, num_replicas: int = 1) -> None:
+    def __init__(self, num_replicas: int = 1, duplicate_window: float = 86400.0) -> None:
         self.num_replicas = num_replicas
+        self.duplicate_window = duplicate_window
 
     async def add_stream(self, config=None):
-        raise RuntimeError("stream name already in use")
+        raise RuntimeError("permissions violation for JetStream API $JS.API.STREAM.CREATE.INGEST")
 
     async def update_stream(self, config=None):
-        raise RuntimeError("replicas > 1 not supported in non-clustered mode")
+        raise RuntimeError("permissions violation for JetStream API $JS.API.STREAM.UPDATE.INGEST")
 
     async def stream_info(self, name):
         import types
 
-        return types.SimpleNamespace(config=types.SimpleNamespace(num_replicas=self.num_replicas))
+        return types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                num_replicas=self.num_replicas, duplicate_window=self.duplicate_window
+            )
+        )
 
 
-def _config(name: str = "INGEST", num_replicas: int = 3):
+def _config(name: str = "INGEST", num_replicas: int = 3, duplicate_window: float = 86400.0):
     import types
 
-    return types.SimpleNamespace(name=name, num_replicas=num_replicas)
+    return types.SimpleNamespace(
+        name=name, num_replicas=num_replicas, duplicate_window=duplicate_window
+    )
+
+
+def _drift_gauge(stream: str, setting: str) -> float:
+    from api.services import metrics as metrics_service
+
+    return metrics_service.REGISTRY.get_sample_value(
+        "octo_nats_stream_config_drift", {"stream": stream, "setting": setting}
+    )
 
 
 def test_a_stream_that_cannot_be_reconciled_is_logged(monkeypatch, caplog):
@@ -310,7 +327,7 @@ def test_a_stream_that_cannot_be_reconciled_is_logged(monkeypatch, caplog):
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("could not be reconciled" in message and "INGEST" in message for message in messages)
-    assert any("is R1, not the R3" in message for message in messages)
+    assert any("num_replicas=1, not the 3" in message for message in messages)
 
 
 def test_a_stream_already_at_the_wanted_replicas_is_quiet(monkeypatch, caplog):
@@ -326,4 +343,50 @@ def test_a_stream_already_at_the_wanted_replicas_is_quiet(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="shapoclyack.nats"):
         asyncio.run(bus._ensure_stream(_config()))
 
-    assert not any("is R" in record.getMessage() for record in caplog.records)
+    assert not any("num_replicas=" in record.getMessage() for record in caplog.records)
+    assert _drift_gauge("INGEST", "num_replicas") == 0
+
+
+def test_an_unbounded_ingest_retention_does_not_switch_the_dedupe_window_off(monkeypatch):
+    """``OCTO_NATS_INGEST_MAX_AGE_SECONDS=0`` is "keep forever", not "dedupe off".
+
+    The window was ``min(dedupe, max_age)`` unconditionally, so an operator who
+    did not want raw results aged out at all got ``duplicate_window=0`` — the
+    dedupe the outbox's replay leans on, silently disabled — while the comment
+    beside it promised a *shorter* window for a shorter retention.
+    """
+    assert nats_bus.ingest_duplicate_window_seconds(86400, 0) == 86400
+    assert nats_bus.ingest_duplicate_window_seconds(86400, -1) == 86400
+    # The clamp itself is unchanged: JetStream refuses a window longer than the
+    # retention, so a shortened retention still shortens the window.
+    assert nats_bus.ingest_duplicate_window_seconds(86400, 3600) == 3600
+    assert nats_bus.ingest_duplicate_window_seconds(600, 3600) == 600
+    # An explicit zero is still an explicit "off".
+    assert nats_bus.ingest_duplicate_window_seconds(0, 86400) == 0
+
+
+def test_a_stream_keeping_a_shorter_dedupe_window_is_reported(monkeypatch, caplog):
+    """The setting that could not be reconciled is the one nothing could see.
+
+    ``update_stream`` is fail-soft by design, so an upgrade of an installation
+    whose ``INGEST`` stream already exists can leave JetStream's 2-minute
+    default window in place — shorter than a single outbox backoff — while the
+    changelog, the migration and ``nats_outbox``'s own docstring all state that
+    duplicates are dropped for a day. Only the replica count was ever compared,
+    so this drifted in silence and the first replayed message was a second run
+    in ClickHouse.
+    """
+    import asyncio
+
+    monkeypatch.setattr(nats_bus.asyncio, "sleep", _no_sleep)
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+    bus._js = _ExistingStream(num_replicas=3, duplicate_window=120.0)
+
+    with caplog.at_level("WARNING", logger="shapoclyack.nats"):
+        asyncio.run(bus._ensure_stream(_config(num_replicas=3, duplicate_window=86400.0)))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("duplicate_window=120.0, not the 86400.0" in message for message in messages)
+    assert any("double a run" in message for message in messages)
+    assert _drift_gauge("INGEST", "duplicate_window") == 1
+    assert _drift_gauge("INGEST", "num_replicas") == 0

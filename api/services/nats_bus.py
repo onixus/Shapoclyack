@@ -19,6 +19,7 @@ JetStream ``update_stream``, so changing them takes effect on redeploy):
   - OCTO_NATS_JOBS_MAX_AGE_SECONDS      (default 86400 / 24h)
   - OCTO_NATS_INGEST_MAX_AGE_SECONDS    (default 604800 / 7d)
   - OCTO_NATS_INGEST_MAX_BYTES          (default 10GiB)
+  - OCTO_NATS_INGEST_DEDUPE_SECONDS     (default 86400 / 24h, clamped to max age)
   - OCTO_NATS_EVENTS_MAX_AGE_SECONDS    (default 2592000 / 30d)
   - OCTO_NATS_EVENTS_MAX_BYTES          (default 1GiB)
   - OCTO_NATS_EVENTS_DEDUPE_SECONDS     (default 86400 / 24h)
@@ -40,6 +41,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.services import egress
+from api.services import metrics
 
 LOG = logging.getLogger("shapoclyack.nats")
 
@@ -82,6 +84,18 @@ _DEFAULT_EVENTS_MAX_BYTES = 1024 * 1024 * 1024  # 1GB
 # case the Phase 10.1 event ids exist to collapse. 24h covers a replayed
 # results upload without keeping the dedupe table alive for the stream's life.
 _DEFAULT_EVENTS_DEDUPE_SECONDS = 24 * 3600
+# INGEST needs the same treatment and for a sharper reason than EVENTS: since
+# the outbox (``api/services/nats_outbox.py``) a refused ingest publish is
+# retried with capped exponential backoff for up to ``OCTO_NATS_OUTBOX_
+# MAX_ATTEMPTS`` attempts — close to four hours at the defaults. ``publish_json``
+# reports False on an ack timeout, which the server may well have written
+# anyway, so the retry is a genuine duplicate. Against JetStream's 2-minute
+# default every one of those retries past the first is accepted twice and the
+# ingest worker transforms the run twice: ClickHouse collapses it eventually
+# (ReplacingMergeTree) but not before a SELECT without FINAL sees both, and the
+# worker's counters double unconditionally. 24h covers the outbox's whole
+# retry window with room for an operator's requeue on top.
+_DEFAULT_INGEST_DEDUPE_SECONDS = 24 * 3600
 # JetStream replication factor (R). 1 = single node (default/dev). Set to 3 on
 # a 3+ node NATS cluster (e.g. prod overlay) for stream-level HA.
 _DEFAULT_STREAM_REPLICAS = 1
@@ -96,6 +110,28 @@ def _int_env(name: str, default: int) -> int:
     except ValueError:
         LOG.warning("Invalid int for %s=%r; using default %s", name, raw, default)
         return default
+
+
+def ingest_duplicate_window_seconds(dedupe: int, max_age: int) -> int:
+    """The ``INGEST`` duplicate window, clamped to what the stream will accept.
+
+    JetStream refuses a duplicate window longer than the stream's ``max_age``,
+    and an operator who shortens ``OCTO_NATS_INGEST_MAX_AGE_SECONDS`` should
+    get a shorter dedupe window rather than a stream that fails to reconcile.
+    So the two are clamped together — except at zero, where the clamp meant the
+    opposite of what it reads like: ``max_age=0`` is JetStream's idiom for
+    "keep these forever", which ``min()`` turned into ``duplicate_window=0``,
+    i.e. dedupe off entirely. An operator who asked for unbounded retention got
+    the one setting the outbox's replay depends on silently disabled, and the
+    first replayed message was a second run in ClickHouse.
+
+    A dedupe value of zero is still honoured: that one is an explicit "off".
+    """
+    if dedupe <= 0:
+        return 0
+    if max_age <= 0:
+        return dedupe
+    return min(dedupe, max_age)
 
 
 def tls_connect_options() -> dict[str, Any]:
@@ -152,26 +188,70 @@ _STREAM_MAX_DELAY_SECONDS = 3.0
 _STREAM_BUDGET_SECONDS = 12.0
 
 
-def _warn_on_replica_drift(config: Any, info: Any) -> None:
-    """Say so when a stream's replica count is not the one we asked for.
+# Stream settings compared against the running stream after every connect, and
+# the sentence an operator needs when one of them did not take.
+_DRIFT_SETTINGS: dict[str, str] = {
+    "num_replicas": (
+        "losing a broker node can lose this stream's messages "
+        "(OCTO_NATS_STREAM_REPLICAS)"
+    ),
+    "duplicate_window": (
+        "a republished message is accepted a second time once the running "
+        "window has passed, so an outbox replay can double a run "
+        "(OCTO_NATS_INGEST_DEDUPE_SECONDS)"
+    ),
+}
 
-    ``update_stream`` is how ``OCTO_NATS_STREAM_REPLICAS=3`` reaches a stream
-    that already exists, and it is exactly the call that fails when the cluster
-    has fewer peers than the requested replicas (#335). Without this the
-    operator who scaled NATS to three nodes keeps single-copy streams — the
-    thing the scale-out was bought to prevent — and nothing anywhere says it.
+
+def _report_stream_drift(config: Any, info: Any) -> list[str]:
+    """Compare a running stream with the configuration this replica asked for.
+
+    ``update_stream`` is how a changed setting reaches a stream that already
+    exists, and it is deliberately fail-soft (:meth:`_ensure_stream`): an
+    existing stream carries messages, and refusing to start over one we could
+    not reconcile turns a stale limit into an outage. The cost of that is that
+    nothing downstream can tell a reconciled stream from an unreconciled one —
+    ``OCTO_NATS_STREAM_REPLICAS=3`` silently keeping single-copy streams
+    (#335), or an upgraded installation keeping JetStream's 2-minute default
+    ``duplicate_window`` while the outbox's replay, the changelog and the
+    migration all state that duplicates are dropped for a day.
+
+    So every drift becomes a metric as well as a log line: the settings that
+    matter are gauged on ``octo_nats_stream_config_drift{stream,setting}``,
+    which stays 1 until a later connect reconciles it. Returns the settings
+    that drifted, for the tests and the caller's log.
+
+    Read only on the fail-soft branch of :meth:`_ensure_stream`, and that is
+    the whole reach of this check: ``STREAM.CREATE`` on nats-server 2.10 is a
+    create-*or-update*, so on an installation whose account may write the
+    stream ``add_stream`` applies the requested config itself and never raises
+    — there is nothing to compare and no series in ``/metrics`` at all. The
+    comparison is for the installation where it cannot: an account without
+    rights to change an existing stream, where both ``add_stream`` and
+    ``update_stream`` fail and the stream keeps settings nobody could see.
+    Absence of the series therefore means "never had to compare", not "no
+    drift"; the log line is what an operator reads either way.
     """
-    wanted = getattr(config, "num_replicas", None)
-    actual = getattr(getattr(info, "config", None), "num_replicas", None)
-    if wanted is None or actual is None or wanted == actual:
-        return
-    LOG.warning(
-        "JetStream stream %s is R%s, not the R%s this replica asked for "
-        "(OCTO_NATS_STREAM_REPLICAS): losing a broker node can lose its messages",
-        getattr(config, "name", "?"),
-        actual,
-        wanted,
-    )
+    running = getattr(info, "config", None)
+    name = str(getattr(config, "name", "?"))
+    drifted: list[str] = []
+    for setting, consequence in _DRIFT_SETTINGS.items():
+        wanted = getattr(config, setting, None)
+        actual = getattr(running, setting, None)
+        if wanted is None or actual is None or wanted == actual:
+            metrics.NATS_STREAM_CONFIG_DRIFT.labels(stream=name, setting=setting).set(0)
+            continue
+        drifted.append(setting)
+        metrics.NATS_STREAM_CONFIG_DRIFT.labels(stream=name, setting=setting).set(1)
+        LOG.warning(
+            "JetStream stream %s runs with %s=%s, not the %s this replica asked for: %s",
+            name,
+            setting,
+            actual,
+            wanted,
+            consequence,
+        )
+    return drifted
 
 
 class NatsBus:
@@ -265,6 +345,15 @@ class NatsBus:
                 # or is disabled; oldest raw results are discarded past this.
                 max_age=float(ingest_max_age),
                 max_bytes=ingest_max_bytes,
+                duplicate_window=float(
+                    ingest_duplicate_window_seconds(
+                        _int_env(
+                            "OCTO_NATS_INGEST_DEDUPE_SECONDS",
+                            _DEFAULT_INGEST_DEDUPE_SECONDS,
+                        ),
+                        ingest_max_age,
+                    )
+                ),
                 num_replicas=stream_replicas,
             )
         )
@@ -352,7 +441,7 @@ class NatsBus:
                             type(update_exc).__name__,
                             update_exc,
                         )
-                    _warn_on_replica_drift(config, info)
+                    _report_stream_drift(config, info)
                     return
                 except Exception as info_exc:  # noqa: BLE001
                     last_exc = info_exc
@@ -541,18 +630,51 @@ class NatsBus:
         )
 
     def publish_ingest(self, payload: dict[str, Any], *, msg_id: str) -> bool:
-        """Publish to ``ingest.results.{tenant_id}`` (and legacy ``ingest.raw_results``)."""
+        """Publish to ``ingest.results.{tenant_id}``, plus the legacy copy.
+
+        True when the *tenant* subject took the message. That is the subject
+        anything here reads: ``ch_ingest_worker`` filters ``ingest.results.>``
+        and nothing in this tree subscribes to ``ingest.raw_results`` at all.
+        The legacy copy is kept for an external consumer that has not moved
+        yet (#230, ``docs/operations.md`` § *ClickHouse ingest consumer subjects*) and
+        is on its way out, so a broker that refuses it is counted on
+        ``octo_nats_legacy_ingest_total`` and logged — not folded into the
+        result.
+
+        Folding it in was worse than the hole it closed. The outbox builds its
+        recovery guarantee on this flag, so on an account whose per-subject
+        permissions allow ``ingest.results.>`` and not the deprecated alias —
+        an ordinary closed installation — *every* publish read as a failure:
+        every run was recorded, every row spent its attempts against a broker
+        that was never going to accept that subject, and hours later the
+        backlog was ``dead`` and ``/api/health`` degraded while ClickHouse had
+        been receiving the runs the whole time. The same flag also decides
+        whether megabytes of archive are replayed, and there is nothing to
+        recover when the reader already has the run.
+        """
         tenant_id = str(payload.get("tenant_id") or "default")
         subject = ingest_results_subject(tenant_id)
         extra = {"tenant_id": tenant_id}
         ok = self.publish_json(subject, payload, msg_id=msg_id, headers=extra)
         # Keep legacy subject for older consumers / tests.
-        self.publish_json(
+        legacy_ok = self.publish_json(
             SUBJECT_INGEST_RAW,
             payload,
             msg_id=f"{msg_id}-legacy" if msg_id else None,
             headers=extra,
         )
+        metrics.NATS_LEGACY_INGEST_TOTAL.labels(
+            outcome="published" if legacy_ok else "refused"
+        ).inc()
+        if ok and not legacy_ok:
+            LOG.warning(
+                "Ingest published on %s but refused on the legacy %s; the run is "
+                "delivered and the publish stands. Nothing in this installation "
+                "consumes the legacy subject — if nothing outside it does either, "
+                "the copy can go",
+                subject,
+                SUBJECT_INGEST_RAW,
+            )
         return ok
 
     def publish_asset_event(self, envelope: dict[str, Any], *, retries: int = 1) -> bool:

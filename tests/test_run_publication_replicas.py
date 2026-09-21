@@ -65,6 +65,23 @@ def _clean_store_cache():
     artifact_workspace.reset_marker_cache()
 
 
+def _publish_result(*, published: bool) -> dict[str, object]:
+    """What ``results_ingest.publish_raw_results`` answers, in full.
+
+    The bus hop reads more of it than ``published``: a refusal is written to
+    the outbox under the message's own ``subject`` and ``msg_id``
+    (``nats_outbox``), so a stub that leaves them out is answering a different
+    contract and fails the caller rather than the broker.
+    """
+    return {
+        "published": published,
+        "msg_id": "m",
+        "archive_sha256": "d",
+        "tenant_id": "default",
+        "subject": "ingest.results.default",
+    }
+
+
 def _replica(tmp_path: Path, name: str, shared: FakeS3Client | None = None, **overrides):
     """One API pod: its own disk and cache, the same database and bucket."""
     root = tmp_path / name
@@ -361,7 +378,7 @@ def test_the_accepting_request_and_a_reconciler_tick_do_not_both_publish(
         on_the_bus.append(kwargs["run_id"])
         publishing.set()
         release.wait(30)
-        return {"published": True, "msg_id": "m", "archive_sha256": "d"}
+        return _publish_result(published=True)
 
     monkeypatch.setattr(results_ingest, "publish_raw_results", _slow_broker)
     monkeypatch.setattr(

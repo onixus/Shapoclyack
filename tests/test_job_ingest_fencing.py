@@ -27,6 +27,7 @@ from api.db.engine import get_session
 from api.schemas import StartScanRequest
 from api.services import agents as agents_service
 from api.services import jobs as jobs_service
+from api.services import nats_outbox
 from api.services import results_ingest
 from api.services import run_publisher
 from api.services import artifact_store
@@ -72,6 +73,31 @@ def _archive(marker: str) -> bytes:
             info.size = len(payload)
             tf.addfile(info, io.BytesIO(payload))
     return buf.getvalue()
+
+
+def _outbox_rows(settings) -> list[models.NatsOutboxEntry]:
+    """Messages the broker refused and the outbox is holding for it."""
+    with get_session(settings.postgres_url) as session:
+        rows = session.query(models.NatsOutboxEntry).all()
+        session.expunge_all()
+        return rows
+
+
+def _publish_result(*, published: bool) -> dict[str, object]:
+    """What ``results_ingest.publish_raw_results`` answers, in full.
+
+    The bus hop reads more of it than ``published``: a refusal is written to
+    the outbox under the message's own ``subject`` and ``msg_id``
+    (``nats_outbox``), so a stub that leaves them out is answering a different
+    contract and fails the caller rather than the broker.
+    """
+    return {
+        "published": published,
+        "msg_id": "m",
+        "archive_sha256": "d",
+        "tenant_id": "default",
+        "subject": "ingest.results.default",
+    }
 
 
 def _later():
@@ -385,11 +411,16 @@ def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, 
 
     ``ingest.results.{tenant}`` feeds ClickHouse under the run id, so a
     republish that produced a second message would insert the same scan twice.
-    What is asserted here is the half that is this module's to keep: the row is
-    gone once the message lands, so no later tick sends a second one. (The
+    What is asserted here is that exactly one message reaches the broker across
+    the whole deferral, and that nothing is left owing it afterwards. (The
     other half — a retry carrying the *same* ``Msg-Id``, for the broker to drop
     — is the archive kept beside the staging tree, and it is JetStream's
     duplicate window that acts on it; see ``nats_bus``.)
+
+    The deferral is the outbox's, not this module's: the bus hop is the last
+    step of the publication and hands a refused message to ``nats_outbox``
+    rather than failing the row, so the run's artifacts and its Postgres
+    projections do not wait for the broker. What stays owed is the message.
     """
     settings.nats_url = "nats://127.0.0.1:4222"
     published: list[dict] = []
@@ -397,9 +428,9 @@ def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, 
 
     def _publish(**kwargs):
         if not broker["up"]:
-            return {"published": False, "msg_id": "m", "archive_sha256": "d"}
+            return _publish_result(published=False)
         published.append(kwargs)
-        return {"published": True, "msg_id": "m", "archive_sha256": "d"}
+        return _publish_result(published=True)
 
     monkeypatch.setattr(results_ingest, "publish_raw_results", _publish)
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
@@ -418,22 +449,34 @@ def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, 
     )
 
     # The broker is down, so the run is published on disk and in the store and
-    # the message is owed. The scan is not failed over a projection.
+    # only the message is owed. The scan is not failed over a projection, and
+    # the publication itself is not held open by the broker either.
     assert done.status == "succeeded"
     assert (
         artifact_workspace.run_dir(settings, str(run_id), refresh=False) / "fresh.json"
     ).is_file()
     assert published == []
-    assert [row.status for row in run_publisher.pending_publications(settings, job.job_id)] == [
-        "pending"
-    ]
-
-    broker["up"] = True
-    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
-    assert [p["run_id"] for p in published] == [str(run_id)]
-    # Nothing is owed any more, so no later tick can publish it a second time.
     assert run_publisher.pending_publications(settings, job.job_id) == []
     assert run_publisher.reconcile_once(settings, now=_later())["published"] == 0
+    owed = _outbox_rows(settings)
+    assert [(row.status, row.run_id) for row in owed] == [("pending", str(run_id))]
+
+    # The broker is back. The reconciler talks to it directly rather than
+    # through ``publish_raw_results``, so the recovered publish is recorded on
+    # the same list by the bus itself.
+    broker["up"] = True
+
+    class _Broker:
+        def publish_ingest(self, payload, *, msg_id):
+            published.append({"run_id": str(payload.get("run_id"))})
+            return True
+
+    monkeypatch.setattr(nats_outbox.nats_bus, "get_bus", lambda url: _Broker())
+    assert nats_outbox.reconcile_once(settings, now=_later())["republished"] == 1
+    assert [p["run_id"] for p in published] == [str(run_id)]
+    # Nothing is owed any more, so no later tick can publish it a second time.
+    assert _outbox_rows(settings) == []
+    assert nats_outbox.reconcile_once(settings, now=_later())["republished"] == 0
     assert [p["run_id"] for p in published] == [str(run_id)]
 
 
@@ -505,7 +548,7 @@ def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, 
     monkeypatch.setattr(
         results_ingest,
         "publish_raw_results",
-        lambda **kwargs: published.append(kwargs) or {"published": True},
+        lambda **kwargs: published.append(kwargs) or _publish_result(published=True),
     )
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
     first = jobs_service.claim_job(settings, "agent-1")
@@ -581,7 +624,7 @@ def test_a_reap_during_the_publication_cannot_mix_two_attempts(settings, monkeyp
     monkeypatch.setattr(
         results_ingest,
         "publish_raw_results",
-        lambda **kwargs: published.append(kwargs) or {"published": True},
+        lambda **kwargs: published.append(kwargs) or _publish_result(published=True),
     )
     job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
     first = jobs_service.claim_job(settings, "agent-1")

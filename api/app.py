@@ -70,6 +70,7 @@ from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
 from api.services import nats_bus
+from api.services import nats_outbox
 from api.services import oidc as oidc_service
 from api.services import scan_schedules
 from api.services.reports import dispatcher as report_dispatcher
@@ -92,6 +93,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             clickhouse_url=settings.clickhouse_url,
             settings=settings,
         )
+    # Drains the publications the broker refused while it was down. Safe in
+    # every replica without leader election — rows are claimed with FOR UPDATE
+    # SKIP LOCKED — and it is what a relaxed NATS readiness check is paid for:
+    # without it, a broker outage would be silently missing analytics behind an
+    # API that answers 200 (P2, docs/architecture-review-2026-09-18.ru.md).
+    nats_outbox.start_worker(settings)
     # Started in every replica, but dispatches only in the one holding the
     # advisory lock (ROADMAP P1.6).
     schedule_dispatcher.start_worker(settings)
@@ -145,6 +152,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         endpoint_retention.stop_worker()
         schedule_dispatcher.stop_worker()
         ch_ingest_worker.stop_worker()
+        nats_outbox.stop_worker()
         nats_bus.shutdown_bus()
 
 

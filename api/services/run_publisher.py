@@ -38,13 +38,11 @@ the pointer is a file, and the bus message carries a ``Msg-Id`` derived from
 the archive digest — which is why the archive is kept beside the staging tree
 rather than re-derived (:func:`artifact_store.workspace.staged_archive_path`).
 A republish of the same run is therefore the same message, which JetStream
-drops *if* the ``INGEST`` stream's duplicate window is longer than the gap
-between an upload and its retry — it is not today: the stream is declared in
-``nats_bus`` without one, so the default two minutes is shorter than this
-module's own backoff. Until that window is set, a republish after a broker
-outage is a second message for one run, and the digest is what will make it a
-duplicate rather than a new insert once it is. Two *different* attempts could
-never both get here, because only one of them was ever accepted.
+drops: the ``INGEST`` stream is declared with a ``duplicate_window``
+(``OCTO_NATS_INGEST_DEDUPE_SECONDS``, 24h) wide enough to cover both this
+module's backoff and the outbox's, rather than the two-minute default that was
+shorter than either. Two *different* attempts could never both get here,
+because only one of them was ever accepted.
 
 **The bound.** Retries stop at ``run_publication_max_attempts`` and the row
 stays ``dead``. That is the honest end: an installation whose store has been
@@ -90,6 +88,7 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import metrics as metrics_service
+from api.services import nats_outbox
 from api.services import results_ingest
 from api.services import runs as runs_service
 from api.services.artifact_store import workspace as artifact_workspace
@@ -570,6 +569,24 @@ def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
     landed and no future attempt can produce these bytes, so the row is ended
     as ``dead`` with the reason on it rather than counting down attempts that
     cannot work.
+
+    **A refused publish is handed to the outbox, not retried here.** This is
+    the last step of the publication, and the three before it — the store, the
+    run directory, the pointer — are done by the time it runs, as are the
+    Postgres projections waiting on :func:`_record_success`. Failing the whole
+    row on a broker that is down therefore held *those* hostage too: a ten
+    minute outage spent this row's five attempts, ended it ``dead``, and left
+    every run of that window without its assets, its findings and its
+    notification, over a message for ClickHouse. So the message is published or
+    written down (``nats_outbox``), and either outcome closes the publication.
+    The two mechanisms own disjoint work — this module up to and including the
+    hand-off, the outbox reconciler the hop itself — so neither retries what
+    the other is retrying.
+
+    Refusing without recording is still a failure of the publication: with
+    ``OCTO_NATS_OUTBOX_ENABLED=false`` nothing durable is left behind, and an
+    upload whose message is neither delivered nor written down must not read as
+    published.
     """
     if not settings.nats_url:
         return
@@ -579,8 +596,8 @@ def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
             "the uploaded archive is no longer on disk, so the analytical projection "
             "cannot be fed for this run; the run itself is published"
         )
-    result = results_ingest.publish_raw_results(
-        nats_url=settings.nats_url,
+    result = nats_outbox.publish_ingest_or_record(
+        settings,
         job_id=publication.job_id,
         run_id=publication.run_id,
         agent_id=publication.agent_id or "",
@@ -589,8 +606,8 @@ def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
         error=publication.scan_error,
         tenant_id=publication.tenant_id,
     )
-    if not result.get("published"):
-        raise RuntimeError("the broker refused the ingest publish")
+    if not result.get("published") and not result.get("outbox_id"):
+        raise RuntimeError("the broker refused the ingest publish and the outbox is disabled")
 
 
 def _record_success(settings: Settings, publication: _Publication) -> None:

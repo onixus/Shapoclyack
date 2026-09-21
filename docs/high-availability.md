@@ -247,14 +247,17 @@ work with:
 
 * `strategy.rollingUpdate.maxUnavailable: 0` / `maxSurge: 1` — the replacement
   pod is Ready before the old one is taken down.
-* `readinessProbe` on `/readyz`, which checks Postgres and, where configured,
-  NATS — a replica without either can neither serve a request nor dispatch a
-  job, and it leaves the Service instead of being restarted. ClickHouse is
-  checked too but deliberately does **not** fail the probe: it is one pod with
-  no PDB (see [below](#what-this-overlay-does-not-give-you)), so letting it
-  decide readiness would make one broker restart take *both* API replicas out
-  of the Service at once. A replica with ClickHouse down answers `/readyz` with
-  200 and `"status": "degraded"`, and `/api/health` says which check failed.
+* `readinessProbe` on `/readyz`, which fails only on Postgres — a replica
+  without its database can serve nothing, and it leaves the Service instead of
+  being restarted. ClickHouse, the artifact bucket, NATS and the outbox backlog
+  are checked and reported but deliberately do **not** fail the probe: each of
+  them is shared by every replica (and ClickHouse is one pod with no PDB, see
+  [below](#what-this-overlay-does-not-give-you)), so letting one decide
+  readiness would take *both* API replicas out of the Service at once. Such a
+  replica answers `/readyz` with 200 and `"status": "degraded"`, and
+  `/api/health` says which check failed. NATS stopped being a blocking check
+  with the outbox described in
+  [What a NATS outage costs](#what-a-nats-outage-costs).
 * `livenessProbe` on `/livez`, dependency-free on purpose: a Postgres outage
   must not restart every replica at once.
 * `startupProbe` — up to 150s for a cold start against a busy database, during
@@ -279,6 +282,72 @@ What is still a brief interruption:
   API process. A replica terminating mid-scan loses that run; the job is
   re-claimed after its lease expires, it is not lost, but it restarts rather
   than resumes.
+
+## What a NATS outage costs
+
+The matrix the 2026-09-18 architecture review asked for before deciding whether
+the broker should keep failing `/readyz`. Read from the code: `nats_bus` and
+every caller of it — `jobs._publish_job_offer`, `results_ingest`,
+`asset_events`, `audit_events`, `endpoint_inventory`, `ch_ingest_worker`,
+`webhook_worker`, `audit_syslog_forwarder`.
+
+| Capability | With NATS unreachable | Why |
+| --- | --- | --- |
+| Sign-in, RBAC, tenants, users, sessions | **Works** | Postgres only; the bus is not in the path |
+| Every read of assets, findings, runs, reports, schedules, policies | **Works** | Served from Postgres and the artifact store |
+| Starting a scan (`POST /api/scans`) | **Works** | The job row is committed first; the offer is published after it and is only a notification. A failed publish is logged and the job stays `queued` |
+| A sensor picking up work | **Works, slower** | `POST /api/agent/jobs/claim` is HTTP and takes the job under a row lock; JetStream only tells a sensor to claim *sooner*. A sensor with `OCTO_NATS_URL` set falls back to that claim every `NATS_FALLBACK_CLAIM_SECONDS` (60s, `agent/worker.py`), so with the broker gone dispatch latency is bounded by one minute rather than by the poll interval |
+| Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
+| Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |
+| The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The refused publish is written to `nats_outbox` by the last step of the run's publication (`run_publisher._publish_to_bus`) and republished when the broker returns. The run itself, its artifacts and its Postgres projections are published without waiting for that. The backlog is the `ingest_backlog` check and `octo_nats_outbox_backlog` |
+| Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — recovered, out of order** | The envelopes the broker refused go to the same `nats_outbox` (`kind="asset_event"`) — from a scan's diff and from the operator's `decommissioned_host` alike — and are published when it returns, so the webhooks are late rather than missing. Late means *reordered*: a replayed event arrives after events published live after the outage, so a consumer that cares about the order of two events on one asset must sort by the envelope's `occurred_at`, which is stamped when the event is built, not when it is published. With `OCTO_NATS_OUTBOX_ENABLED=false` they are counted `octo_asset_events_published_total{outcome="skipped"}` and not sent later — `ShapoclyackAssetEventsSkipped` |
+| Audit events to a SIEM over `events.audit.>` | **Degrades — recovered by the other source** | The rows are committed and readable via `GET /api/audit`; the publish is skipped. `OCTO_AUDIT_SYSLOG_SOURCE=db` forwards without the broker at all |
+| Endpoint inventory submissions | **Works, event skipped** | The snapshot is stored; the `endpoint_inventory_accepted` event is fail-soft |
+| Webhook delivery of already-queued events, including DLQ replay | **Works** | The queue is Postgres rows and the dispatcher needs no broker |
+| Replaying events from the stream after recovery | **Works** | JetStream retains `INGEST` for 7d and `EVENTS` for 30d; a consumer that was down resumes at its cursor |
+
+Nothing in the first block needs the bus, which is why NATS is **not** in
+`health.BLOCKING_CHECKS` any more. Blocking on it meant one broker outage took
+every API replica out of its Service simultaneously — they share one broker —
+and what the installation lost was not "dispatch" but sign-in, the console, the
+sensor fleet's heartbeats and the ability to see that anything was wrong.
+
+The row that made the old policy defensible is the ingest one: a publish lost
+with the broker is lost for good, and availability then hides a permanent hole
+in analytics. That is what `nats_outbox` (migration `0059`) is for, and the two
+are a single decision — **do not put NATS back into `BLOCKING_CHECKS` without
+also removing the outbox, and do not remove the outbox while NATS is
+advisory.** The unrecovered backlog is reported as the `ingest_backlog` check
+on `/readyz` and `/api/health`, and as `octo_nats_outbox_backlog`; draining it
+is [operations.md § NATS outbox](operations.md#nats-outbox).
+
+The recording is done where the publication ends. An accepted run is published
+from a durable `run_publications` row (migration `0058`), and the bus hop is
+that row's last step; it now publishes *or* records, so neither the run's
+artifacts nor its Postgres projections wait on the broker, and the message is
+not lost when the broker refuses it. The one configuration in which it still is
+is `OCTO_NATS_OUTBOX_ENABLED=false`: nothing durable is written, and the
+publication itself then fails and retries like any other, ending `dead` for an
+operator rather than silently.
+
+Asset events are in the outbox for the same reason, and it is a reason this
+change created rather than inherited. They feed the webhook fan-out and nothing
+else does (`webhook_worker` is the only caller of `webhooks.enqueue_event`).
+While NATS blocked `/readyz` the replicas left the Service for the length of an
+outage, so the upload that produces those events was not accepted until the
+broker was back: the notification was late. Accepting the upload during the
+outage — which is the whole point of the relaxed policy — would have made it
+missing instead, for exactly the runs an operator most wants to hear about. So
+`asset_events.publish_events` records what it could not deliver
+(`kind="asset_event"`) and the same reconciler lands it.
+
+The operator-initiated `decommissioned_host` publish from `PATCH
+/api/assets/{id}` is recorded the same way, and for the same reason: its
+transaction is committed before the publish is attempted, so the broker being
+down must cost the webhook its latency and not its existence. What is still not
+recovered is those events with the outbox switched off. This section is the
+honest statement of what a broker outage costs today, not a claim that it costs
+nothing.
 
 Background workers are safe across replicas by construction, not by luck: the
 scheduler dispatcher, the report dispatcher, the software-match worker, the SLA

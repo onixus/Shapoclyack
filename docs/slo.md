@@ -201,6 +201,33 @@ This is queue depth, not end-to-end latency. There is no scan-finished →
 row-queryable timer today; add one before promising a freshness number in a
 customer-facing SLA.
 
+The consumer's lag is only the half of freshness that *reached* the stream.
+Since NATS stopped deciding readiness, a run whose ingest publish the broker
+refused is held in the outbox instead, and that backlog is invisible to the
+gauge above — the message is not on the stream to be pending. Both halves are
+alerted on: `ShapoclyackNatsOutboxBacklog` and `ShapoclyackNatsOutboxDead` ship
+in `k8s/shapoclyack/examples/prometheus-slo.rules.yaml` alongside the consumer
+rules, with `ShapoclyackNatsOutboxDropping` for the `OCTO_NATS_OUTBOX_ENABLED=false`
+configuration, where a refused publish is written down nowhere and the run
+survives only on the publication's own retries. The expressions are:
+
+```promql
+max(octo_nats_outbox_backlog{status="stale"}) > 0
+or
+max(octo_nats_outbox_backlog{status="dead"}) > 0
+```
+
+`max()`, not `sum()`: every replica reports the same cluster-wide query. A
+non-zero value means the HTTP control plane is healthy while the analytical
+projection is behind, which is precisely what the relaxed readiness check must
+not be allowed to hide — see
+[operations.md § NATS outbox](operations.md#nats-outbox).
+
+A zero is a real zero: the writer is the last step of every accepted run's
+publication (`run_publisher._publish_to_bus`), so rows appear whenever the
+broker refuses and only then
+([high-availability.md](high-availability.md#what-a-nats-outage-costs)).
+
 ### 6. Ingest correctness
 
 ```promql

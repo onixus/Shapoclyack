@@ -2174,6 +2174,159 @@ Never replay a restored stream by republishing every message with new message
 IDs. That defeats the deduplication mechanisms the recovery procedure relies
 on.
 
+### NATS outbox
+
+What a broker outage leaves behind, and how to see and drain it.
+
+Since the 2026-09-18 architecture review, NATS is **not** a blocking readiness
+check: an API replica whose broker is unreachable stays in its Service and goes
+on serving everything that does not need the bus (the matrix is in
+[high-availability.md § What a NATS outage costs](high-availability.md#what-a-nats-outage-costs)).
+Two things would otherwise be lost silently. One is the `ingest.results.*`
+message that feeds the ClickHouse projection: the upload is accepted, the
+artifacts are written, the job succeeds — and analytics never hear about the
+run. The other is the run's asset events, which are the only source of the
+webhook fan-out: with the broker advisory the upload is accepted during the
+outage, so a `new_cve` webhook that used merely to arrive late would never be
+sent at all. The `nats_outbox` table (migration `0059`) and the reconciler
+thread in every API replica hold both (`kind` is `ingest` or `asset_event`) and
+republish them.
+
+The writer for `ingest` is `run_publisher._publish_to_bus` — the last step of an
+accepted run's publication, after the object store, the run directory and the
+pointer. It publishes or records, and either way the publication closes, so a
+broker outage costs the analytical projection its latency and costs the run
+itself nothing. The writer for `asset_event` is `asset_events.publish_events`,
+on the same post-run hook. Rows appear only while the broker is refusing; an
+installation with a healthy broker has an empty table.
+
+What an operator sees:
+
+* `/readyz` and `/api/health` carry an `ingest_backlog` check next to `nats`.
+  It is `error` when something has been owed for longer than
+  `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` (default 300), or when any entry has
+  gone `dead`. Both endpoints stay 200 — this degrades the installation, it
+  does not unready the replica.
+* `octo_nats_outbox_backlog{status="pending"|"stale"|"dead"}` — a cluster-wide
+  count, so aggregate with `max()`, not `sum()`. **This is the series to alert
+  on:** `stale` or `dead` above zero means HTTP is healthy while the analytical
+  projection is behind, which is exactly what relaxing the readiness check
+  could otherwise hide.
+* `octo_nats_outbox_total{kind,outcome}` — `recorded`, `republished`, `dead`,
+  `superseded` (a recorded message a later attempt of the same publication
+  delivered anyway, so the row was dropped instead of republished),
+  `unreplayable`, `discarded`, and `dropped` for the configuration that writes
+  nothing down (`OCTO_NATS_OUTBOX_ENABLED=false`), where a refused ingest
+  publish rides on the publication's own retries instead and only an outage
+  outliving those loses the run's message.
+* `octo_asset_events_published_total{kind,outcome}` — `deferred` is an event
+  waiting in this table, `skipped` one that is not waiting anywhere and whose
+  webhook is never sent (`ShapoclyackAssetEventsSkipped`).
+* `octo_nats_stream_config_drift{stream,setting}` — 1 when a stream runs with a
+  setting other than the one the API asked for. **Do not build a panel that
+  expects this series to exist.** It is written only on the fail-soft branch of
+  the stream setup: nats-server 2.10 treats `STREAM.CREATE` as a
+  create-or-update, so an installation whose account may write the stream
+  applies `OCTO_NATS_INGEST_DEDUPE_SECONDS` and `OCTO_NATS_STREAM_REPLICAS` on
+  every connect and never compares anything — the series is absent, which is
+  the healthy case. It appears when the API could neither create nor update an
+  existing stream (an account without the rights to change it) and the stream
+  kept settings of its own. To check what a stream actually runs with, ask the
+  server: `nats stream info INGEST`.
+  A stale `duplicate_window` matters here specifically: a republish from this
+  table relies on JetStream dropping a copy the broker already stored, and
+  JetStream's own default window (2 minutes) is shorter than one backoff.
+  Recreate or reconcile the stream — `nats stream edit INGEST
+  --dupe-window=24h` from a host with the CLI, or fix the account permissions
+  that made `update_stream` fail and restart an API replica.
+
+A `dead` row here is about the *message*, not the run: the scan, its artifacts
+and its findings were published when the upload was accepted. A run that is
+missing altogether is a `dead` `run_publications` row instead — a different
+table, a different check (`run_publications`) and the procedure above this one.
+
+The backlog drains by itself once the broker accepts publishes again: entries
+are retried with exponential backoff between
+`OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` and `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS`,
+`OCTO_NATS_OUTBOX_BATCH_SIZE` at a time, from every replica (rows are claimed
+`FOR UPDATE SKIP LOCKED`, so the replicas divide the work). An entry that
+exhausts `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` goes `dead` and waits for a decision —
+close to four hours of retries at the defaults, so a `dead` row means an outage
+longer than that, not a flaky publish.
+
+Inspecting and replaying the dead end:
+
+The API image has no `psql` (`Dockerfile.api` installs `openssh-client` and the
+DejaVu fonts, nothing else), and `OCTO_POSTGRES_URL` is a SQLAlchemy DSN —
+`psql` does not recognise the `postgresql+psycopg://` prefix and reads the whole
+string as a database name. So the outbox is inspected the way the rest of this
+runbook reaches the database: `python -c` in the API container.
+
+```bash
+# What is owed, oldest first. Payloads are megabytes of base64 — never SELECT *.
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from sqlalchemy import func, select
+from api.db import models
+from api.db.engine import get_session
+from api.services import nats_outbox
+from api.settings import load_settings
+settings = load_settings()
+print(nats_outbox.backlog(settings))
+with get_session(settings.postgres_url) as session:
+    for row in session.execute(
+        select(
+            models.NatsOutboxEntry.status,
+            func.count(),
+            func.min(models.NatsOutboxEntry.created_at),
+        ).group_by(models.NatsOutboxEntry.status)
+    ):
+        print(row)
+"
+
+# Put the dead entries back on the due queue (all tenants, or one).
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from api.services import nats_outbox
+from api.settings import load_settings
+settings = load_settings()
+print(nats_outbox.requeue_dead(settings), 'requeued')
+print(nats_outbox.reconcile_once(settings))
+"
+
+# Give up on the ones that are not coming back, after re-scanning those runs.
+# Only 'dead' rows can be discarded; a pending row is still the reconciler's.
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from api.services import nats_outbox
+from api.settings import load_settings
+print(nats_outbox.discard_dead(load_settings()), 'discarded')
+"
+```
+
+Bounds worth knowing before an incident:
+
+* A run archive larger than 4 MB was never published inline in the first place
+  (`results_ingest.build_gateway_payload`), so its stored body says
+  `archive_inline: false` and replaying it gives ClickHouse nothing to
+  transform. That limitation predates the outbox and is unchanged by it: for
+  those runs the artifacts are the record, and the analytics gap needs a
+  re-scan or a manual load. Such an entry is recorded `dead` immediately rather
+  than queued, and `requeue_dead` skips it with a log line. Requeueing one is
+  how the health signal gets to lie in the cheerful direction: the broker
+  accepts a body-less message, the republish counts as a success, the row is
+  deleted and the backlog reads zero over a ClickHouse that received nothing.
+* `dead` is the only status that needs a human, and it has exactly two exits:
+  `requeue_dead` for entries that failed because the outage outlasted the
+  retries, and `discard_dead` for entries an operator has decided against.
+  Until one of them is used, `ingest_backlog` stays `error` and
+  `octo_nats_outbox_backlog{status="dead"}` stays non-zero — the degraded
+  signal does not expire on its own, by design.
+* Only ingest messages are recorded. A job offer is not (the job row is in
+  Postgres and a sensor claims over HTTP), and asset/audit events are not —
+  those are skipped and counted, see the matrix.
+* The table grows with the outage. Each entry holds one run archive, so size
+  the database accordingly, or accept the dead end: an installation that would
+  rather re-scan than keep the bodies sets `OCTO_NATS_OUTBOX_ENABLED=false`,
+  which makes a refused publish a logged loss again.
+
 ### Per-tenant job stream
 
 Job offers are published on `jobs.scan.{tenant}` (stream `JOBS`, unchanged

@@ -133,6 +133,81 @@ groups:
             more than 5 minutes. A stopped poller leaves a stale value rather
             than a rising one.
 
+      # The consumer lag above is only the half of freshness that reached the
+      # stream. Since NATS stopped deciding readiness, a run whose ingest
+      # publish the broker refused is held in nats_outbox instead, where the
+      # gauge above cannot see it — the message is not pending on a stream it
+      # never reached. /readyz and /api/health both answer 200 in that state by
+      # design, so without these rules "the analytics are a day behind" has no
+      # signal at all. max(), not sum(): every replica reports the same
+      # cluster-wide query. See docs/slo.md and docs/operations.md § NATS outbox.
+      - alert: ShapoclyackNatsOutboxBacklog
+        expr: max(octo_nats_outbox_backlog{status="stale"}) > 0
+        for: 10m
+        labels:
+          severity: ticket
+          slo: "5"
+        annotations:
+          summary: Ingest publications have been unrecovered past the alert window
+          description: >-
+            Publications the broker refused have been waiting longer than
+            OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS. HTTP is healthy while the
+            analytical projection is behind, which is what the relaxed NATS
+            readiness check must not be allowed to hide. Drain per
+            docs/operations.md § NATS outbox.
+
+      - alert: ShapoclyackNatsOutboxDead
+        expr: max(octo_nats_outbox_backlog{status="dead"}) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Ingest publications have exhausted their retries
+          description: >-
+            An entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS (close to four hours
+            of retrying at the defaults) or was recorded with no replayable
+            body. Nothing retries it again: it needs an operator decision —
+            nats_outbox.requeue_dead, a re-scan, or discard_dead.
+
+      - alert: ShapoclyackNatsOutboxDropping
+        expr: sum(rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Refused ingest publications are being dropped, not recorded
+          description: >-
+            OCTO_NATS_OUTBOX_ENABLED=false, so nothing durable is written when
+            the broker refuses a publish. This is not yet a lost run: the
+            publication itself then fails and retries
+            (OCTO_RUN_PUBLICATION_MAX_ATTEMPTS, a few minutes of backoff), and
+            a broker that blinked is covered by the second attempt. It becomes
+            a loss only for an outage that outlives those attempts, which
+            shows up as octo_run_publication_backlog{status="dead"}. Ticket,
+            not page:
+            the fix is turning the outbox back on, and it is not urgent by
+            itself.
+
+      # Asset events are the only source of the webhook fan-out, and unlike an
+      # ingest message they used to have nowhere to wait. They go to the outbox
+      # now, so outcome="skipped" means the event reached neither the stream nor
+      # a row: OCTO_NATS_OUTBOX_ENABLED=false, or a database that refused to
+      # take it. The notification for that finding is not sent later.
+      - alert: ShapoclyackAssetEventsSkipped
+        expr: sum(rate(octo_asset_events_published_total{outcome="skipped"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Asset events are being dropped, not deferred
+          description: >-
+            An asset event was neither published nor recorded in nats_outbox,
+            so the webhook it feeds — including a new critical CVE — will not
+            be sent at all. A run's events are still in its diff.json, and an
+            operator's decommission in the asset row — but nothing resends them.
+            outcome="deferred" is the healthy version of the same outage and is
+            covered by the outbox alerts above.
+
       - alert: ShapoclyackClickHouseIngestErrors
         expr: |
           (

@@ -4,6 +4,73 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **An outbox for ingest publications the broker refuses.** A run's
+  publication ends on the analytics bus (`run_publisher._publish_to_bus`), and
+  a broker that is down used to fail the whole publication: the row was
+  retried, went `dead` after `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (five attempts
+  on a 15 s base, so about four and a half minutes of outage at the defaults,
+  reconciler ticks included), and the run's own Postgres projections — assets,
+  findings, the notification — never ran either, because they are the last
+  step after the bus. The bus step now publishes *or* writes the message down
+  in the new `nats_outbox` table (migration `0059`), and its reconciler thread
+  — rows claimed `FOR UPDATE SKIP LOCKED`, retried with capped exponential
+  backoff, deleted once the stream has them — lands it when NATS comes back.
+  The publication itself closes either way, so a broker outage now costs the
+  analytical projection its latency and nothing else. The two mechanisms do not
+  overlap: `run_publications` owns the store, the run directory, the pointer
+  and the projections; `nats_outbox` owns exactly the last hop, and only for
+  messages the broker has refused. An entry that exhausts
+  `OCTO_NATS_OUTBOX_MAX_ATTEMPTS`, or whose archive was over the inline cap and
+  so has no body to replay, goes `dead` and waits for an operator
+  (`nats_outbox.requeue_dead`, `nats_outbox.discard_dead`). With
+  `OCTO_NATS_OUTBOX_ENABLED=false` there is nothing to write the message down
+  in, so the bus step fails as before and the publication carries the loss —
+  the one configuration in which a refused publish still costs a run. New
+  variables `OCTO_NATS_OUTBOX_ENABLED`, `_INTERVAL_SECONDS`, `_BATCH_SIZE`,
+  `_MAX_ATTEMPTS`, `_RETRY_BASE_SECONDS`, `_RETRY_MAX_SECONDS`,
+  `_BACKLOG_ALERT_SECONDS`, `OCTO_NATS_INGEST_DEDUPE_SECONDS`; new metrics
+  `octo_nats_outbox_backlog{status}` and `octo_nats_outbox_total{kind,outcome}`;
+  new alerts `ShapoclyackNatsOutboxBacklog`, `ShapoclyackNatsOutboxDead` and
+  `ShapoclyackNatsOutboxDropping` in the shipped SLO rules.
+
+- **Asset events survive a broker outage too** (`kind="asset_event"` in the
+  same outbox). They are the only source of the webhook fan-out, and relaxing
+  the readiness check changed what losing one costs: the upload used to be
+  refused for the length of the outage, so the notification went out late,
+  whereas now the run is accepted and `asset.vulnerability.new` for that hour
+  would simply never be sent. `asset_events.publish_events` records the
+  envelopes it could not deliver and the reconciler publishes them when the
+  broker is back; `octo_asset_events_published_total{outcome="deferred"}` is
+  that case, and `outcome="skipped"` is now only the event with nowhere to wait
+  (`OCTO_NATS_OUTBOX_ENABLED=false` or a database that refused the rows), which
+  the new `ShapoclyackAssetEventsSkipped` alert covers. The operator's
+  `decommissioned_host` from `PATCH /api/assets/{id}` takes the same route: its
+  write is committed before the publish is tried, so a broker that is down
+  makes that webhook late rather than lost. A replayed event arrives after
+  events published live in the meantime — consumers that compare two events on
+  one asset order them by the envelope's `occurred_at`, not by arrival.
+
+- The `INGEST` JetStream stream now sets a `duplicate_window`
+  (`OCTO_NATS_INGEST_DEDUPE_SECONDS`, default 24h, clamped to the stream's
+  retention — except at `OCTO_NATS_INGEST_MAX_AGE_SECONDS=0`, JetStream's idiom
+  for unbounded retention, where the clamp would have switched dedupe off
+  entirely), as `EVENTS` already did. A stream that already existed and could
+  neither be created over nor updated — an account without the rights to change
+  it — keeps its own window, which is fail-soft on purpose and was invisible;
+  on that branch both it and the replica count are now compared against the
+  requested config and reported as
+  `octo_nats_stream_config_drift{stream,setting}` alongside the existing log
+  line. On an installation that may write its streams nats-server 2.10 applies
+  the requested config through `STREAM.CREATE` itself, so there is nothing to
+  compare and the series is absent. JetStream's 2-minute default is shorter
+  than a single outbox backoff, so a publish whose ack timed out after the
+  server had stored it would have been accepted a second time on replay and
+  ingested twice. A run's `Msg-Id` is derived from its archive digest, so the
+  window is what makes "republish the same run" a duplicate the stream drops
+  rather than a second insert.
+
 ### Fixed
 
 - **A result from a replaced attempt can no longer finish somebody else's
@@ -169,8 +236,9 @@ All notable changes to Shapoclyack are documented in this file.
   derived from. Re-packing the run directory would have produced a different
   one, i.e. a second ClickHouse insert for one scan with nothing able to tell.
   Whether JetStream then *drops* the duplicate is the `INGEST` stream's
-  business, and that stream still has no `duplicate_window` set — so until it
-  does, this makes the duplicate recognisable rather than impossible.
+  business, and that stream now sets a `duplicate_window` wide enough to cover
+  both retry schedules (see *Added* above), so the duplicate is dropped rather
+  than merely recognisable.
 - The run's `tenant.json` is written into the staging tree, so both copies
   carry their owner from the moment either can be read. A run without it reads
   back as the **default tenant** — one tenant's scan in every tenant's run
@@ -227,6 +295,25 @@ All notable changes to Shapoclyack are documented in this file.
   ingest reserved.
 
 ### Changed
+
+- **NATS no longer blocks readiness.** A configured but unreachable broker used
+  to fail `/readyz` in every API replica at once — they share one broker —
+  which turned a degraded installation into an unavailable one: sign-in, the
+  console, the sensor fleet and every read and write that never touches the bus
+  went down with it. The capability matrix behind the decision is in
+  [docs/high-availability.md](docs/high-availability.md) § *What a NATS outage
+  costs*. `/readyz` now fails only on Postgres; the broker is reported and
+  degrades `/api/health`, alongside a new `ingest_backlog` check that names the
+  publications the outbox above has not recovered — because availability must
+  not hide analytics falling behind. The two are one decision: NATS must not go
+  back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not
+  be removed while NATS is advisory.
+
+- `nats_bus.publish_ingest` now reports success only when both the tenant
+  subject and the legacy `ingest.raw_results` subject accepted the message. The
+  legacy result was discarded, so a partial publish read as a full one — which
+  the outbox would have taken as "nothing to record".
+
 
 - **The Pulse binary is pinned by digest, and the image builds without it.**
   `scripts/pulse-pinned.sha256` now holds the reviewed SHA-256 of each

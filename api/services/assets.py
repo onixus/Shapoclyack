@@ -1101,6 +1101,11 @@ def _publish_decommissioned(
             asset_id=asset_id,
             host=host,
             data={"previous_status": previous_status},
+            # The PATCH's own transaction is committed by now, so a refused
+            # publish belongs in the outbox: the operator marked the host
+            # decommissioned and the webhook subscriber has to hear about it
+            # eventually, not only when the broker happened to be up.
+            settings=settings,
         )
     except Exception:  # noqa: BLE001
         LOG.exception("decommissioned_host publish failed tenant=%s asset=%s", tenant_id, asset_id)

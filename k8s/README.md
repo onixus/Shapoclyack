@@ -172,6 +172,13 @@ storage without limit. Override on the API deployment:
 `OCTO_NATS_EVENTS_MAX_BYTES`. Limits apply to existing streams on API restart
 (via JetStream `update_stream`), not just first creation.
 
+`INGEST` sets a 24h JetStream duplicate window
+(`OCTO_NATS_INGEST_DEDUPE_SECONDS`, clamped to the stream's max age): a refused
+ingest publish is held in `nats_outbox` and retried for close to four hours, and
+a publish whose ack timed out after the server had stored it would otherwise be
+accepted a second time on replay and ingested twice. JetStream's own default is
+two minutes, shorter than a single retry backoff.
+
 `EVENTS` also sets a 24h JetStream duplicate window
 (`OCTO_NATS_EVENTS_DEDUPE_SECONDS`): event ids are derived from
 tenant+run+kind+host+port+CVE, so a results upload retried after a network
