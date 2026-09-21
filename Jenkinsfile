@@ -2,11 +2,16 @@
 // Все стадии крутятся в контейнерах через docker.sock хоста, поэтому на
 // контроллере не нужны ни Python, ни Node, ни kubectl.
 //
-// Отличия от GitHub Actions, осознанные:
+// Сами проверки — в scripts/ci-*.sh, общих с ci.yml: две копии одних и тех же
+// команд успели разъехаться (ruff 0.15.22 против 0.15.20, agent/ не линтился
+// нигде). Здесь остаётся только оркестрация контейнеров.
+//
+// Отличия от GitHub Actions, осознанные (таблица — в docs/development.md):
 //   * нет cache-from/to type=gha — вместо него локальный кэш демона + именованные
 //     volume'ы под pip/npm;
 //   * synthetic-load-test (composite action) не портирован — см. stage 'Load test';
-//   * образ собирается только под нативный linux/arm64, без QEMU-матрицы.
+//   * образ собирается только под нативный linux/arm64, без QEMU-матрицы;
+//   * стадии 'SSH deploy (live sshd)' в ci.yml нет вовсе.
 
 def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
 
@@ -32,37 +37,25 @@ pipeline {
     stage('Lint (ruff)') {
       agent { docker { image 'python:3.12-slim'; args PIP_CACHE; reuseNode true } }
       steps {
-        sh '''
-          set -eu
-          pip install --quiet ruff==0.15.22
-          ruff check scanner api tests
-        '''
+        // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
+        // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
+        // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
+        // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
+        sh 'scripts/ci-lint.sh --install'
       }
     }
 
     // Quality gate. Стоит до тестов и сборки образа намеренно: находка
     // уровня ERROR роняет билд за пару минут, а не после часа сборки.
+    // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
+    // эта стадия была единственной, которой в reference workflow не было.
+    // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
+    // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
+    // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
     stage('SAST (semgrep)') {
       agent any
       steps {
-        sh '''
-          set -eu
-          RULES="--config p/security-audit --config p/secrets --config p/python"
-
-          # Проход 1 — полный отчёт, все severity, билд не роняет (--no-error).
-          # WARNING/INFO должны быть видны в артефакте, но не блокировать.
-          echo "[sast] полный отчёт"
-          docker run --rm -v "$WORKSPACE":/src -w /src semgrep/semgrep:latest \
-            semgrep scan $RULES --metrics=off --no-error \
-              --json --output semgrep.json
-
-          # Проход 2 — гейт. --severity ERROR оставляет только криты,
-          # --error переводит находки в ненулевой код возврата. Гейтим кодом
-          # возврата, а не разбором JSON: меньше движущихся частей.
-          echo "[sast] quality gate: блок при ERROR"
-          docker run --rm -v "$WORKSPACE":/src -w /src semgrep/semgrep:latest \
-            semgrep scan $RULES --metrics=off --severity ERROR --error
-        '''
+        sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
       }
       post {
         always {
@@ -143,12 +136,14 @@ pipeline {
 
                           alembic -c api/db/alembic.ini upgrade head
 
-                          python -m pytest -q \
-                            --junitxml=junit-''' + PY + '''.xml \
-                            --cov=api --cov=scanner \
-                            --cov-report=xml:coverage-''' + PY + '''.xml \
-                            --cov-report=term-missing \
-                            --cov-fail-under=74
+                          # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
+                          # общем с ci.yml. Там же выставляется
+                          # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
+                          # отличает прогнанные Postgres-наборы от пропущенных
+                          # целиком, а это большая часть всех тестов.
+                          JUNIT_XML=junit-''' + PY + '''.xml \
+                          COVERAGE_XML=coverage-''' + PY + '''.xml \
+                            scripts/ci-pytest.sh
                         '''
                       }
                     }
@@ -194,12 +189,9 @@ pipeline {
           mkdir -p "$BUILD_DIR"
           cp -R web-next/. "$BUILD_DIR/"
           rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
-          cd "$BUILD_DIR"
-          npm ci
-          npm run lint
-          npm run typecheck
-          npm test
-          npm run build
+          # Сами шаги (ci/lint/typecheck/test/build) — в scripts/ci-web.sh,
+          # общем с ci.yml; здесь остаётся только копия мимо VirtioFS.
+          scripts/ci-web.sh "$BUILD_DIR"
         '''
       }
     }
