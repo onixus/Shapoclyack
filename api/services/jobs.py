@@ -21,7 +21,6 @@ slices (ROADMAP P1.4-P1.5).
 
 from __future__ import annotations
 
-import sys
 import threading
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -32,7 +31,6 @@ from typing import Any
 from api.db import models
 from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
 from api.services import audit as audit_service
-from api.services import job_states
 from api.services import job_control
 from api.services import job_dispatch
 from api.services import job_inputs
@@ -56,6 +54,7 @@ SCAN_SCOPE_INPUT = job_inputs.SCAN_SCOPE_INPUT
 PROMOTED_DOMAINS_INPUT = job_inputs.PROMOTED_DOMAINS_INPUT
 SCAN_POLICY_INPUT = job_inputs.SCAN_POLICY_INPUT
 _JOB_INPUT_FILES = job_inputs.JOB_INPUT_FILES
+
 
 def _now() -> datetime:
     """Naive UTC, matching the other Postgres-backed services."""
@@ -201,27 +200,17 @@ def _build_command(
     target_args: list[str],
     config_path: str,
 ) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "scanner.main",
-        "--config",
-        config_path,
-        "--mode",
-        mode,
-    ]
-    if delta:
-        command.append("--delta")
-    if skip_nse:
-        command.append("--skip-nse")
-    if notify:
-        command.append("--notify")
-    if export_defectdojo:
-        command.append("--export-defectdojo")
-    if run_id:
-        command.extend(["--run-id", run_id])
-    command.extend(target_args)
-    return command
+    return job_submission.build_command(
+        settings,
+        mode=mode,
+        delta=delta,
+        skip_nse=skip_nse,
+        notify=notify,
+        export_defectdojo=export_defectdojo,
+        run_id=run_id,
+        target_args=target_args,
+        config_path=config_path,
+    )
 
 
 # Compatibility facade for callers/tests that historically reached completion
