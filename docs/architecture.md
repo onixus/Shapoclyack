@@ -131,10 +131,19 @@ life — see the orphan deadline below.
 Should the race happen anyway (a renewal that never reached the database, two
 pods whose clocks disagree), the side that loses is harmless rather than
 destructive: a failed upload rolls back **the keys it wrote itself**, and only
-while the run is still owed. Taking the run's whole `runs/<run_id>/` prefix, as
-this first did, deletes a run somebody else has just published — and while run
-ids were minted from a one-second clock, somebody else's run entirely. Run ids
-minted by the API now carry a random suffix as well as the timestamp.
+while nothing has yet put the run's tree in the store. Taking the run's whole
+`runs/<run_id>/` prefix, as this first did, deletes a run somebody else has
+just published — and while run ids were minted from a one-second clock,
+somebody else's run entirely. Run ids minted by the API now carry a random
+suffix as well as the timestamp.
+
+The fence for that second condition is `run_publications.stored_at` and not the
+row itself. The winner promotes the staging tree and only *then* ships the
+archive to the broker, so the row that owes the publication outlives the moment
+the run became readable by the length of that upload — and that is precisely
+when the loser finds its staging tree gone and decides what to do with the keys
+it had written. So the transfer stamps the row before it promotes the tree, and
+a rollback that sees a stamp leaves the store alone.
 
 Attempts are counted where a publication fails, not where its row is claimed,
 so a replica killed mid-batch does not write one off for every row it was

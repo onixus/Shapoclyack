@@ -29,6 +29,7 @@ nothing else, the way ``test_runs_on_object_storage`` does.
 from __future__ import annotations
 
 import io
+import re
 import tarfile
 import threading
 import time
@@ -526,7 +527,12 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
 
     Here the tick publishes the run and promotes the staging tree out from
     under the request, whose own upload then fails on a file that is no longer
-    on disk.
+    on disk — and it does so in the order production runs in: the request finds
+    out the moment the tree is moved, which is while the winner is still
+    shipping the archive to the broker, several seconds before the row that
+    owes the publication is deleted. Releasing the loser only after the whole
+    tick has returned tests the one order in which a rollback fenced on the row
+    alone would also have been harmless.
     """
     shared = FakeS3Client()
     writer = _remote_replica(tmp_path, "pod-a", shared)
@@ -551,6 +557,21 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
         return real_put(key, data, **kwargs)
 
     monkeypatch.setattr(store, "put_bytes", _stalls_on_the_first_key)
+
+    # The winner's bus publish: megabytes of archive, and the seconds during
+    # which the loser finds its staging tree gone and decides what to do about
+    # the keys it wrote. The row it would read is still there throughout.
+    real_bus = run_publisher._publish_to_bus  # noqa: SLF001
+    loser_done = threading.Event()
+
+    def _ships_the_archive_while_the_loser_wakes_up(settings, publication):
+        go_on.set()
+        assert loser_done.wait(60), "the losing attempt never finished"
+        return real_bus(settings, publication)
+
+    monkeypatch.setattr(
+        run_publisher, "_publish_to_bus", _ships_the_archive_while_the_loser_wakes_up
+    )
     job = jobs_service.start_scan(writer, StartScanRequest(mode="balanced"), username="admin")
     claim = jobs_service.claim_job(writer, "agent-1")
     run_id = str(jobs_service.get_job(writer, job.job_id).run_id)
@@ -561,6 +582,8 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
             accepted["job"] = _upload(writer, job.job_id, claim.attempt, run_id)
         except Exception as exc:  # noqa: BLE001 - reported by the assertions below
             accepted["error"] = exc
+        finally:
+            loser_done.set()
 
     request = threading.Thread(target=_accept, name="accepting-request")
     request.start()
@@ -577,8 +600,10 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
         assert artifact_workspace.run_ids(reader) == [run_id]
     finally:
         # Always: a request left blocked in the store stub would finish its
-        # publication after pytest undid the monkeypatches around it.
+        # publication after pytest undid the monkeypatches around it, and a
+        # tick left waiting on it would never return.
         go_on.set()
+        loser_done.set()
         request.join(60)
     assert "error" not in accepted, accepted.get("error")
 
@@ -780,4 +805,10 @@ def test_two_jobs_claimed_in_the_same_second_get_different_run_ids(tmp_path):
     first = jobs_service.claim_job(settings, "agent-1")
     second = jobs_service.claim_job(settings, "agent-2")
     assert first.run_id != second.run_id
-    assert first.run_id.split("-")[0] == second.run_id.split("-")[0]
+    # The shape, not the two stamps being equal: the gap between the claims is
+    # milliseconds, so a pair that straddles a second boundary would fail an
+    # equality assertion without anything being wrong. What matters is that
+    # both ids carry the suffix and that the clock still leads.
+    shape = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{6}")
+    assert shape.fullmatch(first.run_id) and shape.fullmatch(second.run_id)
+    assert first.run_id.split("-")[0] <= second.run_id.split("-")[0]

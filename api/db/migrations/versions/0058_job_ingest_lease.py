@@ -102,6 +102,11 @@ def upgrade() -> None:
         # neither, and without this a row it keeps taking is retried forever
         # with nothing to see it (see ``_claims_spent`` in the publisher).
         sa.Column("claims", sa.Integer(), nullable=False, server_default="0"),
+        # When the run's whole tree reached the store. Stamped before the
+        # staging tree is promoted, because the row is deleted only after the
+        # bus publish and an attempt that loses the race must not take a
+        # published run apart in between (see ``_may_take_back``).
+        sa.Column("stored_at", sa.DateTime(), nullable=True),
         # Naive UTC like every other timestamp in this schema.
         sa.Column("next_attempt_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.String(), nullable=True),

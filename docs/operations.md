@@ -1097,9 +1097,15 @@ from api.services import run_publisher
 s = load_settings()
 print(run_publisher.backlog(s))
 for row in run_publisher.pending_publications(s, "<job_id>"):
-    print(row.publication_id, row.status, row.attempts, row.claims, row.replica, row.staging_path, row.last_error)
+    print(row.publication_id, row.status, row.attempts, row.claims, row.stored_at, row.replica, row.staging_path, row.last_error)
 '
 ```
+
+`stored_at` says the run's whole tree reached the object store: a row that
+carries it is owed only `latest_run.json` and the message on
+`ingest.results.{tenant}`, so the scan is readable in the console and it is the
+analytical projection that is behind. It is also the fence that keeps a
+publication which loses a race from taking the winner's keys back off.
 
 `staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
 row is normally finished by the replica that accepted the upload. A peer picks

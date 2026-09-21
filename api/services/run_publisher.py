@@ -422,6 +422,13 @@ def _publish(settings: Settings, publication: _Publication) -> None:
                 "attempt had already written could not be taken back, so the run may "
                 "be listed by every replica with files missing from it"
             ) from exc
+        # The whole tree is in the store now, and ``_record_success`` will not
+        # say so for another archive upload. Stamped before the promotion
+        # rather than after it, because the promotion is what a second attempt
+        # trips over — it takes the staging tree both are reading — and the
+        # stamp is what stops that attempt taking these keys back off again
+        # (:func:`_may_take_back`).
+        _mark_stored(settings, publication)
         # The marker cache on a remote backend may hold a "no marker" answer
         # from a listing that asked about this run before it existed, and
         # reading that back is the default-tenant leak the marker prevents.
@@ -431,6 +438,23 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         raise _TreeIsGone(_TREE_IS_GONE)
     results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
     _publish_to_bus(settings, publication)
+
+
+def _mark_stored(settings: Settings, publication: _Publication) -> None:
+    """Record that this run's tree is in the store, whatever else is left.
+
+    Not best-effort: a database that refuses this write is one that cannot
+    record the outcome either, and the retry it buys re-publishes a run that
+    is already readable — which every step here is built to survive — while
+    swallowing it would leave the fence down for the attempt that needs it.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication.publication_id)
+        if row is None:  # pragma: no cover - finished by a peer mid-flight
+            return
+        row.stored_at = now
+        row.updated_at = now
 
 
 def _roll_back_upload(
@@ -447,16 +471,19 @@ def _roll_back_upload(
       failed publication then deleted a scan that was complete, across tenants.
       So the keys this transfer actually wrote are collected as they land and
       those are what goes.
-    * **run at all after another attempt has finished this row.** The keys are
-      the *same* keys then, so removing "only what this attempt wrote" would
-      still take the published run apart file by file. The row is the fence:
-      ``_record_success`` deletes it, so a row that is gone means the run is
-      published and this attempt has nothing to clean up. The lease above is
-      what makes that race rare; this is what makes it harmless.
+    * **run at all after another attempt has published this run.** The keys
+      are the *same* keys then, so removing "only what this attempt wrote"
+      would still take the published run apart file by file. ``stored_at`` is
+      the fence, and the row is not: the winner stamps the tree as stored
+      before it promotes it, then spends an archive upload on the bus before
+      ``_record_success`` deletes the row — and a loser that read the row
+      would spend that whole upload believing nothing had been published yet,
+      having been woken by the very promotion the stamp precedes. The lease
+      above is what makes the race rare; this is what makes it harmless.
     """
     if not written:
         return True
-    if not _still_owed(settings, publication):
+    if not _may_take_back(settings, publication):
         LOG.warning(
             "Run %s was published by another attempt while this one was uploading; "
             "leaving the %d key(s) this attempt wrote where they are",
@@ -474,10 +501,17 @@ def _roll_back_upload(
         return False
 
 
-def _still_owed(settings: Settings, publication: _Publication) -> bool:
-    """Whether this publication is still owed. ``False`` once somebody finished it."""
+def _may_take_back(settings: Settings, publication: _Publication) -> bool:
+    """Whether this attempt's keys are still its own to remove.
+
+    ``False`` once any attempt has put the run's tree in the store — because
+    the row is gone (``_record_success``) or because it carries ``stored_at``
+    and the winner is still on the bus. Either way the keys under this run are
+    a published scan and the caller's job is to leave them alone.
+    """
     with get_session(settings.postgres_url) as session:
-        return session.get(models.RunPublication, publication.publication_id) is not None
+        row = session.get(models.RunPublication, publication.publication_id)
+        return row is not None and row.stored_at is None
 
 
 def _publish_to_bus(settings: Settings, publication: _Publication) -> None:

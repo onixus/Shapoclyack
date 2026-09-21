@@ -1815,6 +1815,13 @@ class RunPublication(Base):
     # replica before it could record one, which is the only way an accepted
     # run could otherwise be retried forever in silence.
     claims: Mapped[int] = mapped_column(default=0, server_default="0")
+    # When the run's whole tree reached the store, stamped before the staging
+    # tree is promoted and long before the row is closed out. It is the fence
+    # a losing attempt reads before taking its own keys back: the row outlives
+    # the upload by the length of an archive publish to the broker, so "the row
+    # is still here" is not the same question as "is this run already
+    # published" (see the reconciler).
+    stored_at: Mapped[datetime | None] = mapped_column(default=None)
     next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
