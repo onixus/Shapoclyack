@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import or_, select
 
@@ -112,8 +113,6 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
             settings, job_states.FAILED, execution, started_at, now
         )
     for failure in failed_events:
-        from api.services import workflow_events
-
         workflow_events.emit(settings, "scan_failed", **failure)
 
     if outcome["requeued"] or outcome["failed"]:
