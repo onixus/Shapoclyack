@@ -25,6 +25,8 @@ _EXPORTED = {
     metrics.SCHEDULER_IS_LEADER._original_name,
     metrics.NATS_OUTBOX_BACKLOG._original_name,
     metrics.NATS_OUTBOX_TOTAL._original_name,
+    metrics.ASSET_EVENTS_PUBLISHED_TOTAL._original_name,
+    metrics.RUN_PUBLICATION_BACKLOG._original_name,
 }
 
 _SERIES = re.compile(r"octo_[a-z0-9_]+")
@@ -54,6 +56,7 @@ def test_rules_file_has_every_slo_and_both_scheduler_invariants():
         "ShapoclyackNatsOutboxBacklog",
         "ShapoclyackNatsOutboxDead",
         "ShapoclyackNatsOutboxDropping",
+        "ShapoclyackAssetEventsSkipped",
     ):
         assert name in alerts, name
 

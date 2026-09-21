@@ -2182,18 +2182,23 @@ Since the 2026-09-18 architecture review, NATS is **not** a blocking readiness
 check: an API replica whose broker is unreachable stays in its Service and goes
 on serving everything that does not need the bus (the matrix is in
 [high-availability.md § What a NATS outage costs](high-availability.md#what-a-nats-outage-costs)).
-The one thing that would otherwise be lost silently is the `ingest.results.*`
+Two things would otherwise be lost silently. One is the `ingest.results.*`
 message that feeds the ClickHouse projection: the upload is accepted, the
 artifacts are written, the job succeeds — and analytics never hear about the
-run. The `nats_outbox` table (migration `0059`) and the reconciler thread in
-every API replica exist to hold that message and republish it.
+run. The other is the run's asset events, which are the only source of the
+webhook fan-out: with the broker advisory the upload is accepted during the
+outage, so a `new_cve` webhook that used merely to arrive late would never be
+sent at all. The `nats_outbox` table (migration `0059`) and the reconciler
+thread in every API replica hold both (`kind` is `ingest` or `asset_event`) and
+republish them.
 
-The writer is `run_publisher._publish_to_bus` — the last step of an accepted
-run's publication, after the object store, the run directory and the pointer.
-It publishes or records, and either way the publication closes, so a broker
-outage costs the analytical projection its latency and costs the run itself
-nothing. Rows appear only while the broker is refusing; an installation with a
-healthy broker has an empty table.
+The writer for `ingest` is `run_publisher._publish_to_bus` — the last step of an
+accepted run's publication, after the object store, the run directory and the
+pointer. It publishes or records, and either way the publication closes, so a
+broker outage costs the analytical projection its latency and costs the run
+itself nothing. The writer for `asset_event` is `asset_events.publish_events`,
+on the same post-run hook. Rows appear only while the broker is refusing; an
+installation with a healthy broker has an empty table.
 
 What an operator sees:
 
@@ -2209,9 +2214,24 @@ What an operator sees:
   could otherwise hide.
 * `octo_nats_outbox_total{kind,outcome}` — `recorded`, `republished`, `dead`,
   `superseded` (a recorded message a later attempt of the same publication
-  delivered anyway, so the row was dropped instead of republished), and
-  `dropped` for the one configuration that still loses messages
-  (`OCTO_NATS_OUTBOX_ENABLED=false`).
+  delivered anyway, so the row was dropped instead of republished),
+  `unreplayable`, `discarded`, and `dropped` for the configuration that writes
+  nothing down (`OCTO_NATS_OUTBOX_ENABLED=false`), where a refused ingest
+  publish rides on the publication's own retries instead and only an outage
+  outliving those loses the run's message.
+* `octo_asset_events_published_total{kind,outcome}` — `deferred` is an event
+  waiting in this table, `skipped` one that is not waiting anywhere and whose
+  webhook is never sent (`ShapoclyackAssetEventsSkipped`).
+* `octo_nats_stream_config_drift{stream,setting}` — 1 when a stream runs with a
+  setting other than the one the API asked for. Reconciling an existing stream
+  is fail-soft on purpose, so this is the only signal that
+  `OCTO_NATS_INGEST_DEDUPE_SECONDS` or `OCTO_NATS_STREAM_REPLICAS` never took.
+  A stale `duplicate_window` matters here specifically: a republish from this
+  table relies on JetStream dropping a copy the broker already stored, and
+  JetStream's own default window (2 minutes) is shorter than one backoff.
+  Recreate or reconcile the stream — `nats stream edit INGEST
+  --dupe-window=24h` from a host with the CLI, or fix the account permissions
+  that made `update_stream` fail and restart an API replica.
 
 A `dead` row here is about the *message*, not the run: the scan, its artifacts
 and its findings were published when the upload was accepted. A run that is

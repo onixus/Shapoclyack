@@ -300,7 +300,7 @@ every caller of it — `jobs._publish_job_offer`, `results_ingest`,
 | Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
 | Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |
 | The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The refused publish is written to `nats_outbox` by the last step of the run's publication (`run_publisher._publish_to_bus`) and republished when the broker returns. The run itself, its artifacts and its Postgres projections are published without waiting for that. The backlog is the `ingest_backlog` check and `octo_nats_outbox_backlog` |
-| Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — not recovered** | `asset_events.publish_events` counts the failure as `skipped` and moves on. The changes are in `diff.json` and in Postgres; the notifications for that run are not sent later |
+| Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — recovered** | The envelopes the broker refused go to the same `nats_outbox` (`kind="asset_event"`) and are published when it returns, so the webhooks are late rather than missing. With `OCTO_NATS_OUTBOX_ENABLED=false` they are counted `octo_asset_events_published_total{outcome="skipped"}` and not sent later — `ShapoclyackAssetEventsSkipped` |
 | Audit events to a SIEM over `events.audit.>` | **Degrades — recovered by the other source** | The rows are committed and readable via `GET /api/audit`; the publish is skipped. `OCTO_AUDIT_SYSLOG_SOURCE=db` forwards without the broker at all |
 | Endpoint inventory submissions | **Works, event skipped** | The snapshot is stored; the `endpoint_inventory_accepted` event is fail-soft |
 | Webhook delivery of already-queued events, including DLQ replay | **Works** | The queue is Postgres rows and the dispatcher needs no broker |
@@ -330,11 +330,22 @@ is `OCTO_NATS_OUTBOX_ENABLED=false`: nothing durable is written, and the
 publication itself then fails and retries like any other, ending `dead` for an
 operator rather than silently.
 
-One row is *not* recovered: asset events and the notifications they feed — P1
-of the same review ("успешное задание не гарантирует актуальность всех
-проекций"), deliberately out of scope here. This section is the honest
-statement of what a broker outage costs today, not a claim that it costs
-nothing.
+Asset events are in the outbox for the same reason, and it is a reason this
+change created rather than inherited. They feed the webhook fan-out and nothing
+else does (`webhook_worker` is the only caller of `webhooks.enqueue_event`).
+While NATS blocked `/readyz` the replicas left the Service for the length of an
+outage, so the upload that produces those events was not accepted until the
+broker was back: the notification was late. Accepting the upload during the
+outage — which is the whole point of the relaxed policy — would have made it
+missing instead, for exactly the runs an operator most wants to hear about. So
+`asset_events.publish_events` records what it could not deliver
+(`kind="asset_event"`) and the same reconciler lands it.
+
+What is still not recovered is the same events with the outbox switched off,
+and the operator-initiated `decommissioned_host` publish from `PATCH
+/api/assets/{id}`, which has no durable intent behind it and answers the
+operator directly. This section is the honest statement of what a broker outage
+costs today, not a claim that it costs nothing.
 
 Background workers are safe across replicas by construction, not by luck: the
 scheduler dispatcher, the report dispatcher, the software-match worker, the SLA

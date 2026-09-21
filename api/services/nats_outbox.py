@@ -38,13 +38,25 @@ deleted rather than kept — an ingest body is megabytes of base64, not an audit
 trail. A row that exhausts ``nats_outbox_max_attempts`` goes ``dead`` and stays
 for an operator to decide about (``docs/operations.md``, *NATS outbox*).
 
+**Asset events are recorded too** (``kind="asset_event"``), and for a reason
+the relaxed readiness policy created. They are the only source of the webhook
+fan-out: ``webhook_worker`` subscribes to ``EVENTS`` and nothing else calls
+``webhooks.enqueue_event``. While NATS blocked ``/readyz`` a broker outage took
+the replicas out of the Service, so the upload that would have produced those
+events was not accepted until the broker was back and the notification went out
+late. With the broker advisory the upload is accepted, the run is published —
+and ``asset.vulnerability.new`` for that hour would simply never be sent. A
+late webhook is a cost; a webhook for a new critical CVE that is never sent is
+not one this change gets to introduce quietly, so those envelopes are written
+down here and published when the broker returns.
+
 **What is deliberately not here.** Job offers are not recorded. An offer is a
 notification of a row that is already in Postgres, an agent claims over HTTP
 without one, and the reaper re-offers it — replaying a stale offer buys
-nothing. Asset and audit events are not recorded either: those have their own
-skip-and-count paths and their own follow-ups in the review. The table's
-``kind`` column and the generic republish are what let a later change add them
-without a migration.
+nothing. Audit events are not recorded either: the rows are committed and
+readable through ``GET /api/audit``, and ``OCTO_AUDIT_SYSLOG_SOURCE=db``
+forwards them to a SIEM without the broker at all, so the publish is a second
+copy of something durable rather than the only one.
 """
 
 from __future__ import annotations
@@ -68,6 +80,7 @@ from api.settings import Settings
 LOG = logging.getLogger("shapoclyack.nats-outbox")
 
 KIND_INGEST = "ingest"
+KIND_ASSET_EVENT = "asset_event"
 
 STATUS_PENDING = "pending"
 STATUS_DEAD = "dead"
@@ -98,6 +111,8 @@ def _is_replayable(kind: str, payload: Mapping[str, Any]) -> bool:
     never a retry.
     """
     if kind != KIND_INGEST:
+        # An asset event carries its whole envelope: there is no out-of-line
+        # body it could be missing, so every recorded one can be replayed.
         return True
     return payload.get("archive_inline") is not False
 
@@ -123,9 +138,14 @@ def publish_ingest_or_record(
     of sent.
 
     Never raises for a broker that is merely down — that is the case this
-    exists to survive. It does propagate a database failure: a refusal we
-    cannot record is the silent loss the whole change is about, and the upload
-    is better answered with an error the sensor will retry.
+    exists to survive. A database failure *is* propagated, but not to the
+    sensor: the only caller is ``run_publisher._publish_to_bus``, which runs
+    inside ``_attempt`` and turns any exception into a failed publication
+    attempt, and the upload itself was answered before the publication began
+    (``publish_now`` never raises either). So a refusal we cannot record fails
+    this publication and is retried by the publication reconciler — the loss
+    the change is about is still prevented, by a retry on this side rather
+    than by one the sensor makes.
     """
     result = results_ingest.publish_raw_results(
         nats_url=settings.nats_url,
@@ -179,16 +199,32 @@ def _forget_recorded(settings: Settings, *, subject: str, msg_id: str) -> None:
     yet, and deleting it here would take the question away rather than answer
     it — a delivered ``dead`` row is the unreplayable kind, whose body never
     reached ClickHouse to begin with.
+
+    ``FOR UPDATE`` (blocking, not ``SKIP LOCKED``) for the same reason
+    ``_claim_due`` takes the lock: a reconciler tick holding this row is about
+    to publish it, and deleting it out from under that tick would be exactly
+    the duplicate this function exists to prevent. Waiting for the claim's
+    transaction to commit means we either delete a row nobody has taken, or
+    find it already claimed — in which case its own publish is the one that
+    lands and ``_record_attempt`` deletes it. What is still *not* covered is a
+    tick that has already left its claim transaction: ``_claim_due`` commits
+    before publishing (deliberately, so a batch's megabytes are not held under
+    a row lock), and there is no column that tells a claimed row from an idle
+    one. That window is the stream's ``duplicate_window`` to close, which is
+    why the window is now checked rather than assumed
+    (``nats_bus._report_stream_drift``).
     """
     if not settings.nats_outbox_enabled:
         return
     with get_session(settings.postgres_url) as session:
         row = session.execute(
-            select(models.NatsOutboxEntry).where(
+            select(models.NatsOutboxEntry)
+            .where(
                 models.NatsOutboxEntry.subject == subject,
                 models.NatsOutboxEntry.msg_id == msg_id,
                 models.NatsOutboxEntry.status == STATUS_PENDING,
             )
+            .with_for_update()
         ).scalars().first()
         if row is None:
             return
@@ -221,9 +257,12 @@ def record_failed_publish(
     than queueing the run twice.
     """
     if not settings.nats_outbox_enabled:
-        LOG.error(
-            "Dropping refused %s publish for job=%s: the outbox is disabled, so this "
-            "message is lost and only a re-scan can produce it again",
+        LOG.warning(
+            "Dropping refused %s publish for job=%s: the outbox is disabled, so nothing "
+            "durable is left behind here. The publication itself fails and is retried "
+            "(OCTO_RUN_PUBLICATION_MAX_ATTEMPTS attempts over a few minutes); only an "
+            "outage that outlives those loses the message for good, and then only a "
+            "re-scan produces the run again",
             subject,
             job_id,
         )
@@ -291,6 +330,72 @@ def record_failed_publish(
         outbox_id,
     )
     return outbox_id
+
+
+def record_undelivered_asset_events(
+    settings: Settings, envelopes: list[dict[str, Any]]
+) -> int:
+    """Write down asset events the broker did not take. Returns how many.
+
+    Zero — and nothing written — when the outbox is disabled; the caller then
+    counts them ``skipped`` as before, which is the configuration the
+    ``ShapoclyackNatsOutboxDropping`` alert names.
+
+    One session for the whole batch, unlike :func:`record_failed_publish`. A
+    run that first discovers a /16 is capped at ``OCTO_ASSET_EVENTS_MAX_PER_RUN``
+    envelopes (1000 by default) and a broker that is down refuses all of them,
+    so a transaction per envelope would be a thousand round trips inside the
+    request that is holding the sensor's upload. ``insert_if_absent`` scopes
+    each row to its own SAVEPOINT, so the one duplicate a replayed upload
+    brings does not take the other 999 down with it — and the ``event_id`` is
+    content-derived, so that duplicate is the same event, not a second one.
+    """
+    if not envelopes:
+        return 0
+    if not settings.nats_outbox_enabled:
+        return 0
+    now = _now()
+    recorded = 0
+    with get_session(settings.postgres_url) as session:
+        for envelope in envelopes:
+            tenant_id = str(envelope.get("tenant_id") or "default")
+            kind = str(envelope.get("kind") or "unknown")
+            msg_id = str(envelope.get("event_id") or "")
+            if not msg_id:
+                # Without an id there is no dedupe key and no unique row; an
+                # event built by ``asset_events.build_events`` always has one.
+                continue
+            subject = nats_bus.asset_event_subject(tenant_id, kind)
+            row = models.NatsOutboxEntry(
+                outbox_id=uuid.uuid4().hex,
+                tenant_id=tenant_id,
+                kind=KIND_ASSET_EVENT,
+                subject=subject,
+                msg_id=msg_id,
+                payload=dict(envelope),
+                job_id=str(envelope.get("job_id") or "") or None,
+                run_id=str(envelope.get("run_id") or "") or None,
+                status=STATUS_PENDING,
+                attempts=0,
+                next_attempt_at=now,
+                last_error=None,
+                created_at=now,
+                updated_at=now,
+            )
+            if insert_if_absent(session, row, f"{subject}|{msg_id}"):
+                recorded += 1
+    if recorded:
+        metrics_service.NATS_OUTBOX_TOTAL.labels(
+            kind=KIND_ASSET_EVENT, outcome="recorded"
+        ).inc(recorded)
+        LOG.warning(
+            "Recorded %s undelivered asset event(s) of %s for run %s; the webhooks "
+            "they feed are sent when the broker accepts them",
+            recorded,
+            len(envelopes),
+            envelopes[0].get("run_id"),
+        )
+    return recorded
 
 
 def backlog(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
@@ -402,12 +507,16 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
 def _republish(bus: Any, *, kind: str, subject: str, msg_id: str, payload: dict[str, Any]) -> bool:
     """Put one recorded message back on the stream it was meant for.
 
-    Ingest goes through ``publish_ingest`` rather than a raw publish so the
-    legacy ``ingest.raw_results`` subject is fed too — a replayed message must
-    reach the same consumers the original would have.
+    Each kind goes back through the same ``nats_bus`` helper that sent it the
+    first time rather than through a raw publish on the stored subject: that
+    is what keeps the headers, the message id and — for ingest — the legacy
+    ``ingest.raw_results`` copy identical to the original, so a replayed
+    message reaches the same consumers the first attempt would have.
     """
     if kind == KIND_INGEST:
         return bus.publish_ingest(payload, msg_id=msg_id)
+    if kind == KIND_ASSET_EVENT:
+        return bus.publish_asset_event(payload)
     headers = {"tenant_id": str(payload.get("tenant_id") or "")}
     return bus.publish_json(subject, payload, msg_id=msg_id, headers=headers)
 
@@ -454,6 +563,11 @@ def reconcile_once(settings: Settings, *, now: datetime | None = None) -> dict[s
             LOG.exception("Outbox republish raised for %s (subject=%s)", outbox_id, subject)
             ok = False
         status = _record_attempt(settings, outbox_id=outbox_id, ok=ok, now=moment)
+        if status == "gone":
+            # A peer delivered and deleted this row while we held it claimed
+            # outside the transaction. Counting it as ours would report a
+            # backlog draining twice as fast as it is.
+            continue
         if ok:
             outcome["republished"] += 1
             metrics_service.NATS_OUTBOX_TOTAL.labels(kind=kind, outcome="republished").inc()
@@ -560,6 +674,7 @@ def discard_dead(
     one would be the silent loss this whole module exists to prevent.
     """
     removed = 0
+    by_kind: dict[str, int] = {}
     with get_session(settings.postgres_url) as session:
         for row in _dead_rows(session, tenant_id=tenant_id, outbox_id=outbox_id):
             LOG.warning(
@@ -571,13 +686,13 @@ def discard_dead(
                 row.run_id,
                 row.attempts,
             )
+            by_kind[str(row.kind)] = by_kind.get(str(row.kind), 0) + 1
             session.delete(row)
             removed += 1
         session.flush()
+    for kind, count in by_kind.items():
+        metrics_service.NATS_OUTBOX_TOTAL.labels(kind=kind, outcome="discarded").inc(count)
     if removed:
-        metrics_service.NATS_OUTBOX_TOTAL.labels(kind=KIND_INGEST, outcome="discarded").inc(
-            removed
-        )
         _refresh_backlog_gauge(settings)
     return removed
 

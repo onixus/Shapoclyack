@@ -505,7 +505,7 @@ republished when the broker returns.
 | `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` | `20` | Republish attempts before an entry goes `dead` and waits for an operator (`nats_outbox.requeue_dead`). At the default backoff that is close to four hours of retrying |
 | `OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` | `15` | First backoff after a failed republish; doubles per attempt |
 | `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS` | `900` | Cap on that backoff |
-| `OCTO_NATS_INGEST_DEDUPE_SECONDS` | `86400` | JetStream duplicate window on the `INGEST` stream, clamped to `OCTO_NATS_INGEST_MAX_AGE_SECONDS`. Wide enough to cover the whole retry schedule above: a publish whose ack timed out after the server stored it is a genuine duplicate on replay, and JetStream's own 2-minute default is shorter than a single backoff |
+| `OCTO_NATS_INGEST_DEDUPE_SECONDS` | `86400` | JetStream duplicate window on the `INGEST` stream, clamped to `OCTO_NATS_INGEST_MAX_AGE_SECONDS` unless that is `0` (unbounded retention), which does **not** switch dedupe off. Wide enough to cover the whole retry schedule above: a publish whose ack timed out after the server stored it is a genuine duplicate on replay, and JetStream's own 2-minute default is shorter than a single backoff |
 | `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `ingest_backlog: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
 
 The unrecovered backlog is the `ingest_backlog` check on `/readyz` and

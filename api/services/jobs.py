@@ -1057,6 +1057,12 @@ def _publish_asset_events_best_effort(
             run_id=run_id,
             job_id=job_id,
             max_events=settings.asset_events_max_per_run,
+            # Passed so an event the broker refuses is written to nats_outbox
+            # rather than counted and forgotten: these events are the only
+            # source of the webhook fan-out, and since NATS stopped deciding
+            # readiness the upload is accepted during an outage that would
+            # otherwise swallow them.
+            settings=settings,
         )
     except Exception:  # noqa: BLE001
         logging.exception("Asset event publish failed for run %s (tenant=%s)", run_id, tenant_id)

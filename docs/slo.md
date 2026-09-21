@@ -208,7 +208,8 @@ gauge above — the message is not on the stream to be pending. Both halves are
 alerted on: `ShapoclyackNatsOutboxBacklog` and `ShapoclyackNatsOutboxDead` ship
 in `k8s/shapoclyack/examples/prometheus-slo.rules.yaml` alongside the consumer
 rules, with `ShapoclyackNatsOutboxDropping` for the `OCTO_NATS_OUTBOX_ENABLED=false`
-configuration that loses messages outright. The expressions are:
+configuration, where a refused publish is written down nowhere and the run
+survives only on the publication's own retries. The expressions are:
 
 ```promql
 max(octo_nats_outbox_backlog{status="stale"}) > 0

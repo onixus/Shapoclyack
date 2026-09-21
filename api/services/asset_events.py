@@ -30,6 +30,18 @@ Delivery is best-effort by design: a scan whose results are on disk and whose
 assets are registered must not be reported as failed because the broker was
 unreachable. The events stay in ``diff.json``, so a missed publish is a missed
 notification, not lost data.
+
+"Not lost data" was as far as that argument went while NATS blocked ``/readyz``:
+an outage kept the replicas out of the Service, so the uploads that would have
+produced these events were not accepted until the broker was back and the
+notifications went out late. Now that the broker is advisory the upload is
+accepted during the outage, and a missed publish here would be a notification
+nobody ever sends — a new critical CVE with no webhook, and the only record of
+it inside a run artifact. So a caller that can reach the database passes its
+``settings`` and the undelivered envelopes are written to ``nats_outbox``
+(``kind="asset_event"``), which republishes them when the broker returns.
+Without ``settings``, or with ``OCTO_NATS_OUTBOX_ENABLED=false``, the old
+skip-and-count is what is left.
 """
 
 from __future__ import annotations
@@ -43,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from api.services import metrics, nats_bus
+from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.asset_events")
 
@@ -189,28 +202,31 @@ def publish_events(
     nats_url: str,
     envelopes: list[dict[str, Any]],
     *,
+    settings: Settings | None = None,
     deadline_seconds: float = DEFAULT_PUBLISH_DEADLINE_SECONDS,
 ) -> int:
     """Publish envelopes to ``events.asset.{tenant}.{kind}``. Returns the count published.
 
-    Never raises, and never runs longer than ``deadline_seconds``: every failure
-    path is counted on ``octo_asset_events_published_total`` (``error`` for a
-    publish that was attempted and failed, ``skipped`` for one abandoned with
-    the broker unreachable) and logged. The caller holds a job that stays
-    non-terminal until this returns, so an unbounded loop over a broker that
-    accepts connections but fails publishes would be paid for by the job, not
-    by the event.
+    Never raises, and never runs longer than ``deadline_seconds``: every
+    envelope that did not reach the stream is either handed to the outbox
+    (``deferred``, with ``settings``) or counted ``skipped`` on
+    ``octo_asset_events_published_total``, and both are logged. The caller
+    holds a job that stays non-terminal until this returns, so an unbounded
+    loop over a broker that accepts connections but fails publishes would be
+    paid for by the job, not by the event — the two aborts below are that
+    bound, and the outbox is what makes an abort a delay rather than a loss.
     """
     if not envelopes:
         return 0
     bus = nats_bus.get_bus(nats_url)
     if bus is None:
-        _count_abandoned(envelopes)
+        _hand_over(envelopes, settings)
         return 0
 
     started = time.monotonic()
     published = 0
     failure_streak = 0
+    undelivered: list[dict[str, Any]] = []
     for index, envelope in enumerate(envelopes):
         if failure_streak >= _FAILURE_STREAK_ABORT:
             LOG.warning(
@@ -218,7 +234,7 @@ def publish_events(
                 len(envelopes) - index,
                 failure_streak,
             )
-            _count_abandoned(envelopes[index:])
+            undelivered.extend(envelopes[index:])
             break
         if time.monotonic() - started > deadline_seconds:
             LOG.warning(
@@ -227,7 +243,7 @@ def publish_events(
                 len(envelopes) - index,
                 len(envelopes),
             )
-            _count_abandoned(envelopes[index:])
+            undelivered.extend(envelopes[index:])
             break
         kind = envelope["kind"]
         try:
@@ -235,12 +251,50 @@ def publish_events(
         except Exception:  # noqa: BLE001
             LOG.exception("Asset event publish raised (kind=%s run=%s)", kind, envelope.get("run_id"))
             ok = False
-        metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(
-            kind=kind, outcome="published" if ok else "error"
-        ).inc()
-        published += int(ok)
-        failure_streak = 0 if ok else failure_streak + 1
+        if ok:
+            metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(kind=kind, outcome="published").inc()
+            published += 1
+            failure_streak = 0
+            continue
+        # A refused publish is the same loss as an abandoned one, so it goes
+        # the same way rather than being counted "error" and forgotten.
+        undelivered.append(envelope)
+        failure_streak += 1
+    _hand_over(undelivered, settings)
     return published
+
+
+def _hand_over(envelopes: list[dict[str, Any]], settings: Settings | None) -> None:
+    """Record undelivered envelopes in the outbox, or count them as lost.
+
+    Imported here rather than at module scope: ``nats_outbox`` reaches the
+    database and ``results_ingest``, and this module is imported by the job
+    path on both execution routes.
+    """
+    if not envelopes:
+        return
+    if settings is not None and settings.nats_outbox_enabled:
+        from api.services import nats_outbox
+
+        try:
+            nats_outbox.record_undelivered_asset_events(settings, envelopes)
+        except Exception:  # noqa: BLE001
+            # Fail-soft on purpose: this runs inside the sensor's upload, whose
+            # run is already stored. A database that cannot take the events is
+            # the blocking Postgres check's business, and raising here would
+            # fail a scan over a notification — so the events fall back to the
+            # counter that says they are gone.
+            LOG.exception("Could not record %s undelivered asset events", len(envelopes))
+        else:
+            # ``deferred`` for every envelope, not only the rows inserted: one
+            # already in the table is the same event recorded by an earlier
+            # attempt (the id is content-derived), which is deferred too.
+            for envelope in envelopes:
+                metrics.ASSET_EVENTS_PUBLISHED_TOTAL.labels(
+                    kind=envelope.get("kind", "unknown"), outcome="deferred"
+                ).inc()
+            return
+    _count_abandoned(envelopes)
 
 
 def _count_abandoned(envelopes: list[dict[str, Any]]) -> None:
@@ -275,6 +329,7 @@ def publish_run_events(
     run_id: str,
     job_id: str | None = None,
     max_events: int = DEFAULT_MAX_EVENTS_PER_RUN,
+    settings: Settings | None = None,
 ) -> int:
     """Read a run's diff and publish its asset events. Returns the count published."""
     if not nats_url:
@@ -293,7 +348,7 @@ def publish_run_events(
             max_events,
             dropped,
         )
-    published = publish_events(nats_url, envelopes)
+    published = publish_events(nats_url, envelopes, settings=settings)
     if published:
         LOG.info(
             "Published %s/%s asset events for run %s (tenant=%s)",

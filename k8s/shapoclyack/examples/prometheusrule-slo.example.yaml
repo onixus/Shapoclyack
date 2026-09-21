@@ -132,12 +132,25 @@ spec:
       expr: sum(rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
       for: 5m
       labels:
-        severity: page
+        severity: ticket
       annotations:
         summary: Refused ingest publications are being dropped, not recorded
-        description: "OCTO_NATS_OUTBOX_ENABLED=false, so a refused publish is logged and lost and only\
-          \ a re-scan produces the run again \u2014 the one supported configuration that still loses messages\
-          \ while the API answers 200."
+        description: 'OCTO_NATS_OUTBOX_ENABLED=false, so nothing durable is written when the broker refuses
+          a publish. This is not yet a lost run: the publication itself then fails and retries (OCTO_RUN_PUBLICATION_MAX_ATTEMPTS,
+          a few minutes of backoff), and a broker that blinked is covered by the second attempt. It becomes
+          a loss only for an outage that outlives those attempts, which shows up as octo_run_publication_backlog{status="dead"}.
+          Ticket, not page: the fix is turning the outbox back on, and it is not urgent by itself.'
+    - alert: ShapoclyackAssetEventsSkipped
+      expr: sum(rate(octo_asset_events_published_total{outcome="skipped"}[15m])) > 0
+      for: 5m
+      labels:
+        severity: ticket
+      annotations:
+        summary: Asset events are being dropped, not deferred
+        description: "An asset event was neither published nor recorded in nats_outbox, so the webhook\
+          \ it feeds \u2014 including a new critical CVE \u2014 will not be sent at all. The events are\
+          \ still in the run's diff.json. outcome=\"deferred\" is the healthy version of the same outage\
+          \ and is covered by the outbox alerts above."
     - alert: ShapoclyackClickHouseIngestErrors
       expr: "(\n  1 - (\n    sum(rate(octo_ch_ingest_messages_total{result=\"ok\"}[6h]))\n    /\n    sum(rate(octo_ch_ingest_messages_total[6h]))\n\
         \  )\n) > 0.001\nand\nsum(rate(octo_ch_ingest_messages_total[6h])) > 0\n"

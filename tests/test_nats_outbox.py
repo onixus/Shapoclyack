@@ -22,7 +22,7 @@ import pytest
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import nats_bus, nats_outbox, results_ingest
+from api.services import asset_events, nats_bus, nats_outbox, results_ingest
 from tests.conftest import configured_client, login, make_settings, requires_postgres
 
 pytestmark = requires_postgres
@@ -345,13 +345,20 @@ def test_backlog_counts_what_health_reads(tmp_path, monkeypatch):
 
 
 def test_a_disabled_outbox_says_so_instead_of_pretending(tmp_path, monkeypatch, caplog):
-    """The only configuration in which a refused publish is still lost, and it
-    is loud about it — an operator who turned the outbox off is choosing to
-    re-scan rather than keep the bodies."""
+    """The only configuration in which a refused publish can still be lost, and
+    it says so — an operator who turned the outbox off is choosing to re-scan
+    rather than keep the bodies.
+
+    WARNING rather than ERROR, and the sentence is hedged, because one refusal
+    here is not yet a loss: the publication itself then fails and retries
+    (``OCTO_RUN_PUBLICATION_MAX_ATTEMPTS``), so a broker that blinked is
+    covered by the next attempt. The ERROR belongs to the publication that
+    ends ``dead``.
+    """
     monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
     settings = make_settings(tmp_path, nats_url=NATS_URL, nats_outbox_enabled=False)
 
-    with caplog.at_level("ERROR", logger="shapoclyack.nats-outbox"):
+    with caplog.at_level("WARNING", logger="shapoclyack.nats-outbox"):
         result = nats_outbox.publish_ingest_or_record(
             settings,
             job_id="job-8",
@@ -365,6 +372,9 @@ def test_a_disabled_outbox_says_so_instead_of_pretending(tmp_path, monkeypatch, 
     assert result["outbox_id"] is None
     assert _entries(settings) == []
     assert "the outbox is disabled" in caplog.text
+    # Not the "lost forever" it used to claim, which paged for a message the
+    # publication's second attempt delivers fifteen seconds later.
+    assert "only an outage that outlives those" in caplog.text
 
 
 def test_an_invalid_archive_still_raises_before_anything_is_recorded(tmp_path, monkeypatch):
@@ -735,14 +745,19 @@ def test_the_claim_window_covers_the_whole_batch_not_one_row(tmp_path, monkeypat
     assert deadlines == [now + timedelta(seconds=per_row * 3)] * 3
 
 
-def test_an_ingest_publish_only_half_accepted_is_not_a_publish(monkeypatch):
-    """The legacy subject's result was discarded.
+def test_a_refused_legacy_subject_does_not_hold_the_run_back():
+    """The deprecated copy must not be able to fail the publish.
 
-    ``publish_ingest`` returned the tenant subject's result alone, so a broker
-    that took ``ingest.results.{tenant}`` and refused ``ingest.raw_results``
-    reported success — the outbox recorded nothing and a consumer still bound
-    to the legacy subject never saw the run. The outbox builds its guarantee on
-    this flag, so a partial publish has to read as a failure.
+    ``publish_ingest`` returned ``tenant and legacy``, so on an account whose
+    per-subject permissions allow ``ingest.results.>`` and not the deprecated
+    ``ingest.raw_results`` — an ordinary closed installation — *every* publish
+    read as a failure. Every run was recorded, every row spent its attempts
+    against a subject the broker was never going to accept, and hours later the
+    backlog was ``dead`` and ``/api/health`` degraded, while the ClickHouse
+    worker (bound to ``ingest.results.>``) had the runs all along.
+
+    Nothing in this tree subscribes to the legacy subject; it is counted and
+    logged instead.
     """
     bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
     attempted: list[str] = []
@@ -752,13 +767,160 @@ def test_an_ingest_publish_only_half_accepted_is_not_a_publish(monkeypatch):
         return subject != nats_bus.SUBJECT_INGEST_RAW
 
     bus.publish_json = _publish_json
+    refused_before = _legacy_count("refused")
 
     ok = bus.publish_ingest({"tenant_id": "default", "job_id": "job-legacy"}, msg_id="m")
 
-    assert ok is False
-    # Both were tried: the tenant subject is not abandoned because the legacy
-    # one failed, and the replay sends both again under the same message ids.
+    assert ok is True
+    # Still attempted, and still counted: an operator who wants to retire the
+    # copy needs to see that nothing outside the installation reads it either.
     assert attempted == [
         nats_bus.ingest_results_subject("default"),
         nats_bus.SUBJECT_INGEST_RAW,
     ]
+    assert _legacy_count("refused") == refused_before + 1
+
+
+def test_a_refused_tenant_subject_is_still_a_failed_publish():
+    """The other half of the same flag, which the fix must not soften.
+
+    The tenant subject is the one the ingest worker reads, so refusing it is
+    exactly the case the outbox exists for — whatever the legacy copy did.
+    """
+    bus = nats_bus.NatsBus.__new__(nats_bus.NatsBus)
+
+    def _publish_json(subject, payload, *, msg_id=None, headers=None, retries=3):
+        return subject == nats_bus.SUBJECT_INGEST_RAW
+
+    bus.publish_json = _publish_json
+
+    assert bus.publish_ingest({"tenant_id": "default", "job_id": "job-t"}, msg_id="m") is False
+
+
+def _legacy_count(outcome: str) -> float:
+    from api.services import metrics as metrics_service
+
+    return (
+        metrics_service.REGISTRY.get_sample_value(
+            "octo_nats_legacy_ingest_total", {"outcome": outcome}
+        )
+        or 0.0
+    )
+
+
+# ---------------------------------------------------------------------------
+# Asset events: the row that used to have nowhere to wait.
+
+
+def test_asset_events_a_dead_broker_refuses_are_kept_and_published_later(tmp_path, monkeypatch):
+    """The cost the relaxed readiness policy would otherwise have introduced.
+
+    Asset events are the only source of the webhook fan-out (``webhook_worker``
+    is the sole caller of ``webhooks.enqueue_event``). While NATS blocked
+    ``/readyz`` a broker outage took the replicas out of the Service, so the
+    upload that produces these events was not accepted until the broker was
+    back and the notification merely went out late. With the broker advisory
+    the upload *is* accepted — and ``publish_events`` counted the envelopes
+    ``skipped`` and moved on, so ``new_cve`` for that hour was never sent at
+    all, with no alert anywhere.
+    """
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    envelopes = [
+        {
+            "kind": "new_cve",
+            "tenant_id": "default",
+            "run_id": "run-ae",
+            "job_id": "job-ae",
+            "host": "10.0.0.1",
+            "event_id": "event-ae-1",
+        }
+    ]
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+
+    assert asset_events.publish_events(NATS_URL, envelopes, settings=settings) == 0
+
+    with get_session(settings.postgres_url) as session:
+        rows = session.query(models.NatsOutboxEntry).all()
+        recorded = [(r.kind, r.subject, r.msg_id, r.run_id, r.status) for r in rows]
+    assert recorded == [
+        (
+            nats_outbox.KIND_ASSET_EVENT,
+            nats_bus.asset_event_subject("default", "new_cve"),
+            "event-ae-1",
+            "run-ae",
+            nats_outbox.STATUS_PENDING,
+        )
+    ]
+
+    # And the reconciler puts it back on the stream the webhook worker reads,
+    # through the same helper that would have sent it — not a raw publish.
+    sent: list[dict] = []
+
+    class _AssetBus:
+        def publish_asset_event(self, envelope, **kwargs):
+            sent.append(envelope)
+            return True
+
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: _AssetBus())
+    outcome = nats_outbox.reconcile_once(settings)
+
+    assert outcome["republished"] == 1
+    assert [envelope["event_id"] for envelope in sent] == ["event-ae-1"]
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.NatsOutboxEntry).count() == 0
+
+
+def test_asset_events_without_the_outbox_are_still_counted_as_lost(tmp_path, monkeypatch):
+    """``OCTO_NATS_OUTBOX_ENABLED=false`` keeps the old behaviour, loudly.
+
+    ``skipped`` is the series ``ShapoclyackAssetEventsSkipped`` alerts on, and
+    it has to stay distinct from ``deferred``: one is a notification that is
+    late, the other one that is never sent.
+    """
+    settings = make_settings(tmp_path, nats_url=NATS_URL, nats_outbox_enabled=False)
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: None)
+
+    asset_events.publish_events(
+        NATS_URL,
+        [{"kind": "new_cve", "tenant_id": "default", "event_id": "event-ae-2"}],
+        settings=settings,
+    )
+
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.NatsOutboxEntry).count() == 0
+
+
+def test_a_row_a_peer_delivered_mid_flight_is_not_counted_as_republished(tmp_path, monkeypatch):
+    """``_claim_due`` commits before publishing, so the row can go under us.
+
+    A peer's ``_forget_recorded`` deletes a pending row whose message a later
+    attempt delivered. ``_record_attempt`` already answered ``"gone"`` for
+    that, but ``reconcile_once`` counted the pass as ``republished`` anyway and
+    incremented the metric — a backlog reported as draining twice as fast as it
+    is, which is the number an operator watches during an outage.
+    """
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    subject = nats_bus.ingest_results_subject("default")
+    nats_outbox.record_failed_publish(
+        settings,
+        kind=nats_outbox.KIND_INGEST,
+        subject=subject,
+        msg_id="msg-gone",
+        payload={"tenant_id": "default", "job_id": "job-gone"},
+        tenant_id="default",
+        job_id="job-gone",
+        run_id="run-gone",
+    )
+
+    def _delivered_by_a_peer(bus, *, kind, subject, msg_id, payload):
+        nats_outbox._forget_recorded(settings, subject=subject, msg_id=msg_id)  # noqa: SLF001
+        return True
+
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: FakeBus())
+    monkeypatch.setattr(nats_outbox, "_republish", _delivered_by_a_peer)
+
+    outcome = nats_outbox.reconcile_once(settings)
+
+    assert outcome == {"republished": 0, "failed": 0, "dead": 0}
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.NatsOutboxEntry).count() == 0

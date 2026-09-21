@@ -9,8 +9,9 @@ All notable changes to Shapoclyack are documented in this file.
 - **An outbox for ingest publications the broker refuses.** A run's
   publication ends on the analytics bus (`run_publisher._publish_to_bus`), and
   a broker that is down used to fail the whole publication: the row was
-  retried, went `dead` after `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (about eight
-  minutes of outage), and the run's own Postgres projections — assets,
+  retried, went `dead` after `OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` (five attempts
+  on a 15 s base, so about four and a half minutes of outage at the defaults,
+  reconciler ticks included), and the run's own Postgres projections — assets,
   findings, the notification — never ran either, because they are the last
   step after the bus. The bus step now publishes *or* writes the message down
   in the new `nats_outbox` table (migration `0059`), and its reconciler thread
@@ -34,9 +35,27 @@ All notable changes to Shapoclyack are documented in this file.
   new alerts `ShapoclyackNatsOutboxBacklog`, `ShapoclyackNatsOutboxDead` and
   `ShapoclyackNatsOutboxDropping` in the shipped SLO rules.
 
+- **Asset events survive a broker outage too** (`kind="asset_event"` in the
+  same outbox). They are the only source of the webhook fan-out, and relaxing
+  the readiness check changed what losing one costs: the upload used to be
+  refused for the length of the outage, so the notification went out late,
+  whereas now the run is accepted and `asset.vulnerability.new` for that hour
+  would simply never be sent. `asset_events.publish_events` records the
+  envelopes it could not deliver and the reconciler publishes them when the
+  broker is back; `octo_asset_events_published_total{outcome="deferred"}` is
+  that case, and `outcome="skipped"` is now only the event with nowhere to wait
+  (`OCTO_NATS_OUTBOX_ENABLED=false` or a database that refused the rows), which
+  the new `ShapoclyackAssetEventsSkipped` alert covers.
+
 - The `INGEST` JetStream stream now sets a `duplicate_window`
   (`OCTO_NATS_INGEST_DEDUPE_SECONDS`, default 24h, clamped to the stream's
-  retention), as `EVENTS` already did. JetStream's 2-minute default is shorter
+  retention — except at `OCTO_NATS_INGEST_MAX_AGE_SECONDS=0`, JetStream's idiom
+  for unbounded retention, where the clamp would have switched dedupe off
+  entirely), as `EVENTS` already did. A stream that already existed and could
+  not be reconciled keeps its own window, which is fail-soft on purpose and was
+  invisible; both it and the replica count are now compared against the
+  requested config on every connect and reported as
+  `octo_nats_stream_config_drift{stream,setting}`. JetStream's 2-minute default is shorter
   than a single outbox backoff, so a publish whose ack timed out after the
   server had stored it would have been accepted a second time on replay and
   ingested twice. A run's `Msg-Id` is derived from its archive digest, so the

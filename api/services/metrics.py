@@ -199,6 +199,27 @@ NATS_CONSUMER_PENDING = Gauge(
     registry=REGISTRY,
 )
 
+NATS_STREAM_CONFIG_DRIFT = Gauge(
+    "octo_nats_stream_config_drift",
+    "1 when a JetStream stream runs with a setting other than the one this API "
+    "replica asked for, by stream and setting. Reconciling an existing stream "
+    "is deliberately fail-soft, so this is the only signal that a "
+    "duplicate_window or replica count never took — and the duplicate window is "
+    "what keeps an outbox replay from doubling a run in ClickHouse.",
+    ["stream", "setting"],
+    registry=REGISTRY,
+)
+NATS_LEGACY_INGEST_TOTAL = Counter(
+    "octo_nats_legacy_ingest_total",
+    "Publishes of the deprecated ingest.raw_results copy of each run, by "
+    "outcome. Nothing in this installation subscribes to it (the ClickHouse "
+    "worker is bound to ingest.results.>), so outcome=refused is a broker or "
+    "an account policy rejecting a subject on its way out — worth a ticket, "
+    "never a reason to hold the run's real publish back.",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
 NATS_OUTBOX_BACKLOG = Gauge(
     "octo_nats_outbox_backlog",
     "Publications the broker refused and has not accepted since, by status "
@@ -277,8 +298,11 @@ SCHEDULER_IS_LEADER = Gauge(
 ASSET_EVENTS_PUBLISHED_TOTAL = Counter(
     "octo_asset_events_published_total",
     "Asset-level events by kind and publish outcome (ROADMAP Phase 10.2). "
-    "outcome=skipped means the broker was disabled or unreachable, so the "
-    "events exist only in the run's diff.json.",
+    "outcome=deferred means the broker did not take the event and it is in "
+    "nats_outbox, to be published — and to feed its webhooks — when the broker "
+    "is back. outcome=skipped is the same event with nowhere to wait: no "
+    "database-backed caller or OCTO_NATS_OUTBOX_ENABLED=false, so the event "
+    "exists only in the run's diff.json and its notification is never sent.",
     ["kind", "outcome"],
     registry=REGISTRY,
 )
