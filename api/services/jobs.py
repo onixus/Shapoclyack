@@ -1,23 +1,4 @@
-"""Scan jobs — the control plane's unit of work (Postgres-backed since P1.2).
-
-Jobs used to live in a module-level ``_JOBS`` dict guarded by a
-``threading.Lock`` and dumped to ``state/api_jobs.json`` after every mutation.
-That has three failure modes this module no longer has: a second API replica
-kept its own queue (so an agent could claim a job twice, once per replica),
-the lock only serialised claims *within* one process, and anything not yet
-flushed to the file died with the process.
-
-The table is the queue now. ``claim_job`` takes a row lock
-(``SELECT … FOR UPDATE SKIP LOCKED``) so concurrent claims across replicas
-hand out distinct jobs, and every status change is a committed UPDATE rather
-than a whole-file rewrite.
-
-Since P1.3 every status write goes through ``api/services/job_states.py``:
-statuses are no longer assigned, they are *transitioned*, and an illegal move
-(a late upload for a job that already failed, a second terminal write) raises
-instead of silently overwriting. Leases and idempotency keys are the next
-slices (ROADMAP P1.4-P1.5).
-"""
+"""Compatibility facade for scan jobs.\n\nThe job subsystem is split by invariant: admission, submission, repository,\nstate writes, agent control, leases/reaping, result ingestion, local execution\nand post-run completion each live in their own service module. Routes and older\ninternal callers still import ``api.services.jobs`` so this module keeps those\npublic and test-facing names stable while delegating the implementation.\n\nDo not add new policy or side-effect logic here. Put it in the owning service\nand expose a compatibility wrapper only when an existing caller needs one.\n"""
 
 from __future__ import annotations
 
