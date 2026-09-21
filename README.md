@@ -10,7 +10,7 @@
 
 Shapoclyack turns external discovery into a verifiable remediation workflow. It keeps vulnerability history attached to persistent assets instead of transient IP addresses, understands distribution security backports, makes scanning scope explicit and fail-closed, and can mechanically re-check whether a remediation actually worked.
 
-**[Getting Started](docs/getting-started.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
+**[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
 
 ## Why Shapoclyack
 
@@ -32,6 +32,8 @@ curl --fail http://127.0.0.1:8080/api/health
 ```
 
 Then open **http://127.0.0.1:8080**. The local `kind` setup, demo accounts, approved-scope workflow and first scan are documented step by step in [Getting Started](docs/getting-started.md).
+
+**See the differentiator end to end:** [run the closed-loop remediation demo](docs/demo-remediation-loop.md) to take a real network finding through remediation, targeted re-scan, and either `machine_verified = true` or a return to `FIXING`.
 
 > [!WARNING]
 > **Scanning touches live external systems.** Operate Shapoclyack only against networks and infrastructure you own or are explicitly authorized to assess. A fresh installation deliberately executes no scans until an administrator reviews and approves an authorized scanning scope for the tenant.
