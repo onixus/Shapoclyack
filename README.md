@@ -12,6 +12,19 @@ Shapoclyack turns external discovery into a verifiable remediation workflow. It 
 
 **[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
 
+## Closed-loop remediation at a glance
+
+```mermaid
+flowchart LR
+    A["1. Discover<br/>authorized scan"] --> B["2. Track<br/>finding + owner + SLA"]
+    B --> C["3. Remediate<br/>patch / config / exposure"]
+    C --> D["4. Verify<br/>targeted re-scan"]
+    D -->|not observed| E["CLOSED<br/>machine_verified = true"]
+    D -->|observed again| F["FIXING<br/>keep working"]
+```
+
+Shapoclyack does not treat a closed ticket as proof that a network finding is gone. The verification step re-tests the observation that created the finding. **[Run the end-to-end demo →](docs/demo-remediation-loop.md)**
+
 ## Why Shapoclyack
 
 - **Asset-centric identity** — findings and remediation history survive DHCP/IP drift.
