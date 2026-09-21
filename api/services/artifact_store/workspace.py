@@ -297,6 +297,36 @@ def publish_run_file(settings: Settings, run_id: str, relative_path: str, data: 
         get_store(settings).put_bytes(keys.run_artifact(run_id, relative_path), data)
 
 
+def unpublish_run(settings: Settings, run_id: str) -> int:
+    """Take a run's keys back out of the store, leaving every local copy alone.
+
+    For an upload that failed partway: ``upload_tree`` writes a key at a time,
+    and a listing is the children of ``runs/``, so a tree that went up by
+    halves is a run every replica can see and open with files missing from it.
+    The publisher removes the half before recording the failure, so a retry
+    starts from nothing and a publication that never succeeds leaves no run
+    rather than a partial one.
+
+    Best-effort and never raises: the store refusing this is the same outage
+    that refused the upload, and the caller is already on its way to recording
+    that failure. A no-op on the local backend, where nothing was uploaded.
+    """
+    if not is_remote(settings):
+        return 0
+    try:
+        removed = get_store(settings).delete_prefix(keys.run_prefix(run_id))
+    except ArtifactStoreError:
+        LOG.warning(
+            "Could not remove the partial upload of run %s from the artifact store; "
+            "it may be listed with files missing until the next attempt",
+            run_id,
+            exc_info=True,
+        )
+        return 0
+    _forget_synced(settings, run_id)
+    return removed
+
+
 def delete_run(settings: Settings, run_id: str) -> int:
     """Remove a run from the store and from this pod's working copy."""
     store = get_store(settings)

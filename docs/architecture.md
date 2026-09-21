@@ -118,12 +118,27 @@ nowhere and the sensor's retry is answered as a replay of that outcome. Both
 were shipped in turn; the record is in the dated
 [architecture review](architecture-review-2026-09-18.ru.md).
 
+One accepted upload is one publication. The row is inserted due immediately,
+so the accepting request claims it with `FOR UPDATE SKIP LOCKED` and holds it
+out of the due window for the length of the work, exactly as a reconciler tick
+holds the batch it claimed — otherwise the next tick in any replica would find
+the row due and publish it alongside the request. Attempts are counted where a
+publication fails, not where its row is claimed, so a replica killed mid-batch
+does not write one off for every row it was holding.
+
 A run that cannot be published at all is the bounded end of this. Past
-`OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` the row stays `dead`: `/api/health` reports
+`OCTO_RUN_PUBLICATION_MAX_ATTEMPTS` the row stays `dead` — as it does past
+`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` for a row whose staging tree is
+on a replica that is gone, which with the artifact cache on an `emptyDir` is
+what a scaled-down pod leaves behind. Either way: `/api/health` reports
 `run_publications` (advisory — `/readyz` is unaffected),
 `octo_run_publication_backlog{status="dead"}` rises, the job's `error` says the
 run was not published, and the extracted tree stays on the accepting replica's
-disk for 24 hours so an operator can publish it by hand or re-scan. The
+disk for 24 hours so an operator can publish it by hand or re-scan (a run whose
+replica is gone has only the second of those, and the runbook says so). A
+publication that failed partway through the object store takes its own keys
+back off before the failure is recorded, so a `dead` row never leaves a half of
+a run for the other replicas to list and open. The
 projections that read a published run — assets, vulnerabilities, asset events,
 notifications — run when the publication lands, not when the job finishes, and
 they cannot fail it: a failure there is recorded in the job's `error`.

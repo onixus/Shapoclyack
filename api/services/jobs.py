@@ -2338,13 +2338,22 @@ def _stalled_ingest(settings: Settings, row: models.Job) -> bool:
     An ingest marker is proof that an upload is being processed, and nothing
     clears it for a job that is already ``cancelling``: the lease reaper takes
     IN_FLIGHT rows only, and the process that would have cleared it is the one
-    that died. Past ``job_cancel_grace_seconds`` the marker is no longer
-    evidence of a confirmation in progress — it is the shape one left behind.
+    that died. Past the ingest lease the marker is no longer evidence of a
+    confirmation in progress — it is the shape one left behind.
+
+    The clock is ``job_ingest_lease_seconds``, not the cancellation grace: an
+    upload is allowed to take the whole ingest lease (a branch office's uplink
+    plus the extraction, which is what the sensor's own upload timeout is
+    sized for), so a marker younger than that can be a live confirmation still
+    inside its window. Dropping it would refuse that upload at the fence and
+    take the partial archive with it. A marker left by a dead replica is older
+    than the lease just as surely as it is older than the grace — the longer
+    clock costs nothing but the wait.
     """
     if row.ingest_started_at is None:
         return False
-    grace = timedelta(seconds=max(settings.job_cancel_grace_seconds, 1))
-    return (_now() - row.ingest_started_at) > grace
+    lease = timedelta(seconds=max(settings.job_ingest_lease_seconds, 1))
+    return (_now() - row.ingest_started_at) > lease
 
 
 def cancel_job(
@@ -2416,11 +2425,12 @@ def cancel_job(
             # was promised, with no way to say "I know, kill it". Dropping the
             # marker hands the row back to the reaper's ordinary clock.
             #
-            # Bounded by the grace period rather than by the ingest lease
-            # because that is the promise this escalates past: an upload
-            # younger than it is a confirmation still inside its window, and
-            # is left alone so a slow branch office does not lose the partial
-            # archive it is in the middle of delivering.
+            # Bounded by the *ingest lease*, not by the grace period: an
+            # upload younger than the lease is a confirmation still inside the
+            # window the sensor was given, and is left alone so a slow branch
+            # office does not lose the partial archive it is in the middle of
+            # delivering. A marker a dead replica left behind is past the lease
+            # too, so the longer clock only costs the wait.
             if _stalled_ingest(settings, row):
                 _log.warning(
                     "Job %s is stopping with an ingest open since %s; %s asked again, so "

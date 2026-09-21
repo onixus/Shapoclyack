@@ -622,6 +622,15 @@ class Settings:
     run_publication_retry_max_seconds: int = 900
     run_publication_worker_enabled: bool = True
     run_publication_interval_seconds: int = 30
+    # How long a publication whose tree no replica can reach is offered around
+    # before it is declared dead. The paths in the row are on the disk of the
+    # replica that accepted the upload, and in the HA overlay that disk is an
+    # ``emptyDir`` — a row left by a pod the autoscaler removed is one nobody
+    # can ever publish. Without this it would be claimed and given back every
+    # adoption window forever, with the job saying ``succeeded`` and no health
+    # check saying otherwise. Floored at two adoption windows in the publisher
+    # so it cannot land before a peer has had a chance to adopt the row.
+    run_publication_orphan_deadline_seconds: int = 3600
     # Login brute-force protection (#157). The counter is the auth_events table,
     # so the limit holds across replicas; see api/services/auth_audit.py.
     login_rate_limit_enabled: bool = True
@@ -1618,6 +1627,9 @@ def load_settings() -> Settings:
         # would spin it against Postgres.
         run_publication_interval_seconds=max(
             1, int(os.environ.get("OCTO_RUN_PUBLICATION_INTERVAL_SECONDS", "30"))
+        ),
+        run_publication_orphan_deadline_seconds=max(
+            1, int(os.environ.get("OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS", "3600"))
         ),
         login_rate_limit_enabled=os.environ.get("OCTO_LOGIN_RATE_LIMIT_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},

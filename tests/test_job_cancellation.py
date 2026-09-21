@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import threading
 from datetime import timedelta
 from pathlib import Path
 
@@ -775,6 +776,85 @@ def test_the_grace_period_does_not_expire_under_a_confirming_upload(tmp_path, mo
     ]
 
 
+def test_a_second_stop_does_not_kill_an_upload_still_inside_its_ingest_lease(
+    tmp_path, monkeypatch
+):
+    """The escalation above, bounded by the clock the upload actually runs on.
+
+    A sensor is given ``job_ingest_lease_seconds`` (900s by default, which is
+    also its own upload timeout) to deliver and extract a result. Measuring the
+    second press against ``job_cancel_grace_seconds`` (300s) instead made a
+    live upload from a branch office indistinguishable from a marker a dead
+    replica left behind after five minutes: the token was cleared underneath
+    it, its terminal write was refused at the fence, ``complete_job`` discarded
+    the staging tree and the archive beside it, and the sensor read the 409 as
+    "rejected" and dropped the run. Nothing said so — not the job's ``error``,
+    not the run directory, which simply was not there.
+    """
+    from api.schemas import StartScanRequest
+    from api.services import results_ingest
+    from api.services.artifact_store import workspace as artifact_workspace
+
+    settings = _service_settings(tmp_path)
+    settings.job_cancel_grace_seconds = 300
+    settings.job_ingest_lease_seconds = 900
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="safe"), username="operator")
+    claim = jobs_service.claim_job(settings, "agent-1")
+    run_id = str(jobs_service.get_job(settings, job.job_id).run_id)
+    jobs_service.mark_running(settings, job.job_id, agent_id="agent-1")
+    jobs_service.cancel_job(settings, job.job_id, username="operator")
+
+    uploading = threading.Event()
+    pressed = threading.Event()
+    real_extract = results_ingest.extract_run_archive
+
+    def _slow_uplink(archive_bytes: bytes, dest: Path, **kwargs):
+        result = real_extract(archive_bytes, dest, **kwargs)
+        uploading.set()
+        pressed.wait(30)
+        return result
+
+    monkeypatch.setattr(results_ingest, "extract_run_archive", _slow_uplink)
+    outcome: dict[str, object] = {}
+
+    def _confirm() -> None:
+        try:
+            outcome["job"] = jobs_service.complete_job(
+                settings,
+                job.job_id,
+                agent_id="agent-1",
+                exit_code=143,
+                run_id=run_id,
+                archive_bytes=_archive("partial.json", "summary.json"),
+                attempt=claim.attempt,
+                idempotency_key="confirm-slow",
+                cancelled=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            outcome["error"] = exc
+
+    uploader = threading.Thread(target=_confirm, name="slow-branch-office")
+    uploader.start()
+    assert uploading.wait(30)
+
+    # Six minutes into the upload: past the stop's grace period, well inside
+    # the lease the sensor was told it had.
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job.job_id)
+        row.ingest_started_at = jobs_service._now() - timedelta(seconds=400)  # noqa: SLF001
+
+    jobs_service.cancel_job(settings, job.job_id, username="operator")
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.Job, job.job_id).ingest_token is not None
+
+    pressed.set()
+    uploader.join(30)
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["job"].status == job_states.CANCELLED  # type: ignore[union-attr]
+    run_dir = artifact_workspace.run_dir(settings, run_id, refresh=False)
+    assert (run_dir / "partial.json").is_file()
+
+
 def test_an_ingest_lease_from_a_dead_replica_does_not_hold_a_stop_open(tmp_path):
     """The other end of the rule above: a lease is the agent answering only
     while it is fresh. A replica killed mid-ingest leaves one on the row, and
@@ -812,13 +892,14 @@ def test_a_second_stop_drops_an_ingest_hold_a_dead_replica_left_behind(tmp_path)
     grace the operator was promised — and pressing stop again was a no-op with
     nothing in the response to say why.
 
-    A second press past the grace period drops the hold. A fresher one is left
-    alone: that is a confirmation still inside its window, and the partial
-    archive it is delivering is what #360 exists to keep.
+    A second press past the *ingest lease* drops the hold. A fresher one is
+    left alone: that is a confirmation still inside the window the sensor was
+    given, and the partial archive it is delivering is what #360 exists to
+    keep.
     """
     settings = _service_settings(tmp_path)
     settings.job_cancel_grace_seconds = 60
-    settings.job_ingest_lease_seconds = 900
+    settings.job_ingest_lease_seconds = 60
     job_id = _cancelling_job(settings)
     _age_cancellation(settings, job_id, 300)
 

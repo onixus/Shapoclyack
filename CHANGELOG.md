@@ -53,6 +53,36 @@ All notable changes to Shapoclyack are documented in this file.
   fetch's debris gets, so the choice between publishing it by hand and
   re-scanning is an operator's. A replica killed between the outcome and the
   publication is the same case: the row is due, and the next tick finishes it.
+- **An accepted run is published once, by whichever side got there first.**
+  The row is inserted due immediately, so the accepting request now *claims*
+  it — `FOR UPDATE SKIP LOCKED` and the same due-window hold a reconciler tick
+  takes — before spending minutes on the store and the broker. Without that,
+  any replica's next tick found the row due and published it in parallel: two
+  messages on `ingest.results`, two projections, two notifications for one
+  scan, and an `upload_tree` racing the `rmtree` that promotes the tree, with
+  the loser's failure swallowed because the winner had already deleted the row.
+- **A publication nobody can finish now ends `dead` instead of circulating
+  forever.** A row's staging tree is on the accepting replica's disk, and in
+  the HA overlay that disk is an `emptyDir` — so a row left behind by a pod the
+  autoscaler removed is one *no* replica can ever publish. It was claimed and
+  given back every adoption window indefinitely, with the job saying
+  `succeeded`, no artifacts behind it, `/api/health` green (only `dead` counts)
+  and nothing in the job's `error`: the exact failure this release closes,
+  made permanent and silent. Past
+  `OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` (1h) the row is `dead` with
+  the reason on it and the usual three-way visibility.
+- **A tree that went up by halves no longer stays in the bucket.**
+  `upload_tree` writes a key at a time and a run listing is the children of
+  `runs/`, so a store that started refusing mid-tree left a run every replica
+  could list and open with files missing from it — while the job said the run
+  was not published. The partial prefix is now removed before the failure is
+  recorded, so a retry starts from nothing and a `dead` row costs the run its
+  visibility rather than leaving a half of one that reads as whole.
+- An attempt is now counted where a publication fails, not where its row is
+  claimed. A tick claims up to ten rows in one transaction and publishes them
+  afterwards, so a replica the OOM killer took down mid-batch used to write off
+  one attempt per row per restart: five restarts left a batch `dead`, blaming a
+  store that had never been asked.
 - A retried publication is the same bus message, not a second run: the archive
   is kept beside the staging tree so the republish carries the digest the
   `Msg-Id` is derived from. Re-packing the run directory would have produced a
@@ -88,9 +118,14 @@ All notable changes to Shapoclyack are documented in this file.
   rather than the `OCTO_JOB_CANCEL_GRACE_SECONDS` (300s) the operator was
   promised — nothing clears that marker for a row in `cancelling`, because the
   lease reaper takes in-flight rows only. Pressing stop a second time past the
-  grace period now drops the hold (audited, and an upload still in flight for
-  it is then refused as stale); inside the grace period it is left alone, so a
-  slow branch office does not lose the partial archive it is delivering.
+  **ingest lease** now drops the hold (audited, and an upload still in flight
+  for it is then refused as stale); a marker younger than the lease is left
+  alone, so a slow branch office does not lose the partial archive it is
+  delivering. The bound was the cancellation grace (300s) at first, which is
+  shorter than the lease an upload actually runs on (900s, the sensor's own
+  upload timeout): a live upload six minutes in was indistinguishable from a
+  marker a dead replica left behind, and a second press destroyed it —
+  staging tree, archive and all — with nothing on the job to say so.
   Before this, the second press was a no-op with nothing in the answer to say
   why the scan would not die.
 - The `409` on `POST /api/agent/jobs/{job_id}/results` carries

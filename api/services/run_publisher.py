@@ -53,7 +53,11 @@ Safe in every replica without leader election, like the job reaper: due-ness
 is a property of the row and rows are claimed with ``FOR UPDATE SKIP LOCKED``.
 The paths in a row are on one replica's disk, though, so a peer that claims a
 row it cannot see gives it back instead of declaring the run lost — see
-:func:`_claim_due`.
+:func:`_claim_due`. Bounded as well: a pod's ``emptyDir`` cache takes its
+staging trees with it, so a row offered around for
+``run_publication_orphan_deadline_seconds`` with nobody able to see the tree
+ends ``dead`` like any other publication that cannot be finished, rather than
+circulating silently forever (:func:`_give_back`).
 """
 
 from __future__ import annotations
@@ -92,6 +96,14 @@ _TREE_IS_GONE = (
     "the extracted upload is no longer on disk; this run needs a re-scan or a manual load"
 )
 
+#: Why a publication is dead without this replica having tried it: the row was
+#: accepted by a replica that is gone and the only copy of the tree went with
+#: it. Distinct from ``_TREE_IS_GONE``, which is this replica's own tree.
+_REPLICA_IS_GONE = (
+    "the replica that accepted this upload is gone and no peer can see the extracted "
+    "tree; this run needs a re-scan"
+)
+
 
 def _now() -> datetime:
     """Naive UTC, matching ``jobs`` and every timestamp column in this schema."""
@@ -119,6 +131,7 @@ class _Publication:
     staging_path: str
     archive_path: str | None
     replica: str | None
+    created_at: datetime | None
     attempts: int
 
 
@@ -136,6 +149,7 @@ def _snapshot(row: models.RunPublication) -> _Publication:
         staging_path=row.staging_path or "",
         archive_path=row.archive_path,
         replica=row.replica,
+        created_at=row.created_at,
         attempts=row.attempts or 0,
     )
 
@@ -197,17 +211,28 @@ def publish_now(settings: Settings, publication_id: str) -> bool:
     the upload, which is what keeps the ordinary case synchronous: by the time
     the sensor is answered, the run is in the store and on the bus.
 
+    The row is *claimed* here exactly as a reconciler tick claims it: the row
+    is inserted due immediately and publishing it is minutes of store and
+    broker work, so a tick — in this replica or any other — would otherwise
+    find it due and publish it a second time alongside this call. That costs
+    the operator a duplicate notification, the projections a second pass, and
+    the tree a ``rmtree`` racing an ``upload_tree``. A row a peer is already
+    holding is left to it: ``False`` here is "not published by me".
+
     Never raises for a failed publication. The outcome is committed, the
     agent's retry is answered as a replay, and raising here would report a
     failure for a scan the API has kept — while the work itself is not lost,
     it is a row.
     """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.RunPublication, publication_id)
-        if row is None:  # pragma: no cover - inserted moments ago
+        row = session.execute(
+            select(models.RunPublication)
+            .where(models.RunPublication.publication_id == publication_id)
+            .with_for_update(skip_locked=True)
+        ).scalars().first()
+        if row is None:  # pragma: no cover - inserted moments ago, or held by a tick
             return False
-        row.attempts += 1
-        row.updated_at = _now()
+        _hold(row, now=_now(), rows=1, settings=settings)
         publication = _snapshot(row)
     return _attempt(settings, publication)
 
@@ -255,7 +280,19 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         )
         # Into the store from staging: the copy the other replicas read is
         # complete and marked the first time they can see it.
-        artifact_workspace.publish_run(settings, run_id, source=staging)
+        try:
+            artifact_workspace.publish_run(settings, run_id, source=staging)
+        except Exception:
+            # A remote backend uploads the tree file by file, and a store that
+            # starts refusing halfway leaves keys under ``runs/<run_id>/``. A
+            # run listing is the children of ``runs/``, so those keys are a
+            # scan every replica can see and open, with whatever did not make
+            # it simply missing. The half is taken back off before the failure
+            # is recorded, so a retry starts from nothing and a row that ends
+            # ``dead`` costs the run its visibility rather than leaving a
+            # partial one that reads as complete.
+            artifact_workspace.unpublish_run(settings, run_id)
+            raise
         # The marker cache on a remote backend may hold a "no marker" answer
         # from a listing that asked about this run before it existed, and
         # reading that back is the default-tenant leak the marker prevents.
@@ -318,12 +355,12 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
     if publication.archive_path:
         Path(publication.archive_path).unlink(missing_ok=True)
     metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="published").inc()
-    if publication.attempts > 1:
+    if publication.attempts:
         LOG.info(
             "Published run %s of job %s after %d attempt(s)",
             publication.run_id,
             publication.job_id,
-            publication.attempts,
+            publication.attempts + 1,
         )
     # Imported here rather than at module scope: ``jobs`` owns the projections
     # and calls this module for every upload it accepts, so the two would be a
@@ -346,13 +383,16 @@ def _record_failure(
 
     ``final`` is for a failure no retry can fix. Everything else counts down
     ``run_publication_max_attempts`` on an exponential backoff, the same shape
-    as ``webhooks.backoff_seconds``.
+    as ``webhooks.backoff_seconds``. The attempt itself is counted here rather
+    than where the row was claimed, so an attempt is something that was tried
+    and refused — see :func:`_hold`.
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id)
         if row is None:  # pragma: no cover - deleted by a peer mid-flight
             return
+        row.attempts += 1
         row.updated_at = now
         row.last_error = reason[:2000]
         spent = final or row.attempts >= settings.run_publication_max_attempts
@@ -422,14 +462,31 @@ def _adoption_seconds(settings: Settings) -> int:
     return max(300, 10 * settings.run_publication_interval_seconds)
 
 
+def _hold(row: models.RunPublication, *, now: datetime, rows: int, settings: Settings) -> None:
+    """Push one claimed row out of the due window for the length of the work.
+
+    The window covers the whole batch rather than one row, because the rows
+    are published after the claiming transaction commits and a batch of runs
+    is minutes of work: a peer must not claim the tail of a batch that is
+    still being published.
+
+    Attempts are *not* counted here. A claim is not an attempt: a replica the
+    OOM killer takes down while publishing a large run would otherwise write
+    off one attempt per restart for every row it was holding, and five
+    restarts would leave a batch ``dead`` without the store having refused
+    once. They are counted where a failure is recorded instead.
+    """
+    per_row = max(60, settings.run_publication_interval_seconds)
+    row.next_attempt_at = now + timedelta(seconds=per_row * max(1, rows))
+    row.updated_at = now
+
+
 def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> list[Any]:
     """Take up to ``limit`` due rows, pushing them out of the due window.
 
     ``FOR UPDATE SKIP LOCKED`` plus a bumped ``next_attempt_at`` is what makes
-    the reconciler safe in every replica. The window covers the whole batch
-    rather than one row, because the rows are published after this transaction
-    commits and a batch of runs is minutes of work: a peer must not claim the
-    tail of a batch that is still being published.
+    the reconciler safe in every replica — and what the accepting request does
+    too, see :func:`publish_now`.
     """
     instance = settings.instance_id
     adoption_cutoff = now - timedelta(seconds=_adoption_seconds(settings))
@@ -450,12 +507,8 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
             .with_for_update(skip_locked=True)
         ).scalars().all()
     )
-    per_row = max(60, settings.run_publication_interval_seconds)
-    visibility = timedelta(seconds=per_row * max(1, len(rows)))
     for row in rows:
-        row.attempts += 1
-        row.next_attempt_at = now + visibility
-        row.updated_at = now
+        _hold(row, now=now, rows=len(rows), settings=settings)
     session.flush()
     return rows
 
@@ -476,15 +529,54 @@ def _is_foreign_and_absent(settings: Settings, publication: _Publication) -> boo
     return not artifact_workspace.run_exists(settings, publication.run_id)
 
 
-def _give_back(settings: Settings, publication: _Publication) -> None:
-    """Undo a claim on a peer's row this replica cannot act on."""
+def _give_back(settings: Settings, publication: _Publication) -> bool:
+    """Hand a peer's row back — or end it, when nobody is coming for it.
+
+    Answers whether the row is still owed. Giving it back has to be bounded:
+    the peer that could publish it may not exist. The default HA overlay keeps
+    the artifact cache in an ``emptyDir``, so a staging tree dies with its pod,
+    and a row from a pod the autoscaler took away is one *no* replica can ever
+    see. Without a deadline it is claimed, given back and claimed again every
+    adoption window, forever, while ``is_backlogged`` counts only ``dead`` and
+    the job goes on saying it succeeded with nothing behind it — which is the
+    failure this whole module exists to end.
+
+    Past ``run_publication_orphan_deadline_seconds`` the row is therefore
+    ``dead`` with the reason on it, which is the same three-way visibility a
+    store outage gets: ``/api/health``, the backlog gauge, and a note on the
+    job. An operator can still find the tree if the disk outlived the pod;
+    what they cannot do any more is not be told.
+    """
+    now = _now()
+    if _is_orphaned(settings, publication, now=now):
+        _record_failure(settings, publication, _REPLICA_IS_GONE, final=True)
+        return False
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id)
         if row is None:  # pragma: no cover - finished by its own replica
-            return
-        row.attempts = max(0, row.attempts - 1)
-        row.next_attempt_at = _now() + timedelta(seconds=_adoption_seconds(settings))
-        row.updated_at = _now()
+            return True
+        row.next_attempt_at = now + timedelta(seconds=_adoption_seconds(settings))
+        row.updated_at = now
+    return True
+
+
+def _is_orphaned(settings: Settings, publication: _Publication, *, now: datetime) -> bool:
+    """Whether a row this replica cannot see has waited past its deadline."""
+    created = publication.created_at
+    if created is None:  # pragma: no cover - the column is written with the row
+        return False
+    return (now - created) > timedelta(seconds=_orphan_deadline_seconds(settings))
+
+
+def _orphan_deadline_seconds(settings: Settings) -> int:
+    """How long an unreachable row is offered around before it is declared dead.
+
+    Floored at two adoption windows so the deadline can never land before a
+    peer has had a chance to adopt the row at all.
+    """
+    return max(
+        settings.run_publication_orphan_deadline_seconds, 2 * _adoption_seconds(settings)
+    )
 
 
 def reconcile_once(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
@@ -501,8 +593,10 @@ def reconcile_once(settings: Settings, *, now: datetime | None = None) -> dict[s
         )]
     for publication in claimed:
         if _is_foreign_and_absent(settings, publication):
-            _give_back(settings, publication)
-            outcome["skipped"] += 1
+            if _give_back(settings, publication):
+                outcome["skipped"] += 1
+            else:
+                outcome["failed"] += 1
             continue
         if publication.replica != settings.instance_id:
             metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="adopted").inc()
@@ -557,6 +651,32 @@ def pending_publications(settings: Settings, job_id: str) -> list[models.RunPubl
                 .order_by(models.RunPublication.created_at.desc())
             ).scalars().all()
         )
+
+
+def discard_publication(settings: Settings, publication_id: str) -> bool:
+    """Forget one owed publication. Answers whether there was one to forget.
+
+    The way out of a ``dead`` row, for the operator who has either loaded the
+    run by hand or decided to re-scan (see the runbook in
+    ``docs/operations.md``). Deliberately not a route: it is the last word on a
+    run the installation has already told its user it accepted, it is reached
+    perhaps twice a year, and the alternative on offer until now was raw SQL
+    against the table in a runbook that did not say so.
+
+    Only the row goes. The extracted tree and the archive beside it stay where
+    they are until the ordinary sweep takes them, so a decision made in haste
+    is still recoverable for a day.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        if row is None:
+            return False
+        session.delete(row)
+    LOG.warning(
+        "Publication %s was discarded by an operator; the run it owed is not published",
+        publication_id,
+    )
+    return True
 
 
 def reset_for_tests(settings: Settings) -> None:

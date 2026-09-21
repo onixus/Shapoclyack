@@ -1092,12 +1092,12 @@ What is owed, and where it is:
 
 ```bash
 python -c '
-from api.settings import get_settings
+from api.settings import load_settings
 from api.services import run_publisher
-s = get_settings()
+s = load_settings()
 print(run_publisher.backlog(s))
 for row in run_publisher.pending_publications(s, "<job_id>"):
-    print(row.status, row.attempts, row.replica, row.staging_path, row.last_error)
+    print(row.publication_id, row.status, row.attempts, row.replica, row.staging_path, row.last_error)
 '
 ```
 
@@ -1106,16 +1106,39 @@ row is normally finished by the replica that accepted the upload. A peer picks
 one up only after that replica has been silent for ten reconciler ticks, and
 gives it back untouched if it cannot see the tree.
 
+That giving back is bounded, which is the other way a row reaches `dead`: with
+the artifact cache on an `emptyDir` — the HA overlay's default — the staging
+tree dies with its pod, so a row left by a pod the autoscaler removed is one no
+replica can ever publish. After
+`OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS` (1h) it is `dead` with *the
+replica that accepted this upload is gone* on it, and the run needs a re-scan:
+there is nothing left to load by hand. A deployment that wants those rows
+adoptable instead needs the cache on an RWX volume, not a longer deadline.
+
 The extracted run and the archive beside it are kept for 24 hours after the
 last attempt, then swept by the next ingest on that replica. Inside that window
 there are two ways out, and both are decisions rather than retries:
 
 - **Publish it by hand.** Copy `staging_path` into the run directory
   (`OCTO_OUTPUT_DIR/runs/<run_id>` on the local backend) or upload it under
-  `runs/<run_id>/` in the bucket, then delete the row. The analytical
+  `runs/<run_id>/` in the bucket, then discard the row. The analytical
   projection stays behind for that run unless the archive is replayed as well.
-- **Re-scan.** Delete the row and start the scan again; the run id will be a
+- **Re-scan.** Discard the row and start the scan again; the run id will be a
   new one.
+
+Discarding a row is one call, and it is the only thing that clears the health
+check and the note on the job — nothing else deletes these rows:
+
+```bash
+python -c '
+from api.settings import load_settings
+from api.services import run_publisher
+print(run_publisher.discard_publication(load_settings(), "<publication_id>"))
+'
+```
+
+The row is all that goes: the extracted tree and the archive beside it stay
+until the ordinary sweep takes them, so the decision is recoverable for a day.
 
 A `pending` row that is not draining is the same problem one step earlier:
 check the store and the broker first (`/api/health`), because the reconciler is
