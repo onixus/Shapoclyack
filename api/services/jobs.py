@@ -21,14 +21,18 @@ slices (ROADMAP P1.4-P1.5).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -1211,6 +1215,182 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     return outcome
 
 
+#: Whether a scan gets a session, and therefore a process group, of its own.
+#: POSIX only -- ``os.killpg`` does not exist on Windows, where a lone
+#: ``terminate()`` is all there is.
+_USE_PROCESS_GROUP = sys.platform != "win32"
+
+#: The local scans this process is executing right now: the executor threads,
+#: and job id -> the ``scanner.main`` process each of them is waiting on.
+#:
+#: A local job's only executor is the thread in the replica that started it --
+#: which is why ``cancel_job`` refuses to stop one -- so nothing outside this
+#: process can reach that scan, and until this registry existed nothing inside
+#: it could either. ``subprocess.run`` kept the handle on its own stack and
+#: gave it up only when the child was already gone.
+_local_scans_lock = threading.Lock()
+_local_scan_threads: set[threading.Thread] = set()
+_local_scan_procs: dict[str, "subprocess.Popen[str]"] = {}
+
+#: Set while :func:`stop_local_scans` is draining. An executor thread that
+#: reaches its ``Popen`` during a stop has spawned into a registry the stop has
+#: already read, so it puts its own scan down instead of running it.
+_local_scans_draining = threading.Event()
+
+#: The real thread class, captured before any test can replace it. Several
+#: tests patch ``threading.Thread`` itself to keep ``start_scan`` from running
+#: anything, so ``isinstance(thread, threading.Thread)`` would ask the double
+#: whether it is the double.
+_REAL_THREAD = threading.Thread
+
+
+def _run_scanner(job_id: str, command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the scanner to completion, leaving a handle on it while it lives.
+
+    Same result as the ``subprocess.run`` this replaces, plus two things that
+    call is structurally unable to offer: the process is registered in
+    :data:`_local_scan_procs` while it runs, so :func:`stop_local_scans` can
+    find it, and it is put in its own session, so signalling it reaches the
+    tools it has shelled out to rather than just the Python parent. That is the
+    same shape the agent's copy of this has used since #360
+    (``agent/worker.py:_run_scan``); the API's local path simply never had a
+    caller that wanted the process back.
+    """
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=_USE_PROCESS_GROUP,
+    )
+    with _local_scans_lock:
+        _local_scan_procs[job_id] = proc
+    if _local_scans_draining.is_set():
+        # Started into a stop. The window is small -- between the thread being
+        # registered and this line -- but it is the whole of the leak that
+        # survived the first version of this: a stop that finds the registry
+        # empty has nothing to signal, and goes on to wait out a scan that had
+        # not been spawned yet when it looked.
+        _terminate_scan_process(proc)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        with _local_scans_lock:
+            _local_scan_procs.pop(job_id, None)
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def _terminate_scan_process(proc: "subprocess.Popen[str]") -> None:
+    """Put down one scanner and everything it started.
+
+    The process *group*, for the reason ``agent/worker.py`` gives: a scan is
+    ``scanner.main`` driving nmap, httpx and nuclei, and killing only the
+    parent leaves the tool that is actually touching the target running with
+    nobody to report it. SIGTERM first so the pipeline can close its files,
+    SIGKILL for whatever ignores it.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if _USE_PROCESS_GROUP:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:  # pragma: no cover - the suite does not run on Windows
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        proc.wait(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if _USE_PROCESS_GROUP:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:  # pragma: no cover - the suite does not run on Windows
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5.0)
+
+
+def live_local_scans() -> list[str]:
+    """The local scans still running here, described for a failure message.
+
+    What makes a leak hard to chase is that the process says nothing about the
+    test that started it until you go and read ``/proc``; naming the job and
+    the pid at the moment the stop gives up saves that step.
+    """
+    with _local_scans_lock:
+        alive = [
+            f"job {job_id} (pid {proc.pid})"
+            for job_id, proc in _local_scan_procs.items()
+            if proc.poll() is None
+        ]
+        alive.extend(
+            f"executor thread {thread.name}" for thread in _local_scan_threads if thread.is_alive()
+        )
+    return alive
+
+
+def stop_local_scans(timeout: float = 30.0) -> bool:
+    """Stop every scan this process is running locally. ``False`` on timeout.
+
+    Test-suite scaffolding, like ``agent_deployer.join_workers`` and
+    ``channels.join_senders``, and not a production path: the API has no way to
+    stop a running local scan and ``cancel_job`` says so rather than pretending
+    otherwise.
+
+    What makes it necessary is that a started scan is a real ``scanner.main``
+    doing real work while the test that asked for it is asserting on a row. A
+    test like "an operator granted only viewer may not start a scan" finishes
+    in milliseconds; the scan the *allowed* half of it started runs for
+    minutes. One session ended with seven of them alive at once, aged up to six
+    minutes, all children of a pytest that had long since moved on -- and some
+    outlived pytest itself, because the executor thread is a daemon and daemon
+    threads are not waited for.
+
+    The threads are joined *after* the processes are signalled, never instead
+    of it: the executor's bookkeeping writes status, metrics and scratch files
+    to the same tables the next test truncates, so returning while one is still
+    running would trade the leak for the race #257 and #351 already document.
+
+    The registry is emptied either way, so the answer is given once: see the
+    comment on that below.
+    """
+    deadline = time.monotonic() + timeout
+    _local_scans_draining.set()
+    try:
+        while True:
+            with _local_scans_lock:
+                procs = list(_local_scan_procs.values())
+                threads = [thread for thread in _local_scan_threads if thread.is_alive()]
+            for proc in procs:
+                _terminate_scan_process(proc)
+            if not threads:
+                break
+            # A slice rather than the whole budget, because an executor still
+            # on its way to ``Popen`` is alive and holding no process yet: the
+            # next pass is what signals the scan it spawns in the meantime.
+            for thread in threads:
+                thread.join(min(0.5, max(0.0, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:
+                break
+    finally:
+        _local_scans_draining.clear()
+    survivors = live_local_scans()
+    with _local_scans_lock:
+        # Emptied whether or not everything stopped. What survived a SIGKILL
+        # to its process group will not answer a second round either, and
+        # keeping the handle would fail the teardown of every test after the
+        # one that actually caused it -- burying the report in its own echo.
+        # The caller is told once, here; the session-wide check in
+        # tests/scanner_gate.py is what still sees the process itself.
+        _local_scan_threads.clear()
+        _local_scan_procs.clear()
+    return not survivors
+
+
 def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
     try:
         # A local job goes queued → running with no claim step: this process is
@@ -1234,7 +1414,7 @@ def _run_job(settings: Settings, job_id: str, command: list[str]) -> None:
         return
     try:
         with _renewing_lease(settings, job_id):
-            completed = subprocess.run(command, check=False, capture_output=True, text=True)
+            completed = _run_scanner(job_id, command)
         # Best-effort: read latest_run.json after completion.
         run_id = None
         pointer = settings.state_dir / "latest_run.json"
@@ -1896,7 +2076,27 @@ def start_scan(
     _refresh_job_gauges(settings)
 
     if execution == "local":
-        thread = threading.Thread(target=_run_job, args=(settings, job_id, command), daemon=True)
+        thread = threading.Thread(
+            target=_run_job,
+            args=(settings, job_id, command),
+            name=f"octo-scan-{job_id}",
+            daemon=True,
+        )
+        if isinstance(thread, _REAL_THREAD):
+            # Only a real one. A test that replaces ``threading.Thread``
+            # wholesale has arranged for no executor to run at all, and its
+            # double answers ``is_alive()`` however it likes: a MagicMock
+            # (tests/test_api_targets.py) says yes forever, which would leave
+            # the registry holding a scan that does not exist and fail the
+            # teardown of every test that followed.
+            with _local_scans_lock:
+                # Finished executors are dropped here as well as in
+                # stop_local_scans, so a process that never calls that one does
+                # not accumulate dead handles for the life of the replica.
+                _local_scan_threads.difference_update(
+                    {t for t in _local_scan_threads if not t.is_alive()}
+                )
+                _local_scan_threads.add(thread)
         thread.start()
     elif execution == "agent" and settings.nats_url:
         _publish_job_offer(settings, job_id)
