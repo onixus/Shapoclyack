@@ -1710,6 +1710,20 @@ class Job(Base):
     # Incremented every time the job is handed to an executor, so the reaper
     # can stop requeueing one that kills whatever picks it up.
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Ingest lease: which upload is being processed right now, and on whose
+    # behalf. ``complete_job`` checks the claim's fencing token in its first
+    # transaction and then spends minutes outside any transaction extracting
+    # the archive and writing artifacts, so these are what its *terminal*
+    # write is conditional on — an attempt the reaper replaced meanwhile no
+    # longer matches and its result is refused instead of overwriting the
+    # attempt that took over. ``ingest_started_at`` is for the operator reading
+    # a row that is mid-ingest; the deadline itself is ``claimed_until``, which
+    # the reservation pushes forward because an upload in flight is proof of
+    # life. All NULL whenever no upload is being processed.
+    ingest_token: Mapped[str | None] = mapped_column(default=None)
+    ingest_attempt: Mapped[int | None] = mapped_column(default=None)
+    ingest_agent_id: Mapped[str | None] = mapped_column(default=None)
+    ingest_started_at: Mapped[datetime | None] = mapped_column(default=None)
     # When an operator asked a *running* scan to stop (#360). The request
     # travels to the agent on its next heartbeat; this column is the deadline
     # clock for the answer, so a job whose agent is too old to understand the

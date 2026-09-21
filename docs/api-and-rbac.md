@@ -730,9 +730,8 @@ What comes back says what was actually stopped:
   sensor keeps heartbeating (`stage=cancelling`) while it terminates the process
   group and packs the partial run, so the fleet does not read a sensor carrying
   out the order as one that has gone offline
-  ([#349](https://github.com/onixus/Shapoclyack/issues/349)); the upload itself
-  is still sent without a beat behind it, so a very slow upload of a very large
-  archive can still cross `OCTO_AGENT_STALE_SECONDS`. An
+  ([#349](https://github.com/onixus/Shapoclyack/issues/349)), and it keeps
+  beating (`stage=uploading`) while the archive is transferred and ingested. An
   archive that arrives **after** the grace period — the sensor obeyed, but a
   large partial run on a narrow link did not finish uploading in time — is
   still kept, for one further grace period after the job was closed. What is
@@ -801,6 +800,15 @@ answers **409** rather than overwriting the run of the attempt that replaced
 it. This matters because a restarted sensor keeps its `agent_id`, so the
 identity alone cannot tell the two apart. Sensors that omit it are unfenced,
 exactly as before.
+
+The attempt is checked twice: when the upload is accepted for ingest, and again
+at the final status write, which happens only if the job is still on the same
+attempt, with the same owner, under the ingest lease this upload reserved. A
+lease that lapses mid-ingest therefore costs the straggler its result and not
+the new attempt its run: the upload answers **409**, nothing it carried is
+published, and the sensor logs a rejected result rather than a failed upload.
+The ingest itself holds the lease open for `OCTO_JOB_INGEST_LEASE_SECONDS`, so
+an ordinary large upload is not refused for being slow.
 
 `POST /api/endpoint/inventory` — the Agent (Lariska) submitting a snapshot —
 is the only agent-JWT-authenticated write in that group and carries contract-specific limits: `411` when `Content-Length` is

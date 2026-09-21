@@ -32,6 +32,7 @@ import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -443,7 +444,73 @@ def reset_for_tests(settings: Settings) -> None:
         session.query(models.Job).delete()
 
 
-def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
+@dataclass(frozen=True)
+class _IngestLease:
+    """Who is allowed to write this job's outcome when the ingest finishes.
+
+    Taken in ``complete_job``'s first transaction, on the row it has just
+    checked, and carried through the ingest — which runs outside any
+    transaction and lasts as long as an archive takes to extract and store.
+    The terminal write is conditional on it, so a lease that lapsed meanwhile
+    and an attempt the reaper handed to somebody else cost this upload its
+    result rather than costing the *new* attempt its own.
+    """
+
+    job_id: str
+    token: str
+    attempt: int
+    agent_id: str
+
+
+def _open_ingest_lease(settings: Settings, row: models.Job, *, agent_id: str) -> _IngestLease:
+    """Reserve the right to finish this job, on a row already locked.
+
+    Also pushes the job's lease out by ``job_ingest_lease_seconds``: an upload
+    being processed is proof of life, and without it an ingest longer than the
+    remaining lease would have the reaper requeue a job whose result is at that
+    moment being written. The fence below is what makes a stale result
+    *refused*; this is what keeps that refusal rare.
+    """
+    token = uuid.uuid4().hex
+    row.ingest_token = token
+    row.ingest_attempt = row.attempts or 0
+    row.ingest_agent_id = agent_id
+    row.ingest_started_at = _now()
+    if row.status in job_states.IN_FLIGHT:
+        _extend_lease(
+            row, _now() + timedelta(seconds=max(settings.job_ingest_lease_seconds, 1))
+        )
+    return _IngestLease(
+        job_id=row.job_id, token=token, attempt=row.ingest_attempt, agent_id=agent_id
+    )
+
+
+def _check_ingest_fence(row: models.Job, fence: _IngestLease) -> None:
+    """Raise unless this row is still the one ``fence`` was taken on.
+
+    All three parts are load-bearing. The token says no other upload has been
+    accepted for ingest since; the attempt says the lease was not expired and
+    reissued (a restarted worker keeps its ``agent_id``, so the attempt is the
+    only thing that tells two of its uploads apart); the owner says the job was
+    not handed to a different agent altogether.
+    """
+    if (
+        row.ingest_token == fence.token
+        and (row.attempts or 0) == fence.attempt
+        and row.assigned_agent_id == fence.agent_id
+    ):
+        return
+    raise StaleAttempt(
+        f"Job {fence.job_id} is no longer on the attempt this result was produced by "
+        f"(uploaded for attempt {fence.attempt} by agent {fence.agent_id}; the job is "
+        f"now on attempt {row.attempts} with agent {row.assigned_agent_id}); "
+        "the result was rejected and nothing was published"
+    )
+
+
+def _update_job(
+    settings: Settings, job_id: str, *, fence: _IngestLease | None = None, **fields: Any
+) -> None:
     """Apply ``fields`` to a job row, validating any status change.
 
     Validation lives here rather than at each call site so a future writer
@@ -451,6 +518,12 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
     executor, agent claim, result upload, restart reconciliation, cancel — goes
     through this function. Use ``force_status`` for the rare repair/test case
     that must ignore the lifecycle.
+
+    ``fence`` is the ingest lease the caller has been holding while it did the
+    long work outside this transaction. Given one, the write happens only if
+    the row is still that lease's — checked under the same lock as the
+    transition, because "is this attempt still current" and "is this move
+    legal" have to be answered against one state of the row, not two.
     """
     with get_session(settings.postgres_url) as session:
         # Locked, not just read: two writers racing on one job (an operator
@@ -460,6 +533,13 @@ def _update_job(settings: Settings, job_id: str, **fields: Any) -> None:
         row = session.get(models.Job, job_id, with_for_update=True)
         if row is None:
             return
+        if fence is not None:
+            _check_ingest_fence(row, fence)
+            # The lease is spent by the write it authorised.
+            fields.setdefault("ingest_token", None)
+            fields.setdefault("ingest_attempt", None)
+            fields.setdefault("ingest_agent_id", None)
+            fields.setdefault("ingest_started_at", None)
         if "status" in fields:
             job_states.check_transition(job_id, row.status, str(fields["status"]))
             if fields["status"] in job_states.TERMINAL:
@@ -1065,6 +1145,19 @@ def _lease_deadline(settings: Settings) -> datetime:
     return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
 
 
+def _extend_lease(row: models.Job, deadline: datetime) -> None:
+    """Push a lease deadline out, never pull it in.
+
+    A heartbeat is worth one ``job_lease_seconds``, but a result being ingested
+    is worth the longer ``job_ingest_lease_seconds`` (see
+    :func:`_open_ingest_lease`), and the agent goes on beating while its upload
+    is processed. Assigning would let those beats shorten the window the
+    ingest reserved, which is exactly the window the reaper must stay out of.
+    """
+    if row.claimed_until is None or row.claimed_until < deadline:
+        row.claimed_until = deadline
+
+
 def renew_lease(settings: Settings, job_id: str, *, agent_id: str | None = None) -> bool:
     """Push a job's lease deadline forward. Returns whether it applied.
 
@@ -1080,7 +1173,7 @@ def renew_lease(settings: Settings, job_id: str, *, agent_id: str | None = None)
             return False
         if agent_id is not None and row.assigned_agent_id != agent_id:
             return False
-        row.claimed_until = _lease_deadline(settings)
+        _extend_lease(row, _lease_deadline(settings))
         return True
 
 
@@ -1160,6 +1253,14 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
         ).scalars().all()
         for row in rows:
             retriable = row.execution == "agent" and row.attempts < settings.job_max_attempts
+            # Whatever was being ingested under this row's lease is void: the
+            # job is either going back on the queue or being written off, and
+            # in both cases the upload's terminal write is about to be refused
+            # by the fence rather than land on a row that has moved on.
+            row.ingest_token = None
+            row.ingest_attempt = None
+            row.ingest_agent_id = None
+            row.ingest_started_at = None
             if retriable:
                 job_states.check_transition(row.job_id, row.status, job_states.QUEUED)
                 row.status = job_states.QUEUED
@@ -2206,7 +2307,7 @@ def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> bool:
             return True
         if row.status not in job_states.IN_FLIGHT:
             return False
-        row.claimed_until = _lease_deadline(settings)
+        _extend_lease(row, _lease_deadline(settings))
         if row.status != job_states.CLAIMED:
             return False
         row.status = job_states.RUNNING
@@ -2467,7 +2568,7 @@ def _accepts_late_archive(
 
 
 def _record_late_cancellation_archive(
-    settings: Settings, job_id: str, *, agent_id: str, run_id: str | None
+    settings: Settings, job_id: str, *, agent_id: str, run_id: str | None, fence: _IngestLease
 ) -> None:
     """Note that the archive landed, without rewriting how the job ended.
 
@@ -2476,12 +2577,21 @@ def _record_late_cancellation_archive(
     the two things that are about the *data* — which run directory now holds it,
     and a line in ``error``, so an operator reading the drawer is not left
     wondering why a job that "did not confirm" has results.
+
+    Fenced like the ordinary terminal write, and for the same reason: this one
+    also runs after an ingest that took as long as it took, and a second upload
+    accepted meanwhile is the upload whose archive is now in the run directory.
     """
     note = f"; partial results uploaded late by agent {agent_id}"
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Job, job_id, with_for_update=True)
         if row is None:  # pragma: no cover - the row was locked moments ago
             return
+        _check_ingest_fence(row, fence)
+        row.ingest_token = None
+        row.ingest_attempt = None
+        row.ingest_agent_id = None
+        row.ingest_started_at = None
         if run_id and not row.run_id:
             row.run_id = run_id
         if note not in (row.error or ""):
@@ -2549,6 +2659,103 @@ def _merge_cancellation_reason(requested: str | None, reported: str | None) -> s
     return merged[:2000] or None
 
 
+def _release_ingest_lease(settings: Settings, fence: _IngestLease) -> None:
+    """Give back an ingest lease whose upload produced nothing.
+
+    Only our own, and only while it is still ours: a lease the reaper has
+    already cleared, or one a later upload has taken, is not this caller's to
+    tidy up. ``claimed_until`` is deliberately left where the reservation put
+    it — the agent whose upload just failed is about to retry it, and pulling
+    the deadline back in would hand its job away in the middle of that.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, fence.job_id, with_for_update=True)
+        if row is None or row.ingest_token != fence.token:
+            return
+        row.ingest_token = None
+        row.ingest_attempt = None
+        row.ingest_agent_id = None
+        row.ingest_started_at = None
+
+
+def _publish_ingested_run(
+    settings: Settings,
+    job_id: str,
+    *,
+    run_id: str,
+    staging: Path,
+    tenant_id: str,
+    surface: str | None,
+    status: str,
+) -> None:
+    """Make an *accepted* result the installation's copy of the run.
+
+    Called only after the terminal write went through under the ingest lease,
+    which is the whole point of the split: until that write, this upload might
+    still have been a straggler from a replaced attempt, and everything here —
+    the run directory, the store, the latest-run pointer, the projections — is
+    visible to operators and to the rest of the platform.
+
+    Failures are recorded on the job rather than raised, which is a change from
+    when this ran *before* the status was written: the outcome is committed and
+    the agent's retry would be answered as a replay, so raising would tell an
+    agent its upload failed when what failed is this replica's copy of the run
+    reaching the store. The job carries the note, and the log carries the
+    exception, so the gap is visible to an operator instead of silent.
+    """
+    try:
+        artifact_workspace.promote_staging(settings, run_id, staging)
+        results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
+        # Into the store before the marker is written, so the marker is never
+        # the only part of the run the other replicas can see.
+        artifact_workspace.publish_run(settings, run_id)
+        runs_service.write_run_tenant(
+            settings, run_id, tenant_id, job_id=job_id, surface=surface
+        )
+    except (OSError, artifact_store.ArtifactStoreError) as exc:
+        _log.error(
+            "Job %s finished but its run %s could not be published to the artifact store",
+            job_id,
+            run_id,
+            exc_info=True,
+        )
+        _append_job_error(settings, job_id, f"; run artifacts were not published: {exc}")
+        return
+    finally:
+        artifact_workspace.discard_staging(staging)
+    _upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
+    # Ungated, matching the local path: this is where the agent's copy of the
+    # run reaches disk, and a refusal the scanner made is a decision to journal
+    # regardless of how the scan ended (#244).
+    _record_scope_denials_best_effort(
+        settings,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        requested_by=_requested_by(settings, job_id),
+    )
+    # Gated on the outcome, matching the local path. An agent may attach
+    # diagnostics to a *failed* run, and a partial diff read as a change set
+    # would alert on hosts and ports that a broken scan simply failed to
+    # observe — a disappearance is not a discovery.
+    if status == job_states.SUCCEEDED:
+        _track_vulnerabilities_best_effort(
+            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
+        )
+        _publish_asset_events_best_effort(
+            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
+        )
+
+
+def _append_job_error(settings: Settings, job_id: str, note: str) -> None:
+    """Add one line to a job's ``error``, without touching how it ended."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id, with_for_update=True)
+        if row is None:  # pragma: no cover - the row was written moments ago
+            return
+        if note not in (row.error or ""):
+            row.error = f"{row.error or ''}{note}"[:2000]
+
+
 def _replayed(row: models.Job) -> JobInfo:
     metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="results").inc()
     _log.info("Replayed results upload for job %s; returning the stored outcome", row.job_id)
@@ -2584,6 +2791,19 @@ def complete_job(
     restarted worker keeps its ``agent_id``, that is the only way to tell the
     two apart. Omitted by pre-P1.5 agents, which are then unfenced.
 
+    ``attempt`` is checked twice, and the second check is the one that matters.
+    Between the two, this function extracts an archive and writes artifacts
+    over the network, and the lease can lapse inside that window: the reaper
+    then requeues the job, a second attempt claims it, and the first one's
+    terminal write used to finish *that* attempt, because ``claimed → succeeded``
+    is legal whoever asks for it. So the first transaction takes an ingest
+    lease, everything the upload produces is extracted into staging named after
+    that lease, and the terminal write happens only if the row is still on the
+    same (attempt, owner, token). A result that is no longer current is refused
+    as :class:`StaleAttempt` — the agent is told its result was rejected, which
+    is not the same thing as its upload having failed — and nothing it carried
+    is published.
+
     ``cancelled`` is the agent confirming it put the scan down because the API
     asked it to (#360), and it decides the outcome on its own: the scanner was
     signalled, so it exits non-zero, and without this flag every stop would be
@@ -2596,6 +2816,7 @@ def complete_job(
     """
     replay_result: JobInfo | None = None
     late_archive = False
+    fence: _IngestLease | None = None
     with get_session(settings.postgres_url) as session:
         # Locked for the whole check: concurrent uploads for the same job must
         # be decided one at a time, or both would read a non-terminal row and
@@ -2680,6 +2901,11 @@ def complete_job(
         # Read here rather than re-fetched at the write below: the row is
         # already loaded and locked, and the surface was decided at start_scan.
         job_surface = (row.scan_options or {}).get("surface")
+        # Taken last, on the row this transaction has just approved, and only
+        # for an upload that is going to be ingested: a replay is answered
+        # from the row as it stands and produces no write to fence.
+        if replay_result is None:
+            fence = _open_ingest_lease(settings, row, agent_id=agent_id)
 
     if replay_result is not None:
         # Reached only for a job that is already terminal, so the agent is not
@@ -2690,6 +2916,8 @@ def complete_job(
         _discard_job_inputs(settings, job_id)
         return replay_result
 
+    assert fence is not None  # every non-replay path takes one above
+    staging: Path | None = None
     try:
         if archive_bytes:
             if not resolved_run_id:
@@ -2709,61 +2937,35 @@ def complete_job(
                     )
                 except results_ingest.IngestError as exc:
                     raise ValueError(str(exc)) from exc
-            dest = artifact_workspace.scratch_run_dir(settings, str(resolved_run_id))
+            # Into staging named after this ingest lease, never straight into
+            # the run directory: a job keeps its run id across attempts, so
+            # extracting there would publish a straggler's archive over the
+            # run the current attempt is producing — before anything had
+            # checked whether this upload is still the current one.
+            staging = artifact_workspace.staging_run_dir(
+                settings, str(resolved_run_id), fence.token
+            )
             try:
-                results_ingest.extract_run_archive(archive_bytes, dest)
-                results_ingest.update_latest_run_pointer(settings.state_dir, str(resolved_run_id))
-                # Into the store before the marker is written, so the marker
-                # is never the only part of the run the other replicas can
-                # see. Not best-effort: an agent's results that stayed on one
-                # pod are results the installation does not have.
-                artifact_workspace.publish_run(settings, str(resolved_run_id))
-                runs_service.write_run_tenant(
-                    settings,
-                    str(resolved_run_id),
-                    job_tenant,
-                    job_id=job_id,
-                    surface=job_surface,
-                )
+                results_ingest.extract_run_archive(archive_bytes, staging)
             except results_ingest.IngestError as exc:
                 raise ValueError(str(exc)) from exc
-            except artifact_store.ArtifactStoreError as exc:
-                raise ValueError(f"could not store run artifacts: {exc}") from exc
-            _upsert_assets_best_effort(
-                settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-            )
-            # Ungated, matching the local path: this is where the agent's copy
-            # of the run reaches disk, and a refusal the scanner made is a
-            # decision to journal regardless of how the scan ended (#244).
-            _record_scope_denials_best_effort(
-                settings,
-                tenant_id=job_tenant,
-                run_id=str(resolved_run_id),
-                requested_by=_requested_by(settings, job_id),
-            )
-            # Gated on the outcome, matching the local path. An agent may attach
-            # diagnostics to a *failed* run, and a partial diff read as a change
-            # set would alert on hosts and ports that a broken scan simply
-            # failed to observe — a disappearance is not a discovery.
-            if status == job_states.SUCCEEDED:
-                _track_vulnerabilities_best_effort(
-                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-                )
-                _publish_asset_events_best_effort(
-                    settings, tenant_id=job_tenant, run_id=str(resolved_run_id), job_id=job_id
-                )
 
+        # The fence. Everything above this line is work on a copy nobody can
+        # see; everything below it acts on the installation's record of the
+        # scan, and may only run for the attempt the job is still on.
         if late_archive:
             _record_late_cancellation_archive(
                 settings,
                 job_id,
                 agent_id=agent_id,
                 run_id=str(resolved_run_id) if resolved_run_id else None,
+                fence=fence,
             )
         else:
             _update_job(
                 settings,
                 job_id,
+                fence=fence,
                 status=status,
                 finished_at=_now(),
                 exit_code=exit_code,
@@ -2774,6 +2976,10 @@ def complete_job(
                 results_idempotency_key=(idempotency_key or None),
             )
     except Exception:
+        # A refused or failed ingest publishes nothing, so its staging tree is
+        # rubbish rather than a partial run somebody might find.
+        if staging is not None:
+            artifact_workspace.discard_staging(staging)
         # The reservation above is only meaningful while this upload is in
         # flight. Releasing it lets the agent retry with the same key — or, on
         # the late path, with no key at all — instead of meeting its own
@@ -2781,7 +2987,19 @@ def complete_job(
         held = idempotency_key or (LATE_ARCHIVE_RESERVATION if late_archive else None)
         if held:
             _release_results_reservation(settings, job_id, held, late=late_archive)
+        _release_ingest_lease(settings, fence)
         raise
+
+    if staging is not None:
+        _publish_ingested_run(
+            settings,
+            job_id,
+            run_id=str(resolved_run_id),
+            staging=staging,
+            tenant_id=job_tenant,
+            surface=job_surface,
+            status=status,
+        )
     if status == job_states.CANCELLED:
         # Counted apart from a confirmation, because it is not one: the scan was
         # written off unconfirmed and only its archive arrived afterwards. A

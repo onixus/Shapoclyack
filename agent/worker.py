@@ -383,6 +383,22 @@ NATS_FALLBACK_CLAIM_SECONDS = 60.0
 _DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
 
 
+class AgentResultRejected(RuntimeError):
+    """The API refused this result — the upload itself was fine.
+
+    Since the ingest lease (architecture review P1) a completion is fenced at
+    the *final* write: a lease that lapsed while the archive was going up, and
+    a job the reaper has since handed to another attempt, make this result a
+    straggler that the API declines rather than publish over the attempt that
+    took over. The same status also covers a duplicate upload that met the
+    first one still being ingested.
+
+    Its own type because the two are not a transport failure: the archive
+    arrived, and resending it — which is what the loop does with a network
+    error — only spends the site's uplink on being refused again.
+    """
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -508,6 +524,11 @@ class AgentClient:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
                     raise AgentUpgradeRequired(f"{method} {path} -> 426: {detail}") from exc
+                if exc.code == 409:
+                    # Only the results route answers this to an agent, and it
+                    # means the result was not accepted — see
+                    # AgentResultRejected.
+                    raise AgentResultRejected(f"{method} {path} -> 409: {detail}") from exc
                 if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
                     raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
@@ -900,6 +921,7 @@ def _busy_heartbeats(
     output_dir: Path | None = None,
     interval: float,
     cancel_event: threading.Event | None = None,
+    stage: str | None = None,
 ) -> Iterator[None]:
     """Keep reporting this job for as long as the scan runs with live telemetry.
 
@@ -925,6 +947,14 @@ def _busy_heartbeats(
     for an agent that is doing exactly what it was told. So the loop keeps
     beating until the context manager stops it, saying ``cancelling`` instead
     of the stage: an agent obeying a cancellation is busy, not gone.
+
+    ``stage`` names the phase outright instead of reading it off the run
+    directory, for the phase where there is nothing left to read: the scan has
+    finished and the archive is being transferred and ingested. The job is
+    still in flight for the whole of that — the API's lease covers the ingest
+    too — so going quiet there is the same mistake as going quiet during a
+    cancellation, one interval from being requeued behind a result that is on
+    its way.
     """
     stop = threading.Event()
     t0 = time.perf_counter()
@@ -936,9 +966,11 @@ def _busy_heartbeats(
                 cancelling = cancel_event is not None and cancel_event.is_set()
                 if cancelling:
                     detail = f"stage=cancelling elapsed={elapsed_sec}s"
+                elif stage:
+                    detail = f"stage={stage} elapsed={elapsed_sec}s"
                 else:
-                    stage = _detect_current_stage(output_dir, run_id)
-                    detail = f"stage={stage or 'running'} elapsed={elapsed_sec}s"
+                    current = _detect_current_stage(output_dir, run_id)
+                    detail = f"stage={current or 'running'} elapsed={elapsed_sec}s"
                 beat = client.heartbeat(
                     agent_id, status="busy", current_job_id=job_id, detail=detail
                 )
@@ -1011,20 +1043,45 @@ def _execute_job(
                     cancel_event=cancel_event,
                 )
         cancelled = cancel_event.is_set() and exit_code != 0
-        client.upload_results(
-            job["job_id"],
+        # Under heartbeats like the scan itself: the transfer of a run archive
+        # over a branch office's uplink, plus the API's ingest of it, is minutes
+        # during which the job is in flight and its lease has to be renewed.
+        # Silent, this is the window where the reaper hands the job to a second
+        # agent and the result arriving from this one is refused as stale.
+        with _busy_heartbeats(
+            client,
             agent_id=agent_id,
-            attempt=job.get("attempt"),
-            exit_code=exit_code,
+            job_id=job["job_id"],
             run_id=str(job["run_id"]),
-            error=error,
-            archive_path=archive,
-            # ...and a clean exit is reported as one even here: the scan can
-            # finish by itself in the second between the stop being set and the
-            # wait noticing it, and calling a completed run cancelled would
-            # throw away a whole sweep's findings to match the request (#360).
-            cancelled=cancelled,
-        )
+            interval=heartbeat_interval,
+            stage="uploading",
+        ):
+            try:
+                client.upload_results(
+                    job["job_id"],
+                    agent_id=agent_id,
+                    attempt=job.get("attempt"),
+                    exit_code=exit_code,
+                    run_id=str(job["run_id"]),
+                    error=error,
+                    archive_path=archive,
+                    # ...and a clean exit is reported as one even here: the scan
+                    # can finish by itself in the second between the stop being
+                    # set and the wait noticing it, and calling a completed run
+                    # cancelled would throw away a whole sweep's findings to
+                    # match the request (#360).
+                    cancelled=cancelled,
+                )
+            except AgentResultRejected as exc:
+                # Not an error of this agent's making and not retried: the job
+                # belongs to another attempt now, and this result was declined
+                # rather than lost in transit. Logged as what it is so an
+                # operator reading the journal sees a rejection, not a failed
+                # upload to go hunting for on the network.
+                LOG.warning(
+                    "The API rejected the result of job %s: %s", job["job_id"], exc
+                )
+                return
     LOG.info(
         "Job %s finished exit=%s%s", job["job_id"], exit_code, " (cancelled)" if cancelled else ""
     )

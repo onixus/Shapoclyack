@@ -580,6 +580,17 @@ class Settings:
     # the dead process). The default is deliberately several times the agent's
     # heartbeat interval so an ordinary hiccup does not steal a live job.
     job_lease_seconds: int = 300
+    # How long the lease is held open while a *result* is being ingested. The
+    # scan is over by then and the agent's heartbeat says "uploading" rather
+    # than a stage, but the job is not finished: the archive still has to be
+    # extracted and its artifacts written, and a lease that lapses in that
+    # window has the reaper hand the job to a second attempt while the first
+    # one's result is being written. Longer than ``job_lease_seconds`` because
+    # this covers a transfer over a branch office's uplink plus the ingest,
+    # where the ordinary lease only has to cover the gap between heartbeats.
+    # A stale result is refused at the terminal write either way — this is what
+    # keeps the refusal rare instead of routine.
+    job_ingest_lease_seconds: int = 900
     # How many times a job may be handed out before the reaper stops requeueing
     # it and fails it instead. Counted per claim, so a target that reliably
     # kills its worker cannot cycle forever.
@@ -1565,6 +1576,9 @@ def load_settings() -> Settings:
         ),
         instance_id=os.environ.get("OCTO_INSTANCE_ID", "").strip() or socket.gethostname(),
         job_lease_seconds=int(os.environ.get("OCTO_JOB_LEASE_SECONDS", "300")),
+        job_ingest_lease_seconds=int(
+            os.environ.get("OCTO_JOB_INGEST_LEASE_SECONDS", "900")
+        ),
         job_max_attempts=int(os.environ.get("OCTO_JOB_MAX_ATTEMPTS", "3")),
         job_cancel_grace_seconds=_cancel_grace_seconds(
             agent_stale_seconds=agent_stale_seconds,

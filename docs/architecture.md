@@ -73,10 +73,29 @@ claimed | running ──→ queued                      (eligible expired sensor
 Sensor result uploads can carry both an idempotency key and the claim `attempt`.
 The API checks the attempt against the current claim when completion starts;
 uploads arriving with an already superseded attempt are rejected. The field is
-optional for legacy sensors. This entry check does not fence the entire ingest:
-archive processing happens outside that transaction, and the final status write
-does not recheck the attempt. See the dated [architecture review](architecture-review-2026-09-18.ru.md)
-for the concurrent lease-expiry scenario and proposed validation.
+optional for legacy sensors.
+
+The entry check is not the fence. Archive processing happens outside that
+transaction and can outlast the lease, so the first transaction also takes an
+**ingest lease** on the row: `ingest_token`, `ingest_attempt`, `ingest_agent_id`
+and `ingest_started_at`, plus `claimed_until` pushed out by
+`OCTO_JOB_INGEST_LEASE_SECONDS` — an upload being processed is proof of life,
+and the sensor keeps heartbeating (`stage=uploading`) for the whole transfer.
+The terminal status write is conditional on `(job_id, attempt, owner, ingest
+token)` still matching; if the lease lapsed and the reaper gave the job to
+another attempt, the upload is refused with `409` and the sensor reports a
+rejected result rather than a failed upload.
+
+Artifacts follow the same boundary. An upload is extracted into a staging
+directory named after its ingest token, beside the run directory rather than
+inside it, and is promoted into the run — object store, latest-run pointer,
+tenant marker, asset/vulnerability projections, notifications — only after the
+conditional status write succeeds. A refused ingest discards its staging tree
+and publishes nothing. Publishing after that write is no longer able to fail
+the request: the outcome is committed, so a store failure is logged and
+recorded in the job's `error` instead of being answered to a sensor whose
+upload was in fact accepted. The concurrent lease-expiry scenario this replaced
+is in the dated [architecture review](architecture-review-2026-09-18.ru.md).
 
 Result ingestion itself runs on a worker thread, not on the API's event loop,
 and behind an admission gate (`api/services/ingest_gate.py`): a bounded number

@@ -4,6 +4,35 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **A result from a replaced attempt can no longer finish somebody else's
+  scan.** `complete_job` checked the claim's `attempt` and the owning sensor in
+  its first transaction and then spent the ingest — archive extraction,
+  artifact writes over the network, projections — outside any transaction; its
+  terminal write took the row lock again but compared nothing, so a lease that
+  lapsed in that window, plus a reaper that requeued the job and a second
+  attempt that claimed it, left the first attempt free to write
+  `claimed/running → succeeded` on the new attempt's job and publish its own
+  archive over the run being produced. The first transaction now takes an
+  **ingest lease** (`jobs.ingest_token`, `ingest_attempt`, `ingest_agent_id`,
+  `ingest_started_at`; migration `0058_job_ingest_lease`) and the terminal
+  write is conditional on `(job_id, attempt, owner, ingest token)`. A stale
+  result is refused with `409` and the sensor logs a rejected result rather
+  than a failed upload — nothing it carried is published.
+- Uploaded artifacts are extracted into a staging directory named after the
+  ingest lease and promoted into the run — object store, latest-run pointer,
+  tenant marker, projections, notifications — only after that conditional write
+  succeeds. A refused ingest discards its staging tree. A store failure *after*
+  the write is logged and recorded in the job's `error` instead of being
+  answered to a sensor whose result was in fact accepted.
+- The sensor keeps heartbeating (`stage=uploading`) while the result is
+  transferred and ingested; it used to go silent for the whole of it. The API
+  side matches: reserving the ingest pushes `claimed_until` out by
+  `OCTO_JOB_INGEST_LEASE_SECONDS` (default 900), and lease renewals now only
+  ever move a deadline forward, so a heartbeat cannot shorten the window an
+  ingest reserved.
+
 ### Changed
 
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`

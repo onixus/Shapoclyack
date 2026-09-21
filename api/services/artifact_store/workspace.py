@@ -80,6 +80,53 @@ def scratch_run_dir(settings: Settings, run_id: str) -> Path:
     return Path(settings.output_dir) / "runs" / run_id
 
 
+def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
+    """Where one *attempt's* upload is extracted before it is accepted.
+
+    A run directory is named after the run, and a job keeps its run id across
+    attempts, so extracting an upload straight into it publishes whatever
+    arrived -- including a straggler from an attempt whose lease has already
+    been given to somebody else. Staging is named after that upload's ingest
+    token instead, and :func:`promote_staging` moves it into place only once
+    the outcome has been written under the same token.
+
+    A *sibling* of the run directory, and a dotted name: inside it would be
+    uploaded with the run and listed by ``GET /api/runs/{id}`` as one of the
+    scan's own artifacts, and a plain name in the cache root would be read as
+    a run of its own by :func:`run_ids`.
+    """
+    destination = scratch_run_dir(settings, run_id)
+    return destination.parent / f".ingest-{destination.name}-{token[:12]}"
+
+
+def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
+    """Move an accepted upload into the run's own directory. Answers where.
+
+    Renamed when the run has no directory yet, which is every first upload and
+    costs nothing however large the run is. Merged when it has one -- a run
+    the local executor or an earlier partial upload already wrote -- because
+    the alternative is deleting artifacts this upload did not carry.
+    """
+    destination = scratch_run_dir(settings, run_id)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        try:
+            staging.rename(destination)
+            return destination
+        except OSError:
+            # Across filesystems, or a directory that appeared between the
+            # check and the rename. Copying is the same outcome, slower.
+            LOG.debug("Could not rename staged run %s into place", run_id, exc_info=True)
+    shutil.copytree(staging, destination, dirs_exist_ok=True)
+    discard_staging(staging)
+    return destination
+
+
+def discard_staging(staging: Path) -> None:
+    """Drop a staged upload that was refused, or one already promoted."""
+    shutil.rmtree(staging, ignore_errors=True)
+
+
 def run_dir(settings: Settings, run_id: str, *, refresh: bool = True) -> Path:
     """A local directory holding ``run_id``'s artifacts.
 
