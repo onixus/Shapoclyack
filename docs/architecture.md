@@ -44,6 +44,38 @@ In local execution mode (`OCTO_JOB_EXECUTION_MODE=local`, the default), the API 
 
 Jobs and the sensor registry are rows in PostgreSQL (`jobs`, `agents`), not process memory. Sensors and Agents (Lariska) share the same `agents` registry and are told apart by `agent_kind` (`scanner` vs `endpoint`); only `scanner` rows may claim jobs. Any API replica therefore sees the same queue and fleet, and a restart does not lose persisted control-plane state. Claims are serialized with `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent sensors receive different jobs across replicas.
 
+### Job service boundaries
+
+`api/services/jobs.py` is the compatibility facade for the job API, not the
+implementation boundary. New job behavior belongs to the service that owns the
+corresponding invariant:
+
+- `scan_admission.py` decides whether a scan may enter the queue and where it
+  may run: tenant state, quota, maintenance windows, approved scope, scan policy,
+  promoted domains and agent-group placement.
+- `job_submission.py` creates jobs, applies start idempotency, materializes the
+  admitted request and hands it to the selected executor.
+- `job_repository.py` owns queue reads, summaries, legacy import and startup
+  reconciliation; `job_store.py` owns lifecycle writes, transition validation,
+  terminal metrics and failure events.
+- `job_control.py` owns agent claim, heartbeat promotion, queued-policy
+  tightening and cancellation; `job_leases.py` owns lease and ingest-fence
+  primitives; `job_reaper.py` owns abandoned-work recovery.
+- `job_results.py` owns the agent result-upload protocol and durable
+  publication intent. `run_publisher.py` makes an accepted run visible and
+  `run_completion.py` updates derived projections after publication.
+- `job_inputs.py` owns job-scoped files and object-store mirroring;
+  `local_scan_executor.py` owns subprocess/process-group lifecycle and
+  `local_job_runner.py` owns the state transitions around a local execution.
+- `job_dispatch.py` publishes the optional NATS wake-up hint. PostgreSQL
+  remains the queue; a broker failure cannot erase or transfer ownership of a
+  job.
+
+The dependency direction is intentionally one-way: these services do not import
+`jobs.py`. Routes and older internal callers may continue to use the facade,
+but adding a new policy or side effect there would recreate the dependency hub
+this split removed.
+
 ### Job lifecycle
 
 A job holds one of seven states, and transitions are validated by `api/services/job_states.py`:
