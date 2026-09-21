@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 
 from api.services import artifact_store
 from api.services import job_inputs
@@ -25,6 +26,10 @@ from api.settings import Settings
 _log = logging.getLogger(__name__)
 
 
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def run_job(
     settings: Settings, job_id: str, command: list[str]
 ) -> None:
@@ -34,7 +39,7 @@ def run_job(
             settings,
             job_id,
             status=job_states.RUNNING,
-            started_at=job_repository._now(),
+            started_at=_now(),
             claimed_until=job_leases.lease_deadline(settings),
             attempts=1,
         )
@@ -77,7 +82,7 @@ def run_job(
             settings,
             job_id,
             status=status,
-            finished_at=job_repository._now(),
+            finished_at=_now(),
             exit_code=completed.returncode,
             run_id=str(run_id) if run_id else None,
             error=error,
@@ -155,7 +160,7 @@ def run_job(
                 settings,
                 job_id,
                 status=job_states.FAILED,
-                finished_at=job_repository._now(),
+                finished_at=_now(),
                 error=str(exc)[:2000],
             )
         except job_states.InvalidJobTransition:
