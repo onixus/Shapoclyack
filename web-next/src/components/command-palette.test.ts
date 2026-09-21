@@ -14,6 +14,14 @@ describe("jumpEntries", () => {
     expect(out[0].href).toBe("/runs/view?runId=20260909T101010Z");
   });
 
+  it("recognises a run id with the collision suffix the API mints today", () => {
+    // A timestamp alone is one second wide, so ids now carry six hex; a run
+    // pasted from a report or a toast has to open either way.
+    const out = jumpEntries("20260921T111955Z-79e1dd", t);
+    expect(out.map((e) => e.id)).toEqual(["run"]);
+    expect(out[0].href).toBe("/runs/view?runId=20260921T111955Z-79e1dd");
+  });
+
   it("recognises a job id and deep-links the drawer", () => {
     const out = jumpEntries("abc123def456", t);
     expect(out[0]).toMatchObject({ id: "job", href: "/scans?job=abc123def456" });

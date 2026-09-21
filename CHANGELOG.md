@@ -78,9 +78,14 @@ All notable changes to Shapoclyack are documented in this file.
   job still `succeeded`, the row already gone, `/api/health` green and nothing
   said anywhere. A rollback now removes **the keys that attempt wrote itself**
   (collected as they land, because the return value of `upload_tree` is lost
-  with the exception that raised), and only while the run is still owed: a row
-  another attempt has already closed means the run is published and there is
-  nothing to clean up.
+  with the exception that raised), and only while nothing has put the run's
+  tree in the store yet. That last condition is `run_publications.stored_at`,
+  stamped as the transfer finishes and before the staging tree is promoted
+  (migration `0058_job_ingest_lease`), rather than the existence of the row:
+  the winner deletes the row only after shipping the archive to the broker, so
+  a loser reading the row would spend that whole upload believing nothing had
+  been published — which is exactly the window in which it wakes up on the
+  staging tree the winner has just moved away.
 - **A publication holds its row for as long as it takes, not for a minute.**
   The claim pushed the row 60 seconds out of the due window while the docstring
   beside it called the work "minutes of store and broker work" — so a tree that
@@ -98,7 +103,9 @@ All notable changes to Shapoclyack are documented in this file.
   take the other's keys with it. Ids minted by the API now carry a six-hex
   suffix after the timestamp; the clock still leads, so the run listing's
   ordering is unchanged. (`scanner.main` run outside the API still mints the
-  bare timestamp.)
+  bare timestamp.) The console's command palette recognises both shapes, so a
+  run id pasted from a report or a toast still offers *Open run* rather than a
+  vulnerability search.
 - **A publication that keeps killing the replica publishing it now ends
   `dead`.** Counting an attempt at the claim was wrong — five OOM restarts must
   not condemn a batch the store never refused — and removing it left the

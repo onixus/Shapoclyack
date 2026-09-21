@@ -21,7 +21,9 @@ export type PaletteEntry = {
   keywords?: string;
 };
 
-const RUN_ID = /^\d{8}T\d{6}Z$/i;
+// Both shapes: runs minted before the id carried a suffix are still in the
+// store, and the ones minted since end in six hex (`jobs._mint_run_id`).
+const RUN_ID = /^\d{8}T\d{6}Z(-[0-9a-f]{6})?$/i;
 const JOB_ID = /^[0-9a-f]{12}$/i;
 // The separator is required: `vulnerable` and `agentless` are words, not ids.
 const VULN_ID = /^vuln[_-][0-9a-z_-]{4,}$/i;
