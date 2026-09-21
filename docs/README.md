@@ -31,6 +31,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |
 | Hand the firewall team what sensors and the API open | [Network requirements](network-requirements.md) |
 | Develop or review changes | [Development](development.md) |
+| Plan product certification under FSTEC requirements | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 |
 
 ## Product and UX direction
 
@@ -86,6 +87,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
+| [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
 | [Scan performance](scan-performance.md) | Faster scans without more hardware: stage timings, intents, delta |
