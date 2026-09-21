@@ -615,6 +615,10 @@ def run_pulse_probe(
     Raises ``FileNotFoundError`` when there is work to do and no pulse binary:
     Pulse is the default backend and the only source of services on that path,
     so a missing binary is a deployment error to surface, not a stage to skip.
+    Deliberately not a silent fallback to nmap -- an image built with
+    ``--build-arg INSTALL_PULSE=0`` would then produce a scan with a different
+    finding set under the same profile, and nobody would see it happen. The
+    message names both fixes instead.
     Raises ``PulseCrashLoopError`` after ``MAX_CONSECUTIVE_CRASHED_CHUNKS``
     chunks in a row end in a pulse exit without JSON.
     """
@@ -647,9 +651,14 @@ def run_pulse_probe(
 
     if not _pulse_available(pulse_bin):
         raise FileNotFoundError(
-            f"pulse binary not found ({pulse_bin!r}); install it with "
-            "scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
-            "service_probe.pulse.bin at an existing binary"
+            f"pulse binary not found ({pulse_bin!r}) and service_probe.backend "
+            "asks for it, so this run would report no services at all. Either "
+            "install it (scripts/install-pulse.sh, or point OCTO_PULSE_BIN / "
+            "service_probe.pulse.bin at an existing binary), or switch the "
+            "backend to nmap (OCTO_SERVICE_BACKEND=nmap / service_probe."
+            "backend: nmap) on an image that has nmap. An image built with "
+            "--build-arg INSTALL_PULSE=0 ships no pulse by design and must be "
+            "configured that way; see docs/pulse-backend.md."
         )
 
     # Effective --os for this run. Flipped off once pulse refuses it for lack

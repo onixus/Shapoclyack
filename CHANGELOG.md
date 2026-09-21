@@ -6,6 +6,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **The Pulse binary is pinned by digest, and the image builds without it.**
+  `scripts/pulse-pinned.sha256` now holds the reviewed SHA-256 of each
+  platform's GenDec release tarball, and `scripts/install-pulse.sh` checks the
+  download against that committed value instead of against a `checksums.txt`
+  fetched from the same release. The old check proved a download was not
+  corrupted; it could not detect a rewritten release, which matters for a
+  binary that gets `cap_net_raw,cap_net_admin` on every sensor host.
+  `PULSE_SKIP_CHECKSUM=1` no longer applies to a pinned version, and
+  `tests/test_pulse_supply_chain.py` fails a `PULSE_VERSION` bump that does not
+  bump the pins or that lands in only some of the four files declaring it.
+  `--build-arg INSTALL_PULSE=0` builds `Dockerfile` / `Dockerfile.allinone`
+  with no Pulse and no GitHub token at all, for anyone without access to the
+  private `onixus/GenDec`; such an image must run `service_probe.backend:
+  nmap`, and the scanner now says exactly that (and how) when the binary is
+  missing rather than failing with a bare install hint. `docs/third-party.md`
+  states that GenDec is private and what that costs a supply-chain review.
+  Signed releases and the public-releases-vs-vendoring decision stay open in
+  #340.
+
+- **Release provenance is checked when a Pulse digest is pinned.** GenDec now
+  signs each release's `checksums.txt` with cosign in keyless mode, and
+  `scripts/pulse-pin.sh` verifies that signature — against GenDec's release
+  workflow on that exact tag, not merely against "somebody" — before printing
+  the lines to paste into `scripts/pulse-pinned.sha256`. An unsigned release is
+  refused unless `PULSE_PIN_ALLOW_UNSIGNED=1`, which is how the `v1.1.0` pins
+  were taken, since signing landed in GenDec after that release. The install
+  path deliberately does not check a signature: on the pinned path the digest
+  committed here already beats anything fetched from the release being
+  installed, and the images carry no cosign. The GitHub-release plumbing shared
+  by the installer and the helper moved to `scripts/pulse-release-lib.sh`.
+
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`
   — SQL, the NATS publish, archive extraction, artifact writes, projection
   updates — now runs on a worker thread behind an admission gate, so a slow
