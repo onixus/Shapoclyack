@@ -74,35 +74,13 @@ from scanner.pipeline import scan_scope
 
 _log = logging.getLogger(__name__)
 
-#: The tenant's approved scope, handed to the run beside its target files so the
-#: scanner can hold the resolution it actually scans on to the same rules (#244).
-SCAN_SCOPE_INPUT = "scan_scope.json"
-
-#: What a job hands to its worker. The scope rides the same channel as the
-#: targets on purpose: a worker that receives one receives the other.
-#: Related domains the tenant's operators promoted (org_profile M4). A separate
-#: file rather than lines appended to ``domains.txt``: the scanner merges it
-#: into the name scope *in addition to* whatever target files the run reads, so
-#: a run on the installation's default targets is widened rather than replaced.
-PROMOTED_DOMAINS_INPUT = "promoted_domains.txt"
-
-#: The tenant's scan policy as it stood when this job was admitted (#362) —
-#: the rate ceilings, the host concurrency and the ports the run must not
-#: touch. It rides the same channel as the scope for the same reason: it is a
-#: server-decided constraint the worker hands to the scanner unread, and a
-#: worker that receives the targets receives what it may do to them. Absent for
-#: a tenant with no policy, which is the pre-#362 behaviour.
-SCAN_POLICY_INPUT = "scan_policy.json"
-_JOB_INPUT_FILES = (
-    "ranges.txt",
-    "domains.txt",
-    "ports.txt",
-    "ports_udp.txt",
-    SCAN_SCOPE_INPUT,
-    PROMOTED_DOMAINS_INPUT,
-    SCAN_POLICY_INPUT,
-)
-
+# Compatibility names for the scanner input contract. Layout ownership lives
+# in job_inputs; keeping aliases here avoids breaking existing callers while
+# preventing two copies of the file list from drifting.
+SCAN_SCOPE_INPUT = job_inputs.SCAN_SCOPE_INPUT
+PROMOTED_DOMAINS_INPUT = job_inputs.PROMOTED_DOMAINS_INPUT
+SCAN_POLICY_INPUT = job_inputs.SCAN_POLICY_INPUT
+_JOB_INPUT_FILES = job_inputs.JOB_INPUT_FILES
 
 def _now() -> datetime:
     """Naive UTC, matching the other Postgres-backed services."""
