@@ -18,6 +18,24 @@ All notable changes to Shapoclyack are documented in this file.
   `octo_agent_ingest_in_flight`, `octo_agent_ingest_waiting`,
   `octo_agent_ingest_rejected_total{reason}`.
 
+- **CI runs one set of checks, not two that drift.** Lint, the test run, the
+  web-next gate and the Semgrep scan moved into `scripts/ci-lint.sh`,
+  `scripts/ci-pytest.sh`, `scripts/ci-web.sh` and `scripts/ci-semgrep.sh`,
+  which the `Jenkinsfile` and `.github/workflows/ci.yml` both call. The Ruff
+  version is now read out of `requirements-dev.txt` instead of being pinned in
+  each pipeline (they had drifted to `0.15.22` and `0.15.20`), lint covers
+  `agent/` as well as `scanner api tests`, the reference workflow gained the
+  Semgrep job and the Prometheus-rules validation it was missing, and
+  `tests/test_ci_checks.py` fails if a pipeline goes back to spelling any of
+  this out itself.
+- **A green test run has to have run the integration suites.** With
+  `OCTO_REQUIRE_INTEGRATION=1` (set by `scripts/ci-pytest.sh`),
+  `tests/conftest.py` refuses a session that has no `OCTO_POSTGRES_URL` /
+  `OCTO_NATS_URL` before collection, and fails one that skipped those suites
+  anyway or ran fewer of them than the floor. 1232 of 3025 collected tests are
+  Postgres-gated, so until now exit code 0 said nothing about tenant isolation
+  or row locks.
+
 ### Documentation
 
 - Add a dated architecture review of the `b12df58` source tree with ingestion,

@@ -32,10 +32,15 @@ python -m pip install \
 Run the baseline checks:
 
 ```bash
-ruff check .
+scripts/ci-lint.sh                             # ruff over scanner api tests agent, pin from requirements-dev.txt
 python -m compileall scanner api tests agent   # `agent/` is the sensor package (agent/worker.py)
 python -m pytest
 ```
+
+`scripts/ci-lint.sh` is what both pipelines run, so a local pass means the CI
+lint passes. It uses `ruff` from `PATH`, falling back to `.venv/bin/ruff`;
+`--install` pip-installs the pinned version first and is meant for CI
+containers, not for a checkout that already has one.
 
 Infrastructure-dependent suites skip tests when their targets are absent.
 PostgreSQL-dependent tests use `requires_postgres` from `tests/conftest.py`
@@ -43,12 +48,35 @@ and need `OCTO_POSTGRES_URL` (or `POSTGRES_URL`) pointing to a dedicated test
 database migrated with `alembic -c api/db/alembic.ini upgrade head`. Test
 fixtures delete stored data: never use a production or shared development
 database. Inspect pytest's skipped-test summary; a green run without Postgres
-does not validate tenant isolation, job concurrency, or database-backed APIs.
+does not validate tenant isolation, job concurrency, or database-backed APIs —
+1232 of 3025 collected tests are gated on that one variable.
 The NATS tests need `OCTO_NATS_URL`, and `tests/test_ssh_deploy_live.py` needs a
 real `sshd`. For the latter, `tests/e2e/ssh-deploy.sh` starts one in a
 container (docker and a local OpenSSH client required), reads its host key
 off the server's own files, and runs the suite against it — the same thing
 the CI stage `SSH deploy (live sshd)` does.
+
+### Proving the integration suites actually ran
+
+`pytest` exits 0 the same way whether a Postgres-backed suite passed or was
+skipped wholesale, so CI cannot treat its own exit code as evidence. Set
+`OCTO_REQUIRE_INTEGRATION=1` to declare the infrastructure available — which is
+what `scripts/ci-pytest.sh` does, and what both pipelines run:
+
+```bash
+OCTO_POSTGRES_URL=... OCTO_NATS_URL=... scripts/ci-pytest.sh
+```
+
+`tests/conftest.py` then makes the run show for it. Before collection it fails
+if either URL is unset. At the end it fails if any Postgres- or NATS-gated test
+was skipped anyway, or if fewer of them ran than the floor in
+`INTEGRATION_SUITES` (1000 and 5 against current counts of 1232 and 5). The
+floors are a tripwire for "the mark stopped applying and the gate passed on an
+empty set", not a coverage target: raise them deliberately, not to track
+growth. The summary prints ran/skipped/collected per suite either way.
+
+Without the flag nothing changes — skipping stays the right default on a
+laptop with no database.
 
 Run the API locally:
 
@@ -198,9 +226,29 @@ The screenshot process is documented in [ui.md](ui.md).
 ## Continuous integration
 
 CI runs on a **local Jenkins**, not on GitHub Actions — `.github/workflows/ci.yml`
-is kept as a manually runnable reference. The two pipelines can drift; compare
-their actual stages and pinned tools before treating their results as equivalent. The jobs build from the working copy on disk,
-so they do not depend on anything being pushed to GitHub.
+is kept as a manually runnable reference. The jobs build from the working copy
+on disk, so they do not depend on anything being pushed to GitHub.
+
+**The checks themselves live in `scripts/`, not in either pipeline.** Lint, the
+test run, the web-next gate and the Semgrep scan are `scripts/ci-lint.sh`,
+`scripts/ci-pytest.sh`, `scripts/ci-web.sh` and `scripts/ci-semgrep.sh`, and
+both files call them. Spelled out twice they had drifted — Ruff `0.15.22` here
+against `0.15.20` there, `agent/` linted by neither, Semgrep and the
+Prometheus-rules validation in Jenkins only. `tests/test_ci_checks.py` fails if
+a pipeline starts spelling any of this out again.
+
+What still differs, on purpose:
+
+| | Jenkins | `ci.yml` |
+|---|---|---|
+| Python matrix | sequential loop, one agent | parallel `strategy.matrix` |
+| Image build | native `linux/arm64`, daemon cache | `docker/build-push-action`, `type=gha` cache |
+| Load test | `tests/load/run.sh` from the Jenkinsfile | `.github/actions/synthetic-load-test` |
+| `SSH deploy (live sshd)` | present | **absent** — no ported equivalent |
+| web-next build directory | copied off the VirtioFS workspace | built in place |
+
+So the stage lists are close but not identical: compare them before treating a
+run of one as a run of the other.
 
 | Job | Builds | Notes |
 |-----|--------|-------|

@@ -41,6 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 os.environ.setdefault("OCTO_ENV", "dev")
 
 POSTGRES_URL = (os.environ.get("OCTO_POSTGRES_URL") or os.environ.get("POSTGRES_URL") or "").strip()
+NATS_URL = (os.environ.get("OCTO_NATS_URL") or os.environ.get("NATS_URL") or "").strip()
 
 requires_postgres = pytest.mark.skipif(
     not POSTGRES_URL,
@@ -324,3 +325,140 @@ def auth_headers(
 
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------
+# Integration gate
+#
+# Skipping is the right default on a laptop, but it makes an exit code
+# ambiguous: `pytest` prints the same green whether the Postgres-backed suites
+# ran or were skipped wholesale, so CI proving "exit 0" proved nothing about
+# tenant isolation or row locks — 1232 of 3025 collected tests are gated on
+# OCTO_POSTGRES_URL alone.
+#
+# Setting OCTO_REQUIRE_INTEGRATION=1 (scripts/ci-pytest.sh does) declares the
+# infrastructure available, and the session then has to show for it: the run
+# fails before collection if a URL is missing, and fails at the end if any
+# gated test was skipped anyway, or if fewer of them ran than the floor.
+# ---------------------------------------------------------------------------
+
+REQUIRE_INTEGRATION = os.environ.get("OCTO_REQUIRE_INTEGRATION", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Suite name -> (the variable its skip reason names, how many of its tests must
+# have run). The suites are recognised by that variable appearing in the skipif
+# reason rather than by a marker of their own: the reasons are already written
+# for humans, and tagging 307 call sites a second time would be a worse thing
+# to keep correct than this.
+#
+# The floors sit well below the current counts (1232 Postgres, 5 NATS at this
+# commit) on purpose. They are not a coverage target — they catch "the mark
+# stopped applying and the gate passed on an empty set", which the skipped
+# count alone cannot. Raise them deliberately, not to track growth.
+INTEGRATION_SUITES: dict[str, tuple[str, int]] = {
+    "postgres": ("OCTO_POSTGRES_URL", 1000),
+    "nats": ("OCTO_NATS_URL", 5),
+}
+
+_integration_collected: dict[str, set[str]] = {name: set() for name in INTEGRATION_SUITES}
+_integration_skipped: dict[str, set[str]] = {name: set() for name in INTEGRATION_SUITES}
+
+
+def integration_gate_problems(counts: dict[str, tuple[int, int]]) -> list[str]:
+    """Describe why ``counts`` fails the gate, or return an empty list.
+
+    ``counts`` maps a suite name to ``(collected, skipped)``. Kept separate from
+    the hooks so the gate's own arithmetic is testable without a nested pytest
+    session (tests/test_ci_checks.py).
+    """
+    problems: list[str] = []
+    for name, (var, floor) in INTEGRATION_SUITES.items():
+        collected, skipped = counts.get(name, (0, 0))
+        ran = collected - skipped
+        if skipped:
+            # Belt to the floor's braces. With the current marks nothing can
+            # skip once the URL is set — pytest_configure already refused that
+            # run — but a future gate that probes reachability rather than
+            # env presence would skip with the URL set, and that has to be red.
+            problems.append(
+                f"{name}: {skipped} of {collected} tests skipped although {var} "
+                "is declared available"
+            )
+        if ran < floor:
+            problems.append(f"{name}: only {ran} tests ran, floor is {floor} ({var})")
+    return problems
+
+
+def _integration_counts() -> dict[str, tuple[int, int]]:
+    return {
+        name: (len(_integration_collected[name]), len(_integration_skipped[name]))
+        for name in INTEGRATION_SUITES
+    }
+
+
+def pytest_configure(config) -> None:  # noqa: ARG001 - pytest hook signature
+    """Refuse a declared-integration run that has nothing to run against.
+
+    Fails here rather than at the end: the matrix stage takes minutes, and a
+    missing URL is knowable before the first test.
+    """
+    if not REQUIRE_INTEGRATION:
+        return
+    missing = [
+        var
+        for var, url in (("OCTO_POSTGRES_URL", POSTGRES_URL), ("OCTO_NATS_URL", NATS_URL))
+        if not url
+    ]
+    if missing:
+        raise pytest.UsageError(
+            f"OCTO_REQUIRE_INTEGRATION declares the integration infrastructure "
+            f"available, but {', '.join(missing)} is unset. Point it at the test "
+            "database/broker, or drop the flag — a run that skips those suites "
+            "must not report success."
+        )
+
+
+def pytest_collection_modifyitems(config, items) -> None:  # noqa: ARG001 - pytest hook signature
+    for item in items:
+        reasons = " ".join(str(mark.kwargs.get("reason", "")) for mark in item.iter_markers("skipif"))
+        for name, (var, _floor) in INTEGRATION_SUITES.items():
+            if var in reasons:
+                _integration_collected[name].add(item.nodeid)
+
+
+def pytest_runtest_logreport(report) -> None:
+    # Only the setup phase: that is where a skipif mark takes effect, and
+    # counting call/teardown too would double-count nothing but confuse later.
+    if report.when != "setup" or not report.skipped:
+        return
+    for name, nodes in _integration_collected.items():
+        if report.nodeid in nodes:
+            _integration_skipped[name].add(report.nodeid)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ARG001
+    if not REQUIRE_INTEGRATION:
+        return
+    counts = _integration_counts()
+    problems = integration_gate_problems(counts)
+    terminalreporter.section("integration gate")
+    for name, (collected, skipped) in sorted(counts.items()):
+        terminalreporter.write_line(
+            f"{name}: {collected - skipped} ran, {skipped} skipped, {collected} collected"
+        )
+    for problem in problems:
+        terminalreporter.write_line(f"FAILED {problem}", red=True)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001 - pytest hook signature
+    if not REQUIRE_INTEGRATION:
+        return
+    if integration_gate_problems(_integration_counts()):
+        # Only ever upgrades green to red: a run already failing for its own
+        # reasons keeps the status that names the real cause.
+        if session.exitstatus == 0:
+            session.exitstatus = 1
