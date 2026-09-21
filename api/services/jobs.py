@@ -46,11 +46,11 @@ from api.services import audit as audit_service
 from api.services import config_override as config_override_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.services import job_states
+from api.services import job_dispatch
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import local_scan_executor
 from api.services import metrics as metrics_service
-from api.services import nats_bus
 from api.services import pagination
 from api.services import promoted_domains
 from api.services import results_ingest
@@ -1383,52 +1383,7 @@ def start_scan(
 
 
 def _publish_job_offer(settings: Settings, job_id: str) -> None:
-    """Announce one queued job on the subject its entitled agents listen to.
-
-    The offer is a notification, not a hand-out: it names the job and nothing
-    about what the job reaches. ``inputs`` used to travel in it, which made the
-    body of every offer a copy of the scan's target list — and since the body
-    is read before the claim, an agent could read the targets of a job it was
-    then refused (#361). The claim response carries them instead, to the one
-    agent the API has just bound the job to.
-    """
-    with get_session(settings.postgres_url) as session:
-        row = session.get(models.Job, job_id)
-        if row is None:
-            return
-        opts = dict(row.scan_options or {})
-        payload = {
-            "job_id": row.job_id,
-            "run_id": row.run_id or "",
-            "mode": row.mode or opts.get("mode") or "balanced",
-            "delta": bool(opts.get("delta", False)),
-            "skip_nse": bool(opts.get("skip_nse", False)),
-            "notify": bool(opts.get("notify", False)),
-            "export_defectdojo": bool(opts.get("export_defectdojo", False)),
-            "tenant_id": row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
-            # Decides the subject, so only the group's own agents are offered
-            # it at all; repeated in the body so a subscriber can tell a
-            # misrouted offer from one of its own.
-            "agent_group": row.agent_group,
-        }
-    bus = nats_bus.get_bus(settings.nats_url)
-    if bus is None:
-        _log.warning(
-            "NATS configured but unavailable; job %s stays queued for HTTP claim",
-            job_id,
-        )
-        return
-    tenant_subject = nats_bus.jobs_scan_subject(
-        str(payload["tenant_id"]), payload["agent_group"]
-    )
-    if bus.publish_job_offer(payload):
-        _log.info("Published %s offer for %s", tenant_subject, job_id)
-    else:
-        _log.warning(
-            "Failed to publish %s for %s; HTTP claim still available",
-            tenant_subject,
-            job_id,
-        )
+    job_dispatch.publish_offer(settings, job_id)
 
 
 def _read_job_inputs(settings: Settings, job_id: str) -> dict[str, str]:
