@@ -268,3 +268,136 @@ def test_unpinned_version_without_checksums_txt_still_refuses(fake_release):
     assert proc.returncode != 0
     assert "refusing to install an unverified binary" in proc.stderr
     assert not dest.exists()
+
+
+# --- the pin helper: where the signature actually gates something ------------
+#
+# install-pulse.sh does not check a signature, on purpose: on the pinned path
+# the digest committed here is strictly stronger than anything fetched from the
+# release being installed. The signature's job is to gate the moment a *new*
+# digest enters this repository, which is scripts/pulse-pin.sh.
+
+PIN_HELPER = REPO_ROOT / "scripts" / "pulse-pin.sh"
+
+
+@pytest.fixture
+def fake_pin_release(tmp_path: Path):
+    """A release served to scripts/pulse-pin.sh, with or without a signature."""
+    release = tmp_path / "release"
+    release.mkdir()
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        "dest=''; url=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '    -o) dest="$2"; shift 2 ;;\n'
+        "    -w|-H) shift 2 ;;\n"
+        "    -*) shift ;;\n"
+        '    *) url="$1"; shift ;;\n'
+        "  esac\n"
+        "done\n"
+        'src="' + str(release) + '/$(basename "$url")"\n'
+        'if [[ -f "$src" ]]; then cp "$src" "$dest"; echo 200; else echo 404; fi\n'
+    )
+    (bindir / "curl").chmod(0o755)
+
+    def run(
+        *,
+        signed: bool,
+        allow_unsigned: bool = False,
+        cosign_ok: bool = True,
+        version: str = "v9.9.9",
+    ):
+        lines = [
+            f"{'a' * 64}  dist/pulse-{version}-{plat}.tar.gz"
+            for plat in ("linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64")
+        ]
+        (release / "checksums.txt").write_text("\n".join(lines) + "\n")
+        bundle = release / "checksums.txt.cosign.bundle"
+        if signed:
+            bundle.write_text("{}\n")
+        else:
+            bundle.unlink(missing_ok=True)
+        # A cosign that records that it was called, and with which identity.
+        called = tmp_path / "cosign-args"
+        called.unlink(missing_ok=True)
+        (bindir / "cosign").write_text(
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$@" > '
+            + str(called)
+            + "\n"
+            + (
+                "exit 0\n"
+                if cosign_ok
+                else 'echo "signature not verified" >&2\nexit 1\n'
+            )
+        )
+        (bindir / "cosign").chmod(0o755)
+
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{bindir}{os.pathsep}{env['PATH']}",
+            PULSE_PIN_ALLOW_UNSIGNED="1" if allow_unsigned else "0",
+        )
+        env.pop("GITHUB_TOKEN", None)
+        env.pop("GH_TOKEN", None)
+        proc = subprocess.run(
+            ["bash", str(PIN_HELPER), version],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        args = called.read_text().splitlines() if called.exists() else []
+        return proc, args
+
+    return run
+
+
+def test_pin_helper_refuses_an_unsigned_release(fake_pin_release):
+    proc, cosign_args = fake_pin_release(signed=False)
+    assert proc.returncode != 0
+    assert "nothing to verify" in proc.stderr
+    assert proc.stdout == ""
+    assert cosign_args == []
+
+
+def test_pin_helper_allows_an_unsigned_release_only_on_request(fake_pin_release):
+    proc, _ = fake_pin_release(signed=False, allow_unsigned=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "WARNING" in proc.stderr
+    assert "only as good as this download" in proc.stderr
+
+
+def test_pin_helper_constrains_the_signer_identity(fake_pin_release):
+    """cosign verify-blob with no --certificate-identity accepts a signature
+    from anybody, which would make the whole exercise decorative."""
+    proc, cosign_args = fake_pin_release(signed=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "verify-blob" in cosign_args
+    identity = cosign_args[cosign_args.index("--certificate-identity") + 1]
+    assert identity == (
+        "https://github.com/onixus/GenDec/.github/workflows/release.yml"
+        "@refs/tags/v9.9.9"
+    ), "identity must pin the workflow and the tag, not just the repository"
+    issuer = cosign_args[cosign_args.index("--certificate-oidc-issuer") + 1]
+    assert issuer == "https://token.actions.githubusercontent.com"
+
+
+def test_pin_helper_prints_nothing_when_the_signature_fails(fake_pin_release):
+    proc, _ = fake_pin_release(signed=True, cosign_ok=False)
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+
+
+def test_pin_helper_output_is_parsed_by_the_pin_reader(fake_pin_release):
+    """The helper's stdout is pasted into pulse-pinned.sha256 verbatim, so the
+    two formats have to stay the same one."""
+    proc, _ = fake_pin_release(signed=True)
+    assert proc.returncode == 0, proc.stderr
+    pins = _parse_pins(proc.stdout)
+    assert set(pins) == {("v9.9.9", plat) for plat in set(_PLATFORMS.values())}
+    assert set(pins.values()) == {"a" * 64}

@@ -107,7 +107,7 @@ ARG INSTALL_PULSE=1
 # scripts/pulse-pinned.sha256, and installs it. Both files are copied into the
 # same directory because the script looks for the pins next to itself.
 # Anything about how Pulse is fetched belongs in the script.
-COPY scripts/install-pulse.sh scripts/pulse-pinned.sha256 /tmp/pulse/
+COPY scripts/install-pulse.sh scripts/pulse-release-lib.sh scripts/pulse-pinned.sha256 /tmp/pulse/
 # No `set -x`: the token would be traced into the build log (BuildKit keeps
 # the unmasked trace in `docker buildx history logs`).
 RUN --mount=type=secret,id=github_token,required=false \

@@ -9,15 +9,19 @@
 # (Dockerfile), so a swapped pulse is root-equivalent on a sensor host. Treat a
 # change to this file as a security review, not a version bump.
 #
-# Bumping PULSE_VERSION means bumping these in the same commit. Get the values
-# from the release itself, from two sources that are computed independently:
+# Bumping PULSE_VERSION means bumping these in the same commit:
 #
-#   gh release download <tag> --repo onixus/GenDec --pattern checksums.txt -O -
-#   gh release view <tag> --repo onixus/GenDec --json assets \
-#     --jq '.assets[] | "\(.digest)  \(.name)"'
+#   GITHUB_TOKEN=... scripts/pulse-pin.sh v1.2.0
 #
-# The first is what GenDec's release job hashed before uploading; the second is
-# what GitHub computed after receiving the bytes. They must agree.
+# That verifies GenDec's cosign signature over the release's checksums.txt
+# before printing anything, and prints the lines to paste here. It refuses a
+# release with no signature unless PULSE_PIN_ALLOW_UNSIGNED=1.
+#
+# The v1.1.0 lines below were taken with that override: v1.1.0 predates signing
+# in GenDec, so they rest on the download plus a cross-check between the
+# release's own checksums.txt and the digests GitHub computed on upload (two
+# independently computed values that agreed). The next bump should land on a
+# signed release.
 #
 # tests/test_pulse_supply_chain.py fails if this file and the PULSE_VERSION
 # defaults in install-pulse.sh / Dockerfile / Dockerfile.allinone drift apart.

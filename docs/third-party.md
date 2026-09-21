@@ -62,10 +62,16 @@ not remove, what that costs:
   the check off for a pinned version.
 - Each GenDec release ships an SPDX SBOM (`pulse-<version>.spdx.json`) covering
   Pulse's own dependency tree.
+- GenDec signs each release's `checksums.txt` with cosign in keyless mode.
+  `scripts/pulse-pin.sh` verifies that signature against GenDec's release
+  workflow on that tag before printing a digest to pin, so provenance is
+  checked at the moment a new version enters this repository. The `v1.1.0`
+  pins predate signing and were taken with `PULSE_PIN_ALLOW_UNSIGNED=1`.
 
-Neither gives provenance: the pin proves the bytes are the reviewed bytes, not
-that the release was produced by the pipeline it claims. A signature over the
-release (cosign in GenDec's release job) would, and does not exist yet.
+What that still does not give: the signature proves the release came out of
+GenDec's release workflow, not that the code that went into it was reviewed by
+anyone outside the organisation. For a reviewer who cannot read the repository,
+that remains the gap.
 `--build-arg INSTALL_PULSE=0` builds an image without Pulse and without a
 token; that image has no service-probe backend of its own and must be run with
 `service_probe.backend: nmap` on an `INSTALL_NMAP=1` build — the scanner fails

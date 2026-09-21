@@ -182,13 +182,31 @@ release, so it catches a truncated or corrupted download, not a rewritten one.
 download that fails for any other reason (5xx, timeout) is reported as such and
 does not suggest the override.
 
-**What is still missing is provenance.** A pin proves the bytes are the bytes
-that were reviewed; it does not prove the release was built by the pipeline it
-claims, and a fresh pin taken from a compromised release is a compromised pin.
-That needs a signature over the release (cosign in GenDec's release job), which
-does not exist yet — see #340, which also carries the open question of whether
-GenDec's releases become public (the SPDX SBOM is already built per release) or
-its sources get vendored here.
+**Provenance is checked when a pin is taken, not when it is used.** A pin proves
+the bytes are the bytes that were reviewed; it does not say where they came
+from, and a fresh pin taken from a compromised release would be a compromised
+pin. That is what GenDec's release signature is for, and why it is checked in
+`scripts/pulse-pin.sh` rather than at install time:
+
+```bash
+GITHUB_TOKEN=… scripts/pulse-pin.sh v1.2.0
+```
+
+The helper fetches the release's `checksums.txt` and its
+`checksums.txt.cosign.bundle`, runs `cosign verify-blob` against GenDec's
+release workflow **on that tag** as the certificate identity, and only then
+prints the lines to paste into `scripts/pulse-pinned.sha256`. A release with no
+signature is refused unless `PULSE_PIN_ALLOW_UNSIGNED=1` — which the `v1.1.0`
+pins currently in the repo were taken with, because signing was added to GenDec
+after that release. Adding cosign to the install path instead would not help:
+on the pinned path the committed digest already beats anything fetched from the
+release being installed, and the images carry no cosign.
+
+This proves the release was produced by GenDec's release workflow. It does not
+prove the code that went into it was reviewed — it closes "the assets were
+swapped", not "a bad commit was merged". Whether GenDec's releases become
+public (the SPDX SBOM is already built per release) or its sources get vendored
+here is still open in #340.
 
 Neither the script nor the image stage uses `set -x`: the token would land in
 the build log.

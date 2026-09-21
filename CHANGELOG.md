@@ -25,6 +25,18 @@ All notable changes to Shapoclyack are documented in this file.
   Signed releases and the public-releases-vs-vendoring decision stay open in
   #340.
 
+- **Release provenance is checked when a Pulse digest is pinned.** GenDec now
+  signs each release's `checksums.txt` with cosign in keyless mode, and
+  `scripts/pulse-pin.sh` verifies that signature — against GenDec's release
+  workflow on that exact tag, not merely against "somebody" — before printing
+  the lines to paste into `scripts/pulse-pinned.sha256`. An unsigned release is
+  refused unless `PULSE_PIN_ALLOW_UNSIGNED=1`, which is how the `v1.1.0` pins
+  were taken, since signing landed in GenDec after that release. The install
+  path deliberately does not check a signature: on the pinned path the digest
+  committed here already beats anything fetched from the release being
+  installed, and the images carry no cosign. The GitHub-release plumbing shared
+  by the installer and the helper moved to `scripts/pulse-release-lib.sh`.
+
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`
   — SQL, the NATS publish, archive extraction, artifact writes, projection
   updates — now runs on a worker thread behind an admission gate, so a slow
