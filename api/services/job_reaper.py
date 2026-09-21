@@ -1,41 +1,264 @@
-"""Background sweep for jobs no executor is going to finish (P1.4, #360).
+"""Background sweep for jobs no executor is going to finish.
 
-Structured like ``schedule_dispatcher``/``endpoint_retention``: a daemon thread
-with a crash-restart loop, started and stopped from the FastAPI lifespan. The
-work itself is two functions — ``jobs.reap_expired_leases`` for a lease its
-executor stopped renewing, and ``jobs.reap_stale_cancellations`` for a stop an
-agent never confirmed (#360) — and this module only decides when to call them.
-They are on one tick because they are the same kind of statement: a job that
-has been waiting on somebody longer than the promise allowed.
-
-Unlike the schedule dispatcher, this worker is **safe in every replica** and
-does not wait on leader election (P1.6). Expiry is a property of the row, not
-of the observer, and the sweep takes its candidates with ``FOR UPDATE SKIP
-LOCKED``, so concurrent reapers divide the work instead of duplicating it.
+Lease expiry and cancellation timeout are row-level recovery policies, so they
+live with the reaper instead of the general jobs service. Every API replica may
+run the sweep: candidates are locked with FOR UPDATE SKIP LOCKED.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from api.services import jobs as jobs_service
+from sqlalchemy import func, select
+
+from api.db import models
+from api.db.engine import get_session
+from api.services import job_dispatch
+from api.services import job_states
+from api.services import metrics as metrics_service
+from api.services import tenants as tenants_service
+from api.services import workflow_events
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.job-reaper")
 
 
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _scan_failure_event(row: models.Job) -> dict[str, Any]:
+    return {
+        "tenant_id": row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
+        "subject_id": row.job_id,
+        "marker": str(row.attempts or 0),
+        "data": {
+            "job_id": row.job_id,
+            "run_id": row.run_id,
+            "execution": row.execution,
+            "mode": row.mode,
+            "surface": (row.scan_options or {}).get("surface"),
+            "attempts": row.attempts,
+            "assigned_agent_id": row.assigned_agent_id,
+            "exit_code": row.exit_code,
+            "requested_by": row.requested_by,
+            "error": (row.error or "")[:1000] or None,
+        },
+    }
+
+
+def _refresh_job_gauges(settings: Settings) -> None:
+    with get_session(settings.postgres_url) as session:
+        counts = dict(
+            session.execute(
+                select(models.Job.status, func.count())
+                .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
+                .group_by(models.Job.status)
+            ).all()
+        )
+    metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
+    metrics_service.JOBS_RUNNING.set(
+        sum(
+            counts.get(status, 0)
+            for status in (*job_states.IN_FLIGHT, job_states.CANCELLING)
+        )
+    )
+
+
+def _record_job_metrics(
+    settings: Settings,
+    status: str,
+    execution: str,
+    started_at: datetime | None,
+    finished_at: datetime | None,
+) -> None:
+    if status in {job_states.SUCCEEDED, job_states.FAILED} and started_at and finished_at:
+        duration = (finished_at - started_at).total_seconds()
+        if duration >= 0:
+            metrics_service.JOB_DURATION_SECONDS.labels(
+                status=status, execution=execution or "local"
+            ).observe(duration)
+    _refresh_job_gauges(settings)
+
+
+def reap_expired_leases(settings: Settings) -> dict[str, int]:
+    """Requeue abandoned agent jobs and fail abandoned local jobs."""
+    now = _now()
+    outcome = {"requeued": 0, "failed": 0}
+    requeued_agent_jobs: list[str] = []
+    failed_for_metrics: list[tuple[str, datetime | None]] = []
+    failed_events: list[dict[str, Any]] = []
+
+    with get_session(settings.postgres_url) as session:
+        rows = (
+            session.execute(
+                select(models.Job)
+                .where(
+                    models.Job.status.in_(tuple(job_states.IN_FLIGHT)),
+                    models.Job.claimed_until.is_not(None),
+                    models.Job.claimed_until < now,
+                )
+                .with_for_update(skip_locked=True)
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            retriable = (
+                row.execution == "agent"
+                and row.attempts < settings.job_max_attempts
+            )
+
+            # Any result ingest tied to the expired attempt is void.
+            row.ingest_token = None
+            row.ingest_attempt = None
+            row.ingest_agent_id = None
+            row.ingest_started_at = None
+
+            if retriable:
+                job_states.check_transition(
+                    row.job_id, row.status, job_states.QUEUED
+                )
+                row.status = job_states.QUEUED
+                row.assigned_agent_id = None
+                row.claimed_until = None
+                row.started_at = None
+                outcome["requeued"] += 1
+                requeued_agent_jobs.append(row.job_id)
+                LOG.warning(
+                    "Requeued job %s: lease expired after attempt %d/%d",
+                    row.job_id,
+                    row.attempts,
+                    settings.job_max_attempts,
+                )
+            else:
+                job_states.check_transition(
+                    row.job_id, row.status, job_states.FAILED
+                )
+                row.status = job_states.FAILED
+                row.finished_at = now
+                row.claimed_until = None
+                row.error = (
+                    f"Lease expired after {row.attempts} attempt(s): the "
+                    f"{row.execution} executor stopped reporting and never returned"
+                )
+                outcome["failed"] += 1
+                failed_for_metrics.append(
+                    (row.execution or "local", row.started_at)
+                )
+                failed_events.append(_scan_failure_event(row))
+                LOG.warning(
+                    "Failed job %s: lease expired after %d attempt(s) "
+                    "(execution=%s)",
+                    row.job_id,
+                    row.attempts,
+                    row.execution,
+                )
+
+    for name, count in outcome.items():
+        if count:
+            metrics_service.JOB_LEASE_EXPIRED_TOTAL.labels(outcome=name).inc(
+                count
+            )
+    for execution, started_at in failed_for_metrics:
+        _record_job_metrics(
+            settings, job_states.FAILED, execution, started_at, now
+        )
+    for failure in failed_events:
+        workflow_events.emit(settings, "scan_failed", **failure)
+
+    if outcome["requeued"] or outcome["failed"]:
+        _refresh_job_gauges(settings)
+
+    if settings.nats_url:
+        for job_id in requeued_agent_jobs:
+            job_dispatch.publish_offer(settings, job_id)
+
+    return outcome
+
+
+def reap_stale_cancellations(settings: Settings) -> int:
+    """Finish cancellation requests whose agent never confirmed the stop."""
+    now = _now()
+    deadline = now - timedelta(
+        seconds=max(settings.job_cancel_grace_seconds, 1)
+    )
+    ingest_deadline = now - timedelta(
+        seconds=max(settings.job_ingest_lease_seconds, 1)
+    )
+
+    with get_session(settings.postgres_url) as session:
+        rows = (
+            session.execute(
+                select(models.Job)
+                .where(
+                    models.Job.status == job_states.CANCELLING,
+                    models.Job.cancel_requested_at.is_not(None),
+                    models.Job.cancel_requested_at < deadline,
+                    (
+                        models.Job.ingest_started_at.is_(None)
+                        | (models.Job.ingest_started_at < ingest_deadline)
+                    ),
+                )
+                .with_for_update(skip_locked=True)
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            job_states.check_transition(
+                row.job_id, row.status, job_states.CANCELLED
+            )
+            row.status = job_states.CANCELLED
+            row.finished_at = now
+            row.claimed_until = None
+            row.error = (
+                f"{row.error or 'Cancellation requested'}; agent "
+                f"{row.assigned_agent_id or 'unknown'} did not confirm within "
+                f"{settings.job_cancel_grace_seconds}s"
+            )[:2000]
+            LOG.warning(
+                "Cancelled job %s without confirmation: agent %s stayed silent "
+                "for %ds",
+                row.job_id,
+                row.assigned_agent_id,
+                settings.job_cancel_grace_seconds,
+            )
+        count = len(rows)
+
+    if count:
+        metrics_service.JOB_CANCELLATIONS_TOTAL.labels(
+            outcome="unconfirmed"
+        ).inc(count)
+        _refresh_job_gauges(settings)
+    return count
+
+
 class JobReaper:
-    def __init__(self, *, settings: Settings, poll_interval_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        poll_interval_seconds: float | None = None,
+    ) -> None:
         self._settings = settings
-        # Floored here as well as in Settings: a caller constructing this
-        # directly (tests, an embedder) must not be able to spin the loop.
         self._poll_interval = max(
-            1.0, poll_interval_seconds or float(settings.job_reaper_interval_seconds)
+            1.0,
+            poll_interval_seconds
+            or float(settings.job_reaper_interval_seconds),
         )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._stats = {"ticks": 0, "requeued": 0, "failed": 0, "cancelled": 0, "errors": 0}
+        self._stats = {
+            "ticks": 0,
+            "requeued": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "errors": 0,
+        }
 
     @property
     def stats(self) -> dict[str, int]:
@@ -45,7 +268,9 @@ class JobReaper:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="octo-job-reaper", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="octo-job-reaper", daemon=True
+        )
         self._thread.start()
         LOG.info(
             "Job reaper started (poll_interval=%.0fs lease=%ds max_attempts=%d "
@@ -73,10 +298,10 @@ class JobReaper:
 
     def _tick(self) -> None:
         self._stats["ticks"] += 1
-        outcome = jobs_service.reap_expired_leases(self._settings)
+        outcome = reap_expired_leases(self._settings)
         self._stats["requeued"] += outcome["requeued"]
         self._stats["failed"] += outcome["failed"]
-        self._stats["cancelled"] += jobs_service.reap_stale_cancellations(self._settings)
+        self._stats["cancelled"] += reap_stale_cancellations(self._settings)
 
 
 _REAPER: JobReaper | None = None
