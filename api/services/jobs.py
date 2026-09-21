@@ -67,6 +67,7 @@ from api.services import results_ingest
 from api.services.integrations import channels as channels_service
 from api.services import run_publisher
 from api.services import runs as runs_service
+from api.services import scan_admission
 from api.services import scan_policy
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -1827,20 +1828,6 @@ def start_scan(
     if not settings.allow_scan_start:
         raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
 
-    tenant_id = (request.tenant_id or tenants_service.DEFAULT_TENANT_ID).strip()
-    tenant = tenants_service.get_tenant(tenant_id)
-    if tenant is None:
-        raise ValueError(f"Unknown tenant_id: {tenant_id}")
-    if tenant.get("status") != "active":
-        raise ValueError(f"Tenant is not active: {tenant_id}")
-
-    # Before any work is prepared: what the tenant bought (Track E, MSSP
-    # operations). Placed here rather than in the route because the recurring
-    # dispatcher and every other caller reach start_scan and none of them
-    # reach the route — a quota only one entry point honours is not a quota.
-    if not quota_exempt:
-        quotas.assert_scan_quota(settings, tenant_id=tenant_id)
-
     job_id = uuid.uuid4().hex[:12]
     execution = "agent" if settings.job_execution_mode == "agent" else "local"
     run_id = request.run_id
@@ -1849,82 +1836,29 @@ def start_scan(
     if execution == "agent" and not run_id:
         run_id = _mint_run_id()
 
-    # Loaded once here and handed to both barriers below: the scope cannot
-    # change inside this call frame, and each load is a round trip.
-    scope = scan_scopes.load_scope(settings, tenant_id)
+    # Admission is its own boundary: jobs owns queueing/execution while
+    # scan_admission owns whether this request may enter the queue and where it
+    # may run. New policy no longer adds another dependency and another branch
+    # to this already hot service.
+    admission = scan_admission.admit_scan(
+        settings,
+        request,
+        username=username,
+        job_id=job_id,
+        execution=execution,
+        quota_exempt=quota_exempt,
+        widen_with_promoted=widen_with_promoted,
+    )
+    tenant_id = admission.tenant_id
+    scope = admission.scope
+    promoted_admitted = list(admission.promoted_admitted)
+    promoted_refused = list(admission.promoted_refused)
+    policy_snapshot = admission.policy_snapshot
+    agent_group = admission.agent_group
+    group_has_live_agent = admission.group_has_live_agent
 
-    # Related domains the tenant's operators promoted (org_profile M4) ride
-    # along with every ordinary scan — that is what promotion means. Held to
-    # the approved scope as it stands *now*, suffix and resolve-time checks
-    # both: a domain promoted under a wider scope is dropped and recorded,
-    # not a reason to refuse the operator's own targets.
-    promoted_admitted: list[str] = []
-    promoted_refused: list[str] = []
-    if widen_with_promoted:
-        promoted_admitted, promoted_refused = promoted_domains.split_for_scan(
-            settings, scope, promoted_domains.promoted_names(settings, tenant_id)
-        )
-        if promoted_refused:
-            _log.warning(
-                "Tenant %s: %d promoted domain(s) outside the approved scan scope "
-                "dropped from job %s: %s",
-                tenant_id,
-                len(promoted_refused),
-                job_id,
-                ", ".join(promoted_refused[:8]),
-            )
-
-    # What the tenant consented to *right now* (#352): a blackout window or a
-    # change freeze. In start_scan rather than in the route for the same reason
-    # the quota is here — the recurring dispatcher never touches a route, and a
-    # blackout the scheduler walks through at 02:00 is not a blackout.
-    #
-    # Below the promoted-domain widening on purpose: a promoted related domain
-    # is a target of every scan the tenant starts, so an asset-group window
-    # covering it has to see it. Checking the operator's typed targets alone
-    # would let a scan of an unrelated domain carry the promoted one straight
-    # into the group the window was protecting.
-    #
-    # Deliberately not exempted for `quota_exempt` dispatches: a verification
-    # re-scan still reaches the customer's network, and the calendar is about
-    # the network rather than the invoice.
-    try:
-        maintenance.assert_scan_admitted(
-            settings,
-            tenant_id=tenant_id,
-            ranges_text=request.ranges,
-            domains_text="\n".join([request.domains or "", *promoted_admitted]),
-        )
-    except maintenance.MaintenanceBlocked as blocked:
-        maintenance.record_block(username=username, blocked=blocked)
-        raise
-
-    # How hard this tenant may be scanned (#362). Here, beside the quota and
-    # the calendar, for the same reason both are here: the recurring dispatcher
-    # and the platform's own re-scans never touch a route, and a rate ceiling
-    # the nightly sweep ignores is not a rate ceiling.
-    #
-    # ``request.mode`` rather than the resolved CLI mode below, so the refusal
-    # lands before any input file is written. The two agree on the only
-    # question asked here — ``scan_intents`` maps the API's ``test`` onto
-    # ``balanced`` and leaves ``safe`` alone, so "the operator asked for safe"
-    # is the same statement before and after that mapping.
-    try:
-        policy = scan_policy.assert_scan_admitted(
-            settings,
-            tenant_id=tenant_id,
-            mode=request.mode,
-            ports_text=request.ports,
-            ports_udp_text=request.ports_udp,
-        )
-    except scan_policy.ScanPolicyViolation as violation:
-        scan_policy.record_block(username=username, violation=violation)
-        raise
-    # The document the run is held to, frozen now: a policy edited while the
-    # job sits in the queue must not change what was admitted, and the run has
-    # to be answerable afterwards for the ceiling it actually ran under.
-    policy_snapshot = scan_policy.snapshot(policy)
-
+    # Only after admission succeeds do we create job-scoped files. A refused
+    # scan is now side-effect free at this boundary.
     try:
         _, target_counts, target_args = _prepare_target_inputs(
             settings,
@@ -1936,90 +1870,13 @@ def start_scan(
             policy=policy_snapshot,
         )
         publish_job_inputs(settings, job_id)
-        # Second barrier, deliberately redundant. start_scan is also reached
-        # from schedule_dispatcher, which replays targets stored days ago and
-        # never passed through the check above, and the approved scope may
-        # have been narrowed since the targets were entered — the moment that
-        # matters is the moment the scan starts, not the moment it was typed.
-        scan_scopes.assert_scan_allowed(
-            settings,
-            tenant_id=tenant_id,
-            ranges_text=request.ranges,
-            domains_text=request.domains,
-            scope=scope,
-        )
     except scan_scopes.ScanScopeDenied as denied:
+        # Defensive: admission already ran the same barrier, but target parsing
+        # is intentionally allowed to be stricter. Preserve the audit contract
+        # if it rejects a value admission did not.
         scan_scopes.record_denial(username=username, denied=denied)
+        _discard_job_inputs(settings, job_id)
         raise
-
-    # Which of the tenant's agents may execute this scan (#361). Two inputs,
-    # and the request's is the one that is not trusted: the scope decides which
-    # groups these targets may be reached from, and a selector naming anything
-    # else is refused rather than honoured.
-    #
-    # The operator's targets only — unlike the maintenance check above, which
-    # does look at the promoted domains. A window is a statement about an
-    # asset, so a scan that reaches a promoted domain has to respect it; a
-    # group restriction is a statement about *this* scan, and letting a
-    # promoted domain contribute to it meant an ordinary external scan of
-    # ``www.customer.example`` inherited the ``pci`` requirement of a promoted
-    # ``pci.customer.example`` and went out from the card-data segment — the
-    # reverse of what the control is for. Two promoted domains restricted to
-    # disjoint groups did worse: they intersected to nothing and refused every
-    # scan the tenant started, with advice ("split into separate scans") the
-    # operator had no way to follow, because the form cannot exclude them.
-    if promoted_admitted:
-        _log.debug(
-            "Job %s: %d promoted domain(s) are scanned but excluded from the "
-            "agent-group requirement (#361); it follows the requested targets",
-            job_id,
-            len(promoted_admitted),
-        )
-    try:
-        required_groups = scan_scopes.required_agent_groups(
-            settings,
-            tenant_id=tenant_id,
-            ranges_text=request.ranges,
-            domains_text=request.domains,
-        )
-        agent_group = agent_groups_service.resolve_for_scan(
-            settings,
-            tenant_id=tenant_id,
-            requested=request.agent_group,
-            required=required_groups,
-        )
-    except scan_scopes.ScanScopeDenied as denied:
-        scan_scopes.record_denial(username=username, denied=denied)
-        raise
-    if agent_group and execution != "agent":
-        # The group names remote workers, and a local scan runs in this
-        # container, which is in no group. Refused rather than quietly ignored:
-        # a scope entry that restricts targets to an agent group is an
-        # instruction about where the packets come from, and running it here
-        # anyway would be the control silently not applying.
-        raise ValueError(
-            f"agent_group {agent_group} requires a remote agent, but this "
-            "installation runs scans locally (OCTO_JOB_EXECUTION_MODE=local)"
-        )
-    group_has_live_agent = not agent_group or bool(
-        agent_groups_service.live_agent_count(settings, tenant_id=tenant_id, name=agent_group)
-    )
-    if not group_has_live_agent:
-        # A warning rather than a refusal: an agent that is restarting is back
-        # in seconds, so refusing here would turn a blip into a failed scan.
-        # Only a log line, though — nothing is written onto the job. What the
-        # console shows next to a queued job is ``agent_group_unavailable``,
-        # recomputed on every read (see ``_to_info``), because the answer this
-        # line gives is only true for as long as it takes the operator to start
-        # the agent. See docs/operations.md.
-        _log.warning(
-            "Job %s (tenant %s) is addressed to agent group %s, which has no "
-            "active agent seen within OCTO_AGENT_STALE_SECONDS: it stays queued "
-            "until one registers",
-            job_id,
-            tenant_id,
-            agent_group,
-        )
 
     try:
         resolved = scan_intents.resolve_scan_options(
