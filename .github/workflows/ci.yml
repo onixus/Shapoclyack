@@ -27,10 +27,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # Version and package list both live in scripts/ci-lint.sh (the pin is
-      # read out of requirements-dev.txt), which the Jenkinsfile calls too.
-      # Spelled out here, the two copies drifted to different Ruff versions and
-      # neither of them linted agent/.
+      # Version and scope both live in scripts/ci-lint.sh (the pin is read out
+      # of requirements-dev.txt), which the Jenkinsfile and both READMEs point
+      # at too. Spelled out here, the copies drifted to different Ruff versions
+      # and none of them linted agent/.
       - name: Ruff check
         run: ./scripts/ci-lint.sh --install
 
@@ -101,9 +101,10 @@ jobs:
           OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
         run: alembic -c api/db/alembic.ini upgrade head
       # scripts/ci-pytest.sh, shared with the Jenkinsfile. It sets
-      # OCTO_REQUIRE_INTEGRATION=1, so tests/conftest.py fails the run if the
-      # Postgres- or NATS-gated suites were skipped anyway — an exit code on
-      # its own does not distinguish "1232 tests passed" from "1232 skipped".
+      # OCTO_REQUIRE_INTEGRATION=1, so tests/integration_gate.py fails the run
+      # if the Postgres- or NATS-gated suites were skipped, deselected or never
+      # recognised — an exit code on its own does not distinguish "the gated
+      # tests passed" from "the gated tests were skipped wholesale".
       - name: Run tests
         env:
           OCTO_NATS_URL: nats://127.0.0.1:4222

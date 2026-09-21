@@ -32,15 +32,25 @@ python -m pip install \
 Run the baseline checks:
 
 ```bash
-scripts/ci-lint.sh                             # ruff over scanner api tests agent, pin from requirements-dev.txt
+scripts/ci-lint.sh                             # ruff over the whole tree, pin from requirements-dev.txt
 python -m compileall scanner api tests agent   # `agent/` is the sensor package (agent/worker.py)
 python -m pytest
 ```
 
-`scripts/ci-lint.sh` is what both pipelines run, so a local pass means the CI
-lint passes. It uses `ruff` from `PATH`, falling back to `.venv/bin/ruff`;
-`--install` pip-installs the pinned version first and is meant for CI
-containers, not for a checkout that already has one.
+`scripts/ci-lint.sh` is what both pipelines and both READMEs run — one command,
+one scope. The scope is the repository root rather than a package list, so a new
+`scripts/*.py` cannot fall outside it the way `agent/` used to; `tests/test_ci_checks.py`
+fails if any tracked `.py` does. Ruff honours `.gitignore`, so build output stays
+out on its own.
+
+The script uses `ruff` from `PATH`, falling back to `.venv/bin/ruff`, and
+**refuses to run a version other than the pin** in `requirements-dev.txt` — that
+refusal is what makes "a local pass means the CI lint passes" true rather than
+merely likely: a `.venv` one release ahead has rules CI does not, and the failure
+lands on whoever opens the PR instead of on whoever ran the lint. Reinstall the
+pin, or set `OCTO_LINT_ALLOW_RUFF_DRIFT=1` to try a newer Ruff deliberately.
+`--install` pip-installs the pinned version first and is meant for CI containers,
+not for a checkout that already has one.
 
 Infrastructure-dependent suites skip tests when their targets are absent.
 PostgreSQL-dependent tests use `requires_postgres` from `tests/conftest.py`
@@ -49,7 +59,8 @@ database migrated with `alembic -c api/db/alembic.ini upgrade head`. Test
 fixtures delete stored data: never use a production or shared development
 database. Inspect pytest's skipped-test summary; a green run without Postgres
 does not validate tenant isolation, job concurrency, or database-backed APIs —
-1232 of 3025 collected tests are gated on that one variable.
+roughly two fifths of the suite is gated on that one variable, and
+`python -m pytest --collect-only -q` with it unset prints the current count.
 The NATS tests need `OCTO_NATS_URL`, and `tests/test_ssh_deploy_live.py` needs a
 real `sshd`. For the latter, `tests/e2e/ssh-deploy.sh` starts one in a
 container (docker and a local OpenSSH client required), reads its host key
@@ -67,16 +78,28 @@ what `scripts/ci-pytest.sh` does, and what both pipelines run:
 OCTO_POSTGRES_URL=... OCTO_NATS_URL=... scripts/ci-pytest.sh
 ```
 
-`tests/conftest.py` then makes the run show for it. Before collection it fails
-if either URL is unset. At the end it fails if any Postgres- or NATS-gated test
-was skipped anyway, or if fewer of them ran than the floor in
-`INTEGRATION_SUITES` (1000 and 5 against current counts of 1232 and 5). The
-floors are a tripwire for "the mark stopped applying and the gate passed on an
-empty set", not a coverage target: raise them deliberately, not to track
-growth. The summary prints ran/skipped/collected per suite either way.
+`tests/integration_gate.py` (registered by `tests/conftest.py`) then makes the
+run show for it. Before collection it fails if either URL is unset. At the end it
+fails if a gated suite was recognised in no test at all, if any of its tests was
+skipped anyway, or if any was collected and then never executed — which is what
+`-k`, `-m` and an early `-x` abort do. The summary prints
+ran/skipped/never-ran/collected per suite either way.
+
+There is deliberately no minimum test count. An earlier version of the gate
+required 1000 Postgres tests against a then-current 1232: a threshold nobody
+would keep right, and whose only repair when it went red — a suite legitimately
+split or fixed to need no database — was to edit the threshold itself. What it
+guarded against, "the mark stopped applying and the gate passed on an empty set",
+is now the zero-recognised-tests check, which needs no maintenance.
+
+A suite recognised by the wording of its skip reason means that wording is API:
+rename `OCTO_POSTGRES_URL` out of `requires_postgres`'s `reason=` without
+updating `INTEGRATION_SUITES` and the gate goes red naming exactly that.
 
 Without the flag nothing changes — skipping stays the right default on a
-laptop with no database.
+laptop with no database, and so is the way to narrow a run:
+`OCTO_REQUIRE_INTEGRATION=0 scripts/ci-pytest.sh -k something` debugs one stage
+without a gate it cannot satisfy.
 
 Run the API locally:
 

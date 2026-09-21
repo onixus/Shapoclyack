@@ -331,8 +331,8 @@ See [API and RBAC Documentation](docs/api-and-rbac.md) for endpoint details and 
 # Run unit and integration tests
 python -m pytest
 
-# Run linter and formatting checks
-ruff check .
+# Run the lint CI runs (ruff over the whole tree, version pinned in requirements-dev.txt)
+scripts/ci-lint.sh
 ```
 
 ### Next.js Operations Console

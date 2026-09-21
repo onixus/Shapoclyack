@@ -37,10 +37,10 @@ pipeline {
     stage('Lint (ruff)') {
       agent { docker { image 'python:3.12-slim'; args PIP_CACHE; reuseNode true } }
       steps {
-        // Команда и пин — в scripts/ci-lint.sh, общем с ci.yml. Раньше их было
-        // две копии, и обе разошлись: здесь ruff 0.15.22, в ci.yml — 0.15.20,
-        // и ни одна не проверяла agent/. Версия читается из
-        // requirements-dev.txt, поэтому синхронизировать вручную больше нечего.
+        // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
+        // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
+        // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
+        // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
         sh 'scripts/ci-lint.sh --install'
       }
     }
@@ -49,10 +49,13 @@ pipeline {
     // уровня ERROR роняет билд за пару минут, а не после часа сборки.
     // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
     // эта стадия была единственной, которой в reference workflow не было.
+    // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
+    // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
+    // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
     stage('SAST (semgrep)') {
       agent any
       steps {
-        sh 'scripts/ci-semgrep.sh'
+        sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
       }
       post {
         always {
@@ -137,7 +140,7 @@ pipeline {
                           # общем с ci.yml. Там же выставляется
                           # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
                           # отличает прогнанные Postgres-наборы от пропущенных
-                          # целиком, а их 1232 из 3025.
+                          # целиком, а это большая часть всех тестов.
                           JUNIT_XML=junit-''' + PY + '''.xml \
                           COVERAGE_XML=coverage-''' + PY + '''.xml \
                             scripts/ci-pytest.sh
