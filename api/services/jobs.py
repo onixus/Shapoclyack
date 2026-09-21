@@ -50,6 +50,7 @@ from api.services import job_reaper
 from api.services import job_repository
 from api.services import job_results
 from api.services import job_store
+from api.services import job_submission
 from api.services import local_job_runner
 from api.services import local_scan_executor
 from api.services import metrics as metrics_service
@@ -305,97 +306,22 @@ def _run_job(
     local_job_runner.run_job(settings, job_id, command)
 
 
-#: Request fields that define *which scan* a start asks for. ``tenant_id`` is
-#: decided by the route rather than the caller, and ``run_id`` only names the
-#: output directory, so neither makes two calls a different request.
-_IDEMPOTENCY_FIELDS = (
-    "mode",
-    "intent",
-    "delta",
-    "skip_nse",
-    "notify",
-    "export_defectdojo",
-    "surface",
-    "wordlist_id",
-    # Which agents may execute the scan is part of what was asked for (#361):
-    # answering a request for one group with the job of another would report a
-    # scan that reached the targets from somewhere else entirely.
-    "agent_group",
-)
-
-#: Target fields, compared line by line rather than character by character.
-_IDEMPOTENCY_TARGET_FIELDS = ("ranges", "domains", "ports", "ports_udp")
+_IDEMPOTENCY_FIELDS = job_submission._IDEMPOTENCY_FIELDS
+_IDEMPOTENCY_TARGET_FIELDS = job_submission._IDEMPOTENCY_TARGET_FIELDS
+IdempotencyMismatch = job_submission.IdempotencyMismatch
+IdempotentReplay = job_submission.IdempotentReplay
 
 
 def _normalised_target_text(text: str | None) -> str | None:
-    """The same target list typed with different whitespace, spelled one way.
-
-    Not ``split_target_lines``: that also drops comments and splits on commas,
-    which are edits to the request rather than formatting of it. A retry is a
-    resend of the same body, so trimming each line and dropping blank ones is
-    as far as this may go without calling two different requests the same.
-    """
-    if text is None:
-        return None
-    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    return job_submission._normalised_target_text(text)
 
 
 def _idempotency_digest(request: StartScanRequest) -> str:
-    """A fingerprint of the scan a start request asks for (ROADMAP P1.5).
-
-    A key on its own only says "the client called this request X"; it cannot
-    say whether the second call is the retry it claims to be. The digest is
-    what lets the second call be answered with the first job only when it is
-    in fact the same scan — see ``IdempotencyMismatch``.
-    """
-    payload: dict[str, Any] = {
-        field: getattr(request, field) for field in _IDEMPOTENCY_FIELDS
-    }
-    payload.update(
-        {
-            field: _normalised_target_text(getattr(request, field))
-            for field in _IDEMPOTENCY_TARGET_FIELDS
-        }
-    )
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-class IdempotencyMismatch(Exception):
-    """A key an earlier request used, sent with a *different* scan request.
-
-    Deliberately not a replay: answering with the earlier job would report a
-    scan of targets this caller never asked for, and starting a second one
-    would break the promise the key was given for. Neither is right, so the
-    caller is told the key is taken (409) and picks another.
-
-    Not a ``ValueError``: the body is well-formed, and the route maps
-    ``ValueError`` to 422.
-    """
-
-    def __init__(self, job: JobInfo) -> None:
-        super().__init__(
-            "Idempotency-Key already used for a different scan request "
-            f"(job {job.job_id})"
-        )
-        self.job = job
-
-
-class IdempotentReplay(Exception):
-    """A scan start whose key already created a job. Carries that job.
-
-    An exception rather than a return value because the caller has to answer
-    differently (200, not 202): nothing was accepted by this request.
-    """
-
-    def __init__(self, job: JobInfo) -> None:
-        super().__init__(f"Idempotency key already started job {job.job_id}")
-        self.job = job
+    return job_submission.idempotency_digest(request)
 
 
 def note_start_replay() -> None:
-    """Count a scan-start request answered from an existing job."""
-    metrics_service.JOB_IDEMPOTENT_REPLAYS_TOTAL.labels(operation="start").inc()
+    job_submission.note_start_replay()
 
 
 def find_by_idempotency_key(
@@ -405,39 +331,14 @@ def find_by_idempotency_key(
     key: str,
     request: StartScanRequest | None = None,
 ) -> JobInfo | None:
-    """The job a previous request with this key created, if any (P1.5).
-
-    With ``request``, the hit is also checked against what this caller is
-    asking for and a key reused for a different scan raises
-    ``IdempotencyMismatch`` instead of replaying. A job stored before the
-    digest shipped carries none and is treated as a match: the alternative is
-    to start 409-ing keys that worked yesterday.
-    """
-    if not key:
-        return None
-    with get_session(settings.postgres_url) as session:
-        row = session.execute(
-            select(models.Job).where(
-                models.Job.tenant_id == tenant_id,
-                models.Job.idempotency_key == key,
-            )
-        ).scalars().first()
-        if row is None:
-            return None
-        info = _to_info(row)
-    if request is not None:
-        stored = (row.scan_options or {}).get("idempotency_digest")
-        if stored and stored != _idempotency_digest(request):
-            raise IdempotencyMismatch(info)
-    return info
+    return job_submission.find_by_idempotency_key(
+        settings,
+        tenant_id=tenant_id,
+        key=key,
+        request=request,
+    )
 
 
-# A run id names one directory under ``output_dir/runs``. This module mints
-# them as ``%Y%m%dT%H%M%SZ-<6 hex>`` (:func:`_mint_run_id`), the scanner's own
-# CLI as the timestamp alone; operators may supply their own for a local run.
-# Either way it must stay a single path segment: it is joined onto the output
-# directory unescaped, so anything with a separator or ``..`` in it would name
-# a directory the caller was never given.
 def _mint_run_id() -> str:
     return run_ids.mint()
 
@@ -446,7 +347,9 @@ def validate_run_id(value: str) -> str:
     return run_ids.validate(value)
 
 
-def _confirm_run_id(expected: str | None, offered: str | None) -> str | None:
+def _confirm_run_id(
+    expected: str | None, offered: str | None
+) -> str | None:
     return run_ids.confirm(expected, offered)
 
 
@@ -459,276 +362,18 @@ def start_scan(
     quota_exempt: bool = False,
     widen_with_promoted: bool = True,
 ) -> JobInfo:
-    """``widen_with_promoted`` is whether this scan carries the related domains
-    the tenant's operators promoted (org_profile M4) on top of its own targets.
-    On by default — that is what promotion means — and off for a dispatch
-    that is aimed at one thing, today the verification re-scan of #183. A
-    separate switch from ``quota_exempt`` on purpose: billing and targeting
-    are different policies that happen to coincide on that one caller.
-
-    ``quota_exempt`` marks a scan the platform dispatched to close its own
-    loop — today only the verification re-scan of #183. It is neither refused
-    by the tenant's monthly quota nor counted against it, and it is a property
-    of *this dispatch*: the requester's name is the analyst's on that path, so
-    recognising the exemption by username would be both wrong and forgeable.
-    """
-    if not settings.allow_scan_start:
-        raise RuntimeError("Scan start disabled by OCTO_ALLOW_SCAN_START")
-
-    job_id = uuid.uuid4().hex[:12]
-    execution = "agent" if settings.job_execution_mode == "agent" else "local"
-    run_id = request.run_id
-    if run_id:
-        validate_run_id(run_id)
-    if execution == "agent" and not run_id:
-        run_id = _mint_run_id()
-
-    # Admission is its own boundary: jobs owns queueing/execution while
-    # scan_admission owns whether this request may enter the queue and where it
-    # may run. New policy no longer adds another dependency and another branch
-    # to this already hot service.
-    admission = scan_admission.admit_scan(
+    return job_submission.start_scan(
         settings,
         request,
         username=username,
-        job_id=job_id,
-        execution=execution,
+        build_command=_build_command,
+        run_local_job=_run_job,
+        thread_factory=threading.Thread,
+        publish_offer=_publish_job_offer,
+        idempotency_key=idempotency_key,
         quota_exempt=quota_exempt,
         widen_with_promoted=widen_with_promoted,
     )
-    tenant_id = admission.tenant_id
-    scope = admission.scope
-    promoted_admitted = list(admission.promoted_admitted)
-    promoted_refused = list(admission.promoted_refused)
-    policy_snapshot = admission.policy_snapshot
-    agent_group = admission.agent_group
-    group_has_live_agent = admission.group_has_live_agent
-
-    # Only after admission succeeds do we create job-scoped files. A refused
-    # scan is now side-effect free at this boundary.
-    try:
-        _, target_counts, target_args = _prepare_target_inputs(
-            settings,
-            job_id,
-            request,
-            tenant_id=tenant_id,
-            promoted=promoted_admitted,
-            scope=scope,
-            policy=policy_snapshot,
-        )
-        publish_job_inputs(settings, job_id)
-    except scan_scopes.ScanScopeDenied as denied:
-        # Defensive: admission already ran the same barrier, but target parsing
-        # is intentionally allowed to be stricter. Preserve the audit contract
-        # if it rejects a value admission did not.
-        scan_scopes.record_denial(username=username, denied=denied)
-        _discard_job_inputs(settings, job_id)
-        raise
-
-    try:
-        resolved = scan_intents.resolve_scan_options(
-            intent=request.intent,
-            mode=request.mode,
-            delta=request.delta,
-            skip_nse=request.skip_nse,
-        )
-    except ValueError:
-        raise
-
-    # Local scans run in this container, so apply the installation config
-    # overrides by merging them into a job-specific config file. Agents run
-    # their own mounted config, so overrides don't reach them — they keep the
-    # base config (documented limitation). Intent nuclei/top_ports overlays
-    # are local-only for the same reason.
-    wordlist_options: dict[str, Any] = {}
-    intent_extra = resolved.config_extra
-    if execution == "local":
-        selected = _wordlist_overrides(settings, job_id, tenant_id, request.wordlist_id)
-        wordlist_extra: dict[str, Any] | None = None
-        if selected:
-            wordlist_extra, wordlist_options = selected
-        extra = scan_intents.merge_config_extras(intent_extra, wordlist_extra)
-        config_path = config_override_service.effective_config_path(settings, job_id, extra)
-    else:
-        if request.wordlist_id:
-            # A custom wordlist lives in the API's Postgres and is materialized
-            # onto the API pod's filesystem; a remote agent runs its own mounted
-            # config and never sees it. Rather than silently ignore the request,
-            # refuse it — the same class of limitation as installation overrides
-            # not reaching agents.
-            raise ValueError(
-                "wordlist_id is only supported in local execution mode, "
-                "not with remote agents"
-            )
-        if intent_extra:
-            # Agent workers do not receive the merged effective-config file;
-            # surface that so operators do not think nuclei floors applied.
-            _log.warning(
-                "intent=%s config overlays (nuclei/top_ports) are skipped in agent mode; "
-                "CLI flags delta=%s skip_nse=%s still apply",
-                resolved.intent,
-                resolved.delta,
-                resolved.skip_nse,
-            )
-        config_path = str(settings.config_path)
-    # Derived from the targets as the operator entered them, not from the
-    # widened set: a promoted related domain rides along with every scan and
-    # would turn an internal sweep into a "mixed" one it was never asked to be.
-    surface = scan_surface.resolve(request.surface, request.ranges, request.domains)
-    # A fragile (OT/ICS) policy turns the service-probe stage off: nmap's NSE
-    # scripts and pulse's banner grabs are the packets that put a PLC into a
-    # fault state, and the port inventory a fragile run is really asked for
-    # does not need them. Expressed on the command line as well as in the
-    # policy document the scanner applies, so a reader of the job — and the
-    # ``--skip-nse`` the scanner sees — says the same thing.
-    skip_nse = resolved.skip_nse or bool((policy_snapshot or {}).get("skip_service_probe"))
-    command = _build_command(
-        settings,
-        mode=resolved.mode,
-        delta=resolved.delta,
-        skip_nse=skip_nse,
-        notify=request.notify,
-        export_defectdojo=request.export_defectdojo,
-        run_id=run_id,
-        target_args=target_args,
-        config_path=config_path,
-    )
-
-    row = models.Job(
-        job_id=job_id,
-        tenant_id=tenant_id,
-        status=job_states.QUEUED,
-        execution=execution,
-        mode=resolved.mode,
-        run_id=run_id,
-        command=command,
-        scan_options={
-            "mode": resolved.mode,
-            "intent": resolved.intent,
-            "intent_summary": resolved.summary if resolved.intent else None,
-            "delta": resolved.delta,
-            # Visible on the job rather than only in the log: which promoted
-            # domains this scan carried, and which the scope kept out.
-            **({"promoted_domains": promoted_admitted} if promoted_admitted else {}),
-            **({"promoted_domains_refused": promoted_refused} if promoted_refused else {}),
-            "skip_nse": skip_nse,
-            # The policy this scan was admitted under (#362), on the job rather
-            # than only derivable from a table that has since moved on. Absent
-            # for a tenant with no policy, so a job started before one was
-            # written reads exactly as it did.
-            **({"scan_policy": policy_snapshot} if policy_snapshot else {}),
-            # External / internal / mixed, or None when the scan runs the
-            # server's default input files and nothing here can tell (see
-            # api.services.scan_surface).
-            "surface": surface,
-            # Whether that value is the operator's declaration or the server's
-            # reading of the targets. Risk scoring treats only a declared
-            # external scan as network-exposure evidence, and without this the
-            # two are indistinguishable once stored.
-            "surface_source": (
-                "operator" if request.surface else ("derived" if surface else None)
-            ),
-            "notify": request.notify,
-            "export_defectdojo": request.export_defectdojo,
-            # Mirrored into the options so a schedule replaying this job's
-            # settings, and the idempotency digest, both see the selector.
-            **({"agent_group": agent_group} if agent_group else {}),
-            # Only alongside a key: it exists to tell this request apart from
-            # the next one carrying the same key, and nothing else reads it.
-            **(
-                {"idempotency_digest": _idempotency_digest(request)}
-                if idempotency_key
-                else {}
-            ),
-            **wordlist_options,
-        },
-        target_counts=target_counts,
-        requested_by=username,
-        agent_group=agent_group,
-        assigned_agent_id=None,
-        # Only local jobs are bound to this process; an agent job is claimable
-        # by any worker and must not be reconciled when this replica restarts.
-        owner_id=settings.instance_id if execution == "local" else None,
-        idempotency_key=(idempotency_key or None),
-        quota_exempt=quota_exempt,
-        queued_at=_now(),
-    )
-    try:
-        with get_session(settings.postgres_url) as session:
-            if agent_group:
-                # Re-asked here, holding the group row, rather than trusted
-                # from the resolution above: that ran on a connection of its
-                # own and this insert is another, so a concurrent
-                # ``DELETE /api/agent-groups/{name}`` could count the pending
-                # jobs of the group, find this one not yet inserted, and take
-                # the row. What was left is a ``queued`` job addressed to a
-                # group that is gone — no agent can be put into one, so it is
-                # claimed by nobody, shows ``agent_group_unavailable`` in the
-                # console and raises no error anywhere (#361).
-                if not agent_groups_service.lock_existing_names(
-                    session, tenant_id=tenant_id, names={agent_group}
-                ):
-                    raise ValueError(
-                        f"Unknown agent_group for tenant {tenant_id}: {agent_group}"
-                    )
-            session.add(row)
-            session.flush()
-            info = _to_info(
-                row,
-                # What the check a few lines above found, so the answer to the
-                # request that created the job is the same one the queue view
-                # will show. Every later read recomputes it.
-                (
-                    ({(tenant_id, agent_group)} if group_has_live_agent else set())
-                    if agent_group
-                    else None
-                ),
-            )
-    except ValueError:
-        # The group this scan is addressed to went while the row was being
-        # written. Nothing became a job, so the input files staged for it —
-        # and the merged config beside them — would be read by nobody;
-        # discarded here the way the idempotency loser's are.
-        _discard_job_wordlist(settings, job_id)
-        _discard_job_inputs(settings, job_id)
-        raise
-    except IntegrityError:
-        # Lost the race on (tenant_id, idempotency_key): another replica — or
-        # this one, serving the client's retry concurrently — already created
-        # the job. The caller wanted one scan for this key and there is one.
-        # This job_id never became a row, so its materialized wordlist (and the
-        # merged config beside it) and its input files would be read by nobody
-        # — discarded first, so the mismatch below does not leak them either.
-        _discard_job_wordlist(settings, job_id)
-        _discard_job_inputs(settings, job_id)
-        # ``request=`` here too: the racing pair may not be the same scan, and
-        # the loser of the race must hear that rather than be handed a job for
-        # targets it never asked about.
-        existing = find_by_idempotency_key(
-            settings, tenant_id=tenant_id, key=idempotency_key or "", request=request
-        )
-        if existing is None:
-            raise
-        _log.info("Idempotent scan start: key already created job %s", existing.job_id)
-        # Raised rather than returned so the caller can answer 200 here too:
-        # this request accepted nothing, exactly like the sequential replay the
-        # route detects before calling in.
-        raise IdempotentReplay(existing) from None
-    _refresh_job_gauges(settings)
-
-    if execution == "local":
-        thread = threading.Thread(
-            target=_run_job,
-            args=(settings, job_id, command),
-            name=f"octo-scan-{job_id}",
-            daemon=True,
-        )
-        local_scan_executor.register_thread(thread)
-        thread.start()
-    elif execution == "agent" and settings.nats_url:
-        _publish_job_offer(settings, job_id)
-
-    return info
 
 
 def _publish_job_offer(settings: Settings, job_id: str) -> None:
