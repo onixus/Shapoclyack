@@ -125,16 +125,57 @@ def test_readyz_is_200_degraded_while_clickhouse_is_down(tmp_path, monkeypatch):
     assert body["checks"]["postgres"] == "ok"
 
 
-def test_nats_still_blocks_readiness(tmp_path, monkeypatch):
-    """NATS is not advisory: without a broker a replica cannot dispatch a job,
-    so it belongs out of the Service rather than in it answering 200."""
+def test_nats_degrades_but_no_longer_unreadies_a_replica(tmp_path, monkeypatch):
+    """The policy this replaces, and why (P2 of the 2026-09-18 review).
+
+    NATS used to be in ``BLOCKING_CHECKS`` on the grounds that a replica
+    without a broker cannot dispatch a job. It can: the offer is a
+    notification, agents claim over HTTP, uploads have an HTTP route, and every
+    read and write that is not a scan result never touches the bus — see the
+    capability matrix in ``docs/high-availability.md``. Since all replicas share
+    one broker, blocking on it converted a degraded installation into an
+    unavailable one, all at once.
+
+    This test is the new policy, deliberately spelled out: 200 and *degraded*.
+    It is only defensible together with the outbox — a publish the broker
+    refuses is recorded and replayed (``tests/test_nats_outbox.py``) — so if
+    that ever goes away, this expectation has to go back to 503.
+    """
     monkeypatch.setattr(health_service, "_postgres_ok", lambda settings: True)
     monkeypatch.setattr(health_service, "_nats_ok", lambda settings: False)
+    monkeypatch.setattr(health_service, "_backlogged", lambda settings: False)
     settings = make_settings(tmp_path, nats_url="nats://nats.invalid:4222")
 
     report = health_service.check_readiness(settings)
-    assert report.ready is False
+    assert report.ready is True
+    assert report.healthy is False
     assert report.checks["nats"] == "error"
+
+
+def test_an_unrecovered_publish_backlog_is_its_own_check(tmp_path, monkeypatch):
+    """Availability must not hide analytics falling behind: the broker can be
+    answering again while the runs it refused are still unpublished, and that
+    outlives the outage. Advisory like ClickHouse — a backlog is shared by every
+    replica, so unreadying on it would be the outage this change removed."""
+    monkeypatch.setattr(health_service, "_postgres_ok", lambda settings: True)
+    monkeypatch.setattr(health_service, "_nats_ok", lambda settings: True)
+    monkeypatch.setattr(health_service, "_backlogged", lambda settings: True)
+    settings = make_settings(tmp_path, nats_url="nats://nats.invalid:4222")
+
+    report = health_service.check_readiness(settings)
+    assert report.ready is True
+    assert report.healthy is False
+    assert report.checks == {"postgres": "ok", "nats": "ok", "ingest_backlog": "error"}
+
+
+def test_no_broker_configured_means_no_backlog_check(tmp_path, monkeypatch):
+    """An installation with no bus has nothing to publish and nothing to
+    recover, and is ready rather than degraded — the same rule as the broker
+    itself."""
+    monkeypatch.setattr(health_service, "_postgres_ok", lambda settings: True)
+    settings = make_settings(tmp_path)
+
+    assert health_service.check_readiness(settings).checks == {"postgres": "ok"}
 
 
 @requires_postgres

@@ -180,6 +180,26 @@ NATS_CONSUMER_PENDING = Gauge(
     registry=REGISTRY,
 )
 
+NATS_OUTBOX_BACKLOG = Gauge(
+    "octo_nats_outbox_backlog",
+    "Publications the broker refused and has not accepted since, by status "
+    "(pending, dead, and the pending ones older than the alert window as "
+    "'stale'). Cluster-wide — every replica reports the same query, so "
+    "aggregate with max(), not sum(). Non-zero 'stale' or 'dead' is the "
+    "analytical projection falling behind while HTTP is up, which is the one "
+    "thing NATS leaving the readiness probe must not hide.",
+    ["status"],
+    registry=REGISTRY,
+)
+NATS_OUTBOX_TOTAL = Counter(
+    "octo_nats_outbox_total",
+    "NATS outbox entries by kind and outcome (recorded, republished, dead, "
+    "dropped — 'dropped' meaning the outbox was disabled and the message is "
+    "simply gone).",
+    ["kind", "outcome"],
+    registry=REGISTRY,
+)
+
 CH_INGEST_BATCH_DURATION_SECONDS = Histogram(
     "octo_ch_ingest_batch_duration_seconds",
     "Time to transform + insert one ingest message into ClickHouse.",

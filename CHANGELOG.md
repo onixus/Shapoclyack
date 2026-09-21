@@ -4,7 +4,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Ingest publications the broker refused are kept and replayed.**
+  `results_ingest.publish_raw_results` returned `published=false` when NATS was
+  unreachable and nobody checked the flag: the sensor's upload was answered
+  `200`, the artifacts were written, the job succeeded, and the message that
+  feeds the ClickHouse projection was gone with nothing left to replay it from.
+  It is now recorded in the new `nats_outbox` table (migration `0059`) and
+  republished by a reconciler thread running in every replica — rows are
+  claimed `FOR UPDATE SKIP LOCKED`, retried with capped exponential backoff,
+  and deleted once the stream has them. An entry that exhausts
+  `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` goes `dead` and waits for an operator
+  (`nats_outbox.requeue_dead`). New variables `OCTO_NATS_OUTBOX_ENABLED`,
+  `_INTERVAL_SECONDS`, `_BATCH_SIZE`, `_MAX_ATTEMPTS`, `_RETRY_BASE_SECONDS`,
+  `_RETRY_MAX_SECONDS`, `_BACKLOG_ALERT_SECONDS`; new metrics
+  `octo_nats_outbox_backlog{status}` and `octo_nats_outbox_total{kind,outcome}`.
+
 ### Changed
+
+- **NATS no longer blocks readiness.** A configured but unreachable broker used
+  to fail `/readyz` in every API replica at once — they share one broker —
+  which turned a degraded installation into an unavailable one: sign-in, the
+  console, the sensor fleet and every read and write that never touches the bus
+  went down with it. The capability matrix behind the decision is in
+  [docs/high-availability.md](docs/high-availability.md) § *What a NATS outage
+  costs*. `/readyz` now fails only on Postgres; the broker is reported and
+  degrades `/api/health`, alongside a new `ingest_backlog` check that names the
+  publications the outbox above has not recovered — because availability must
+  not hide analytics falling behind. The two are one decision: NATS must not go
+  back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not
+  be removed while NATS is advisory.
 
 - Sensor result ingestion no longer runs on the API's event loop. `complete_job`
   — SQL, the NATS publish, archive extraction, artifact writes, projection

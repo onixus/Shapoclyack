@@ -2442,3 +2442,65 @@ class EndpointAgentPolicy(Base):
             sqlite_where=text("agent_id IS NOT NULL"),
         ),
     )
+
+
+class NatsOutboxEntry(Base):
+    """One publication the broker refused, kept until it is on the stream.
+
+    From the P2 finding of ``docs/architecture-review-2026-09-18.ru.md``.
+
+    The gap this closes: ``results_ingest.publish_raw_results`` returns
+    ``published=false`` when NATS is unreachable and its caller does not look at
+    the flag, so the upload is answered 200 while the analytics projection never
+    hears about the run. With the broker out of ``BLOCKING_CHECKS`` the replica
+    also stays in its Service, which would make that silence the *normal* way a
+    broker outage looks. A row here is the record that makes the silence
+    temporary and visible instead.
+
+    ``payload`` is the exact body that was to be published, not a reference to
+    rebuild it from: an ingest body carries the run archive inline (bounded by
+    ``results_ingest``'s 4 MB cap — a larger archive travels as
+    ``archive_inline: false`` and the stored body says so too, exactly like the
+    one that would have gone to the broker). Re-deriving it later would mean
+    re-tarring a run whose files may already have been retained away.
+
+    ``(subject, msg_id)`` is unique, which is the same key JetStream dedupes
+    on: two replicas that fail to publish the same message record it once, and
+    a republish of a message the broker did in fact accept is dropped by the
+    stream rather than doubled in ClickHouse.
+
+    A row is deleted once it is published — unlike ``webhook_deliveries``,
+    which keeps its history, because that history is an audit trail and this
+    one is megabytes of base64. ``status="dead"`` rows stay: they are the
+    backlog an operator has to decide about.
+    """
+
+    __tablename__ = "nats_outbox"
+
+    outbox_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    # What kind of message this is, which decides how it is republished:
+    # "ingest" goes back through the ingest publisher (tenant subject plus the
+    # legacy one), anything else is a plain publish on ``subject``.
+    kind: Mapped[str]
+    subject: Mapped[str]
+    msg_id: Mapped[str]
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Carried for the operator view and for log lines; the payload holds them
+    # too, and reading a 5 MB document to answer "which run is stuck" is not a
+    # query worth running.
+    job_id: Mapped[str | None] = mapped_column(default=None)
+    run_id: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="pending")  # pending|dead
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint("subject", "msg_id", name="uq_nats_outbox_message"),
+        # The reconciler's predicate: due pending rows, oldest first. It runs on
+        # every replica on a timer, so it must not scan the table.
+        Index("ix_nats_outbox_due", "status", "next_attempt_at"),
+    )

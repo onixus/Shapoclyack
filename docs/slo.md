@@ -201,6 +201,23 @@ This is queue depth, not end-to-end latency. There is no scan-finished →
 row-queryable timer today; add one before promising a freshness number in a
 customer-facing SLA.
 
+The consumer's lag is only the half of freshness that *reached* the stream.
+Since NATS stopped deciding readiness, a run whose ingest publish the broker
+refused is held in the outbox instead, and that backlog is invisible to the
+gauge above — the message is not on the stream to be pending. Alert on both:
+
+```promql
+max(octo_nats_outbox_backlog{status="stale"}) > 0
+or
+max(octo_nats_outbox_backlog{status="dead"}) > 0
+```
+
+`max()`, not `sum()`: every replica reports the same cluster-wide query. A
+non-zero value means the HTTP control plane is healthy while the analytical
+projection is behind, which is precisely what the relaxed readiness check must
+not be allowed to hide — see
+[operations.md § NATS outbox](operations.md#nats-outbox).
+
 ### 6. Ingest correctness
 
 ```promql

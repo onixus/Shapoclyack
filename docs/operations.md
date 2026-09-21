@@ -2067,6 +2067,79 @@ Never replay a restored stream by republishing every message with new message
 IDs. That defeats the deduplication mechanisms the recovery procedure relies
 on.
 
+### NATS outbox
+
+What a broker outage leaves behind, and how to see and drain it.
+
+Since the 2026-09-18 architecture review, NATS is **not** a blocking readiness
+check: an API replica whose broker is unreachable stays in its Service and goes
+on serving everything that does not need the bus (the matrix is in
+[high-availability.md § What a NATS outage costs](high-availability.md#what-a-nats-outage-costs)).
+The one thing that would otherwise be lost silently is the `ingest.results.*`
+message that feeds the ClickHouse projection: the upload is accepted, the
+artifacts are written, the job succeeds — and analytics never hear about the
+run. That message is now written to the `nats_outbox` table instead (migration
+`0059`) and republished by a reconciler thread in every API replica.
+
+What an operator sees:
+
+* `/readyz` and `/api/health` carry an `ingest_backlog` check next to `nats`.
+  It is `error` when something has been owed for longer than
+  `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` (default 300), or when any entry has
+  gone `dead`. Both endpoints stay 200 — this degrades the installation, it
+  does not unready the replica.
+* `octo_nats_outbox_backlog{status="pending"|"stale"|"dead"}` — a cluster-wide
+  count, so aggregate with `max()`, not `sum()`. **This is the series to alert
+  on:** `stale` or `dead` above zero means HTTP is healthy while the analytical
+  projection is behind, which is exactly what relaxing the readiness check
+  could otherwise hide.
+* `octo_nats_outbox_total{kind,outcome}` — `recorded`, `republished`, `dead`,
+  and `dropped` for the one configuration that still loses messages
+  (`OCTO_NATS_OUTBOX_ENABLED=false`).
+
+The backlog drains by itself once the broker accepts publishes again: entries
+are retried with exponential backoff between
+`OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` and `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS`,
+`OCTO_NATS_OUTBOX_BATCH_SIZE` at a time, from every replica (rows are claimed
+`FOR UPDATE SKIP LOCKED`, so the replicas divide the work). An entry that
+exhausts `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` goes `dead` and waits for a decision —
+close to four hours of retries at the defaults, so a `dead` row means an outage
+longer than that, not a flaky publish.
+
+Inspecting and replaying the dead end:
+
+```bash
+# What is owed, oldest first. Payloads are megabytes of base64 — do not SELECT *.
+kubectl -n network-scan exec deploy/shapoclyack-api -- \
+  psql "$OCTO_POSTGRES_URL" -c \
+  "SELECT status, count(*), min(created_at) FROM nats_outbox GROUP BY status"
+
+# Put the dead entries back on the due queue (all tenants, or one).
+kubectl -n network-scan exec deploy/shapoclyack-api -- python -c "
+from api.services import nats_outbox
+from api.settings import load_settings
+settings = load_settings()
+print(nats_outbox.requeue_dead(settings), 'requeued')
+print(nats_outbox.reconcile_once(settings))
+"
+```
+
+Bounds worth knowing before an incident:
+
+* A run archive larger than 4 MB was never published inline in the first place
+  (`results_ingest.build_gateway_payload`), so its stored body says
+  `archive_inline: false` and replaying it gives ClickHouse nothing to
+  transform. That limitation predates the outbox and is unchanged by it: for
+  those runs the artifacts are the record, and the analytics gap needs a
+  re-scan or a manual load.
+* Only ingest messages are recorded. A job offer is not (the job row is in
+  Postgres and a sensor claims over HTTP), and asset/audit events are not —
+  those are skipped and counted, see the matrix.
+* The table grows with the outage. Each entry holds one run archive, so size
+  the database accordingly, or accept the dead end: an installation that would
+  rather re-scan than keep the bodies sets `OCTO_NATS_OUTBOX_ENABLED=false`,
+  which makes a refused publish a logged loss again.
+
 ### Per-tenant job stream
 
 Job offers are published on `jobs.scan.{tenant}` (stream `JOBS`, unchanged

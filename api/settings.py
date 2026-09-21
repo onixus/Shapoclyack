@@ -247,6 +247,25 @@ class Settings:
     agent_results_ingest_wait_seconds: float = 25.0
     # NATS JetStream URL (e.g. nats://shapoclyack-nats-client:4222). Empty disables broker.
     nats_url: str = ""
+    # Durable record of publications the broker refused, and the reconciler
+    # that drains it (P2 of docs/architecture-review-2026-09-18.ru.md). This is
+    # what NATS leaving BLOCKING_CHECKS is paid for with: with it off, a broker
+    # outage means ingest messages that are simply lost while the API goes on
+    # answering 200. Off only for an installation that has decided it would
+    # rather re-scan than keep the bodies.
+    nats_outbox_enabled: bool = True
+    nats_outbox_interval_seconds: int = 30
+    # Small batch on purpose, unlike the webhook dispatcher's 50: one ingest
+    # row carries a run archive, so a batch is megabytes of payload held in
+    # this process at once.
+    nats_outbox_batch_size: int = 10
+    nats_outbox_max_attempts: int = 20
+    nats_outbox_retry_base_seconds: int = 15
+    nats_outbox_retry_max_seconds: int = 900
+    # How long a publication may sit unrecovered before /readyz and
+    # /api/health call this installation degraded. Longer than a broker
+    # restart, shorter than an outage nobody should have to notice by hand.
+    nats_outbox_backlog_alert_seconds: int = 300
     # ClickHouse HTTP URL (e.g. http://shapoclyack-clickhouse-client:8123). Empty disables CH.
     clickhouse_url: str = ""
     # Start NATS→ClickHouse ingest worker when both NATS and CH URLs are set.
@@ -1305,6 +1324,26 @@ def load_settings() -> Settings:
             0.0, float(os.environ.get("OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS", "25") or 0.0)
         ),
         nats_url=os.environ.get("OCTO_NATS_URL", "").strip(),
+        nats_outbox_enabled=os.environ.get("OCTO_NATS_OUTBOX_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        # Floored like the reaper's interval: a mistyped 0 would turn the
+        # reconciler's Event.wait() into a busy loop against the database.
+        nats_outbox_interval_seconds=max(
+            1, int(os.environ.get("OCTO_NATS_OUTBOX_INTERVAL_SECONDS", "30"))
+        ),
+        nats_outbox_batch_size=max(1, int(os.environ.get("OCTO_NATS_OUTBOX_BATCH_SIZE", "10"))),
+        nats_outbox_max_attempts=max(
+            1, int(os.environ.get("OCTO_NATS_OUTBOX_MAX_ATTEMPTS", "20"))
+        ),
+        nats_outbox_retry_base_seconds=max(
+            1, int(os.environ.get("OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS", "15"))
+        ),
+        nats_outbox_retry_max_seconds=max(
+            1, int(os.environ.get("OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS", "900"))
+        ),
+        nats_outbox_backlog_alert_seconds=max(
+            0, int(os.environ.get("OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS", "300"))
+        ),
         clickhouse_url=os.environ.get("OCTO_CLICKHOUSE_URL", "").strip(),
         ch_ingest_enabled=os.environ.get("OCTO_CH_INGEST_ENABLED", "true").lower()
         in {"1", "true", "yes"},
