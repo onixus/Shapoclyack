@@ -10,17 +10,15 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 
 from api.db import models
 from api.db.engine import get_session
 from api.services import job_dispatch
 from api.services import job_states
+from api.services import job_store
 from api.services import metrics as metrics_service
-from api.services import tenants as tenants_service
-from api.services import workflow_events
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.job-reaper")
@@ -28,60 +26,6 @@ LOG = logging.getLogger("shapoclyack.job-reaper")
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
-
-
-def _scan_failure_event(row: models.Job) -> dict[str, Any]:
-    return {
-        "tenant_id": row.tenant_id or tenants_service.DEFAULT_TENANT_ID,
-        "subject_id": row.job_id,
-        "marker": str(row.attempts or 0),
-        "data": {
-            "job_id": row.job_id,
-            "run_id": row.run_id,
-            "execution": row.execution,
-            "mode": row.mode,
-            "surface": (row.scan_options or {}).get("surface"),
-            "attempts": row.attempts,
-            "assigned_agent_id": row.assigned_agent_id,
-            "exit_code": row.exit_code,
-            "requested_by": row.requested_by,
-            "error": (row.error or "")[:1000] or None,
-        },
-    }
-
-
-def _refresh_job_gauges(settings: Settings) -> None:
-    with get_session(settings.postgres_url) as session:
-        counts = dict(
-            session.execute(
-                select(models.Job.status, func.count())
-                .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
-                .group_by(models.Job.status)
-            ).all()
-        )
-    metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
-    metrics_service.JOBS_RUNNING.set(
-        sum(
-            counts.get(status, 0)
-            for status in (*job_states.IN_FLIGHT, job_states.CANCELLING)
-        )
-    )
-
-
-def _record_job_metrics(
-    settings: Settings,
-    status: str,
-    execution: str,
-    started_at: datetime | None,
-    finished_at: datetime | None,
-) -> None:
-    if status in {job_states.SUCCEEDED, job_states.FAILED} and started_at and finished_at:
-        duration = (finished_at - started_at).total_seconds()
-        if duration >= 0:
-            metrics_service.JOB_DURATION_SECONDS.labels(
-                status=status, execution=execution or "local"
-            ).observe(duration)
-    _refresh_job_gauges(settings)
 
 
 def reap_expired_leases(settings: Settings) -> dict[str, int]:
@@ -149,7 +93,7 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
                 failed_for_metrics.append(
                     (row.execution or "local", row.started_at)
                 )
-                failed_events.append(_scan_failure_event(row))
+                failed_events.append(job_store.scan_failure_event(row))
                 LOG.warning(
                     "Failed job %s: lease expired after %d attempt(s) "
                     "(execution=%s)",
@@ -164,14 +108,16 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
                 count
             )
     for execution, started_at in failed_for_metrics:
-        _record_job_metrics(
+        job_store.record_job_metrics(
             settings, job_states.FAILED, execution, started_at, now
         )
     for failure in failed_events:
+        from api.services import workflow_events
+
         workflow_events.emit(settings, "scan_failed", **failure)
 
     if outcome["requeued"] or outcome["failed"]:
-        _refresh_job_gauges(settings)
+        job_store.refresh_job_gauges(settings)
 
     if settings.nats_url:
         for job_id in requeued_agent_jobs:
@@ -233,7 +179,7 @@ def reap_stale_cancellations(settings: Settings) -> int:
         metrics_service.JOB_CANCELLATIONS_TOTAL.labels(
             outcome="unconfirmed"
         ).inc(count)
-        _refresh_job_gauges(settings)
+        job_store.refresh_job_gauges(settings)
     return count
 
 
