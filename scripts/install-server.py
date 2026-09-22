@@ -15,8 +15,8 @@ import sys
 from urllib.parse import urlsplit
 
 DEFAULT_IMAGE = (
-    "ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.45-0916"
-    "@sha256:a19ae5c1f516c62d573e24271d4099ee1c3e705948f7f03cb7d7415b039a39a3"
+    "ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922"
+    "@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161"
 )
 
 
