@@ -4,7 +4,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+## [0.46-0922] — 2026-09-22
+
 ### Added
+
+- **A server installer that deploys prebuilt images.** `scripts/install-server.py`
+  (`prepare`, `install`, `start`, `status`, `logs`, `stop`, `backup`) brings up
+  the all-in-one image and PostgreSQL through Docker Compose on a single host,
+  without `dev-up.sh` or a build on the target. The application image is
+  pinned as `tag@sha256`; PostgreSQL is `postgres:16-alpine`. Admin and
+  database passwords, the JWT secret and the master key are generated into a
+  `0600` directory, the API listens on loopback only (an HTTPS reverse proxy is
+  the operator's), PostgreSQL publishes no port, migrations run before the API
+  and a custom-format dump is taken before them; `install` and upgrade neither
+  delete volumes nor overwrite existing secrets. Profile: one server, local
+  scans, no HA, NATS and ClickHouse off. Guide: `docs/server-install.ru.md`.
+  The end-to-end smoke (migrations, `/readyz`, admin sign-in) was **not**
+  completed on the branch — Docker Desktop aborted the image pull twice — so
+  the first live install is still to be observed.
+- **APEX Architecture Contract v1.** The canonical contract is pinned to
+  `onixus/unified-platform@878d138c`, `apex-contract/validate.py` is a local
+  conformance gate (a CI stage of its own), the Lariska-facing boundary —
+  `auth` and `agents` routers — is also mounted under `/api/v1` with the same
+  handlers and authorization (`/api` stays as the compatibility alias), and
+  the Pulse adapter's field mapping is guarded by a test. The owning service
+  stays authoritative for assets, findings and evidence.
 
 - **An outbox for ingest publications the broker refuses.** A run's
   publication ends on the analytics bus (`run_publisher._publish_to_bus`), and
@@ -72,6 +96,25 @@ All notable changes to Shapoclyack are documented in this file.
   rather than a second insert.
 
 ### Fixed
+
+- **A scan a test started no longer outlives the test — or pytest.** The
+  local scanner (`python -m scanner.main`) was spawned from a daemon thread
+  with its handle on that thread's stack, so nothing could reach it; under
+  pytest, tests asserting a `202` or an RBAC refusal left up to seven scans
+  running concurrently and six alive after the session, orphaned to init. The
+  scanner now runs under `Popen` in its own session and is registered while it
+  lives; `stop_local_scans` signals the group, escalates to `SIGKILL`, and
+  joins the executor threads *after* that (they write the tables the next test
+  truncates). An autouse fixture calls it after every test and a session-end
+  hook refuses a run that leaves `scanner.main` processes behind, naming the
+  tests through their `tmp_path`. Same suite: 27 s faster with twelve more
+  tests, zero scanners at exit.
+- The per-test database reset now reaches `config_overrides` and
+  `asset_identity_links`, two tables without a foreign key onto `tenants` that
+  survived the truncation and the whole pytest session on the shared local
+  database; and a test that starts a second writer on its own connection fails
+  if that thread does not return, instead of leaving an open transaction to
+  deadlock against the next test's `DELETE FROM tenants`.
 
 - **A result from a replaced attempt can no longer finish somebody else's
   scan.** `complete_job` checked the claim's `attempt` and the owning sensor in
@@ -296,6 +339,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- `api/services/jobs.py` is a compatibility facade now, not the place where
+  scans are admitted, run and fed. Admission (tenant quota, maintenance, scan
+  policy, approved scope, promoted domains, agent-group placement) lives in
+  `api/services/scan_admission.py` and runs before any job-scoped file is
+  written; the local process supervisor (`Popen`, the process registry,
+  process-group termination and the `SIGTERM`/`SIGKILL` escalation) in
+  `api/services/local_scan_executor.py`; target, scope, policy and wordlist
+  materialization plus the artifact-store mirror in `api/services/job_inputs.py`;
+  result ingestion, the lease and fencing primitives, the reaper policy, job
+  state persistence and post-run projections in modules of their own. The
+  public `jobs.start_scan(...)` contract is unchanged and the old names are
+  re-exported; a test guards the dependency direction.
+
 - **NATS no longer blocks readiness.** A configured but unreachable broker used
   to fail `/readyz` in every API replica at once — they share one broker —
   which turned a degraded installation into an unavailable one: sign-in, the
@@ -383,6 +439,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Documentation
 
+- Add the FSTEC certification roadmap (`docs/fstec-certification.ru.md`, ROADMAP
+  Track F): УД4 as the working baseline with no claim of conformance, the
+  proposed certification boundary and TCB minimisation, a certified release
+  train, security invariants, the supply-chain inventory and traceability,
+  NATS/TLS, dependency closure and vulnerability response as separate
+  workstreams, and a Definition of Ready for hand-over to the test laboratory.
+  Normative baseline as of 2026-09-22 (FSTEC orders 55, 76 and the 2026
+  amendments to order 9).
+- Add the server installation guide (`docs/server-install.ru.md`) and link it
+  from the READMEs and Getting Started.
 - Add a dated architecture review of the `b12df58` source tree with ingestion,
   fencing, projection recovery, readiness, and worker-isolation priorities.
   Clarify completion fencing limits and PostgreSQL-dependent test skips;
