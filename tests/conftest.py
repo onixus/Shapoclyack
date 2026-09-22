@@ -110,6 +110,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import agents as agents_service
     from api.services import audit as audit_service
     from api.services import auth_audit
+    from api.services import config_override as config_service
     from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
     from api.services import scan_schedules
@@ -163,6 +164,14 @@ def reset_service_state(settings: "Settings") -> None:
     # not vanish with the truncation above: a key one test used would 409 the
     # next test that reached for the same name.
     idempotency_service.reset_for_tests(settings)
+    # The installation-wide config overrides are one row keyed by scope, with
+    # no tenant to cascade from either. Left behind, the next test to PUT the
+    # same override writes it over itself — a change that changed nothing, so
+    # the audit diff is empty and the row that says the override was recorded
+    # never appears. It outlived the whole session, too: the database is shared
+    # between runs, so running one file on its own was enough to fail the next
+    # full run.
+    config_service.reset_for_tests(settings)
     # Service tokens are rows on the tenants the reset above truncated, and the
     # OIDC caches are process-global — a discovery document or an in-flight
     # authorization request from a previous test would otherwise leak into this

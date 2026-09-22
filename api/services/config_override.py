@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, get_args
 
 import yaml
+from sqlalchemy import delete
 
 from api.db import models
 from api.db.engine import get_session
@@ -386,3 +387,21 @@ def editable_snapshot(settings: Settings) -> dict[str, Any]:
         "effective": effective,
         "overrides": overrides_flat,
     }
+
+
+def reset_for_tests(settings: Settings) -> None:
+    """Drop the stored overrides (test isolation only).
+
+    The ``global`` row has no foreign key to ``tenants``, so the truncation in
+    ``api/services/tenants.py`` does not cascade into it and nothing else in
+    ``tests/conftest.py::reset_service_state`` touched it. It therefore
+    survived not just the next test but the whole pytest session: a run that
+    ended with a test having set ``enrichment.cvss4.nvd_api_key`` left the
+    value in the shared database, and the *next* run's
+    ``test_memberships_scan_scope_and_config_are_recorded`` wrote the same
+    value over itself — a no-op whose audit diff is empty, so the test that
+    asserts the override was recorded failed on the first run after the file
+    had been run on its own, and passed on the second.
+    """
+    with get_session(settings.postgres_url) as session:
+        session.execute(delete(models.ConfigOverride))
