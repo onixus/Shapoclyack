@@ -171,6 +171,15 @@ def reset_for_tests() -> None:
         session.query(models.AssetIdentifier).delete()
         session.query(models.AssetTag).delete()
         session.query(models.Asset).delete()
+        # The IP<->FQDN correlation trail (P4.2) has no foreign key to either
+        # assets or tenants, so it survived the truncation around it and, like
+        # the config overrides, the whole pytest session. It is keyed
+        # ``(tenant_id, ip, fqdn)`` and upserted rather than inserted, so a row
+        # left by an earlier test is not a duplicate the next one would notice
+        # -- it is the row the next one updates, carrying that test's
+        # ``sources``, ``confidence``, ``merged`` and ``run_id`` into a run
+        # that never wrote them.
+        session.query(models.AssetIdentityLink).delete()
         session.query(models.ScanSchedule).delete()
         # Would cascade with the tenant (FK ON DELETE CASCADE, migration 0048),
         # but listed here with its siblings so the order stays readable.

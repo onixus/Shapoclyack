@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -110,6 +111,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import agents as agents_service
     from api.services import audit as audit_service
     from api.services import auth_audit
+    from api.services import config_override as config_service
     from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
     from api.services import scan_schedules
@@ -163,6 +165,14 @@ def reset_service_state(settings: "Settings") -> None:
     # not vanish with the truncation above: a key one test used would 409 the
     # next test that reached for the same name.
     idempotency_service.reset_for_tests(settings)
+    # The installation-wide config overrides are one row keyed by scope, with
+    # no tenant to cascade from either. Left behind, the next test to PUT the
+    # same override writes it over itself — a change that changed nothing, so
+    # the audit diff is empty and the row that says the override was recorded
+    # never appears. It outlived the whole session, too: the database is shared
+    # between runs, so running one file on its own was enough to fail the next
+    # full run.
+    config_service.reset_for_tests(settings)
     # Service tokens are rows on the tenants the reset above truncated, and the
     # OIDC caches are process-global — a discovery document or an in-flight
     # authorization request from a previous test would otherwise leak into this
@@ -327,8 +337,71 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+#: How long a thread a test started is given to finish once the test is over.
+#: Generous on purpose: this is not there to police slow work but to catch the
+#: writer that is never coming back, so a healthy test pays nothing for it and
+#: a leak pays it once.
+_THREAD_JOIN_TIMEOUT = 30.0
+
+#: Threads that are process-global by design, whichever test happens to start
+#: them first. ``octo-*`` are the application's own workers, owned by
+#: ``start_worker``/``stop_worker`` and the app lifespan rather than by a test;
+#: ``octo-nats`` in particular is a lazily-created singleton that only
+#: ``shutdown_bus`` stops, and ``asyncio_N`` are the idle workers of the default
+#: executor its event loop keeps. Neither holds a transaction across tests, and
+#: neither is the test's to join.
+#:
+#: Not hypothetical tidiness: with ``OCTO_NATS_URL`` set -- which is CI, and not
+#: a default local run -- the first test to publish anything starts the bus, and
+#: without this that test was the one blamed for it.
+_PROCESS_GLOBAL_THREADS = ("octo-", "asyncio_")
+
+
 @pytest.fixture(autouse=True)
-def _stop_local_scans():
+def _no_thread_outlives_its_test():
+    """Fail the test that leaves a thread running, not the one it corrupts.
+
+    Several tests here drive a real second writer on a connection of its own,
+    because that is the only honest way to test a lock: two requests for one
+    group name, two replicas accepting the same run, eight racing webhook
+    creates. Every one of them ends in ``join(timeout=...)`` and then carries
+    on regardless of what the join returned -- and the threads are daemons, so
+    a join that timed out leaves a transaction open with nothing to say so.
+
+    What that costs is paid by somebody else. The abandoned writer commits, or
+    deadlocks, against whatever runs next, which is almost always
+    ``reset_service_state``'s ``DELETE FROM tenants``: Postgres kills one of
+    the two, and either the truncation silently does not happen or the writer's
+    rows land *after* it and survive into tests that never created them. The
+    database log for 2026-09-21 has six such deadlocks, between
+    ``DELETE FROM tenants`` and an ``UPDATE agents``, an
+    ``INSERT INTO scan_schedules``, an ``INSERT INTO vulnerabilities`` -- none
+    of which belonged to the test that was running at the time.
+
+    So the check is here rather than at each call site: joining every thread
+    the test started, and failing if one will not come back, names the test
+    that started it. Threads that were already running when the test began are
+    left alone -- the workers a previous ``create_app`` lifespan owns are that
+    lifespan's business, and ``reset_service_state`` has its own assertions for
+    the deployment and notification fan-outs. So are the ones named in
+    :data:`_PROCESS_GLOBAL_THREADS`, which outlive every test on purpose.
+    """
+    before = {thread.ident for thread in threading.enumerate()}
+    yield
+    started_here = [
+        thread
+        for thread in threading.enumerate()
+        if thread.ident not in before
+        and not thread.name.startswith(_PROCESS_GLOBAL_THREADS)
+    ]
+    for thread in started_here:
+        thread.join(timeout=_THREAD_JOIN_TIMEOUT)
+    outlived = sorted(thread.name for thread in started_here if thread.is_alive())
+    assert not outlived, f"a thread outlived its test: {outlived}"
+
+
+@pytest.fixture(autouse=True)
+def _stop_local_scans(_no_thread_outlives_its_test):
     """Put down the scans a test started before the next test begins.
 
     Starting a scan in local execution mode -- the default for this suite --
@@ -352,6 +425,12 @@ def _stop_local_scans():
     -- ``test_an_abandoned_local_job_is_failed_not_requeued`` and friends --
     is unaffected: the row it examines is already written, and what this drops
     is the process, after the assertions.
+
+    Requesting :func:`_no_thread_outlives_its_test` is an ordering statement,
+    not a dependency: a fixture is torn down before the ones it requested, so
+    this puts the scans down *first* and the thread check then sees a process
+    whose scan threads have already been let go rather than reporting them as
+    leaks.
     """
     yield
     from api.services import jobs as jobs_service
