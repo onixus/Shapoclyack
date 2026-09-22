@@ -78,6 +78,16 @@ $$\text{Risk} = f(\text{Likelihood}, \text{Impact})$$
 
 ## ⚡ Быстрый старт
 
+**Сервер без сборки:** используйте [самостоятельный установщик](docs/server-install.ru.md).
+Он скачивает готовый образ, создаёт PostgreSQL, секреты и постоянные тома:
+
+```bash
+sudo python3 scripts/install-server.py install --url https://scan.example.com
+```
+
+Нужны Docker Compose, Python 3 и HTTPS reverse proxy. Ниже — отдельный путь
+для разработки с локальной сборкой.
+
 Требования: Docker (для сборки и загрузки образов), [kind](https://kind.sigs.k8s.io/) и `kubectl`, не менее 4 ГБ свободной оперативной памяти.
 
 ```bash

@@ -3,6 +3,21 @@
 This guide starts an all-in-one installation, validates its dependencies, and
 runs the first authorized scan.
 
+## Server installation without a build
+
+Use the standalone `scripts/install-server.py` installer with Docker Compose:
+
+```bash
+sudo python3 scripts/install-server.py install --url https://scan.example.com
+```
+
+Copy just this script to the server; no repository checkout or build tools are
+needed. It pulls the digest-pinned release image, creates PostgreSQL and random
+credentials, runs migrations and waits for readiness. A host HTTPS reverse proxy
+is required. See the [server installation guide (RU)](server-install.ru.md) for
+requirements, management, backups and upgrades. The kind workflow below is for
+local development and builds an image.
+
 ## Prerequisites
 
 - Docker Engine (to build/load images), [kind](https://kind.sigs.k8s.io/), and `kubectl`;

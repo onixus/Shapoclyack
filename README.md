@@ -35,6 +35,11 @@ Shapoclyack does not treat a closed ticket as proof that a network finding is go
 
 ## Quick start
 
+For a server installation **without building on the server**, use the
+[standalone installer](docs/server-install.ru.md):
+`sudo python3 scripts/install-server.py install --url https://scan.example.com`.
+It requires Docker Compose, Python 3 and an HTTPS reverse proxy.
+
 For a local evaluation cluster:
 
 ```bash
