@@ -343,6 +343,19 @@ def bearer(token: str) -> dict[str, str]:
 #: a leak pays it once.
 _THREAD_JOIN_TIMEOUT = 30.0
 
+#: Threads that are process-global by design, whichever test happens to start
+#: them first. ``octo-*`` are the application's own workers, owned by
+#: ``start_worker``/``stop_worker`` and the app lifespan rather than by a test;
+#: ``octo-nats`` in particular is a lazily-created singleton that only
+#: ``shutdown_bus`` stops, and ``asyncio_N`` are the idle workers of the default
+#: executor its event loop keeps. Neither holds a transaction across tests, and
+#: neither is the test's to join.
+#:
+#: Not hypothetical tidiness: with ``OCTO_NATS_URL`` set -- which is CI, and not
+#: a default local run -- the first test to publish anything starts the bus, and
+#: without this that test was the one blamed for it.
+_PROCESS_GLOBAL_THREADS = ("octo-", "asyncio_")
+
 
 @pytest.fixture(autouse=True)
 def _no_thread_outlives_its_test():
@@ -370,12 +383,16 @@ def _no_thread_outlives_its_test():
     that started it. Threads that were already running when the test began are
     left alone -- the workers a previous ``create_app`` lifespan owns are that
     lifespan's business, and ``reset_service_state`` has its own assertions for
-    the deployment and notification fan-outs.
+    the deployment and notification fan-outs. So are the ones named in
+    :data:`_PROCESS_GLOBAL_THREADS`, which outlive every test on purpose.
     """
     before = {thread.ident for thread in threading.enumerate()}
     yield
     started_here = [
-        thread for thread in threading.enumerate() if thread.ident not in before
+        thread
+        for thread in threading.enumerate()
+        if thread.ident not in before
+        and not thread.name.startswith(_PROCESS_GLOBAL_THREADS)
     ]
     for thread in started_here:
         thread.join(timeout=_THREAD_JOIN_TIMEOUT)
