@@ -412,7 +412,7 @@ See the [Development Guide](docs/development.md) for full setup instructions and
 
 ## Releases & Container Images
 
-Documented release: [`shapoclyack-0.45-0916`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.45-0916).
+Documented release: [`shapoclyack-0.46-0922`](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.46-0922).
 
 | Image | Description |
 |---|---|
