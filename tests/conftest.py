@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -336,8 +337,54 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+#: How long a thread a test started is given to finish once the test is over.
+#: Generous on purpose: this is not there to police slow work but to catch the
+#: writer that is never coming back, so a healthy test pays nothing for it and
+#: a leak pays it once.
+_THREAD_JOIN_TIMEOUT = 30.0
+
+
 @pytest.fixture(autouse=True)
-def _stop_local_scans():
+def _no_thread_outlives_its_test():
+    """Fail the test that leaves a thread running, not the one it corrupts.
+
+    Several tests here drive a real second writer on a connection of its own,
+    because that is the only honest way to test a lock: two requests for one
+    group name, two replicas accepting the same run, eight racing webhook
+    creates. Every one of them ends in ``join(timeout=...)`` and then carries
+    on regardless of what the join returned -- and the threads are daemons, so
+    a join that timed out leaves a transaction open with nothing to say so.
+
+    What that costs is paid by somebody else. The abandoned writer commits, or
+    deadlocks, against whatever runs next, which is almost always
+    ``reset_service_state``'s ``DELETE FROM tenants``: Postgres kills one of
+    the two, and either the truncation silently does not happen or the writer's
+    rows land *after* it and survive into tests that never created them. The
+    database log for 2026-09-21 has six such deadlocks, between
+    ``DELETE FROM tenants`` and an ``UPDATE agents``, an
+    ``INSERT INTO scan_schedules``, an ``INSERT INTO vulnerabilities`` -- none
+    of which belonged to the test that was running at the time.
+
+    So the check is here rather than at each call site: joining every thread
+    the test started, and failing if one will not come back, names the test
+    that started it. Threads that were already running when the test began are
+    left alone -- the workers a previous ``create_app`` lifespan owns are that
+    lifespan's business, and ``reset_service_state`` has its own assertions for
+    the deployment and notification fan-outs.
+    """
+    before = {thread.ident for thread in threading.enumerate()}
+    yield
+    started_here = [
+        thread for thread in threading.enumerate() if thread.ident not in before
+    ]
+    for thread in started_here:
+        thread.join(timeout=_THREAD_JOIN_TIMEOUT)
+    outlived = sorted(thread.name for thread in started_here if thread.is_alive())
+    assert not outlived, f"a thread outlived its test: {outlived}"
+
+
+@pytest.fixture(autouse=True)
+def _stop_local_scans(_no_thread_outlives_its_test):
     """Put down the scans a test started before the next test begins.
 
     Starting a scan in local execution mode -- the default for this suite --
@@ -361,6 +408,12 @@ def _stop_local_scans():
     -- ``test_an_abandoned_local_job_is_failed_not_requeued`` and friends --
     is unaffected: the row it examines is already written, and what this drops
     is the process, after the assertions.
+
+    Requesting :func:`_no_thread_outlives_its_test` is an ordering statement,
+    not a dependency: a fixture is torn down before the ones it requested, so
+    this puts the scans down *first* and the thread check then sees a process
+    whose scan threads have already been let go rather than reporting them as
+    leaks.
     """
     yield
     from api.services import jobs as jobs_service

@@ -939,6 +939,17 @@ def test_the_loser_of_a_simultaneous_create_is_told_the_name_is_taken(
             )
             thread.start()
             thread.join(timeout=30)
+            # Not merely joined: a join that timed out leaves the winner's
+            # transaction open on a connection of its own, and this thread is
+            # a daemon, so nothing else would ever notice. It commits (or
+            # deadlocks) against whatever the next test is doing -- in
+            # practice against ``reset_service_state``'s ``DELETE FROM
+            # tenants`` -- and the failure lands on a test that did nothing
+            # wrong. Fail here, where the writer was started.
+            assert not thread.is_alive(), (
+                "the other create never returned; it would outlive this test "
+                "holding its transaction"
+            )
         return row
 
     monkeypatch.setattr(agent_groups, "_row_by_name", _let_the_other_request_commit_first)
