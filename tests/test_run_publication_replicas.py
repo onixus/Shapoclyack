@@ -45,6 +45,7 @@ from api.services import agents as agents_service
 from api.services import artifact_store
 from api.services import jobs as jobs_service
 from api.services import results_ingest
+from api.services import run_completion
 from api.services import run_publisher
 from api.services import tenants as tenants_service
 from api.services.artifact_store import keys
@@ -382,8 +383,8 @@ def test_the_accepting_request_and_a_reconciler_tick_do_not_both_publish(
 
     monkeypatch.setattr(results_ingest, "publish_raw_results", _slow_broker)
     monkeypatch.setattr(
-        jobs_service,
-        "_notify_channels_best_effort",
+        run_completion,
+        "notify_channels_best_effort",
         lambda *_a, **kwargs: notified.append(kwargs["run_id"]),
     )
 
@@ -558,7 +559,7 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
     # One key at a time, so "halfway through the tree" is a place the test can
     # stand rather than a race between eight threads.
     monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
-    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
 
     store = artifact_store.get_store(writer)
     real_put = store.put_bytes
@@ -661,7 +662,7 @@ def test_a_loser_does_not_take_keys_back_out_of_a_tree_that_is_still_going_up(
     # One key at a time, so the two uploads interleave where the test puts
     # them rather than across eight threads.
     monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
-    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
 
     store = artifact_store.get_store(writer)
     real_put = store.put_bytes
@@ -758,7 +759,7 @@ def test_a_peer_does_not_call_a_run_published_while_its_owner_is_still_uploading
     peer = _remote_replica(tmp_path, "pod-b", shared)
     _serve(owner)
     monkeypatch.setattr(s3_store, "_TREE_CONCURRENCY", 1)
-    monkeypatch.setattr(jobs_service, "_notify_channels_best_effort", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
 
     store = artifact_store.get_store(owner)
     real_put = store.put_bytes
