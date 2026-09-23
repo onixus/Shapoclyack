@@ -31,6 +31,32 @@ All notable changes to Shapoclyack are documented in this file.
   `OCTO_REFRESH_COOKIE_SECURE` (on in `prod`, where `false` refuses startup;
   off by default in `dev`, like HSTS).
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **`OCTO_JWT_EXPIRE_MINUTES` is now the absolute session length, not the
@@ -373,6 +399,32 @@ All notable changes to Shapoclyack are documented in this file.
   ever move a deadline forward, so a heartbeat cannot shorten the window an
   ingest reserved.
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - `api/services/jobs.py` is a compatibility facade now, not the place where
@@ -491,6 +543,32 @@ All notable changes to Shapoclyack are documented in this file.
   document that Jenkins and the reference GitHub workflow can drift.
 
 ## [0.45-0916] — 2026-09-16
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -2354,6 +2432,32 @@ All notable changes to Shapoclyack are documented in this file.
   CA for Postgres `verify-full`. Its NATS permission note now describes the
   per-tenant job stream that #372 introduced.
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **The agent's version is the release's version**
@@ -3124,6 +3228,32 @@ All notable changes to Shapoclyack are documented in this file.
   project's own terms alongside everyone else's, and says plainly that an image
   is an aggregate governed by its most restrictive component.
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **`python -m scanner.main --validate-config` exists.** Two guides told the
@@ -3619,6 +3749,32 @@ All notable changes to Shapoclyack are documented in this file.
   [docs/operations.md](docs/operations.md): deployment runs are held in the API process'
   memory, and SSH host keys are not verified.
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **A schedule is checked against the approved scan scope when it is written**
@@ -3711,6 +3867,32 @@ All notable changes to Shapoclyack are documented in this file.
   hostname JSON fetches now retry with exponential backoff on `429/502/503/504` and transient
   transport errors, and send an explicit `shapoclyack/scanner` User-Agent. `nuclei_scan.py`
   hardened alongside them.
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -4143,6 +4325,32 @@ All notable changes to Shapoclyack are documented in this file.
   `localStorage` (`shapoclyack.theme`, `shapoclyack.locale`) and apply before
   first paint. Russian covers chrome — navigation, titles, table headers,
   status badges, login — not CVE/host identifiers or API error strings.
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -4638,6 +4846,32 @@ All notable changes to Shapoclyack are documented in this file.
   per-replica in-memory job gauges, no tenant label on any series, and no
   tracing.
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **Risk scoring rebuilt on NIST SP 800-30 Rev. 1** (#144) — scoring model
@@ -5051,6 +5285,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## [0.40-0806] — 2026-08-06
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **Pulse `v0.2.7` → `v0.8.3`** — `PULSE_VERSION` in `Dockerfile` and
@@ -5131,6 +5391,32 @@ All notable changes to Shapoclyack are documented in this file.
   `tenant.json` by hand for historical runs that belong to a customer tenant.
 
 ## [0.39-0805] — 2026-08-05
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -5226,6 +5512,32 @@ All notable changes to Shapoclyack are documented in this file.
   left open from the Phase 3 endpoint-inventory plan (per-device history
   already existed on the asset view; this adds the global view).
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - **Nmap removed from default published images** ([#97](https://github.com/onixus/Shapoclyack/issues/97)
@@ -5316,6 +5628,32 @@ All notable changes to Shapoclyack are documented in this file.
   Trivy CI exception — no nuclei release has shipped the fix yet, and the
   vulnerable code path (`openapi3filter.ValidationHandler`) is unreachable in
   how nuclei actually uses the dependency.
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -5490,6 +5828,32 @@ All notable changes to Shapoclyack are documented in this file.
   matching the vulscan/enrichment fetch scripts' fail-soft philosophy.
 
 ## [0.35-0722] — 2026-07-22
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -5824,6 +6188,32 @@ All notable changes to Shapoclyack are documented in this file.
   - Agent pull consumer (durable `octo-agents`) when NATS URL set; HTTP claim remains default
   - Compose profile `nats`; example patches under `k8s/shapoclyack/examples/nats-*.yaml`
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
+
 ### Changed
 
 - Promoted discovery completeness knobs from `discovery-bench-realistic` into
@@ -5850,6 +6240,32 @@ GitHub release / tag: [`shapoclyack-0.33`](https://github.com/onixus/Shapoclyack
 - API endpoints `GET /api/runs/{id}/hosts` and `GET /api/runs/{id}/ports`
 - **Severity dashboard** in the Web UI (grouped, scrollable vulnerability lists)
 - Test fixture `tests/data/geoip/GeoIP2-City-Test.mmdb` for the `.mmdb` reader path
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -5886,6 +6302,32 @@ All-in-one release: Web UI can start scans by default.
 - **All-in-one image** (`Dockerfile.allinone`): scanner tools + API + React UI + agent client
 - **`docker-compose.yml`**: one-command local stack with Jobs UI scan start enabled
 - Kustomize overlay `overlays/api-readonly` for the thin results-only API image
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 
@@ -5926,6 +6368,32 @@ First Shapoclyack-hosted product release after Phase 1–2 and the Kubernetes cu
   - kustomize under `k8s/shapoclyack` (Job, CronJob, API Deployment/Service, PVC)
   - `dev` / `prod` overlays; Secrets and Ingress examples
   - `./k8s/scripts/validate-kustomize.sh` + CI kustomize job
+
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the token that
+  asked for them; the signature counter is checked and advanced under a row
+  lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables, additive). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key. Sessions now carry `mfa_method` next to
+  `mfa_verified_at`, and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party.
 
 ### Changed
 

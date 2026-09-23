@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppearanceControls } from "@/components/appearance-controls";
 import { SsoSignInButton } from "@/components/sso-sign-in-button";
-import { fetchSsoStatus, setAccessToken, type SsoStatus } from "@/lib/api";
+import { fetchSsoStatus, setAccessToken, type Me, type SsoStatus } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
+import { isWebAuthnSupported } from "@/lib/webauthn";
 
 /** An outstanding second factor: the challenge token, how long it is good for,
  * and the account it names when we know it — after an SSO redirect we do not,
@@ -16,9 +17,20 @@ import { useT } from "@/lib/i18n";
  * to hold would be a lie on the one screen that must not tell them. */
 type Challenge = { token: string; expiresIn: number | null; username: string | null };
 
+/** Whether a signed-in session can reach only the security page: it owes an
+ * enrolment, or it was proved with a code where its role needs a key (#315).
+ * Landing either on the dashboard would show it a screen of 403s. */
+function confinedToSecurity(user: Me | null | undefined): boolean {
+  return Boolean(user?.mfa_pending || user?.phishing_resistant_pending);
+}
+
+function landing(): string {
+  return confinedToSecurity(useAuthStore.getState().user) ? "/security" : "/";
+}
+
 export default function LoginPage() {
   const router = useRouter();
-  const { user, loading, hydrated, hydrate, login, verifyMfa } = useAuthStore();
+  const { user, loading, hydrated, hydrate, login, verifyMfa, verifyWithKey } = useAuthStore();
   const t = useT();
   const [username, setUsername] = useState("viewer");
   const [password, setPassword] = useState("viewer-change-me");
@@ -30,6 +42,10 @@ export default function LoginPage() {
   const [code, setCode] = useState("");
   const [useRecovery, setUseRecovery] = useState(false);
   const [sso, setSso] = useState<SsoStatus | null>(null);
+  // Read after mount: the server render has no `window`, and a button that
+  // appears on hydration is better than a hydration mismatch.
+  const [keySupported, setKeySupported] = useState(false);
+  useEffect(() => setKeySupported(isWebAuthnSupported()), []);
 
   // An SSO callback lands here with the session in the URL *fragment*, which
   // browsers never send to a server and access logs never record. Store it and
@@ -77,7 +93,7 @@ export default function LoginPage() {
     if (hydrated && !loading && user) {
       // A session that owes an enrolment can reach one page. Landing it on the
       // dashboard would show it a screen of 403s instead (#315).
-      router.replace(user.mfa_pending ? "/security" : "/");
+      router.replace(confinedToSecurity(user) ? "/security" : "/");
     }
   }, [hydrated, loading, user, router]);
 
@@ -111,7 +127,24 @@ export default function LoginPage() {
         code: useRecovery ? undefined : code,
         recoveryCode: useRecovery ? code : undefined,
       });
-      router.replace("/");
+      router.replace(landing());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("login.failed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** The second leg with a security key instead of a code (#315). The
+   * challenge is bound to this login's token, so it is fetched here rather
+   * than cached: a restarted login gets a fresh one. */
+  async function onUseKey() {
+    if (!challenge) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await verifyWithKey(challenge.token);
+      router.replace(landing());
     } catch (err) {
       setError(err instanceof Error ? err.message : t("login.failed"));
     } finally {
@@ -174,6 +207,20 @@ export default function LoginPage() {
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>
+            {/* Offered whenever the browser can run a ceremony: whether this
+                account holds a key is the server's answer to give, and a
+                409 here reads as "no key registered" in the error line. */}
+            {keySupported ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={submitting}
+                onClick={() => void onUseKey()}
+              >
+                {submitting ? t("login.mfa.usingKey") : t("login.mfa.useKey")}
+              </Button>
+            ) : null}
             <div className="flex items-center justify-between text-xs">
               <button
                 type="button"

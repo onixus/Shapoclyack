@@ -794,6 +794,31 @@ class Settings:
     # authority to issue credentials. Applies only to accounts that have MFA
     # enabled; an installation with no MFA is unchanged.
     mfa_stepup_minutes: int = 15
+    # Roles whose sessions count as fully signed in only when the second factor
+    # was a WebAuthn assertion — a security key or a passkey — rather than an
+    # authenticator-app code or a recovery code, both of which a convincing
+    # fake login page can relay in real time. A listed role is implicitly in
+    # ``mfa_required_roles`` too. A session of such a role proved by a code is
+    # confined the way ``mfa_pending`` is — to the MFA routes, where it can
+    # register a key — rather than refused, so the requirement is a guided
+    # enrolment and not a lockout. Empty by default.
+    mfa_phishing_resistant_roles: list[str] = field(default_factory=list)
+    # Whether the step-up that credential-issuing and account-administration
+    # routes demand must itself be a WebAuthn assertion, for every account that
+    # has MFA enabled — not only the roles above. Off by default; turning it on
+    # means an account holding only an authenticator app cannot perform those
+    # operations until it registers a key.
+    mfa_stepup_phishing_resistant: bool = False
+    # WebAuthn relying party (#315). ``webauthn_rp_id`` is the domain a browser
+    # scopes a credential to; empty derives the hostname of ``public_base_url``.
+    # ``webauthn_origins`` are the exact origins (scheme://host[:port]) a
+    # ceremony may come from — the console's, which is not necessarily the
+    # API's; empty derives the origin of ``public_base_url``. With neither
+    # configured nor derivable the WebAuthn routes answer 409 and the rest of
+    # MFA works exactly as before.
+    webauthn_rp_id: str = ""
+    webauthn_rp_name: str = "Shapoclyack"
+    webauthn_origins: list[str] = field(default_factory=list)
     # What local (password) login is for when SSO is configured:
     #   enabled      — the default and the pre-#315 behaviour;
     #   break-glass  — only the accounts in OCTO_BREAK_GLASS_USERS may use it,
@@ -808,6 +833,24 @@ class Settings:
     # named, closely watched credential rather than a property somebody can
     # acquire by being promoted.
     break_glass_users: list[str] = field(default_factory=list)
+
+    def webauthn_relying_party(self) -> tuple[str, list[str]]:
+        """``(rp_id, origins)`` for WebAuthn, derived where not configured (#315).
+
+        Either half may come back empty, which means WebAuthn is unavailable on
+        this installation. Derived from ``public_base_url`` rather than from the
+        request: the RP ID and origin are what stop a phishing page's assertion
+        being accepted here, and the request's ``Host``/``Origin`` headers are
+        written by exactly the party that check is against.
+        """
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(self.public_base_url.strip())
+        rp_id = self.webauthn_rp_id or (parsed.hostname or "")
+        origins = list(self.webauthn_origins)
+        if not origins and parsed.scheme and parsed.netloc:
+            origins = [f"{parsed.scheme}://{parsed.netloc}".lower()]
+        return rp_id, origins
 
     def agent_signing_secret(self) -> str:
         """The key agent JWTs are signed and verified with (#312).
@@ -961,7 +1004,7 @@ def _oidc_role_map() -> dict[str, str]:
     return mapping
 
 
-def _mfa_required_roles() -> list[str]:
+def _mfa_required_roles(variable: str = "OCTO_MFA_REQUIRED_ROLES") -> list[str]:
     """Roles that must carry a second factor, from ``OCTO_MFA_REQUIRED_ROLES``.
 
     Comma-separated, and an unknown value is dropped with a warning rather than
@@ -969,8 +1012,11 @@ def _mfa_required_roles() -> list[str]:
     ever *relaxes* the requirement, which is a state an operator can see in the
     console (an admin whose account says "MFA not required") — where raising
     would take the API down for every tenant over a typo.
+
+    ``variable`` lets ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` be read by the same
+    rules: it is the same kind of list, naming a stricter requirement.
     """
-    raw = os.environ.get("OCTO_MFA_REQUIRED_ROLES", "").strip()
+    raw = os.environ.get(variable, "").strip()
     if not raw:
         return []
     roles: list[str] = []
@@ -980,8 +1026,8 @@ def _mfa_required_roles() -> list[str]:
             continue
         if role not in VALID_CONSOLE_ROLES:
             logger.warning(
-                "OCTO_MFA_REQUIRED_ROLES names an unknown role %r; ignoring it. "
-                "Valid roles: %s.",
+                "%s names an unknown role %r; ignoring it. Valid roles: %s.",
+                variable,
                 role,
                 ", ".join(VALID_CONSOLE_ROLES),
             )
@@ -1242,6 +1288,19 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    so a bare hostname produces a command that cannot work.\n"
             "    Include the scheme, e.g. https://shapoclyack.example.com"
         )
+
+    # A phishing-resistant requirement with no relying party to register a key
+    # against confines every listed role to a page whose one action answers
+    # 409 — an administrator lockout that starts at the first login (#315).
+    if settings.mfa_phishing_resistant_roles or settings.mfa_stepup_phishing_resistant:
+        rp_id, origins = settings.webauthn_relying_party()
+        if not rp_id or not origins:
+            problems.append(
+                "OCTO_MFA_PHISHING_RESISTANT_ROLES / OCTO_MFA_STEPUP_PHISHING_RESISTANT\n"
+                "    require WebAuthn, but no relying party could be derived.\n"
+                "    Set OCTO_PUBLIC_BASE_URL, or OCTO_WEBAUTHN_RP_ID and\n"
+                "    OCTO_WEBAUTHN_ORIGINS, to the console's domain and origin."
+            )
 
     # Object storage that is asked for but not named (#336). The store would
     # raise on its first use instead — which is the end of a scan, after the
@@ -1788,6 +1847,18 @@ def load_settings() -> Settings:
         # request in a burst of administration, which is a way of teaching
         # people to keep an authenticator open next to the console.
         mfa_stepup_minutes=max(1, int(os.environ.get("OCTO_MFA_STEPUP_MINUTES", "15"))),
+        mfa_phishing_resistant_roles=_mfa_required_roles("OCTO_MFA_PHISHING_RESISTANT_ROLES"),
+        mfa_stepup_phishing_resistant=os.environ.get(
+            "OCTO_MFA_STEPUP_PHISHING_RESISTANT", "false"
+        ).lower()
+        in {"1", "true", "yes"},
+        webauthn_rp_id=os.environ.get("OCTO_WEBAUTHN_RP_ID", "").strip().lower(),
+        webauthn_rp_name=os.environ.get("OCTO_WEBAUTHN_RP_NAME", "").strip() or "Shapoclyack",
+        webauthn_origins=[
+            item.strip().rstrip("/")
+            for item in os.environ.get("OCTO_WEBAUTHN_ORIGINS", "").split(",")
+            if item.strip()
+        ],
         local_login=_local_login(),
         break_glass_users=[
             item.strip()

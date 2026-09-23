@@ -3,15 +3,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  beginKeyRegistration,
   confirmTotp,
   disableMfa,
   fetchMfaStatus,
+  fetchWebAuthnKeys,
+  finishKeyRegistration,
   resetUserMfa,
+  revokeWebAuthnKey,
   setupTotp,
   type MfaSetup,
+  type WebAuthnKey,
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { queryKeys } from "@/lib/query-keys";
+import { createKey } from "@/lib/webauthn";
 
 /** The signed-in account's own second-factor state (#315). */
 export function useMfaStatus(enabled = true) {
@@ -94,6 +100,58 @@ export function useResetUserMfa() {
     },
     onError: (err) => {
       toast.error("Could not reset MFA", { description: err.message });
+    },
+  });
+}
+
+/** The signed-in account's own security keys (#315). */
+export function useWebAuthnKeys(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.webauthnKeys,
+    queryFn: fetchWebAuthnKeys,
+    enabled,
+  });
+}
+
+/**
+ * Register a new key: options from the API, the browser's create prompt, the
+ * attestation back to the API.
+ *
+ * A stale step-up is not handled here: the options call answers the same 403
+ * every step-up route does, and the interceptor raises the prompt for it.
+ * After re-verifying, the user presses the button again — nothing is replayed.
+ */
+export function useRegisterWebAuthnKey() {
+  const queryClient = useQueryClient();
+  return useMutation<WebAuthnKey, Error, { name: string }>({
+    mutationFn: async ({ name }) => {
+      const options = await beginKeyRegistration();
+      const answer = await createKey(options);
+      return finishKeyRegistration(answer, name);
+    },
+    onSuccess: async () => {
+      toast.success("Security key added");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mfa });
+      // A session confined by the key policy stays confined until it is
+      // re-proved *with* the key; re-reading the principal is what shows that.
+      await useAuthStore.getState().hydrate();
+    },
+    onError: (err) => {
+      toast.error("Could not add the security key", { description: err.message });
+    },
+  });
+}
+
+export function useRevokeWebAuthnKey() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (id: string) => revokeWebAuthnKey(id),
+    onSuccess: async () => {
+      toast.success("Security key removed");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mfa });
+    },
+    onError: (err) => {
+      toast.error("Could not remove the security key", { description: err.message });
     },
   });
 }

@@ -109,12 +109,21 @@ def _remaining(codes: Any) -> int:
 
 
 def required_for_role(settings: Settings, role: str) -> bool:
-    """Whether this installation demands a second factor of ``role``."""
-    return str(role or "").lower() in settings.mfa_required_roles
+    """Whether this installation demands a second factor of ``role``.
+
+    A role that must carry a *phishing-resistant* factor must carry a factor
+    at all: ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` implies
+    ``OCTO_MFA_REQUIRED_ROLES`` rather than asking the operator to list the
+    role twice and confining nobody when they forget.
+    """
+    role = str(role or "").lower()
+    return role in settings.mfa_required_roles or role in settings.mfa_phishing_resistant_roles
 
 
-def _state(row: models.User, settings: Settings) -> dict[str, Any]:
+def _state(row: models.User, settings: Settings, session: Any) -> dict[str, Any]:
     """Public shape. Never carries the secret, a code, or a hash of either."""
+    from api.services import passkeys as passkeys_service
+
     enabled = row.mfa_enabled_at is not None
     return {
         "username": row.username,
@@ -130,6 +139,17 @@ def _state(row: models.User, settings: Settings) -> dict[str, Any]:
         # Whether confirming an enrolment will ask for the password. See
         # :func:`password_required`.
         "password_required": password_required(settings, row.username, row.password_hash),
+        # WebAuthn (#315): whether this installation can register a key at all,
+        # how many this account holds, and whether policy insists that one of
+        # them — not a code — is what signs this account in or steps it up.
+        "webauthn_available": passkeys_service.available(settings),
+        "webauthn_credentials": passkeys_service.credential_count(session, row.username),
+        "phishing_resistant_required": passkeys_service.phishing_resistant_required(
+            settings, row.role
+        ),
+        "stepup_phishing_resistant": passkeys_service.stepup_requires_webauthn(
+            settings, row.role
+        ),
     }
 
 
@@ -163,7 +183,7 @@ def status(settings: Settings, username: str) -> dict[str, Any]:
         row = session.get(models.User, username)
         if row is None:
             raise LookupError(f"user '{username}' not found")
-        return _state(row, settings)
+        return _state(row, settings, session)
 
 
 def is_enabled(settings: Settings, username: str) -> bool:
@@ -455,7 +475,7 @@ def disable(
         if row is None:
             raise LookupError(f"user '{username}' not found")
         before = _iso(row.mfa_enabled_at)
-        _clear(row, now)
+        keys = _clear(session, row, now)
         session.flush()
         audit_service.record(
             session,
@@ -463,10 +483,10 @@ def disable(
             action=audit_service.ACTION_USER_MFA_DISABLE,
             resource_type="user",
             resource_id=username,
-            before={"mfa_enabled_at": before},
-            after={"mfa_enabled_at": None},
+            before={"mfa_enabled_at": before, "webauthn_credentials": keys},
+            after={"mfa_enabled_at": None, "webauthn_credentials": 0},
         )
-        return _state(row, settings)
+        return _state(row, settings, session)
 
 
 def admin_reset(
@@ -489,7 +509,7 @@ def admin_reset(
         if row is None:
             raise LookupError(f"user '{username}' not found")
         before = _iso(row.mfa_enabled_at)
-        _clear(row, now)
+        keys = _clear(session, row, now)
         row.token_version = int(row.token_version or 0) + 1
         session.flush()
         audit_service.record(
@@ -498,25 +518,35 @@ def admin_reset(
             action=audit_service.ACTION_USER_MFA_RESET,
             resource_type="user",
             resource_id=username,
-            before={"mfa_enabled_at": before},
-            after={"mfa_enabled_at": None, "token_version": int(row.token_version)},
+            before={"mfa_enabled_at": before, "webauthn_credentials": keys},
+            after={
+                "mfa_enabled_at": None,
+                "webauthn_credentials": 0,
+                "token_version": int(row.token_version),
+            },
         )
-        return _state(row, settings)
+        return _state(row, settings, session)
 
 
-def _clear(row: models.User, now: datetime) -> None:
-    """Return one row to "never enrolled". Every field, or none of them.
+def _clear(session: Any, row: models.User, now: datetime) -> int:
+    """Return one account to "never enrolled". Every factor, or none of them.
 
     Leaving the secret behind would keep a phone that still has the QR code
     able to produce codes the moment MFA is switched on again, and leaving the
     recovery codes would keep ten passwords alive for a factor that no longer
-    exists.
+    exists. The same goes for security keys (#315): a key is an addition to
+    this enrolment, and one left registered would be a factor on an account
+    that no longer has MFA — and a lost key would survive the reset meant to
+    retire it. Returns how many keys went.
     """
+    from api.services import passkeys as passkeys_service
+
     row.mfa_secret = None
     row.mfa_enabled_at = None
     row.mfa_last_step = None
     row.mfa_recovery_codes = []
     row.updated_at = now
+    return passkeys_service.delete_all(session, row.username)
 
 
 def stepup_deadline(verified_at: datetime | None, settings: Settings) -> datetime | None:

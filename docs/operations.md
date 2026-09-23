@@ -1852,6 +1852,40 @@ If `OCTO_MFA_REQUIRED_ROLES` names the account's role, its next login is a
 session confined to the enrolment flow, so the reset does not leave it locked
 out — it leaves it in front of the setup page.
 
+**A lost security key** is the same procedure. The reset removes every
+registered key along with the authenticator secret and the recovery codes (the
+audit row's `before.webauthn_credentials` says how many), so the lost key stops
+working the moment the reset lands. Somebody who still holds another key or
+their phone does not need an admin: they remove the lost key themselves on the
+Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
+recorded as `user.webauthn_revoke`.
+
+### Rolling out security keys
+
+WebAuthn needs a relying party the browser agrees with, and getting it wrong
+after keys are registered orphans them, so settle it first:
+
+1. Set `OCTO_WEBAUTHN_RP_ID` to the console's hostname (or a registrable
+   parent of it) and `OCTO_WEBAUTHN_ORIGINS` to the exact origin the console is
+   served from — `https://shapoclyack.example.com`, not the API's internal URL.
+   Both default to `OCTO_PUBLIC_BASE_URL`, which is right when the console and
+   the API share it. The console must be on `https` (or `localhost`): browsers
+   do not expose WebAuthn anywhere else.
+2. Let administrators register keys (Security page → *Security keys and
+   passkeys*). Each needs the authenticator app enrolled first and a recent
+   verification.
+3. Only then set `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin` (and, if wanted,
+   `OCTO_MFA_STEPUP_PHISHING_RESISTANT=true`). An admin without a key is not
+   locked out: a code-verified session is confined to the Security page, where
+   it can register one. Watch `octo_mfa_verifications_total{outcome="webauthn_failure"}`
+   in the first days — a spike is usually a wrong origin, and the API log names
+   the reason for each refusal.
+
+Changing `OCTO_WEBAUTHN_RP_ID` later invalidates every registered key: the
+authenticator binds each credential to the RP ID it was created for. Treat it
+like a domain migration — keys have to be registered again, and until then the
+authenticator app is the way in.
+
 ### Break-glass local login
 
 On an installation with SSO configured, `OCTO_LOCAL_LOGIN=break-glass` reserves
