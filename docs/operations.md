@@ -1212,7 +1212,16 @@ status, so the refusal lasts at most one hold (`max(60s,
 OCTO_RUN_PUBLICATION_INTERVAL_SECONDS)`) after the last attempt stops. It is
 stamped and compared on the database's clock, not the pods': the pod running
 the attempt and the pod serving the button are not the same one, and a skew
-between them past one hold used to read a live attempt as a lease long gone. An
+between them past one hold used to read a live attempt as a lease long gone.
+(The SQLite dev fallback is one process with one clock and uses that.)
+
+When a requeued publication lands, the *run not published* note comes off the
+job in the same transaction that closes the row. If that fails — the job row
+refused the write — the run is still closed out and projected, and
+`octo_run_publication_stale_notes_total` goes up with a warning naming the job:
+that job's `error` says the run was not published although it was, and can be
+edited by hand. Notes written by the previous release (or a replica still on it
+during the rollout) carry their reason's `;` and are removed whole too. An
 attempt that has stopped renewing without stopping — a paused process — cannot
 be seen this way; what protects the requeued publication from it is that a
 requeue moves the row's `fence`, so the stale attempt no longer takes back the

@@ -157,7 +157,15 @@ def _db_now(session) -> datetime:
     pod running an attempt and read by whichever pod serves an operator's
     button. ``clock_timestamp()`` rather than ``now()``, which is the start of
     a transaction that may have waited on the row lock.
+
+    Postgres only. The SQLite dev fallback has neither function — asking it
+    raised on every job card, on both buttons and on every lease renewal, so
+    the hold was never pushed forward — and it is one process with one clock,
+    which is what :func:`_now` already is (as in ``leader_lock`` and
+    ``auth_audit``).
     """
+    if session.get_bind().dialect.name != "postgresql":
+        return _now()
     return session.execute(select(func.timezone("UTC", func.clock_timestamp()))).scalar_one()
 
 
@@ -799,8 +807,15 @@ def _clear_notes(session, publication: _Publication, reasons: list[str]) -> None
                 reasons=[redact_paths(reason) for reason in reasons] + reasons,
             )
     except Exception:  # noqa: BLE001 - a stale note must not cost the publication
+        # Counted and logged with the job, because the job is then the one
+        # place that says the run was not published while it was: this is
+        # how an operator finds it.
+        metrics_service.RUN_PUBLICATION_STALE_NOTES_TOTAL.inc()
         LOG.warning(
-            "Could not clear the publication note on job %s", publication.job_id,
+            "Run %s of job %s is published, but the note saying it was not could not "
+            "be taken off the job's error",
+            publication.run_id,
+            publication.job_id,
             exc_info=True,
         )
 
@@ -938,6 +953,11 @@ def _hold(row: models.RunPublication, *, now: datetime, rows: int, settings: Set
     """
     per_row = _lease_horizon_seconds(settings)
     row.next_attempt_at = now + timedelta(seconds=per_row * max(1, rows))
+    if (row.claims or 0) < (row.claims_base or 0):
+        # A replica on the release before 0062 recorded an outcome: it writes
+        # ``claims = 0`` and knows nothing of the base, which would read as a
+        # negative count and stretch the budget by as much.
+        row.claims_base = 0
     row.claims = (row.claims or 0) + 1
     # The generation the rollback fence compares, and the one ``claims``
     # cannot be: that counter starts over whenever an attempt records an
@@ -1289,7 +1309,9 @@ def _view(
         "attempts": row.attempts or 0,
         "max_attempts": settings.run_publication_max_attempts,
         # Claims since the last outcome: what the budget counts.
-        "claims": (row.claims or 0) - (row.claims_base or 0),
+        # Floored: a replica on the previous release resets ``claims`` and
+        # not the base, until the next claim here starts the base over.
+        "claims": max(0, (row.claims or 0) - (row.claims_base or 0)),
         "lease_lapses": row.lease_lapses or 0,
         "last_error": row.last_error if show_paths else redact_paths(row.last_error),
         "stored_at": _iso(row.stored_at),

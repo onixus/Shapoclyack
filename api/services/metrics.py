@@ -97,6 +97,14 @@ RUN_PUBLICATIONS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RUN_PUBLICATION_STALE_NOTES_TOTAL = Counter(
+    "octo_run_publication_stale_notes_total",
+    "Runs published after their publication had failed, whose \"run not "
+    "published\" note could not be taken off the job's error. The job then says "
+    "the opposite of what happened; the API log names it.",
+    registry=REGISTRY,
+)
+
 RUN_PUBLICATION_LEASE_RENEWALS_TOTAL = Counter(
     "octo_run_publication_lease_renewal_total",
     "Renewals of a running publication's hold on its row, by outcome: renewed; "

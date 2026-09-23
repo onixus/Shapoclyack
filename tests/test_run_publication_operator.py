@@ -712,6 +712,179 @@ def test_a_note_whose_reason_has_changed_since_still_ends_where_it_should(
     assert jobs_service.get_job(settings, job_id).error == after
 
 
+def test_a_note_written_by_the_previous_release_is_cleared_whole(tmp_path, monkeypatch):
+    """0.46 wrote the reason with its ``;`` intact, and the row no longer says which.
+
+    The row died on 0.46; after the upgrade it was requeued, its first attempt
+    failed with a different reason (overwriting ``last_error``) and the second
+    one landed. Cut at the first ``;``, the old note left ``; this run needs a
+    re-scan or a manual load`` on a published job. A note a replica still on
+    0.46 writes during the rollout is the same shape.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    after = "; partial results uploaded late by agent agent-1"
+    legacy = (
+        f"; run not published (publication {publication_id}): "
+        "the extracted upload is no longer on disk; this run needs a re-scan or a manual load"
+    )
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, job_id).error = f"Cancellation requested by op{legacy}{after}"
+        session.get(models.RunPublication, publication_id).last_error = "a later reason"
+    settings.run_publication_max_attempts = 3
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    assert run_publisher.reconcile_once(settings)["published"] == 1
+
+    assert jobs_service.get_job(settings, job_id).error == f"Cancellation requested by op{after}"
+
+
+def _waiting_on_a_lock(settings) -> int:
+    from sqlalchemy import text
+
+    with get_session(settings.postgres_url) as session:
+        return int(
+            session.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+def test_the_close_out_waits_for_a_peer_that_is_ending_the_row(tmp_path, monkeypatch):
+    """Two replicas, one row: B is ending it ``dead`` while A publishes it.
+
+    B holds the row inside the transaction that writes the note; A's
+    close-out must read the row *after* B commits, or it sees no error,
+    deletes the row and leaves B's note on a published run. Driven by a
+    barrier inside B's transaction and the database's own lock table, not by
+    sleeps.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    monkeypatch.setattr(run_completion, "on_run_published", lambda *_a, **_k: None)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        row.status = "pending"
+        row.last_error = None
+        session.get(models.Job, job_id).error = None
+    with get_session(settings.postgres_url) as session:
+        snapshot = run_publisher._snapshot(  # noqa: SLF001
+            session.get(models.RunPublication, publication_id)
+        )
+    assert snapshot.last_error is None
+
+    real_note = run_completion.note_publication_failed
+    noted = threading.Event()
+    release = threading.Event()
+
+    def _note_then_hold(session, job_id, **kwargs):
+        real_note(session, job_id, **kwargs)
+        noted.set()
+        assert release.wait(30), "the test never released the peer"
+
+    monkeypatch.setattr(run_completion, "note_publication_failed", _note_then_hold)
+    peer = threading.Thread(
+        target=run_publisher._record_failure,  # noqa: SLF001
+        args=(settings, snapshot, "peer: bucket unreachable"),
+        kwargs={"final": True},
+        name="peer",
+    )
+    closer = threading.Thread(
+        target=run_publisher._record_success,  # noqa: SLF001
+        args=(settings, snapshot),
+        name="closer",
+    )
+    peer.start()
+    try:
+        assert noted.wait(30), "the peer never wrote its note"
+        closer.start()
+        assert _wait_until(lambda: _waiting_on_a_lock(settings) >= 1), "the close-out never waited"
+    finally:
+        release.set()
+        peer.join(30)
+        if closer.ident is not None:
+            closer.join(30)
+
+    assert run_publisher.pending_publications(settings, job_id) == []
+    assert "run not published" not in (jobs_service.get_job(settings, job_id).error or "")
+
+
+def test_a_note_the_database_refuses_to_clear_neither_undoes_the_close_out_nor_hides(
+    tmp_path, monkeypatch
+):
+    """A real database error inside the clear, not a Python exception.
+
+    A ``RuntimeError`` from a stub leaves the transaction healthy, so it proved
+    nothing about the savepoint. A statement Postgres refuses aborts the whole
+    transaction unless it is rolled back to a savepoint — and then the row's
+    delete fails with it and the run is published again on every tick. The
+    job whose note stayed must also be findable: counted and logged with its id.
+    """
+    from sqlalchemy import text
+
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, run_id, publication_id = _dead_run(settings, monkeypatch)
+    settings.run_publication_max_attempts = 3
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    projected: list[str] = []
+
+    def _database_refuses(session, *_a, **_k):
+        session.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr(run_completion, "clear_publication_notes", _database_refuses)
+    monkeypatch.setattr(
+        run_completion,
+        "on_run_published",
+        lambda _settings, _job_id, **kwargs: projected.append(kwargs["run_id"]),
+    )
+    stale = metrics_service.REGISTRY.get_sample_value(
+        "octo_run_publication_stale_notes_total"
+    ) or 0.0
+
+    assert run_publisher.reconcile_once(settings)["published"] == 1
+    assert projected == [run_id]
+    assert run_publisher.pending_publications(settings, job_id) == []
+    assert metrics_service.REGISTRY.get_sample_value(
+        "octo_run_publication_stale_notes_total"
+    ) == stale + 1
+
+
+def test_a_claim_counter_a_previous_release_reset_does_not_go_negative(tmp_path, monkeypatch):
+    """A replica on 0.46 writes ``claims = 0`` and knows nothing of ``claims_base``.
+
+    The budget read ``claims - claims_base`` = -4 and so stretched by four
+    claims, and the console showed ``claims: -4``. The next claim on this
+    release notices and starts the base over.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        row.status = "pending"
+        row.claims_base = 5
+        row.claims = 0  # what the previous release's _record_failure writes
+        row.next_attempt_at = jobs_service._now()  # noqa: SLF001
+    [before] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert before["claims"] == 0
+
+    with get_session(settings.postgres_url) as session:
+        claimed = run_publisher._snapshot(  # noqa: SLF001
+            run_publisher._claim_due(  # noqa: SLF001
+                session, now=jobs_service._now(), limit=10, settings=settings  # noqa: SLF001
+            )[0]
+        )
+    assert claimed.claims - claimed.claims_base == 1
+    [after] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert after["claims"] == 1
+
+
 def test_a_tenant_reads_the_reason_but_not_the_pods_paths(tmp_path, monkeypatch):
     """Paths on the pod's disk are the platform admin's, in the reason as well.
 

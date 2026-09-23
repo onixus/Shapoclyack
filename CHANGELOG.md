@@ -58,6 +58,15 @@ All notable changes to Shapoclyack are documented in this file.
   the database's clock. `claims` no longer resets (budget counted from
   `claims_base`, migration `0062`), so a replica on the previous release, which
   fences on `claims` alone, cannot be handed its own number back by a requeue.
+- **Review of #435, round 2.** The database clock is Postgres-only: on the
+  SQLite dev fallback every job card, both buttons and every lease renewal
+  raised; it now uses the process clock there. A note written by 0.46 (reason
+  with `;`) is removed whole — the end of a note is the next known note prefix,
+  not the next `;`. A note the database refuses to clear no longer undoes the
+  close-out (savepoint, now tested with a real database error) and is counted
+  as `octo_run_publication_stale_notes_total`. A `claims` a previous release
+  reset below `claims_base` restarts the base on the next claim, and the API
+  never reports a negative count.
 
 ## [0.46-0922] — 2026-09-22
 

@@ -299,6 +299,16 @@ def on_run_published(
         notify_channels_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
 
 
+#: Every prefix a note appended to ``jobs.error`` starts with — what ends the
+#: note before it. A new ``_append_job_error``-style writer adds its prefix
+#: here, or a cleared publication note swallows it.
+_NOTE_PREFIXES = (
+    "; run not published (publication ",
+    "; run projections did not complete: ",
+    "; partial results uploaded late by agent ",
+)
+
+
 def _publication_note_prefix(publication_id: str) -> str:
     return f"; run not published (publication {publication_id}): "
 
@@ -344,9 +354,14 @@ def clear_publication_notes(
     Only this publication's notes go, and nothing around them: first the exact
     notes for ``reasons`` (the row's own ``last_error``, as written by this
     release or, with its ``;`` intact, by the one before), then any other note
-    of this publication up to the next ``;`` — which, since
-    :func:`note_publication_failed` writes none into a reason, is where it
-    ends.
+    of this publication up to where the next note begins.
+
+    "Where the next note begins" is the next of the prefixes something in this
+    codebase appends to ``error`` with (:data:`_NOTE_PREFIXES`), not the next
+    ``;``. A note written before this release — or by a replica still on it
+    during a rollout — carries its reason's ``;`` intact, and cutting there
+    left ``; this run needs a re-scan or a manual load`` on a job whose run
+    had since been published.
     """
     row = session.get(models.Job, job_id, with_for_update=True)
     if row is None or not row.error:
@@ -356,6 +371,7 @@ def clear_publication_notes(
     for reason in reasons:
         for text in (reason.replace(";", ","), reason):
             cleaned = cleaned.replace(f"{prefix}{text}", "")
-    cleaned = re.sub(rf"{re.escape(prefix)}[^;]*", "", cleaned)
+    ends = "|".join(re.escape(note) for note in _NOTE_PREFIXES)
+    cleaned = re.sub(rf"{re.escape(prefix)}.*?(?={ends}|$)", "", cleaned, flags=re.DOTALL)
     if cleaned != row.error:
         row.error = cleaned or None
