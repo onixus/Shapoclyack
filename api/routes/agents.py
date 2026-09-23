@@ -14,6 +14,7 @@ from fastapi.responses import PlainTextResponse
 from api.auth import (
     AgentPrincipal,
     Role,
+    cached_agent_info,
     StepUpDep,
     TenantPrincipal,
     get_settings,
@@ -100,7 +101,18 @@ def _bind_identity(principal: AgentPrincipal, requested_agent_id: str | None) ->
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
-def _require_active(agent_id: str) -> None:
+def _agent_for_request(
+    request: Request,
+    principal: AgentPrincipal,
+    requested_agent_id: str,
+) -> AgentInfo | None:
+    hit, info = cached_agent_info(request, principal, requested_agent_id)
+    if hit:
+        return info
+    return agents_service.get_agent(requested_agent_id)
+
+
+def _require_active(agent: AgentInfo | None) -> None:
     """403 when an operator has disabled or quarantined this agent (#308).
 
     Applied to the two things a non-active agent must not do — claim work and
@@ -109,7 +121,7 @@ def _require_active(agent_id: str) -> None:
     into a wall.
     """
     try:
-        agents_service.require_active(agent_id)
+        agents_service.require_active_info(agent)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
@@ -250,12 +262,13 @@ def heartbeat(
 )
 def claim_job(
     agent_id: str,
+    request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
     job_id: str | None = None,
 ) -> AgentClaimResponse | Response:
     _bind_identity(principal, agent_id)
-    agent = agents_service.get_agent(agent_id)
+    agent = _agent_for_request(request, principal, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id; register first")
     if agent.tenant_id != principal.tenant_id:
@@ -270,7 +283,7 @@ def claim_job(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Endpoint agents do not run scan jobs",
         )
-    _require_active(agent_id)
+    _require_active(agent)
     # The version floor is checked here rather than in require_agent: an agent
     # below it must still register and heartbeat, or the fleet view would lose
     # the very agents an operator needs to find and upgrade (#363).
@@ -286,6 +299,7 @@ def claim_job(
             agent_id,
             job_id=job_id,
             tenant_id=principal.tenant_id,
+            agent=agent,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -305,6 +319,7 @@ def claim_job(
 @router.post("/agent/jobs/{job_id}/results", response_model=JobInfo)
 async def upload_results(
     job_id: str,
+    request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     settings: Annotated[Settings, Depends(get_settings)],
     agent_id: Annotated[str, Form()],
@@ -327,12 +342,12 @@ async def upload_results(
     cancelled: Annotated[bool, Form()] = False,
 ) -> JobInfo:
     _bind_identity(principal, agent_id)
-    agent = agents_service.get_agent(agent_id)
+    agent = _agent_for_request(request, principal, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown agent_id")
     if agent.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
-    _require_active(agent_id)
+    _require_active(agent)
     archive_bytes: bytes | None = None
     if archive is not None:
         archive_bytes = await archive.read()

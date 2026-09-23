@@ -10,7 +10,7 @@ from sqlalchemy import or_, select
 
 from api.db import models
 from api.db.engine import get_session
-from api.schemas import AgentClaimResponse, JobInfo
+from api.schemas import AgentClaimResponse, AgentInfo, JobInfo
 from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import job_inputs
@@ -132,6 +132,7 @@ def claim_job(
     *,
     job_id: str | None = None,
     tenant_id: str | None = None,
+    agent: AgentInfo | None = None,
 ) -> AgentClaimResponse | None:
     """Assign a queued agent job to ``agent_id``, or return None.
 
@@ -159,7 +160,8 @@ def claim_job(
     concurrently — against the same replica or different ones — each get a
     different job instead of both being handed the head of the queue.
     """
-    agent = agents_service.get_agent(agent_id)
+    if agent is None:
+        agent = agents_service.get_agent(agent_id)
     if agent is None:
         raise LookupError("Unknown agent_id; register first")
     effective_tenant = tenant_id or agent.tenant_id

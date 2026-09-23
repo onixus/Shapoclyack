@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from api.schemas import AgentClaimResponse, JobInfo, StartScanRequest
+from api.schemas import AgentClaimResponse, AgentInfo, JobInfo, StartScanRequest
 from api.services import audit as audit_service
 from api.services import job_control
 from api.services import job_dispatch
@@ -263,12 +263,14 @@ def claim_job(
     *,
     job_id: str | None = None,
     tenant_id: str | None = None,
+    agent: AgentInfo | None = None,
 ) -> AgentClaimResponse | None:
     return job_control.claim_job(
         settings,
         agent_id,
         job_id=job_id,
         tenant_id=tenant_id,
+        agent=agent,
     )
 
 
