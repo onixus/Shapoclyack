@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { ConfigEditor } from "@/components/config-editor";
 import { KpiCard } from "@/components/kpi-card";
+import { useRetroMatchStatus } from "@/hooks/use-retro-match";
 import { useSystemStatus } from "@/hooks/use-system";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type { EnrichmentDb } from "@/lib/api";
@@ -48,6 +49,7 @@ export default function SystemPage() {
   const ago = useRelativeTime();
   const t = useT();
   const { data, isLoading, error, isFetching } = useSystemStatus();
+  const retroDataset = useRetroMatchStatus().data?.dataset ?? null;
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
   // GET /api/config needs `config.read` since #318, which a viewer does not
   // hold: rendering the panel for one would show an error where there used to
@@ -143,6 +145,28 @@ export default function SystemPage() {
                         <td className="py-2.5 px-2">
                           <p className="font-mono font-bold uppercase text-foreground">{db.name}</p>
                           <p className="font-mono text-[10px] text-muted-foreground">{db.path}</p>
+                          {/* The file's age says when it was written; what the
+                              retro matcher actually loaded from it — or why it
+                              could not — is the retro status's answer. */}
+                          {db.name === "nvd_cpe" && retroDataset ? (
+                            <p className="text-[10px] text-muted-foreground" data-testid="nvd-cpe-detail">
+                              {!retroDataset.present ? (
+                                t("retro.noDataset")
+                              ) : retroDataset.error ? (
+                                <span className="text-rose-600 dark:text-rose-400">{retroDataset.error}</span>
+                              ) : (
+                                <>
+                                  {t("page.system.nvdCpe.summary", {
+                                    products: retroDataset.products.toLocaleString(),
+                                    statements: retroDataset.statements.toLocaleString(),
+                                  })}
+                                  {retroDataset.updated
+                                    ? ` · ${t("page.system.nvdCpe.updated", { date: retroDataset.updated })}`
+                                    : ""}
+                                </>
+                              )}
+                            </p>
+                          ) : null}
                         </td>
                         <td className="py-2.5 px-2 text-right text-[11px] text-muted-foreground">
                           {formatBytes(db.size_bytes)}

@@ -2,6 +2,7 @@ import type {
   AgentInfo,
   AgentLifecycleStatus,
   AssetContextSource,
+  AssetServiceMatchStatus,
   AssetDataClassification,
   AssetEnvironment,
   AssetExposureLevel,
@@ -11,6 +12,7 @@ import type {
   JobInfo,
   MaintenanceWindowKind,
   NistRiskLevel,
+  RetroMatchConfidence,
   Role,
   ScanScopeEffect,
   SlaState,
@@ -189,6 +191,35 @@ export const SOFTWARE_CVE_MATCH_STATUS: Record<SoftwareCveMatchStatus, StatusSty
 export const VULN_SOURCE_STATUS: Record<VulnerabilitySource, StatusStyle> = {
   scan: { label: "scan", variant: "outline", className: MUTED },
   endpoint_software: { label: "endpoint", variant: "outline", className: INFO_VIOLET },
+  retro_match: { label: "retro match", variant: "outline", className: INFO_INDIGO },
+};
+
+/** How sure the retro matcher is (docs/retro-cve-matching.md). A vendor's own
+ * statement outranks an NVD range, and "backport possible" is the muted one:
+ * it is never a tracked finding, only a possible CVE on the service row. */
+export const RETRO_MATCH_CONFIDENCE: Record<RetroMatchConfidence, StatusStyle> = {
+  vendor_advisory: { label: "vendor advisory", variant: "outline", className: INFO_SKY },
+  version_range: { label: "version range", variant: "outline", className: IN_PROGRESS },
+  backport_possible: { label: "backport possible", variant: "secondary", className: MUTED },
+};
+
+/** Whether the retro matcher could assess a stored listener. Every reason it
+ * could not is a warning, not muted — for the same cause as the software
+ * matcher's `unknown`: an empty CVE list on such a row means "not asked", and
+ * reading it as "clean" is exactly the wrong conclusion. */
+export const ASSET_SERVICE_MATCH_STATUS: Record<AssetServiceMatchStatus, StatusStyle> = {
+  matched: { label: "assessed", className: SUCCESS },
+  unknown_product: { label: "unknown product", variant: "outline", className: IN_PROGRESS },
+  no_version: { label: "no version", variant: "outline", className: IN_PROGRESS },
+  too_old: { label: "too old", variant: "outline", className: IN_PROGRESS },
+  no_dataset: { label: "no dataset", variant: "outline", className: IN_PROGRESS },
+};
+
+/** A listener no sweep has reached yet (`match_status` null). */
+export const ASSET_SERVICE_NOT_MATCHED: StatusStyle = {
+  label: "not yet matched",
+  variant: "secondary",
+  className: MUTED,
 };
 
 export const SEVERITY_STATUS: Record<Severity, StatusStyle & { tremorColor: string }> = {

@@ -823,6 +823,93 @@ export const en = {
   "vuln.software.lastSnapshot": "Last observed",
   "vuln.software.device": "Endpoint",
 
+  // Retro CVE matching (docs/retro-cve-matching.md): findings inferred from a
+  // stored service fingerprint and the NVD CPE-range data, not observed.
+  "vuln.source.retroMatch": "Retro CVE match",
+  "vuln.retro.noVerify":
+    "Inferred from a stored service fingerprint and an NVD version range, not observed — a re-scan that stays silent about it would prove nothing, so none is offered. A scan that does see the CVE turns this into a scan finding.",
+  "vuln.retro.confidence": "Match confidence",
+  "vuln.retro.confidenceHint.vendor_advisory":
+    "The distribution's own advisory says this release is affected.",
+  "vuln.retro.confidenceHint.version_range":
+    "The version falls inside the NVD affected range; no distribution was visible to check for a backported fix.",
+  "vuln.retro.evidence": "Retro match evidence",
+  "vuln.retro.productVersion": "Product / version",
+  "vuln.retro.upstream": "compared as {version}",
+  "vuln.retro.cpe": "CPE",
+  "vuln.retro.via": "Identified by",
+  "vuln.retro.via.cpe": "CPE the scan recorded",
+  "vuln.retro.via.product_table": "product name",
+  "vuln.retro.via.banner": "service banner",
+  "vuln.retro.range": "NVD affected range",
+  "vuln.retro.feedDate": "NVD data as of",
+  "vuln.retro.dataset": "Dataset version",
+  "vuln.retro.distro": "Distribution",
+  "vuln.retro.advisory": "Vendor advisory",
+  "vuln.retro.fixedIn": "Fixed in",
+  "vuln.retro.installed": "Installed",
+  "vuln.retro.noFix": "no fix published",
+
+  "retro.title": "Retro CVE matching",
+  "retro.subtitle":
+    "Stored service fingerprints re-checked against the NVD CPE-range data, so a newly published CVE surfaces without a re-scan.",
+  "retro.listeners": "Listeners",
+  "retro.assessed": "Assessed",
+  "retro.pending": "Awaiting re-check",
+  "retro.possible": "Possible, not tracked",
+  "retro.possibleHint":
+    "NVD says affected, but the banner names a distribution that may have backported the fix. These carry no deadline.",
+  "retro.openFindings": "Open retro findings",
+  "retro.lastRun": "Last sweep",
+  "retro.never": "never",
+  "retro.datasetAsOf": "NVD data as of {date}",
+  "retro.requested": "Re-check requested {when} by {who}",
+  "retro.refreshBtn": "Re-check against current CVE data",
+  "retro.refreshing": "Queuing…",
+  "retro.queued.one": "{count} listener queued; the worker re-checks it in the background.",
+  "retro.queued.few": "{count} listeners queued; the worker re-checks them in the background.",
+  "retro.queued.many": "{count} listeners queued; the worker re-checks them in the background.",
+  "retro.disabled":
+    "Retro matching is switched off on this installation (OCTO_RETRO_MATCH_ENABLED).",
+  "retro.workerStopped":
+    "The retro worker is not running on this API instance — queued listeners wait until one is.",
+  "retro.noDataset": "No NVD CPE-range dataset is loaded, so nothing can be matched.",
+  "retro.loading": "Loading retro matching status…",
+  "page.system.nvdCpe.summary": "{products} products · {statements} range statements",
+  "page.system.nvdCpe.updated": "data as of {date}",
+
+  "asset.tab.services": "Services ({count})",
+  "services.title": "Fingerprinted services",
+  "services.subtitle":
+    "Listeners scans recorded on this asset, re-checked against current CVE data without a re-scan.",
+  "services.col.port": "Port",
+  "services.col.service": "Service",
+  "services.col.product": "Product / version",
+  "services.col.cpe": "CPE",
+  "services.col.lastSeen": "Last seen",
+  "services.col.status": "Retro match",
+  "services.col.cves": "CVEs",
+  "services.loading": "Loading services…",
+  "services.empty":
+    "No fingerprinted listeners are stored for this asset yet. They appear after a scan with service detection.",
+  "services.counts.vulnerable": "Vulnerable",
+  "services.counts.fixed": "Fixed",
+  "services.counts.notAffected": "Not affected",
+  "services.counts.possible": "Possible",
+  "services.possibleList":
+    "Possible, not tracked — the distribution may have backported the fix:",
+  "services.reason.unknown_product":
+    "The product is not in the NVD CPE data, so it could not be checked — which is not the same as clean.",
+  "services.reason.no_version":
+    "The scan recorded no version, so no range could be compared — which is not the same as clean.",
+  "services.reason.too_old":
+    "Not observed recently enough to re-check; the next scan that sees it brings it back.",
+  "services.reason.no_dataset":
+    "No NVD CPE-range dataset was loaded when this listener was last checked.",
+  "services.reason.pending": "Not matched against the current dataset yet.",
+  "services.footnote":
+    "Only rows marked assessed were actually checked. The others say why they could not be — an empty CVE column there does not mean the service is clean.",
+
   // False-positive verdicts (Track E). The verdict is an expiring attribute of
   // the finding, so every string here names the expiry as well as the verdict.
   "vuln.reason.falsePositive": "Not a real finding",
@@ -2345,6 +2432,92 @@ export const ru: Record<MsgKey, string> = {
   "vuln.software.lastSnapshot": "Последнее наблюдение",
   "vuln.software.device": "Хост",
 
+  // Ретро-сопоставление CVE (docs/retro-cve-matching.md).
+  "vuln.source.retroMatch": "Ретро-сопоставление",
+  "vuln.retro.noVerify":
+    "Выведено из сохранённого отпечатка сервиса и диапазона версий NVD, а не наблюдалось — молчание повторного скана ничего бы не доказало, поэтому он не предлагается. Скан, который увидит эту CVE, превратит находку в сканерную.",
+  "vuln.retro.confidence": "Уверенность сопоставления",
+  "vuln.retro.confidenceHint.vendor_advisory":
+    "Собственный бюллетень дистрибутива говорит, что этот релиз затронут.",
+  "vuln.retro.confidenceHint.version_range":
+    "Версия попадает в затронутый диапазон NVD; дистрибутив не виден, поэтому бэкпорт исправления проверить нельзя.",
+  "vuln.retro.evidence": "Основание ретро-сопоставления",
+  "vuln.retro.productVersion": "Продукт / версия",
+  "vuln.retro.upstream": "сравнивалась как {version}",
+  "vuln.retro.cpe": "CPE",
+  "vuln.retro.via": "Определено по",
+  "vuln.retro.via.cpe": "CPE, записанному сканом",
+  "vuln.retro.via.product_table": "названию продукта",
+  "vuln.retro.via.banner": "баннеру сервиса",
+  "vuln.retro.range": "Затронутый диапазон NVD",
+  "vuln.retro.feedDate": "Данные NVD на",
+  "vuln.retro.dataset": "Версия набора данных",
+  "vuln.retro.distro": "Дистрибутив",
+  "vuln.retro.advisory": "Бюллетень вендора",
+  "vuln.retro.fixedIn": "Исправлено в",
+  "vuln.retro.installed": "Установлено",
+  "vuln.retro.noFix": "исправление не опубликовано",
+
+  "retro.title": "Ретро-сопоставление CVE",
+  "retro.subtitle":
+    "Сохранённые отпечатки сервисов перепроверяются по диапазонам CPE из NVD — новая CVE находится без пересканирования.",
+  "retro.listeners": "Сервисов",
+  "retro.assessed": "Проверено",
+  "retro.pending": "Ждут перепроверки",
+  "retro.possible": "Возможные, не отслеживаются",
+  "retro.possibleHint":
+    "NVD считает версию затронутой, но баннер называет дистрибутив, который мог бэкпортировать исправление. Срок на них не ставится.",
+  "retro.openFindings": "Открытые ретро-находки",
+  "retro.lastRun": "Последний проход",
+  "retro.never": "не было",
+  "retro.datasetAsOf": "Данные NVD на {date}",
+  "retro.requested": "Перепроверку запросил {who} {when}",
+  "retro.refreshBtn": "Перепроверить по актуальным данным CVE",
+  "retro.refreshing": "Ставим в очередь…",
+  "retro.queued.one": "В очередь поставлен {count} сервис; воркер перепроверит его в фоне.",
+  "retro.queued.few": "В очередь поставлено {count} сервиса; воркер перепроверит их в фоне.",
+  "retro.queued.many": "В очередь поставлено {count} сервисов; воркер перепроверит их в фоне.",
+  "retro.disabled":
+    "Ретро-сопоставление выключено на этой инсталляции (OCTO_RETRO_MATCH_ENABLED).",
+  "retro.workerStopped":
+    "Ретро-воркер не запущен на этом экземпляре API — очередь ждёт, пока он появится.",
+  "retro.noDataset": "Набор диапазонов CPE из NVD не загружен, сопоставлять не с чем.",
+  "retro.loading": "Загрузка состояния ретро-сопоставления…",
+  "page.system.nvdCpe.summary": "продуктов: {products} · диапазонов: {statements}",
+  "page.system.nvdCpe.updated": "данные на {date}",
+
+  "asset.tab.services": "Сервисы ({count})",
+  "services.title": "Распознанные сервисы",
+  "services.subtitle":
+    "Сервисы, которые сканы записали на этом активе, перепроверяются по актуальным данным CVE без пересканирования.",
+  "services.col.port": "Порт",
+  "services.col.service": "Сервис",
+  "services.col.product": "Продукт / версия",
+  "services.col.cpe": "CPE",
+  "services.col.lastSeen": "Последнее наблюдение",
+  "services.col.status": "Ретро-сопоставление",
+  "services.col.cves": "CVE",
+  "services.loading": "Загрузка сервисов…",
+  "services.empty":
+    "Для этого актива ещё нет сохранённых отпечатков сервисов. Они появятся после скана с определением сервисов.",
+  "services.counts.vulnerable": "Уязвимо",
+  "services.counts.fixed": "Исправлено",
+  "services.counts.notAffected": "Не затронуто",
+  "services.counts.possible": "Возможно",
+  "services.possibleList":
+    "Возможные, не отслеживаются — дистрибутив мог бэкпортировать исправление:",
+  "services.reason.unknown_product":
+    "Продукта нет в данных CPE из NVD, проверить его нельзя — это не то же самое, что «чисто».",
+  "services.reason.no_version":
+    "Скан не записал версию, сравнивать с диапазоном нечего — это не то же самое, что «чисто».",
+  "services.reason.too_old":
+    "Сервис давно не наблюдался и не перепроверяется; следующий скан, который его увидит, вернёт его в работу.",
+  "services.reason.no_dataset":
+    "При последней проверке набор диапазонов CPE из NVD не был загружен.",
+  "services.reason.pending": "Ещё не сопоставлен с текущим набором данных.",
+  "services.footnote":
+    "Проверены только строки со статусом «проверен». Остальные объясняют, почему проверить не удалось, — пустая колонка CVE в них не означает, что сервис чист.",
+
   // Вердикт «ложное срабатывание» (Track E).
   "vuln.reason.falsePositive": "Ложное срабатывание",
   "vuln.fp.title": "Ложное срабатывание",
@@ -3144,6 +3317,17 @@ export const STATUS_EN: Record<string, string> = {
   denied: "denied",
   "trust change": "trust change",
   revoked: "revoked",
+  // Retro CVE matching: the source, the confidence and the listener verdicts.
+  "retro match": "retro match",
+  "vendor advisory": "vendor advisory",
+  "version range": "NVD version range",
+  "backport possible": "backport possible",
+  assessed: "assessed",
+  "unknown product": "unknown product",
+  "no version": "no version",
+  "too old": "too old",
+  "no dataset": "no dataset",
+  "not yet matched": "not yet matched",
 };
 
 export const STATUS_RU: Record<string, string> = {
@@ -3246,5 +3430,15 @@ export const STATUS_RU: Record<string, string> = {
   denied: "отказано",
   "trust change": "смена доверия",
   revoked: "отозван",
+  "retro match": "ретро-сопоставление",
+  "vendor advisory": "по бюллетеню вендора",
+  "version range": "по диапазону версий NVD",
+  "backport possible": "возможно, бэкпорт",
+  assessed: "проверен",
+  "unknown product": "неизвестный продукт",
+  "no version": "нет версии",
+  "too old": "давно не виден",
+  "no dataset": "нет данных NVD",
+  "not yet matched": "ещё не проверен",
 };
 

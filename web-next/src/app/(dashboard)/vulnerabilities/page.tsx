@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
 import { VulnerabilityBulkActions } from "@/components/vulnerability/bulk-actions";
+import { RetroMatchCard } from "@/components/vulnerability/retro-match-card";
 import { useT } from "@/lib/i18n";
 import { useRelativeTime } from "@/lib/i18n/datetime";
 import { KpiCard } from "@/components/kpi-card";
@@ -24,6 +25,7 @@ import { useBulkSelection } from "@/hooks/use-bulk-actions";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTrackedVulnerabilities, useVulnerabilitySummary } from "@/hooks/use-vulnerabilities";
 import { MAX_BULK_IDS } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 import type {
   SlaState,
   TrackedVulnerability,
@@ -32,6 +34,7 @@ import type {
   VulnLifecycleState,
 } from "@/lib/api";
 import {
+  RETRO_MATCH_CONFIDENCE,
   SEVERITY_STATUS,
   VULN_LIFECYCLE_STATUS,
   VULN_SOURCE_STATUS,
@@ -52,6 +55,7 @@ const ALL_STATES = "any";
 function VulnerabilitiesInner() {
   const t = useT();
   const ago = useRelativeTime();
+  const { canOperate } = useAuthStore();
   const searchParams = useSearchParams();
   const initialAssetId = (searchParams.get("assetId") || "").trim();
   const initialSla = (searchParams.get("sla") || "") as SlaState | "";
@@ -139,7 +143,17 @@ function VulnerabilitiesInner() {
         header: t("vuln.source"),
         enableSorting: false,
         cell: ({ row }) => (
-          <StatusBadge value={row.original.source} map={VULN_SOURCE_STATUS} />
+          <div className="flex flex-col items-start gap-1">
+            <StatusBadge value={row.original.source} map={VULN_SOURCE_STATUS} />
+            {/* An inferred finding says how sure the inference is: a vendor's
+                statement and a bare NVD range are not the same claim. */}
+            {row.original.source === "retro_match" && row.original.match_confidence ? (
+              <StatusBadge
+                value={row.original.match_confidence}
+                map={RETRO_MATCH_CONFIDENCE}
+              />
+            ) : null}
+          </div>
         ),
       },
       {
@@ -282,6 +296,8 @@ function VulnerabilitiesInner() {
         />
       </div>
 
+      <RetroMatchCard canOperate={canOperate} />
+
       <DataTable
         columns={columns}
         data={data}
@@ -343,6 +359,7 @@ function VulnerabilitiesInner() {
                 <SelectItem value="endpoint_software">
                   {t("vuln.source.endpointSoftware")}
                 </SelectItem>
+                <SelectItem value="retro_match">{t("vuln.source.retroMatch")}</SelectItem>
               </SelectContent>
             </Select>
             <Select

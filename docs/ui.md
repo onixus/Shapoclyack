@@ -434,6 +434,33 @@ its row shows the installed package and the version that closes it
 (`curl 7.68.0-1ubuntu2.1 → 7.68.0-1ubuntu2.20`) where a scan finding shows
 `port 443`.
 
+### Retro CVE matches
+
+A third source, **retro match** (`?source=retro_match`), is a finding the retro
+matcher inferred from a stored service fingerprint and the NVD CPE-range data,
+not one a scan observed ([retro-cve-matching.md](retro-cve-matching.md)). Its
+row carries a second badge with the matcher's confidence: **vendor advisory**
+(the distribution's own advisory says the release is affected) or **NVD version
+range** (the version is inside the NVD window and no distribution was visible
+to check for a backport). The finding card adds a **Retro match evidence**
+block — product and version (and the upstream version it was compared as), the
+CPE key, the NVD affected range, the feed date and dataset version, and, when a
+distribution was visible, its release, the advisory id and the fixed version —
+so the claim can be checked by hand. The **Verify remediation** button is not
+offered for these, for the same reason it is not offered for software findings:
+the API refuses the dispatch, because a re-scan that does not know the CVE
+would "verify" it by silence.
+
+Above the table, the **Retro CVE matching** card shows the active tenant's
+queue from `GET /api/retro-match/status`: listeners stored, assessed, awaiting
+re-check, possible-but-untracked matches, open retro findings by confidence, the
+NVD feed date and the last sweep. Operators get **Re-check against current CVE
+data** (`POST /api/retro-match/refresh`), which only queues — the card says how
+many listeners went back on the queue, and its 15-second poll shows the worker
+draining them. The button is disabled when retro matching is switched off, and
+the card says so when the worker is not running on this API instance or no
+dataset is loaded. The dataset's own provenance is on `/system`, below.
+
 ### Bulk actions
 
 Every row carries a checkbox, and the header one ticks the whole page
@@ -540,6 +567,15 @@ owner or service.
 - **Findings** — tracked findings with lifecycle, SLA and the next required
   action (assign, acknowledge, …), linking to the finding card and the
   Remediation board;
+- **Services** — the listeners scans fingerprinted on the asset
+  (`GET /api/assets/{id}/services`): port/protocol, service, product and
+  version (with the banner), CPE, last seen, and the retro matcher's verdict.
+  An `assessed` row shows vulnerable / fixed / not-affected / possible counts,
+  with the possible CVEs — NVD says affected, a visible distribution may have
+  backported the fix — in a collapsed list, because they are deliberately not
+  tracked findings. Every other row says why it could not be assessed
+  (`unknown product`, `no version`, `too old`, `no dataset`, or `not yet
+  matched`) and shows no counts, so an empty CVE column is never read as clean;
 - **Software** — the endpoint Agent's (Lariska) inventory when an endpoint
   is linked;
 - **Scan evidence** — last-run ports, host telemetry and raw findings
@@ -1063,6 +1099,13 @@ A `usable` of `null` — no manifest beside the data, which is every image built
 before the manifest existed — is left to the age check and badges as it did
 before. "Nothing recorded" is not "the data is bad". See
 [configuration.md](configuration.md#provenance-what-the-image-actually-shipped).
+
+The `nvd_cpe` row — the NVD CPE-range file behind retro CVE matching — also says
+what the matcher actually loaded from it, read from
+`GET /api/retro-match/status`: the number of products and range statements and
+the feed date, or the load error when the file is present but unusable. The
+file's age says when it was written; this line says whether the matcher can use
+it.
 
 ## Scan scope refusals elsewhere
 
