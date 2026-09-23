@@ -79,6 +79,16 @@ All notable changes to Shapoclyack are documented in this file.
   running publication's hold, `renewed` / `late` / `superseded` / `failed`, and
   `run_publications.lease_lapses` on the row it happened to. Until now a lost
   renewal — the precondition of a second parallel attempt — was a log line.
+- **A pull-request gate on GitHub**
+  ([#345](https://github.com/onixus/Shapoclyack/issues/345)):
+  `.github/workflows/pr-gate.yml`, one Python 3.12 job with a read-only token
+  on `pull_request` to `main` and `merge_group` — `scripts/ci-lint.sh`,
+  `compileall` and `scripts/ci-pytest.sh` without PostgreSQL/NATS (integration
+  and coverage gates off). The local Jenkins remains the full CI. `ruff.toml`
+  now sets `target-version = "py311"`, the oldest Python in the Jenkins matrix,
+  so 3.12-only syntax fails lint instead of only the 3.11 test leg.
+  `tests/test_pr_gate.py` parses the workflow and compares triggers,
+  permissions and commands whole.
 
 ### Changed
 
