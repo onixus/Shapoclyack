@@ -1997,9 +1997,10 @@ class VulnerabilityInfo(BaseModel):
     tenant_id: str
     asset_id: str
     finding_key: str
-    # Which observer produced it: "scan" or "endpoint_software". The console
-    # branches on this — a software finding has a package where a scan finding
-    # has a port, and it is not verifiable by a re-scan.
+    # Which observer produced it: "scan", "endpoint_software" or
+    # "retro_match". The console branches on this — a software finding has a
+    # package where a scan finding has a port, and neither a software nor a
+    # retro finding is verifiable by a re-scan.
     source: str = "scan"
     device_id: str | None = None
     cve: str | None = None
@@ -2086,6 +2087,11 @@ class VulnerabilityInfo(BaseModel):
     fp_suppress_until: str | None = None
     fp_observations: int = 0
     fp_suppressed: bool = False
+    # Retro matching (docs/retro-cve-matching.md): how sure the matcher is
+    # (``vendor_advisory`` | ``version_range``) and what it saw — product,
+    # version, CPE, NVD range, feed date, advisory. NULL for observed findings.
+    match_confidence: str | None = None
+    match_evidence: dict[str, Any] | None = None
 
 
 class VulnerabilityEventInfo(BaseModel):
@@ -3109,3 +3115,81 @@ class EndpointAgentReleaseInfo(BaseModel):
     notes: str | None = None
     uploaded_at: str | None = None
     uploaded_by: str | None = None
+
+
+class AssetServiceInfo(BaseModel):
+    """One listener a scan fingerprinted on an asset (docs/retro-cve-matching.md).
+
+    ``match_status`` is what the retro matcher concluded about it: ``matched``
+    (it could ask), or why it could not — ``unknown_product``, ``no_version``,
+    ``too_old`` — so an empty CVE list is never read as "clean" when it means
+    "not assessable". ``possible_cves`` are the NVD hits a visible distribution
+    may have backported; they are deliberately not tracked findings.
+    """
+
+    id: int
+    asset_id: str
+    host: str = ""
+    port: int
+    protocol: str = "tcp"
+    service: str = ""
+    product: str = ""
+    version: str = ""
+    banner: str = ""
+    cpe: list[str] = Field(default_factory=list)
+    source: str = ""
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    last_run_id: str | None = None
+    fingerprint_changed_at: str | None = None
+    matched_dataset_version: str | None = None
+    matched_at: str | None = None
+    match_status: str | None = None
+    match_counts: dict[str, int] = Field(default_factory=dict)
+    possible_cves: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CpeRangeDatasetStatus(BaseModel):
+    """Provenance of the NVD CPE-range dataset the retro matcher reads."""
+
+    path: str
+    present: bool = False
+    source: str | None = None
+    updated: str | None = None
+    marker: str | None = None
+    products: int = 0
+    statements: int = 0
+    error: str | None = None
+
+
+class RetroMatchStatus(BaseModel):
+    """What the retro matcher knows and has done for the caller's tenant."""
+
+    enabled: bool = True
+    worker_running: bool = False
+    dataset: CpeRangeDatasetStatus
+    # The version listeners are matched against: the NVD marker joined with a
+    # digest of the advisory feeds. ``None`` when there is no dataset to match.
+    dataset_version: str | None = None
+    services_total: int = 0
+    # Not yet matched against ``dataset_version``.
+    services_pending: int = 0
+    services_assessed: int = 0
+    # Open retro findings by confidence.
+    open_findings: dict[str, int] = Field(default_factory=dict)
+    possible_matches: int = 0
+    last_run_at: str | None = None
+    last_dataset_version: str | None = None
+    findings_created: int = 0
+    events_published: int = 0
+    events_summarised: int = 0
+    last_stats: dict[str, Any] = Field(default_factory=dict)
+    refresh_requested_at: str | None = None
+    refresh_requested_by: str | None = None
+
+
+class RetroMatchRefreshResult(BaseModel):
+    """``POST /retro-match/refresh``: listeners put back on the queue."""
+
+    queued: int = 0
+    worker_running: bool = False

@@ -42,6 +42,7 @@ from api.routes import service_tokens as service_tokens_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
 from api.routes import vulnerabilities as vulnerabilities_routes
+from api.routes import retro_match as retro_match_routes
 from api.routes import notification_channels as notification_channels_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
@@ -59,6 +60,7 @@ from api.services import health as health_service
 from api.services import screenshot_retention
 from api.services import sla_escalation
 from api.services import software_match_worker
+from api.services import retro_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services import run_publisher
@@ -111,6 +113,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # per-row claim, so a second replica would re-match the same devices
     # and write the same lifecycle events twice.
     software_match_worker.start_worker(settings)
+    # Leader-locked for the same reason, plus one: it publishes new_cve events,
+    # which a second replica would send twice (docs/retro-cve-matching.md).
+    retro_match_worker.start_worker(settings)
     # Leader-locked like the scan dispatcher above, and for a stronger
     # reason: a duplicate scan is wasted work, a duplicate report is a
     # second PDF in a customer's inbox.
@@ -145,6 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         job_reaper.stop_worker()
         sla_escalation.stop_worker()
         report_dispatcher.stop_worker()
+        retro_match_worker.stop_worker()
         software_match_worker.stop_worker()
         risk_snapshots.stop_worker()
         run_retention.stop_worker()
@@ -367,6 +373,7 @@ def create_app() -> FastAPI:
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")
+    app.include_router(retro_match_routes.router, prefix="/api")
     app.include_router(compliance_routes.router, prefix="/api")
     app.include_router(adoption_routes.router, prefix="/api")
     app.include_router(usage_routes.router, prefix="/api")

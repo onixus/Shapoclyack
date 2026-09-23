@@ -170,7 +170,11 @@ def reset_for_tests() -> None:
         session.query(models.EndpointDevice).delete()
         session.query(models.AssetIdentifier).delete()
         session.query(models.AssetTag).delete()
+        # Would cascade with the asset (FK ON DELETE CASCADE, migration 0064);
+        # listed so a reader of this function sees every table it empties.
+        session.query(models.AssetService).delete()
         session.query(models.Asset).delete()
+        session.query(models.RetroMatchState).delete()
         # The IP<->FQDN correlation trail (P4.2) has no foreign key to either
         # assets or tenants, so it survived the truncation around it and, like
         # the config overrides, the whole pytest session. It is keyed

@@ -1317,7 +1317,9 @@ class Vulnerability(Base):
     # folded in by api/services/software_findings.py). The two share the table
     # because they share everything an operator does with a finding — an owner,
     # a deadline, a ticket, an audit trail — and differ only in who is allowed
-    # to say it is gone.
+    # to say it is gone. "retro_match" (api/services/retro_findings.py) is a
+    # stored service fingerprint re-matched against the NVD range dataset; it
+    # shares the *scan* key, and a scan that observes it takes the row over.
     source: Mapped[str] = mapped_column(default="scan", server_default="scan")
     # The endpoint the software finding was observed on. NULL for every scan
     # finding. SET NULL rather than CASCADE, exactly as EndpointDevice.asset_id
@@ -1479,6 +1481,17 @@ class Vulnerability(Base):
     fp_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     fp_suppress_until: Mapped[datetime | None] = mapped_column(default=None)
     fp_observations: Mapped[int] = mapped_column(default=0, server_default="0")
+    # How sure the observer is, for a finding nobody observed directly: a
+    # ``retro_match`` row says "the NVD range dataset covers the version this
+    # service disclosed" (``version_range``) or "the distribution's advisory
+    # says this build is unfixed" (``vendor_advisory``). NULL for every scan
+    # and endpoint-software finding, and cleared when a scan observes the
+    # finding itself (docs/retro-cve-matching.md).
+    match_confidence: Mapped[str | None] = mapped_column(default=None)
+    # What the retro matcher saw: product, version, CPE, the range, the feed
+    # date, the advisory. Kept after a scan takes the row over, because it is
+    # the record of why the finding existed before the scan confirmed it.
+    match_evidence: Mapped[dict | None] = mapped_column(JSON, default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -2756,3 +2769,98 @@ class NatsOutboxEntry(Base):
         # growing precisely during the outage it is there to measure.
         Index("ix_nats_outbox_stale", "status", "created_at"),
     )
+
+
+class AssetService(Base):
+    """One listener a scan fingerprinted on an asset (docs/retro-cve-matching.md).
+
+    Until this table the platform kept no service inventory: the product and
+    version a scan disclosed lived in the run's ``services.json`` / nmap XML and
+    left with the run directory at ``run_retention_days``. That is enough for
+    the scan's own CVE checks, which run while the socket is open, and useless
+    for the question a new CVE asks — *which of our hosts run the affected
+    version?* — which has to be answerable without re-scanning.
+
+    Keyed ``(tenant, asset, port, protocol)``: the same listener on the next
+    scan is the same row, updated. A newer observation replaces the fingerprint;
+    an older one (a backfill walking runs out of order) only widens
+    ``first_seen_at``. A port that stops being observed is not deleted —
+    ``last_seen_at`` says how old the statement is, exactly as a finding's does.
+
+    ``matched_dataset_version`` is the retro matcher's durable queue, the same
+    device as ``EndpointDevice.last_matched_snapshot_id``: a row is due when it
+    differs from the NVD dataset's current marker, which a new fingerprint (the
+    column is cleared) and a new dataset (the marker moves) both cause.
+    """
+
+    __tablename__ = "asset_services"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    # CASCADE like a finding: a fingerprint is a statement about an asset.
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="CASCADE"), index=True
+    )
+    # The address the scan reached it on — what a retro ``new_cve`` event names
+    # as ``host``, as a scan's own event would.
+    host: Mapped[str] = mapped_column(default="")
+    port: Mapped[int]
+    protocol: Mapped[str] = mapped_column(default="tcp")
+    service: Mapped[str] = mapped_column(default="")
+    product: Mapped[str] = mapped_column(default="")
+    version: Mapped[str] = mapped_column(default="")
+    # Truncated raw banner, or nmap's extrainfo — where "Ubuntu Linux" or
+    # "Debian-2+deb12u3" lives when the version field does not carry it.
+    banner: Mapped[str] = mapped_column(default="")
+    cpe: Mapped[list] = mapped_column(JSON, default=list)
+    # pulse | nmap
+    source: Mapped[str] = mapped_column(default="")
+    first_seen_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+    last_run_id: Mapped[str | None] = mapped_column(default=None)
+    # When product/version/banner/cpe last changed, as opposed to when the
+    # listener was last seen.
+    fingerprint_changed_at: Mapped[datetime]
+    matched_dataset_version: Mapped[str | None] = mapped_column(default=None)
+    matched_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Verdict tallies and the "possible, unconfirmed" CVEs of the last match —
+    # the statements that are deliberately not tracked findings.
+    match_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    match_failure_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    match_retry_after: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "asset_id", "port", "protocol", name="uq_asset_service_listener"
+        ),
+        # The worker's due read: one tenant's rows not yet matched against the
+        # current dataset.
+        Index("ix_asset_services_match_due", "tenant_id", "matched_dataset_version"),
+    )
+
+
+class RetroMatchState(Base):
+    """Per-tenant bookkeeping of the retro matcher, for the status route.
+
+    Not the queue — that is ``asset_services.matched_dataset_version`` — and
+    nothing reads it to decide what to do. It exists so "when did this last
+    run, against which dataset, and what did it find" has an answer that
+    survives a restart and is the same in every replica.
+    """
+
+    __tablename__ = "retro_match_state"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    dataset_version: Mapped[str | None] = mapped_column(default=None)
+    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Cumulative since the tenant's first sweep.
+    findings_created: Mapped[int] = mapped_column(default=0, server_default="0")
+    events_published: Mapped[int] = mapped_column(default=0, server_default="0")
+    events_suppressed: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    refresh_requested_at: Mapped[datetime | None] = mapped_column(default=None)
+    refresh_requested_by: Mapped[str | None] = mapped_column(default=None)

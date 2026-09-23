@@ -15,6 +15,7 @@ from pathlib import Path
 from api.db import models
 from api.db.engine import get_session
 from api.services import artifact_store
+from api.services import asset_services
 from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import auth_audit
@@ -118,6 +119,33 @@ def track_vulnerabilities_best_effort(
     except Exception:  # noqa: BLE001
         _log.exception(
             "Vulnerability tracking failed for run %s (tenant=%s, job=%s)",
+            run_id,
+            tenant_id,
+            job_id,
+        )
+
+
+def record_services_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+) -> None:
+    """Best-effort record of the run's service fingerprints (retro matching).
+
+    After the vulnerability fold and only for a *succeeded* run, for the same
+    two reasons: a fingerprint hangs off an asset, which the upsert above has
+    just written, and a failed run may have stopped halfway through the probe
+    stage and would record an older version of a listener as its newest.
+
+    Quiet on failure like the fold: a listener this misses is still in the run
+    directory, the next scan records it, and the backfill script can re-read
+    any run still on disk (docs/retro-cve-matching.md).
+    """
+    if not run_id:
+        return
+    try:
+        asset_services.record_run(settings, tenant_id=tenant_id, run_id=run_id)
+    except Exception:  # noqa: BLE001
+        _log.exception(
+            "Service fingerprint recording failed for run %s (tenant=%s, job=%s)",
             run_id,
             tenant_id,
             job_id,
@@ -279,6 +307,9 @@ def project_published_run(
     # observe — a disappearance is not a discovery.
     if status == job_states.SUCCEEDED:
         track_vulnerabilities_best_effort(
+            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
+        )
+        record_services_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
         )
         publish_asset_events_best_effort(
