@@ -392,6 +392,58 @@ class JobInfo(BaseModel):
     agent_group_unavailable: bool = False
 
 
+class RunPublicationInfo(BaseModel):
+    """One accepted run the installation still owes its visible copy (#425).
+
+    A row of ``run_publications``: the job succeeded, the upload is kept, and
+    the store, the run directory, ``latest_run.json`` and the bus message are
+    not all done yet. See ``api/services/run_publisher.py`` and the runbook in
+    ``docs/operations.md``.
+    """
+
+    publication_id: str
+    job_id: str
+    run_id: str
+    tenant_id: str
+    status: Literal["pending", "dead"]
+    # ``publishing``: an attempt is running and renewing its hold right now.
+    # ``retrying``: owed, between attempts. ``dead``: an operator decides.
+    state: Literal["publishing", "retrying", "dead"]
+    # What an operator can usefully do: ``wait``, ``requeue`` once the cause is
+    # fixed, ``rescan`` when no reachable disk holds the tree, ``discard`` when
+    # the run is readable and only its analytical projection is lost.
+    resolution: Literal["wait", "requeue", "rescan", "discard"]
+    attempts: int
+    max_attempts: int
+    claims: int
+    # Renewals of this row's hold that failed or came late (#426).
+    lease_lapses: int = 0
+    last_error: str | None = None
+    # The whole tree reached the object store: the run is readable, and what
+    # is owed is the pointer and the bus message.
+    stored_at: str | None = None
+    # Until when the accepting pod may still hold the extracted tree: a day
+    # from the upload's acceptance, not from the last attempt.
+    tree_kept_until: str | None = None
+    next_attempt_at: str | None = None
+    leased_until: str | None = None
+    # A pending row nobody has touched for longer than its own retry and a
+    # peer's adoption would take: on the HA overlay, a pod that is gone.
+    silent: bool = False
+    orphan_deadline_at: str | None = None
+    # Requeue and discard are accepted now; else not before ``actionable_at``
+    # (an attempt is still running) or not at all (the row is still pending).
+    actionable: bool = False
+    actionable_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    # A pod and paths on its disk — the runbook's manual load. Platform admin
+    # only; ``None`` for everyone else.
+    replica: str | None = None
+    staging_path: str | None = None
+    archive_path: str | None = None
+
+
 class JobSurfaceCounts(BaseModel):
     """One surface's slice of the queue — see JobSummary."""
 

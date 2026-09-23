@@ -1140,18 +1140,21 @@ longer costs the scan. It costs its *visibility*, for as long as the row says
   its `error`, which is what the console shows on a scan that says it succeeded
   and has no artifacts.
 
-What is owed, and where it is:
+What is owed, and where it is: the job's card in the console (**Publication**
+section of the job drawer on `/scans`), or the same thing from the API
+([#425](https://github.com/onixus/Shapoclyack/issues/425)):
 
 ```bash
-python -c '
-from api.settings import load_settings
-from api.services import run_publisher
-s = load_settings()
-print(run_publisher.backlog(s))
-for row in run_publisher.pending_publications(s, "<job_id>"):
-    print(row.publication_id, row.status, row.attempts, row.claims, row.stored_at, row.replica, row.staging_path, row.last_error)
-'
+curl -H "Authorization: Bearer $TOKEN" https://<api>/api/jobs/<job_id>/publications
 ```
+
+Each row says its `state` (`publishing` — an attempt is running right now;
+`retrying`; `dead`), `attempts` of `max_attempts`, `last_error`, `stored_at`,
+`lease_lapses` and a `resolution` — what is worth doing about it (`wait`,
+`requeue`, `rescan`, `discard`), derived from the reason the row died.
+`replica`, `staging_path` and `archive_path` — what the manual load below needs
+— are filled in for a platform admin only. The fleet-wide count is still
+`octo_run_publication_backlog` and `/api/health`.
 
 `stored_at` says the run's whole tree reached the object store: a row that
 carries it is owed only `latest_run.json` and the message on
@@ -1159,7 +1162,16 @@ carries it is owed only `latest_run.json` and the message on
 analytical projection that is behind. It is also half of the fence that keeps a
 publication which loses a race from taking the winner's keys back off; `claims`
 is the other half, because the stamp goes on only once the winner's whole tree
-is up and the race is lost long before that.
+is up and the race is lost long before that. Since #425 there is a third,
+`fence`, which every claim and every requeue moves forward and nothing moves
+back. `claims` itself no longer starts over either: the claim budget counts
+from `claims_base`, which an outcome, a requeue and an unworked hand-back move
+up to `claims`. The reset used to hand a stale attempt its own number back —
+and a replica on the release before `0062` fences on `claims` alone. (Such a
+replica still resets it when *it* records an outcome, and still counts its
+budget from 0, so during a rollout it may end a row that new replicas have
+claimed many times as *claimed far more often than it may be attempted*: a
+false `dead`, which a requeue answers.)
 
 `staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
 row is normally finished by the replica that accepted the upload. A peer picks
@@ -1183,6 +1195,14 @@ can reach, and then the manual load below applies. A deployment that wants
 those rows adopted rather than condemned needs the cache on an RWX volume, not
 a longer deadline.
 
+The console does not wait out that hour to say so. A `pending` row that nobody
+holds and nobody has touched for longer than its own replica's next retry plus
+a peer's adoption window is shown with `silent: true` and the moment it will be
+declared dead (`orphan_deadline_at`); on the HA overlay that is almost always a
+pod the autoscaler removed, and the answer is a re-scan. Once dead, such a row
+reads `resolution: rescan` — a requeue walks it back to `dead` an hour later
+unless the tree has turned up on a disk some replica can see.
+
 A third reason, rarer: *claimed far more often than it may be attempted*. The
 publication keeps killing the replica that takes it — a tree large enough to
 reach the pod's memory limit is the case this was written for — so no attempt
@@ -1197,10 +1217,19 @@ from `staging_path`) before deciding between a manual load and a re-scan —
 until then an operator reading that run cannot tell it from a scan that found
 nothing.
 
-The extracted run and the archive beside it are kept for 24 hours after the
-last attempt, then swept by the next ingest on that replica. Inside that window
-there are two ways out, and both are decisions rather than retries:
+The extracted run and the archive beside it are kept for up to 24 hours **from
+the upload's acceptance** — not from the last attempt: the sweep reads the
+staging directory's modification time, which only its first entry sets — and
+are removed by the next ingest on that replica after that. The job's card shows
+the moment as `tree_kept_until`, and a `dead` row the store never took whole
+reads `resolution: rescan` once it has passed, because a requeue would only
+find the tree gone and die again. Inside that window there are three ways out,
+and all of them are decisions rather than retries:
 
+- **Requeue it** once whatever refused it is fixed — the store, the broker, the
+  pod's memory limit. The row goes back to `pending` with a full set of
+  attempts, and the next reconciler tick publishes it. When it lands, the
+  *run not published* note leaves the job's `error` as well.
 - **Publish it by hand.** Copy `staging_path` into the run directory
   (`OCTO_OUTPUT_DIR/runs/_tenants/<tenant>/<run_id>` on the local backend) or
   upload it under `runs/_tenants/<tenant>/<run_id>/` in the bucket, then discard
@@ -1209,19 +1238,61 @@ there are two ways out, and both are decisions rather than retries:
 - **Re-scan.** Discard the row and start the scan again; the run id will be a
   new one.
 
-Discarding a row is one call, and it is the only thing that clears the health
-check and the note on the job — nothing else deletes these rows:
+Both actions are buttons on the job's card and `admin` routes, each written to
+the audit trail (`run_publication.requeue`, `run_publication.discard`):
 
 ```bash
-python -c '
-from api.settings import load_settings
-from api.services import run_publisher
-print(run_publisher.discard_publication(load_settings(), "<publication_id>"))
-'
+curl -X POST   -H "Authorization: Bearer $TOKEN" https://<api>/api/jobs/<job_id>/publications/<publication_id>/requeue
+curl -X DELETE -H "Authorization: Bearer $TOKEN" https://<api>/api/jobs/<job_id>/publications/<publication_id>
 ```
 
-The row is all that goes: the extracted tree and the archive beside it stay
-until the ordinary sweep takes them, so the decision is recoverable for a day.
+`run_publisher.discard_publication(settings, "<publication_id>")` from
+`python -c` still works for an installation without the console, with the same
+checks. Discarding is the only thing that clears the health check for a row
+nobody will requeue — nothing else deletes these rows. The row is all that
+goes: the extracted tree and the archive beside it stay until the ordinary
+sweep takes them — until `tree_kept_until` at most, a day from the acceptance —
+and the note on the job stays too, because the run was not published.
+
+Both are refused with `409` for a row that is not `dead` and, with a
+`Retry-After`, while **an attempt at it is still running**. `dead` is one
+attempt giving up, not every attempt having stopped: a second attempt that took
+the row while the first one's hold had lapsed may still be uploading. A requeue
+beside it would be a second live publication of the same keys; a discard would
+delete the row that attempt reads its rollback fence from. Every running
+attempt stamps `leased_until` on the row as it renews its hold, whatever the
+status, so the refusal lasts at most one hold (`max(60s,
+OCTO_RUN_PUBLICATION_INTERVAL_SECONDS)`) after the last attempt stops. It is
+stamped and compared on the database's clock, not the pods': the pod running
+the attempt and the pod serving the button are not the same one, and a skew
+between them past one hold used to read a live attempt as a lease long gone.
+(The SQLite dev fallback is one process with one clock and uses that.)
+
+When a requeued publication lands, the *run not published* note comes off the
+job in the same transaction that closes the row. If that fails — the job row
+refused the write — the run is still closed out and projected, and
+`octo_run_publication_stale_notes_total` goes up with a warning naming the job:
+that job's `error` says the run was not published although it was, and can be
+edited by hand. Notes written by the previous release (or a replica still on it
+during the rollout) carry their reason's `;` and are removed whole too. An
+attempt that has stopped renewing without stopping — a paused process — cannot
+be seen this way; what protects the requeued publication from it is that a
+requeue moves the row's `fence`, so the stale attempt no longer takes back the
+keys it wrote. During a rolling upgrade to the release that added this, an
+attempt on a replica still running the old code stamps nothing: finish the
+rollout before acting on a row that went `dead` during it.
+
+A publication's hold is renewed every few seconds while it runs, and a renewal
+that fails or lands late is what lets a second attempt start beside it — the
+precondition of every race above. It is counted
+([#426](https://github.com/onixus/Shapoclyack/issues/426)):
+`octo_run_publication_lease_renewal_total{outcome}` with `renewed`, `late` (the
+previous hold had already run out), `superseded` (another attempt or a requeue
+has taken the row since) and `failed` (the database did not answer). Anything
+but `renewed` rising is worth an alert on its own — database latency, a paused
+or CPU-starved pod, clock skew between nodes — and the row it happened to
+carries it in `lease_lapses`, so a post-mortem can tell which publication ran
+unprotected.
 
 A `pending` row that is not draining is the same problem one step earlier:
 check the store and the broker first (`/api/health`), because the reconciler is

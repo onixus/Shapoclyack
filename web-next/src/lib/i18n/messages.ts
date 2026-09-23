@@ -1127,6 +1127,42 @@ export const en = {
   "jobs.requestedBy": "Requested by",
   "jobs.tenant": "Tenant",
   "jobs.intentSummary": "What this intent runs",
+  "jobs.publication.title": "Publication",
+  "jobs.publication.hint":
+    "The upload was accepted, but the run is not (all) visible yet: store, run directory, pointer and the analytics message are still owed.",
+  "jobs.publication.state.publishing": "publishing",
+  "jobs.publication.state.retrying": "retrying",
+  "jobs.publication.state.dead": "needs an operator",
+  "jobs.publication.attempts": "Attempts",
+  "jobs.publication.lastError": "Last error",
+  "jobs.publication.stored": "Stored",
+  "jobs.publication.storedHint": "the run is readable; the analytical projection is behind",
+  "jobs.publication.nextAttempt": "Next attempt",
+  "jobs.publication.treeKeptUntil": "Tree kept until",
+  "jobs.publication.treeKeptUntilHint":
+    "the accepting pod sweeps the extracted tree a day after the upload was accepted, whatever the attempts since",
+  "jobs.publication.leaseLapses": "Lease lapses",
+  "jobs.publication.leaseLapsesHint":
+    "renewals of this publication's hold that failed or came late — a second attempt may have run beside it",
+  "jobs.publication.replica": "Accepted by",
+  "jobs.publication.stagingPath": "Extracted tree",
+  "jobs.publication.silent":
+    "Nobody has worked on this publication for a while. If the pod that accepted the upload is gone (HA overlay, emptyDir cache), no replica can see its tree: it will be declared dead at {deadline} and needs a re-scan.",
+  "jobs.publication.resolution.wait": "Being retried; nothing to do yet.",
+  "jobs.publication.resolution.requeue":
+    "Fix what refused it (store, broker, pod memory), then requeue. Or discard and re-scan.",
+  "jobs.publication.resolution.rescan":
+    "No replica can reach the extracted tree, so a requeue will not help: discard and re-scan.",
+  "jobs.publication.resolution.discard":
+    "The run itself is readable; only its analytics message is lost. Discard to clear the alert.",
+  "jobs.publication.inFlight":
+    "An attempt at this publication is still running. Requeue and discard are available after {at}.",
+  "jobs.publication.requeue": "Requeue",
+  "jobs.publication.discard": "Discard",
+  "jobs.publication.discardTitle": "Discard publication {id}?",
+  "jobs.publication.discardBody":
+    "The run stays unpublished and the health alert clears. The extracted tree stays on the accepting pod's disk until a day after the upload was accepted ({until}), then is swept. Do this after loading the run by hand, or before a re-scan.",
+  "jobs.publication.keep": "Keep it",
   "col.surface": "Surface",
   "col.intent": "Intent",
   "col.duration": "Duration",
@@ -2610,6 +2646,42 @@ export const ru: Record<MsgKey, string> = {
   "jobs.requestedBy": "Запросил",
   "jobs.tenant": "Тенант",
   "jobs.intentSummary": "Что делает это намерение",
+  "jobs.publication.title": "Публикация",
+  "jobs.publication.hint":
+    "Результат принят, но прогон ещё не (весь) виден: хранилище, каталог прогона, указатель и сообщение для аналитики ещё не доставлены.",
+  "jobs.publication.state.publishing": "публикуется",
+  "jobs.publication.state.retrying": "повтор",
+  "jobs.publication.state.dead": "нужен оператор",
+  "jobs.publication.attempts": "Попытки",
+  "jobs.publication.lastError": "Последняя ошибка",
+  "jobs.publication.stored": "В хранилище",
+  "jobs.publication.storedHint": "прогон читается; отстаёт аналитическая проекция",
+  "jobs.publication.nextAttempt": "Следующая попытка",
+  "jobs.publication.treeKeptUntil": "Дерево хранится до",
+  "jobs.publication.treeKeptUntilHint":
+    "принявший под удаляет распакованное дерево через сутки после приёма выгрузки, сколько бы попыток ни было потом",
+  "jobs.publication.leaseLapses": "Потери аренды",
+  "jobs.publication.leaseLapsesHint":
+    "продления удержания этой публикации, которые не удались или опоздали — рядом могла идти вторая попытка",
+  "jobs.publication.replica": "Принял под",
+  "jobs.publication.stagingPath": "Распакованное дерево",
+  "jobs.publication.silent":
+    "Этой публикацией давно никто не занимается. Если под, принявший выгрузку, свёрнут (HA-оверлей, кэш в emptyDir), дерево не видит ни одна реплика: в {deadline} публикация будет признана мёртвой и потребует пересканирования.",
+  "jobs.publication.resolution.wait": "Повторяется; пока ничего делать не нужно.",
+  "jobs.publication.resolution.requeue":
+    "Устраните то, что отказывало (хранилище, брокер, память пода), и поставьте в очередь заново. Или отбросьте и пересканируйте.",
+  "jobs.publication.resolution.rescan":
+    "Распакованное дерево недоступно ни одной реплике, повтор не поможет: отбросьте и пересканируйте.",
+  "jobs.publication.resolution.discard":
+    "Сам прогон читается; потеряно только сообщение для аналитики. Отбросьте, чтобы снять тревогу.",
+  "jobs.publication.inFlight":
+    "Попытка публикации ещё идёт. Повтор и отбрасывание будут доступны после {at}.",
+  "jobs.publication.requeue": "Повторить",
+  "jobs.publication.discard": "Отбросить",
+  "jobs.publication.discardTitle": "Отбросить публикацию {id}?",
+  "jobs.publication.discardBody":
+    "Прогон останется неопубликованным, тревога снимется. Распакованное дерево пролежит на диске принявшего пода до суток с момента приёма выгрузки ({until}) и будет удалено. Делайте это после ручной загрузки прогона или перед пересканированием.",
+  "jobs.publication.keep": "Оставить",
   "col.surface": "Поверхность",
   "col.intent": "Намерение",
   "col.duration": "Длительность",

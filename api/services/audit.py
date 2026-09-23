@@ -156,6 +156,13 @@ ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
 # confirmation, which is a machine reporting that it obeyed rather than a
 # person deciding anything.
 ACTION_SCAN_CANCEL = "scan.cancel"
+# The two ways out of a ``dead`` run publication (#425). Both are decisions
+# about a run the installation has already told its user it accepted: one
+# gives the publication another full set of attempts, the other gives up on
+# making the run visible at all. ``before`` carries the attempts and the last
+# error the operator was looking at when they decided.
+ACTION_RUN_PUBLICATION_REQUEUE = "run_publication.requeue"
+ACTION_RUN_PUBLICATION_DISCARD = "run_publication.discard"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"

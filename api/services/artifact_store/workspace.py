@@ -691,6 +691,12 @@ _ABANDONED_AFTER_SECONDS = 3600
 #: a failed installation's scans into next week.
 _ABANDONED_INGEST_AFTER_SECONDS = 24 * 3600
 
+#: The same bound, for what an operator is told. Measured from the staging
+#: directory's ``st_mtime`` — which only its first entry moves — so it runs
+#: from the upload's acceptance, not from the publication's last attempt
+#: (``run_publisher._tree_kept_until``).
+INGEST_KEPT_SECONDS = _ABANDONED_INGEST_AFTER_SECONDS
+
 #: Prefix :func:`staging_run_dir` gives an ingest's tree, and — with
 #: ``.upload`` appended — its archive.
 _INGEST_PREFIX = ".ingest-"

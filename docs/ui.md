@@ -316,7 +316,29 @@ renders an absent value as internal: it shows **Unclassified**.
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
   admitted and dropped, wordlist, sensor, command line, links to the run and
-  its findings. `/scans?job=<id>` opens the drawer directly;
+  its findings. `/scans?job=<id>` opens the drawer directly.
+  A finished job whose run was accepted but is not (all) visible yet gets a
+  **Publication** section above the timeline
+  ([#425](https://github.com/onixus/Shapoclyack/issues/425)) — one card per
+  owed `run_publications` row, from `GET /api/jobs/{id}/publications`: state
+  (*publishing*, *retrying*, *needs an operator*), attempts of the maximum,
+  the last error, when the tree reached the store, the next attempt, and lease
+  lapses when there were any. Under it, what is worth doing, from the reason
+  the row died: requeue once the cause is fixed, **re-scan** when no replica
+  can reach the extracted tree (a requeue would only walk it back), or discard
+  when the run itself is readable and only its analytics message is lost. A
+  pending row nobody has worked on for a while — on the HA overlay, a pod the
+  autoscaler removed with the only copy of the tree — says so, with the time it
+  will be declared dead, rather than looking like an ordinary retry for an
+  hour. **Requeue** and **Discard** (with a confirmation) are shown on a dead
+  row to a tenant admin or a platform admin, and are disabled with the reason
+  while an attempt at the row is still running — the API refuses them then.
+  The card also says until when the extracted tree is kept — a day from the
+  upload's acceptance, not from the last attempt; past it a dead row that never
+  reached the store is shown as needing a re-scan. The pod and the extracted
+  tree's path appear for a platform admin only, in the reason as well. The
+  section polls while a row is pending or held, and renders nothing for the
+  ordinary job;
 - recent runs on that surface, linking to `/runs?surface=`.
 
 The dashboard's **Scan operations** block shows, per surface, the last run's

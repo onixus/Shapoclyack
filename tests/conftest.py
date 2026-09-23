@@ -114,6 +114,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import config_override as config_service
     from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
+    from api.services import run_publisher
     from api.services import scan_schedules
     from api.services import service_tokens as service_tokens_service
     from api.services import tenants as tenants_service
@@ -173,6 +174,10 @@ def reset_service_state(settings: "Settings") -> None:
     # between runs, so running one file on its own was enough to fail the next
     # full run.
     config_service.reset_for_tests(settings)
+    # Owed run publications carry a tenant id but no foreign key to it either,
+    # and since #425 they are read through the API: a ``dead`` row one test
+    # left would sit in the next test's job card and health check.
+    run_publisher.reset_for_tests(settings)
     # Service tokens are rows on the tenants the reset above truncated, and the
     # OIDC caches are process-global — a discovery document or an in-flight
     # authorization request from a previous test would otherwise leak into this

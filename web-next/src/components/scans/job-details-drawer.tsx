@@ -14,6 +14,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { StatusBadge } from "@/components/status-badge";
+import { JobPublications } from "@/components/scans/job-publications";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { useJob } from "@/hooks/use-jobs";
 import { type JobInfo } from "@/lib/api";
@@ -156,6 +157,8 @@ export function JobDetailsDrawer({
             </div>
           </div>
         ) : null}
+
+        <JobPublications job={current} open={open} />
 
         <section className="mt-5">
           <h4 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
