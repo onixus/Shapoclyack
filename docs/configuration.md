@@ -276,8 +276,9 @@ feeds below, with a flag of its own.
 ```bash
 # Once, the whole corpus (replaces the file):
 OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full
-# Daily increment, merged (what fetch-enrichment.sh runs with the flag set):
-OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --last-mod-days 8
+# Daily increment from where the file's coverage ends, merged (what
+# fetch-enrichment.sh runs with the flag set). More than 120 days behind: --full.
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py
 ```
 
 In Kubernetes: `kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe`
