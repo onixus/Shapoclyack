@@ -1189,12 +1189,15 @@ export type AssetServiceMatchStatus =
   | "too_old"
   | "no_dataset";
 
-/** An NVD hit a visible distribution may have backported. Deliberately not a
- * tracked finding: it carries no deadline. */
+/** A CVE deliberately not tracked as a finding, so it carries no deadline:
+ * `possible` is an NVD hit a visible distribution may have backported,
+ * `unfixed` is the vendor saying "affected, no fix published yet". */
 export type AssetServicePossibleCve = {
   cve: string;
   severity: string;
   cvss: number | null;
+  /** Absent on summaries written before the vendor-verdict split. */
+  verdict?: "possible" | "unfixed";
   reason: string | null;
 };
 
@@ -1218,8 +1221,10 @@ export type AssetServiceInfo = {
   matched_dataset_version: string | null;
   matched_at: string | null;
   match_status: AssetServiceMatchStatus | null;
-  /** `vulnerable`, `fixed`, `not_affected`, `possible`; empty until matched. */
-  match_counts: Partial<Record<"vulnerable" | "fixed" | "not_affected" | "possible", number>>;
+  /** `vulnerable`, `fixed`, `not_affected`, `possible`, `unfixed`; empty until matched. */
+  match_counts: Partial<
+    Record<"vulnerable" | "fixed" | "not_affected" | "possible" | "unfixed", number>
+  >;
   possible_cves: AssetServicePossibleCve[];
 };
 

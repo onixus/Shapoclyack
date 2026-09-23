@@ -896,8 +896,10 @@ export const en = {
   "services.counts.fixed": "Fixed",
   "services.counts.notAffected": "Not affected",
   "services.counts.possible": "Possible",
-  "services.possibleList":
-    "Possible, not tracked — the distribution may have backported the fix:",
+  "services.counts.unfixed": "No fix yet",
+  "services.possibleList": "Not tracked as findings:",
+  "services.verdict.possible": "backport possible",
+  "services.verdict.unfixed": "vendor: no fix published",
   "services.reason.unknown_product":
     "The product is not in the NVD CPE data, so it could not be checked — which is not the same as clean.",
   "services.reason.no_version":
@@ -2504,8 +2506,10 @@ export const ru: Record<MsgKey, string> = {
   "services.counts.fixed": "Исправлено",
   "services.counts.notAffected": "Не затронуто",
   "services.counts.possible": "Возможно",
-  "services.possibleList":
-    "Возможные, не отслеживаются — дистрибутив мог бэкпортировать исправление:",
+  "services.counts.unfixed": "Без исправления",
+  "services.possibleList": "Не отслеживаются как находки:",
+  "services.verdict.possible": "возможен бэкпорт",
+  "services.verdict.unfixed": "вендор: исправления нет",
   "services.reason.unknown_product":
     "Продукта нет в данных CPE из NVD, проверить его нельзя — это не то же самое, что «чисто».",
   "services.reason.no_version":

@@ -151,6 +151,11 @@ function ServiceRow({
                 value={counts.possible ?? 0}
                 className="text-amber-700 dark:text-amber-300"
               />
+              <Count
+                label={t("services.counts.unfixed")}
+                value={counts.unfixed ?? 0}
+                className="text-amber-700 dark:text-amber-300"
+              />
             </div>
             {service.possible_cves.length ? (
               <details className="text-[11px]">
@@ -168,6 +173,11 @@ function ServiceRow({
                       {possible.cvss != null ? (
                         <span className="tabular-nums text-muted-foreground">{possible.cvss}</span>
                       ) : null}
+                      <span className="text-muted-foreground">
+                        {possible.verdict === "unfixed"
+                          ? t("services.verdict.unfixed")
+                          : t("services.verdict.possible")}
+                      </span>
                     </li>
                   ))}
                 </ul>

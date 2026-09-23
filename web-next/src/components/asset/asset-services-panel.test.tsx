@@ -43,10 +43,16 @@ const APACHE = service({
   version: "2.4.25",
   banner: "Apache/2.4.25 (Debian)",
   cpe: ["cpe:/a:apache:http_server:2.4.25"],
-  match_counts: { vulnerable: 0, fixed: 0, not_affected: 0, possible: 5 },
+  match_counts: { vulnerable: 0, fixed: 0, not_affected: 0, possible: 5, unfixed: 2 },
   possible_cves: [
-    { cve: "CVE-2021-44790", severity: "critical", cvss: 9.8, reason: "unsupported_distro" },
-    { cve: "CVE-2019-0211", severity: "high", cvss: 7.8, reason: "unsupported_distro" },
+    {
+      cve: "CVE-2021-44790",
+      severity: "critical",
+      cvss: 9.8,
+      verdict: "possible",
+      reason: "unsupported_distro",
+    },
+    { cve: "CVE-2019-0211", severity: "high", cvss: 7.8, verdict: "unfixed", reason: null },
   ],
 });
 
@@ -107,10 +113,14 @@ describe("AssetServicesPanel", () => {
     await screen.findByText("80/tcp");
     const apache = rowOf("80/tcp");
     expect(within(apache).getByText("5")).toBeInTheDocument();
-    const summary = within(apache).getByText(/Possible, not tracked/);
+    expect(within(apache).getByText("2")).toBeInTheDocument();
+    const summary = within(apache).getByText(/Not tracked as findings/);
     fireEvent.click(summary);
-    expect(within(apache).getByText("CVE-2021-44790")).toBeInTheDocument();
-    expect(within(apache).getByText("CVE-2019-0211")).toBeInTheDocument();
+    // Each untracked CVE says which of the two reasons keeps it untracked.
+    const backport = within(apache).getByText("CVE-2021-44790").closest("li")!;
+    expect(within(backport).getByText("backport possible")).toBeInTheDocument();
+    const unfixed = within(apache).getByText("CVE-2019-0211").closest("li")!;
+    expect(within(unfixed).getByText("vendor: no fix published")).toBeInTheDocument();
   });
 
   it("says why a listener was not assessed instead of showing it as clean", async () => {

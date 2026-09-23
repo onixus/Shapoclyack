@@ -1,7 +1,7 @@
 """Stored service fingerprints and retro CVE matching
 
 Revision ID: 0064_asset_services_retro_match
-Revises: 0062_run_publication_lease
+Revises: 0063_nats_outbox_kind_due
 Create Date: 2026-09-23
 
 Retro matching (docs/retro-cve-matching.md) re-asks an updated NVD range
@@ -36,10 +36,8 @@ by the next scan or by re-running the backfill — and it never sees a
 ``retro_match`` finding as anything but a finding with an unfamiliar
 ``source``, which every read path already renders as text.
 
-**Merge note.** Written against ``0062_run_publication_lease``, the head of
-``main`` when it was branched. ``0063`` is taken by an open PR
-(``0063_nats_outbox_kind_due``, #438); whichever of the two merges second
-re-points its ``down_revision`` at the other. Nothing here depends on 0063.
+Follows ``0063_nats_outbox_kind_due`` (#438) only for ordering; nothing here
+depends on it.
 
 Rollback drops everything added; the fingerprints are re-derivable from any
 run still on disk.
@@ -52,7 +50,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0064_asset_services_retro_match"
-down_revision: Union[str, None] = "0062_run_publication_lease"
+down_revision: Union[str, None] = "0063_nats_outbox_kind_due"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
