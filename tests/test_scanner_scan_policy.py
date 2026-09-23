@@ -14,15 +14,18 @@ starts from is a real one: ``safe`` discovery at 2000 packets per second.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from scanner.pipeline.config_schema import load_config
 from scanner.pipeline.scan_policy import (
+    SECONDARY_ACTIVE_STAGE_POLICIES,
     ScanPolicyError,
     apply_policy,
     load_policy,
+    require_secondary_active_stage_policy,
 )
 
 
@@ -108,6 +111,9 @@ def test_concurrency_is_held_down_everywhere_a_batch_can_widen():
     assert tightened.runtime.ports_concurrency == 1
     assert tightened.runtime.nse_concurrency == 1
     assert tightened.profiles["safe"].pulse.host_parallel == 1
+    assert tightened.tls_posture.probe_concurrency == 1
+    assert tightened.fingerprint.concurrency == 1
+    assert tightened.screenshots.concurrency == 1
 
 
 def test_the_fragile_profile_turns_the_service_probe_stage_off():
@@ -120,6 +126,94 @@ def test_the_policy_cannot_turn_the_service_probe_stage_back_on():
     """One direction only — a policy is a set of ceilings, not of values."""
     tightened = apply_policy(_config(skip_nse=True), _policy(skip_service_probe=False))
     assert tightened.runtime.skip_nse is True
+
+
+def test_fragile_disables_active_secondary_work_but_keeps_passive_tls_parsing():
+    """Inventory-only means no fresh HTTP/browser/TLS connections after ports.
+
+    TLS posture may still parse evidence an earlier stage already wrote. That
+    distinction keeps passive findings without letting its stdlib fallback
+    quietly perform full handshakes on a fragile controller.
+    """
+    config = _config()
+    config = config.model_copy(
+        update={
+            "tls_posture": config.tls_posture.model_copy(
+                update={"enabled": True, "probe_fallback": True}
+            ),
+            "fingerprint": config.fingerprint.model_copy(update={"enabled": True}),
+            "screenshots": config.screenshots.model_copy(update={"enabled": True}),
+        }
+    )
+
+    tightened = apply_policy(
+        config,
+        _policy(skip_service_probe=True, max_host_concurrency=1),
+    )
+
+    assert tightened.tls_posture.enabled is True
+    assert tightened.tls_posture.probe_fallback is False
+    assert tightened.tls_posture.probe_concurrency == 1
+    assert tightened.fingerprint.enabled is False
+    assert tightened.fingerprint.concurrency == 1
+    assert tightened.screenshots.enabled is False
+    assert tightened.screenshots.concurrency == 1
+
+
+def test_policy_cannot_enable_locally_disabled_secondary_work():
+    config = _config()
+    config = config.model_copy(
+        update={
+            "tls_posture": config.tls_posture.model_copy(
+                update={"enabled": True, "probe_fallback": False}
+            ),
+            "fingerprint": config.fingerprint.model_copy(update={"enabled": False}),
+            "screenshots": config.screenshots.model_copy(update={"enabled": False}),
+        }
+    )
+
+    tightened = apply_policy(
+        config,
+        _policy(skip_service_probe=False, max_host_concurrency=32),
+    )
+
+    assert tightened.tls_posture.probe_fallback is False
+    assert tightened.fingerprint.enabled is False
+    assert tightened.screenshots.enabled is False
+    # A loose tenant ceiling cannot raise the stricter local pools either.
+    assert tightened.tls_posture.probe_concurrency == 20
+    assert tightened.fingerprint.concurrency == 10
+    assert tightened.screenshots.concurrency == 4
+
+
+def test_secondary_active_stage_contract_is_central_and_fail_closed():
+    config = _config()
+    assert set(SECONDARY_ACTIVE_STAGE_POLICIES) == {
+        "tls_posture",
+        "fingerprint",
+        "screenshots",
+    }
+    for stage, (concurrency_field, active_work_field) in (
+        SECONDARY_ACTIVE_STAGE_POLICIES.items()
+    ):
+        stage_config = getattr(config, stage)
+        assert hasattr(stage_config, concurrency_field)
+        assert hasattr(stage_config, active_work_field)
+        require_secondary_active_stage_policy(stage)
+
+    with pytest.raises(ScanPolicyError, match="no scan-policy contract"):
+        require_secondary_active_stage_policy("future_active_stage")
+
+    source = Path("scanner/main.py").read_text(encoding="utf-8")
+    guarded = set(
+        re.findall(
+            r'_run_policy_controlled_secondary_stage\(\s*"([^"]+)"',
+            source,
+        )
+    )
+    assert guarded == set(SECONDARY_ACTIVE_STAGE_POLICIES)
+    for stage in SECONDARY_ACTIVE_STAGE_POLICIES:
+        assert not re.search(rf'_run_stage\(\s*"{stage}"', source)
 
 
 def test_avoided_ports_are_added_to_the_exclusions_the_config_already_has():

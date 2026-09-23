@@ -39,6 +39,35 @@ class ScanPolicyError(ValueError):
     """The policy file is missing, malformed, or of a version this build cannot apply."""
 
 
+#: Secondary stages that open fresh network connections after discovery.
+#:
+#: The value is ``(concurrency_field, active_work_field)``. A host-concurrency
+#: ceiling lowers the first field. ``skip_service_probe`` sets the second one
+#: to false. For fingerprint/screenshots that disables the whole stage; for
+#: TLS posture it disables only the direct-handshake fallback and preserves
+#: passive parsing of NSE/Pulse evidence already collected by another stage.
+#:
+#: Pipeline call sites go through :func:`require_secondary_active_stage_policy`,
+#: so adding a new active stage without declaring how policy controls it fails
+#: closed instead of silently creating another route around the tenant ceiling.
+SECONDARY_ACTIVE_STAGE_POLICIES: dict[str, tuple[str, str]] = {
+    "tls_posture": ("probe_concurrency", "probe_fallback"),
+    "fingerprint": ("concurrency", "enabled"),
+    "screenshots": ("concurrency", "enabled"),
+}
+
+
+def require_secondary_active_stage_policy(stage: str) -> None:
+    """Fail closed when a network-active secondary stage has no policy contract."""
+    if stage in SECONDARY_ACTIVE_STAGE_POLICIES:
+        return
+    known = ", ".join(sorted(SECONDARY_ACTIVE_STAGE_POLICIES))
+    raise ScanPolicyError(
+        f"network-active secondary stage {stage!r} has no scan-policy contract; "
+        f"register its concurrency and disable fields (known: {known})"
+    )
+
+
 def load_policy(path: Path) -> dict[str, Any]:
     """Read and sanity-check one policy document written by the API."""
     try:
@@ -72,6 +101,44 @@ def _ceiling(current: int | None, limit: int | None, *, zero_is_unlimited: bool 
     if zero_is_unlimited and current == 0:
         return limit
     return min(current, limit)
+
+
+def _secondary_active_stage_updates(
+    config: AppConfig,
+    *,
+    max_concurrency: int | None,
+    skip_service_probe: bool,
+) -> dict[str, Any]:
+    """Tighten every registered secondary stage that can open a connection.
+
+    The registry is deliberately data rather than three nearby assignments:
+    the pipeline guard and the tests consume the same list, so a fourth active
+    stage needs an explicit policy decision before it is allowed to run.
+    """
+    updates: dict[str, Any] = {}
+    for stage, (concurrency_field, active_work_field) in SECONDARY_ACTIVE_STAGE_POLICIES.items():
+        require_secondary_active_stage_policy(stage)
+        stage_config = getattr(config, stage, None)
+        if stage_config is None:
+            raise ScanPolicyError(
+                f"scan-policy contract names missing AppConfig field {stage!r}"
+            )
+        for field in (concurrency_field, active_work_field):
+            if not hasattr(stage_config, field):
+                raise ScanPolicyError(
+                    f"scan-policy contract for {stage!r} names missing field {field!r}"
+                )
+
+        stage_updates: dict[str, Any] = {}
+        if max_concurrency is not None:
+            stage_updates[concurrency_field] = _ceiling(
+                getattr(stage_config, concurrency_field), max_concurrency
+            )
+        if skip_service_probe:
+            stage_updates[active_work_field] = False
+        if stage_updates:
+            updates[stage] = stage_config.model_copy(update=stage_updates)
+    return updates
 
 
 def _nuclei_ceilings(
@@ -257,7 +324,8 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     nuclei_updates = _nuclei_ceilings(
         config.nuclei.rate_limit, config.nuclei.concurrency, per_host_rate, max_concurrency
     )
-    if policy.get("skip_service_probe"):
+    skip_service_probe = bool(policy.get("skip_service_probe"))
+    if skip_service_probe:
         # Nuclei is the other stage that sends payloads rather than counting
         # SYN/ACKs: ~8.9k templates of HTTP requests aimed at an engineering
         # station's web interface. ``skip_service_probe`` is the policy saying
@@ -265,6 +333,12 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         # honoured it for pulse and NSE while nuclei kept going would honour it
         # in name only. One direction, like ``skip_nse``: never turned back on.
         nuclei_updates["enabled"] = False
+
+    secondary_updates = _secondary_active_stage_updates(
+        config,
+        max_concurrency=max_concurrency,
+        skip_service_probe=skip_service_probe,
+    )
 
     # Batching is deliberately not among the knobs above. Narrowing a batch to
     # one address is the only way "one host at a time" becomes literally true,
@@ -280,6 +354,7 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         updates["nuclei"] = config.nuclei.model_copy(update=nuclei_updates)
     if runtime_updates:
         updates["runtime"] = config.runtime.model_copy(update=runtime_updates)
+    updates.update(secondary_updates)
     if avoid_ports:
         updates["ports"] = config.ports.model_copy(
             update={"exclude_ports": sorted(set(config.ports.exclude_ports) | set(avoid_ports))}
@@ -300,4 +375,16 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     )
     if config.nuclei.enabled and not tightened.nuclei.enabled:
         logging.info("Scan policy: nuclei stage turned off (skip_service_probe)")
+    if skip_service_probe:
+        disabled_secondary = [
+            stage
+            for stage, (_, active_work_field) in SECONDARY_ACTIVE_STAGE_POLICIES.items()
+            if getattr(getattr(config, stage), active_work_field)
+            and not getattr(getattr(tightened, stage), active_work_field)
+        ]
+        if disabled_secondary:
+            logging.info(
+                "Scan policy: active secondary network work turned off for %s",
+                ", ".join(disabled_secondary),
+            )
     return tightened

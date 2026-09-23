@@ -59,6 +59,7 @@ from scanner.pipeline.scan_policy import (
     ScanPolicyError,
     apply_policy as apply_scan_policy,
     load_policy as load_scan_policy,
+    require_secondary_active_stage_policy,
 )
 from scanner.pipeline.pulse_shadow import write_pulse_nmap_diff
 from scanner.pipeline.alerts import send_alerts
@@ -176,6 +177,16 @@ def _run_stage(stage: str, func, timer: StageTimer | None = None):  # type: igno
     if active is not None:
         return active.run(stage, _call)
     return _call()
+
+
+def _run_policy_controlled_secondary_stage(stage: str, func):  # type: ignore[no-untyped-def]
+    """Run network-active follow-up work only when its policy contract exists.
+
+    New secondary stages that open connections must use this wrapper. An
+    unregistered name stops the run rather than bypassing tenant ceilings.
+    """
+    require_secondary_active_stage_policy(stage)
+    return _run_stage(stage, func)
 
 
 def _keep_in_scope(
@@ -943,7 +954,7 @@ def _run_pipeline_body(
     if args.resume and checkpoint.is_done("tls_posture"):
         timer.skip("tls_posture")
     else:
-        _run_stage(
+        _run_policy_controlled_secondary_stage(
             "tls_posture",
             lambda: check_tls_posture(
                 nmap_dir,
@@ -962,7 +973,7 @@ def _run_pipeline_body(
     if args.resume and checkpoint.is_done("fingerprint"):
         timer.skip("fingerprint")
     else:
-        _run_stage(
+        _run_policy_controlled_secondary_stage(
             "fingerprint",
             lambda: fingerprint_hosts_sync(open_ports, config.fingerprint, paths.output_dir),
         )
@@ -973,7 +984,7 @@ def _run_pipeline_body(
     if args.resume and checkpoint.is_done("screenshots"):
         timer.skip("screenshots")
     else:
-        _run_stage(
+        _run_policy_controlled_secondary_stage(
             "screenshots",
             lambda: capture_screenshots_sync(open_ports, config.screenshots, paths.output_dir),
         )
