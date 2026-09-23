@@ -367,6 +367,7 @@ One row per administrative change, with the resource before and after it:
 | `maintenance_window.create`, `maintenance_window.update`, `maintenance_window.delete` | `POST`/`PATCH`/`DELETE /api/maintenance-windows[/{id}]` — the window as stored, so "who moved the blackout off Saturday night" has an answer |
 | `tenant.change_freeze` | `PUT /api/change-freeze`. `before`/`after` carry the flag, the note and the stamp, so both the freeze and the thaw are rows — the thaw is the one that precedes the scan somebody did not expect |
 | `scan.maintenance_block` | Not an edit: the platform refusing a scan because a window or a freeze said so ([#352](https://github.com/onixus/Shapoclyack/issues/352)). Written by `jobs_service.start_scan`, so the console's `POST /api/jobs` and the recurring dispatcher leave the same row, with the `reason`, the `window_id` that refused and the `retry_at` it will lift at. Best-effort like the scope denial above: the scan is already refused, and losing the row must not turn a clean `409` into a `500` |
+| `run_publication.requeue`, `run_publication.discard` | `POST /api/jobs/{id}/publications/{publication_id}/requeue`, `DELETE /api/jobs/{id}/publications/{publication_id}` ([#425](https://github.com/onixus/Shapoclyack/issues/425)) — the two ways out of a run the installation accepted and could not publish. `before` holds the job, the run, the status, the attempts spent and the `last_error` the operator was looking at when they decided; `after` is the requeued row, or `null` for a discard. `resource_id` is the publication id, which is also what the job's *run not published* note names |
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
@@ -773,6 +774,35 @@ digest — the route decides the first and the second only names the output — 
 target texts are compared line by line, so re-serialised but identical targets
 still replay. Jobs created before this shipped carry no digest and keep
 replaying on the key alone.
+
+`GET /api/jobs/{job_id}/publications` (operator) is what the job's accepted run
+still owes before it is visible — the `run_publications` rows of
+[operations.md § Runs accepted but not published](operations.md#runs-accepted-but-not-published-run_publications)
+([#425](https://github.com/onixus/Shapoclyack/issues/425)). Empty for the
+ordinary job: a row is deleted when its publication lands. Each row carries
+`status` (`pending` / `dead`), `state` (`publishing` while an attempt is
+running, `retrying` between attempts, `dead`), `resolution` (`wait`, `requeue`,
+`rescan`, `discard` — what is worth doing, from the reason it died),
+`attempts`/`max_attempts`, `last_error`, `stored_at`, `leased_until`,
+`lease_lapses` (renewals of its hold that failed or came late), `silent` with
+`orphan_deadline_at` (a pending row nobody has touched for longer than a retry
+and a peer's adoption would take — on the HA overlay, a pod that is gone), and
+`actionable`/`actionable_at`. `replica`, `staging_path` and `archive_path` name
+a pod and paths on its disk, for the manual load in the runbook: they are filled
+in for a platform admin and `null` for everyone else.
+
+`POST /api/jobs/{job_id}/publications/{publication_id}/requeue` and `DELETE
+/api/jobs/{job_id}/publications/{publication_id}` are the runbook's two ways out
+of a `dead` row, **`admin`** in the job's tenant (like taking a webhook delivery
+out of the DLQ). Requeue gives the row a full set of attempts and returns it;
+the reconciler publishes it on its next tick, and a row that is already
+`pending` is returned unchanged. Discard deletes the row (`204`) and leaves the
+extracted tree for the day-long sweep. Both answer `409` for a row that is not
+`dead`, and `409` with `Retry-After` while an attempt at it is still running —
+`dead` is one attempt giving up, and acting beside another that has not would
+start a second publication of the same keys. `404` for a job or a publication in
+another tenant, or a publication of another job. Both are written to
+`audit_events`.
 
 `GET /api/jobs/summary` (operator) is the queue depth behind the job list, in
 one grouped query: `by_status` (all six lifecycle states, zero-filled),

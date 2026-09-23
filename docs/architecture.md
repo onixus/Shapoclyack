@@ -224,7 +224,11 @@ slow store is not condemned by a peer that cannot see its disk. Either way:
 `octo_run_publication_backlog{status="dead"}` rises, the job's `error` says the
 run was not published, and the extracted tree stays on the accepting replica's
 disk for 24 hours so an operator can publish it by hand or re-scan (a run whose
-replica is gone has only the second of those, and the runbook says so). A
+replica is gone has only the second of those, and the runbook says so). The
+job's card shows the row and offers requeue and discard
+([#425](https://github.com/onixus/Shapoclyack/issues/425)); both are refused
+while any attempt at the row still stamps `leased_until`, because `dead` is one
+attempt giving up, not every attempt having stopped. A
 publication that failed partway through the object store takes its own keys
 back off before the failure is recorded, so a `dead` row does not normally
 leave a half of a run for the other replicas to list and open. *Normally*: the

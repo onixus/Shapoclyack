@@ -14,11 +14,12 @@ from api.auth import (
 from api.core import permissions as permission_catalog
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
-from api.schemas import JobInfo, JobSummary, Page, StartScanRequest
+from api.schemas import JobInfo, JobSummary, Page, RunPublicationInfo, StartScanRequest
 from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import maintenance
 from api.services import quotas
+from api.services import run_publisher
 from api.services import scan_policy
 from api.services import scan_scopes
 from api.settings import Settings
@@ -83,6 +84,110 @@ def get_job(
     if job is None or (not principal.is_platform_admin and job.tenant_id != principal.tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
+
+
+def _own_job(settings: Settings, job_id: str, principal: TenantPrincipal) -> None:
+    """404 for a job that is not there or not the caller's, like ``get_job``."""
+    job = jobs_service.get_job(settings, job_id)
+    if job is None or (not principal.is_platform_admin and job.tenant_id != principal.tenant_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+
+def _publication_conflict(exc: ValueError) -> HTTPException:
+    headers = None
+    if isinstance(exc, run_publisher.PublicationInFlight):
+        # When the running attempt's hold runs out, if it stops renewing it.
+        headers = {"Retry-After": str(exc.retry_after_seconds)}
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc), headers=headers)
+
+
+@router.get("/{job_id}/publications", response_model=list[RunPublicationInfo])
+def list_job_publications(
+    job_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict[str, Any]]:
+    """What this job's accepted run still owes before it is visible (#425).
+
+    Empty for the ordinary job: a publication's row is deleted when it lands.
+    A row here is a run that was accepted and is not (all) visible yet —
+    ``pending`` while it is retried, ``dead`` when it needs an operator. The
+    pod and the paths the runbook's manual load needs are shown to a platform
+    admin only.
+    """
+    _own_job(settings, job_id, principal)
+    return run_publisher.publications_for_job(
+        settings,
+        job_id,
+        tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+        show_paths=principal.is_platform_admin,
+    )
+
+
+@router.post(
+    "/{job_id}/publications/{publication_id}/requeue", response_model=RunPublicationInfo
+)
+def requeue_job_publication(
+    job_id: str,
+    publication_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Give a ``dead`` publication a full set of attempts again.
+
+    ``admin``, like taking a webhook delivery out of the DLQ. The reconciler
+    picks the row up on its next tick. ``409`` while an attempt at the row is
+    still running (with ``Retry-After``); a row already ``pending`` is
+    returned unchanged, so a double click is not a second decision.
+    """
+    _own_job(settings, job_id, principal)
+    try:
+        requeued = run_publisher.requeue_publication(
+            settings,
+            publication_id,
+            job_id=job_id,
+            tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+            audit=audit,
+            show_paths=principal.is_platform_admin,
+        )
+    except ValueError as exc:
+        raise _publication_conflict(exc) from exc
+    if requeued is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publication not found")
+    return requeued
+
+
+@router.delete(
+    "/{job_id}/publications/{publication_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def discard_job_publication(
+    job_id: str,
+    publication_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> Response:
+    """Give up on publishing a ``dead`` run: after a manual load, or before a re-scan.
+
+    Only the row goes; the extracted tree stays on the accepting pod's disk
+    until the ordinary sweep. ``409`` for a row that is not ``dead`` or whose
+    last attempt is still running.
+    """
+    _own_job(settings, job_id, principal)
+    try:
+        discarded = run_publisher.discard_publication(
+            settings,
+            publication_id,
+            job_id=job_id,
+            tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+            audit=audit,
+        )
+    except ValueError as exc:
+        raise _publication_conflict(exc) from exc
+    if not discarded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publication not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{job_id}/cancel", response_model=JobInfo)

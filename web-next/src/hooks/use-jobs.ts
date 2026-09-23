@@ -4,9 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   cancelJob,
+  discardJobPublication,
   fetchJob,
+  fetchJobPublications,
   fetchJobSummary,
   fetchJobs,
+  requeueJobPublication,
   startScan,
   type PageParams,
   type ScanListFilters,
@@ -108,6 +111,61 @@ export function useCancelJob() {
     },
     onError: (err) => {
       toast.error("Could not cancel job", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+/**
+ * What a finished job's accepted run still owes before it is visible (#425).
+ * Asked only of a job that has ended — a publication row is written with the
+ * terminal status — and polled while a row is still pending, so a drawer left
+ * open watches a requeue land, or while a dead row is still held by a running
+ * attempt, so its buttons come on when the API would accept them.
+ */
+export function useJobPublications(jobId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.jobPublications(jobId ?? ""),
+    queryFn: () => fetchJobPublications(jobId ?? ""),
+    enabled: enabled && Boolean(jobId),
+    refetchInterval: (query) =>
+      query.state.data?.some((row) => row.status === "pending" || !row.actionable)
+        ? POLL_INTERVALS.jobs
+        : false,
+  });
+}
+
+export function useRequeuePublication(jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (publicationId: string) => requeueJobPublication(jobId, publicationId),
+    onSuccess: async () => {
+      toast.success("Publication requeued", {
+        description: "The next reconciler tick publishes it.",
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
+    },
+    onError: (err) => {
+      toast.error("Could not requeue the publication", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useDiscardPublication(jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (publicationId: string) => discardJobPublication(jobId, publicationId),
+    onSuccess: async () => {
+      toast.success("Publication discarded", {
+        description: "The run stays unpublished; its extracted tree is kept for a day.",
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
+    },
+    onError: (err) => {
+      toast.error("Could not discard the publication", {
         description: err instanceof Error ? err.message : undefined,
       });
     },

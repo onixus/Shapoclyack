@@ -90,8 +90,21 @@ RUN_PUBLICATIONS_TOTAL = Counter(
     "octo_run_publications_total",
     "Publications of an accepted run — store, run directory, latest_run.json, "
     "ingest.results.{tenant} — by outcome (published, deferred, dead, "
-    "adopted). Anything but published means the run was accepted and is not "
-    "visible yet; dead means it will not become visible without an operator.",
+    "adopted, requeued, discarded). Anything but published means the run was "
+    "accepted and is not visible yet; dead means it will not become visible "
+    "without an operator, and requeued/discarded are that operator's answer.",
+    ["outcome"],
+    registry=REGISTRY,
+)
+
+RUN_PUBLICATION_LEASE_RENEWALS_TOTAL = Counter(
+    "octo_run_publication_lease_renewal_total",
+    "Renewals of a running publication's hold on its row, by outcome: renewed; "
+    "late (the previous hold had already lapsed — a peer could have claimed the "
+    "row meanwhile); superseded (another attempt has claimed or an operator "
+    "requeued the row since this attempt took it); failed (the renewal did not "
+    "reach the database). Anything but renewed is the precondition of a "
+    "second, parallel attempt at the same publication.",
     ["outcome"],
     registry=REGISTRY,
 )

@@ -4,6 +4,49 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Owed run publications in the job card, with requeue and discard**
+  ([#425](https://github.com/onixus/Shapoclyack/issues/425)).
+  `GET /api/jobs/{id}/publications` (operator) reads the job's
+  `run_publications` rows — state, attempts, last error, `stored_at`, lease
+  lapses, and a `resolution` derived from why the row died (`requeue`,
+  `rescan`, `discard`). `POST …/publications/{id}/requeue` and `DELETE
+  …/publications/{id}` (tenant `admin`, audited as `run_publication.requeue` /
+  `run_publication.discard`) replace the runbook's `python -c`. The console's
+  job drawer shows a **Publication** section with both buttons, and says when a
+  pending row has gone quiet — the HA overlay's pod that took its tree with it
+  — and when it will be declared dead, instead of an hour of looking like a
+  retry. Pod and `staging_path` are shown to a platform admin only.
+- **`octo_run_publication_lease_renewal_total{outcome}`**
+  ([#426](https://github.com/onixus/Shapoclyack/issues/426)): renewals of a
+  running publication's hold, `renewed` / `late` / `superseded` / `failed`, and
+  `run_publications.lease_lapses` on the row it happened to. Until now a lost
+  renewal — the precondition of a second parallel attempt — was a log line.
+
+### Fixed
+
+- **Requeue and discard cannot start a second live publication.** A row goes
+  `dead` when one attempt gives up, and another attempt that took it while the
+  first one's hold lapsed may still be uploading; the old lease stopped
+  renewing the moment the row said `dead`, so nothing told the two apart. Every
+  running attempt now stamps `leased_until` whatever the status, and both
+  actions answer `409` with `Retry-After` while it is in the future.
+- **The rollback fence is monotonic.** `_may_take_back` compared `claims`,
+  which starts over whenever an attempt records an outcome: an attempt that
+  lost its lease, slept through a peer's failure and a fresh claim read its own
+  number again and took the new attempt's keys back out of the bucket. A new
+  `fence` column, bumped by every claim and by a requeue and never reset, is
+  compared as well (migration `0062_run_publication_lease`, expand-only).
+- A publication that died because only the **archive** for the bus hop was
+  gone was recorded as "needs a re-scan or a manual load", although the run
+  itself was published. It now carries its own reason, and the console
+  suggests discarding rather than re-scanning.
+- The *run not published* note is taken back off the job's `error` when a
+  requeued publication lands.
+- `tests/conftest.reset_service_state` empties `run_publications`, which has no
+  foreign key to `tenants` and outlived the test that wrote it.
+
 ## [0.46-0922] — 2026-09-22
 
 ### Added

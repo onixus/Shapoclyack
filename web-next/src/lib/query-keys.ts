@@ -30,6 +30,7 @@ export const queryKeys = {
   jobsPage: (page?: PageParams, filters?: ScanListFilters) =>
     ["jobs", pageKey(page), { surface: filters?.surface ?? null }] as const,
   job: (jobId: string) => ["jobs", "detail", jobId] as const,
+  jobPublications: (jobId: string) => ["jobs", "publications", jobId] as const,
   jobSummary: ["jobs", "summary"] as const,
   wordlists: (tenantId: string | null) => ["wordlists", tenantId] as const,
   schedules: ["schedules"] as const,

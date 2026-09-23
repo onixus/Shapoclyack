@@ -193,6 +193,9 @@ def _leave_it_to_a_pod_that_is_gone(settings, job_id: str, *, age_seconds: int) 
         # seconds, and that — not the age of the upload — is what the orphan
         # deadline runs from.
         row.updated_at = now - timedelta(seconds=age_seconds)
+        # Its lease went quiet at the same moment (#425): the proof of life
+        # is renewed by the same work that stamps ``updated_at``.
+        row.leased_until = now - timedelta(seconds=age_seconds)
         row.next_attempt_at = now
     return publication_id
 

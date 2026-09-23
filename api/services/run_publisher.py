@@ -87,6 +87,7 @@ from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import audit as audit_service
 from api.services import metrics as metrics_service
 from api.services import nats_outbox
 from api.services import results_ingest
@@ -128,6 +129,15 @@ _NEVER_ATTEMPTED = (
     "mid-publication; this run needs a re-scan or a manual load"
 )
 
+#: Why a publication is dead although the run itself is readable: every step
+#: but the bus hop has landed, and the archive that hop needs is gone. Named
+#: because the operator's answer differs — there is nothing to requeue or
+#: re-scan for, only the analytical projection to give up on.
+_ARCHIVE_IS_GONE = (
+    "the uploaded archive is no longer on disk, so the analytical projection "
+    "cannot be fed for this run; the run itself is published"
+)
+
 #: Ceiling on how often a running publication pushes its row's hold forward.
 #: The period is the smaller of this and a third of the horizon, so one missed
 #: renewal still leaves two more before the row falls due.
@@ -165,6 +175,8 @@ class _Publication:
     attempts: int
     claims: int
     stored_at: datetime | None
+    fence: int
+    last_error: str | None
 
 
 def _snapshot(row: models.RunPublication) -> _Publication:
@@ -186,6 +198,8 @@ def _snapshot(row: models.RunPublication) -> _Publication:
         attempts=row.attempts or 0,
         claims=row.claims or 0,
         stored_at=row.stored_at,
+        fence=row.fence or 0,
+        last_error=row.last_error,
     )
 
 
@@ -231,6 +245,8 @@ def new_publication(
         status=STATUS_PENDING,
         attempts=0,
         claims=0,
+        fence=0,
+        lease_lapses=0,
         # Due immediately: the accepting request publishes it inline, and a
         # row that outlives that request is one the reconciler should pick up
         # on its next tick rather than after a backoff nothing has earned yet.
@@ -298,8 +314,8 @@ def _attempt(settings: Settings, publication: _Publication) -> bool:
     try:
         with _Lease(settings, publication):
             _publish(settings, publication)
-    except _TreeIsGone:
-        _record_failure(settings, publication, _TREE_IS_GONE, final=True)
+    except _TreeIsGone as exc:
+        _record_failure(settings, publication, str(exc) or _TREE_IS_GONE, final=True)
         return False
     except _HalfPublished as exc:
         _record_failure(settings, publication, str(exc))
@@ -331,15 +347,39 @@ class _Lease:
     is for: to a peer holding a row whose tree it cannot see, that stamp is the
     difference between "the replica that accepted this upload is gone" and "it
     is still working on it" (:func:`_is_orphaned`).
+
+    The third is ``leased_until``, which an operator's requeue and discard read
+    (#425). It is stamped from the moment the attempt starts and on every
+    renewal *whatever the row's status*: a row goes ``dead`` when one attempt
+    records its last failure, and another attempt that took the row while the
+    first one's hold had lapsed is still running then. Stopping at ``dead``, as
+    this class used to, made that attempt invisible to exactly the button that
+    would start a third one beside it. The stamp only moves forward, so two
+    attempts renewing one row cannot shorten each other's proof of life.
+
+    A renewal that fails or lands after the previous hold had already lapsed is
+    the precondition of that second attempt, and until #426 it was a log line.
+    It is counted now (``octo_run_publication_lease_renewal_total``) and marked
+    on the row (``lease_lapses``); a failed renewal is marked by the next one
+    that reaches the database, because the one that failed could not.
     """
 
     def __init__(self, settings: Settings, publication: _Publication) -> None:
         self._settings = settings
         self._publication_id = publication.publication_id
+        self._fence = publication.fence
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # This attempt's own hold as it last stamped it, and the lapses it has
+        # not been able to write down yet.
+        self._held_until: datetime | None = None
+        self._unrecorded_lapses = 0
+        self._superseded = False
 
     def __enter__(self) -> "_Lease":
+        # Stamped before the work starts, not one period into it: an operator
+        # reading the row in between would otherwise see no attempt at all.
+        self._renew()
         period = min(_LEASE_RENEW_SECONDS, _lease_horizon_seconds(self._settings) / 3)
         self._thread = threading.Thread(
             target=self._run, args=(period,), name="octo-publication-lease", daemon=True
@@ -359,25 +399,61 @@ class _Lease:
 
     def _renew(self) -> None:
         now = _now()
-        horizon = timedelta(seconds=_lease_horizon_seconds(self._settings))
+        until = now + timedelta(seconds=_lease_horizon_seconds(self._settings))
+        late = self._held_until is not None and now > self._held_until
         try:
             with get_session(self._settings.postgres_url) as session:
                 row = session.get(models.RunPublication, self._publication_id)
-                if row is None or row.status != STATUS_PENDING:
-                    # Finished, or ended by somebody else. Nothing to hold.
+                if row is None:
+                    # Finished, or discarded. Nothing to hold.
                     self._stop.set()
                     return
-                row.next_attempt_at = now + horizon
-                row.updated_at = now
+                superseded = (row.fence or 0) != self._fence
+                lapses = self._unrecorded_lapses
+                if superseded and not self._superseded:
+                    lapses += 1
+                elif late and not superseded:
+                    lapses += 1
+                if lapses:
+                    row.lease_lapses = (row.lease_lapses or 0) + lapses
+                if row.leased_until is None or row.leased_until < until:
+                    row.leased_until = until
+                if row.status == STATUS_PENDING:
+                    row.next_attempt_at = until
+                    row.updated_at = now
         except Exception:  # noqa: BLE001 - a lost renewal is not a failed publication
             # The work goes on. Losing a renewal costs at worst the duplicate
             # publication this class exists to prevent, which is what the code
             # did before it existed; failing the publication over a database
             # hiccup would cost the run instead.
+            self._unrecorded_lapses += 1
+            metrics_service.RUN_PUBLICATION_LEASE_RENEWALS_TOTAL.labels(outcome="failed").inc()
             LOG.warning(
                 "Could not renew the publication lease for %s", self._publication_id,
                 exc_info=True,
             )
+            return
+        self._unrecorded_lapses = 0
+        self._held_until = until
+        if superseded:
+            outcome = "superseded"
+            if not self._superseded:
+                LOG.warning(
+                    "Publication %s was claimed by another attempt (or requeued) while "
+                    "this one was still running; both are publishing it now",
+                    self._publication_id,
+                )
+            self._superseded = True
+        elif late:
+            outcome = "late"
+            LOG.warning(
+                "Publication %s renewed its hold after the hold had lapsed; a peer "
+                "may have claimed it meanwhile",
+                self._publication_id,
+            )
+        else:
+            outcome = "renewed"
+        metrics_service.RUN_PUBLICATION_LEASE_RENEWALS_TOTAL.labels(outcome=outcome).inc()
 
 
 def _publish(settings: Settings, publication: _Publication) -> None:
@@ -550,12 +626,24 @@ def _may_take_back(settings: Settings, publication: _Publication) -> bool:
     as a tick does), so a claim taken since this one means somebody else has
     been working this row — and it is visible from the first key the other
     attempt writes rather than from its last.
+
+    And ``fence`` is the third, because ``claims`` is not monotonic: it starts
+    over whenever an attempt records an outcome. An attempt that took the row
+    as its first claim, lost its lease, and woke after a peer had failed and a
+    third attempt had claimed read ``claims == 1`` again — its own number —
+    and took the third attempt's keys for its own. An operator's requeue is the
+    same shape on purpose (#425): it bumps ``fence``, so nothing that was
+    running before the requeue may take back what runs after it. ``claims`` is
+    still compared as well, so a replica on the previous release, whose claims
+    do not bump ``fence``, is fenced exactly as it was.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id)
         if row is None or row.stored_at is not None:
             return False
-        return (row.claims or 0) == publication.claims
+        return (row.claims or 0) == publication.claims and (
+            row.fence or 0
+        ) == publication.fence
 
 
 def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
@@ -593,10 +681,7 @@ def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
         return
     archive = Path(publication.archive_path) if publication.archive_path else None
     if archive is None or not archive.is_file():
-        raise _TreeIsGone(
-            "the uploaded archive is no longer on disk, so the analytical projection "
-            "cannot be fed for this run; the run itself is published"
-        )
+        raise _TreeIsGone(_ARCHIVE_IS_GONE)
     result = nats_outbox.publish_ingest_or_record(
         settings,
         job_id=publication.job_id,
@@ -627,6 +712,23 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
     if publication.archive_path:
         Path(publication.archive_path).unlink(missing_ok=True)
     metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="published").inc()
+    if publication.last_error is not None:
+        # A row that has failed before may have been ``dead``, requeued by an
+        # operator and put a "not published" note on the job on the way. It
+        # is published now, and the note would say otherwise in red.
+        try:
+            run_completion.clear_publication_note(
+                settings, publication.job_id, publication_id=publication.publication_id
+            )
+        except Exception:  # noqa: BLE001 - a stale note must not cost the projections
+            # The row is already gone, so nothing retries what follows: a
+            # database hiccup here raising past this point would skip the
+            # run's assets, findings and notification for good, over a line
+            # of text on the job.
+            LOG.warning(
+                "Could not clear the publication note on job %s", publication.job_id,
+                exc_info=True,
+            )
     if publication.attempts:
         LOG.info(
             "Published run %s of job %s after %d attempt(s)",
@@ -766,6 +868,10 @@ def _hold(row: models.RunPublication, *, now: datetime, rows: int, settings: Set
     per_row = _lease_horizon_seconds(settings)
     row.next_attempt_at = now + timedelta(seconds=per_row * max(1, rows))
     row.claims = (row.claims or 0) + 1
+    # The generation the rollback fence compares, and the one ``claims``
+    # cannot be: that counter starts over whenever an attempt records an
+    # outcome, so it can come back to the very value a stale attempt holds.
+    row.fence = (row.fence or 0) + 1
 
 
 def _claim_budget(settings: Settings) -> int:
@@ -991,29 +1097,302 @@ def pending_publications(settings: Settings, job_id: str) -> list[models.RunPubl
         )
 
 
-def discard_publication(settings: Settings, publication_id: str) -> bool:
+class PublicationInFlight(ValueError):
+    """An operator action on a row some attempt is still proving it works on.
+
+    Carries the moment that proof of life runs out, so the caller can say when
+    to ask again rather than only "not now".
+    """
+
+    def __init__(self, message: str, *, leased_until: datetime, now: datetime) -> None:
+        super().__init__(message)
+        self.leased_until = leased_until
+        self.retry_after_seconds = max(1, int((leased_until - now).total_seconds()) + 1)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z") if value else None
+
+
+def _is_leased(row: models.RunPublication, *, now: datetime) -> bool:
+    return row.leased_until is not None and row.leased_until > now
+
+
+def _resolution(row: models.RunPublication) -> str:
+    """What an operator can usefully do about one row, as the console shows it.
+
+    ``wait`` while it is owed and somebody is on it; ``rescan`` when the tree
+    it would publish is on no disk this installation can reach — a requeue
+    would only walk it back to ``dead``; ``discard`` when the run itself is
+    readable and only the analytical projection is lost; ``requeue`` for every
+    other ``dead`` row, once whatever refused it (the store, the broker, the
+    pod's memory limit) has been fixed.
+    """
+    if row.status != STATUS_DEAD:
+        return "wait"
+    reason = row.last_error or ""
+    if reason == _ARCHIVE_IS_GONE:
+        return "discard"
+    if reason in (_REPLICA_IS_GONE, _TREE_IS_GONE):
+        # Both are written only when no reachable copy of the tree was found
+        # — not in staging, and not whole in the store (``_tree_is_stored``).
+        return "rescan"
+    return "requeue"
+
+
+def _view(
+    settings: Settings, row: models.RunPublication, *, now: datetime, show_paths: bool
+) -> dict[str, Any]:
+    """One row as ``GET /api/jobs/{id}/publications`` reports it.
+
+    ``staging_path``, ``archive_path`` and ``replica`` name a pod and a path on
+    its disk: what the runbook's manual load needs, and nothing a tenant can
+    act on — that step takes a shell on the pod. So they are the platform
+    admin's only.
+
+    ``silent`` is the HA overlay's orphan told apart from a slow store: a
+    pending row nobody holds, which neither its own replica's next retry nor a
+    peer's adoption has touched in the time both should have. On an
+    ``emptyDir`` cache that is a pod the autoscaler took away with the only
+    copy of the tree; it ends ``dead`` at ``orphan_deadline_at`` needing a
+    re-scan, and the console says so now rather than an hour later.
+    """
+    leased = _is_leased(row, now=now)
+    touched = row.updated_at or row.created_at
+    silent = False
+    orphan_deadline_at = None
+    if row.status == STATUS_PENDING and touched is not None:
+        orphan_deadline_at = touched + timedelta(seconds=_orphan_deadline_seconds(settings))
+        quiet_for = timedelta(
+            seconds=_retry_delay_seconds(row.attempts or 0, settings)
+            + _adoption_seconds(settings)
+        )
+        silent = not leased and (now - touched) > quiet_for
+    dead = row.status == STATUS_DEAD
+    return {
+        "publication_id": row.publication_id,
+        "job_id": row.job_id,
+        "run_id": row.run_id,
+        "tenant_id": row.tenant_id,
+        "status": row.status,
+        "state": "dead" if dead else "publishing" if leased else "retrying",
+        "resolution": _resolution(row),
+        "attempts": row.attempts or 0,
+        "max_attempts": settings.run_publication_max_attempts,
+        "claims": row.claims or 0,
+        "lease_lapses": row.lease_lapses or 0,
+        "last_error": row.last_error,
+        "stored_at": _iso(row.stored_at),
+        "next_attempt_at": _iso(row.next_attempt_at),
+        "leased_until": _iso(row.leased_until),
+        "silent": silent,
+        "orphan_deadline_at": _iso(orphan_deadline_at),
+        "actionable": dead and not leased,
+        "actionable_at": _iso(row.leased_until) if dead and leased else None,
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "replica": row.replica if show_paths else None,
+        "staging_path": (row.staging_path or None) if show_paths else None,
+        "archive_path": row.archive_path if show_paths else None,
+    }
+
+
+def publications_for_job(
+    settings: Settings, job_id: str, *, tenant_id: str | None, show_paths: bool = False
+) -> list[dict[str, Any]]:
+    """What one job still owes, newest first, for the console (#425).
+
+    ``tenant_id`` is the caller's scope — ``None`` for a platform admin — and a
+    row in another tenant is not there, like a job in another tenant.
+    """
+    now = _now()
+    query = (
+        select(models.RunPublication)
+        .where(models.RunPublication.job_id == job_id)
+        .order_by(models.RunPublication.created_at.desc())
+    )
+    if tenant_id is not None:
+        query = query.where(models.RunPublication.tenant_id == tenant_id)
+    with get_session(settings.postgres_url) as session:
+        return [
+            _view(settings, row, now=now, show_paths=show_paths)
+            for row in session.execute(query).scalars().all()
+        ]
+
+
+def _operator_row(
+    session, publication_id: str, *, job_id: str | None, tenant_id: str | None
+) -> models.RunPublication | None:
+    """The row an operator named, locked, or ``None`` when it is not theirs.
+
+    A plain ``FOR UPDATE``: the reconciler's claim is ``SKIP LOCKED``, so while
+    this transaction holds the row no tick can take it, and whatever is decided
+    here is what the next claim sees.
+    """
+    row = session.get(models.RunPublication, publication_id, with_for_update=True)
+    if row is None:
+        return None
+    if job_id is not None and row.job_id != job_id:
+        return None
+    if tenant_id is not None and row.tenant_id != tenant_id:
+        return None
+    return row
+
+
+def _refuse_while_leased(row: models.RunPublication, *, now: datetime, action: str) -> None:
+    """The operator's half of the fence: no decision beside a running attempt.
+
+    ``dead`` is one attempt giving up, not every attempt having stopped (see
+    :class:`_Lease`), and both actions go wrong beside one that is still
+    running. A requeue starts a second publication of the same keys — two
+    uploads of one tree, and a rollback in either that removes names the other
+    has just written. A discard deletes the row the running attempt reads its
+    rollback fence from, and ``_may_take_back`` reads a missing row as
+    "published by somebody else": a store that refuses that attempt halfway
+    then leaves half a run listed by every replica, with nothing owing it.
+    """
+    if row.status != STATUS_DEAD:
+        raise ValueError(
+            f"publication {row.publication_id} is {row.status}; only a dead publication "
+            "can be requeued or discarded — a pending one is still being retried"
+        )
+    if _is_leased(row, now=now):
+        assert row.leased_until is not None
+        raise PublicationInFlight(
+            f"publication {row.publication_id} is dead, but an attempt at it is still "
+            f"running (its hold lasts until {_iso(row.leased_until)}); {action} it "
+            "once that attempt has stopped",
+            leased_until=row.leased_until,
+            now=now,
+        )
+
+
+def _decision_record(row: models.RunPublication) -> dict[str, Any]:
+    return {
+        "job_id": row.job_id,
+        "run_id": row.run_id,
+        "status": row.status,
+        "attempts": row.attempts or 0,
+        "last_error": row.last_error,
+        "stored_at": _iso(row.stored_at),
+    }
+
+
+def requeue_publication(
+    settings: Settings,
+    publication_id: str,
+    *,
+    job_id: str | None = None,
+    tenant_id: str | None = None,
+    audit: audit_service.AuditContext | None = None,
+    show_paths: bool = False,
+) -> dict[str, Any] | None:
+    """Give a ``dead`` publication a full set of attempts again (#425).
+
+    The runbook's first way out, for the operator who has fixed what refused
+    it — the store, the broker, the pod's memory limit. ``None`` for a row that
+    is not there, or not in ``tenant_id``/``job_id``. A row that is already
+    ``pending`` comes back unchanged, so a double click is not a second
+    decision; one an attempt is still running on is refused
+    (:class:`PublicationInFlight`).
+
+    The requeue bumps ``fence``, as a claim does. Whatever was running before
+    it — an attempt that lost its lease and has not noticed — then reads the
+    row as somebody else's and leaves its own keys where they are, rather than
+    taking back what the requeued attempt uploads (:func:`_may_take_back`).
+    ``claims`` and ``attempts`` start over: the budgets they enforce are for
+    the world as it is now, not as it was when the row died. ``last_error``
+    stays, so the console still says what went wrong until something else does.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        row = _operator_row(session, publication_id, job_id=job_id, tenant_id=tenant_id)
+        if row is None:
+            return None
+        if row.status == STATUS_PENDING:
+            return _view(settings, row, now=now, show_paths=show_paths)
+        _refuse_while_leased(row, now=now, action="requeue")
+        before = _decision_record(row)
+        row.status = STATUS_PENDING
+        row.attempts = 0
+        row.claims = 0
+        row.fence = (row.fence or 0) + 1
+        row.next_attempt_at = now
+        # The orphan deadline runs from here: the operator is saying somebody
+        # should try this again, and a row condemned on the old clock by the
+        # first peer to look at it would not have been tried at all.
+        row.updated_at = now
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_RUN_PUBLICATION_REQUEUE,
+            resource_type="run_publication",
+            resource_id=row.publication_id,
+            tenant_id=row.tenant_id,
+            before=before,
+            after=_decision_record(row),
+        )
+        session.flush()
+        view = _view(settings, row, now=now, show_paths=show_paths)
+    metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="requeued").inc()
+    LOG.warning(
+        "Publication %s of job %s was requeued by an operator after %d attempt(s): %s",
+        publication_id,
+        view["job_id"],
+        before["attempts"],
+        before["last_error"],
+    )
+    _refresh_backlog_gauge(settings)
+    return view
+
+
+def discard_publication(
+    settings: Settings,
+    publication_id: str,
+    *,
+    job_id: str | None = None,
+    tenant_id: str | None = None,
+    audit: audit_service.AuditContext | None = None,
+) -> bool:
     """Forget one owed publication. Answers whether there was one to forget.
 
     The way out of a ``dead`` row, for the operator who has either loaded the
     run by hand or decided to re-scan (see the runbook in
-    ``docs/operations.md``). Deliberately not a route: it is the last word on a
-    run the installation has already told its user it accepted, it is reached
-    perhaps twice a year, and the alternative on offer until now was raw SQL
-    against the table in a runbook that did not say so.
+    ``docs/operations.md``). Reached from ``DELETE
+    /api/jobs/{id}/publications/{publication_id}`` since #425 and still from
+    the runbook's ``python -c``, with the same checks either way: only a
+    ``dead`` row, and not while an attempt at it is still running
+    (:func:`_refuse_while_leased`). ``False`` for a row that is not there, or
+    not in ``tenant_id``/``job_id``.
 
     Only the row goes. The extracted tree and the archive beside it stay where
     they are until the ordinary sweep takes them, so a decision made in haste
-    is still recoverable for a day.
+    is still recoverable for a day. So does the note on the job: the run was
+    not published, and that is still true.
     """
+    now = _now()
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.RunPublication, publication_id)
+        row = _operator_row(session, publication_id, job_id=job_id, tenant_id=tenant_id)
         if row is None:
             return False
+        _refuse_while_leased(row, now=now, action="discard")
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_RUN_PUBLICATION_DISCARD,
+            resource_type="run_publication",
+            resource_id=row.publication_id,
+            tenant_id=row.tenant_id,
+            before=_decision_record(row),
+            after=None,
+        )
         session.delete(row)
+    metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="discarded").inc()
     LOG.warning(
         "Publication %s was discarded by an operator; the run it owed is not published",
         publication_id,
     )
+    _refresh_backlog_gauge(settings)
     return True
 
 
@@ -1121,7 +1500,11 @@ def reconciler_stats() -> dict[str, int] | None:
 
 
 __all__ = [
+    "PublicationInFlight",
     "PublicationReconciler",
+    "discard_publication",
+    "publications_for_job",
+    "requeue_publication",
     "reset_for_tests",
     "backlog",
     "is_backlogged",

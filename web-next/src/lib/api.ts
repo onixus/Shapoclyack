@@ -500,6 +500,44 @@ export type JobInfo = {
   agent_group_unavailable?: boolean;
 };
 
+/** One accepted run the installation still owes its visible copy (#425) —
+ * a `run_publications` row from `GET /api/jobs/{id}/publications`. */
+export type RunPublicationInfo = {
+  publication_id: string;
+  job_id: string;
+  run_id: string;
+  tenant_id: string;
+  status: "pending" | "dead";
+  /** `publishing` = an attempt is running now; `retrying` = owed, between
+   * attempts; `dead` = an operator decides. */
+  state: "publishing" | "retrying" | "dead";
+  /** What is worth doing, from the reason the row died. */
+  resolution: "wait" | "requeue" | "rescan" | "discard";
+  attempts: number;
+  max_attempts: number;
+  claims: number;
+  /** Renewals of this row's hold that failed or came late (#426). */
+  lease_lapses: number;
+  last_error: string | null;
+  /** The whole tree reached the store: the run is readable. */
+  stored_at: string | null;
+  next_attempt_at: string | null;
+  leased_until: string | null;
+  /** Pending, and nobody has touched it for longer than a retry and a peer's
+   * adoption would take — on the HA overlay, a pod that is gone. */
+  silent: boolean;
+  orphan_deadline_at: string | null;
+  /** Requeue/discard accepted now; otherwise not before `actionable_at`. */
+  actionable: boolean;
+  actionable_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Platform admin only; null for everyone else. */
+  replica: string | null;
+  staging_path: string | null;
+  archive_path: string | null;
+};
+
 /** `GET /api/jobs/summary`: one grouped count instead of paging the list. */
 export type JobSurfaceCounts = { running: number; queued: number; total: number };
 export type JobSummary = {
@@ -1656,6 +1694,44 @@ export async function cancelJob(jobId: string) {
   try {
     const { data } = await api.post<JobInfo>(`/jobs/${encodeURIComponent(jobId)}/cancel`);
     return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** What this job's accepted run still owes before it is visible (#425).
+ * Empty for the ordinary job. */
+export async function fetchJobPublications(jobId: string) {
+  try {
+    const { data } = await api.get<RunPublicationInfo[]>(
+      `/jobs/${encodeURIComponent(jobId)}/publications`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Give a `dead` publication a full set of attempts again (tenant admin).
+ * 409 while an attempt at it is still running. */
+export async function requeueJobPublication(jobId: string, publicationId: string) {
+  try {
+    const { data } = await api.post<RunPublicationInfo>(
+      `/jobs/${encodeURIComponent(jobId)}/publications/${encodeURIComponent(publicationId)}/requeue`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Give up on publishing a `dead` run: after a manual load, or before a
+ * re-scan (tenant admin). The extracted tree stays for the day-long sweep. */
+export async function discardJobPublication(jobId: string, publicationId: string) {
+  try {
+    await api.delete(
+      `/jobs/${encodeURIComponent(jobId)}/publications/${encodeURIComponent(publicationId)}`,
+    );
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

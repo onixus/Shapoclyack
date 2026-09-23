@@ -1824,6 +1824,18 @@ class RunPublication(Base):
     stored_at: Mapped[datetime | None] = mapped_column(default=None)
     next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(default=None)
+    # Proof of life, stamped by every renewal of a running attempt whatever
+    # the row's status (migration 0062). ``next_attempt_at`` cannot say it: a
+    # ``dead`` row has none, and a row goes ``dead`` when *one* attempt gives
+    # up, not when every attempt has stopped. Operator actions wait it out.
+    leased_until: Mapped[datetime | None] = mapped_column(default=None)
+    # A generation that only moves forward: bumped by every claim and by a
+    # requeue. ``claims`` is reset on every recorded outcome, so it alone
+    # cannot tell a rollback whether the row is still the one it claimed.
+    fence: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Renewals of this row that failed or came after the hold had lapsed
+    # (#426): which publication ran unprotected, after the fact.
+    lease_lapses: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
