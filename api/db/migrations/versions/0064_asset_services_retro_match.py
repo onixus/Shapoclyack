@@ -19,9 +19,11 @@ fingerprints to outlive the run directory they came from. Expand-only:
     Per-tenant bookkeeping for ``GET /api/retro-match/status``: last sweep,
     dataset marker, totals. Not a queue.
 
-``vulnerabilities.match_confidence`` / ``match_evidence``
-    Why a ``source = 'retro_match'`` finding exists and how sure it is. NULL on
-    every existing row, which is correct: no existing row came from a match.
+``vulnerabilities.match_confidence`` / ``match_evidence`` / ``match_announced_at``
+    Why a ``source = 'retro_match'`` finding exists, how sure it is, and when
+    it was announced as a ``new_cve`` event (NULL = committed, not yet
+    announced). NULL on every existing row, which is correct: no existing row
+    came from a match. A partial index covers the announcer's read.
 
 Rolling deploy: an old replica neither reads nor writes any of this. It keeps
 projecting runs without recording fingerprints — those listeners are picked up
@@ -110,6 +112,10 @@ def upgrade() -> None:
         sa.Column("findings_created", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("events_published", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("events_suppressed", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("events_marker", sa.String(), nullable=True),
+        sa.Column(
+            "events_marker_individual", sa.Integer(), nullable=False, server_default="0"
+        ),
         sa.Column("last_stats", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("refresh_requested_at", sa.DateTime(), nullable=True),
         sa.Column("refresh_requested_by", sa.String(), nullable=True),
@@ -117,9 +123,22 @@ def upgrade() -> None:
 
     op.add_column("vulnerabilities", sa.Column("match_confidence", sa.String(), nullable=True))
     op.add_column("vulnerabilities", sa.Column("match_evidence", sa.JSON(), nullable=True))
+    op.add_column("vulnerabilities", sa.Column("match_announced_at", sa.DateTime(), nullable=True))
+    # Partial: every existing row and every non-retro row stays out of it, so
+    # the index costs nothing until retro findings exist, and the announcer's
+    # "what is still unannounced" is a scan of exactly those.
+    op.create_index(
+        "ix_vulnerabilities_retro_unannounced",
+        "vulnerabilities",
+        ["tenant_id"],
+        postgresql_where=sa.text("source = 'retro_match' AND match_announced_at IS NULL"),
+        sqlite_where=sa.text("source = 'retro_match' AND match_announced_at IS NULL"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_vulnerabilities_retro_unannounced", table_name="vulnerabilities")
+    op.drop_column("vulnerabilities", "match_announced_at")
     op.drop_column("vulnerabilities", "match_evidence")
     op.drop_column("vulnerabilities", "match_confidence")
     op.drop_table("retro_match_state")

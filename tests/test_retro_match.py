@@ -84,7 +84,19 @@ def test_upstream_equal(left: str, right: str) -> None:
         ("8.4p1", CpeRange("CVE-2024-6387", start_including="8.5", end_excluding="9.8"), False),
         # Inclusive and exclusive ends, both sides.
         ("7.7", CpeRange("CVE-2018-15473", end_including="7.7"), True),
-        ("7.7p1", CpeRange("CVE-2018-15473", end_including="7.7"), False),
+        # NVD keeps OpenSSH's "p1" in the CPE update component: a plain bound
+        # of 7.7 covers the 7.7p1 release, and 7.8p1 is past it.
+        ("7.7p1", CpeRange("CVE-2018-15473", end_including="7.7"), True),
+        ("7.8p1", CpeRange("CVE-2018-15473", end_including="7.7"), False),
+        # A bound that itself carries the patch level is compared as written.
+        ("9.3p1", CpeRange("CVE-2023-38408", end_excluding="9.3p2"), True),
+        ("9.3p2", CpeRange("CVE-2023-38408", end_excluding="9.3p2"), False),
+        # 4.4p1 is the fix for the first CVE-2024-6387 window (< 4.4).
+        ("4.4p1", CpeRange("CVE-2024-6387", end_excluding="4.4"), False),
+        ("4.3p2", CpeRange("CVE-2024-6387", end_excluding="4.4"), True),
+        # Only OpenSSH's pattern: an OpenSSL letter release is its version.
+        ("1.0.1f", CpeRange("CVE-2014-0160", start_including="1.0.1", end_excluding="1.0.1g"), True),
+        ("1.0.1g", CpeRange("CVE-2014-0160", start_including="1.0.1", end_excluding="1.0.1g"), False),
         ("4.87", CpeRange("CVE-X", start_excluding="4.87"), False),
         ("4.87.1", CpeRange("CVE-X", start_excluding="4.87"), True),
         # An exact statement is equality, not a floor.
@@ -411,7 +423,7 @@ def test_the_evidence_names_what_was_matched(seed) -> None:
 
 def test_the_seed_loads_and_every_statement_is_bounded(seed) -> None:
     assert seed.available
-    assert seed.updated and seed.marker and seed.marker.startswith(seed.updated)
+    assert seed.updated and seed.marker and seed.marker.startswith("nvd:")
     for statements in seed.index.values():
         for statement in statements:
             assert statement.exact or any(
@@ -421,7 +433,27 @@ def test_the_seed_loads_and_every_statement_is_bounded(seed) -> None:
             assert statement.cve in seed.cves
 
 
-def test_an_unbounded_statement_is_dropped_and_the_marker_tracks_the_bytes(tmp_path: Path) -> None:
+def test_the_marker_tracks_content_not_the_feed_date_or_the_order(tmp_path: Path) -> None:
+    """A daily refresh re-stamps ``updated`` and re-appends the week's CVEs even
+    when NVD changed nothing. If that moved the marker, the worker would
+    re-match the whole estate every night for nothing."""
+    path = tmp_path / "ranges.json"
+    payload = json.loads(SEED.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    original = cpe_ranges.load_dataset(path).marker
+
+    payload["updated"] = "2027-01-01"
+    payload["entries"]["a:openbsd:openssh"].reverse()
+    payload["entries"] = dict(reversed(list(payload["entries"].items())))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    assert cpe_ranges.load_dataset(path).marker == original
+
+    payload["cves"]["CVE-2024-6387"]["cvss"] = 8.2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert cpe_ranges.load_dataset(path).marker != original
+
+
+def test_an_unbounded_statement_is_dropped_and_new_content_moves_the_marker(tmp_path: Path) -> None:
     path = tmp_path / "ranges.json"
     payload = {
         "version": 1,

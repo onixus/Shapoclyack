@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func, or_, select
 
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_if_absent
 from api.services import audit as audit_service
 from api.services import exploit_evidence
 from api.services import metrics
@@ -993,7 +993,7 @@ def register_findings_from_run(
                     severity=severity,
                     criticality=asset.asset_criticality,
                 )
-                row = models.Vulnerability(
+                candidate = models.Vulnerability(
                     vuln_id=f"vln_{uuid.uuid4().hex[:16]}",
                     tenant_id=tenant_id,
                     asset_id=asset.asset_id,
@@ -1021,26 +1021,39 @@ def register_findings_from_run(
                     updated_at=now,
                     **latest,
                 )
-                session.add(row)
-                session.flush()
-                created += 1
-                _record_event(
-                    session,
-                    vuln_id=row.vuln_id,
-                    tenant_id=tenant_id,
-                    kind="observed",
-                    occurred_at=now,
-                    to_state=vuln_states.OPEN,
-                    detail={
-                        "run_id": run_id,
-                        "first_seen": True,
-                        "severity": severity,
-                        "due_at": _iso(row.due_at),
-                        "sla_days": days,
-                        "sla_source": source,
-                    },
-                )
-                continue
+                # In a SAVEPOINT: another writer can commit this very key
+                # between the read above and this insert — the retro matcher
+                # (retro_findings.py) shares the key by design. A bare flush
+                # would abort the whole run's transaction on the unique
+                # constraint and every finding of the run with it; losing the
+                # race instead means the row exists, and this observation
+                # updates it like any re-observation.
+                if insert_if_absent(session, candidate, f"vulnerability {key}"):
+                    row = candidate
+                    created += 1
+                    _record_event(
+                        session,
+                        vuln_id=row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="observed",
+                        occurred_at=now,
+                        to_state=vuln_states.OPEN,
+                        detail={
+                            "run_id": run_id,
+                            "first_seen": True,
+                            "severity": severity,
+                            "due_at": _iso(row.due_at),
+                            "sla_days": days,
+                            "sla_source": source,
+                        },
+                    )
+                    continue
+                row = session.execute(
+                    select(models.Vulnerability).where(
+                        models.Vulnerability.tenant_id == tenant_id,
+                        models.Vulnerability.finding_key == key,
+                    )
+                ).scalar_one()
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what

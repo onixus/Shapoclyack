@@ -64,6 +64,7 @@ SLEEP_KEYED = 0.8
 MAX_LAST_MOD_DAYS = 120
 DEFAULT_PARTS = ("a",)
 _RETRYABLE = (429, 503, 504)
+_ORDER = ("cve", *cpe_ranges.RANGE_KEYS)
 
 
 class FetchDisabledError(RuntimeError):
@@ -214,7 +215,12 @@ def merge(existing: dict[str, Any] | None, harvest: Harvest, *, replace: bool) -
         "updated": datetime.now(UTC).date().isoformat(),
         "parts": sorted({key.split(":", 1)[0] for key in entries}) or list(DEFAULT_PARTS),
         "cves": {cve: cves[cve] for cve in sorted(cves) if cve in referenced},
-        "entries": {key: entries[key] for key in sorted(entries)},
+        # Sorted within each product too, so the file is the same bytes for the
+        # same content whatever order the harvest arrived in.
+        "entries": {
+            key: sorted(entries[key], key=lambda s: tuple(str(s.get(k) or "") for k in _ORDER))
+            for key in sorted(entries)
+        },
     }
 
 

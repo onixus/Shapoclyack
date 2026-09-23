@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 
 from api.db import models
@@ -62,6 +63,15 @@ def _set_asset_upsert_error(settings: Settings, job_id: str, message: str) -> No
         row = session.get(models.Job, job_id, with_for_update=True)
         if row is not None:
             row.asset_upsert_error = message[:2000]
+
+
+def _job_finished_at(settings: Settings, job_id: str | None) -> datetime | None:
+    """When the job that produced a run finished, or ``None`` when unknown."""
+    if not job_id:
+        return None
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        return row.finished_at if row is not None else None
 
 
 def _requested_by(settings: Settings, job_id: str) -> str:
@@ -142,7 +152,15 @@ def record_services_best_effort(
     if not run_id:
         return
     try:
-        asset_services.record_run(settings, tenant_id=tenant_id, run_id=run_id)
+        asset_services.record_run(
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            # When the scan finished, not when its publication landed: the
+            # reconciler can publish a run hours late, and "now" would let that
+            # run's fingerprints overwrite a newer scan's.
+            observed_at=_job_finished_at(settings, job_id),
+        )
     except Exception:  # noqa: BLE001
         _log.exception(
             "Service fingerprint recording failed for run %s (tenant=%s, job=%s)",

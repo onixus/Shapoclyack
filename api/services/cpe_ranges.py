@@ -20,11 +20,13 @@ corpus is millions of statements and every repeated long key costs a megabyte.
 And per-CVE metadata (score, severity, published date) lives once in a
 top-level ``cves`` map rather than on each statement that names the CVE.
 
-**The dataset version is what wakes the worker.** ``marker`` is the feed date
-plus a digest of the file's bytes, so a refresh that changed nothing (NVD had a
-quiet day) does not re-match the estate, and one that changed a single range
-does. The digest is taken over the bytes already read for parsing; nothing
-stats or hashes the file on a lookup.
+**The dataset version is what wakes the worker.** ``marker`` is a digest of
+what the file *says* — every statement and every CVE's metadata, canonically
+ordered — and deliberately not of its bytes or its ``updated`` date: a refresh
+that changed nothing (NVD had a quiet day, but the file was re-stamped and the
+week's CVEs re-appended) must not re-match the estate, and one that changed a
+single range must. It is computed once per load; nothing stats or hashes the
+file on a lookup.
 
 Nothing here opens a socket; ``api/services/cpe_ranges_fetch.py`` is the
 opt-in step that writes the file.
@@ -192,11 +194,33 @@ def load_dataset(path: Path) -> CpeRangeDataset:
                 cves[str(cve).strip().upper()] = info
 
     updated = _text(payload.get("updated"))
-    digest = hashlib.sha256(raw_bytes).hexdigest()[:16]
+    # Over what the dataset *says*, canonically ordered — not over the bytes.
+    # A daily refresh re-stamps ``updated`` and re-appends the week's CVEs even
+    # when NVD changed nothing, and a byte digest would then re-match the whole
+    # estate every night for nothing.
+    canonical = json.dumps(
+        {
+            "entries": {
+                key: sorted(
+                    (
+                        [s.cve, s.exact, s.start_including, s.start_excluding,
+                         s.end_including, s.end_excluding]
+                        for s in statements
+                    ),
+                    key=lambda item: [part or "" for part in item],
+                )
+                for key, statements in index.items()
+            },
+            "cves": cves,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return CpeRangeDataset(
         source=_text(payload.get("source")),
         updated=updated,
-        marker=f"{updated or 'undated'}:{digest}",
+        marker=f"nvd:{digest}",
         index=index,
         cves=cves,
         statements=statements,
@@ -229,6 +253,11 @@ class _Holder:
                 self._key = key
             return self._dataset
 
+    def peek(self) -> CpeRangeDataset | None:
+        """What is loaded now, without checking the file or loading it."""
+        with self._lock:
+            return self._dataset
+
     def reset(self) -> None:
         with self._lock:
             self._dataset = None
@@ -251,9 +280,17 @@ def reload() -> None:
     _HOLDER.reset()
 
 
-def status() -> dict[str, Any]:
-    """Provenance for the retro-match status route and the fetch script."""
-    loaded = dataset()
+def status(*, load: bool = True) -> dict[str, Any]:
+    """Provenance for the retro-match status route and the fetch script.
+
+    ``load=False`` reports what this process already has loaded (the worker's
+    view) and never parses the file: a request handler must not be the thing
+    that loads a multi-hundred-megabyte corpus, on every replica, after every
+    refresh. Nothing loaded yet reads as ``present: False`` with the reason.
+    """
+    loaded = dataset() if load else _HOLDER.peek()
+    if loaded is None:
+        loaded = CpeRangeDataset(error="not loaded in this process yet")
     return {
         "path": str(dataset_path()),
         "present": loaded.present,

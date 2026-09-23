@@ -401,6 +401,39 @@ def test_the_worker_runs_on_a_new_dataset_and_not_again_without_one(settings) ->
     assert retro_match_worker.sweep_tenant(settings, "default") == {"services": 0}
 
 
+def test_a_re_stamped_vendor_feed_does_not_requeue_but_a_new_statement_does(
+    settings, monkeypatch, tmp_path
+) -> None:
+    """The advisory fetch stamps ``updated`` with today's date every run; the
+    marker must follow what the feed says, or the estate is re-matched nightly."""
+    from api.services import advisories
+
+    feed = tmp_path / "debian.json"
+    payload = json.loads(
+        (REPO_ROOT / "scanner/data/advisories/debian-advisories.json").read_text(encoding="utf-8")
+    )
+    feed.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("OCTO_DEBIAN_ADVISORY_DATABASE", str(feed))
+    advisories.reload_providers()
+    try:
+        before = retro_match_worker.current_marker(cpe_ranges.dataset())
+
+        payload["updated"] = "2027-01-01"
+        payload["entries"].reverse()
+        feed.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        advisories.reload_providers()
+        assert retro_match_worker.current_marker(cpe_ranges.dataset()) == before
+
+        fixed = next(entry for entry in payload["entries"] if entry.get("fixed_version"))
+        fixed["fixed_version"] += "+1"
+        feed.write_text(json.dumps(payload), encoding="utf-8")
+        advisories.reload_providers()
+        assert retro_match_worker.current_marker(cpe_ranges.dataset()) != before
+    finally:
+        monkeypatch.undo()
+        advisories.reload_providers()
+
+
 def test_no_dataset_means_no_matching_and_nothing_marked(settings, monkeypatch, tmp_path) -> None:
     write_run(settings, "run-1")
     asset_services.record_run(settings, tenant_id="default", run_id="run-1")
@@ -482,7 +515,7 @@ def test_a_listener_id_from_another_tenant_is_not_folded(settings) -> None:
         foreign = list(session.scalars(select(models.AssetService.id)).all())
 
     dataset = cpe_ranges.dataset()
-    stats, created = retro_findings.fold_services(
+    stats = retro_findings.fold_services(
         settings,
         tenant_id="default",
         service_ids=foreign,
@@ -490,7 +523,7 @@ def test_a_listener_id_from_another_tenant_is_not_folded(settings) -> None:
         marker=retro_match_worker.current_marker(dataset),
         lookup=lambda _distro: None,
     )
-    assert (stats.services, created) == (0, [])
+    assert (stats.services, stats.created) == (0, 0)
     assert retro_rows(settings, "ten_other") == []
 
 
@@ -532,6 +565,79 @@ def test_new_findings_announce_as_new_cve_and_the_overflow_as_one_aggregate(
         assert (state.events_published, state.events_suppressed) == (3, 2)
 
 
+def test_the_one_by_one_budget_is_per_dataset_version_not_per_tick(settings, monkeypatch) -> None:
+    """A wave from one dataset spans many ticks; a per-tick cap would send the
+    cap again on every one of them."""
+    from api.services import asset_events
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        asset_events,
+        "publish_events",
+        lambda url, envelopes, settings=None: sent.extend(envelopes) or len(envelopes),
+    )
+    settings.nats_url = "nats://example.invalid:4222"
+    settings.retro_match_max_events = 3
+    write_run(settings, "run-1")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert len([e for e in sent if not e["data"].get("aggregate")]) == 3
+
+    # A second host arrives under the same dataset: its four findings are
+    # announced, but the budget of three is spent — one aggregate.
+    sent.clear()
+    write_run(settings, "run-2", ip="10.0.0.6")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-2")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert [e["data"].get("aggregate") for e in sent] == [True]
+    assert sent[0]["data"]["count"] == len(OPENSSH_74_CVES)
+
+
+def test_a_finding_committed_but_never_announced_is_announced_next_tick(
+    settings, monkeypatch
+) -> None:
+    """The process dies between the fold's commit and the publish (a rolling
+    update's SIGTERM). The findings are there and will never be created again,
+    so the announcement has to survive in the database, not in memory."""
+    from api.services import asset_events
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        asset_events,
+        "publish_events",
+        lambda url, envelopes, settings=None: sent.extend(envelopes) or len(envelopes),
+    )
+    settings.nats_url = "nats://example.invalid:4222"
+    write_run(settings, "run-1")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+
+    def killed(*args, **kwargs):
+        raise SystemExit("SIGTERM between the commit and the publish")
+
+    monkeypatch.setattr(retro_findings, "announce_pending", killed)
+    with pytest.raises(SystemExit):
+        retro_match_worker.sweep_tenant(settings, "default")
+    assert sent == []
+    assert len(retro_rows(settings)) == len(OPENSSH_74_CVES)
+
+    # The replacement process: the real announcer, the same dataset.
+    dataset_path = cpe_ranges.dataset_path()
+    monkeypatch.undo()
+    monkeypatch.setenv(cpe_ranges.ENV_VAR, str(dataset_path))
+    monkeypatch.setattr(
+        asset_events,
+        "publish_events",
+        lambda url, envelopes, settings=None: sent.extend(envelopes) or len(envelopes),
+    )
+    result = retro_match_worker.sweep_tenant(settings, "default")
+    assert result["services"] == 0  # nothing re-matched ...
+    assert {e["data"]["cve"] for e in sent} == OPENSSH_74_CVES  # ... but all announced
+    assert all(row.match_announced_at is not None for row in retro_rows(settings))
+    sent.clear()
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert sent == []
+
+
 def test_no_bus_no_events_but_the_findings_are_there(settings, monkeypatch) -> None:
     from api.services import asset_events
 
@@ -542,6 +648,133 @@ def test_no_bus_no_events_but_the_findings_are_there(settings, monkeypatch) -> N
     write_run(settings, "run-1")
     asset_services.record_run(settings, tenant_id="default", run_id="run-1")
     assert retro_match_worker.sweep_tenant(settings, "default")["created"] == len(OPENSSH_74_CVES)
+    # Stamped anyway: turning a bus on later must not flood it with old news.
+    assert all(row.match_announced_at is not None for row in retro_rows(settings))
+
+
+# --------------------------------------------------------------------------
+# The scan and the matcher writing the same keys at once
+# --------------------------------------------------------------------------
+
+
+def test_the_scan_fold_survives_a_retro_insert_between_its_read_and_its_write(
+    settings, monkeypatch
+) -> None:
+    """The scan's fold read "no row" for a key, and before it inserted, the
+    retro matcher committed that key. The scan used to die on the unique
+    constraint — and with it every finding of the run."""
+    write_run(
+        settings,
+        "run-scan",
+        findings=[
+            {"host": "10.0.0.5", "port": "22", "cve": "CVE-2023-48795", "severity": "medium"},
+            {"host": "10.0.0.5", "port": "80", "cve": "CVE-2021-41773", "severity": "high"},
+        ],
+    )
+    asset_services.record_run(settings, tenant_id="default", run_id="run-scan")
+    real = vulns._resolve_sla_days  # noqa: SLF001
+    raced: list[str] = []
+
+    def retro_gets_there_first(session, **kwargs):
+        if not raced:
+            raced.append("retro")
+            # A different transaction, committed while the scan's is open.
+            retro_match_worker.sweep_tenant(settings, "default")
+        return real(session, **kwargs)
+
+    monkeypatch.setattr(vulns, "_resolve_sla_days", retro_gets_there_first)
+    stats = vulns.register_findings_from_run(settings, tenant_id="default", run_id="run-scan")
+
+    assert raced == ["retro"]
+    assert (stats.created, stats.reobserved) == (1, 1)
+    rows = retro_rows(settings)
+    terrapin = [row for row in rows if row.cve == "CVE-2023-48795"]
+    assert len(terrapin) == 1 and terrapin[0].source == "scan"
+    assert any(row.cve == "CVE-2021-41773" and row.port == "80" for row in rows)
+
+
+@pytest.mark.skipif(not POSTGRES_URL.startswith("postgresql"), reason="lock_timeout is Postgres")
+def test_the_matcher_yields_to_a_lock_the_scan_holds(settings) -> None:
+    """A scan's fold holds a retro finding's row. The matcher must give up on
+    that listener within its lock timeout and retry it later — not wait, and
+    not be the transaction that forms a deadlock with the scan."""
+    import threading
+    import time
+
+    from sqlalchemy import text
+
+    write_run(settings, "run-1")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+    retro_match_worker.sweep_tenant(settings, "default")
+    target = next(row for row in retro_rows(settings) if row.cve == "CVE-2023-48795")
+    retro_match_worker.request_refresh(settings, tenant_id="default", actor="test")
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def scan_holding_the_row() -> None:
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                text("SELECT 1 FROM vulnerabilities WHERE vuln_id = :id FOR UPDATE"),
+                {"id": target.vuln_id},
+            )
+            locked.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=scan_holding_the_row)
+    holder.start()
+    try:
+        assert locked.wait(5)
+        started = time.monotonic()
+        result = retro_match_worker.sweep_tenant(settings, "default")
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(10)
+
+    assert elapsed < 5
+    assert result["errors"] == 1  # the SSH listener: held off
+    with get_session(settings.postgres_url) as session:
+        ssh = session.scalars(
+            select(models.AssetService).where(models.AssetService.port == 22)
+        ).one()
+        assert ssh.match_retry_after is not None
+        assert ssh.matched_dataset_version is None
+
+
+def test_a_late_publication_does_not_overwrite_a_newer_fingerprint(settings) -> None:
+    """The reconciler published a run hours after its scan finished, and after
+    a newer scan had been recorded. The projection used to stamp it "now"."""
+    from api.services import job_states, run_completion
+
+    now = asset_services._now()  # noqa: SLF001
+    newer = NMAP_XML.replace('version="7.4"', 'version="9.8p1"').replace(":7.4<", ":9.8p1<")
+    write_run(settings, "run-new", xml=newer)
+    write_run(settings, "run-late")
+    with get_session(settings.postgres_url) as session:
+        for job_id, run_id, hours in (("job-new", "run-new", 1), ("job-late", "run-late", 6)):
+            session.add(
+                models.Job(
+                    job_id=job_id,
+                    tenant_id="default",
+                    status=job_states.SUCCEEDED,
+                    run_id=run_id,
+                    queued_at=now - timedelta(hours=hours),
+                    finished_at=now - timedelta(hours=hours),
+                )
+            )
+    run_completion.record_services_best_effort(
+        settings, tenant_id="default", run_id="run-new", job_id="job-new"
+    )
+    run_completion.record_services_best_effort(
+        settings, tenant_id="default", run_id="run-late", job_id="job-late"
+    )
+    with get_session(settings.postgres_url) as session:
+        ssh = session.scalars(
+            select(models.AssetService).where(models.AssetService.port == 22)
+        ).one()
+        assert ssh.version == "9.8p1"
+        assert ssh.last_run_id == "run-new"
 
 
 # --------------------------------------------------------------------------
@@ -599,7 +832,7 @@ def test_status_route_is_per_tenant_and_refresh_needs_operator(client, settings)
     assert body["open_findings"] == {"version_range": len(OPENSSH_74_CVES)}
     assert body["possible_matches"] == 5
     assert body["dataset"]["products"] == 8
-    assert body["dataset_version"].startswith("2026-09-23:")
+    assert body["dataset_version"].startswith("nvd:")
 
     assert client.post("/api/retro-match/refresh", headers=viewer).status_code == 403
     operator = auth_headers(client, "operator")

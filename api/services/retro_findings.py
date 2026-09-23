@@ -16,32 +16,41 @@ a scanner did. One row, whichever observer got there first.
 
 * No row for the key: a new ``OPEN`` finding, ``source = "retro_match"``, with
   the tenant's SLA like any other.
-* A row from another observer (a scan saw it): left exactly as it is. The scan
-  observed the listener directly and owns the row's lifecycle; a range
-  statement adds nothing to that and must not overwrite it.
+* A row from another observer (a scan saw it): left exactly as it is, and not
+  even locked. The scan observed the listener directly and owns the row.
 * A ``retro_match`` row still open: its assessment is refreshed (severity,
   score, confidence, evidence) and nothing is written to its audit trail — a
   re-match of the same fingerprint is not an observation.
 * A ``retro_match`` row that is ``CLOSED``: left closed. Whoever closed it
-  (an operator, a ticket, a false-positive verdict) decided about exactly this
-  statement, and the dataset re-stating it is not new evidence. A regression
-  reopens through the scan path, which observes the listener.
+  decided about exactly this statement, and the dataset re-stating it is not
+  new evidence. A regression reopens through the scan path, which observes the
+  listener.
 
-And absence closes nothing: a fingerprint that stops matching (the host was
-upgraded, the vendor published a backport) leaves the finding open. Closure of
-a network finding is the scan path's, and only for a scan it dispatched.
+And absence closes nothing: a fingerprint that stops matching leaves the
+finding open. Closure of a network finding is the scan path's.
+
+**The fold always yields to the scan.** The two write the same keys, and the
+scan's fold of a whole run is one transaction that must not be the one that
+dies. So a listener is folded in a transaction of its own, lock waits in it
+are capped at :data:`LOCK_TIMEOUT` (below Postgres's ``deadlock_timeout``, so
+the retro side times out before a deadlock can be detected and a victim
+chosen), and a timeout is an ordinary failure: the listener is held off and
+retried. Only ``retro_match`` rows are ever locked here. The other half is in
+``vulnerabilities.register_findings_from_run``, whose insert is a SAVEPOINT so
+that losing the race to a retro insert is a re-observation, not a lost run.
 
 **Only ``vulnerable`` becomes a finding.** ``possible`` — NVD says affected,
 the banner names a distribution whose backports we cannot see — stays on the
-service row (``asset_services.match_summary``), with no deadline, because a
-deadline on "maybe" is how an SLA report stops being read.
+service row (``asset_services.match_summary``), with no deadline.
 
-**Event volume is bounded.** A new dataset over a large estate can create
-thousands of findings in one tick. Each tenant gets at most
-``OCTO_RETRO_MATCH_MAX_EVENTS`` individual ``new_cve`` events per tick, worst
-first; everything beyond that is one aggregate ``new_cve`` event carrying the
-count and a sample (``data.aggregate = true``). Every finding is still created;
-only the notification is summarised.
+**Announcements are durable and bounded.** A new finding is committed with
+``match_announced_at`` NULL; :func:`announce_pending` publishes what is still
+unannounced and only then stamps it. A process killed in between re-announces
+on the next tick — the event ids are content-derived, so JetStream drops the
+duplicate — and one killed before publishing loses nothing. Per tenant and per
+dataset version at most ``OCTO_RETRO_MATCH_MAX_EVENTS`` findings are announced
+one by one, worst first; everything beyond is one aggregate ``new_cve`` per
+tick (``data.aggregate = true``). Every finding is created regardless.
 """
 
 from __future__ import annotations
@@ -53,10 +62,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select, update
 
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_if_absent
 from api.services import retro_match, vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.cpe_ranges import CpeRangeDataset
@@ -71,6 +80,15 @@ SOURCE = "retro_match"
 #: How many ``possible`` statements are kept on a service row. The count is
 #: always exact; the list is for the asset page, which shows the worst first.
 POSSIBLE_SAMPLE = 50
+
+#: Longest a retro transaction waits for a row lock. Postgres's default
+#: ``deadlock_timeout`` is 1 s: waiting less means the retro side gives up
+#: before the deadlock detector would pick a victim, which could be the scan.
+LOCK_TIMEOUT = "500ms"
+
+#: Unannounced findings read per announcement pass. The rest wait for the next
+#: tick, still unannounced.
+ANNOUNCE_BATCH = 5000
 
 _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
 
@@ -186,6 +204,16 @@ def _latest(
     }
 
 
+def _find(session: Any, *, tenant_id: str, key: str, lock: bool) -> models.Vulnerability | None:
+    query = select(models.Vulnerability).where(
+        models.Vulnerability.tenant_id == tenant_id,
+        models.Vulnerability.finding_key == key,
+    )
+    if lock:
+        query = query.with_for_update()
+    return session.execute(query).scalar_one_or_none()
+
+
 def _fold_service(
     session: Any,
     *,
@@ -195,25 +223,22 @@ def _fold_service(
     lookup: retro_match.AdvisoryLookup,
     max_age_days: int,
     now: datetime,
-) -> tuple[RetroStats, dict[str, Any], list[dict[str, Any]]]:
-    """One listener: ``(stats, match summary, findings created)``.
-
-    Raises on anything unexpected; the caller holds the SAVEPOINT and the
-    backoff.
-    """
+) -> tuple[RetroStats, dict[str, Any]]:
+    """One listener: ``(stats, match summary)``. Raises on anything unexpected;
+    the caller owns the transaction and the backoff."""
     stats = RetroStats(services=1)
     if max_age_days > 0 and service.last_seen_at < now - timedelta(days=max_age_days):
         # A port nobody has seen open for months is not a statement about the
         # host any more; matching it would page on a service that is gone.
         stats.too_old = 1
-        return stats, {"status": "too_old"}, []
+        return stats, {"status": "too_old"}
     asset = session.get(models.Asset, service.asset_id)
     if asset is None or asset.tenant_id != tenant_id:  # pragma: no cover - FK cascade
-        return stats, {"status": "no_asset"}, []
+        return stats, {"status": "no_asset"}
 
     outcome = retro_match.match(_fingerprint(service), dataset, lookup=lookup)
     if outcome.reason:
-        return stats, _summary(outcome, status=outcome.reason), []
+        return stats, _summary(outcome, status=outcome.reason)
     stats.assessed = 1
     counts = outcome.counts()
     stats.vulnerable = counts[retro_match.VULNERABLE]
@@ -221,7 +246,6 @@ def _fold_service(
     stats.fixed = counts[retro_match.FIXED]
     stats.not_affected = counts[retro_match.NOT_AFFECTED]
 
-    created: list[dict[str, Any]] = []
     port = str(service.port)
     for match in outcome.matches:
         if not match.is_finding:
@@ -229,15 +253,10 @@ def _fold_service(
         key = vulns_service.finding_key(
             asset_id=asset.asset_id, cve=match.cve, script_id=None, port=port
         )
-        row = session.execute(
-            select(models.Vulnerability)
-            .where(
-                models.Vulnerability.tenant_id == tenant_id,
-                models.Vulnerability.finding_key == key,
-            )
-            .with_for_update()
-        ).scalar_one_or_none()
         latest = _latest(match, service=service, asset=asset)
+        # Read without a lock first: a row that is not ours is the scan's, and
+        # locking it would make the scan's fold wait on a retro transaction.
+        row = _find(session, tenant_id=tenant_id, key=key, lock=False)
 
         if row is None:
             days, sla_source = vulns_service._resolve_sla_days(  # noqa: SLF001
@@ -246,7 +265,7 @@ def _fold_service(
                 severity=match.severity,
                 criticality=asset.asset_criticality,
             )
-            row = models.Vulnerability(
+            candidate = models.Vulnerability(
                 vuln_id=f"vln_{uuid.uuid4().hex[:16]}",
                 tenant_id=tenant_id,
                 asset_id=asset.asset_id,
@@ -272,49 +291,46 @@ def _fold_service(
                 observation_count=1,
                 created_at=now,
                 updated_at=now,
+                # Committed unannounced; announce_pending publishes and stamps.
+                match_announced_at=None,
                 **latest,
             )
-            session.add(row)
-            session.flush()
-            stats.created += 1
-            vulns_service._record_event(  # noqa: SLF001
-                session,
-                vuln_id=row.vuln_id,
-                tenant_id=tenant_id,
-                kind="observed",
-                occurred_at=now,
-                to_state=vuln_states.OPEN,
-                detail={
-                    "source": SOURCE,
-                    "first_seen": True,
-                    "confidence": match.confidence,
-                    "severity": match.severity,
-                    "product": service.product,
-                    "version": service.version,
-                    "range": match.evidence.get("range"),
-                    "dataset": match.evidence.get("dataset"),
-                    "due_at": vulns_service._iso(row.due_at),  # noqa: SLF001
-                    "sla_days": days,
-                    "sla_source": sla_source,
-                },
-            )
-            created.append(
-                {
-                    "vuln_id": row.vuln_id,
-                    "asset_id": asset.asset_id,
-                    "host": service.host,
-                    "port": service.port,
-                    "protocol": service.protocol,
-                    "cve": match.cve,
-                    "severity": match.severity,
-                    "cvss": match.cvss,
-                    "confidence": match.confidence,
-                    "dataset": match.evidence.get("dataset"),
-                }
-            )
-            continue
+            if insert_if_absent(session, candidate, f"retro {key}"):
+                stats.created += 1
+                vulns_service._record_event(  # noqa: SLF001
+                    session,
+                    vuln_id=candidate.vuln_id,
+                    tenant_id=tenant_id,
+                    kind="observed",
+                    occurred_at=now,
+                    to_state=vuln_states.OPEN,
+                    detail={
+                        "source": SOURCE,
+                        "first_seen": True,
+                        "confidence": match.confidence,
+                        "severity": match.severity,
+                        "product": service.product,
+                        "version": service.version,
+                        "range": match.evidence.get("range"),
+                        "dataset": match.evidence.get("dataset"),
+                        "due_at": vulns_service._iso(candidate.due_at),  # noqa: SLF001
+                        "sla_days": days,
+                        "sla_source": sla_source,
+                    },
+                )
+                continue
+            # A scan committed the key between the read and the insert.
+            row = _find(session, tenant_id=tenant_id, key=key, lock=False)
+            if row is None:  # pragma: no cover - the winner's row was deleted under us
+                continue
 
         if row.source != SOURCE:
+            stats.already_tracked += 1
+            continue
+        # Ours: now lock it (bounded by LOCK_TIMEOUT) and re-check, since a scan
+        # may have taken it over, or someone closed it, since the plain read.
+        row = _find(session, tenant_id=tenant_id, key=key, lock=True)
+        if row is None or row.source != SOURCE:
             stats.already_tracked += 1
             continue
         if row.state == vuln_states.CLOSED:
@@ -330,16 +346,34 @@ def _fold_service(
             row.observation_count += 1
         row.updated_at = now
         stats.refreshed += 1
-    return stats, _summary(outcome, status="matched"), created
+    return stats, _summary(outcome, status="matched")
 
 
-def _hold_off(service: models.AssetService, *, now: datetime) -> None:
-    """Keep a row that raised out of the queue for a while; its marker is not
-    advanced, so it is still due, just not yet."""
-    failures = int(service.match_failure_count or 0) + 1
-    delay = _RETRY_BACKOFF_SECONDS[min(failures, len(_RETRY_BACKOFF_SECONDS)) - 1]
-    service.match_failure_count = failures
-    service.match_retry_after = now + timedelta(seconds=delay)
+def _bound_lock_waits(session: Any) -> None:
+    """Cap every lock wait in this transaction at :data:`LOCK_TIMEOUT` (Postgres).
+
+    ``is_local = true``: the setting dies with the transaction and never leaks
+    into the pooled connection's next user.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(select(func.set_config("lock_timeout", LOCK_TIMEOUT, True)))
+
+
+def _hold_off(settings: Settings, *, service_id: int, now: datetime) -> None:
+    """Keep a listener that raised out of the queue for a while.
+
+    In a transaction of its own — the listener's own one has been rolled back
+    by the time this runs. The marker is not advanced, so it is still due,
+    just not yet.
+    """
+    with get_session(settings.postgres_url) as session:
+        service = session.get(models.AssetService, service_id)
+        if service is None:  # pragma: no cover - deleted with its asset meanwhile
+            return
+        failures = int(service.match_failure_count or 0) + 1
+        delay = _RETRY_BACKOFF_SECONDS[min(failures, len(_RETRY_BACKOFF_SECONDS)) - 1]
+        service.match_failure_count = failures
+        service.match_retry_after = now + timedelta(seconds=delay)
 
 
 def fold_services(
@@ -350,50 +384,50 @@ def fold_services(
     dataset: CpeRangeDataset,
     marker: str,
     lookup: retro_match.AdvisoryLookup,
-) -> tuple[RetroStats, list[dict[str, Any]]]:
+) -> RetroStats:
     """Match a batch of listeners and fold the result into the lifecycle.
 
-    Each listener runs in its own SAVEPOINT and, whatever it concluded, is
-    stamped with ``marker`` — the durable statement "matched against this
-    dataset". A listener that raised is held off instead, with its marker left
-    alone. Returns the stats and the findings created, for the events.
+    One transaction per listener, not per batch: a batch-long transaction held
+    the locks of two hundred listeners' findings while the scan's fold waited
+    on them. The listener's own row is locked first, so a scan recording a new
+    fingerprint for it (``asset_services.record_run``) cannot be overwritten by
+    a verdict about the old one. Whatever the fold concluded, the listener is
+    stamped with ``marker``; one that raised — including a lock wait that ran
+    past :data:`LOCK_TIMEOUT` — is held off instead.
     """
     stats = RetroStats()
-    created: list[dict[str, Any]] = []
-    if not service_ids:
-        return stats, created
     now = _now()
-    with get_session(settings.postgres_url) as session:
-        for service_id in service_ids:
-            service = session.get(models.AssetService, service_id)
-            if service is None or service.tenant_id != tenant_id:
-                continue
-            try:
-                with session.begin_nested():
-                    one, summary, new = _fold_service(
-                        session,
-                        tenant_id=tenant_id,
-                        service=service,
-                        dataset=dataset,
-                        lookup=lookup,
-                        max_age_days=int(settings.retro_match_max_age_days),
-                        now=now,
-                    )
-            except Exception:  # noqa: BLE001 - one listener must not stop the tenant
-                stats.errors += 1
-                LOG.exception(
-                    "Retro match: service %s failed to fold (tenant %s)", service_id, tenant_id
+    max_age_days = int(settings.retro_match_max_age_days)
+    for service_id in service_ids:
+        try:
+            with get_session(settings.postgres_url) as session:
+                _bound_lock_waits(session)
+                service = session.get(models.AssetService, service_id, with_for_update=True)
+                if service is None or service.tenant_id != tenant_id:
+                    continue
+                one, summary = _fold_service(
+                    session,
+                    tenant_id=tenant_id,
+                    service=service,
+                    dataset=dataset,
+                    lookup=lookup,
+                    max_age_days=max_age_days,
+                    now=now,
                 )
-                _hold_off(service, now=now)
-                continue
-            stats.add(one)
-            created.extend(new)
-            service.match_summary = summary
-            service.matched_dataset_version = marker
-            service.matched_at = now
-            service.match_failure_count = 0
-            service.match_retry_after = None
-    return stats, created
+                service.match_summary = summary
+                service.matched_dataset_version = marker
+                service.matched_at = now
+                service.match_failure_count = 0
+                service.match_retry_after = None
+        except Exception:  # noqa: BLE001 - one listener must not stop the tenant
+            stats.errors += 1
+            LOG.exception(
+                "Retro match: service %s failed to fold (tenant %s)", service_id, tenant_id
+            )
+            _hold_off(settings, service_id=service_id, now=now)
+            continue
+        stats.add(one)
+    return stats
 
 
 # --------------------------------------------------------------------------
@@ -419,7 +453,7 @@ def build_events(
     notification and not ten thousand. ``summarised`` is how many findings the
     aggregate stands for. Ids are content-derived — one finding is one event
     id, one aggregate is the hash of the findings it covers — so a republish
-    from the outbox is dropped by JetStream as a duplicate.
+    is dropped by JetStream as a duplicate.
     """
     if not created:
         return [], 0
@@ -440,13 +474,12 @@ def build_events(
                 "job_id": None,
                 "asset_id": item["asset_id"],
                 "host": item["host"],
-                "port": str(item["port"]),
+                "port": item["port"],
                 "occurred_at": occurred_at,
                 "source": SOURCE,
                 "data": {
                     "host": item["host"],
-                    "port": str(item["port"]),
-                    "protocol": item.get("protocol"),
+                    "port": item["port"],
                     "cve": item["cve"],
                     "severity": item["severity"],
                     "cvss": item.get("cvss"),
@@ -498,33 +531,131 @@ def build_events(
     return envelopes, len(rest)
 
 
-def publish_created(
-    settings: Settings, *, tenant_id: str, created: list[dict[str, Any]]
-) -> dict[str, int]:
-    """Announce new retro findings on the asset event bus. Never raises.
-
-    The same bus, subject and outbox as a run's ``new_cve``, so
-    ``asset.vulnerability.new`` webhooks fire for these too; ``source`` on the
-    envelope is ``retro_match`` so a consumer can tell the two apart.
-    """
-    result = {"published": 0, "summarised": 0}
-    if not created or not settings.asset_events_enabled or not settings.nats_url:
-        return result
-    from api.services import asset_events
-
-    envelopes, summarised = build_events(
-        created,
-        tenant_id=tenant_id,
-        max_events=settings.retro_match_max_events,
-        occurred_at=asset_events._now_iso(),  # noqa: SLF001 - same clock as run events
+def _pending(session: Any, *, tenant_id: str) -> list[dict[str, Any]]:
+    """Unannounced retro findings, worst first, as event material."""
+    severity_rank = case(
+        *((models.Vulnerability.severity == name, rank) for name, rank in _SEVERITY_RANK.items()),
+        else_=0,
     )
-    result["summarised"] = summarised
-    try:
+    rows = session.execute(
+        select(models.Vulnerability)
+        .where(
+            models.Vulnerability.tenant_id == tenant_id,
+            models.Vulnerability.source == SOURCE,
+            models.Vulnerability.match_announced_at.is_(None),
+        )
+        .order_by(severity_rank.desc(), models.Vulnerability.created_at.asc())
+        .limit(ANNOUNCE_BATCH)
+    ).scalars().all()
+    # The address the listener was scanned on, for the envelope's ``host`` —
+    # what a scan's own new_cve names.
+    hosts: dict[tuple[str, str], str] = {}
+    if rows:
+        for asset_id, port, host in session.execute(
+            select(
+                models.AssetService.asset_id, models.AssetService.port, models.AssetService.host
+            ).where(
+                models.AssetService.tenant_id == tenant_id,
+                models.AssetService.asset_id.in_({row.asset_id for row in rows}),
+            )
+        ).all():
+            hosts[(asset_id, str(port))] = host
+    return [
+        {
+            "vuln_id": row.vuln_id,
+            "asset_id": row.asset_id,
+            "host": hosts.get((row.asset_id, str(row.port))),
+            "port": row.port,
+            "cve": row.cve,
+            "severity": row.severity,
+            "cvss": row.cvss,
+            "confidence": row.match_confidence,
+            "dataset": (row.match_evidence or {}).get("dataset"),
+        }
+        for row in rows
+    ]
+
+
+def announce_pending(settings: Settings, *, tenant_id: str, marker: str) -> dict[str, int]:
+    """Publish the tenant's unannounced retro findings, then stamp them.
+
+    At-least-once: publish first, stamp after. A process killed between the
+    two re-announces on the next tick under the same event ids, which
+    JetStream drops as duplicates; a broker that refuses is the outbox's
+    problem (``asset_events.publish_events`` hands the envelopes over). With
+    no bus configured nothing can ever be sent, so the findings are stamped
+    without publishing — turning a bus on later must not flood it with a
+    backlog of old "new" CVEs.
+
+    The one-by-one budget is per tenant **per dataset version**
+    (``retro_match_state.events_marker``): the wave a new dataset causes can
+    span many ticks, and a per-tick cap would repeat itself on every one.
+    """
+    result = {"published": 0, "summarised": 0, "announced": 0}
+    with get_session(settings.postgres_url) as session:
+        pending = _pending(session, tenant_id=tenant_id)
+        state = session.get(models.RetroMatchState, tenant_id)
+        spent = (
+            int(state.events_marker_individual or 0)
+            if state is not None and state.events_marker == marker
+            else 0
+        )
+    if not pending:
+        return result
+    budget = max(0, int(settings.retro_match_max_events) - spent)
+    bus = bool(settings.asset_events_enabled and settings.nats_url)
+    individual = 0
+    if bus:
+        from api.services import asset_events
+
+        envelopes, summarised = build_events(
+            pending,
+            tenant_id=tenant_id,
+            max_events=budget,
+            occurred_at=asset_events._now_iso(),  # noqa: SLF001 - same clock as run events
+        )
+        individual = len(pending) - summarised
+        result["summarised"] = summarised
+        # Never raises: what the broker refuses goes to the outbox, which is
+        # the retry for everything after this point.
         result["published"] = asset_events.publish_events(
             settings.nats_url, envelopes, settings=settings
         )
-    except Exception:  # noqa: BLE001 - publish_events never raises; belt and braces
-        # A notification lost here is not a finding lost: every row is already
-        # committed, and the outbox (inside publish_events) is the retry.
-        LOG.exception("Retro match: event publish failed (tenant %s)", tenant_id)
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.Vulnerability)
+            .where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.vuln_id.in_([item["vuln_id"] for item in pending]),
+            )
+            .values(match_announced_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        state = _state_row(session, tenant_id)
+        if state.events_marker != marker:
+            state.events_marker = marker
+            state.events_marker_individual = 0
+        state.events_marker_individual = int(state.events_marker_individual or 0) + individual
+        state.events_published = int(state.events_published or 0) + result["published"]
+        state.events_suppressed = int(state.events_suppressed or 0) + result["summarised"]
+    result["announced"] = len(pending)
     return result
+
+
+def _state_row(session: Any, tenant_id: str) -> models.RetroMatchState:
+    """The tenant's state row, locked; created on first use.
+
+    Two writers can meet here — the worker and an operator's refresh — and
+    both would otherwise insert the same primary key when the row does not
+    exist yet. ``insert_if_absent`` makes losing that race a re-read.
+    """
+    row = session.get(models.RetroMatchState, tenant_id, with_for_update=True)
+    if row is None:
+        insert_if_absent(
+            session,
+            models.RetroMatchState(tenant_id=tenant_id, last_stats={}),
+            f"retro_match_state:{tenant_id}",
+        )
+        row = session.get(models.RetroMatchState, tenant_id, with_for_update=True)
+    return row

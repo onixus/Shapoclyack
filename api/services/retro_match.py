@@ -141,17 +141,44 @@ def compare_upstream(left: str, right: str) -> int:
     return 0
 
 
+#: OpenSSH-portable's patch level. NVD keeps it in the CPE's ``update``
+#: component (``openssh:7.7:p1``), not in ``version``, so a range bound is a
+#: plain ``7.7`` and ``versionEndIncluding 7.7`` covers ``7.7p1``.
+_PORTABLE_PATCH = re.compile(r"^(\d+(?:\.\d+)*)p\d+$", re.IGNORECASE)
+
+
+def _against(version: str, bound: str) -> str:
+    """``version`` as NVD would compare it with ``bound``.
+
+    A bound with no letters is a ``version`` attribute alone; an observed
+    ``7.7p1`` is version ``7.7`` with update ``p1`` to NVD, so the patch level
+    is dropped for that comparison. A bound that carries one (the seed writes
+    ``9.3p2``) is compared as written.
+    """
+    match = _PORTABLE_PATCH.match(version.strip())
+    if match and not any(ch.isalpha() for ch in bound):
+        return match.group(1)
+    return version
+
+
 def in_range(version: str, statement: CpeRange) -> bool:
-    """Does ``statement``'s window cover ``version``?"""
+    """Does ``statement``'s window cover ``version``?
+
+    An exact statement is equality as written (``openssh:7.7:p1`` arrives as
+    ``7.7p1``); only range bounds get the update-component treatment of
+    :func:`_against`.
+    """
     if statement.exact:
         return compare_upstream(version, statement.exact) == 0
-    if statement.start_including and compare_upstream(version, statement.start_including) < 0:
+    low_in, low_ex = statement.start_including, statement.start_excluding
+    high_in, high_ex = statement.end_including, statement.end_excluding
+    if low_in and compare_upstream(_against(version, low_in), low_in) < 0:
         return False
-    if statement.start_excluding and compare_upstream(version, statement.start_excluding) <= 0:
+    if low_ex and compare_upstream(_against(version, low_ex), low_ex) <= 0:
         return False
-    if statement.end_including and compare_upstream(version, statement.end_including) > 0:
+    if high_in and compare_upstream(_against(version, high_in), high_in) > 0:
         return False
-    if statement.end_excluding and compare_upstream(version, statement.end_excluding) >= 0:
+    if high_ex and compare_upstream(_against(version, high_ex), high_ex) >= 0:
         return False
     return True
 
@@ -582,8 +609,15 @@ def vendor_verdict(
     cve: str,
     upstream: str,
     lookup: AdvisoryLookup,
+    shipping: dict[tuple[str, str], list[str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """What the distribution says about ``cve`` on this build: a verdict and why."""
+    """What the distribution says about ``cve`` on this build: a verdict and why.
+
+    ``shipping`` memoises :func:`_releases_shipping` across the CVEs of one
+    listener — the answer depends on the package and the upstream version,
+    not on the CVE, and walking the releases once per CVE made a Ubuntu
+    listener with thirty NVD hits thirty walks.
+    """
     provider = lookup(hint.distro or "")
     if provider is None or not provider.available():
         return POSSIBLE, {"reason": "no_advisory_provider"}
@@ -593,7 +627,13 @@ def vendor_verdict(
     if hint.release:
         releases = [hint.release]
     else:
-        releases = _releases_shipping(provider, packages, upstream)
+        memo_key = (product_key, upstream)
+        if shipping is not None and memo_key in shipping:
+            releases = shipping[memo_key]
+        else:
+            releases = _releases_shipping(provider, packages, upstream)
+            if shipping is not None:
+                shipping[memo_key] = releases
         if not releases:
             return POSSIBLE, {"reason": "release_not_identified"}
     verdicts: list[tuple[str, dict[str, Any]]] = []
@@ -691,6 +731,7 @@ def match(
                 hits[statement.cve] = (key, statement)
 
     matches: list[Match] = []
+    shipping: dict[tuple[str, str], list[str]] = {}
     for cve, (key, statement) in sorted(hits.items()):
         severity, cvss = _severity(dataset.cve_info(cve))
         evidence: dict[str, Any] = {
@@ -713,7 +754,12 @@ def match(
             verdict, confidence = VULNERABLE, CONFIDENCE_RANGE
         elif hint.distro in package_identity.SUPPORTED_DISTROS:
             verdict, advisory = vendor_verdict(
-                hint, product_key=key, cve=cve, upstream=upstream, lookup=lookup
+                hint,
+                product_key=key,
+                cve=cve,
+                upstream=upstream,
+                lookup=lookup,
+                shipping=shipping,
             )
             evidence["advisory"] = advisory
             confidence = CONFIDENCE_VENDOR if verdict != POSSIBLE else CONFIDENCE_BACKPORT

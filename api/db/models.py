@@ -1492,6 +1492,11 @@ class Vulnerability(Base):
     # date, the advisory. Kept after a scan takes the row over, because it is
     # the record of why the finding existed before the scan confirmed it.
     match_evidence: Mapped[dict | None] = mapped_column(JSON, default=None)
+    # When the retro matcher announced this finding as a ``new_cve`` event.
+    # NULL on a retro finding means "committed, not yet announced" — the
+    # durable half of at-least-once delivery (retro_findings.announce_pending).
+    # NULL and meaningless for every other source.
+    match_announced_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -1513,6 +1518,14 @@ class Vulnerability(Base):
         # Adoption: one tenant's closures inside a window, by reason.
         Index("ix_vulnerabilities_fp", "tenant_id", "closure_reason", "closed_at"),
         Index("ix_vulnerabilities_closed", "tenant_id", "state", "closed_at"),
+        # The retro announcer's read: findings committed but not yet announced
+        # (migration 0064). Partial, so it holds only those.
+        Index(
+            "ix_vulnerabilities_retro_unannounced",
+            "tenant_id",
+            postgresql_where=text("source = 'retro_match' AND match_announced_at IS NULL"),
+            sqlite_where=text("source = 'retro_match' AND match_announced_at IS NULL"),
+        ),
         # The ticket-sync worker's due read: one tenant's findings on one
         # tracker, oldest cursor first (#347).
         Index(
@@ -2861,6 +2874,11 @@ class RetroMatchState(Base):
     findings_created: Mapped[int] = mapped_column(default=0, server_default="0")
     events_published: Mapped[int] = mapped_column(default=0, server_default="0")
     events_suppressed: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The one-by-one event budget is per dataset version, not per tick: the
+    # wave a new dataset causes spans many ticks. Which version the count is
+    # for, and how much of it is spent.
+    events_marker: Mapped[str | None] = mapped_column(default=None)
+    events_marker_individual: Mapped[int] = mapped_column(default=0, server_default="0")
     last_stats: Mapped[dict] = mapped_column(JSON, default=dict)
     refresh_requested_at: Mapped[datetime | None] = mapped_column(default=None)
     refresh_requested_by: Mapped[str | None] = mapped_column(default=None)
