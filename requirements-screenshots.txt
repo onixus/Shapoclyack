@@ -1,0 +1,4 @@
+# Browser runtime for scanner/pipeline/screenshots.py.
+# Keep this separate from requirements.txt so the API-only image and ordinary
+# unit-test environments do not download a browser stack they never execute.
+playwright==1.63.0
