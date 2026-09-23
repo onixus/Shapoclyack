@@ -14,7 +14,7 @@ import {
 } from "@/hooks/use-mfa";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
-import { isWebAuthnSupported } from "@/lib/webauthn";
+import { isCancelledCeremony, isWebAuthnSupported } from "@/lib/webauthn";
 
 function when(value: string | null): string {
   return value ? value.slice(0, 16).replace("T", " ") : "";
@@ -58,9 +58,11 @@ export function SecurityKeysPanel() {
     try {
       await register.mutateAsync({ name: name.trim() });
       setName("");
-    } catch {
-      // Toasted by the mutation, or raised as the step-up prompt. The name
-      // stays in the field for the retry.
+    } catch (err) {
+      // Toasted by the mutation, or raised as the step-up prompt — except a
+      // cancelled browser prompt, which the mutation leaves to us so it can
+      // be said in the console's language. The name stays for the retry.
+      if (isCancelledCeremony(err)) toast.error(t("mfa.keys.cancelled"));
     }
   }
 
@@ -70,7 +72,13 @@ export function SecurityKeysPanel() {
       await verifyWithKey();
       toast.success(t("mfa.keys.verified"));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("login.failed"));
+      toast.error(
+        isCancelledCeremony(err)
+          ? t("mfa.keys.cancelled")
+          : err instanceof Error
+            ? err.message
+            : t("login.failed"),
+      );
     } finally {
       setVerifying(false);
     }

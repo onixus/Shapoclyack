@@ -9,7 +9,7 @@ import { SsoSignInButton } from "@/components/sso-sign-in-button";
 import { fetchSsoStatus, setAccessToken, type Me, type SsoStatus } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
-import { isWebAuthnSupported } from "@/lib/webauthn";
+import { isCancelledCeremony, isWebAuthnSupported } from "@/lib/webauthn";
 
 /** An outstanding second factor: the challenge token, how long it is good for,
  * and the account it names when we know it — after an SSO redirect we do not,
@@ -146,7 +146,13 @@ export default function LoginPage() {
       await verifyWithKey(challenge.token);
       router.replace(landing());
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("login.failed"));
+      setError(
+        isCancelledCeremony(err)
+          ? t("mfa.keys.cancelled")
+          : err instanceof Error
+            ? err.message
+            : t("login.failed"),
+      );
     } finally {
       setSubmitting(false);
     }

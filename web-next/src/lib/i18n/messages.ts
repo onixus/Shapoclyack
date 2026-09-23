@@ -1463,6 +1463,7 @@ export const en = {
   "mfa.keys.verifying": "Waiting for the key…",
   "mfa.keys.verified": "Verified with your security key.",
   "mfa.stepup.useKey": "Use a security key",
+  "mfa.keys.cancelled": "The security key prompt was cancelled or timed out. Try again when the key is to hand.",
 
   "login.mfa.title": "Enter your code",
   "login.mfa.subtitle": "{username} has two-factor authentication on. Open your authenticator and type the six digits it shows.",
@@ -2945,6 +2946,7 @@ export const ru: Record<MsgKey, string> = {
   "mfa.keys.verifying": "Ждём ключ…",
   "mfa.keys.verified": "Подтверждено ключом безопасности.",
   "mfa.stepup.useKey": "Использовать ключ безопасности",
+  "mfa.keys.cancelled": "Запрос ключа безопасности отменён или истёк. Попробуйте снова, когда ключ будет под рукой.",
 
   "login.mfa.title": "Введите код",
   "login.mfa.subtitle": "У {username} включена двухфакторная аутентификация. Откройте аутентификатор и введите шесть цифр.",

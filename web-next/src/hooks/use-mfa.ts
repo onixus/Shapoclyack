@@ -17,7 +17,7 @@ import {
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { queryKeys } from "@/lib/query-keys";
-import { createKey } from "@/lib/webauthn";
+import { createKey, isCancelledCeremony } from "@/lib/webauthn";
 
 /** The signed-in account's own second-factor state (#315). */
 export function useMfaStatus(enabled = true) {
@@ -137,6 +137,9 @@ export function useRegisterWebAuthnKey() {
       await useAuthStore.getState().hydrate();
     },
     onError: (err) => {
+      // A cancelled browser prompt is not a failure worth a red toast in the
+      // browser's own English; the panel says it in the console's language.
+      if (isCancelledCeremony(err)) return;
       toast.error("Could not add the security key", { description: err.message });
     },
   });

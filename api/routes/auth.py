@@ -274,6 +274,7 @@ def refresh(
         session_id=rotated.family_id,
         session_expires_at=rotated.expires_at,
         mfa_verified_at=rotated.mfa_verified_at,
+        mfa_method=rotated.mfa_method,
         token_version=rotated.token_version,
     )
     answer = JSONResponse(

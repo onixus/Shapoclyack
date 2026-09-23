@@ -183,6 +183,37 @@ describe("SecurityKeysPanel", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it("says a cancelled browser prompt in the console's words, not the browser's", async () => {
+    const { toast } = await import("sonner");
+    const cancelled = Object.assign(new Error("The operation either timed out or was not allowed."), {
+      name: "NotAllowedError",
+    });
+    stubBrowserKey(vi.fn().mockRejectedValue(cancelled));
+    installTransport({
+      "get /auth/mfa": { status: 200, data: STATUS },
+      "get /auth/mfa/webauthn/credentials": { status: 200, data: [] },
+      "post /auth/mfa/webauthn/register/options": {
+        status: 200,
+        data: {
+          challenge_id: "c-1",
+          public_key: {
+            rp: { id: "console.example", name: "Shapoclyack" },
+            user: { id: "AQID", name: "admin", displayName: "admin" },
+            challenge: "BAUG",
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          },
+        },
+      },
+    });
+    vi.mocked(toast.error).mockClear();
+    renderPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: /add a security key/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/cancelled or timed out/i));
+  });
+
   it("says a key needs the authenticator app first, and offers no button", async () => {
     stubBrowserKey(vi.fn());
     installTransport({ "get /auth/mfa": { status: 200, data: { ...STATUS, enabled: false } } });

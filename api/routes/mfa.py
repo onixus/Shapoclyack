@@ -318,8 +318,23 @@ def verify_mfa(
     client_ip = _client_ip(request, settings)
     accepted = _check_under_limiter(request, settings, username, _prove)
     if not accepted:
+        # Which factor was refused, so the message is about what the user
+        # actually presented. And which status: on the login leg there is no
+        # session and 401 is what the second leg has always answered; on a
+        # step-up the *session* is fine and only the proof was refused — the
+        # console signs out on every 401, so a stale challenge from another tab
+        # would otherwise end a perfectly good session (#437 review).
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
+            status_code=(
+                status.HTTP_401_UNAUTHORIZED
+                if body.mfa_token
+                else status.HTTP_403_FORBIDDEN
+            ),
+            detail=(
+                "that security key response is not valid"
+                if body.webauthn is not None
+                else "that code is not valid"
+            ),
         )
 
     record = users_service.get_user(username)

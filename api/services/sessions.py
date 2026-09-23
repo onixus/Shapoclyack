@@ -103,6 +103,8 @@ class OpenedSession:
     # else here, so the access token can be signed without another query.
     token_version: int
     mfa_verified_at: datetime | None = None
+    # The factor that proof was made with (#315), carried the same way.
+    mfa_method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -268,7 +270,11 @@ def _end(family: models.SessionFamily, now: datetime, reason: str) -> None:
 
 
 def open_session(
-    settings: Settings, *, username: str, mfa_verified_at: datetime | None = None
+    settings: Settings,
+    *,
+    username: str,
+    mfa_verified_at: datetime | None = None,
+    mfa_method: str | None = None,
 ) -> OpenedSession:
     """Open a session family for a completed sign-in and issue its first refresh token.
 
@@ -303,6 +309,7 @@ def open_session(
                 expires_at=expires_at,
                 last_used_at=now,
                 mfa_verified_at=_naive(mfa_verified_at),
+                mfa_method=mfa_method if mfa_verified_at is not None else None,
             )
         )
         session.flush()
@@ -317,6 +324,7 @@ def open_session(
             role=row.role,
             token_version=int(row.token_version or 0),
             mfa_verified_at=mfa_verified_at,
+            mfa_method=mfa_method if mfa_verified_at is not None else None,
         )
 
 
@@ -396,6 +404,7 @@ def rotate(settings: Settings, refresh_token: str) -> OpenedSession:
                     role=account.role,
                     token_version=int(account.token_version or 0),
                     mfa_verified_at=_aware(family.mfa_verified_at),
+                    mfa_method=family.mfa_method,
                 )
     except SQLAlchemyError as exc:
         logger.warning("session store unavailable: %s", exc)
@@ -434,19 +443,35 @@ def end_session_by_refresh_token(settings: Settings, refresh_token: str) -> None
         end_session(settings, family_id)
 
 
-def record_step_up(settings: Settings, family_id: str, verified_at: datetime) -> datetime:
+def record_step_up(
+    settings: Settings, family_id: str, verified_at: datetime, *, method: str | None = None
+) -> datetime:
     """Stamp a fresh second-factor proof on a live family; return its absolute end.
 
     So the access tokens refreshed from it afterwards carry the step-up rather
     than the proof from sign-in. A family that has ended is a
     :class:`PermissionError`: the step-up was made with a session that is over.
+
+    ``method`` is written in the same statement as the time (#315), always —
+    ``None`` included. A code-proved step-up after a key-proved sign-in must
+    replace the label along with the time; keeping the old ``webauthn`` next
+    to a newer code proof would let the next refresh pass a key-only step-up.
+    One conditional ``UPDATE`` rather than read-then-write, so there is no
+    window in which the two columns disagree.
     """
     with get_session(settings.postgres_url) as session:
-        family = session.get(models.SessionFamily, family_id, with_for_update=True)
-        if family is None or family.revoked_at is not None:
+        expires_at = session.execute(
+            update(models.SessionFamily)
+            .where(
+                models.SessionFamily.family_id == family_id,
+                models.SessionFamily.revoked_at.is_(None),
+            )
+            .values(mfa_verified_at=_naive(verified_at), mfa_method=method)
+            .returning(models.SessionFamily.expires_at)
+        ).scalar_one_or_none()
+        if expires_at is None:
             raise PermissionError("session has ended")
-        family.mfa_verified_at = _naive(verified_at)
-        return family.expires_at.replace(tzinfo=UTC)
+        return expires_at.replace(tzinfo=UTC)
 
 
 def get_family(settings: Settings, family_id: str) -> models.SessionFamily | None:

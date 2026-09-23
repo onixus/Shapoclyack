@@ -1,7 +1,7 @@
 """WebAuthn / passkeys: registered security keys and their one-time challenges
 
 Revision ID: 0061_webauthn_credentials
-Revises: 0059_nats_outbox
+Revises: 0060_refresh_tokens
 Create Date: 2026-09-23
 
 Two new tables, additive, with no backfill and no contract phase (#315). There
@@ -26,7 +26,12 @@ asked for it (the pre-authentication token on a login, the session on a
 step-up or a registration), so a challenge minted for one ceremony cannot be
 spent by another. Rows are short-lived (``expires_at``) and swept by the writer.
 
-Both carry ``username`` as a real FK with ``ON DELETE CASCADE``: a deleted
+One nullable column on ``session_families`` (``0060_refresh_tokens``):
+``mfa_method``, the factor the family's ``mfa_verified_at`` was proved with,
+written together with it, so an access token refreshed from the family says
+what the session was proved with and not only when.
+
+Both new tables carry ``username`` as a real FK with ``ON DELETE CASCADE``: a deleted
 account's keys authenticate nothing, and keeping them would only let a later
 account under the same name inherit them.
 
@@ -48,9 +53,9 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0061_webauthn_credentials"
-# Reserved number; 0060 is being taken by a parallel branch. Re-point at
-# whichever revision is head when this merges.
-down_revision: Union[str, None] = "0059_nats_outbox"
+# Chained onto the refresh-token migration (#314), which merges first; re-point
+# at whichever revision is head if the order changes.
+down_revision: Union[str, None] = "0060_refresh_tokens"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -90,6 +95,9 @@ def upgrade() -> None:
         sa.Column("purpose", sa.String(), nullable=False),
         sa.Column("binding", sa.String(), nullable=False),
         sa.Column("challenge", sa.LargeBinary(), nullable=False),
+        # Who asked, for the per-(account, address) rate limit on options: a
+        # password holder elsewhere must not be able to spend the owner's.
+        sa.Column("client_ip", sa.String(), nullable=False, server_default=""),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("expires_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
@@ -102,8 +110,15 @@ def upgrade() -> None:
         "ix_webauthn_challenges_expires_at", "webauthn_challenges", ["expires_at"]
     )
 
+    # Which factor the family's ``mfa_verified_at`` was proved with, so a
+    # refreshed access token carries it on (#314 × #315). Nullable, no
+    # backfill: a family opened before this column is a session nobody proved
+    # with a key, which is exactly what NULL reads as.
+    op.add_column("session_families", sa.Column("mfa_method", sa.String(), nullable=True))
+
 
 def downgrade() -> None:
+    op.drop_column("session_families", "mfa_method")
     op.drop_index("ix_webauthn_challenges_expires_at", table_name="webauthn_challenges")
     op.drop_index("ix_webauthn_challenges_username", table_name="webauthn_challenges")
     op.drop_table("webauthn_challenges")

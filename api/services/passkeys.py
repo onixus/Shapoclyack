@@ -22,9 +22,12 @@ behind would be a factor for an account that no longer has MFA.
 **A challenge is spent before it is checked.** :func:`_consume_challenge`
 deletes the row in its own transaction and only then is the response verified,
 so a failed attempt burns the challenge as surely as a successful one. The row
-is bound to the user, the ceremony (``register``/``authenticate``) and the
-``jti`` of the token that asked for it, and it expires after
-:data:`CHALLENGE_TTL_SECONDS`.
+is bound to the user, the ceremony (``register``/``authenticate``) and what
+asked for it — the challenge token's ``jti`` on a login, the session family
+(``sid``) on a signed-in session (:func:`session_binding`) — and it expires
+after :data:`CHALLENGE_TTL_SECONDS`. Asking for one is limited per binding and
+per (account, address), and never evicts somebody else's
+(:func:`_store_challenge`).
 
 **The counter is advanced under a row lock.** An assertion whose signature
 counter does not move past the stored one is refused (the library's rule, with
@@ -46,7 +49,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import webauthn
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.exceptions import WebAuthnException
@@ -72,10 +75,13 @@ logger = logging.getLogger(__name__)
 #: enough to find the key on the keyring, short enough that an options response
 #: somebody screenshotted is worthless by the time they act on it.
 CHALLENGE_TTL_SECONDS = 300
-#: Open challenges one account may hold at once. Each options call writes a
-#: row; without a cap a caller holding a session could grow the table without
-#: bound. The oldest are dropped, so a person who clicked twice is unaffected.
-MAX_OPEN_CHALLENGES = 5
+#: Open challenges one binding — one login's challenge token, or one session —
+#: may hold at once. Each options call writes a row. Ten is a person clicking
+#: "use a security key" and cancelling the browser prompt, many times over.
+MAX_OPEN_CHALLENGES = 10
+#: Open challenges one account may hold from one client address, across all
+#: its bindings: what bounds a script that signs in over and over.
+MAX_CHALLENGES_PER_WINDOW = 30
 #: Longest label a key may be given in the inventory.
 MAX_NAME_LENGTH = 64
 
@@ -103,6 +109,18 @@ _ENROL_FIRST = (
     "enrol an authenticator app first (POST /api/auth/mfa/totp/setup); "
     "a security key is added on top of it"
 )
+
+
+class TooManyChallenges(PermissionError):
+    """An options call over the limit; the route answers 429 with ``Retry-After``.
+
+    A :class:`PermissionError` so a caller that only wants "refused" needs no
+    second ``except``, the same shape ``sessions.RefreshTokenReused`` has.
+    """
+
+    def __init__(self, *, retry_after_seconds: int) -> None:
+        super().__init__("too many security key challenges; try again shortly")
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _now() -> datetime:
@@ -139,6 +157,21 @@ def _user_handle(username: str) -> bytes:
     about hiding the first.
     """
     return hashlib.sha256(f"shapoclyack:webauthn:{username}".encode()).digest()
+
+
+def session_binding(session_id: str | None, jti: str | None) -> str | None:
+    """What a challenge asked for on a signed-in session is bound to.
+
+    The session family (``sid``, #314) when the token names one: the console
+    refreshes its fifteen-minute access token on its own schedule, and a
+    refresh between the options and the answer must not break the ceremony —
+    the family is what "this sign-in" means now. A token minted before refresh
+    tokens has no family and binds to its own ``jti``, as before. Prefixed so
+    a family id can never equal a token id by accident.
+    """
+    if session_id:
+        return f"sid:{session_id}"
+    return jti or None
 
 
 def phishing_resistant_required(settings: Settings, role: str) -> bool:
@@ -226,18 +259,59 @@ def _descriptors(session: Any, username: str) -> list[PublicKeyCredentialDescrip
 
 
 def _store_challenge(
-    session: Any, username: str, *, purpose: str, binding: str, challenge: bytes, now: datetime
+    session: Any,
+    username: str,
+    *,
+    purpose: str,
+    binding: str,
+    challenge: bytes,
+    client_ip: str,
+    now: datetime,
 ) -> str:
-    """Write one challenge row, sweeping expired rows and the account's excess."""
+    """Write one challenge row, or refuse with :class:`TooManyChallenges`.
+
+    Nothing is ever evicted to make room. An account-wide cap that dropped the
+    oldest row let anybody holding the password — their own sign-in, their own
+    challenge token — push the owner's in-flight challenge out and fail the
+    owner's key (#437 review). So the limits refuse the *asker* instead:
+
+    * :data:`MAX_OPEN_CHALLENGES` open per binding — per login or per session,
+      which only the holder of that token can spend;
+    * :data:`MAX_CHALLENGES_PER_WINDOW` open per (account, client address), so
+      a flood of sign-ins from one address cannot grow the table without bound
+      and cannot touch the budget of an owner elsewhere.
+
+    Both count rows still open, which is the same thing as "asked for within
+    the last :data:`CHALLENGE_TTL_SECONDS`" less those already answered: a
+    challenge a real ceremony spent frees its slot.
+    """
     session.execute(delete(models.WebAuthnChallenge).where(models.WebAuthnChallenge.expires_at <= now))
-    open_ids = session.execute(
-        select(models.WebAuthnChallenge.id)
-        .where(models.WebAuthnChallenge.username == username)
-        .order_by(models.WebAuthnChallenge.created_at.desc(), models.WebAuthnChallenge.id)
-    ).scalars().all()
-    stale = open_ids[MAX_OPEN_CHALLENGES - 1 :]
-    if stale:
-        session.execute(delete(models.WebAuthnChallenge).where(models.WebAuthnChallenge.id.in_(stale)))
+    open_for_binding = session.execute(
+        select(func.count())
+        .select_from(models.WebAuthnChallenge)
+        .where(
+            models.WebAuthnChallenge.username == username,
+            models.WebAuthnChallenge.binding == binding,
+        )
+    ).scalar_one()
+    open_from_address = session.execute(
+        select(func.count())
+        .select_from(models.WebAuthnChallenge)
+        .where(
+            models.WebAuthnChallenge.username == username,
+            models.WebAuthnChallenge.client_ip == client_ip,
+        )
+    ).scalar_one()
+    if open_for_binding >= MAX_OPEN_CHALLENGES or open_from_address >= MAX_CHALLENGES_PER_WINDOW:
+        oldest = session.execute(
+            select(func.min(models.WebAuthnChallenge.expires_at)).where(
+                models.WebAuthnChallenge.username == username,
+                (models.WebAuthnChallenge.binding == binding)
+                | (models.WebAuthnChallenge.client_ip == client_ip),
+            )
+        ).scalar_one()
+        wait = int((oldest - now).total_seconds()) + 1 if oldest else CHALLENGE_TTL_SECONDS
+        raise TooManyChallenges(retry_after_seconds=max(1, wait))
     challenge_id = uuid.uuid4().hex
     session.add(
         models.WebAuthnChallenge(
@@ -246,6 +320,7 @@ def _store_challenge(
             purpose=purpose,
             binding=binding,
             challenge=challenge,
+            client_ip=client_ip,
             created_at=now,
             expires_at=now + timedelta(seconds=CHALLENGE_TTL_SECONDS),
         )
@@ -367,7 +442,7 @@ def check_disable_proof(
         )
 
 
-def begin_registration(settings: Settings, username: str, *, binding: str) -> dict[str, Any]:
+def begin_registration(settings: Settings, username: str, *, binding: str, client_ip: str = "") -> dict[str, Any]:
     """Issue ``PublicKeyCredentialCreationOptions`` for a new key.
 
     Refused (``ValueError``) for an account with no authenticator app enrolled:
@@ -405,6 +480,7 @@ def begin_registration(settings: Settings, username: str, *, binding: str) -> di
             purpose=PURPOSE_REGISTER,
             binding=binding,
             challenge=options.challenge,
+            client_ip=client_ip,
             now=now,
         )
     return {"challenge_id": challenge_id, "public_key": _options_json(options)}
@@ -526,7 +602,7 @@ def revoke_credential(
 # --------------------------------------------------------------------------- #
 
 
-def begin_authentication(settings: Settings, username: str, *, binding: str) -> dict[str, Any]:
+def begin_authentication(settings: Settings, username: str, *, binding: str, client_ip: str = "") -> dict[str, Any]:
     """Issue ``PublicKeyCredentialRequestOptions`` naming the account's keys.
 
     ``ValueError`` when the account holds none: there is nothing for the
@@ -554,6 +630,7 @@ def begin_authentication(settings: Settings, username: str, *, binding: str) -> 
             purpose=PURPOSE_AUTHENTICATE,
             binding=binding,
             challenge=options.challenge,
+            client_ip=client_ip,
             now=now,
         )
     return {"challenge_id": challenge_id, "public_key": _options_json(options)}

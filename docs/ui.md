@@ -236,7 +236,10 @@ At the login code step, **Use a security key** asks for a challenge bound to
 that login's token and signs it; the step-up dialog has the same button. Both
 appear only when the browser exposes WebAuthn (an `https` page or
 `localhost`); whether the account actually holds a key is the server's answer,
-shown as the error line if not.
+shown as the error line if not. A prompt the user cancels or lets time out (the browser's
+`NotAllowedError`) is said in the console's own words rather than the browser's
+English. A refused key or code on a step-up is a `403` from the API, so it
+stays in the dialog as an error instead of signing the console out.
 
 When `OCTO_MFA_PHISHING_RESISTANT_ROLES` names your role and the session was
 verified with a code, the API confines it like an unfinished enrolment

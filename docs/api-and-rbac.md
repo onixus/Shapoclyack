@@ -370,18 +370,33 @@ the account already holds a key, that verification must itself have been a key.
 
 A challenge is **single-use** (the verification deletes it *before* checking
 the response, so a failed attempt spends it too), lives five minutes, and is
-bound to the account, the ceremony and the `jti` of the token that asked for
-it — the challenge token on a login, the session otherwise. At most five are
-open per account. The key's **signature counter** is checked and advanced under
+bound to the account, the ceremony and what asked for it — the challenge
+token's `jti` on a login, the **session family** (`sid`) on a signed-in
+session, so a refresh of the access token between the options and the answer
+does not break the ceremony. Asking for challenges is limited, and the limit
+refuses the asker — it never evicts an open challenge: at most 10 open per
+binding (one login, one session) and 30 per (account, client address). Over
+either, the options call is `429` with `Retry-After`. Somebody else who knows
+the password therefore cannot push the owner's in-flight challenge out.
+The key's **signature counter** is checked and advanced under
 a row lock: an assertion whose counter does not move past the stored value is
 refused as a possible clone (authenticators that always report `0`, as most
 synced passkeys do, are exempt per the spec). Attestation is `none`: this
 installation keeps no trust store of authenticator vendors.
 
-Every refusal is `401 that security key response is not valid` on
-`/mfa/verify` (the reason is logged, not returned) and goes through the login
-limiter like a wrong code. The session a verification mints carries
-`mfa_method` (`totp`, `recovery` or `webauthn`) next to `mfa_verified_at`;
+A refused key response on `/mfa/verify` answers `that security key response
+is not valid` (a refused code, `that code is not valid`); the reason is logged,
+not returned, and the attempt goes through the login limiter like a wrong code.
+The status depends on the leg: **401** on the login leg (with `mfa_token`,
+there is no session yet), **403** on a step-up (bearer) — the session is fine,
+only the proof was refused, and the console ends the session on any 401. This
+applies to codes as well as keys.
+
+The session a verification mints carries `mfa_method` (`totp`, `recovery` or
+`webauthn`) next to `mfa_verified_at`, and so does its session family
+(`session_families.mfa_method`): a refreshed access token keeps the method the
+session was proved with. A step-up writes the new time **and** the new method in
+one `UPDATE` — a code step-up after a key sign-in makes the session code-proved.
 `GET /api/auth/me` echoes it.
 
 ### Requiring a phishing-resistant factor
@@ -414,7 +429,11 @@ proved; to cut off a stolen key's sessions as well, use "sign out everywhere"
 
 Under `OCTO_ENV=prod` the API refuses to start with either setting and no
 derivable relying party: every covered administrator would be confined to a
-page whose one action answers 409.
+page whose one action answers 409. It also refuses — whenever WebAuthn is
+configured explicitly or a policy uses it — an IP address as the RP ID, an
+origin that is not `https` (`localhost` excepted), and an RP ID that is not the
+host of every origin or a parent domain of it: browsers refuse the first and
+the last, and the middle makes the origin check worth nothing.
 
 ### Break-glass local login
 

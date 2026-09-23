@@ -35,6 +35,15 @@ export function isWebAuthnSupported(): boolean {
   );
 }
 
+/** Whether an error is the browser's "the user cancelled, or the prompt timed
+ * out" — `NotAllowedError` (or `AbortError`) from `navigator.credentials`.
+ * Its own message is the browser's English and reads like a failure; the
+ * console shows its own, translated line instead (`mfa.keys.cancelled`). */
+export function isCancelledCeremony(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  return name === "NotAllowedError" || name === "AbortError";
+}
+
 export function base64urlToBuffer(value: string): ArrayBuffer {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);

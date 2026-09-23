@@ -205,6 +205,9 @@ class WebAuthnChallenge(Base):
     purpose: Mapped[str]  # register | authenticate
     binding: Mapped[str]
     challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    # The address that asked: the options rate limit is per (account, address),
+    # so somebody else holding the password cannot spend the owner's budget.
+    client_ip: Mapped[str] = mapped_column(default="")
     created_at: Mapped[datetime]
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
@@ -423,6 +426,11 @@ class SessionFamily(Base):
     expires_at: Mapped[datetime] = mapped_column(index=True)
     last_used_at: Mapped[datetime]
     mfa_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Which factor ``mfa_verified_at`` was proved with (``totp``, ``recovery``,
+    # ``webauthn``; migration 0061, #315). Always written together with it —
+    # a newer proof by a weaker factor must replace the label as well as the
+    # time — and carried into every refreshed access token.
+    mfa_method: Mapped[str | None] = mapped_column(default=None)
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
     revoked_reason: Mapped[str | None] = mapped_column(default=None)
 

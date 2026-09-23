@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import { useStepUpStore } from "@/lib/step-up";
-import { isWebAuthnSupported } from "@/lib/webauthn";
+import { isCancelledCeremony, isWebAuthnSupported } from "@/lib/webauthn";
 
 /**
  * "Enter a code to carry on", raised by the 403 the API answers a stale
@@ -53,7 +53,13 @@ export function StepUpDialog() {
       toast.success(t("mfa.stepup.done"));
       clear();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("login.failed"));
+      setError(
+        isCancelledCeremony(err)
+          ? t("mfa.keys.cancelled")
+          : err instanceof Error
+            ? err.message
+            : t("login.failed"),
+      );
     } finally {
       setSubmitting(false);
     }

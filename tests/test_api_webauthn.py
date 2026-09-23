@@ -543,18 +543,56 @@ def test_a_step_up_by_code_does_not_satisfy_a_key_only_step_up(tmp_path, monkeyp
     )
 
 
-def test_a_second_key_under_the_policy_costs_the_first_one(tmp_path, monkeypatch, clock):
+#: The two ways policy asks for a key, each of which must hold on its own: a
+#: check that reads only one of the two settings passes half of these.
+POLICIES = pytest.mark.parametrize(
+    "policy",
+    [{"mfa_phishing_resistant_roles": ["admin"]}, {"mfa_stepup_phishing_resistant": True}],
+    ids=["role", "stepup"],
+)
+
+
+def _code_session(client, clock: Clock, secret: str) -> dict[str, str]:
+    """A fresh session signed in with password + code: what a phishing kit holds."""
+    challenge = password_login(client)["mfa_token"]
+    relayed = client.post(
+        "/api/auth/mfa/verify", json={"mfa_token": challenge, "code": clock.next_code(secret)}
+    )
+    assert relayed.status_code == 200, relayed.text
+    return bearer(relayed.json()["access_token"])
+
+
+@POLICIES
+def test_a_second_key_under_the_policy_costs_the_first_one(tmp_path, monkeypatch, clock, policy):
     # Otherwise a phished code would enrol the phisher's key next to the
     # owner's, and the policy would have bought nothing.
-    client = _client(tmp_path, monkeypatch, mfa_stepup_phishing_resistant=True)
+    client = _client(tmp_path, monkeypatch, **policy)
     headers = auth_headers(client, "admin")
     secret, _ = enrol(client, headers, clock)
     _register(client, _step_up(client, headers, clock, secret), SoftAuthenticator(ORIGIN))
 
-    by_code = _step_up(client, headers, clock, secret)
+    by_code = _code_session(client, clock, secret)
     refused = client.post("/api/auth/mfa/webauthn/register/options", headers=by_code)
     assert refused.status_code == 403
     assert "one you already hold" in refused.json()["detail"]
+
+
+@POLICIES
+def test_a_relayed_code_cannot_remove_the_owners_key(tmp_path, monkeypatch, clock, policy):
+    # The other half of replacing the owner's key: remove it, then the next key
+    # is a "first" one. Removal is a step-up operation, and under either
+    # policy that step-up must be the key.
+    client = _client(tmp_path, monkeypatch, **policy)
+    headers = auth_headers(client, "admin")
+    secret, _ = enrol(client, headers, clock)
+    _register(client, _step_up(client, headers, clock, secret), SoftAuthenticator(ORIGIN))
+
+    by_code = _code_session(client, clock, secret)
+    [item] = client.get("/api/auth/mfa/webauthn/credentials", headers=by_code).json()
+    refused = client.delete(f"/api/auth/mfa/webauthn/credentials/{item['id']}", headers=by_code)
+    assert refused.status_code == 403
+    assert "security key" in refused.json()["detail"]
+    assert len(client.get("/api/auth/mfa/webauthn/credentials", headers=by_code).json()) == 1
 
 
 @pytest.mark.parametrize(
@@ -640,3 +678,260 @@ def test_a_code_still_signs_in_an_account_that_holds_a_key(tmp_path, monkeypatch
     session = bearer(verified.json()["access_token"])
     assert client.get("/api/users", headers=session).status_code == 200
     assert client.get("/api/auth/me", headers=session).json()["mfa_method"] == "totp"
+
+
+def test_disabling_under_the_policy_needs_a_recent_key_not_an_old_one(
+    tmp_path, monkeypatch, clock
+):
+    # "Proved with the key" is not enough on its own: a key-proved session left
+    # open on a desk for an hour is not the owner at the keyboard.
+    from tests.conftest import TEST_USERS
+
+    client = _client(tmp_path, monkeypatch, mfa_stepup_phishing_resistant=True, mfa_stepup_minutes=15)
+    secret, key, _ = _enrolled_with_key(client, clock)
+    challenge = password_login(client)["mfa_token"]
+    options = _login_options(client, challenge)
+    by_key = bearer(
+        _verify(client, challenge, options["challenge_id"], key.get(options["public_key"])).json()[
+            "access_token"
+        ]
+    )
+
+    clock.advance(16 * 60)
+    stale = client.post(
+        "/api/auth/mfa/disable",
+        headers=by_key,
+        json={"password": TEST_USERS["admin"], "code": clock.next_code(secret)},
+    )
+    assert stale.status_code == 403
+    assert client.get("/api/auth/mfa", headers=by_key).json()["webauthn_credentials"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Challenges under pressure (review of #437)
+# --------------------------------------------------------------------------- #
+
+
+def test_somebody_with_the_password_cannot_evict_the_owners_challenge(
+    tmp_path, monkeypatch, clock
+):
+    # The owner asks for a challenge; somebody else who has the password signs
+    # in on their own and asks for challenges until any per-account cap would
+    # have pushed the owner's out. The owner's key must still sign in.
+    client = _client(tmp_path, monkeypatch)
+    _, key, _ = _enrolled_with_key(client, clock)
+
+    owners = password_login(client)["mfa_token"]
+    options = _login_options(client, owners)
+
+    intruders = password_login(client)["mfa_token"]
+    for _ in range(12):
+        client.post("/api/auth/mfa/webauthn/authenticate/options", json={"mfa_token": intruders})
+
+    signed = _verify(client, owners, options["challenge_id"], key.get(options["public_key"]))
+    assert signed.status_code == 200, signed.text
+
+
+def test_asking_for_challenges_is_rate_limited(tmp_path, monkeypatch, clock):
+    # Every options call writes a row. A caller holding one challenge token
+    # must not be able to write them without bound — nor to make the owner's
+    # challenges pay for it, which the test above pins.
+    from api.services import passkeys as passkeys_service
+
+    client = _client(tmp_path, monkeypatch)
+    _enrolled_with_key(client, clock)
+    token = password_login(client)["mfa_token"]
+    statuses = [
+        client.post(
+            "/api/auth/mfa/webauthn/authenticate/options", json={"mfa_token": token}
+        ).status_code
+        for _ in range(passkeys_service.MAX_OPEN_CHALLENGES + 1)
+    ]
+    assert statuses[:-1] == [200] * passkeys_service.MAX_OPEN_CHALLENGES
+    assert statuses[-1] == 429
+
+
+def test_many_sign_ins_from_one_address_are_limited_too(tmp_path, monkeypatch, clock):
+    # A fresh sign-in is a fresh binding; the per-address limit is what stops a
+    # loop of them from writing rows without bound.
+    from api.services import passkeys as passkeys_service
+
+    monkeypatch.setattr(passkeys_service, "MAX_CHALLENGES_PER_WINDOW", 4)
+    client = _client(tmp_path, monkeypatch)
+    _enrolled_with_key(client, clock)
+    statuses = [
+        client.post(
+            "/api/auth/mfa/webauthn/authenticate/options",
+            json={"mfa_token": password_login(client)["mfa_token"]},
+        ).status_code
+        for _ in range(5)
+    ]
+    assert statuses == [200, 200, 200, 200, 429]
+
+
+def test_a_failed_key_step_up_does_not_sign_the_console_out(tmp_path, monkeypatch, clock):
+    # The console answers every 401 by dropping the session. A step-up that
+    # fails — a stale challenge, a key from another tab — is a refusal of the
+    # proof, not of the session, so it must not be a 401.
+    client = _client(tmp_path, monkeypatch)
+    _, key, fresh = _enrolled_with_key(client, clock)
+
+    options = client.post(
+        "/api/auth/mfa/webauthn/authenticate/options", headers=fresh, json={}
+    ).json()
+    wrong = key.get(options["public_key"], origin=PHISHING_ORIGIN)
+    refused = _verify(client, None, options["challenge_id"], wrong, fresh)
+    assert refused.status_code == 403
+    # And it says what was refused: a key response, not a code.
+    assert refused.json()["detail"] == "that security key response is not valid"
+    assert "needs a recent multi-factor verification" not in refused.json()["detail"]
+    # The session itself is untouched.
+    assert client.get("/api/auth/me", headers=fresh).status_code == 200
+
+
+def test_a_failed_login_leg_by_key_is_still_a_401_naming_the_key(tmp_path, monkeypatch, clock):
+    client = _client(tmp_path, monkeypatch)
+    _, key, _ = _enrolled_with_key(client, clock)
+    challenge = password_login(client)["mfa_token"]
+    options = _login_options(client, challenge)
+    bad = key.get(options["public_key"], origin=PHISHING_ORIGIN)
+    refused = _verify(client, challenge, options["challenge_id"], bad)
+    assert refused.status_code == 401
+    assert refused.json()["detail"] == "that security key response is not valid"
+
+
+# --------------------------------------------------------------------------- #
+# With refresh tokens (#314): the method lives in the session family
+# --------------------------------------------------------------------------- #
+
+
+def _refresh(client, response) -> dict[str, str]:
+    from tests.test_refresh_tokens import cookie_value, refresh
+
+    refreshed = refresh(client, cookie_value(response))
+    assert refreshed.status_code == 200, refreshed.text
+    return bearer(refreshed.json()["access_token"])
+
+
+def test_a_key_proved_session_stays_key_proved_across_a_refresh(tmp_path, monkeypatch, clock):
+    client = _client(tmp_path, monkeypatch, mfa_phishing_resistant_roles=["admin"])
+    headers = auth_headers(client, "admin")
+    secret, _ = enrol(client, headers, clock)
+    coded = _code_session(client, clock, secret)
+    key = SoftAuthenticator(ORIGIN)
+    _register(client, coded, key)
+
+    challenge = password_login(client)["mfa_token"]
+    options = _login_options(client, challenge)
+    signed = _verify(client, challenge, options["challenge_id"], key.get(options["public_key"]))
+    assert signed.status_code == 200, signed.text
+
+    # Fifteen minutes later the console refreshes; the new access token must
+    # still say what the session was proved with, or the policy confines a
+    # session that did everything right.
+    refreshed = _refresh(client, signed)
+    assert client.get("/api/auth/me", headers=refreshed).json()["mfa_method"] == "webauthn"
+    assert client.get("/api/users", headers=refreshed).status_code == 200
+
+
+def test_a_code_step_up_after_a_key_sign_in_does_not_keep_the_key_label(
+    tmp_path, monkeypatch, clock
+):
+    # The method and the time are one fact. A step-up by code stamps a new
+    # time; if it left "webauthn" standing, the next refresh would present a
+    # fresh code-proved step-up as a key-proved one.
+    client = _client(tmp_path, monkeypatch, mfa_stepup_phishing_resistant=True)
+    secret, key, _ = _enrolled_with_key(client, clock)
+    challenge = password_login(client)["mfa_token"]
+    options = _login_options(client, challenge)
+    signed = _verify(client, challenge, options["challenge_id"], key.get(options["public_key"]))
+    by_key = bearer(signed.json()["access_token"])
+
+    stepped = client.post(
+        "/api/auth/mfa/verify", headers=by_key, json={"code": clock.next_code(secret)}
+    )
+    assert stepped.status_code == 200, stepped.text
+    refreshed = _refresh(client, signed)
+    assert client.get("/api/auth/me", headers=refreshed).json()["mfa_method"] == "totp"
+    refused = client.post(
+        "/api/tenants/default/provisioning-keys", headers=refreshed, json={"label": "x"}
+    )
+    assert refused.status_code == 403
+
+
+def test_a_refresh_between_options_and_answer_does_not_break_the_ceremony(
+    tmp_path, monkeypatch, clock
+):
+    # The challenge is bound to the session, not to one access token: the
+    # console may well refresh while the user is finding the key.
+    client = _client(tmp_path, monkeypatch)
+    secret, key, _ = _enrolled_with_key(client, clock)
+    challenge = password_login(client)["mfa_token"]
+    login = client.post(
+        "/api/auth/mfa/verify", json={"mfa_token": challenge, "code": clock.next_code(secret)}
+    )
+    session = bearer(login.json()["access_token"])
+
+    options = client.post(
+        "/api/auth/mfa/webauthn/authenticate/options", headers=session, json={}
+    ).json()
+    rotated = _refresh(client, login)
+    stepped = _verify(
+        client, None, options["challenge_id"], key.get(options["public_key"]), rotated
+    )
+    assert stepped.status_code == 200, stepped.text
+
+
+# --------------------------------------------------------------------------- #
+# Relying-party configuration in prod
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("rp_id", "origins", "complaint"),
+    [
+        ("10.0.0.5", ["https://10.0.0.5"], "IP address"),
+        ("console.example", ["http://console.example"], "https"),
+        ("console.example", ["https://other.example"], "suffix"),
+    ],
+    ids=["ip-rp-id", "plain-http", "not-a-suffix"],
+)
+def test_prod_refuses_a_relying_party_browsers_would_refuse(tmp_path, rp_id, origins, complaint):
+    from api.settings import ENV_PROD, InsecureConfigurationError, _validate_production
+
+    settings = make_settings(
+        tmp_path, env=ENV_PROD, webauthn_rp_id=rp_id, webauthn_origins=origins
+    )
+    with pytest.raises(InsecureConfigurationError) as raised:
+        _validate_production(settings, postgres_url_env="OCTO_POSTGRES_URL")
+    assert "OCTO_WEBAUTHN" in str(raised.value)
+    assert complaint in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("rp_id", "origins"),
+    [
+        ("example.com", ["https://console.example.com", "https://example.com"]),
+        # Browsers treat localhost as a secure context; so does the check.
+        ("localhost", ["http://localhost:3000"]),
+    ],
+    ids=["parent-domain", "localhost"],
+)
+def test_prod_accepts_a_sound_relying_party(tmp_path, rp_id, origins):
+    from api.settings import ENV_PROD, InsecureConfigurationError, _validate_production
+
+    settings = make_settings(
+        tmp_path, env=ENV_PROD, webauthn_rp_id=rp_id, webauthn_origins=origins
+    )
+    with pytest.raises(InsecureConfigurationError) as raised:
+        _validate_production(settings, postgres_url_env="OCTO_POSTGRES_URL")
+    assert "OCTO_WEBAUTHN" not in str(raised.value)
+
+
+def test_configured_origins_are_compared_case_insensitively(monkeypatch):
+    # Browsers serialise an origin in lower case; an operator who typed
+    # https://Console.Example would otherwise refuse every assertion.
+    from api.settings import load_settings
+
+    monkeypatch.setenv("OCTO_WEBAUTHN_ORIGINS", "https://Console.Example/")
+    assert load_settings().webauthn_origins == ["https://console.example"]

@@ -847,7 +847,7 @@ class Settings:
 
         parsed = urllib.parse.urlparse(self.public_base_url.strip())
         rp_id = self.webauthn_rp_id or (parsed.hostname or "")
-        origins = list(self.webauthn_origins)
+        origins = [origin.lower() for origin in self.webauthn_origins]
         if not origins and parsed.scheme and parsed.netloc:
             origins = [f"{parsed.scheme}://{parsed.netloc}".lower()]
         return rp_id, origins
@@ -1147,6 +1147,56 @@ def _cancel_grace_seconds(*, agent_stale_seconds: int, reaper_interval_seconds: 
     return max(floor, int(os.environ.get("OCTO_JOB_CANCEL_GRACE_SECONDS", "300")))
 
 
+def _webauthn_problems(settings: Settings) -> list[str]:
+    """What is wrong with the WebAuthn relying party, for the prod refusal (#315).
+
+    Three things, each of which either breaks every ceremony or quietly weakens
+    the one check that makes a key phishing-resistant:
+
+    * an IP address as the RP ID — browsers refuse it outright;
+    * an origin that is not ``https`` (``localhost`` excepted, as browsers do) —
+      a key signing for a plain-http origin signs for whoever sits on the path;
+    * an RP ID that is not the host of every origin or a parent domain of it —
+      the browser refuses the ceremony on that origin.
+
+    An empty relying party is not reported here: that is WebAuthn being off,
+    and the policy check above reports it when a policy needs it.
+    """
+    import ipaddress
+    import urllib.parse
+
+    rp_id, origins = settings.webauthn_relying_party()
+    if not rp_id or not origins:
+        return []
+    problems: list[str] = []
+    try:
+        ipaddress.ip_address(rp_id.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        problems.append(
+            f"OCTO_WEBAUTHN_RP_ID is an IP address ({rp_id}).\n"
+            "    Browsers refuse WebAuthn for an IP address RP ID. Use the\n"
+            "    console's DNS name."
+        )
+    for origin in origins:
+        parsed = urllib.parse.urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" and host != "localhost":
+            problems.append(
+                f"OCTO_WEBAUTHN_ORIGINS contains {origin}, which is not https.\n"
+                "    A security key only proves the page it signed for; over plain\n"
+                "    http that page is whatever the network says it is."
+            )
+        if host != rp_id and not host.endswith(f".{rp_id}"):
+            problems.append(
+                f"OCTO_WEBAUTHN_RP_ID ({rp_id}) is not the host of {origin} nor a\n"
+                "    suffix of it. Browsers refuse the ceremony on that origin; set the\n"
+                "    RP ID to the console's hostname or a parent domain of it."
+            )
+    return problems
+
+
 def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     """Refuse to start when prod configuration is still the published default.
 
@@ -1301,6 +1351,19 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
                 "    Set OCTO_PUBLIC_BASE_URL, or OCTO_WEBAUTHN_RP_ID and\n"
                 "    OCTO_WEBAUTHN_ORIGINS, to the console's domain and origin."
             )
+
+    # A relying party browsers would refuse, or one that makes the origin check
+    # meaningless (#315). Checked when WebAuthn was configured on purpose or a
+    # policy depends on it; an install that only derives it from an http
+    # OCTO_PUBLIC_BASE_URL and never uses keys is not failed over it.
+    webauthn_in_use = bool(
+        settings.webauthn_rp_id
+        or settings.webauthn_origins
+        or settings.mfa_phishing_resistant_roles
+        or settings.mfa_stepup_phishing_resistant
+    )
+    if webauthn_in_use:
+        problems.extend(_webauthn_problems(settings))
 
     # Object storage that is asked for but not named (#336). The store would
     # raise on its first use instead — which is the end of a scan, after the
@@ -1855,7 +1918,9 @@ def load_settings() -> Settings:
         webauthn_rp_id=os.environ.get("OCTO_WEBAUTHN_RP_ID", "").strip().lower(),
         webauthn_rp_name=os.environ.get("OCTO_WEBAUTHN_RP_NAME", "").strip() or "Shapoclyack",
         webauthn_origins=[
-            item.strip().rstrip("/")
+            # Lower case: browsers serialise an origin that way, and the
+            # comparison in the verifier is exact.
+            item.strip().rstrip("/").lower()
             for item in os.environ.get("OCTO_WEBAUTHN_ORIGINS", "").split(",")
             if item.strip()
         ],

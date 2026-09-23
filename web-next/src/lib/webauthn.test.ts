@@ -4,6 +4,7 @@ import {
   base64urlToBuffer,
   bufferToBase64url,
   creationOptionsFromJSON,
+  isCancelledCeremony,
   requestOptionsFromJSON,
   signWithKey,
 } from "@/lib/webauthn";
@@ -76,6 +77,15 @@ describe("webauthn JSON ⇄ ArrayBuffer", () => {
         userHandle: undefined,
       },
     });
+  });
+
+  it("recognises a cancelled or timed-out prompt, and nothing else", () => {
+    expect(isCancelledCeremony(Object.assign(new Error("x"), { name: "NotAllowedError" }))).toBe(true);
+    expect(isCancelledCeremony(Object.assign(new Error("x"), { name: "AbortError" }))).toBe(true);
+    // A refused response from the API is an ordinary Error and must still be
+    // shown as what it is.
+    expect(isCancelledCeremony(new Error("that security key response is not valid"))).toBe(false);
+    expect(isCancelledCeremony(null)).toBe(false);
   });
 
   it("signs with the browser and hands back the challenge id it was given", async () => {

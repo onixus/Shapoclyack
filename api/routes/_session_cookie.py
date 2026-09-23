@@ -65,7 +65,11 @@ def clear_refresh_cookie(response: Response, settings: Settings) -> None:
 
 
 def issue_session(
-    settings: Settings, user: TokenUser, *, mfa_verified_at: datetime | None = None
+    settings: Settings,
+    user: TokenUser,
+    *,
+    mfa_verified_at: datetime | None = None,
+    mfa_method: str | None = None,
 ) -> tuple[str, sessions_service.OpenedSession]:
     """Open a session family for ``user`` and mint its first access token.
 
@@ -78,7 +82,10 @@ def issue_session(
     wrong password.
     """
     opened = sessions_service.open_session(
-        settings, username=user.username, mfa_verified_at=mfa_verified_at
+        settings,
+        username=user.username,
+        mfa_verified_at=mfa_verified_at,
+        mfa_method=mfa_method,
     )
     token = create_access_token(
         settings,
@@ -86,6 +93,7 @@ def issue_session(
         session_id=opened.family_id,
         session_expires_at=opened.expires_at,
         mfa_verified_at=mfa_verified_at,
+        mfa_method=mfa_method,
         # The generation the family was opened at, so the access token and
         # the refresh token it travels with can never disagree about it.
         token_version=opened.token_version,
