@@ -232,8 +232,16 @@ def create_access_token(
     session_id: str,
     session_expires_at: datetime,
     mfa_verified_at: datetime | None = None,
+    token_version: int | None = None,
 ) -> str:
     """Mint a console session token (#314).
+
+    ``token_version`` is the generation to stamp when the caller has already
+    read it in its own transaction — which a refresh must: by the time this
+    runs the presented refresh token is spent and committed, so a second trip
+    to the database that failed here would answer an error with no successor
+    cookie, and the browser's next refresh would be read as reuse. ``None``
+    reads it now, as a fresh sign-in does.
 
     Two claims beyond the pre-#314 set, and one header:
 
@@ -269,11 +277,13 @@ def create_access_token(
 
     now = datetime.now(UTC)
     expire = min(now + timedelta(minutes=settings.access_token_expire_minutes), session_expires_at)
+    if token_version is None:
+        token_version = sessions_service.current_version(settings, user.username)
     payload = {
         "sub": user.username,
         "role": user.role.value,
         "typ": USER_TOKEN_TYP,
-        "ver": sessions_service.current_version(settings, user.username),
+        "ver": token_version,
         "jti": uuid.uuid4().hex,
         "sid": session_id,
         "exp": expire,
@@ -713,6 +723,29 @@ def get_current_user(
         user.mfa_pending = True
         _enforce_mfa_enrolment(request)
     return user
+
+
+def get_current_user_if_any(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TokenUser | None:
+    """:func:`get_current_user`, with "no session" answered as ``None`` (#314).
+
+    For ``POST /api/auth/logout`` alone, which must work with nothing but the
+    refresh-token cookie: a console whose access token ran out is still holding
+    an eight-hour credential, and a logout that 401s leaves it there. Only the
+    401 becomes ``None`` — a service token's 403 and an outage's 503 are
+    answers about the credential that *was* presented, and they stand.
+    """
+    if credentials is None:
+        return None
+    try:
+        return get_current_user(request, credentials, settings)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
 
 
 def require_role(minimum: Role):

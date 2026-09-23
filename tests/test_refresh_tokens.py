@@ -14,11 +14,13 @@ which is also the more honest statement of what each request carries.
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
 from sqlalchemy import update
+from sqlalchemy.exc import OperationalError
 
 from api.db import models
 from api.db.engine import get_session
@@ -206,7 +208,11 @@ def test_reuse_is_written_to_the_auth_trail(env):
     events, _total = auth_audit.list_events(
         offset=0, limit=50, q="operator", outcome=auth_audit.OUTCOME_DENIED
     )
-    assert any(event["reason"] == auth_audit.REASON_REFRESH_REUSE for event in events)
+    reuse = [event for event in events if event["reason"] == auth_audit.REASON_REFRESH_REUSE]
+    assert reuse
+    # operations.md sends the operator looking for where the copy came from;
+    # the address it was presented from is the first thing they need.
+    assert reuse[0]["client_ip"] == "testclient"
 
 
 def test_reuse_ends_only_that_session(env):
@@ -365,18 +371,89 @@ def test_disabling_the_account_ends_its_refresh_tokens(env):
 
 
 def test_an_unreachable_session_store_is_a_503_not_a_sign_out(env, monkeypatch):
-    client, _settings = env
-    _access, refresh_token = sign_in(client)
+    """The store failing *inside* the rotation: nothing committed, the same cookie still works.
 
-    def unavailable(*_args, **_kwargs):
-        raise sessions_service.SessionStoreUnavailable("session store is unavailable")
+    The database layer is broken rather than ``rotate`` replaced, so the test
+    goes through the real rotation path and its own error handling.
+    """
+    client, settings = env
+    access, refresh_token = sign_in(client)
 
-    monkeypatch.setattr(sessions_service, "rotate", unavailable)
+    @contextmanager
+    def unreachable(_url):
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+        yield  # pragma: no cover - never reached
+
+    healthy = sessions_service.get_session
+    monkeypatch.setattr(sessions_service, "get_session", unreachable)
     answer = refresh(client, refresh_token)
     assert answer.status_code == 503
     assert answer.headers["retry-after"] == "5"
     # The cookie is left alone: the session was not refused.
     assert set_cookie_header(answer) is None
+
+    monkeypatch.setattr(sessions_service, "get_session", healthy)
+    assert refresh(client, refresh_token).status_code == 200
+    assert sessions_service.get_family(settings, claims(access)["sid"]).revoked_at is None
+
+
+def test_the_store_failing_after_the_rotation_does_not_spend_the_cookie(env, monkeypatch):
+    """Review finding on #434: rotate() committed, then minting the access token
+    went back to the database for ``ver``, and an outage there answered 500 with
+    no ``Set-Cookie`` — the browser kept the spent token, and its next refresh
+    was read as reuse and ended the session. Everything the token needs is
+    decided inside the rotation's own transaction now.
+    """
+    client, settings = env
+    access, refresh_token = sign_in(client)
+
+    def unavailable(*_args, **_kwargs):
+        raise sessions_service.SessionStoreUnavailable("session store is unavailable")
+
+    healthy = sessions_service.current_version
+    monkeypatch.setattr(sessions_service, "current_version", unavailable)
+    answer = refresh(client, refresh_token)
+    assert answer.status_code == 200, answer.text
+    successor = cookie_value(answer)
+    monkeypatch.setattr(sessions_service, "current_version", healthy)
+
+    family = sessions_service.get_family(settings, claims(access)["sid"])
+    assert family.revoked_at is None
+    assert refresh(client, successor).status_code == 200
+
+
+def test_logout_works_with_the_cookie_alone(env):
+    """Review finding on #434: logout required a live access token, so a console
+    whose access token had run out signed "out" with a 401 and left an
+    eight-hour refresh cookie in the browser — on a shared machine, the next
+    person's refresh answered 200."""
+    client, _settings = env
+    _access, refresh_token = sign_in(client)
+    out = client.post("/api/auth/logout", headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
+    assert out.status_code == 204
+    assert "max-age=0" in (set_cookie_header(out) or "").lower()
+    assert refresh(client, refresh_token).status_code == 401
+
+
+def test_logout_with_an_expired_access_token_still_ends_the_session(env):
+    client, _settings = env
+    access, refresh_token = sign_in(client)
+    expired = jwt.encode(
+        {**claims(access), "exp": datetime.now(UTC) - timedelta(minutes=1)},
+        TEST_JWT_SECRET,
+        algorithm="HS256",
+    )
+    out = client.post(
+        "/api/auth/logout",
+        headers={**bearer(expired), "Cookie": f"{REFRESH_COOKIE}={refresh_token}"},
+    )
+    assert out.status_code == 204
+    assert refresh(client, refresh_token).status_code == 401
+
+
+def test_logout_with_neither_credential_is_still_a_401(env):
+    client, _settings = env
+    assert client.post("/api/auth/logout").status_code == 401
 
 
 def test_a_token_minted_before_refresh_tokens_existed_still_works(env):

@@ -66,7 +66,16 @@ export function SessionExpiryBanner() {
     !!user && refreshDue(token, now) && activeSinceIssued(token, lastActivity());
   useEffect(() => {
     if (!renewNow) return;
-    void refreshAccessToken().then(() => setNow(Date.now()));
+    let current = true;
+    // Only a success re-renders at once. A failure waits for the next tick:
+    // re-rendering on it would find the same token still due and fire again
+    // straight away, which is a refresh loop against an API that is down.
+    void refreshAccessToken().then((renewed) => {
+      if (renewed && current) setNow(Date.now());
+    });
+    return () => {
+      current = false;
+    };
   }, [renewNow, now]);
 
   if (!user) return null;

@@ -99,6 +99,9 @@ class OpenedSession:
     expires_at: datetime
     username: str
     role: str
+    # The account's generation, read in the same transaction as everything
+    # else here, so the access token can be signed without another query.
+    token_version: int
     mfa_verified_at: datetime | None = None
 
 
@@ -129,9 +132,10 @@ def check_session(
 
     Raises :class:`PermissionError` — never an HTTP error — for every reason a
     token is no longer good: no such account, disabled, a stale ``ver``, a
-    ``jti`` that was logged out, or a session family (``sid``) that has ended. The caller turns all of them into one 401 with
-    one message, because which of the four applies is information only the
-    presenter of a dead token is interested in.
+    ``jti`` that was logged out, or a session family (``sid``) that has ended.
+    The caller turns all of them into one 401 with one message, because which
+    of them applies is information only the presenter of a dead token is
+    interested in.
 
     A database that cannot be reached is :class:`SessionStoreUnavailable`
     instead: the answer is unknown, not "no". Every authenticated request
@@ -311,6 +315,7 @@ def open_session(
             expires_at=expires_at.replace(tzinfo=UTC),
             username=username,
             role=row.role,
+            token_version=int(row.token_version or 0),
             mfa_verified_at=mfa_verified_at,
         )
 
@@ -335,7 +340,12 @@ def rotate(settings: Settings, refresh_token: str) -> OpenedSession:
     succession. Two tabs racing one cookie look exactly like a thief racing
     the browser, and a window wide enough for the first is wide enough for the
     second; the console serialises its own refreshes instead
-    (``web-next/src/lib/session-refresh.ts``).
+    (``refreshAccessToken`` in ``web-next/src/lib/api.ts``).
+
+    Everything the caller needs to sign the next access token — the role and
+    the account's generation — comes back from this transaction, so nothing
+    between the commit that spends the presented token and the response that
+    carries its successor has to reach the database again.
 
     An unreachable database is :class:`SessionStoreUnavailable`, as on every
     other request: "try again", not "sign in again".
@@ -384,6 +394,7 @@ def rotate(settings: Settings, refresh_token: str) -> OpenedSession:
                     expires_at=family.expires_at.replace(tzinfo=UTC),
                     username=family.username,
                     role=account.role,
+                    token_version=int(account.token_version or 0),
                     mfa_verified_at=_aware(family.mfa_verified_at),
                 )
     except SQLAlchemyError as exc:

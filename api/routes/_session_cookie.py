@@ -86,5 +86,8 @@ def issue_session(
         session_id=opened.family_id,
         session_expires_at=opened.expires_at,
         mfa_verified_at=mfa_verified_at,
+        # The generation the family was opened at, so the access token and
+        # the refresh token it travels with can never disagree about it.
+        token_version=opened.token_version,
     )
     return token, opened

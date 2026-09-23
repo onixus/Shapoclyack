@@ -20,6 +20,7 @@ from api.auth import (
     create_access_token,
     create_pre_auth_token,
     get_current_user,
+    get_current_user_if_any,
     get_settings,
     require_path_tenant_permission,
     require_platform_permission,
@@ -240,10 +241,13 @@ def refresh(
         # the browser the session was issued to held a copy of its refresh
         # token. Which of the two presented it first is unknowable, so both
         # are now signed out.
+        # The address it was presented from is the first thing whoever reads
+        # this row needs (docs/operations.md § Sessions and revocation).
         auth_audit.record_denied(
             username=exc.username,
             reason=auth_audit.REASON_REFRESH_REUSE,
             detail=f"refresh token presented twice; session {exc.family_id} ended",
+            client_ip=_client_ip(request, settings),
         )
         return _refresh_refused(settings, "Session is no longer valid")
     except PermissionError:
@@ -254,19 +258,23 @@ def refresh(
             detail="Session store is unavailable, try again",
             headers={"Retry-After": "5"},
         ) from exc
+    # From here on the presented token is spent and committed, so nothing below
+    # may touch the database: a failure that answered without the successor
+    # cookie would leave the browser holding the spent one, and its next
+    # refresh would be read as theft. ``rotate`` returned everything needed.
     try:
         role = Role(rotated.role)
-        token = create_access_token(
-            settings,
-            TokenUser(username=rotated.username, role=role),
-            session_id=rotated.family_id,
-            session_expires_at=rotated.expires_at,
-            mfa_verified_at=rotated.mfa_verified_at,
-        )
-    except (ValueError, LookupError):
-        # A role the table cannot spell, or the account deleted between the
-        # rotation and here: the session is over either way.
+    except ValueError:
+        # A role the table cannot spell is a broken row, not a viewer.
         return _refresh_refused(settings, "Session is no longer valid")
+    token = create_access_token(
+        settings,
+        TokenUser(username=rotated.username, role=role),
+        session_id=rotated.family_id,
+        session_expires_at=rotated.expires_at,
+        mfa_verified_at=rotated.mfa_verified_at,
+        token_version=rotated.token_version,
+    )
     answer = JSONResponse(
         LoginResponse(access_token=token, role=role, username=rotated.username).model_dump(
             mode="json"
@@ -286,7 +294,7 @@ def _refresh_refused(settings: Settings, detail: str) -> JSONResponse:
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
     request: Request,
-    user: Annotated[TokenUser, Depends(get_current_user)],
+    user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     """End *this* session and no other (#314).
@@ -310,7 +318,24 @@ def logout(
     right: a service token is a credential, revoked with
     ``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``, not a
     session.
+
+    The bearer token is optional when the cookie is there. A console whose
+    access token has already expired — or been revoked — still holds the
+    refresh cookie, and that is the credential worth ending: the cookie alone
+    ends its family and is cleared, ``204``. With neither a live session nor a
+    cookie there is nothing to end, and the answer is the ``401`` it has always
+    been.
     """
+    presented = request.cookies.get(REFRESH_COOKIE)
+    if user is None:
+        if not presented:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            )
+        sessions_service.end_session_by_refresh_token(settings, presented)
+        answer = Response(status_code=status.HTTP_204_NO_CONTENT)
+        clear_refresh_cookie(answer, settings)
+        return answer
     if user.jti is None or user.expires_at is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -325,7 +350,6 @@ def logout(
     )
     if user.session_id is not None:
         sessions_service.end_session(settings, user.session_id)
-    presented = request.cookies.get(REFRESH_COOKIE)
     if presented:
         sessions_service.end_session_by_refresh_token(settings, presented)
     answer = Response(status_code=status.HTTP_204_NO_CONTENT)

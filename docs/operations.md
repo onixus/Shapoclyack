@@ -1755,7 +1755,9 @@ SELECT family_id, username, created_at, last_used_at, expires_at, revoked_at, re
 `idle`, `expired` — or `reuse`, which is the one to act on: a refresh token was
 presented after it had been spent, meaning a second party held a copy. The same
 event is in the auth trail as `outcome=denied`, `reason=refresh_token_reuse`
-(`GET /api/auth/events?outcome=denied`). The session is already ended by then;
+(`GET /api/auth/events?outcome=denied`), with the client address it was
+presented from in `client_ip` — behind a proxy, only as good as
+`OCTO_TRUSTED_PROXIES` makes it. The session is already ended by then;
 what is left is finding out where the copy came from (a shared browser profile,
 a synced cookie store, malware on the workstation) and, if in doubt,
 `POST /api/users/{username}/sessions/revoke-all` plus a password reset.

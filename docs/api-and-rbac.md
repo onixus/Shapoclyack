@@ -145,7 +145,7 @@ token (`refresh_tokens`), grouped into one row per sign-in
 
 | Refused with `401` (cookie cleared) when | The session family is |
 |---|---|
-| the refresh token was **already used** — somebody else holds a copy | ended (`reuse`), and a `denied` / `refresh_token_reuse` row is written to `GET /api/auth/events` |
+| the refresh token was **already used** — somebody else holds a copy | ended (`reuse`), and a `denied` / `refresh_token_reuse` row, with the client address it was presented from, is written to `GET /api/auth/events` |
 | `OCTO_JWT_EXPIRE_MINUTES` have passed since the sign-in | ended (`expired`) |
 | more than `OCTO_SESSION_IDLE_MINUTES` since the last refresh | ended (`idle`) |
 | the account was disabled, deleted, demoted, had its password changed or its sessions revoked | ended (`revoked`) |
@@ -156,17 +156,26 @@ Ending a family refuses its access tokens on their **next request** too
 not wait out the access token's fifteen minutes. A refresh is never extended
 past the sign-in's absolute end, and the access token it returns is cut short
 to that end if needed. An unreachable session store is a `503` with
-`Retry-After`, and the cookie is left alone.
+`Retry-After`, and the cookie is left alone. Everything the new access token
+needs is read inside the rotation's own transaction, so nothing between spending
+the presented token and returning its successor can fail on the database and
+leave the browser holding a spent cookie.
 
 There is no grace window for a refresh token presented twice: two tabs racing
 one cookie are indistinguishable from a thief racing the browser. The console
-serialises its refreshes (one in flight per tab, and a Web Lock across tabs),
-so the only way it meets this refusal is a response lost on the network after
-the server rotated — which costs a sign-in, not a session anyone else can use.
+serialises its refreshes (one in flight per tab, and a Web Lock across tabs —
+or, outside a secure context where there is no Web Lock, a best-effort lock in
+`localStorage`), so the ways it meets this refusal are a response lost on the
+network after the server rotated, and two tabs of a plain-http dev stand
+winning the storage lock's narrow race — each costs a sign-in, not a session
+anyone else can use.
 
 `POST /api/auth/logout` ends the family its access token names and the one the
-cookie belongs to, and clears the cookie; `revoke-all` ends every family of the
-account. A step-up (`POST /api/auth/mfa/verify` with a bearer token) stays in
+cookie belongs to, and clears the cookie. The bearer token is optional when the
+cookie is sent: a console whose access token has already expired still holds an
+eight-hour refresh cookie, and logout with the cookie alone ends that family
+(`204`). With neither a live access token nor a cookie it is a `401`.
+`revoke-all` ends every family of the account. A step-up (`POST /api/auth/mfa/verify` with a bearer token) stays in
 its session: it stamps the family, so refreshed access tokens keep
 `mfa_verified_at` — the original time, never a new one, so a refresh does not
 extend a step-up past `OCTO_MFA_STEPUP_MINUTES`.

@@ -1,7 +1,9 @@
 import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  REFRESH_STORAGE_LOCK,
   api,
+  withStorageLock,
   fetchScanScope,
   getAccessToken,
   getActiveTenant,
@@ -367,5 +369,73 @@ describe("silent refresh (#314)", () => {
 
     await expect(refreshAccessToken()).resolves.toBe(fresh);
     expect(calls).toEqual([]);
+  });
+
+  it("serialises across tabs through storage where there is no Web Lock", async () => {
+    // Review finding on #434: navigator.locks exists only in a secure context,
+    // and the dev stand on plain http is exactly where it does not. Another
+    // tab holds the storage lock, refreshes, and lets go; this tab must take
+    // its token rather than spend the cookie that tab already rotated.
+    const stale = tokenIssuedAt(Date.now() - 20 * 60_000, "stale");
+    setAccessToken(stale);
+    window.localStorage.setItem(
+      REFRESH_STORAGE_LOCK,
+      JSON.stringify({ owner: "other-tab", expires: Date.now() + 5_000 }),
+    );
+    serve();
+
+    const pending = refreshAccessToken();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(calls).toEqual([]);
+    setAccessToken(fresh);
+    window.localStorage.removeItem(REFRESH_STORAGE_LOCK);
+
+    await expect(pending).resolves.toBe(fresh);
+    expect(calls).toEqual([]);
+  });
+
+  it("takes over a storage lock its holder abandoned", async () => {
+    // A tab closed mid-refresh must not wedge every other tab until reload.
+    window.localStorage.setItem(
+      REFRESH_STORAGE_LOCK,
+      JSON.stringify({ owner: "closed-tab", expires: Date.now() - 1 }),
+    );
+    const ran = vi.fn(async () => "done");
+    await expect(withStorageLock(ran)).resolves.toBe("done");
+    expect(ran).toHaveBeenCalledOnce();
+    expect(window.localStorage.getItem(REFRESH_STORAGE_LOCK)).toBeNull();
+  });
+
+  it("backs off for Retry-After when the session store is unavailable", async () => {
+    // Faked from an hour ago so the back-off it leaves behind has long passed
+    // by the time real time is restored for the tests after this one.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 60 * 60_000 });
+    try {
+      setAccessToken(tokenIssuedAt(Date.now() - 20 * 60_000, "stale"));
+      api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        calls.push({ path: config.url ?? "", authorization: undefined });
+        throw Object.assign(new Error("Request failed with status code 503"), {
+          isAxiosError: true,
+          config,
+          response: {
+            data: null,
+            status: 503,
+            statusText: "",
+            headers: { "retry-after": "5" },
+            config,
+          } as AxiosResponse,
+        });
+      };
+
+      await expect(refreshAccessToken()).resolves.toBeNull();
+      await expect(refreshAccessToken()).resolves.toBeNull();
+      expect(calls).toHaveLength(1);
+
+      vi.setSystemTime(Date.now() + 6_000);
+      await expect(refreshAccessToken()).resolves.toBeNull();
+      expect(calls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -95,13 +95,110 @@ type LockManagerLike = {
   request: <T>(name: string, callback: () => Promise<T>) => Promise<T>;
 };
 
-/** Run `fn` holding the cross-tab refresh lock, where the browser has one. */
+/** Run `fn` holding the cross-tab refresh lock: a Web Lock where the browser
+ * has one, the storage lock below where it does not. */
 function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
   const locks =
     typeof navigator !== "undefined"
       ? (navigator as unknown as { locks?: LockManagerLike }).locks
       : undefined;
-  return locks?.request ? locks.request(REFRESH_LOCK, fn) : fn();
+  return locks?.request ? locks.request(REFRESH_LOCK, fn) : withStorageLock(fn);
+}
+
+/** localStorage key of the fallback cross-tab refresh lock. */
+export const REFRESH_STORAGE_LOCK = "shapoclyack_refresh_lock";
+
+/** Identifies this tab as the holder of the storage lock. */
+const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+type StorageLock = { owner: string; expires: number };
+
+function readStorageLock(): StorageLock | null {
+  try {
+    const raw = window.localStorage.getItem(REFRESH_STORAGE_LOCK);
+    return raw ? (JSON.parse(raw) as StorageLock) : null;
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A best-effort cross-tab mutex in localStorage, for where `navigator.locks`
+ * is missing — it exists only in a secure context, so a dev stand served over
+ * plain http (the reason `OCTO_REFRESH_COOKIE_SECURE` can be off) has none.
+ *
+ * Claim, wait `settleMs`, and hold only if the claim is still ours: storage
+ * writes are not atomic across tabs, so two tabs can both write, but only the
+ * last write survives the wait. It narrows the race to that window rather than
+ * closing it — the Web Lock is the real answer and is used wherever it exists.
+ * A claim carries an expiry, so a tab closed mid-refresh does not wedge the
+ * others; and a tab that cannot get the lock within `ttlMs` proceeds rather
+ * than hanging, because a hung console is worse than a rare reuse sign-out.
+ * Without storage at all (private mode throwing on access) `fn` just runs. */
+export async function withStorageLock<T>(
+  fn: () => Promise<T>,
+  { ttlMs = 10_000, pollMs = 50, settleMs = 30 } = {},
+): Promise<T> {
+  if (typeof window === "undefined") return fn();
+  const giveUpAt = Date.now() + ttlMs;
+  let held = false;
+  try {
+    for (;;) {
+      const current = readStorageLock();
+      const now = Date.now();
+      if (!current || current.expires <= now || current.owner === TAB_ID) {
+        window.localStorage.setItem(
+          REFRESH_STORAGE_LOCK,
+          JSON.stringify({ owner: TAB_ID, expires: now + ttlMs }),
+        );
+        await sleep(settleMs);
+        if (readStorageLock()?.owner === TAB_ID) {
+          held = true;
+          break;
+        }
+      } else if (now >= giveUpAt) {
+        break;
+      }
+      await sleep(pollMs);
+    }
+  } catch {
+    // No usable storage: nothing to coordinate with, so nothing to wait for.
+  }
+  try {
+    return await fn();
+  } finally {
+    if (held && readStorageLock()?.owner === TAB_ID) {
+      try {
+        window.localStorage.removeItem(REFRESH_STORAGE_LOCK);
+      } catch {
+        // Expiry releases it instead.
+      }
+    }
+  }
+}
+
+/** How long to leave the refresh endpoint alone after it failed without
+ * refusing — a 5xx with no `Retry-After`, or no answer at all. One banner tick. */
+const REFRESH_BACKOFF_MS = 15_000;
+
+/** No refresh is attempted before this (epoch ms). Set from `Retry-After` on a
+ * 503/429 and from the back-off above on anything else that was not a refusal,
+ * so an outage is not met with a refresh per render. */
+let refreshNotBefore = 0;
+
+function backOffAfter(error: unknown): void {
+  if (!axios.isAxiosError(error)) {
+    refreshNotBefore = Date.now() + REFRESH_BACKOFF_MS;
+    return;
+  }
+  const status = error.response?.status;
+  // A 401 is an answer — the session is over and the interceptor has already
+  // signed the console out — so there is nothing to back off from.
+  if (status === 401) return;
+  const retryAfter = Number(error.response?.headers?.["retry-after"]);
+  refreshNotBefore =
+    Date.now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : REFRESH_BACKOFF_MS);
 }
 
 /** Exchange the refresh-token cookie for a new access token (#314).
@@ -112,11 +209,16 @@ function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
  *
  * Serialised twice over, because the server treats a refresh token presented
  * twice as stolen and ends the session: one refresh at a time in this tab (the
- * in-flight promise is shared), and one at a time across tabs (a Web Lock).
- * Inside the lock the stored token is compared with the one this tab started
- * from — if another tab refreshed while this one waited, its token is used and
- * the cookie, which that tab has already rotated, is left alone. */
+ * in-flight promise is shared), and one at a time across tabs (a Web Lock, or
+ * the storage lock where there is none). Inside the lock the stored token is
+ * compared with the one this tab started from — if another tab refreshed while
+ * this one waited, its token is used and the cookie, which that tab has
+ * already rotated, is left alone.
+ *
+ * After a failure that was not a refusal it answers `null` without asking
+ * again until `Retry-After` (or one banner tick) has passed. */
 export function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight && Date.now() < refreshNotBefore) return Promise.resolve(null);
   if (!refreshInFlight) {
     const startedWith = getAccessToken();
     refreshInFlight = withRefreshLock(async () => {
@@ -131,7 +233,8 @@ export function refreshAccessToken(): Promise<string | null> {
         if (!data.access_token) return null;
         setAccessToken(data.access_token);
         return data.access_token;
-      } catch {
+      } catch (error) {
+        backOffAfter(error);
         return null;
       }
     }).finally(() => {

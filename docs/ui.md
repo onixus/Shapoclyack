@@ -131,7 +131,19 @@ activity, so reopening the console within the idle window picks the session up
 where it was. Refreshes are serialised — one in flight per tab, and one at a
 time across tabs through a Web Lock, with a tab that waited taking the token
 the other one got — because the API treats a refresh token presented twice as
-stolen and ends the session (`src/lib/api.ts`).
+stolen and ends the session (`src/lib/api.ts`). `navigator.locks` exists only in
+a secure context, so on a dev stand served over plain http the console falls
+back to a lock in `localStorage`. That one is best-effort — storage writes are
+not atomic across tabs — and two tabs refreshing in the same few milliseconds
+can still sign the user out; over https the Web Lock closes it.
+
+A refresh that fails without being refused (a `503`, a `5xx`, no network) is
+not retried until the `Retry-After` it came with, or fifteen seconds, has
+passed — an API that is down is not met with a refresh per render.
+
+**Sign out** works after the access token has expired: the refresh cookie is
+the credential that outlives it, and the API ends its session from the cookie
+alone.
 
 When the user has been idle, the banner above the header says how long is left
 and offers **Stay signed in**, which renews the session if the server still

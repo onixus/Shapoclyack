@@ -23,7 +23,11 @@ All notable changes to Shapoclyack are documented in this file.
   Migration `0060_refresh_tokens` (`session_families`, `refresh_tokens`),
   expand-only. The console renews silently — only after user activity since
   the current token, so an unattended console still times out — and
-  serialises refreshes across tabs with a Web Lock. New
+  serialises refreshes across tabs with a Web Lock (a best-effort
+  `localStorage` lock outside a secure context, i.e. a plain-http dev stand,
+  where two tabs racing can still cause a reuse sign-out), backing off for
+  `Retry-After` when a refresh fails. Logout works with the refresh cookie
+  alone, so an expired access token no longer leaves the cookie alive. New
   `OCTO_REFRESH_COOKIE_SECURE` (on in `prod`, where `false` refuses startup;
   off by default in `dev`, like HSTS).
 

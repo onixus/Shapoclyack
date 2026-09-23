@@ -90,6 +90,22 @@ describe("SessionExpiryBanner", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("does not hammer the API when a silent refresh fails", async () => {
+    // Review finding on #434: a refresh that came back empty (503, 500, no
+    // network) re-rendered the banner, the effect saw the same "due" token and
+    // fired again — about 46 calls a second per tab, Retry-After ignored. A
+    // failure now waits for the next tick.
+    refresh.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(null), 5)),
+    );
+    signIn();
+    setAccessToken(tokenExpiringIn(2 * 60 * 1000, 13 * 60 * 1000));
+    noteActivity(Date.now());
+    render(<SessionExpiryBanner />);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("warns an idle console in the last five minutes instead of renewing it", async () => {
     signIn();
     setAccessToken(tokenExpiringIn(2 * 60 * 1000));
