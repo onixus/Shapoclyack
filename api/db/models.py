@@ -973,7 +973,7 @@ class EndpointInventorySnapshot(Base):
 
 class EndpointSoftwareItem(Base):
     """A single software row within one snapshot. ``comparison_key`` is the
-    stable sha256(name|publisher|architecture|source) used for diffing
+    stable schema-aware digest used for diffing
     against the device's previous accepted snapshot."""
 
     __tablename__ = "endpoint_software_items"
@@ -991,6 +991,7 @@ class EndpointSoftwareItem(Base):
     architecture: Mapped[str | None] = mapped_column(default=None)
     source: Mapped[str]
     install_location: Mapped[str | None] = mapped_column(default=None)
+    install_instance_id: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint(

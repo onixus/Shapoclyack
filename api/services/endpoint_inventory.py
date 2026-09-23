@@ -82,17 +82,17 @@ def reset_for_tests() -> None:
         session.query(models.EndpointDevice).delete()
 
 
-def _comparison_key(item: Any) -> str:
-    raw = "|".join(
-        [
-            (item.name or "").strip().lower(),
-            (item.publisher or "").strip().lower(),
-            (item.architecture or "").strip().lower(),
-            item.source,
-        ]
-    )
+def _comparison_key(item: Any, schema_version: int) -> str:
+    components = [
+        (item.name or "").strip().lower(),
+        (item.publisher or "").strip().lower(),
+        (item.architecture or "").strip().lower(),
+        item.source,
+    ]
+    if schema_version >= 2:
+        components.append((item.install_instance_id or "").strip().lower())
+    raw = "|".join(components)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
 
 def _canonical_digest(request: EndpointInventorySnapshotRequest) -> str:
     payload = request.model_dump(mode="json")
@@ -124,13 +124,21 @@ def _validate_bounds(settings: Settings, request: EndpointInventorySnapshotReque
         if len(warning) > max_len:
             raise ValueError(f"collector_warnings entry exceeds max string length {max_len}")
 
+    if request.schema_version == 1 and any(
+        item.install_instance_id is not None for item in request.software
+    ):
+        raise ValueError(
+            "install_instance_id requires endpoint inventory schema version 2"
+        )
+
     keys_seen: set[str] = set()
     for item in request.software:
-        key = _comparison_key(item)
+        key = _comparison_key(item, request.schema_version)
         if key in keys_seen:
             raise ValueError(
                 f"duplicate software entry (name={item.name!r}, publisher={item.publisher!r}, "
-                f"architecture={item.architecture!r}, source={item.source!r})"
+                f"architecture={item.architecture!r}, source={item.source!r}, "
+                f"install_instance_id={item.install_instance_id!r})"
             )
         keys_seen.add(key)
 
@@ -349,7 +357,7 @@ def ingest_snapshot(
 
         current_items: dict[str, str | None] = {}
         for item in request.software:
-            key = _comparison_key(item)
+            key = _comparison_key(item, request.schema_version)
             current_items[key] = item.version
             session.add(
                 models.EndpointSoftwareItem(
@@ -363,12 +371,13 @@ def ingest_snapshot(
                     architecture=item.architecture,
                     source=item.source,
                     install_location=item.install_location,
+                    install_instance_id=item.install_instance_id,
                 )
             )
 
         changes = {"installed": 0, "removed": 0, "updated": 0}
         if not is_first_snapshot:
-            name_by_key = {_comparison_key(item): item.name for item in request.software}
+            name_by_key = {_comparison_key(item, request.schema_version): item.name for item in request.software}
             for key, new_version in current_items.items():
                 if key not in previous_items:
                     changes["installed"] += 1
@@ -689,6 +698,7 @@ def list_software_for_asset(tenant_id: str, asset_id: str) -> list[dict[str, Any
                         "architecture": row.architecture,
                         "source": row.source,
                         "install_location": row.install_location,
+                        "install_instance_id": row.install_instance_id,
                     }
                 )
     return items

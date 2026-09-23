@@ -1727,6 +1727,11 @@ class EndpointSoftwareItem(BaseModel):
         "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "kb", "other"
     ] = "other"
     install_location: str | None = Field(default=None, max_length=1024)
+    # Opaque SHA-256 over agent-local installation evidence. The raw
+    # profile SID or path need not become a durable server identifier.
+    install_instance_id: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
 
 
 class EndpointIdentifierIn(BaseModel):
@@ -1738,9 +1743,9 @@ class EndpointIdentifierIn(BaseModel):
 
 
 class EndpointInventorySnapshotRequest(BaseModel):
-    """Body for ``POST /api/endpoint/inventory`` (schema v1)."""
+    """Body for ``POST /api/endpoint/inventory`` (schema v1 or v2)."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     snapshot_id: str = Field(min_length=1, max_length=128)
     agent_id: str = Field(min_length=1, max_length=128)
     collected_at: str
@@ -1823,6 +1828,7 @@ class EndpointSoftwareItemInfo(BaseModel):
     architecture: str | None = None
     source: str
     install_location: str | None = None
+    install_instance_id: str | None = None
 
 
 SoftwareCveMatchStatus = Literal["vulnerable", "fixed", "not_applicable", "unknown"]

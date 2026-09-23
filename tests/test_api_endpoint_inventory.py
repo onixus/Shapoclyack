@@ -280,3 +280,14 @@ def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, mon
         "/api/endpoint/changes", headers=headers, params={"tenant_id": "ten_missing"}
     )
     assert other_tenant.status_code == 403
+
+
+def test_submit_schema_v2_side_by_side_installations(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v2_instances_valid.json")
+    response = client.post(
+        "/api/endpoint/inventory", headers=_agent_headers(), json=body
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["software_count"] == 2

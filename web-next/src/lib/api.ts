@@ -1069,6 +1069,7 @@ export type EndpointSoftwareItemInfo = {
   architecture: string | null;
   source: string;
   install_location: string | null;
+  install_instance_id?: string | null;
 };
 
 export type EndpointSoftwareChangeInfo = {

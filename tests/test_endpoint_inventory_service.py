@@ -341,3 +341,95 @@ def test_list_software_for_asset_reflects_latest_snapshot(settings):
     software = endpoint_inventory.list_software_for_asset("default", result["asset_id"])
     assert len(software) == 1
     assert software[0]["version"] == "8.6.0"
+
+
+INSTANCE_A = "a" * 64
+INSTANCE_B = "b" * 64
+INSTANCE_C = "c" * 64
+
+
+def _jdk(version: str, instance_id: str) -> EndpointSoftwareItem:
+    return EndpointSoftwareItem(
+        name="OpenJDK",
+        version=version,
+        publisher="Eclipse Adoptium",
+        architecture="x86_64",
+        source="java",
+        install_location=f"/usr/lib/jvm/temurin-{version}",
+        install_instance_id=instance_id,
+    )
+
+
+def test_schema_v2_preserves_side_by_side_installations(settings):
+    result = endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(
+            schema_version=2,
+            software=[_jdk("17.0.12", INSTANCE_A), _jdk("21.0.4", INSTANCE_B)],
+        ),
+    )
+
+    assert result["software_count"] == 2
+    software = endpoint_inventory.list_software_for_asset(
+        "default", result["asset_id"]
+    )
+    assert {item["version"] for item in software} == {"17.0.12", "21.0.4"}
+    assert {item["install_instance_id"] for item in software} == {
+        INSTANCE_A,
+        INSTANCE_B,
+    }
+
+
+def test_schema_v2_diffs_installations_independently(settings):
+    endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(
+            schema_version=2,
+            snapshot_id="snap_1",
+            software=[_jdk("17.0.12", INSTANCE_A), _jdk("21.0.4", INSTANCE_B)],
+        ),
+    )
+    result = endpoint_inventory.ingest_snapshot(
+        tenant_id="default",
+        agent_id="agent-1",
+        request=_request(
+            schema_version=2,
+            snapshot_id="snap_2",
+            software=[_jdk("17.0.13", INSTANCE_A), _jdk("22.0.1", INSTANCE_C)],
+        ),
+    )
+
+    assert result["changes"] == {"installed": 1, "removed": 1, "updated": 1}
+
+
+def test_schema_v1_rejects_install_instance_identity(settings):
+    with pytest.raises(ValueError, match="schema version 2"):
+        endpoint_inventory.ingest_snapshot(
+            tenant_id="default",
+            agent_id="agent-1",
+            request=_request(software=[_jdk("17.0.12", INSTANCE_A)]),
+        )
+
+
+def test_schema_v2_rejects_duplicate_install_instance(settings):
+    with pytest.raises(ValueError, match="duplicate software entry"):
+        endpoint_inventory.ingest_snapshot(
+            tenant_id="default",
+            agent_id="agent-1",
+            request=_request(
+                schema_version=2,
+                software=[_jdk("17.0.12", INSTANCE_A), _jdk("17.0.13", INSTANCE_A)],
+            ),
+        )
+
+
+def test_install_instance_id_must_be_lowercase_sha256():
+    with pytest.raises(Exception):
+        EndpointSoftwareItem(
+            name="OpenJDK",
+            version="17",
+            source="java",
+            install_instance_id="not-a-sha256",
+        )
