@@ -1,0 +1,202 @@
+name: Apply issue 367
+
+on:
+  push:
+    branches:
+      - codex/i367-playwright-runtime
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-367-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/i367-playwright-runtime
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Add browser runtime to scanner images
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"anchor changed in {path}: {old[:100]!r}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          # Dedicated scanner image.
+          replace_once(
+              "Dockerfile",
+              "    PYTHONDONTWRITEBYTECODE=1 \\\n    PYTHONUNBUFFERED=1\n",
+              "    PYTHONDONTWRITEBYTECODE=1 \\\n    PYTHONUNBUFFERED=1 \\\n    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright\n",
+          )
+          replace_once(
+              "Dockerfile",
+              "COPY requirements.txt /app/requirements.txt\n",
+              "COPY requirements.txt requirements-screenshots.txt /app/\n",
+          )
+          replace_once(
+              "Dockerfile",
+              "    pip install --no-cache-dir -r /app/requirements.txt\n",
+              "    pip install --no-cache-dir -r /app/requirements.txt -r /app/requirements-screenshots.txt; \\\n    python -m playwright install --with-deps --only-shell chromium; \\\n    chmod -R a+rX \"${PLAYWRIGHT_BROWSERS_PATH}\"; \\\n    rm -rf /var/lib/apt/lists/*\n",
+          )
+          replace_once(
+              "Dockerfile",
+              "USER scanner\n\nVOLUME",
+              "USER scanner\n\n# Build fails unless the final non-root user can launch the bundled browser.\nRUN python /app/scripts/check-playwright-runtime.py\n\nVOLUME",
+          )
+
+          # All-in-one image also executes local scans and needs the same runtime.
+          replace_once(
+              "Dockerfile.allinone",
+              "    PYTHONUNBUFFERED=1 \\\n    OCTO_WEB_DIST=/app/web/dist",
+              "    PYTHONUNBUFFERED=1 \\\n    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \\\n    OCTO_WEB_DIST=/app/web/dist",
+          )
+          replace_once(
+              "Dockerfile.allinone",
+              "COPY requirements.txt requirements-api.txt /app/\n",
+              "COPY requirements.txt requirements-api.txt requirements-screenshots.txt /app/\n",
+          )
+          replace_once(
+              "Dockerfile.allinone",
+              "    pip install --no-cache-dir -r /app/requirements-api.txt\n",
+              "    pip install --no-cache-dir -r /app/requirements-api.txt -r /app/requirements-screenshots.txt; \\\n    python -m playwright install --with-deps --only-shell chromium; \\\n    chmod -R a+rX \"${PLAYWRIGHT_BROWSERS_PATH}\"; \\\n    rm -rf /var/lib/apt/lists/*\n",
+          )
+          replace_once(
+              "Dockerfile.allinone",
+              "USER octo\n\nEXPOSE",
+              "USER octo\n\n# Build fails unless the final non-root user can launch the bundled browser.\nRUN python /app/scripts/check-playwright-runtime.py\n\nEXPOSE",
+          )
+
+          replace_once(
+              "docs/configuration.md",
+              """`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
+          Playwright + Chromium on the scanner host; without them the stage skips and
+          writes `skipped_reason: playwright.unavailable`. Playwright is not a
+          required dependency and is not baked into the default image.
+          """,
+              """`max_targets` (50) and `concurrency` (4) cap the work. The official
+          scanner and all-in-one images include pinned Playwright plus the Chromium
+          headless shell. A source/host installation can add the same runtime with
+          `pip install -r requirements-screenshots.txt` followed by
+          `python -m playwright install --with-deps --only-shell chromium`. Without
+          the package or browser the stage still fails soft with
+          `skipped_reason: playwright.unavailable`.
+          """,
+          )
+          replace_once(
+              "docs/configuration.md",
+              """expose `screenshots.enabled`. Leave it off until Playwright is installed
+          and the retention window matches the site's data-handling policy.
+          """,
+              """expose `screenshots.enabled`. The browser is present in the official scanner
+          images, but leave capture off until the retention window matches the site's
+          data-handling policy.
+          """,
+          )
+          replace_once(
+              "docs/operations.md",
+              """The stage itself is off by default (`screenshots.enabled`). Turning it on
+          needs Playwright + Chromium on the scanner host (`pip install playwright &&
+          playwright install chromium`). Without that binary the stage writes
+          `skipped_reason: playwright.unavailable` and no files. Capture is not in
+          the default image.
+          """,
+              """The stage itself is off by default (`screenshots.enabled`). The official
+          scanner and all-in-one images carry pinned Playwright and a Chromium
+          headless shell, verified during their build as the final non-root user. A
+          source/host sensor installs the same optional runtime with
+          `pip install -r requirements-screenshots.txt` and
+          `python -m playwright install --with-deps --only-shell chromium`. Without
+          it the stage writes `skipped_reason: playwright.unavailable` and no files.
+          """,
+          )
+          replace_once(
+              "docs/third-party.md",
+              "| Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |",
+              "| Playwright / Chromium | Playwright 1.63.0; its pinned Chromium headless shell | Apache-2.0 (Playwright); Chromium third-party notices apply | Included in scanner and all-in-one images for opt-in P4.4 screenshots; excluded from the API-only image |",
+          )
+          replace_once(
+              "scanner/config/default.yaml",
+              """# Web screenshots (P4.4 / 9.3). Opt-in. Same already-open web ports as
+          # fingerprint — no new scan. Needs Playwright; without it the stage skips.
+          # Images are redacted (obvious form fields) before disk. Retention is API-side.
+          """,
+              """# Web screenshots (P4.4 / 9.3). Opt-in. Same already-open web ports as
+          # fingerprint — no new scan. Official scanner/all-in-one images include Chromium;
+          # source/host installs without Playwright skip the stage. Images are redacted
+          # (obvious form fields) before disk. Retention is API-side.
+          """,
+          )
+          PY
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run static and scanner tests
+        run: |
+          python -m pytest -q tests/test_playwright_container_contract.py tests/test_screenshots.py
+          ruff check scripts/check-playwright-runtime.py tests/test_playwright_container_contract.py
+          python -m compileall scripts/check-playwright-runtime.py tests/test_playwright_container_contract.py
+          git diff --check
+
+      - name: Validate Dockerfile syntax
+        run: |
+          docker buildx build --check -f Dockerfile .
+          docker buildx build --check -f Dockerfile.allinone .
+
+      - name: Prove Chromium launches as non-root
+        run: |
+          cat > /tmp/Dockerfile.playwright-smoke <<'EOF'
+          FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+          ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+              PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+          COPY requirements-screenshots.txt /tmp/requirements-screenshots.txt
+          RUN set -eux; \
+              pip install --no-cache-dir -r /tmp/requirements-screenshots.txt; \
+              python -m playwright install --with-deps --only-shell chromium; \
+              chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+              rm -rf /var/lib/apt/lists/*
+          COPY scripts/check-playwright-runtime.py /app/check-playwright-runtime.py
+          RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
+              chown -R scanner:scanner /app
+          USER scanner
+          RUN python /app/check-playwright-runtime.py
+          EOF
+          docker build --progress=plain -f /tmp/Dockerfile.playwright-smoke -t issue-367-playwright-smoke .
+          docker run --rm issue-367-playwright-smoke python /app/check-playwright-runtime.py
+
+      - name: Commit tested implementation
+        run: |
+          git restore --source=HEAD --staged --worktree .github/workflows/issue-367-apply.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            Dockerfile \
+            Dockerfile.allinone \
+            requirements-screenshots.txt \
+            scripts/check-playwright-runtime.py \
+            scanner/config/default.yaml \
+            docs/configuration.md \
+            docs/operations.md \
+            docs/third-party.md \
+            tests/test_playwright_container_contract.py
+          git diff --cached --check
+          git commit -m 'build(scanner): ship Playwright Chromium runtime (#367)'
+          git push origin HEAD:codex/i367-playwright-runtime
