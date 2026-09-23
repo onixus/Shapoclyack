@@ -10,10 +10,14 @@ live JWT and re-registered on the next poll.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
+
+from api.db.engine import get_engine
 
 from api.settings import Settings
 from tests.conftest import (
@@ -742,3 +746,47 @@ def test_delete_reports_how_many_agents_share_the_key(tmp_path, monkeypatch):
     # And after it, with one fewer agent left on the key.
     remaining = client.get("/api/agents/edge-02", headers=bearer(operator))
     assert remaining.json()["other_agents_on_key"] == 1
+
+def test_claim_reads_agent_and_key_once(tmp_path, monkeypatch):
+    """The request snapshot removes every route-level agent re-read (#384)."""
+    settings = _settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = login(client, "admin")
+    operator = login(client, "operator")
+    key = _mint_key(client, admin)["key"]
+    agent_token = _agent_jwt(
+        client, key, agent_id="agent_query_count"
+    )["access_token"]
+    _register(client, agent_token)
+    _queue_job(client, operator)
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(" ".join(statement.lower().split()))
+
+    engine = get_engine(settings.postgres_url)
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        response = client.post(
+            "/api/agent/jobs/claim?agent_id=agent_query_count",
+            headers=bearer(agent_token),
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert response.status_code == 200, response.text
+    agent_reads = [
+        statement
+        for statement in statements
+        if re.search(r"\bfrom agents\b", statement)
+    ]
+    key_reads = [
+        statement
+        for statement in statements
+        if re.search(r"\bfrom provisioning_keys\b", statement)
+    ]
+    assert len(agent_reads) == 1, agent_reads
+    assert len(key_reads) == 1, key_reads
+    assert "count(" not in agent_reads[0]
