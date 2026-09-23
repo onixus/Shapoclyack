@@ -790,3 +790,93 @@ def test_claim_reads_agent_and_key_once(tmp_path, monkeypatch):
     assert len(agent_reads) == 1, agent_reads
     assert len(key_reads) == 1, key_reads
     assert "count(" not in agent_reads[0]
+
+
+def _agent_row_selects(settings: Settings, send) -> tuple[object, list[str]]:  # noqa: ANN001
+    """Run ``send()`` and return its response with every SELECT on ``agents``."""
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(" ".join(statement.lower().split()))
+
+    engine = get_engine(settings.postgres_url)
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        response = send()
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+    return response, [s for s in statements if re.search(r"\bfrom agents\b", s)]
+
+
+def test_results_and_inventory_read_the_agent_row_once(tmp_path, monkeypatch):
+    """The other two snapshot consumers pay the same single read as claim (#384)."""
+    settings = _settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = login(client, "admin")
+    operator = login(client, "operator")
+    key = _mint_key(client, admin)["key"]
+    agent_token = _agent_jwt(client, key, agent_id="edge-01")["access_token"]
+    _register(client, agent_token, "edge-01")
+    job_id = _queue_job(client, operator)
+    claimed = client.post("/api/agent/jobs/claim?agent_id=edge-01", headers=bearer(agent_token))
+    assert claimed.status_code == 200, claimed.text
+
+    results, agent_reads = _agent_row_selects(
+        settings,
+        lambda: client.post(
+            f"/api/agent/jobs/{job_id}/results",
+            headers=bearer(agent_token),
+            data={"agent_id": "edge-01", "exit_code": "0"},
+        ),
+    )
+    assert results.status_code == 200, results.text
+    assert len(agent_reads) == 1, agent_reads
+
+    inventory, agent_reads = _agent_row_selects(
+        settings,
+        lambda: client.post(
+            "/api/endpoint/inventory",
+            headers=bearer(agent_token),
+            json=_inventory_snapshot("edge-01"),
+        ),
+    )
+    assert inventory.status_code in (200, 201), inventory.text
+    assert len(agent_reads) == 1, agent_reads
+
+
+def test_padded_agent_id_does_not_ride_the_cached_snapshot(tmp_path, monkeypatch):
+    """``edge-01 `` is not ``edge-01``, even though the identity check says so.
+
+    ``require_identity_match`` strips the requested id before comparing, so a
+    JWT for ``edge-01`` passes it with ``edge-01 ``. Before #384 the route then
+    looked ``edge-01 `` up and answered 404; reusing the request snapshot under
+    the stripped id instead let the claim through and assigned the job to an
+    agent row that does not exist -- invisible to operators, never touched by
+    heartbeats, and refused when ``edge-01`` itself tried to complete it.
+    """
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    operator = login(client, "operator")
+    key = _mint_key(client, admin)["key"]
+    agent_token = _agent_jwt(client, key, agent_id="edge-01")["access_token"]
+    _register(client, agent_token, "edge-01")
+    job_id = _queue_job(client, operator)
+
+    claimed = client.post(
+        "/api/agent/jobs/claim?agent_id=edge-01%20",
+        headers=bearer(agent_token),
+    )
+    assert claimed.status_code == 404, claimed.text
+    assert "register first" in claimed.json()["detail"]
+
+    job = client.get(f"/api/jobs/{job_id}", headers=bearer(operator)).json()
+    assert job["status"] == "queued"
+    assert job["assigned_agent_id"] is None
+
+    results = client.post(
+        f"/api/agent/jobs/{job_id}/results",
+        headers=bearer(agent_token),
+        data={"agent_id": "edge-01 ", "exit_code": "0"},
+    )
+    assert results.status_code == 404, results.text

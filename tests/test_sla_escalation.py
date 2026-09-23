@@ -784,6 +784,35 @@ def test_a_run_of_heartbeats_is_broken_by_a_gap_and_only_by_a_gap(settings, monk
     assert _healthy_since() == clock
 
 
+def test_a_claim_or_upload_keeps_the_same_run_rule_as_a_heartbeat(settings, monkeypatch):
+    """``touch_job`` decides ``healthy_since`` in its UPDATE, not via ``_note_seen``.
+
+    Claims and result uploads hear from an agent too, and since #384 they
+    move the two columns with one ``CASE`` rather than a read-modify-write.
+    The rule must be the heartbeat's: a touch inside the stale window
+    continues the run, one after a longer gap starts it over.
+    """
+    agents_service.configure(settings)
+    stale = settings.agent_stale_seconds
+    clock = _NOW.replace(tzinfo=None)
+    monkeypatch.setattr(agents_service, "_now", lambda: clock)
+    agents_service.register_agent(agent_id="fresh", tenant_id="default")
+    agents_service.register_agent(agent_id="away", tenant_id="default")
+    begun = clock - timedelta(hours=1)
+    _set_last_seen(settings, "fresh", clock - timedelta(seconds=stale - 30), healthy_since=begun)
+    _set_last_seen(settings, "away", clock - timedelta(seconds=stale + 30), healthy_since=begun)
+
+    agents_service.touch_job("fresh", "job-1")
+    agents_service.touch_job("away", "job-2")
+
+    with get_session(settings.postgres_url) as session:
+        fresh = session.get(models.Agent, "fresh")
+        away = session.get(models.Agent, "away")
+        assert (fresh.healthy_since, fresh.last_seen_at) == (begun, clock)
+        assert (away.healthy_since, away.last_seen_at) == (clock, clock)
+        assert (fresh.current_job_id, fresh.status) == ("job-1", "busy")
+
+
 def test_a_claim_whose_fan_out_failed_is_given_back(settings, monkeypatch):
     """A marker standing for an event nobody received is worse here than
     anywhere else in this worker: an ``agent_offline`` claim is held for the

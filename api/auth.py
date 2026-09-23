@@ -159,13 +159,19 @@ def cached_agent_info(
     ``hit=True, info=None`` is meaningful: authentication already proved
     the row is absent, as it is before first registration. Legacy shared
     tokens carry no identity, so their routes keep the old lookup path.
+
+    The ids are compared exactly, not stripped: ``require_identity_match``
+    lets ``"edge-01 "`` through for an ``edge-01`` token, and the routes pass
+    that unstripped id on to the job services. The snapshot is the row for
+    the token's id only, so any other spelling misses and takes the old
+    ``get_agent`` path, which answers 404 for it as it always did.
     """
     state = getattr(request.state, AGENT_REQUEST_STATE_ATTR, None)
     if not isinstance(state, AgentRequestState):
         return False, None
     if principal.auth_mode != "jwt" or not state.loaded:
         return False, None
-    if state.agent_id != (requested_agent_id or "").strip():
+    if state.agent_id != requested_agent_id:
         return False, None
     return True, state.info
 
@@ -1227,9 +1233,10 @@ def require_agent(
             request.state,
             AGENT_REQUEST_STATE_ATTR,
             AgentRequestState(
-                agent_id=(principal.agent_id or "").strip() or None,
+                # The id check_credential looked up, verbatim.
+                agent_id=principal.agent_id or None,
                 info=info,
-                loaded=bool((principal.agent_id or "").strip()),
+                loaded=bool(principal.agent_id),
             ),
         )
         return principal
