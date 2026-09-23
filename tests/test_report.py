@@ -163,3 +163,45 @@ def test_build_reports_merges_extra_vulnerabilities(tmp_path: Path):
     md = (output_dir / "summary.md").read_text(encoding="utf-8")
     assert "Vulnerabilities" in md
     assert "CRITICAL" in md
+
+
+CPE_XML = """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <address addr="10.0.0.7" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.5"
+                 extrainfo="Ubuntu Linux; protocol 2.0">
+          <cpe>cpe:/a:openbsd:openssh:8.2p1</cpe>
+          <cpe>cpe:/o:linux:linux_kernel</cpe>
+        </service>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+"""
+
+
+def test_parse_nmap_xml_keeps_cpe_and_extrainfo(tmp_path: Path):
+    """The retro CVE matcher (docs/retro-cve-matching.md) needs both: the CPE
+    names the product, extrainfo carries the distribution hint. Both used to be
+    dropped here."""
+    nmap_dir = tmp_path / "nmap"
+    nmap_dir.mkdir()
+    (nmap_dir / "10.0.0.7.xml").write_text(CPE_XML, encoding="utf-8")
+    services, _, _ = _parse_nmap_xml(nmap_dir)
+    assert services[0]["cpe"] == ["cpe:/a:openbsd:openssh:8.2p1", "cpe:/o:linux:linux_kernel"]
+    assert services[0]["extrainfo"] == "Ubuntu Linux; protocol 2.0"
+
+
+def test_a_services_json_written_before_cpe_existed_still_validates():
+    from scanner.pipeline.service_schema import ServiceRecord, services_to_report_findings
+
+    record = ServiceRecord.model_validate(
+        {"ip": "10.0.0.7", "port": 22, "product": "OpenSSH", "version": "8.2p1", "banner": "SSH-2.0-OpenSSH_8.2p1"}
+    )
+    assert record.cpe == []
+    shaped = services_to_report_findings([record])[0]
+    assert shaped["cpe"] == [] and shaped["banner"] == "SSH-2.0-OpenSSH_8.2p1"
