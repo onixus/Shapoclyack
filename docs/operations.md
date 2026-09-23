@@ -1112,8 +1112,14 @@ publication which loses a race from taking the winner's keys back off; `claims`
 is the other half, because the stamp goes on only once the winner's whole tree
 is up and the race is lost long before that. Since #425 there is a third,
 `fence`, which every claim and every requeue moves forward and nothing moves
-back: `claims` starts over whenever an attempt records an outcome, so a stale
-attempt could read its own number on the row again.
+back. `claims` itself no longer starts over either: the claim budget counts
+from `claims_base`, which an outcome, a requeue and an unworked hand-back move
+up to `claims`. The reset used to hand a stale attempt its own number back —
+and a replica on the release before `0062` fences on `claims` alone. (Such a
+replica still resets it when *it* records an outcome, and still counts its
+budget from 0, so during a rollout it may end a row that new replicas have
+claimed many times as *claimed far more often than it may be attempted*: a
+false `dead`, which a requeue answers.)
 
 `staging_path` is on `replica`'s disk — a remote backend caches per pod — so a
 row is normally finished by the replica that accepted the upload. A peer picks
@@ -1159,9 +1165,14 @@ from `staging_path`) before deciding between a manual load and a re-scan —
 until then an operator reading that run cannot tell it from a scan that found
 nothing.
 
-The extracted run and the archive beside it are kept for 24 hours after the
-last attempt, then swept by the next ingest on that replica. Inside that window
-there are three ways out, and all of them are decisions rather than retries:
+The extracted run and the archive beside it are kept for up to 24 hours **from
+the upload's acceptance** — not from the last attempt: the sweep reads the
+staging directory's modification time, which only its first entry sets — and
+are removed by the next ingest on that replica after that. The job's card shows
+the moment as `tree_kept_until`, and a `dead` row the store never took whole
+reads `resolution: rescan` once it has passed, because a requeue would only
+find the tree gone and die again. Inside that window there are three ways out,
+and all of them are decisions rather than retries:
 
 - **Requeue it** once whatever refused it is fixed — the store, the broker, the
   pod's memory limit. The row goes back to `pending` with a full set of
@@ -1187,8 +1198,8 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" https://<api>/api/jobs/<job_id>
 checks. Discarding is the only thing that clears the health check for a row
 nobody will requeue — nothing else deletes these rows. The row is all that
 goes: the extracted tree and the archive beside it stay until the ordinary
-sweep takes them, so the decision is recoverable for a day, and the note on the
-job stays too, because the run was not published.
+sweep takes them — until `tree_kept_until` at most, a day from the acceptance —
+and the note on the job stays too, because the run was not published.
 
 Both are refused with `409` for a row that is not `dead` and, with a
 `Retry-After`, while **an attempt at it is still running**. `dead` is one
@@ -1198,7 +1209,10 @@ beside it would be a second live publication of the same keys; a discard would
 delete the row that attempt reads its rollback fence from. Every running
 attempt stamps `leased_until` on the row as it renews its hold, whatever the
 status, so the refusal lasts at most one hold (`max(60s,
-OCTO_RUN_PUBLICATION_INTERVAL_SECONDS)`) after the last attempt stops. An
+OCTO_RUN_PUBLICATION_INTERVAL_SECONDS)`) after the last attempt stops. It is
+stamped and compared on the database's clock, not the pods': the pod running
+the attempt and the pod serving the button are not the same one, and a skew
+between them past one hold used to read a live attempt as a lease long gone. An
 attempt that has stopped renewing without stopping — a paused process — cannot
 be seen this way; what protects the requeued publication from it is that a
 requeue moves the row's `fence`, so the stale attempt no longer takes back the

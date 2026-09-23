@@ -299,40 +299,63 @@ def on_run_published(
         notify_channels_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
 
 
-def note_publication_failed(
-    settings: Settings, job_id: str, *, publication_id: str, reason: str
-) -> None:
+def _publication_note_prefix(publication_id: str) -> str:
+    return f"; run not published (publication {publication_id}): "
+
+
+def note_publication_failed(session, job_id: str, *, publication_id: str, reason: str) -> None:
     """Put a publication nobody is going to retry on the job itself.
 
     ``run_publications`` is where an operator finds the details, but the job
     is where they look first: a scan that reads ``succeeded`` with no
     artifacts behind it must say why on the row that claims it succeeded.
+
+    Written in the caller's session — the transaction that ends the row
+    ``dead``, which holds the row's lock — so the note and the death are one
+    fact. Written after it, in a session of its own, the note could land after
+    a peer that was still publishing had succeeded, found no error on the row
+    and left nothing to clear: a published run whose job said it was not
+    (:func:`clear_publication_notes`).
+
+    ``;`` in the reason becomes ``,``. Every note on ``error`` starts with
+    ``; `` and the named reasons carry ``;`` of their own, so without this the
+    note had no end a later clear could find, and took whatever was appended
+    after it along with it.
     """
-    _append_job_error(
-        settings,
-        job_id,
-        f"; run not published (publication {publication_id}): {reason}",
-    )
+    row = session.get(models.Job, job_id, with_for_update=True)
+    if row is None:  # pragma: no cover - the row was written with the publication
+        return
+    note = f"{_publication_note_prefix(publication_id)}{reason.replace(';', ',')}"
+    if note not in (row.error or ""):
+        row.error = f"{row.error or ''}{note}"[:2000]
 
 
-def clear_publication_note(settings: Settings, job_id: str, *, publication_id: str) -> None:
-    """Take a publication's "not published" note back off the job.
+def clear_publication_notes(
+    session, job_id: str, *, publication_id: str, reasons: list[str]
+) -> None:
+    """Take a publication's "not published" notes back off the job.
 
-    Called when a publication that was once ``dead`` lands after all — the
-    operator requeued it (#425). The note was true when it was written and is
-    false now, and it sits on the one field the console paints red on a job
-    that says ``succeeded``. Only this publication's note goes; anything else
-    appended to ``error`` stays where it was.
+    Called, in the transaction that closes the publication out, when a row
+    that had failed before lands after all — typically the operator requeued
+    it (#425). The note was true when it was written and is false now, and it
+    sits on the one field the console paints red on a job that says
+    ``succeeded``.
+
+    Only this publication's notes go, and nothing around them: first the exact
+    notes for ``reasons`` (the row's own ``last_error``, as written by this
+    release or, with its ``;`` intact, by the one before), then any other note
+    of this publication up to the next ``;`` — which, since
+    :func:`note_publication_failed` writes none into a reason, is where it
+    ends.
     """
-    pattern = re.compile(
-        rf"; run not published \(publication {re.escape(publication_id)}\): .*?"
-        r"(?=; run (?:not published \(publication |projections did not complete: )|$)",
-        re.DOTALL,
-    )
-    with get_session(settings.postgres_url) as session:
-        row = session.get(models.Job, job_id, with_for_update=True)
-        if row is None or not row.error:
-            return
-        cleaned = pattern.sub("", row.error)
-        if cleaned != row.error:
-            row.error = cleaned or None
+    row = session.get(models.Job, job_id, with_for_update=True)
+    if row is None or not row.error:
+        return
+    prefix = _publication_note_prefix(publication_id)
+    cleaned = row.error
+    for reason in reasons:
+        for text in (reason.replace(";", ","), reason):
+            cleaned = cleaned.replace(f"{prefix}{text}", "")
+    cleaned = re.sub(rf"{re.escape(prefix)}[^;]*", "", cleaned)
+    if cleaned != row.error:
+        row.error = cleaned or None

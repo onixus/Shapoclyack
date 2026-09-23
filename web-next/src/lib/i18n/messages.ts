@@ -1137,6 +1137,9 @@ export const en = {
   "jobs.publication.stored": "Stored",
   "jobs.publication.storedHint": "the run is readable; the analytical projection is behind",
   "jobs.publication.nextAttempt": "Next attempt",
+  "jobs.publication.treeKeptUntil": "Tree kept until",
+  "jobs.publication.treeKeptUntilHint":
+    "the accepting pod sweeps the extracted tree a day after the upload was accepted, whatever the attempts since",
   "jobs.publication.leaseLapses": "Lease lapses",
   "jobs.publication.leaseLapsesHint":
     "renewals of this publication's hold that failed or came late — a second attempt may have run beside it",
@@ -1157,7 +1160,7 @@ export const en = {
   "jobs.publication.discard": "Discard",
   "jobs.publication.discardTitle": "Discard publication {id}?",
   "jobs.publication.discardBody":
-    "The run stays unpublished and the health alert clears. The extracted tree stays on the accepting pod's disk for a day, then is swept. Do this after loading the run by hand, or before a re-scan.",
+    "The run stays unpublished and the health alert clears. The extracted tree stays on the accepting pod's disk until a day after the upload was accepted ({until}), then is swept. Do this after loading the run by hand, or before a re-scan.",
   "jobs.publication.keep": "Keep it",
   "col.surface": "Surface",
   "col.intent": "Intent",
@@ -2624,6 +2627,9 @@ export const ru: Record<MsgKey, string> = {
   "jobs.publication.stored": "В хранилище",
   "jobs.publication.storedHint": "прогон читается; отстаёт аналитическая проекция",
   "jobs.publication.nextAttempt": "Следующая попытка",
+  "jobs.publication.treeKeptUntil": "Дерево хранится до",
+  "jobs.publication.treeKeptUntilHint":
+    "принявший под удаляет распакованное дерево через сутки после приёма выгрузки, сколько бы попыток ни было потом",
   "jobs.publication.leaseLapses": "Потери аренды",
   "jobs.publication.leaseLapsesHint":
     "продления удержания этой публикации, которые не удались или опоздали — рядом могла идти вторая попытка",
@@ -2644,7 +2650,7 @@ export const ru: Record<MsgKey, string> = {
   "jobs.publication.discard": "Отбросить",
   "jobs.publication.discardTitle": "Отбросить публикацию {id}?",
   "jobs.publication.discardBody":
-    "Прогон останется неопубликованным, тревога снимется. Распакованное дерево пролежит на диске принявшего пода сутки и будет удалено. Делайте это после ручной загрузки прогона или перед пересканированием.",
+    "Прогон останется неопубликованным, тревога снимется. Распакованное дерево пролежит на диске принявшего пода до суток с момента приёма выгрузки ({until}) и будет удалено. Делайте это после ручной загрузки прогона или перед пересканированием.",
   "jobs.publication.keep": "Оставить",
   "col.surface": "Поверхность",
   "col.intent": "Намерение",

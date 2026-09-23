@@ -26,6 +26,15 @@ keys back off. Three columns, all expand-only:
     came back after a peer's failure and a fresh claim read ``1`` again and took
     the new attempt's keys for its own. The rollback fence now asks both.
 
+``claims_base``
+    What ``claims`` stood at when the row last reached an outcome (or was
+    requeued, or handed back unworked). The claim budget is ``claims -
+    claims_base``; ``claims`` itself no longer starts over. It used to be reset
+    to 0 on every outcome and on a requeue, so the requeued attempt's first
+    claim wrote back the very number an older attempt held — and a replica on
+    the previous release, whose rollback compares ``claims`` and nothing else,
+    took that for its own row and removed the new attempt's keys.
+
 ``lease_lapses``
     How many renewals of this row failed or came too late (#426), so a
     post-mortem can tell which publication ran without its hold. The metric
@@ -38,8 +47,13 @@ as well, so a mixed fleet is fenced exactly as before, never less — and its
 attempts never stamp ``leased_until``, so an attempt still running on an old
 replica is invisible to the operator's buttons. Requeue and discard only act on
 ``dead`` rows, which an old replica stops renewing anyway; finish the rollout
-before acting on a row that went ``dead`` during it. No backfill: a lease nobody
-renewed is not one this migration can invent.
+before acting on a row that went ``dead`` during it. An old replica still
+resets ``claims`` to 0 when it records an outcome and still counts its budget
+from 0, so for the length of the rollout a row that new replicas have claimed
+many times can be written off by an old one as "claimed far more often than
+attempted" — a false ``dead`` an operator requeues, not a lost run. No
+backfill: a lease nobody renewed is not one this migration can invent, and
+``claims_base = 0`` is what every existing row's budget already counts from.
 
 Rollback is a plain drop; the columns carry no state a downgraded replica
 could use.
@@ -66,11 +80,16 @@ def upgrade() -> None:
     )
     op.add_column(
         "run_publications",
+        sa.Column("claims_base", sa.Integer(), nullable=False, server_default="0"),
+    )
+    op.add_column(
+        "run_publications",
         sa.Column("lease_lapses", sa.Integer(), nullable=False, server_default="0"),
     )
 
 
 def downgrade() -> None:
     op.drop_column("run_publications", "lease_lapses")
+    op.drop_column("run_publications", "claims_base")
     op.drop_column("run_publications", "fence")
     op.drop_column("run_publications", "leased_until")

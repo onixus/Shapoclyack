@@ -48,8 +48,8 @@ because only one of them was ever accepted.
 stays ``dead``. That is the honest end: an installation whose store has been
 refusing for ten minutes needs an operator, not a slower timer. A dead row is
 visible three ways — ``/api/health``, ``octo_run_publication_backlog`` and a
-note on the job's ``error`` — and its tree is kept on disk for a day (see the
-sweep in ``workspace``), so the decision is "publish it by hand or re-scan",
+note on the job's ``error`` — and its tree is kept on disk for a day from the
+upload's acceptance (see the sweep in ``workspace``), so the decision is "publish it by hand or re-scan",
 never "the scan is gone and nothing said so".
 
 A claimed row is held out of the due window, and the hold is *renewed* while
@@ -77,6 +77,7 @@ than crash-looping in silence (:func:`_claims_spent`).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -149,6 +150,36 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _db_now(session) -> datetime:
+    """The database's clock, naive UTC like :func:`_now`.
+
+    For the one timestamp two pods compare: ``leased_until`` is written by the
+    pod running an attempt and read by whichever pod serves an operator's
+    button. ``clock_timestamp()`` rather than ``now()``, which is the start of
+    a transaction that may have waited on the row lock.
+    """
+    return session.execute(select(func.timezone("UTC", func.clock_timestamp()))).scalar_one()
+
+
+#: An absolute path of two components or more. Not preceded by ``:`` or
+#: ``/``, so the path of a URL (``s3://bucket/key``) is not one.
+_ABSOLUTE_PATH = re.compile(r"(?<![\w:/.~-])/(?:[^\s/'\"]+/)+([^\s/'\"]+)")
+
+
+def redact_paths(text: str | None) -> str | None:
+    """Cut every absolute path in ``text`` down to its last component.
+
+    For a reason a tenant reads — on the job, in ``/publications`` and in the
+    audit trail. A failure is recorded as ``f"{type}: {exc}"``, and an
+    ``OSError`` names the staging tree on the pod's disk, which the route
+    withholds from everyone but the platform admin. The last component stays
+    because it is what says what went wrong (``tenant.json``, ``.upload``).
+    """
+    if not text:
+        return text
+    return _ABSOLUTE_PATH.sub(lambda match: f"…/{match.group(1)}", text)
+
+
 @dataclass(frozen=True)
 class _Publication:
     """One row, snapshotted before any I/O.
@@ -174,6 +205,7 @@ class _Publication:
     updated_at: datetime | None
     attempts: int
     claims: int
+    claims_base: int
     stored_at: datetime | None
     fence: int
     last_error: str | None
@@ -197,6 +229,7 @@ def _snapshot(row: models.RunPublication) -> _Publication:
         updated_at=row.updated_at,
         attempts=row.attempts or 0,
         claims=row.claims or 0,
+        claims_base=row.claims_base or 0,
         stored_at=row.stored_at,
         fence=row.fence or 0,
         last_error=row.last_error,
@@ -245,6 +278,7 @@ def new_publication(
         status=STATUS_PENDING,
         attempts=0,
         claims=0,
+        claims_base=0,
         fence=0,
         lease_lapses=0,
         # Due immediately: the accepting request publishes it inline, and a
@@ -416,8 +450,14 @@ class _Lease:
                     lapses += 1
                 if lapses:
                     row.lease_lapses = (row.lease_lapses or 0) + lapses
-                if row.leased_until is None or row.leased_until < until:
-                    row.leased_until = until
+                # On the database's clock, which is the one the operator's
+                # button reads it by (:func:`_is_leased`). ``next_attempt_at``
+                # stays on this pod's: the reconciler compares it with its own.
+                held = _db_now(session) + timedelta(
+                    seconds=_lease_horizon_seconds(self._settings)
+                )
+                if row.leased_until is None or row.leased_until < held:
+                    row.leased_until = held
                 if row.status == STATUS_PENDING:
                     row.next_attempt_at = until
                     row.updated_at = now
@@ -627,15 +667,15 @@ def _may_take_back(settings: Settings, publication: _Publication) -> bool:
     been working this row — and it is visible from the first key the other
     attempt writes rather than from its last.
 
-    And ``fence`` is the third, because ``claims`` is not monotonic: it starts
-    over whenever an attempt records an outcome. An attempt that took the row
-    as its first claim, lost its lease, and woke after a peer had failed and a
-    third attempt had claimed read ``claims == 1`` again — its own number —
-    and took the third attempt's keys for its own. An operator's requeue is the
-    same shape on purpose (#425): it bumps ``fence``, so nothing that was
-    running before the requeue may take back what runs after it. ``claims`` is
-    still compared as well, so a replica on the previous release, whose claims
-    do not bump ``fence``, is fenced exactly as it was.
+    And ``fence`` is the third, because ``claims`` used not to be monotonic:
+    it started over whenever an attempt recorded an outcome. An attempt that
+    took the row as its first claim, lost its lease, and woke after a peer had
+    failed and a third attempt had claimed read ``claims == 1`` again — its own
+    number — and took the third attempt's keys for its own. ``claims`` only
+    grows now (the budget counts from ``claims_base``), but a replica on the
+    previous release still resets it, so ``fence`` — which only this release
+    moves, on every claim and on an operator's requeue (#425) — stays the
+    condition that cannot come back round.
     """
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication.publication_id)
@@ -704,31 +744,28 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
     and after a deferred publication they are owed exactly as much as the run
     is. Each one guards itself; a failure among them is a note on the job, not
     a reason to publish the run twice.
+
+    The "run not published" note is decided from the row as it is *now*,
+    locked, and not from this attempt's snapshot. The snapshot was taken at
+    the claim, and the row may have died since: a peer that took it while this
+    attempt's hold lapsed gave up, ended it ``dead`` and put the note on the
+    job — and this attempt then published the run and deleted the row, looking
+    at a snapshot with no error on it. A published run whose job said it was
+    not, with no row and no button left to explain it. The peer writes the
+    note in the transaction that ends the row (``_record_failure``) under the
+    same lock, so the two cannot interleave.
     """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.RunPublication, publication.publication_id)
+        row = session.get(models.RunPublication, publication.publication_id, with_for_update=True)
         if row is not None:
+            failed_before = row.last_error is not None or row.status == STATUS_DEAD
+            reasons = [row.last_error] if row.last_error else []
             session.delete(row)
+            if failed_before:
+                _clear_notes(session, publication, reasons)
     if publication.archive_path:
         Path(publication.archive_path).unlink(missing_ok=True)
     metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="published").inc()
-    if publication.last_error is not None:
-        # A row that has failed before may have been ``dead``, requeued by an
-        # operator and put a "not published" note on the job on the way. It
-        # is published now, and the note would say otherwise in red.
-        try:
-            run_completion.clear_publication_note(
-                settings, publication.job_id, publication_id=publication.publication_id
-            )
-        except Exception:  # noqa: BLE001 - a stale note must not cost the projections
-            # The row is already gone, so nothing retries what follows: a
-            # database hiccup here raising past this point would skip the
-            # run's assets, findings and notification for good, over a line
-            # of text on the job.
-            LOG.warning(
-                "Could not clear the publication note on job %s", publication.job_id,
-                exc_info=True,
-            )
     if publication.attempts:
         LOG.info(
             "Published run %s of job %s after %d attempt(s)",
@@ -745,6 +782,29 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
     )
 
 
+def _clear_notes(session, publication: _Publication, reasons: list[str]) -> None:
+    """Take this publication's notes off the job, in a savepoint of their own.
+
+    Fail-soft, because the delete beside it is not optional: a failure here
+    rolling the whole transaction back would keep the row and publish the run
+    again on the next tick — harmless, but forever, if what fails is the job
+    row itself. Only the note is lost then, and the log says so.
+    """
+    try:
+        with session.begin_nested():
+            run_completion.clear_publication_notes(
+                session,
+                publication.job_id,
+                publication_id=publication.publication_id,
+                reasons=[redact_paths(reason) for reason in reasons] + reasons,
+            )
+    except Exception:  # noqa: BLE001 - a stale note must not cost the publication
+        LOG.warning(
+            "Could not clear the publication note on job %s", publication.job_id,
+            exc_info=True,
+        )
+
+
 def _record_failure(
     settings: Settings, publication: _Publication, reason: str, *, final: bool = False
 ) -> None:
@@ -758,19 +818,36 @@ def _record_failure(
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.RunPublication, publication.publication_id)
+        # Locked: the note below is written in this transaction, and a peer
+        # closing the row out as published reads it under the same lock.
+        row = session.get(
+            models.RunPublication, publication.publication_id, with_for_update=True
+        )
         if row is None:  # pragma: no cover - deleted by a peer mid-flight
             return
         row.attempts += 1
         row.updated_at = now
-        # An attempt that reached an outcome is what ``claims`` was counting
-        # the absence of, so it starts over.
-        row.claims = 0
+        # An attempt that reached an outcome is what the claim budget was
+        # counting the absence of, so it starts over — from here, not from 0:
+        # ``claims`` itself is a fence a previous release reads, and setting
+        # it back hands a stale attempt its own number again.
+        row.claims_base = row.claims or 0
         row.last_error = reason[:2000]
         spent = final or row.attempts >= settings.run_publication_max_attempts
         if spent:
             row.status = STATUS_DEAD
             row.next_attempt_at = None
+            # On the job as well as in the table: the operator looking at a
+            # scan that says ``succeeded`` with no artifacts behind it is
+            # looking at the job, and the row is the thing they have not been
+            # told about yet. Everyone who can read the job reads this, so
+            # the pod's paths are taken out of it.
+            run_completion.note_publication_failed(
+                session,
+                publication.job_id,
+                publication_id=publication.publication_id,
+                reason=redact_paths(reason),
+            )
         else:
             row.next_attempt_at = now + timedelta(
                 seconds=_retry_delay_seconds(row.attempts, settings)
@@ -796,12 +873,6 @@ def _record_failure(
         attempts,
         reason,
         publication.staging_path,
-    )
-    # On the job as well as in the table: the operator looking at a scan that
-    # says ``succeeded`` with no artifacts behind it is looking at the job,
-    # and the row is the thing they have not been told about yet.
-    run_completion.note_publication_failed(
-        settings, publication.job_id, publication_id=publication.publication_id, reason=reason
     )
 
 
@@ -894,10 +965,11 @@ def _claims_spent(settings: Settings, publication: _Publication) -> bool:
 
     Twice the permitted attempts is the margin: an ordinary retry spends one
     claim per attempt, so nothing that reaches an outcome can come near it.
-    Reaching an outcome resets the count, and a claim handed straight back to
-    its owner is given back too (:func:`_give_back`).
+    Counted from ``claims_base``, which reaching an outcome, a requeue and a
+    claim handed straight back to its owner all move up to ``claims``
+    (:func:`_give_back`) — ``claims`` itself never goes back down.
     """
-    return publication.claims > _claim_budget(settings)
+    return publication.claims - publication.claims_base > _claim_budget(settings)
 
 
 def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> list[Any]:
@@ -981,10 +1053,12 @@ def _give_back(settings: Settings, publication: _Publication) -> bool:
             return True
         row.next_attempt_at = now + timedelta(seconds=_adoption_seconds(settings))
         # Neither this claim nor this hand-back was work on the row: the claim
-        # counter is given back so a row offered around every adoption window
-        # cannot exhaust it, and ``updated_at`` is left alone so the orphan
-        # deadline keeps running from the last time somebody really published.
-        row.claims = max(0, (row.claims or 0) - 1)
+        # is taken off the budget so a row offered around every adoption
+        # window cannot exhaust it — by moving the base, since ``claims`` is a
+        # fence and must not come back round — and ``updated_at`` is left
+        # alone so the orphan deadline keeps running from the last time
+        # somebody really published.
+        row.claims_base = (row.claims_base or 0) + 1
     return True
 
 
@@ -1114,11 +1188,30 @@ def _iso(value: datetime | None) -> str | None:
     return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z") if value else None
 
 
-def _is_leased(row: models.RunPublication, *, now: datetime) -> bool:
-    return row.leased_until is not None and row.leased_until > now
+def _is_leased(row: models.RunPublication, *, db_now: datetime) -> bool:
+    """Whether a running attempt still holds this row, on the database's clock.
+
+    ``leased_until`` is written by the pod running the attempt and read by
+    whichever pod serves the button, so both sides use the database's clock
+    (:func:`_db_now`): each pod's own, and a skew between two of them past one
+    horizon, read a live attempt as a lease that had long expired.
+    """
+    return row.leased_until is not None and row.leased_until > db_now
 
 
-def _resolution(row: models.RunPublication) -> str:
+def _tree_kept_until(row: models.RunPublication) -> datetime | None:
+    """Until when the accepting pod may still have the extracted tree.
+
+    A day from the *acceptance*, not from the last attempt: the sweep
+    (``workspace._sweep_abandoned``) reads the staging directory's
+    ``st_mtime``, which only the first ``tenant.json`` moves.
+    """
+    if row.created_at is None:  # pragma: no cover - written with the row
+        return None
+    return row.created_at + timedelta(seconds=artifact_workspace.INGEST_KEPT_SECONDS)
+
+
+def _resolution(row: models.RunPublication, *, now: datetime) -> str:
     """What an operator can usefully do about one row, as the console shows it.
 
     ``wait`` while it is owed and somebody is on it; ``rescan`` when the tree
@@ -1127,6 +1220,10 @@ def _resolution(row: models.RunPublication) -> str:
     readable and only the analytical projection is lost; ``requeue`` for every
     other ``dead`` row, once whatever refused it (the store, the broker, the
     pod's memory limit) has been fixed.
+
+    Past :func:`_tree_kept_until` a row the store never took whole is a
+    ``rescan`` whatever it died of: the sweep has had the tree, so a requeue
+    would only walk it to ``_TreeIsGone`` and put a second note on the job.
     """
     if row.status != STATUS_DEAD:
         return "wait"
@@ -1137,11 +1234,19 @@ def _resolution(row: models.RunPublication) -> str:
         # Both are written only when no reachable copy of the tree was found
         # — not in staging, and not whole in the store (``_tree_is_stored``).
         return "rescan"
+    kept_until = _tree_kept_until(row)
+    if row.stored_at is None and kept_until is not None and now > kept_until:
+        return "rescan"
     return "requeue"
 
 
 def _view(
-    settings: Settings, row: models.RunPublication, *, now: datetime, show_paths: bool
+    settings: Settings,
+    row: models.RunPublication,
+    *,
+    now: datetime,
+    db_now: datetime,
+    show_paths: bool,
 ) -> dict[str, Any]:
     """One row as ``GET /api/jobs/{id}/publications`` reports it.
 
@@ -1156,8 +1261,12 @@ def _view(
     ``emptyDir`` cache that is a pod the autoscaler took away with the only
     copy of the tree; it ends ``dead`` at ``orphan_deadline_at`` needing a
     re-scan, and the console says so now rather than an hour later.
+
+    ``last_error`` is ``f"{type}: {exc}"`` and an ``OSError`` carries the full
+    path of the staging tree, so for everyone but the platform admin its paths
+    are cut to their last component (:func:`redact_paths`).
     """
-    leased = _is_leased(row, now=now)
+    leased = _is_leased(row, db_now=db_now)
     touched = row.updated_at or row.created_at
     silent = False
     orphan_deadline_at = None
@@ -1176,13 +1285,15 @@ def _view(
         "tenant_id": row.tenant_id,
         "status": row.status,
         "state": "dead" if dead else "publishing" if leased else "retrying",
-        "resolution": _resolution(row),
+        "resolution": _resolution(row, now=now),
         "attempts": row.attempts or 0,
         "max_attempts": settings.run_publication_max_attempts,
-        "claims": row.claims or 0,
+        # Claims since the last outcome: what the budget counts.
+        "claims": (row.claims or 0) - (row.claims_base or 0),
         "lease_lapses": row.lease_lapses or 0,
-        "last_error": row.last_error,
+        "last_error": row.last_error if show_paths else redact_paths(row.last_error),
         "stored_at": _iso(row.stored_at),
+        "tree_kept_until": _iso(_tree_kept_until(row)),
         "next_attempt_at": _iso(row.next_attempt_at),
         "leased_until": _iso(row.leased_until),
         "silent": silent,
@@ -1214,8 +1325,9 @@ def publications_for_job(
     if tenant_id is not None:
         query = query.where(models.RunPublication.tenant_id == tenant_id)
     with get_session(settings.postgres_url) as session:
+        db_now = _db_now(session)
         return [
-            _view(settings, row, now=now, show_paths=show_paths)
+            _view(settings, row, now=now, db_now=db_now, show_paths=show_paths)
             for row in session.execute(query).scalars().all()
         ]
 
@@ -1239,7 +1351,9 @@ def _operator_row(
     return row
 
 
-def _refuse_while_leased(row: models.RunPublication, *, now: datetime, action: str) -> None:
+def _refuse_while_leased(
+    row: models.RunPublication, *, db_now: datetime, action: str
+) -> None:
     """The operator's half of the fence: no decision beside a running attempt.
 
     ``dead`` is one attempt giving up, not every attempt having stopped (see
@@ -1256,14 +1370,14 @@ def _refuse_while_leased(row: models.RunPublication, *, now: datetime, action: s
             f"publication {row.publication_id} is {row.status}; only a dead publication "
             "can be requeued or discarded — a pending one is still being retried"
         )
-    if _is_leased(row, now=now):
+    if _is_leased(row, db_now=db_now):
         assert row.leased_until is not None
         raise PublicationInFlight(
             f"publication {row.publication_id} is dead, but an attempt at it is still "
             f"running (its hold lasts until {_iso(row.leased_until)}); {action} it "
             "once that attempt has stopped",
             leased_until=row.leased_until,
-            now=now,
+            now=db_now,
         )
 
 
@@ -1273,7 +1387,8 @@ def _decision_record(row: models.RunPublication) -> dict[str, Any]:
         "run_id": row.run_id,
         "status": row.status,
         "attempts": row.attempts or 0,
-        "last_error": row.last_error,
+        # Read by the tenant's own auditors: no pod paths.
+        "last_error": redact_paths(row.last_error),
         "stored_at": _iso(row.stored_at),
     }
 
@@ -1300,8 +1415,12 @@ def requeue_publication(
     it — an attempt that lost its lease and has not noticed — then reads the
     row as somebody else's and leaves its own keys where they are, rather than
     taking back what the requeued attempt uploads (:func:`_may_take_back`).
-    ``claims`` and ``attempts`` start over: the budgets they enforce are for
-    the world as it is now, not as it was when the row died. ``last_error``
+    ``attempts`` and the claim budget start over: the budgets they enforce are
+    for the world as it is now, not as it was when the row died. ``claims``
+    itself does not — the budget counts from ``claims_base`` — because a
+    replica on the release before 0062 fences its rollback on ``claims`` alone,
+    and a requeue that set it back to 0 made the requeued attempt's first
+    claim the number such an attempt was holding. ``last_error``
     stays, so the console still says what went wrong until something else does.
     """
     now = _now()
@@ -1309,13 +1428,15 @@ def requeue_publication(
         row = _operator_row(session, publication_id, job_id=job_id, tenant_id=tenant_id)
         if row is None:
             return None
+        db_now = _db_now(session)
         if row.status == STATUS_PENDING:
-            return _view(settings, row, now=now, show_paths=show_paths)
-        _refuse_while_leased(row, now=now, action="requeue")
+            return _view(settings, row, now=now, db_now=db_now, show_paths=show_paths)
+        _refuse_while_leased(row, db_now=db_now, action="requeue")
         before = _decision_record(row)
         row.status = STATUS_PENDING
         row.attempts = 0
-        row.claims = 0
+        # The budget starts over; ``claims`` does not (see ``_may_take_back``).
+        row.claims_base = row.claims or 0
         row.fence = (row.fence or 0) + 1
         row.next_attempt_at = now
         # The orphan deadline runs from here: the operator is saying somebody
@@ -1333,7 +1454,7 @@ def requeue_publication(
             after=_decision_record(row),
         )
         session.flush()
-        view = _view(settings, row, now=now, show_paths=show_paths)
+        view = _view(settings, row, now=now, db_now=db_now, show_paths=show_paths)
     metrics_service.RUN_PUBLICATIONS_TOTAL.labels(outcome="requeued").inc()
     LOG.warning(
         "Publication %s of job %s was requeued by an operator after %d attempt(s): %s",
@@ -1366,16 +1487,16 @@ def discard_publication(
     not in ``tenant_id``/``job_id``.
 
     Only the row goes. The extracted tree and the archive beside it stay where
-    they are until the ordinary sweep takes them, so a decision made in haste
-    is still recoverable for a day. So does the note on the job: the run was
-    not published, and that is still true.
+    they are until the ordinary sweep takes them — up to a day from the
+    upload's acceptance, not from this call (:func:`_tree_kept_until`) — so a
+    decision made in haste may still be recoverable. So does the note on the
+    job: the run was not published, and that is still true.
     """
-    now = _now()
     with get_session(settings.postgres_url) as session:
         row = _operator_row(session, publication_id, job_id=job_id, tenant_id=tenant_id)
         if row is None:
             return False
-        _refuse_while_leased(row, now=now, action="discard")
+        _refuse_while_leased(row, db_now=_db_now(session), action="discard")
         audit_service.record(
             session,
             audit,

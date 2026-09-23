@@ -1833,6 +1833,11 @@ class RunPublication(Base):
     # requeue. ``claims`` is reset on every recorded outcome, so it alone
     # cannot tell a rollback whether the row is still the one it claimed.
     fence: Mapped[int] = mapped_column(default=0, server_default="0")
+    # ``claims`` at the last outcome, requeue or unworked hand-back: the claim
+    # budget is ``claims - claims_base``, and ``claims`` itself only grows, so
+    # a replica on the release before 0062 — which fences on ``claims`` alone
+    # — never sees its own number come back.
+    claims_base: Mapped[int] = mapped_column(default=0, server_default="0")
     # Renewals of this row that failed or came after the hold had lapsed
     # (#426): which publication ran unprotected, after the fact.
     lease_lapses: Mapped[int] = mapped_column(default=0, server_default="0")

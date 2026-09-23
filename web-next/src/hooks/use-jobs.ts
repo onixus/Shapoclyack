@@ -160,7 +160,7 @@ export function useDiscardPublication(jobId: string) {
     mutationFn: (publicationId: string) => discardJobPublication(jobId, publicationId),
     onSuccess: async () => {
       toast.success("Publication discarded", {
-        description: "The run stays unpublished; its extracted tree is kept for a day.",
+        description: "The run stays unpublished; its extracted tree is kept until a day after the upload was accepted.",
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     },

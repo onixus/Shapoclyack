@@ -521,6 +521,9 @@ export type RunPublicationInfo = {
   last_error: string | null;
   /** The whole tree reached the store: the run is readable. */
   stored_at: string | null;
+  /** Until when the accepting pod may still hold the extracted tree: a day
+   * from the upload's acceptance, not from the last attempt. */
+  tree_kept_until?: string | null;
   next_attempt_at: string | null;
   leased_until: string | null;
   /** Pending, and nobody has touched it for longer than a retry and a peer's

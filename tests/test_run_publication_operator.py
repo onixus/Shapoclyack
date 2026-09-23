@@ -113,7 +113,7 @@ def _expire_lease(settings, publication_id: str) -> None:
     """Age the proof of life out, as one horizon of silence would."""
     with get_session(settings.postgres_url) as session:
         row = session.get(models.RunPublication, publication_id)
-        row.leased_until = jobs_service._now() - timedelta(seconds=1)  # noqa: SLF001
+        row.leased_until = jobs_service._now() - timedelta(seconds=300)  # noqa: SLF001
 
 
 def _peer_gives_up(settings, publication_id: str, reason: str = "peer: bucket unreachable"):
@@ -161,7 +161,9 @@ def test_a_dead_publication_is_requeued_and_published_and_the_job_stops_saying_o
     assert requeued["attempts"] == 0
     row = _row(settings, publication_id)
     assert row.fence == fence_before + 1
-    assert row.claims == 0
+    # The budget starts over; the counter a previous release fences on does not.
+    assert row.claims - row.claims_base == 0
+    assert row.claims >= 1
     assert not run_publisher.is_backlogged(settings)
 
     # The store is still refusing on the first tick: one attempt of three.
@@ -183,11 +185,12 @@ def test_a_dead_publication_is_requeued_and_published_and_the_job_stops_saying_o
 def test_a_note_that_cannot_be_cleared_does_not_cost_the_run_its_projections(
     tmp_path, monkeypatch
 ):
-    """The note is cosmetic; the projections after it are not.
+    """The note is cosmetic; the close-out and the projections after it are not.
 
-    Clearing it runs after the row is deleted, so nothing retries whatever
-    comes next: an exception out of it skipped the run's assets, findings and
-    notification for good.
+    The note is cleared in the transaction that deletes the row. An exception
+    out of it must neither roll that delete back (the run would be published
+    again on every tick, forever, if the job row itself is what fails) nor
+    reach the projections, which nothing retries once the row is gone.
     """
     settings = _replica(tmp_path, "pod-a")
     _serve(settings)
@@ -199,7 +202,7 @@ def test_a_note_that_cannot_be_cleared_does_not_cost_the_run_its_projections(
     def _database_hiccup(*_a, **_k):
         raise RuntimeError("connection reset")
 
-    monkeypatch.setattr(run_completion, "clear_publication_note", _database_hiccup)
+    monkeypatch.setattr(run_completion, "clear_publication_notes", _database_hiccup)
     monkeypatch.setattr(
         run_completion,
         "on_run_published",
@@ -286,6 +289,12 @@ def test_a_requeue_is_refused_while_an_attempt_at_the_dead_row_is_still_running(
     assert run_publisher.pending_publications(settings, job.job_id) == []
     assert run_publisher.requeue_publication(settings, publication_id) is None
     assert artifact_workspace.run_exists(settings, run_id)
+    # And the job says so. The peer's ``dead`` left a "not published" note on
+    # it, and the attempt that then published the run had taken its snapshot
+    # before the row died — with no error on it. Deciding from that snapshot
+    # left a published run whose job said it was not, with no row and no
+    # button left to explain or clear it.
+    assert "run not published" not in (jobs_service.get_job(settings, job.job_id).error or "")
 
 
 def test_an_attempt_that_slept_through_a_requeue_does_not_take_back_the_new_upload(
@@ -387,10 +396,13 @@ def test_a_claim_counter_that_came_back_round_is_not_mistaken_for_ones_own(
 ):
     """The same fence without an operator: a peer's failure, then a new claim.
 
-    ``_record_failure`` resets ``claims`` so the claim budget counts claims
+    ``_record_failure`` reset ``claims`` so the claim budget counted claims
     since the last outcome. A stale attempt that snapshotted the row at its
     first claim therefore saw ``1`` again after one failure and one fresh
-    claim, and read the row as still its own.
+    claim, and read the row as still its own. This release no longer resets
+    it, but a replica on the previous one still does — so the failure here is
+    recorded the way that replica records it, and ``fence`` is what has to
+    hold.
     """
     settings = _replica(tmp_path, "pod-a")
     _serve(settings)
@@ -421,6 +433,9 @@ def test_a_claim_counter_that_came_back_round_is_not_mistaken_for_ones_own(
             run_publisher._claim_due(session, now=later, limit=10, settings=settings)[0]  # noqa: SLF001
         )
     run_publisher._record_failure(settings, peer, "peer: bucket unreachable")  # noqa: SLF001
+    with get_session(settings.postgres_url) as session:
+        # What the previous release's ``_record_failure`` writes on top.
+        session.get(models.RunPublication, publication_id).claims = 0
     with get_session(settings.postgres_url) as session:
         again = run_publisher._claim_due(  # noqa: SLF001
             session, now=later + timedelta(hours=1), limit=10, settings=settings
@@ -607,6 +622,199 @@ def test_a_lost_or_late_renewal_is_counted_and_marked_on_the_row(tmp_path, monke
 
 
 # --------------------------------------------------------------------------
+# Review of #435: the edges the first version got wrong
+# --------------------------------------------------------------------------
+
+
+def test_a_row_whose_tree_has_been_swept_is_not_offered_as_a_requeue(tmp_path, monkeypatch):
+    """The tree is kept a day from the *acceptance*, not from the last attempt.
+
+    ``_sweep_abandoned`` reads the staging directory's ``st_mtime``, which only
+    the first ``tenant.json`` moves — so a row that died two days after its
+    upload has no tree left on any disk. Suggesting a requeue for it walked the
+    row to ``_TreeIsGone`` and a second "not published" note.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        row.stored_at = None
+    [fresh] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert fresh["resolution"] == "requeue"
+
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        row.created_at = jobs_service._now() - timedelta(hours=25)  # noqa: SLF001
+    [old] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert old["resolution"] == "rescan"
+
+
+def test_clearing_a_note_leaves_every_other_note_on_the_job(tmp_path, monkeypatch):
+    """Only this publication's note goes — not the text around it.
+
+    Reasons carry ``;`` of their own (every named one does), so the note has no
+    end the text can mark, and a note appended after it by something else — a
+    late partial archive — was eaten along with it.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    reason = _row(settings, publication_id).last_error
+    before = "Cancellation requested by op"
+    after = "; partial results uploaded late by agent agent-1"
+    other = "; run not published (publication 0ther): the replica that accepted this upload is gone"
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.RunPublication, publication_id)
+        row.last_error = "the store said no; twice; then gave up"
+        job = session.get(models.Job, job_id)
+        job.error = (
+            f"{before}; run not published (publication {publication_id}): {reason}"
+            f"{after}"
+            f"; run not published (publication {publication_id}): "
+            "the store said no; twice; then gave up"
+            f"{other}"
+        )
+    settings.run_publication_max_attempts = 3
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    assert run_publisher.reconcile_once(settings)["published"] == 1
+
+    assert jobs_service.get_job(settings, job_id).error == f"{before}{after}{other}"
+
+
+def test_a_note_whose_reason_has_changed_since_still_ends_where_it_should(
+    tmp_path, monkeypatch
+):
+    """A requeued row dies again with a new reason; the old note is cleared too.
+
+    Only the latest reason is on the row, so the older note is found by its
+    prefix alone — which needs the note to end at the next ``;``, i.e. no
+    ``;`` of its own. ``note_publication_failed`` writes them as ``,``.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    after = "; partial results uploaded late by agent agent-1"
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, job_id).error = None
+    with get_session(settings.postgres_url) as session:
+        run_completion.note_publication_failed(
+            session, job_id, publication_id=publication_id, reason="first; then; this"
+        )
+    with get_session(settings.postgres_url) as session:
+        job = session.get(models.Job, job_id)
+        job.error = f"{job.error}{after}"
+    with get_session(settings.postgres_url) as session:
+        run_completion.clear_publication_notes(
+            session, job_id, publication_id=publication_id, reasons=["a later reason"]
+        )
+    assert jobs_service.get_job(settings, job_id).error == after
+
+
+def test_a_tenant_reads_the_reason_but_not_the_pods_paths(tmp_path, monkeypatch):
+    """Paths on the pod's disk are the platform admin's, in the reason as well.
+
+    A failure is recorded as ``f"{type}: {exc}"`` and an ``OSError`` carries the
+    full path of the staging tree. The route withheld ``staging_path`` from a
+    tenant and then printed it in ``last_error`` and in the job's note.
+    """
+    client, settings = _api(tmp_path, monkeypatch)
+    settings.run_publication_max_attempts = 1
+    secret = "/var/lib/shapoclyack/cache/.ingest-20260923T080001Z-1a2b3c-abcdef/tenant.json"
+
+    def _disk_refuses(*_a, **_k):
+        raise FileNotFoundError(2, "No such file or directory", secret)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(artifact_workspace, "promote_staging", _disk_refuses)
+        job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+        claim = jobs_service.claim_job(settings, "agent-1")
+        _upload(settings, job.job_id, claim.attempt, str(jobs_service.get_job(settings, job.job_id).run_id))
+
+    operator = auth_headers(client, "operator")
+    [row] = client.get(f"/api/jobs/{job.job_id}/publications", headers=operator).json()
+    assert "FileNotFoundError" in row["last_error"]
+    assert "/var/lib/shapoclyack" not in row["last_error"]
+    assert "tenant.json" in row["last_error"]
+    assert "/var/lib/shapoclyack" not in client.get(f"/api/jobs/{job.job_id}", headers=operator).json()["error"]
+    admin = auth_headers(client, "admin")
+    [full] = client.get(f"/api/jobs/{job.job_id}/publications", headers=admin).json()
+    assert secret in full["last_error"]
+
+
+def test_the_lease_is_read_on_the_database_clock_not_the_pods(tmp_path, monkeypatch):
+    """A pod whose clock runs an hour slow must still hold its row.
+
+    ``leased_until`` is written by the pod running the attempt and compared by
+    whichever pod serves the button. Stamped from each one's own clock, a skew
+    past one horizon read a live attempt as a lease long expired.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    with get_session(settings.postgres_url) as session:
+        lease = run_publisher._Lease(  # noqa: SLF001
+            settings, run_publisher._snapshot(session.get(models.RunPublication, publication_id))  # noqa: SLF001
+        )
+    slow = jobs_service._now() - timedelta(hours=1)  # noqa: SLF001
+    with monkeypatch.context() as patch:
+        patch.setattr(run_publisher, "_now", lambda: slow)
+        lease._renew()  # noqa: SLF001
+
+    with pytest.raises(run_publisher.PublicationInFlight):
+        run_publisher.requeue_publication(settings, publication_id, job_id=job_id)
+    # And the other side: the pod serving the button runs an hour fast.
+    fast = jobs_service._now() + timedelta(hours=1)  # noqa: SLF001
+    with monkeypatch.context() as patch:
+        patch.setattr(run_publisher, "_now", lambda: fast)
+        with pytest.raises(run_publisher.PublicationInFlight):
+            run_publisher.discard_publication(settings, publication_id, job_id=job_id)
+        [view] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+        assert view["actionable"] is False
+
+
+def test_a_requeue_does_not_hand_a_previous_release_its_own_claim_number_back(
+    tmp_path, monkeypatch
+):
+    """Mixed fleet: a replica on the previous release fences on ``claims`` alone.
+
+    ``claims`` was reset by every recorded outcome and again by the requeue, so
+    the requeued attempt's first claim wrote back the very number an older
+    attempt holds — which, on the previous release, is all its rollback asks.
+    ``claims`` now only grows; the budget counts from the base the last outcome
+    left, so a requeued row still gets its full set of claims.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    settings.run_publication_max_attempts = 3
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    with get_session(settings.postgres_url) as session:
+        stale = run_publisher._snapshot(  # noqa: SLF001
+            run_publisher._claim_due(  # noqa: SLF001
+                session, now=jobs_service._now(), limit=10, settings=settings  # noqa: SLF001
+            )[0]
+        )
+    _peer_gives_up(settings, publication_id)
+    _expire_lease(settings, publication_id)
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    with get_session(settings.postgres_url) as session:
+        fresh = run_publisher._snapshot(  # noqa: SLF001
+            run_publisher._claim_due(  # noqa: SLF001
+                session, now=jobs_service._now(), limit=10, settings=settings  # noqa: SLF001
+            )[0]
+        )
+
+    # What the previous release's ``_may_take_back`` compares.
+    assert fresh.claims != stale.claims
+    # And the budget is per outcome, not per life of the row.
+    assert not run_publisher._claims_spent(settings, fresh)  # noqa: SLF001
+    [view] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert view["claims"] == 1
+
+
+# --------------------------------------------------------------------------
 # The routes
 # --------------------------------------------------------------------------
 
@@ -700,7 +908,7 @@ def test_requeue_and_discard_through_the_api_are_admin_audited_and_fenced(tmp_pa
         row.leased_until = jobs_service._now() + timedelta(seconds=45)  # noqa: SLF001
     refused = client.post(f"{base}/requeue", headers=admin)
     assert refused.status_code == 409, refused.text
-    assert 1 <= int(refused.headers["Retry-After"]) <= 46
+    assert 1 <= int(refused.headers["Retry-After"]) <= 50
     assert client.delete(base, headers=admin).status_code == 409
     _expire_lease(settings, publication_id)
 

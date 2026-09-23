@@ -112,6 +112,14 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
                 <span className="font-mono">{stamp(row.stored_at)}</span>
               </Field>
             ) : null}
+            {row.tree_kept_until && !row.stored_at ? (
+              <Field
+                label={t("jobs.publication.treeKeptUntil")}
+                hint={t("jobs.publication.treeKeptUntilHint")}
+              >
+                <span className="font-mono">{stamp(row.tree_kept_until)}</span>
+              </Field>
+            ) : null}
             {row.status === "pending" && row.next_attempt_at ? (
               <Field label={t("jobs.publication.nextAttempt")}>
                 <span className="font-mono">{stamp(row.next_attempt_at)}</span>
@@ -198,7 +206,9 @@ export function JobPublications({ job, open }: { job: JobInfo; open: boolean }) 
               {t("jobs.publication.discardTitle", { id: discardTarget?.publication_id ?? "" })}
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
-              {t("jobs.publication.discardBody")}
+              {t("jobs.publication.discardBody", {
+                until: stamp(discardTarget?.tree_kept_until) ?? "—",
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

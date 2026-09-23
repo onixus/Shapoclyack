@@ -37,6 +37,7 @@ function publication(overrides: Partial<RunPublicationInfo> = {}): RunPublicatio
     lease_lapses: 0,
     last_error: "ArtifactStoreError: bucket unreachable",
     stored_at: null,
+    tree_kept_until: "2026-09-24T10:20:10Z",
     next_attempt_at: null,
     leased_until: null,
     silent: false,
@@ -115,7 +116,9 @@ describe("JobPublications", () => {
 
     await user.click(await screen.findByRole("button", { name: "Discard" }));
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("stays on the accepting pod's disk for a day");
+    // A day from the acceptance, not from now: the sweep reads the staging
+    // directory's mtime, which only its first entry sets.
+    expect(dialog).toHaveTextContent("until a day after the upload was accepted (2026-09-2");
     expect(discarded).not.toHaveBeenCalled();
     await user.click(screen.getAllByRole("button", { name: "Discard" }).at(-1)!);
     await waitFor(() => expect(discarded).toHaveBeenCalledWith("abc123def456", "pub-1"));

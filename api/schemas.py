@@ -422,6 +422,9 @@ class RunPublicationInfo(BaseModel):
     # The whole tree reached the object store: the run is readable, and what
     # is owed is the pointer and the bus message.
     stored_at: str | None = None
+    # Until when the accepting pod may still hold the extracted tree: a day
+    # from the upload's acceptance, not from the last attempt.
+    tree_kept_until: str | None = None
     next_attempt_at: str | None = None
     leased_until: str | None = None
     # A pending row nobody has touched for longer than its own retry and a

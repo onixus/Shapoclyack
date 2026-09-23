@@ -267,7 +267,10 @@ renders an absent value as internal: it shows **Unclassified**.
   hour. **Requeue** and **Discard** (with a confirmation) are shown on a dead
   row to a tenant admin or a platform admin, and are disabled with the reason
   while an attempt at the row is still running — the API refuses them then.
-  The pod and the extracted tree's path appear for a platform admin only. The
+  The card also says until when the extracted tree is kept — a day from the
+  upload's acceptance, not from the last attempt; past it a dead row that never
+  reached the store is shown as needing a re-scan. The pod and the extracted
+  tree's path appear for a platform admin only, in the reason as well. The
   section polls while a row is pending or held, and renders nothing for the
   ordinary job;
 - recent runs on that surface, linking to `/runs?surface=`.

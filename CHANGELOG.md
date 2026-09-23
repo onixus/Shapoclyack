@@ -46,6 +46,18 @@ All notable changes to Shapoclyack are documented in this file.
   requeued publication lands.
 - `tests/conftest.reset_service_state` empties `run_publications`, which has no
   foreign key to `tenants` and outlived the test that wrote it.
+- **Review of #435.** The *run not published* note was cleared from the
+  closing attempt's snapshot, taken before a peer could end the row `dead` and
+  write the note — a published run whose job said it was not. Both the note
+  and its clearing now happen in the transaction that ends or deletes the row,
+  under its lock. The note no longer swallows notes appended after it (reasons
+  are written with `,` for `;`), and tenant-visible reasons have pod paths cut
+  to their last component. The extracted tree is kept a day from the upload's
+  acceptance — the runbook said "after the last attempt" — and a dead row past
+  that reads `resolution: rescan`. `leased_until` is stamped and compared on
+  the database's clock. `claims` no longer resets (budget counted from
+  `claims_base`, migration `0062`), so a replica on the previous release, which
+  fences on `claims` alone, cannot be handed its own number back by a requeue.
 
 ## [0.46-0922] — 2026-09-22
 

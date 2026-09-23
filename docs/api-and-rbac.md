@@ -787,9 +787,15 @@ running, `retrying` between attempts, `dead`), `resolution` (`wait`, `requeue`,
 `lease_lapses` (renewals of its hold that failed or came late), `silent` with
 `orphan_deadline_at` (a pending row nobody has touched for longer than a retry
 and a peer's adoption would take — on the HA overlay, a pod that is gone), and
-`actionable`/`actionable_at`. `replica`, `staging_path` and `archive_path` name
-a pod and paths on its disk, for the manual load in the runbook: they are filled
-in for a platform admin and `null` for everyone else.
+`actionable`/`actionable_at`, and `tree_kept_until` — a day from the upload's
+acceptance, when the accepting pod sweeps the extracted tree; a `dead` row the
+store never took whole reads `resolution: rescan` past it. `replica`,
+`staging_path` and `archive_path` name a pod and paths on its disk, for the
+manual load in the runbook: they are filled in for a platform admin and `null`
+for everyone else. The same goes for paths *inside* `last_error` — an `OSError`
+names the staging tree — which reach everyone else cut to their last component
+(`…/tenant.json`), as does the *run not published* note on the job's `error`
+and the `last_error` in the audit rows below.
 
 `POST /api/jobs/{job_id}/publications/{publication_id}/requeue` and `DELETE
 /api/jobs/{job_id}/publications/{publication_id}` are the runbook's two ways out
@@ -797,7 +803,8 @@ of a `dead` row, **`admin`** in the job's tenant (like taking a webhook delivery
 out of the DLQ). Requeue gives the row a full set of attempts and returns it;
 the reconciler publishes it on its next tick, and a row that is already
 `pending` is returned unchanged. Discard deletes the row (`204`) and leaves the
-extracted tree for the day-long sweep. Both answer `409` for a row that is not
+extracted tree to the sweep, which takes it a day after the upload was
+accepted (`tree_kept_until`), not a day after the discard. Both answer `409` for a row that is not
 `dead`, and `409` with `Retry-After` while an attempt at it is still running —
 `dead` is one attempt giving up, and acting beside another that has not would
 start a second publication of the same keys. `404` for a job or a publication in
