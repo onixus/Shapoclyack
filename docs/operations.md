@@ -10,11 +10,63 @@ scanner/output/runs/<run_id>/
 
 That is where the scanner writes. Where the run *lives* afterwards depends on
 `OCTO_ARTIFACT_BACKEND` ([#336](https://github.com/onixus/Shapoclyack/issues/336)):
-`local` (the default) leaves it exactly there, and `s3` publishes it to object
+`local` (the default) keeps it on this volume, and `s3` publishes it to object
 storage once the scan finishes, after which each API replica keeps a node-local
 working copy of the runs it is asked about. Everything below describes the run
 either way — the layout inside it is the same, and so are the paths the console
 and the API use to name its artifacts.
+
+A run the API started is filed under its tenant
+([#427](https://github.com/onixus/Shapoclyack/issues/427)):
+
+```text
+runs/_tenants/<tenant>/<run_id>/     # in the bucket, and under OCTO_OUTPUT_DIR
+```
+
+A sensor upload lands there directly; a local scan is moved there from the
+flat directory above as soon as it finishes, which is a rename on the same
+volume. If that move fails, the job still succeeds but its `error` gains
+`run not filed under its tenant: …` naming where the complete scan was left;
+it is marked with the tenant, so it is not the default tenant's, but the
+tenant reads its own subtree first — copy it in by hand. A custom `run_id` for
+a local scan reserves `runs/<run_id>` when the job is created, so a second
+scan asking for the same id is refused rather than written into the first. A scan run with `scanner.main` by hand stays flat — it has no tenant.
+`<tenant>` is the tenant id itself, or `h_<hash>` for an id that is not a safe
+path segment (ids that predate tenant-id validation).
+
+**Upgrading needs no migration.** Runs already in the flat `runs/<run_id>/`
+layout stay where they are and keep being served, to the tenant their
+`tenant.json` names (no marker: `default`), exactly as before. Nothing moves
+them, on purpose: on S3 a move is a copy and a delete per object, not atomic,
+racing replicas that are serving the run meanwhile — and the flat run is
+readable as it is. Retention ages both layouts out as usual, so the flat ones
+disappear on their own after `OCTO_RUN_RETENTION_DAYS`. Until then, a bucket
+policy scoped to `runs/_tenants/<tenant>/` does not cover that tenant's older
+runs.
+
+**A rolling update is safe for tenant isolation**, and the shipped manifests
+keep `RollingUpdate` (switching to `Recreate` would make every rollout an
+outage, #331). While old and new replicas overlap, an old one lists
+`runs/_tenants` as if it were a single run. The new code writes
+`runs/_tenants/tenant.json` naming an owner no tenant can be (`_tenants`), so
+the old replica shows it to no tenant — including a platform admin with a
+tenant selected. A platform admin's fleet-wide view on the old replica does
+list it, as one odd run holding every tenant's runs; that view already shows
+every tenant's runs, so nothing is disclosed that it did not already show, but
+expect that entry in the list until the rollout finishes. A downgrade keeps
+that entry for good and cannot open the runs written by this release.
+
+The single-run layout (`per_run_output=false`, run id `default`) is the output
+directory itself. It is served only while `runs/` does not exist under it;
+once any per-run output is there, `default` answers 404 instead of exposing
+the runs beneath it.
+
+Two things change for local scans on the local backend. The directory under
+`scanner/output/runs/` is empty once the job completes — look under
+`runs/_tenants/<tenant>/` instead. And the scanner's own `diff.json` no longer
+compares a job's scan with whichever run was last in `latest_run.json`, which
+could be another tenant's: that run has moved, so no diff is produced (the
+same as on the `s3` backend, where it had already moved into the cache).
 
 The directory can contain:
 
@@ -1140,7 +1192,7 @@ the tree is on the accepting replica's disk and can be loaded by hand.
 One more thing a `dead` row can say: *the keys already written could not be
 taken back*. The store refused the upload halfway and then refused the cleanup
 as well, so the run **is** listed by every replica, short the files that never
-arrived. Remove `runs/<run_id>/` from the bucket by hand (or finish the upload
+arrived. Remove `runs/_tenants/<tenant>/<run_id>/` from the bucket by hand (or finish the upload
 from `staging_path`) before deciding between a manual load and a re-scan —
 until then an operator reading that run cannot tell it from a scan that found
 nothing.
@@ -1150,8 +1202,9 @@ last attempt, then swept by the next ingest on that replica. Inside that window
 there are two ways out, and both are decisions rather than retries:
 
 - **Publish it by hand.** Copy `staging_path` into the run directory
-  (`OCTO_OUTPUT_DIR/runs/<run_id>` on the local backend) or upload it under
-  `runs/<run_id>/` in the bucket, then discard the row. The analytical
+  (`OCTO_OUTPUT_DIR/runs/_tenants/<tenant>/<run_id>` on the local backend) or
+  upload it under `runs/_tenants/<tenant>/<run_id>/` in the bucket, then discard
+  the row. The analytical
   projection stays behind for that run unless the archive is replayed as well.
 - **Re-scan.** Discard the row and start the scan again; the run id will be a
   new one.

@@ -4,6 +4,40 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- **Run artifacts are keyed under their tenant (#427).** A run the API started
+  is stored at `runs/_tenants/<tenant>/<run_id>` — in the bucket, and under
+  `OCTO_OUTPUT_DIR` on the local backend — instead of `runs/<run_id>`, so two
+  tenants no longer share a key prefix whenever they share a run id, and
+  removing one tenant's run cannot touch another's. A lookup by run id asks the
+  caller's subtree and cannot name another tenant's. Runs from earlier releases
+  are **not** migrated: they stay in the flat layout and keep being read, by
+  the tenant their `tenant.json` names, checked before the run is fetched.
+  Tenant ids that are not a safe path segment are hashed into the reserved
+  `h_` namespace. A rolling update is safe: an older replica lists
+  `runs/_tenants` as one run, but a marker names an owner no tenant can be, so
+  only a platform admin's fleet-wide view — which sees every tenant's runs
+  anyway — shows it. A downgrade loses sight of the runs written by this
+  release. See `docs/operations.md#run-directories`.
+- **A custom `run_id` already used by a flat run is refused** for local
+  execution (`POST /scans`, 422): the scanner writes `runs/<run_id>` itself,
+  into whatever is there. A local scan whose directory turns out to be another
+  tenant's older run leaves that run's `tenant.json` alone and feeds nothing
+  of it to the job's tenant.
+- The single-run layout's `default` run (the output directory itself) is no
+  longer served once `runs/` exists beneath it, and never serves `runs/…` or
+  `reports/…` as its artifacts: through it, every run and generated report on
+  the volume — every tenant's — was readable as an artifact of the default
+  tenant's run.
+- **The scanner CLI mints run ids the way the API does** — timestamp plus six
+  hex (`20260923T100000Z-a1b2c3`), from one shared function
+  (`scanner/pipeline/run_ids.py`) — and refuses a `--run-id` that is not one
+  path segment of `[A-Za-z0-9_-]`, starting with an alphanumeric.
+- Local scans on the local backend no longer write a `diff.json` against the
+  installation's previous run, which could belong to another tenant; the
+  previous run has moved into its tenant's subtree by then.
+
 ## [0.46-0922] — 2026-09-22
 
 ### Added

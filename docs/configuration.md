@@ -877,7 +877,7 @@ ReadWriteOnce volume pin every pod that mounts it to one node
 |---|---|---|
 | `OCTO_ARTIFACT_BACKEND` | `local` | `local` (the filesystem under `OCTO_OUTPUT_DIR` / `OCTO_STATE_DIR`) or `s3`. Anything else **refuses startup** — an operator who asked for object storage and silently got a filesystem would find out when the second replica could not see the first one's runs |
 | `OCTO_ARTIFACT_S3_BUCKET` | *(unset)* | Bucket for artifacts. **Required** when the backend is `s3`; refuses startup in `prod` without it |
-| `OCTO_ARTIFACT_S3_PREFIX` | *(unset)* | Key prefix inside the bucket, so one bucket can hold several installations. Per-**tenant** prefixes are [#311](https://github.com/onixus/Shapoclyack/issues/311); this one is per installation |
+| `OCTO_ARTIFACT_S3_PREFIX` | *(unset)* | Key prefix inside the bucket, so one bucket can hold several installations. Per-**tenant** prefixes are below it, in the key (`runs/_tenants/<tenant>/<run_id>`, [#427](https://github.com/onixus/Shapoclyack/issues/427)); this one is per installation |
 | `OCTO_ARTIFACT_S3_ENDPOINT_URL` | *(unset)* | Empty means AWS. MinIO, Ceph RGW and every other gateway are named here — the same variable shape as the Postgres backup CronJob's `S3_ENDPOINT_URL` |
 | `OCTO_ARTIFACT_S3_REGION` | *(unset)* | Passed to boto3 as `region_name` |
 | `OCTO_ARTIFACT_S3_ACCESS_KEY_ID` / `OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` | *(unset)* | Static credentials. Leave both unset on a cluster with an instance role or IRSA — boto3's own credential chain is the preferred shape, and a Secret that does not exist cannot leak |

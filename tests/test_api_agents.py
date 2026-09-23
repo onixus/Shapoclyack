@@ -16,6 +16,18 @@ pytestmark = requires_postgres
 SETTINGS = {"job_execution_mode": "agent"}
 
 
+def _landed(output_dir: Path, run_id: str) -> Path:
+    """Where an agent's upload for the default tenant lands since #427."""
+    return Path(output_dir) / "runs" / "_tenants" / "default" / run_id
+
+
+def _nowhere(output_dir: Path, run_id: str) -> bool:
+    """Neither in the tenant's subtree nor in the flat layout of earlier releases."""
+    return not _landed(output_dir, run_id).exists() and not (
+        Path(output_dir) / "runs" / run_id
+    ).exists()
+
+
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
     return make_settings(tmp_path, **{**SETTINGS, **overrides})
 
@@ -195,7 +207,7 @@ def test_agent_claim_and_upload_results(tmp_path, monkeypatch):
     assert done.json()["assigned_agent_id"] == agent_id
 
     settings = _settings(tmp_path)
-    run_dir = settings.output_dir / "runs" / run_id
+    run_dir = _landed(settings.output_dir, run_id)
     assert (run_dir / "findings.json").is_file()
     pointer = settings.state_dir / "latest_run.json"
     assert pointer.is_file()
@@ -329,7 +341,7 @@ def test_results_upload_over_body_cap_is_rejected_before_the_route(tmp_path, mon
     assert resp.status_code == 413
     assert "exceeds limit 512" in resp.json()["detail"]
     # A missing job would answer 404 — proof the cap ran before routing.
-    assert not (make_settings(tmp_path).output_dir / "runs" / "run-1").exists()
+    assert _nowhere(make_settings(tmp_path).output_dir, "run-1")
 
 
 def test_claim_endpoint_is_not_capped_by_the_results_limit(tmp_path, monkeypatch):
@@ -396,8 +408,8 @@ def test_results_upload_refuses_a_run_id_that_is_not_the_jobs(tmp_path, monkeypa
         assert "run_id" in done.json()["detail"]
 
     assert not list(tmp_path.rglob("escaped"))
-    assert not (settings.output_dir / "runs" / "someone-elses-run").exists()
-    assert not (settings.output_dir / "runs" / f"{run_id}x").exists()
+    assert _nowhere(settings.output_dir, "someone-elses-run")
+    assert _nowhere(settings.output_dir, f"{run_id}x")
     # A refused upload is not a completion: the job is still the agent's to finish.
     assert client.get(f"/api/jobs/{job_id}", headers={"Authorization": f"Bearer {login(client, 'operator')}"}).json()["status"] in ("claimed", "running")
 
@@ -408,7 +420,7 @@ def test_results_upload_refuses_a_run_id_that_is_not_the_jobs(tmp_path, monkeypa
         files={"archive": ("run.tar.gz", _results_archive(), "application/gzip")},
     )
     assert done.status_code == 200
-    assert (settings.output_dir / "runs" / run_id / "findings.json").is_file()
+    assert (_landed(settings.output_dir, run_id) / "findings.json").is_file()
 
 
 def test_results_upload_without_run_id_lands_in_the_jobs_run(tmp_path, monkeypatch):
@@ -422,7 +434,7 @@ def test_results_upload_without_run_id_lands_in_the_jobs_run(tmp_path, monkeypat
     )
     assert done.status_code == 200
     assert done.json()["run_id"] == run_id
-    assert (_settings(tmp_path).output_dir / "runs" / run_id / "findings.json").is_file()
+    assert (_landed(_settings(tmp_path).output_dir, run_id) / "findings.json").is_file()
 
 
 def test_start_scan_refuses_a_run_id_that_is_not_a_path_segment(tmp_path, monkeypatch):

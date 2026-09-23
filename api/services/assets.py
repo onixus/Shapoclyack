@@ -434,7 +434,7 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     and the IP is not shared. The evidence is written to
     ``asset_identity_links``; a wrong merge is worse than two rows.
     """
-    run_dir = runs_service.get_run_dir(settings, run_id)
+    run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return AssetUpsertStats(0, 0, 0, 0)
 

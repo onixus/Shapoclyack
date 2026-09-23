@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import artifact_store
 from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import auth_audit
@@ -23,6 +25,24 @@ from api.settings import Settings
 from scanner.pipeline import scan_scope
 
 _log = logging.getLogger(__name__)
+
+
+def _written_run_dir(settings: Settings, run_id: str, tenant_id: str) -> Path | None:
+    """This job's run on this pod, wherever it landed (``workspace.locate_written``).
+
+    ``None`` when the only run under this id is another tenant's. Not
+    refreshed: every caller runs straight after the run was written here.
+    """
+    try:
+        ref = artifact_workspace.locate_written(settings, run_id, tenant_id)
+    except (ValueError, artifact_store.ArtifactStoreError):
+        # Fail-soft like every hook here: an id that is not a run id, or a
+        # store that cannot answer, costs the hooks their input, not the job.
+        _log.warning("Could not locate run %s for tenant %s", run_id, tenant_id, exc_info=True)
+        return None
+    if ref is None:
+        return None
+    return artifact_workspace.run_dir(settings, ref, refresh=False)
 
 
 def _append_job_error(settings: Settings, job_id: str, note: str) -> None:
@@ -119,10 +139,13 @@ def publish_asset_events_best_effort(
     """
     if not run_id or not settings.asset_events_enabled or not settings.nats_url:
         return
+    run_dir = _written_run_dir(settings, run_id, tenant_id)
+    if run_dir is None:
+        return
     try:
         asset_events.publish_run_events(
             nats_url=settings.nats_url,
-            run_dir=artifact_workspace.run_dir(settings, run_id, refresh=False),
+            run_dir=run_dir,
             tenant_id=tenant_id,
             run_id=run_id,
             job_id=job_id,
@@ -163,11 +186,14 @@ def notify_channels_best_effort(
     """
     if not run_id or not settings.notification_channels_enabled:
         return
+    run_dir = _written_run_dir(settings, run_id, tenant_id)
+    if run_dir is None:
+        return
     try:
         channels_service.notify_run_complete_async(
             tenant_id=tenant_id,
             run_id=run_id,
-            run_dir=artifact_workspace.run_dir(settings, run_id, refresh=False),
+            run_dir=run_dir,
         )
     except Exception:  # noqa: BLE001 - a thread that would not start
         _log.exception(
@@ -201,10 +227,11 @@ def record_scope_denials_best_effort(
     """
     if not run_id:
         return
-    artifact = (
-        artifact_workspace.run_dir(settings, run_id, refresh=False) / scan_scope.DENIED_ARTIFACT
-    )
     try:
+        run_dir = _written_run_dir(settings, run_id, tenant_id)
+        if run_dir is None:
+            return
+        artifact = run_dir / scan_scope.DENIED_ARTIFACT
         report = json.loads(artifact.read_text(encoding="utf-8"))
         denied = [str(item) for item in (report.get("denied") or [])]
         if not denied:
@@ -296,6 +323,15 @@ def on_run_published(
         # not happen. The send itself is on a thread, so this costs one
         # ``Thread.start``.
         notify_channels_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
+
+
+def note_adoption_failed(settings: Settings, job_id: str, detail: str) -> None:
+    """Say on the job that its local scan did not reach its tenant's run (#427).
+
+    The run is on disk, but not (all) where readers look for it; the pod log
+    alone would leave the job reading as a clean success.
+    """
+    _append_job_error(settings, job_id, f"; run not filed under its tenant: {detail}")
 
 
 def note_publication_failed(

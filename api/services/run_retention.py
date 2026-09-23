@@ -151,9 +151,10 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     deleted = errors = kept = 0
     store = artifact_store.get_store(settings)
 
-    for run_id in workspace.run_ids(settings):
+    for run in workspace.run_refs(settings):
+        run_id = run.path
         try:
-            age_base = _run_age(store, run_id)
+            age_base = _run_age(store, run)
             if age_base is None:
                 # Gone between the listing and now.
                 deleted += 1
@@ -161,8 +162,8 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
             if age_base > cutoff:
                 kept += 1
                 continue
-            workspace.delete_run(settings, run_id)
-            workspace.forget_run_marker(run_id)
+            workspace.delete_run(settings, run)
+            workspace.forget_run_marker(run)
             deleted += 1
             LOG.info("Run retention: deleted expired run %s", run_id)
         except (artifact_store.ArtifactStoreError, OSError):
@@ -175,7 +176,9 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     return _stats((deleted, errors, kept), _sweep_job_inputs(settings, cutoff))
 
 
-def _run_age(store: artifact_store.ArtifactStore, run_id: str) -> float | None:
+def _run_age(
+    store: artifact_store.ArtifactStore, run: artifact_store.keys.RunRef
+) -> float | None:
     """When this run last mattered, in epoch seconds, or ``None`` if it is gone.
 
     Three answers, in the order they deserve to be believed:
@@ -191,7 +194,7 @@ def _run_age(store: artifact_store.ArtifactStore, run_id: str) -> float | None:
        oldest: a run is as young as its most recent write, and ageing one out on
        its first file would delete a scan still being added to.
     """
-    meta_key = artifact_store.keys.run_artifact(run_id, "run_meta.json")
+    meta_key = artifact_store.keys.run_artifact(run, "run_meta.json")
     try:
         meta = json.loads(store.get_bytes(meta_key).decode("utf-8"))
     except artifact_store.ArtifactNotFound:
@@ -205,7 +208,7 @@ def _run_age(store: artifact_store.ArtifactStore, run_id: str) -> float | None:
         entry = store.stat(meta_key)
         if entry is not None:
             return entry.modified
-    return _prefix_modified(store, artifact_store.keys.run_prefix(run_id))
+    return _prefix_modified(store, artifact_store.keys.run_prefix(run))
 
 
 class RunRetentionWorker:

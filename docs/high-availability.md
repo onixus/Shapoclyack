@@ -371,10 +371,12 @@ Naming these is the point of the page.
 * **Artifacts on a shared filesystem are still the default here.** Object
   storage ([#336](https://github.com/onixus/Shapoclyack/issues/336)) shipped and
   is the better answer, but `pvc-rwx-patch.yaml` is what this overlay enables
-  out of the box — switching is a decision, not an upgrade. Note also that run
-  keys are flat (`runs/<run_id>`): per-tenant prefixes, which is what would let
-  a bucket policy enforce the isolation the API enforces in code, are
-  [#311](https://github.com/onixus/Shapoclyack/issues/311).
+  out of the box — switching is a decision, not an upgrade. Run keys carry
+  their tenant since [#427](https://github.com/onixus/Shapoclyack/issues/427)
+  (`runs/_tenants/<tenant>/<run_id>`), but runs published before it keep their
+  flat `runs/<run_id>` keys and are still read from there, so a bucket policy
+  scoped to a tenant's prefix does not yet cover all of that tenant's runs
+  ([operations.md](operations.md#run-directories)).
 * **Disaster recovery beyond Postgres is unproven.**
   [#333](https://github.com/onixus/Shapoclyack/issues/333) tracks a rehearsed
   restore of ClickHouse, artifacts and JetStream state. Only the Postgres drill

@@ -26,6 +26,7 @@ from api.services import results_ingest
 from api.services import run_ids
 from api.services import run_publisher
 from api.services import tenants as tenants_service
+from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
 
@@ -439,7 +440,9 @@ def complete_job(
             # run the current attempt is producing — before anything had
             # checked whether this upload is still the current one.
             staging = artifact_workspace.staging_run_dir(
-                settings, str(resolved_run_id), fence.token
+                settings,
+                artifact_keys.run_ref(str(resolved_run_id), job_tenant),
+                fence.token,
             )
             try:
                 results_ingest.extract_run_archive(archive_bytes, staging)

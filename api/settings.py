@@ -537,8 +537,8 @@ class Settings:
     artifact_backend: str = "local"
     artifact_s3_bucket: str = ""
     # Key prefix inside the bucket, so one bucket can hold several
-    # installations. Per-*tenant* prefixes are #311, which moves run keys to
-    # runs/{tenant}/{run_id}; this one is per installation.
+    # installations. Per-*tenant* prefixes are below it, in the key itself
+    # (runs/_tenants/{tenant}/{run_id}, #427); this one is per installation.
     artifact_s3_prefix: str = ""
     # Empty means AWS. MinIO, Ceph RGW and every other gateway are named here,
     # matching the Postgres backup CronJob's S3_ENDPOINT_URL.
