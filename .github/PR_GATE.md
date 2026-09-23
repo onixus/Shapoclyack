@@ -5,10 +5,13 @@ on every pull request and merge-queue candidate.
 
 It performs:
 
-- the repository-wide Ruff check through `scripts/ci-lint.sh`;
+- the repository-wide Ruff check through `scripts/ci-lint.sh`, which also
+  rejects syntax newer than Python 3.11 (`ruff.toml`), the oldest version the
+  Jenkins matrix tests — the gate itself runs 3.12 only;
 - `compileall` for `scanner`, `api`, `tests`, and `agent`;
-- the pytest suite without PostgreSQL or NATS, with integration enforcement
-  explicitly disabled.
+- the pytest suite through `scripts/ci-pytest.sh` without PostgreSQL or NATS,
+  with integration enforcement (`OCTO_REQUIRE_INTEGRATION=0`) and the coverage
+  threshold (`COV_FAIL_UNDER=0`) explicitly disabled.
 
 It does **not** replace the manually triggered full CI or Jenkins. Those runs
 provide PostgreSQL/NATS integration coverage, SAST, web and manifest checks,
@@ -28,5 +31,7 @@ After the workflow has produced its first successful check, edit the active
 
 The required-check rule is repository metadata and cannot be represented by a
 committed workflow file. The regression test in `tests/test_pr_gate.py` protects
-the part that can live in Git: the trigger, read-only permissions, shared lint,
-and infrastructure-free test command.
+the part that can live in Git: it parses the workflow and compares the
+triggers, the read-only permissions, the allowed job and step keys and the exact
+list of commands, so `|| true`, `continue-on-error`, `if: false`, a narrowed
+pytest or a widened token all fail it.

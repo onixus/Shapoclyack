@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -36,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 JENKINSFILE = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
 CI_WORKFLOW = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+PR_GATE_WORKFLOW = (REPO_ROOT / ".github/workflows/pr-gate.yml").read_text(encoding="utf-8")
 
 
 # --- the gate, driven through real sessions --------------------------------
@@ -429,11 +431,18 @@ def test_the_sast_scan_mounts_the_root_it_is_given(tmp_path: Path):
     assert sum("semgrep scan" in call for call in calls) == 2, "both passes have to run"
 
 
-@pytest.mark.parametrize("pipeline", ["Jenkinsfile", ".github/workflows/ci.yml"])
+_PIPELINES = {
+    "Jenkinsfile": JENKINSFILE,
+    ".github/workflows/ci.yml": CI_WORKFLOW,
+    ".github/workflows/pr-gate.yml": PR_GATE_WORKFLOW,
+}
+
+
+@pytest.mark.parametrize("pipeline", sorted(_PIPELINES))
 def test_no_pipeline_pins_ruff_of_its_own(pipeline: str):
     # requirements-dev.txt is the single pin; scripts/ci-lint.sh reads it. The
     # drift this replaces was 0.15.22 in the Jenkinsfile against 0.15.20 here.
-    text = JENKINSFILE if pipeline == "Jenkinsfile" else CI_WORKFLOW
+    text = _PIPELINES[pipeline]
     assert "ruff==" not in text, f"{pipeline} pins Ruff itself"
     assert "ruff check" not in text, f"{pipeline} calls ruff directly, bypassing scripts/ci-lint.sh"
 
@@ -452,6 +461,27 @@ def test_the_docs_send_developers_to_the_same_lint(doc: str):
 def test_both_pipelines_call_the_same_scripts(script: str):
     assert f"scripts/{script}" in JENKINSFILE, f"Jenkinsfile does not call {script}"
     assert f"scripts/{script}" in CI_WORKFLOW, f"ci.yml does not call {script}"
+
+
+@pytest.mark.parametrize("script", ["ci-lint.sh", "ci-pytest.sh"])
+def test_the_pr_gate_calls_the_same_scripts(script: str):
+    # The PR gate is the Python half only (no web, Semgrep or manifests), but
+    # that half goes through the same scripts, not a pytest line of its own.
+    assert f"scripts/{script}" in PR_GATE_WORKFLOW, f"pr-gate.yml does not call {script}"
+    assert "python -m pytest" not in PR_GATE_WORKFLOW, "pr-gate.yml calls pytest directly"
+
+
+def test_ruff_targets_the_oldest_python_the_matrix_runs():
+    # The PR gate runs 3.12 only and leans on Ruff to reject 3.12-only syntax;
+    # with no target-version Ruff parses against its newest grammar and does not.
+    matrix = re.search(r"for \(PY in \[([^\]]*)\]\)", JENKINSFILE)
+    assert matrix, "the Jenkinsfile Python matrix moved; update this test"
+    versions = re.findall(r"'3\.(\d+)'", matrix.group(1))
+    oldest = min(int(minor) for minor in versions)
+    ruff_toml = (REPO_ROOT / "ruff.toml").read_text(encoding="utf-8")
+    assert re.search(rf'^target-version = "py3{oldest}"$', ruff_toml, re.MULTILINE), (
+        f"ruff.toml must target py3{oldest}, the oldest Python the Jenkinsfile tests"
+    )
 
 
 def test_both_pipelines_validate_the_prometheus_rules():

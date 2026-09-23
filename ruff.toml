@@ -1,0 +1,7 @@
+# The oldest Python the Jenkins matrix runs (Jenkinsfile: `for (PY in ['3.11',
+# '3.12'])`). Without it Ruff parses against the newest grammar it knows, so a
+# `type` alias or a PEP 695 generic passes lint and every 3.12 check and only
+# breaks on the 3.11 leg of the full CI. The PR gate runs on 3.12 alone and
+# relies on this line for 3.11 syntax; tests/test_ci_checks.py keeps it equal
+# to the matrix minimum. Rules are Ruff's defaults, deliberately unchanged.
+target-version = "py311"
