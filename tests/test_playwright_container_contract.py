@@ -65,8 +65,10 @@ def test_docs_no_longer_claim_official_images_lack_playwright():
     configuration = (ROOT / "docs/configuration.md").read_text(encoding="utf-8")
     third_party = (ROOT / "docs/third-party.md").read_text(encoding="utf-8")
     default_config = (ROOT / "scanner/config/default.yaml").read_text(encoding="utf-8")
+    normalized_configuration = " ".join(configuration.lower().split())
+    normalized_default_config = " ".join(default_config.lower().split())
 
     assert "not baked into the default image" not in configuration
-    assert "official scanner and all-in-one images include" in configuration.lower()
+    assert "official scanner and all-in-one images include" in normalized_configuration
     assert "Playwright 1.63.0" in third_party
-    assert "scanner/all-in-one images include chromium" in default_config.lower()
+    assert "scanner/all-in-one images include chromium" in normalized_default_config
