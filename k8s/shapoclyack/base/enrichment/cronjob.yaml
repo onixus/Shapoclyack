@@ -69,6 +69,16 @@ spec:
                       name: shapoclyack-enrichment
                       key: advisory_fetch_enabled
                       optional: true
+                # Opt-in NVD CPE-range refresh for retro CVE matching
+                # (docs/retro-cve-matching.md), from its own ConfigMap in the
+                # base/enrichment-nvd-cpe component. Off without it. Reads
+                # NVD_API_KEY above; anonymous works, slowly.
+                - name: OCTO_NVD_CPE_FETCH_ENABLED
+                  valueFrom:
+                    configMapKeyRef:
+                      name: shapoclyack-enrichment-nvd-cpe
+                      key: nvd_cpe_fetch_enabled
+                      optional: true
               resources:
                 requests:
                   cpu: "250m"

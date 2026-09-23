@@ -1,0 +1,18 @@
+# Read by the enrichment CronJob through an `optional: true` configMapKeyRef
+# (k8s/shapoclyack/base/enrichment/cronjob.yaml), so the absence of this
+# ConfigMap is the default and leaves the job doing exactly what it did before.
+#
+# Its own ConfigMap rather than a key in `shapoclyack-enrichment`: that one
+# belongs to base/enrichment-advisories, and two components each carrying a
+# ConfigMap of the same name cannot both be applied. Parsed by
+# scripts/fetch-enrichment.sh's nvd_cpe_fetch_enabled() and by fetch_enabled()
+# in api/services/cpe_ranges_fetch.py, which accept the same spellings.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shapoclyack-enrichment-nvd-cpe
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-cronjob
+data:
+  nvd_cpe_fetch_enabled: "true"

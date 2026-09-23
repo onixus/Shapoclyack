@@ -42,6 +42,7 @@
 #   OCTO_ENRICHMENT_DIR=/data ./scripts/fetch-enrichment.sh
 #   MAXMIND_LICENSE_KEY=xxxx ./scripts/fetch-enrichment.sh
 #   OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
+#   OCTO_NVD_CPE_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,6 +63,20 @@ DEST="${OCTO_ENRICHMENT_DIR:-scanner/data}"
 # either way: command substitution eats it. Spaces and tabs do not.)
 advisory_fetch_enabled() {
   local raw="${OCTO_ADVISORY_FETCH_ENABLED:-false}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The same parse for the NVD CPE-range opt-in (retro CVE matching), matching
+# fetch_enabled() in api/services/cpe_ranges_fetch.py spelling for spelling.
+# A flag of its own rather than a rider on the advisory one: the two feeds are
+# different requests to different hosts, and an installation may allow one.
+nvd_cpe_fetch_enabled() {
+  local raw="${OCTO_NVD_CPE_FETCH_ENABLED:-false}"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   raw="${raw%"${raw##*[![:space:]]}"}"
   case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
@@ -96,7 +111,7 @@ run() {
 }
 
 mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev" "$DEST/exploit" \
-  "$DEST/advisories"
+  "$DEST/advisories" "$DEST/nvd-cpe"
 
 # Floor: copy any missing seed file to DEST so scoring never runs with zero
 # data even if every fetch below fails (e.g. no network egress). GeoIP is
@@ -123,7 +138,8 @@ for pair in \
   "exploit/exploit-overlay.json" \
   "advisories/debian-advisories.json" \
   "advisories/ubuntu-advisories.json" \
-  "advisories/msrc-advisories.json"; do
+  "advisories/msrc-advisories.json" \
+  "nvd-cpe/nvd-cpe-ranges.json"; do
   src="$SEED_DIR/$pair"
   dst="$DEST/$pair"
   # Same file (source checkout with no volume mounted): nothing to floor.
@@ -199,6 +215,20 @@ if advisory_fetch_enabled; then
     -o "$DEST/advisories/msrc-advisories.json"
 else
   echo "==> advisories: skipped (opt-in; set OCTO_ADVISORY_FETCH_ENABLED=true to refresh)"
+fi
+
+# NVD CPE ranges for retro CVE matching (docs/retro-cve-matching.md). Opt-in
+# like the advisories and for a bigger reason: the full corpus is a multi-hour
+# anonymous harvest. The daily run is incremental -- CVEs NVD modified in the
+# last eight days, merged into what is on the volume -- so the one-time
+# `fetch-nvd-cpe.py --full` has to have been run for this to be coverage rather
+# than a week of changes on top of the seed. Same exit-code handling as above.
+if nvd_cpe_fetch_enabled; then
+  run nvd_cpe "nvd cpe ranges (incremental)" \
+    python3 "$ROOT/scripts/fetch-nvd-cpe.py" --last-mod-days 8 \
+    -o "$DEST/nvd-cpe/nvd-cpe-ranges.json"
+else
+  echo "==> nvd cpe ranges: skipped (opt-in; set OCTO_NVD_CPE_FETCH_ENABLED=true to refresh)"
 fi
 
 # Record what is actually on disk now, and let the manifest decide the exit

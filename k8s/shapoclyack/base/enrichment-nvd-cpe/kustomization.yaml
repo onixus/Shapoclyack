@@ -1,0 +1,30 @@
+# Opt-in for the NVD CPE-range refresh behind retro CVE matching -- see
+# docs/retro-cve-matching.md.
+#
+# Layer it on top of base/enrichment, which already runs the refresh script:
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe
+#
+# A Component for the same two reasons as base/enrichment-advisories: the flag
+# and the memory it needs belong together, and a component's patch paths
+# resolve relative to this directory so more than one overlay can reuse it.
+#
+# What this costs: the daily run asks NVD for the CVEs modified in the last
+# eight days -- a handful of pages, seconds with the shapoclyack-nvd Secret and
+# a minute or two without. Egress to services.nvd.nist.gov must be allowed.
+#
+# What it does NOT do is the first full harvest. The daily job merges into the
+# file on the volume, which on a fresh volume is the committed seed; run
+# `scripts/fetch-nvd-cpe.py --full` once (a Job from this image, or by hand
+# against the volume) for the dataset to be coverage. Until then GET
+# /api/system reports nvd_cpe as `usable: false`, which is the truth.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+namespace: network-scan
+
+resources:
+  - configmap.yaml
+
+patches:
+  - path: cronjob-memory-patch.yaml
