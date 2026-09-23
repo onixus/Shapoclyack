@@ -136,10 +136,13 @@ and rate limits should be pinned in production.
 
 `screenshots.enabled` (default `false`) takes a viewport PNG of each
 already-open web port — the same candidates as `fingerprint`, no new scan.
-`max_targets` (50) and `concurrency` (4) cap the work. Capture needs
-Playwright + Chromium on the scanner host; without them the stage skips and
-writes `skipped_reason: playwright.unavailable`. Playwright is not a
-required dependency and is not baked into the default image.
+`max_targets` (50) and `concurrency` (4) cap the work. The official
+scanner and all-in-one images include pinned Playwright plus the Chromium
+headless shell. A source/host installation can add the same runtime with
+`pip install -r requirements-screenshots.txt` followed by
+`python -m playwright install --with-deps --only-shell chromium`. Without
+the package or browser the stage still fails soft with
+`skipped_reason: playwright.unavailable`.
 
 Obvious form fields are covered with a black overlay in the live DOM, then
 the screenshot is taken. Unredacted bytes are never written. A name in a
@@ -148,8 +151,9 @@ the API reaper deletes the files after
 `OCTO_SCREENSHOT_RETENTION_DAYS` (see [operations.md](operations.md)).
 
 The System page **Pipeline Stages** tile and the config-override whitelist
-expose `screenshots.enabled`. Leave it off until Playwright is installed
-and the retention window matches the site's data-handling policy.
+expose `screenshots.enabled`. The browser is present in the official scanner
+images, but leave capture off until the retention window matches the site's
+data-handling policy.
 
 ## Discovery modules
 

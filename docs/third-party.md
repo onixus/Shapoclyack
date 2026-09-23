@@ -43,7 +43,7 @@ is the scanner image, so the same choice applies to every sensor host.
 | Pulse | GenDec release tag (`PULSE_VERSION`, currently `v1.1.0`) + per-platform sha256 pinned in `scripts/pulse-pinned.sha256` | MIT | Default service-probe backend (banner/OS/CVE detection); replaces Nmap in the default image. **`onixus/GenDec` is a private repository** — see the note below |
 | Nuclei | `NUCLEI_VERSION` build argument (currently `v3.11.1`) | MIT | Pin tool and templates |
 | DejaVu Sans | Debian package `fonts-dejavu-core` (API and all-in-one images); a 27 KB Latin+Cyrillic subset in `tests/fixtures/fonts/` | Bitstream Vera licence + public domain (DejaVu changes) | Unicode face for PDF reports (`api/services/reports/render.py`); without it the renderer falls back to fpdf2's Latin-1 core fonts. The subset is a test fixture only, not shipped in any image |
-| Playwright / Chromium | not pinned; optional host install | Apache-2.0 (Playwright) | **Not in the default image.** P4.4 screenshots skip when the package or browser is missing |
+| Playwright / Chromium | Playwright 1.63.0; its pinned Chromium headless shell | Apache-2.0 (Playwright); Chromium third-party notices apply | Included in scanner and all-in-one images for opt-in P4.4 screenshots; excluded from the API-only image |
 | nuclei-templates | Git reference (`NUCLEI_TEMPLATES_REF`, currently `v9.9.4`) | MIT | Template content has its own provenance |
 | nmap-vulners | Git reference | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE vulnerability lookup |
 | Vulscan | Git reference (`VULSCAN_REF`, pinned commit) | GPL-3.0 | **Opt-in only** — `INSTALL_NMAP=1` / `-nmap` tag; NSE scripts and local data |

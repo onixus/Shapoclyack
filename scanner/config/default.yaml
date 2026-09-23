@@ -328,8 +328,9 @@ fingerprint:
   verify_tls: false   # self-signed/internal certs are common; TLS posture is Phase 9.2
 
 # Web screenshots (P4.4 / 9.3). Opt-in. Same already-open web ports as
-# fingerprint — no new scan. Needs Playwright; without it the stage skips.
-# Images are redacted (obvious form fields) before disk. Retention is API-side.
+# fingerprint — no new scan. Official scanner/all-in-one images include Chromium;
+# source/host installs without Playwright skip the stage. Images are redacted
+# (obvious form fields) before disk. Retention is API-side.
 screenshots:
   enabled: false
   concurrency: 4

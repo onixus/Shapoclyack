@@ -1332,11 +1332,13 @@ Several API replicas may sweep the same tree; a missing file is a no-op.
 Disabling `OCTO_SCREENSHOT_RETENTION_ENABLED` stops the worker; existing
 PNGs stay until the run directory is pruned.
 
-The stage itself is off by default (`screenshots.enabled`). Turning it on
-needs Playwright + Chromium on the scanner host (`pip install playwright &&
-playwright install chromium`). Without that binary the stage writes
-`skipped_reason: playwright.unavailable` and no files. Capture is not in
-the default image.
+The stage itself is off by default (`screenshots.enabled`). The official
+scanner and all-in-one images carry pinned Playwright and a Chromium
+headless shell, verified during their build as the final non-root user. A
+source/host sensor installs the same optional runtime with
+`pip install -r requirements-screenshots.txt` and
+`python -m playwright install --with-deps --only-shell chromium`. Without
+it the stage writes `skipped_reason: playwright.unavailable` and no files.
 
 PNG download is operator-or-higher. A viewer requesting
 `/api/runs/{id}/download/screenshots/…png` gets `404`, same as a missing

@@ -147,6 +147,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     OCTO_WEB_DIST=/app/web/dist \
     OCTO_API_HOST=0.0.0.0 \
     OCTO_API_PORT=8080 \
@@ -225,7 +226,7 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-api.txt /app/
+COPY requirements.txt requirements-api.txt requirements-screenshots.txt /app/
 # Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
 # five MEDIUM and one LOW advisory that the scan reports against our image.
 # Pinned rather than left as --upgrade so the build stays reproducible; raise
@@ -233,7 +234,10 @@ COPY requirements.txt requirements-api.txt /app/
 ARG PIP_VERSION=26.2.1
 RUN set -eux; \
     pip install --no-cache-dir "pip==${PIP_VERSION}"; \
-    pip install --no-cache-dir -r /app/requirements-api.txt
+    pip install --no-cache-dir -r /app/requirements-api.txt -r /app/requirements-screenshots.txt; \
+    python -m playwright install --with-deps --only-shell chromium; \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    rm -rf /var/lib/apt/lists/*
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.
@@ -303,6 +307,9 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     chown -R octo:octo /app
 
 USER octo
+
+# Build fails unless the final non-root user can launch the bundled browser.
+RUN python /app/scripts/check-playwright-runtime.py
 
 EXPOSE 8080
 # CIS Docker Benchmark 4.6/5.27: in-image liveness check for docker/compose

@@ -150,7 +150,8 @@ LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Phase 5: nmap is optional for the default Pulse path. Default INSTALL_NMAP=1
 # keeps the full image (hybrid/vuln_legacy). Pulse-only lean builds:
@@ -241,7 +242,7 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt requirements-screenshots.txt /app/
 # Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
 # five MEDIUM and one LOW advisory that the scan reports against our image.
 # Pinned rather than left as --upgrade so the build stays reproducible; raise
@@ -249,7 +250,10 @@ COPY requirements.txt /app/requirements.txt
 ARG PIP_VERSION=26.2.1
 RUN set -eux; \
     pip install --no-cache-dir "pip==${PIP_VERSION}"; \
-    pip install --no-cache-dir -r /app/requirements.txt
+    pip install --no-cache-dir -r /app/requirements.txt -r /app/requirements-screenshots.txt; \
+    python -m playwright install --with-deps --only-shell chromium; \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    rm -rf /var/lib/apt/lists/*
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.
@@ -306,6 +310,9 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin scanner && \
     chown -R scanner:scanner /app
 
 USER scanner
+
+# Build fails unless the final non-root user can launch the bundled browser.
+RUN python /app/scripts/check-playwright-runtime.py
 
 VOLUME ["/app/scanner/inputs", "/app/scanner/output", "/app/scanner/state", "/app/scanner/config"]
 
