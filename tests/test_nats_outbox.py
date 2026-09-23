@@ -13,6 +13,7 @@ Two defects at once, and the tests are split the same way:
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
@@ -40,8 +41,16 @@ NATS_URL = "nats://nats.invalid:4222"
 
 
 def _archive(data: bytes = b'{"ok":true}\n') -> bytes:
+    """The same bytes on every call, so the content-derived msg_id matches.
+
+    ``tarfile.open(mode="w:gz")`` stamps the current time into the gzip
+    header, and two calls a second apart hash to different msg_ids.
+    """
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with (
+        gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w") as tf,
+    ):
         info = tarfile.TarInfo(name="findings.json")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
