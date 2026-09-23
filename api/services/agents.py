@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update
 
 from api import __version__
 from api.db import models
@@ -420,43 +420,35 @@ def check_credential(
     agent_id: str | None,
     tenant_id: str,
     key_id: str | None,
-) -> None:
-    """Re-check an authenticated agent's credential against the database (#308).
+) -> AgentInfo | None:
+    """Re-check a JWT and return the agent row snapshot in one transaction.
 
-    An agent JWT is valid for two hours and, until now, nothing between minting
-    and expiry could stop it: revoking the provisioning key it came from,
-    deleting the agent, or disabling it all left the token working. This runs
-    on every agent request, so those acts take effect at once.
+    The JWT remains revocable on every request: its provisioning key
+    must be active and an existing agent row must still belong to the
+    token's tenant. The plain ``AgentInfo`` return value is safe to keep
+    in ``request.state`` after the session commits; an ORM row is not.
 
-    Two checks, and deliberately only two:
-
-    * the provisioning key still exists, is not revoked and is not expired
-      (:class:`AgentCredentialRevoked` → 401);
-    * the agent row, **if there is one**, belongs to the token's tenant
-      (``PermissionError`` → 403).
-
-    A *missing* row is not refused, because the very first request an agent
-    makes is the registration that creates it — and because a deleted agent and
-    a never-registered one are the same absence. Making a delete stick is what
-    ``?revoke_key=true`` is for: it takes away the key, which the first check
-    above then catches. Lifecycle state is not checked here either; the routes
-    apply it, so a heartbeat from a disabled agent can still be answered with
-    the reason it is disabled.
+    A missing row still passes because registration is the first request
+    a new agent makes. Callers can distinguish that cached absence from
+    "not loaded" through ``api.auth.AgentRequestState``.
     """
     settings = _require_settings()
-    if key_id:
-        state = tenants_service.provisioning_key_state(key_id)
-        if state != "active":
-            raise AgentCredentialRevoked(
-                f"The provisioning key behind this agent token is {state}; "
-                "re-provision the agent with a current key"
-            )
-    if not agent_id:
-        return
     with get_session(settings.postgres_url) as session:
+        if key_id:
+            state = tenants_service.provisioning_key_state_in_session(
+                session, key_id
+            )
+            if state != "active":
+                raise AgentCredentialRevoked(
+                    f"The provisioning key behind this agent token is {state}; "
+                    "re-provision the agent with a current key"
+                )
+        if not agent_id:
+            return None
         row = session.get(models.Agent, agent_id)
         if row is not None and row.tenant_id != tenant_id:
             raise PermissionError("Cross-tenant agent access denied")
+        return _to_info(row) if row is not None else None
 
 
 def require_identity_match(token_agent_id: str | None, requested_agent_id: str | None) -> None:
@@ -553,21 +545,30 @@ def check_exchange_identity(*, agent_id: str | None, tenant_id: str, key_id: str
         )
 
 
+def require_active_info(agent: AgentInfo | None) -> None:
+    """Apply the lifecycle gate to an already-read request snapshot."""
+    if agent is None:
+        return
+    lifecycle_status = agent.lifecycle_status or LIFECYCLE_ACTIVE
+    if lifecycle_status == LIFECYCLE_ACTIVE:
+        return
+    raise PermissionError(
+        lifecycle_message(lifecycle_status, agent.lifecycle_reason)
+    )
+
+
 def require_active(agent_id: str) -> None:
     """Raise :class:`PermissionError` unless the agent row is ``active``.
 
-    An unregistered id passes: this gates the work an agent asks *for*, and the
-    routes that need the row to exist already answer 404 for a missing one.
+    Kept for callers without an authenticated request snapshot. Agent
+    HTTP routes use :func:`require_active_info` and do not re-read the
+    same row after ``require_agent`` (#384).
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id)
-        if row is None:
-            return
-        lifecycle_status = row.lifecycle_status or LIFECYCLE_ACTIVE
-        if lifecycle_status == LIFECYCLE_ACTIVE:
-            return
-        raise PermissionError(lifecycle_message(lifecycle_status, row.lifecycle_reason))
+        info = _to_info(row) if row is not None else None
+    require_active_info(info)
 
 
 def set_lifecycle_status(
@@ -863,14 +864,38 @@ def get_agent(agent_id: str, tenant_id: str | None = None) -> AgentInfo | None:
 
 
 def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> None:
+    """Update claim state without selecting the agent row first (#384).
+
+    The previous read existed only to compute ``healthy_since``. The
+    same decision is expressible in the UPDATE: a missing/old previous
+    heartbeat starts a new healthy run, otherwise the existing start is
+    retained. A missing agent remains a no-op, as before.
+    """
     settings = _require_settings()
+    now = _now()
+    stale_before = now - timedelta(seconds=settings.agent_stale_seconds)
+    healthy_since = case(
+        (
+            or_(
+                models.Agent.healthy_since.is_(None),
+                models.Agent.last_seen_at.is_(None),
+                models.Agent.last_seen_at < stale_before,
+            ),
+            now,
+        ),
+        else_=models.Agent.healthy_since,
+    )
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.Agent, agent_id)
-        if row is None:
-            return
-        _note_seen(row, _now())
-        row.current_job_id = job_id
-        row.status = status if job_id else "idle"
+        session.execute(
+            update(models.Agent)
+            .where(models.Agent.agent_id == agent_id)
+            .values(
+                last_seen_at=now,
+                healthy_since=healthy_since,
+                current_job_id=job_id,
+                status=status if job_id else "idle",
+            )
+        )
 
 
 def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:

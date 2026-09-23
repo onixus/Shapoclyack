@@ -23,7 +23,7 @@ refusing, so an installation with a healthy broker never has one.
 
 Rolling upgrade is safe in both directions of the deploy: the migration runs
 before any replica starts, and an old replica simply never reads or writes the
-table. The readiness probe's ``ingest_backlog`` check is fail-soft
+table. The readiness probe's ``nats_outbox`` check is fail-soft
 (``nats_outbox.is_backlogged``), so a replica that somehow meets a missing
 table reports "not backlogged" rather than unreadying itself.
 

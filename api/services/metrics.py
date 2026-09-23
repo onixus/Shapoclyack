@@ -245,13 +245,12 @@ NATS_LEGACY_INGEST_TOTAL = Counter(
 
 NATS_OUTBOX_BACKLOG = Gauge(
     "octo_nats_outbox_backlog",
-    "Publications the broker refused and has not accepted since, by status "
-    "(pending, dead, and the pending ones older than the alert window as "
-    "'stale'). Cluster-wide — every replica reports the same query, so "
-    "aggregate with max(), not sum(). Non-zero 'stale' or 'dead' is the "
-    "analytical projection falling behind while HTTP is up, which is the one "
-    "thing NATS leaving the readiness probe must not hide.",
-    ["status"],
+    "Publications the broker refused and has not accepted since, split by "
+    "kind (ingest or asset_event) and status (pending, dead, or stale for the "
+    "pending rows older than the alert window). Cluster-wide — every replica "
+    "reports the same query, so aggregate with max(), not sum(). kind=ingest "
+    "delays the ClickHouse projection; kind=asset_event delays webhook fan-out.",
+    ["kind", "status"],
     registry=REGISTRY,
 )
 NATS_OUTBOX_TOTAL = Counter(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Annotated, Any
@@ -134,6 +135,45 @@ class AgentPrincipal(BaseModel):
     agent_id: str | None = None
     subject: str = "agent"
     auth_mode: str = "jwt"  # jwt | legacy
+
+
+AGENT_REQUEST_STATE_ATTR = "agent_auth_context"
+
+
+@dataclass(frozen=True)
+class AgentRequestState:
+    """Agent row snapshot loaded while authenticating this request."""
+
+    agent_id: str | None
+    info: Any | None
+    loaded: bool
+
+
+def cached_agent_info(
+    request: Request,
+    principal: AgentPrincipal,
+    requested_agent_id: str | None,
+) -> tuple[bool, Any | None]:
+    """Return ``(hit, info)`` for a JWT-bound request.
+
+    ``hit=True, info=None`` is meaningful: authentication already proved
+    the row is absent, as it is before first registration. Legacy shared
+    tokens carry no identity, so their routes keep the old lookup path.
+
+    The ids are compared exactly, not stripped: ``require_identity_match``
+    lets ``"edge-01 "`` through for an ``edge-01`` token, and the routes pass
+    that unstripped id on to the job services. The snapshot is the row for
+    the token's id only, so any other spelling misses and takes the old
+    ``get_agent`` path, which answers 404 for it as it always did.
+    """
+    state = getattr(request.state, AGENT_REQUEST_STATE_ATTR, None)
+    if not isinstance(state, AgentRequestState):
+        return False, None
+    if principal.auth_mode != "jwt" or not state.loaded:
+        return False, None
+    if state.agent_id != requested_agent_id:
+        return False, None
+    return True, state.info
 
 
 class LoginRequest(BaseModel):
@@ -1135,50 +1175,48 @@ def require_platform_permission(permission: str):
     return _checker
 
 
-def _revalidate_agent_credential(principal: AgentPrincipal) -> None:
-    """Re-check a verified agent JWT against the database, or refuse it (#308).
-
-    Imported inside the function, like every other service this module reaches
-    for: ``api.services`` imports settings and models, and importing it at
-    module scope would make the auth layer part of that cycle.
-    """
+def _revalidate_agent_credential(principal: AgentPrincipal) -> Any | None:
+    """Re-check a verified agent JWT and return its detached row snapshot."""
     from api.services import agents as agents_service
 
     try:
-        agents_service.check_credential(
+        return agents_service.check_credential(
             agent_id=principal.agent_id,
             tenant_id=principal.tenant_id,
             key_id=principal.key_id,
         )
     except agents_service.AgentCredentialRevoked as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
     except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
 
 
 def require_agent(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentPrincipal:
-    """Authenticate remote agent via agent JWT, or legacy OCTO_AGENT_TOKEN.
+    """Authenticate a remote agent and cache its database snapshot.
 
-    A verified signature is no longer the whole answer (#308): an agent JWT
-    lives for two hours, and revoking its provisioning key, deleting the agent
-    or moving it between tenants used to do nothing until it expired. The
-    database is consulted on every request, so those acts land immediately —
-    see :func:`api.services.agents.check_credential` for exactly which two
-    things are checked and why a missing agent row is not one of them.
+    A JWT pays one transaction for the key and agent rows. Routes read
+    the resulting plain ``AgentInfo`` from ``request.state`` rather than
+    issuing their own ``get_agent``/``require_active`` queries (#384).
+    Legacy shared tokens remain unbound and therefore uncached.
     """
     if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
     token = credentials.credentials
 
-    # Prefer agent JWT (typ=agent). Fall back to shared static token for labs.
     try:
-        # Routing peek only -- nothing here is trusted for authorization. A
-        # forged typ=agent merely sends the request into decode_agent_token(),
-        # which re-decodes against jwt_secret and re-checks typ; the legacy
-        # branch compares with hmac.compare_digest.
         unverified = jwt.decode(
             token,
             # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
@@ -1190,13 +1228,28 @@ def require_agent(
 
     if unverified.get("typ") == AGENT_TOKEN_TYP:
         principal = decode_agent_token(settings, token)
-        _revalidate_agent_credential(principal)
+        info = _revalidate_agent_credential(principal)
+        setattr(
+            request.state,
+            AGENT_REQUEST_STATE_ATTR,
+            AgentRequestState(
+                # The id check_credential looked up, verbatim.
+                agent_id=principal.agent_id or None,
+                info=info,
+                loaded=bool(principal.agent_id),
+            ),
+        )
         return principal
 
     if settings.agent_token:
         provided = token.encode("utf-8")
         expected = settings.agent_token.encode("utf-8")
         if hmac.compare_digest(provided, expected):
+            setattr(
+                request.state,
+                AGENT_REQUEST_STATE_ATTR,
+                AgentRequestState(agent_id=None, info=None, loaded=False),
+            )
             return AgentPrincipal(
                 tenant_id=LEGACY_AGENT_TENANT_ID,
                 key_id=None,
@@ -1205,5 +1258,8 @@ def require_agent(
             )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid agent token (use provisioning-key JWT or OCTO_AGENT_TOKEN)",
+        detail=(
+            "Invalid agent token (use provisioning-key JWT or "
+            "OCTO_AGENT_TOKEN)"
+        ),
     )
