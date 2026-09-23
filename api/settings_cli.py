@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -28,41 +29,28 @@ ENV_INDEX_START = "<!-- BEGIN API SETTINGS ENV INDEX -->"
 ENV_INDEX_END = "<!-- END API SETTINGS ENV INDEX -->"
 REDACTED = "<redacted>"
 
-_SECRET_EXACT_NAMES = frozenset(
-    {
-        "access_key",
-        "agent_jwt_secret",
-        "api_key",
-        "password",
-        "private_key",
-        "secret",
-        "secret_key",
-        "session_token",
-        "token",
-        "agent_jwt_secret_previous",
-        "agent_token",
-        "artifact_s3_access_key",
-        "artifact_s3_access_key_id",
-        "artifact_s3_secret_key",
-        "artifact_s3_session_token",
-        "jwt_secret",
-        "jwt_secret_previous",
-        "metrics_token",
-        "oidc_client_secret",
-        "report_smtp_password",
-    }
+# Credentials are recognised by the words in a name rather than by a list of
+# field names: the first cut of #344 listed ``artifact_s3_secret_key`` while the
+# field is ``artifact_s3_secret_access_key``, and ``--check`` printed the S3
+# secret. A name is sensitive when any word carries one of these markers
+# ("sslpassword" as much as "report_smtp_password") ...
+_SECRET_MARKERS = ("secret", "passw", "passphrase", "credential")
+# ... or when its last word names a credential. Only the last word counts, so
+# lifetimes and switches such as ``service_token_max_ttl_days`` stay visible.
+_SECRET_FINAL_WORDS = frozenset({"key", "keys", "token", "tokens"})
+# Names neither rule catches. The S3 access key ID is not a secret in AWS terms,
+# but on MinIO and Ceph it is the account half of a static credential pair, and
+# the endpoint and bucket printed next to it already say which store is meant.
+_SECRET_EXACT_NAMES = frozenset({"artifact_s3_access_key_id"})
+_NAME_WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+_URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_URL_IN_TEXT_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"<>]*", re.IGNORECASE)
+# Python's own conversion errors end by quoting the rejected literal.
+_CONVERSION_ERROR_RE = re.compile(
+    r"^(invalid literal for [\w.]+\(\)[^:]*: |could not convert string to \w+: ).*$",
+    re.DOTALL,
 )
-_SECRET_SUFFIXES = (
-    "_api_key",
-    "_client_secret",
-    "_password",
-    "_private_key",
-    "_secret",
-    "_secret_key",
-    "_session_token",
-    "_token",
-)
-_URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^\s/@]+@", re.IGNORECASE)
 
 
 def settings_environment_names(path: Path = SETTINGS_SOURCE) -> set[str]:
@@ -153,9 +141,12 @@ def _documentation_index_body(text: str) -> str:
 
 def _is_sensitive_name(name: str) -> bool:
     normalized = name.strip().lower()
-    if normalized in _SECRET_EXACT_NAMES:
+    if normalized in _SECRET_EXACT_NAMES or normalized.removeprefix("octo_") in _SECRET_EXACT_NAMES:
         return True
-    return normalized.endswith(_SECRET_SUFFIXES)
+    if any(marker in normalized for marker in _SECRET_MARKERS):
+        return True
+    words = [word for word in _NAME_WORD_SPLIT_RE.split(normalized) if word]
+    return bool(words) and words[-1] in _SECRET_FINAL_WORDS
 
 
 def _redact_value(name: str, value: Any) -> Any:
@@ -184,30 +175,134 @@ def _redact_value(name: str, value: Any) -> Any:
 
 
 def _redact_url(value: str) -> str:
-    """Remove URL userinfo and sensitive query values without parsing the host."""
+    """Redact a setting value that is, or contains, URLs.
 
-    redacted = _URL_USERINFO_RE.sub(rf"\1{REDACTED}@", value)
-    if "?" not in redacted:
-        return redacted
-    base, query = redacted.split("?", 1)
+    A value that starts with a scheme is treated as one URL to its end, so a
+    password with whitespace in it cannot cut the userinfo short. Anywhere
+    else URLs are found as whitespace-delimited runs.
+    """
+
+    if _URL_SCHEME_RE.match(value):
+        return _redact_single_url(value)
+    return _redact_urls_in_text(value)
+
+
+def _redact_urls_in_text(text: str) -> str:
+    return _URL_IN_TEXT_RE.sub(lambda match: _redact_single_url(match.group(0)), text)
+
+
+def _redact_single_url(url: str) -> str:
+    """Remove userinfo and sensitive query values without parsing the host."""
+
+    scheme = _URL_SCHEME_RE.match(url)
+    if scheme is None:
+        return url
+    rest = url[scheme.end() :]
+    # RFC 3986 ends the authority at the first '/', '?' or '#', but SQLAlchemy
+    # reads everything after the username's ':' up to '@' as the password, so
+    # 'postgresql://octo:ab/cd@db/x' has the password 'ab/cd'. The last '@' is
+    # the only boundary both grammars agree cannot sit inside the userinfo; an
+    # '@' in a path or query over-redacts the host, which is the safe way to be
+    # wrong.
+    at = rest.rfind("@")
+    if at >= 0:
+        rest = f"{REDACTED}{rest[at:]}"
+    if "?" not in rest:
+        return f"{scheme.group(0)}{rest}"
+    base, query = rest.split("?", 1)
     chunks: list[str] = []
     for chunk in query.split("&"):
-        key, separator, raw_value = chunk.partition("=")
+        key, separator, _raw_value = chunk.partition("=")
         if separator and _is_sensitive_name(key):
             chunks.append(f"{key}={REDACTED}")
         else:
             chunks.append(chunk if separator else key)
-    return f"{base}?{'&'.join(chunks)}"
+    return f"{scheme.group(0)}{base}?{'&'.join(chunks)}"
 
 
-def _redact_exception_text(text: str) -> str:
-    """Scrub configured secrets before a validation error reaches a terminal."""
+def _redact_exception_text(text: str, *, failing_names: Sequence[str] = ()) -> str:
+    """Scrub configured secrets before a validation error reaches a terminal.
 
-    result = _URL_USERINFO_RE.sub(rf"\1{REDACTED}@", text)
-    for name, value in os.environ.items():
-        if value and (_is_sensitive_name(name) or name == "API_SECRET_KEY"):
+    ``failing_names`` are variables whose own value the error may quote; their
+    values are scrubbed whatever their names say, because a credential pasted
+    into the wrong variable is exactly the value that fails to parse.
+    """
+
+    result = text
+    # Longest first, so a secret that contains another is not half-replaced.
+    for name, value in sorted(os.environ.items(), key=lambda item: -len(item[1])):
+        if not value:
+            continue
+        if _is_sensitive_name(name) or name in failing_names:
             result = result.replace(value, REDACTED)
-    return result
+            continue
+        # A whole URL value is scrubbed as one piece before the text-level pass
+        # below, which would stop at whitespace inside a password.
+        redacted = _redact_url(value)
+        if redacted != value:
+            result = result.replace(value, redacted)
+    return _redact_urls_in_text(result)
+
+
+def _failing_environment_names(exc: BaseException, path: Path = SETTINGS_SOURCE) -> list[str]:
+    """Return the ``OCTO_*`` literals inside the ``api.settings`` expression that raised.
+
+    Numeric settings are read inline, as ``int(os.environ.get("OCTO_X", "5"))``,
+    so ``int()``'s error names the value and not the variable. The traceback's
+    column span of the failing call does contain the variable's name, and it
+    is read back from the same AST ``settings_environment_names`` walks. An
+    error raised anywhere else, or on a Python without column positions,
+    yields no names and the message alone has to do.
+    """
+
+    resolved = path.resolve()
+    frames = [
+        frame
+        for frame in traceback.extract_tb(exc.__traceback__)
+        if Path(frame.filename).resolve() == resolved
+    ]
+    if not frames:
+        return []
+    frame = frames[-1]
+    start_col = getattr(frame, "colno", None)
+    end_line = getattr(frame, "end_lineno", None)
+    end_col = getattr(frame, "end_colno", None)
+    if frame.lineno is None or start_col is None or end_line is None or end_col is None:
+        return []
+    start = (frame.lineno, start_col)
+    end = (end_line, end_col)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return sorted(
+        {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and ENVIRONMENT_NAME_RE.fullmatch(node.value)
+            and start <= (node.lineno, node.col_offset)
+            and (node.end_lineno, node.end_col_offset) <= end
+        }
+    )
+
+
+def _describe_invalid_value(exc: BaseException) -> str:
+    """Render a loader error with the failing variable named and no raw value."""
+
+    names = _failing_environment_names(exc)
+    message = str(exc)
+    conversion = _CONVERSION_ERROR_RE.match(message)
+    if conversion is not None:
+        # Whichever variable it came from, the literal after the colon is the
+        # raw environment value; nothing after it is worth the risk. With it
+        # gone, scrubbing the failing value again would only mangle the prose
+        # around it when the value is short.
+        message = _redact_exception_text(f"{conversion.group(1)}{REDACTED}")
+    else:
+        message = _redact_exception_text(message, failing_names=names)
+    label = type(exc).__name__
+    if names:
+        label = f"{label} in {', '.join(names)}"
+    return f"{label}: {message}" if message else label
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -254,14 +349,11 @@ def main(
         print(_redact_exception_text(str(exc)), file=sys.stderr)
         return 1
     except (OSError, TypeError, ValueError) as exc:
-        # Python's conversion errors quote the rejected value. That value came
-        # from the environment and may itself be sensitive, so report the class
-        # rather than obediently copying it into CI logs.
+        # Python's conversion errors quote the rejected value, which came from
+        # the environment and may itself be sensitive. The operator gets the
+        # variable's name and the loader's own message instead, both scrubbed.
         print("configuration: INVALID", file=sys.stderr)
-        print(
-            f"{type(exc).__name__}: invalid configuration value (value redacted)",
-            file=sys.stderr,
-        )
+        print(_describe_invalid_value(exc), file=sys.stderr)
         return 1
 
     print("configuration: OK")

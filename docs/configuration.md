@@ -438,8 +438,16 @@ python -m api.settings --check
 ```
 
 A successful check prints the effective configuration with credentials
-and URL userinfo redacted. Use `--no-effective-config` when only the exit
-status is needed. The command runs the same fail-closed production
+and URL userinfo redacted. A setting counts as a credential when any word
+of its name contains `secret`, `passw`, `passphrase` or `credential`, or
+its last word is `key`/`token` (so `OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` is
+hidden while `OCTO_SERVICE_TOKEN_MAX_TTL_DAYS` is shown);
+`OCTO_ARTIFACT_S3_ACCESS_KEY_ID` is hidden as well. URL userinfo is cut at
+the last `@`, because SQLAlchemy accepts `/`, `:`, `#` and `?` unencoded in
+a password. A failed check names the variable that did not parse, such as
+`ValueError in OCTO_DB_POOL_SIZE: invalid literal for int() with base 10:
+<redacted>`, and never prints the rejected value itself. Use
+`--no-effective-config` when only the exit status is needed. The command runs the same fail-closed production
 validation as API startup; it does not connect to Postgres, NATS or
 ClickHouse.
 
