@@ -132,7 +132,32 @@ class Settings:
     env: str = ENV_PROD
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = ALLOWED_JWT_ALGORITHMS[0]
+    # The absolute lifetime of a console sign-in (OCTO_JWT_EXPIRE_MINUTES).
+    # Before #314 this was the access token's own lifetime; it is now the end
+    # of the session family that refresh tokens extend, and refreshing never
+    # moves it — eight hours after the password was typed, the password is
+    # typed again. The name is kept so an operator who set it keeps the
+    # session length they chose.
     jwt_expire_minutes: int = 480
+    # Lifetime of one console access token (OCTO_ACCESS_TOKEN_EXPIRE_MINUTES).
+    # Short, because it is a bearer token in local storage that is checked
+    # against the session store but not renewed from it: this is how long a
+    # copy lifted out of the browser works on its own. The console renews it
+    # through ``POST /api/auth/refresh`` while the user is active (#314).
+    access_token_expire_minutes: int = 15
+    # A refresh further than this from the previous one (or from the sign-in)
+    # is refused and the session ends (OCTO_SESSION_IDLE_MINUTES). 0 turns the
+    # idle timeout off. Must be longer than the access token, or an active
+    # user whose console refreshes once per access token would be signed out
+    # between two of them — load_settings() refuses that combination.
+    session_idle_minutes: int = 30
+    # ``Secure`` on the refresh-token cookie (OCTO_REFRESH_COOKIE_SECURE).
+    # On in prod, where turning it off refuses startup; off by default in dev,
+    # the same asymmetry as HSTS: a lab stand reached over plain http at a LAN
+    # address (not localhost, which browsers already treat as secure) would
+    # otherwise never get the cookie back, and every session would end with
+    # its first access token.
+    refresh_cookie_secure: bool = True
     # Keys this installation has retired but still verifies with, newest first
     # (OCTO_JWT_SECRET_PREVIOUS, comma-separated). Rotating a symmetric secret
     # without them is a fleet-wide logout at the moment of the rollout, because
@@ -1154,6 +1179,16 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    § Rotating the JWT signing key."
         )
 
+    # The refresh token is the credential that outlives the access token by
+    # hours; sent over plain http it is readable by anything on the path.
+    if not settings.refresh_cookie_secure:
+        problems.append(
+            "OCTO_REFRESH_COOKIE_SECURE is off.\n"
+            "    The console's refresh token would be sent over plain http, where it\n"
+            "    outlives the access token it renews by hours. Serve the console over\n"
+            "    https and leave the variable unset."
+        )
+
     # Any "*" in the list, not just a bare ["*"]: the wildcard matches every
     # origin regardless of what else is listed beside it, so ["*", "https://x"]
     # is exactly as open as ["*"] while looking deliberate.
@@ -1306,12 +1341,34 @@ def load_settings() -> Settings:
             "    surface: this installation holds one shared symmetric secret."
         )
 
+    # Session lifetimes (#314), read together because they are checked
+    # against each other. Refused in every environment: an idle timeout
+    # shorter than the access token signs an *active* user out, which is a
+    # configuration mistake, not a local-development convenience.
+    session_max_minutes = max(1, int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")))
+    access_token_minutes = max(1, int(os.environ.get("OCTO_ACCESS_TOKEN_EXPIRE_MINUTES", "15")))
+    session_idle_minutes = max(0, int(os.environ.get("OCTO_SESSION_IDLE_MINUTES", "30")))
+    if session_idle_minutes and session_idle_minutes <= access_token_minutes:
+        raise InsecureConfigurationError(
+            f"OCTO_SESSION_IDLE_MINUTES ({session_idle_minutes}) must be longer than "
+            f"OCTO_ACCESS_TOKEN_EXPIRE_MINUTES ({access_token_minutes}).\n"
+            "    The console refreshes once per access token, so an idle timeout no\n"
+            "    longer than one would sign out users who are working. Set it to 0\n"
+            "    to turn the idle timeout off."
+        )
+
     settings = Settings(
         env=env,
         jwt_secret=os.environ.get("API_SECRET_KEY", "").strip()
         or os.environ.get("OCTO_JWT_SECRET", DEFAULT_JWT_SECRET),
         jwt_algorithm=algorithm,
-        jwt_expire_minutes=int(os.environ.get("OCTO_JWT_EXPIRE_MINUTES", "480")),
+        jwt_expire_minutes=session_max_minutes,
+        access_token_expire_minutes=access_token_minutes,
+        session_idle_minutes=session_idle_minutes,
+        refresh_cookie_secure=os.environ.get(
+            "OCTO_REFRESH_COOKIE_SECURE", "true" if env == ENV_PROD else "false"
+        ).strip().lower()
+        in {"1", "true", "yes"},
         jwt_secret_previous=_csv_secrets(os.environ.get("OCTO_JWT_SECRET_PREVIOUS", "")),
         output_dir=Path(os.environ.get("OCTO_OUTPUT_DIR", "scanner/output")),
         state_dir=Path(os.environ.get("OCTO_STATE_DIR", "scanner/state")),

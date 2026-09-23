@@ -86,6 +86,11 @@ class TokenUser(BaseModel):
     # person holding *this* token last proved the factor.
     mfa_pending: bool = False
     mfa_verified_at: datetime | None = None
+    # The session family this access token was minted for (its ``sid``), so
+    # logout can end the refresh token along with it and a step-up can stamp
+    # the family (#314). ``None`` for a service token and for a console token
+    # minted before refresh tokens existed.
+    session_id: str | None = None
 
 
 class TenantPrincipal(BaseModel):
@@ -224,6 +229,8 @@ def create_access_token(
     settings: Settings,
     user: TokenUser,
     *,
+    session_id: str,
+    session_expires_at: datetime,
     mfa_verified_at: datetime | None = None,
 ) -> str:
     """Mint a console session token (#314).
@@ -249,19 +256,28 @@ def create_access_token(
     measure against. There is deliberately no ``mfa_pending`` claim — whether
     an account still owes an enrolment is re-decided on every request from the
     policy and the row, exactly as the role is.
+
+    Since the refresh-token half of #314 every access token belongs to a
+    session family: ``sid`` names it, so ending the family (logout, a reused
+    refresh token, the idle timeout) refuses this token on its next request.
+    Its lifetime is ``OCTO_ACCESS_TOKEN_EXPIRE_MINUTES``, never past the
+    family's absolute end — a refresh at 7h59m does not buy a token that
+    outlives the eight-hour session.
     """
     from api.core.security import jwt_kid
     from api.services import sessions as sessions_service
 
-    expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_expire_minutes)
+    now = datetime.now(UTC)
+    expire = min(now + timedelta(minutes=settings.access_token_expire_minutes), session_expires_at)
     payload = {
         "sub": user.username,
         "role": user.role.value,
         "typ": USER_TOKEN_TYP,
         "ver": sessions_service.current_version(settings, user.username),
         "jti": uuid.uuid4().hex,
+        "sid": session_id,
         "exp": expire,
-        "iat": datetime.now(UTC),
+        "iat": now,
     }
     if mfa_verified_at is not None:
         payload["mfa_verified_at"] = int(mfa_verified_at.timestamp())
@@ -335,7 +351,8 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
     Before #314 this function was the whole check: the role was read out of the
     claims and the database was never asked, so disabling, deleting or demoting
     an account left the token in that person's browser working for the rest of
-    its eight-hour life. Every request now costs two primary-key lookups
+    its eight-hour life. Every request now costs two primary-key lookups — three
+    once the token names a session family (``sid``) —
     (:func:`api.services.sessions.check_session`) and revocation is immediate.
 
     The role that reaches the request is the one in the table, not the one in
@@ -380,12 +397,16 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
     # A token minted before #314 carries no ``ver``; migration 0038 backfills
     # every account at 0, so those sessions keep working until they expire
     # rather than the upgrade signing the console out. See the migration.
+    # Likewise a token with no ``sid`` predates refresh tokens (migration 0060)
+    # and is checked exactly as it was: it has no family to have ended.
+    session_id = str(payload["sid"]) if payload.get("sid") else None
     try:
         state = sessions_service.check_session(
             settings,
             username=str(username),
             token_version=int(payload.get("ver") or 0),
             jti=str(payload["jti"]) if payload.get("jti") else None,
+            session_id=session_id,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(
@@ -421,6 +442,7 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
         username=state.username,
         role=role,
         jti=str(payload["jti"]) if payload.get("jti") else None,
+        session_id=session_id,
         expires_at=datetime.fromtimestamp(int(expires_at), UTC) if expires_at else None,
         # Read out of the claim rather than from the row: it is a property of
         # *this* session — when the person holding this token last proved the

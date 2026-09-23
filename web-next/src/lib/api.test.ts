@@ -6,10 +6,12 @@ import {
   getAccessToken,
   getActiveTenant,
   logout,
+  refreshAccessToken,
   revokeAllSessions,
   setAccessToken,
   setActiveTenant,
 } from "@/lib/api";
+import { noteActivity } from "@/lib/session";
 
 /** The request interceptor registered in api.ts — invoked directly so the
  * tenant-scoping rule (ROADMAP P0) can be asserted without a live server. */
@@ -240,5 +242,130 @@ describe("sign-out", () => {
     serve({ "/auth/sessions/revoke-all": 500 });
     await expect(revokeAllSessions()).rejects.toThrow();
     expect(getAccessToken()).toBe("a.b.c");
+  });
+});
+
+/** A token shaped like the API's, with the two claims silent refresh reads. */
+function tokenIssuedAt(iatMs: number, name: string): string {
+  const encode = (value: object) =>
+    Buffer.from(JSON.stringify(value))
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+  const claims = { sub: name, iat: Math.floor(iatMs / 1000), exp: Math.floor(iatMs / 1000) + 900 };
+  return `${encode({ alg: "HS256" })}.${encode(claims)}.signature`;
+}
+
+describe("silent refresh (#314)", () => {
+  let originalAdapter: typeof api.defaults.adapter;
+  let calls: { path: string; authorization: string | undefined }[];
+  const fresh = tokenIssuedAt(Date.now(), "fresh");
+
+  beforeEach(() => {
+    installLocalStorage();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { pathname: "/runs", href: "/runs" },
+    });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+    originalAdapter = api.defaults.adapter;
+    calls = [];
+  });
+
+  afterEach(() => {
+    api.defaults.adapter = originalAdapter;
+  });
+
+  /** `/runs` answers 401 to anything but the fresh token; `/auth/refresh`
+   * answers `refreshStatus` and, on 200, hands out the fresh token. */
+  function serve(refreshStatus = 200) {
+    api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+      const path = config.url ?? "";
+      const authorization = config.headers?.Authorization as string | undefined;
+      calls.push({ path, authorization });
+      let status = 200;
+      let data: unknown = null;
+      if (path === "/auth/refresh") {
+        status = refreshStatus;
+        data = { access_token: fresh, username: "operator", role: "operator" };
+      } else if (authorization !== `Bearer ${fresh}`) {
+        status = 401;
+      }
+      const response = { data, status, statusText: "", headers: {}, config };
+      if (status >= 400) {
+        throw Object.assign(new Error(`Request failed with status code ${status}`), {
+          isAxiosError: true,
+          config,
+          response: response as AxiosResponse,
+        });
+      }
+      return response as AxiosResponse;
+    };
+  }
+
+  it("renews an expired token and replays the request for a user who is active", async () => {
+    setAccessToken(tokenIssuedAt(Date.now() - 20 * 60_000, "stale"));
+    noteActivity(Date.now());
+    serve();
+
+    const response = await api.get("/runs");
+    expect(response.status).toBe(200);
+    expect(calls.map((call) => call.path)).toEqual(["/runs", "/auth/refresh", "/runs"]);
+    expect(calls[2].authorization).toBe(`Bearer ${fresh}`);
+    expect(getAccessToken()).toBe(fresh);
+  });
+
+  it("lets an idle console go instead of renewing it on a background poll", async () => {
+    // The token was minted after the last thing the user did, so nothing but
+    // polling has happened since — renewing here would defeat the idle timeout.
+    setAccessToken(tokenIssuedAt(Date.now() + 60 * 60_000, "idle"));
+    serve();
+
+    await expect(api.get("/runs")).rejects.toThrow("401");
+    expect(calls.map((call) => call.path)).toEqual(["/runs"]);
+    expect(getAccessToken()).toBeNull();
+    expect(window.location.href).toBe("/login");
+  });
+
+  it("signs out when the server refuses the refresh", async () => {
+    setAccessToken(tokenIssuedAt(Date.now() - 20 * 60_000, "stale"));
+    noteActivity(Date.now());
+    serve(401);
+
+    await expect(api.get("/runs")).rejects.toThrow("401");
+    // One refresh attempt, and no loop: /auth/refresh is never itself retried.
+    expect(calls.map((call) => call.path)).toEqual(["/runs", "/auth/refresh"]);
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it("sends one refresh for any number of requests that expired together", async () => {
+    // Two refreshes with one cookie look like theft to the server, which ends
+    // the session — so concurrent 401s must share a single exchange.
+    setAccessToken(tokenIssuedAt(Date.now() - 20 * 60_000, "stale"));
+    noteActivity(Date.now());
+    serve();
+
+    await Promise.all([api.get("/runs"), api.get("/runs"), api.get("/runs")]);
+    expect(calls.filter((call) => call.path === "/auth/refresh")).toHaveLength(1);
+  });
+
+  it("takes the token another tab already refreshed instead of spending the cookie again", async () => {
+    const stale = tokenIssuedAt(Date.now() - 20 * 60_000, "stale");
+    setAccessToken(stale);
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        // Another tab held the lock and refreshed while this one waited.
+        request: async <T,>(_name: string, callback: () => Promise<T>) => {
+          setAccessToken(fresh);
+          return callback();
+        },
+      },
+    });
+    serve();
+
+    await expect(refreshAccessToken()).resolves.toBe(fresh);
+    expect(calls).toEqual([]);
   });
 });

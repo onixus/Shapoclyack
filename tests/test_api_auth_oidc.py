@@ -492,6 +492,44 @@ def test_the_console_redirect_carries_the_token_in_the_fragment(
     assert "?access_token=" not in location
 
 
+def test_an_sso_session_is_refreshable_and_its_refresh_token_is_never_in_the_url(
+    tmp_path, monkeypatch, provider
+):
+    """#314: SSO sign-ins get the same cookie a password login does.
+
+    The fragment is read by console script, which is precisely what the
+    refresh token is kept away from — so it rides on the redirect as an
+    httpOnly cookie and appears nowhere in the ``Location``.
+    """
+    from api.routes._session_cookie import REFRESH_COOKIE
+
+    settings = sso_settings(
+        tmp_path,
+        oidc_jit_provisioning=True,
+        oidc_post_login_redirect="https://console.example/login",
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    state = start_login(client)
+    stored = latest_pending_state()
+    provider.token_response = {"id_token": make_id_token(nonce=stored.nonce)}
+    response = client.get(
+        f"/api/auth/oidc/callback?code=c&state={state}", follow_redirects=False
+    )
+    assert response.status_code == 303
+    cookies = [
+        header
+        for header in response.headers.get_list("set-cookie")
+        if header.startswith(f"{REFRESH_COOKIE}=")
+    ]
+    assert len(cookies) == 1
+    assert "httponly" in cookies[0].lower()
+    pair = cookies[0].split(";", 1)[0]
+    assert pair.split("=", 1)[1] not in response.headers["location"]
+
+    refreshed = client.post("/api/auth/refresh", headers={"Cookie": pair})
+    assert refreshed.status_code == 200, refreshed.text
+
+
 def test_the_next_path_cannot_inject_extra_fragment_parameters(
     tmp_path, monkeypatch, provider
 ):

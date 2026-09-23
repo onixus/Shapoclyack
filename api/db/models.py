@@ -321,6 +321,76 @@ class RevokedToken(Base):
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
+class SessionFamily(Base):
+    """One console sign-in and every refresh token it has been rotated through (#314).
+
+    A login, an SSO callback or the second leg of an MFA login opens one of
+    these; ``POST /api/auth/refresh`` extends it; nothing else creates a row.
+    The access tokens minted for it quote ``family_id`` as their ``sid`` claim,
+    so ending the family ends them too, on the next request rather than at
+    their own ``exp``.
+
+    Three clocks, all naive UTC:
+
+    * ``expires_at`` — the absolute end, ``OCTO_JWT_EXPIRE_MINUTES`` after the
+      sign-in. Refreshing never moves it: a stolen refresh token rotated
+      forever still stops here.
+    * ``last_used_at`` — the last sign-in or refresh. A refresh further than
+      ``OCTO_SESSION_IDLE_MINUTES`` from it is refused: the idle timeout.
+    * ``revoked_at`` — set by logout, by a refresh token presented twice
+      (``revoked_reason='reuse'``), and by the idle and absolute refusals, so
+      the row says why the session ended rather than only that it did.
+
+    ``token_version`` is the account's generation at sign-in. A refresh is
+    refused once the account's has moved on, which is how disable, demote,
+    password change and ``revoke-all`` reach the refresh token as well as the
+    access token — none of them has to know this table exists.
+
+    ``mfa_verified_at`` is carried from the session that proved the factor to
+    every access token refreshed from it, so a refresh neither loses a step-up
+    nor makes an old one look new.
+    """
+
+    __tablename__ = "session_families"
+
+    family_id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    token_version: Mapped[int]
+    created_at: Mapped[datetime]
+    # The sweep in ``api/services/sessions.py`` reads this index.
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    last_used_at: Mapped[datetime]
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(default=None)
+
+
+class RefreshToken(Base):
+    """One refresh token of a :class:`SessionFamily`, stored as its digest (#314).
+
+    The browser holds the plaintext in an httpOnly cookie; this row holds
+    ``sha256`` of it. A plain digest rather than bcrypt, unlike a password or a
+    service token: the value is 256 random bits the server chose, so there is
+    nothing to brute-force, and the lookup has to be by the digest itself.
+
+    ``used_at`` is set the moment the token is exchanged. A second presentation
+    of a row that already has one is the reuse the rotation exists to detect —
+    one of the two presenters is not the browser the session was issued to —
+    and ends the whole family.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    token_hash: Mapped[str] = mapped_column(primary_key=True)
+    family_id: Mapped[str] = mapped_column(
+        ForeignKey("session_families.family_id", ondelete="CASCADE"), index=True
+    )
+    issued_at: Mapped[datetime]
+    used_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
 class AuthEvent(Base):
     """One console-authentication attempt: the audit trail *and* the rate limiter (#157).
 

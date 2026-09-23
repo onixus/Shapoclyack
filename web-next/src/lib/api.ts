@@ -1,6 +1,7 @@
 import axios from "axios";
+import { activeSinceIssued, lastActivity } from "@/lib/session";
 import { isStepUpRefusal, useStepUpStore } from "@/lib/step-up";
-import type { AxiosError } from "axios";
+import type { AxiosError, InternalAxiosRequestConfig } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
 const TENANT_KEY = "shapoclyack_active_tenant";
@@ -68,10 +69,105 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/** For the requests that set, send or clear the refresh-token cookie (#314).
+ * Same-origin requests carry cookies anyway; this is for a console served from
+ * a different origin than `NEXT_PUBLIC_API_BASE_URL`. Only these calls: the
+ * cookie is scoped to `/api/auth`, and nothing else needs credentials. */
+const WITH_REFRESH_COOKIE = { withCredentials: true } as const;
+
+/** Routes whose 401 is the answer rather than an expired access token: retrying
+ * them after a refresh would either loop (`/auth/refresh` itself) or turn a
+ * refused credential into a second attempt nobody asked for. */
+const REFRESH_EXEMPT = [
+  "/auth/login",
+  "/auth/refresh",
+  "/auth/logout",
+  "/auth/mfa/verify",
+  "/auth/sessions/revoke-all",
+];
+
+/** Name of the Web Lock that serialises refreshes across this origin's tabs. */
+const REFRESH_LOCK = "shapoclyack-session-refresh";
+
+let refreshInFlight: Promise<string | null> | null = null;
+
+type LockManagerLike = {
+  request: <T>(name: string, callback: () => Promise<T>) => Promise<T>;
+};
+
+/** Run `fn` holding the cross-tab refresh lock, where the browser has one. */
+function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks =
+    typeof navigator !== "undefined"
+      ? (navigator as unknown as { locks?: LockManagerLike }).locks
+      : undefined;
+  return locks?.request ? locks.request(REFRESH_LOCK, fn) : fn();
+}
+
+/** Exchange the refresh-token cookie for a new access token (#314).
+ *
+ * Returns the new token, or `null` when the session could not be extended —
+ * refused (the 401 goes through the interceptor below, which signs the console
+ * out) or unreachable.
+ *
+ * Serialised twice over, because the server treats a refresh token presented
+ * twice as stolen and ends the session: one refresh at a time in this tab (the
+ * in-flight promise is shared), and one at a time across tabs (a Web Lock).
+ * Inside the lock the stored token is compared with the one this tab started
+ * from — if another tab refreshed while this one waited, its token is used and
+ * the cookie, which that tab has already rotated, is left alone. */
+export function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight) {
+    const startedWith = getAccessToken();
+    refreshInFlight = withRefreshLock(async () => {
+      const current = getAccessToken();
+      if (current && current !== startedWith) return current;
+      try {
+        const { data } = await api.post<LoginResult>(
+          "/auth/refresh",
+          null,
+          WITH_REFRESH_COOKIE,
+        );
+        if (!data.access_token) return null;
+        setAccessToken(data.access_token);
+        return data.access_token;
+      } catch {
+        return null;
+      }
+    }).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+function isRefreshExempt(url: string | undefined): boolean {
+  const path = (url ?? "").split("?")[0];
+  return REFRESH_EXEMPT.some((exempt) => path === exempt || path.endsWith(exempt));
+}
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error?.response?.status === 401 && typeof window !== "undefined") {
+      // An expired access token is renewed once and the request replayed — but
+      // only for a user who has touched the console since the token was minted
+      // (`@/lib/session`). A console left polling on its own is let go, which
+      // is what the idle timeout is for.
+      const config = error.config as (InternalAxiosRequestConfig & { _refreshed?: boolean }) | undefined;
+      if (
+        config &&
+        !config._refreshed &&
+        !isRefreshExempt(config.url) &&
+        activeSinceIssued(getAccessToken(), lastActivity())
+      ) {
+        const token = await refreshAccessToken();
+        if (token) {
+          config._refreshed = true;
+          config.headers.Authorization = `Bearer ${token}`;
+          return api.request(config);
+        }
+      }
       setAccessToken(null);
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -1036,7 +1132,11 @@ export type LoginResult = {
 
 export async function login(username: string, password: string): Promise<LoginResult> {
   try {
-    const { data } = await api.post<LoginResult>("/auth/login", { username, password });
+    const { data } = await api.post<LoginResult>(
+      "/auth/login",
+      { username, password },
+      WITH_REFRESH_COOKIE,
+    );
     // Only a real session is stored. Storing the challenge token would put a
     // credential that opens one endpoint into the slot every request reads
     // from, and every one of those requests would 401.
@@ -1059,11 +1159,15 @@ export async function verifyMfa(body: {
   recovery_code?: string;
 }): Promise<LoginResult> {
   try {
-    const { data } = await api.post<LoginResult>("/auth/mfa/verify", {
-      mfa_token: body.mfa_token ?? undefined,
-      code: body.code || undefined,
-      recovery_code: body.recovery_code || undefined,
-    });
+    const { data } = await api.post<LoginResult>(
+      "/auth/mfa/verify",
+      {
+        mfa_token: body.mfa_token ?? undefined,
+        code: body.code || undefined,
+        recovery_code: body.recovery_code || undefined,
+      },
+      WITH_REFRESH_COOKIE,
+    );
     if (data.access_token) setAccessToken(data.access_token);
     return data;
   } catch (error) {
@@ -1182,7 +1286,7 @@ export type LogoutOutcome = "ended" | "already-ended" | "uncertain";
 export async function logout(): Promise<LogoutOutcome> {
   let outcome: LogoutOutcome = "ended";
   try {
-    await api.post("/auth/logout");
+    await api.post("/auth/logout", null, WITH_REFRESH_COOKIE);
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
     if (status === 401 || status === 403) {
@@ -1198,7 +1302,7 @@ export async function logout(): Promise<LogoutOutcome> {
 /** The fallback path of `logout()`: succeeded or not, no message to render. */
 async function revokeAllQuietly(): Promise<boolean> {
   try {
-    await api.post("/auth/sessions/revoke-all");
+    await api.post("/auth/sessions/revoke-all", null, WITH_REFRESH_COOKIE);
     return true;
   } catch {
     return false;
@@ -1212,7 +1316,7 @@ async function revokeAllQuietly(): Promise<boolean> {
  * they choose, and the local token is kept because nothing was ended. */
 export async function revokeAllSessions() {
   try {
-    await api.post("/auth/sessions/revoke-all");
+    await api.post("/auth/sessions/revoke-all", null, WITH_REFRESH_COOKIE);
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

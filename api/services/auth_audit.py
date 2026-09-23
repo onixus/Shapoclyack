@@ -109,6 +109,10 @@ REASON_NOT_BREAK_GLASS = "local_login_not_break_glass"
 #: A break-glass account signed in with a password while SSO was configured.
 #: A success, and one an operator is expected to be able to account for.
 REASON_BREAK_GLASS = "break_glass_login"
+#: A console refresh token was presented after it had already been exchanged
+#: (#314): somebody other than the browser it was issued to held a copy. The
+#: whole session is ended, and this row is the only place that says why.
+REASON_REFRESH_REUSE = "refresh_token_reuse"
 
 _SSO_ACTION_REASONS = {
     "signin": REASON_SSO_SIGNIN,
