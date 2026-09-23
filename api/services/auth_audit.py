@@ -109,6 +109,10 @@ REASON_NOT_BREAK_GLASS = "local_login_not_break_glass"
 #: A break-glass account signed in with a password while SSO was configured.
 #: A success, and one an operator is expected to be able to account for.
 REASON_BREAK_GLASS = "break_glass_login"
+#: A console refresh token was presented after it had already been exchanged
+#: (#314): somebody other than the browser it was issued to held a copy. The
+#: whole session is ended, and this row is the only place that says why.
+REASON_REFRESH_REUSE = "refresh_token_reuse"
 
 _SSO_ACTION_REASONS = {
     "signin": REASON_SSO_SIGNIN,
@@ -249,12 +253,16 @@ def _record(
     )
 
 
-def record_denied(*, username: str, reason: str, detail: str | None = None) -> None:
+def record_denied(
+    *, username: str, reason: str, detail: str | None = None, client_ip: str = ""
+) -> None:
     """Record one authorization refusal of an already-authenticated principal.
 
     Used by the scan-scope barriers (#226), which run in the service layer and
     therefore have no request to read a client address from — ``client_ip`` is
-    left empty rather than guessed, and ``detail`` carries what was refused.
+    left empty rather than guessed, and ``detail`` carries what was refused. A
+    route that has the request passes it: a reused refresh token (#314) is
+    exactly the refusal where the address is what the operator goes looking for.
 
     Writes in its own transaction: unlike a login attempt, this decision was
     not taken under the limiter's serialized lock and shares nothing with it.
@@ -264,7 +272,7 @@ def record_denied(*, username: str, reason: str, detail: str | None = None) -> N
         _record(
             session,
             username=username,
-            client_ip="",
+            client_ip=client_ip,
             outcome=OUTCOME_DENIED,
             reason=reason,
             detail=detail,

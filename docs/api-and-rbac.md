@@ -78,15 +78,17 @@ Two claims and one header carry this:
 |---|---|---|
 | `ver` | claim | The account's `token_version` when the token was minted. A mismatch is a 401 |
 | `jti` | claim | Per-token id. What `POST /api/auth/logout` puts on the denylist |
+| `sid` | claim | The session family (one per sign-in) the token was refreshed within. An ended family is a 401 — see [Refresh tokens](#refresh-tokens-and-the-idle-timeout) |
 | `kid` | header | Which signing key signed it — see [Key rotation](#jwt-signing-key-rotation) |
 
 ```http
+POST /api/auth/refresh                          # cookie only — next access token, rotated cookie
 POST /api/auth/logout                           # any role — ends this session only
 POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
 POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
 ```
 
-All three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
+The last three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
 until its own `exp` and is idempotent; the two `revoke-all` routes increment
 `users.token_version`, which invalidates every token quoting the old value —
 including the caller's own, which is the point. `revoke-all` on an account that
@@ -118,6 +120,74 @@ Changing your own password (`POST /api/auth/password`) ends **every** session
 of the account, the one making the request included: the console lands back on
 the login form. That is deliberate — a rotation is usually "somebody may have
 my password", and the session that survives it is the one that mattered.
+
+### Refresh tokens and the idle timeout
+
+A console session is two tokens. The **access token** is the bearer token
+above, returned in the body of `POST /api/auth/login`, of the second leg of
+`POST /api/auth/mfa/verify` and of the SSO callback; it lives
+`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` (15 by default). The **refresh token** is set
+by the same responses as a cookie and never appears in a body or a URL:
+
+```http
+Set-Cookie: shapoclyack_refresh=…; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=…
+```
+
+```http
+POST /api/auth/refresh      # no bearer token, no body — the cookie is the credential
+```
+
+answers `200` with the same body as a login (`access_token`, `role`,
+`username`) and a **new** cookie: every refresh rotates the refresh token, and
+the one presented is spent. The server keeps only `sha256` of each refresh
+token (`refresh_tokens`), grouped into one row per sign-in
+(`session_families`), whose id every access token carries as its `sid` claim.
+
+| Refused with `401` (cookie cleared) when | The session family is |
+|---|---|
+| the refresh token was **already used** — somebody else holds a copy | ended (`reuse`), and a `denied` / `refresh_token_reuse` row, with the client address it was presented from, is written to `GET /api/auth/events` |
+| `OCTO_JWT_EXPIRE_MINUTES` have passed since the sign-in | ended (`expired`) |
+| more than `OCTO_SESSION_IDLE_MINUTES` since the last refresh | ended (`idle`) |
+| the account was disabled, deleted, demoted, had its password changed or its sessions revoked | ended (`revoked`) |
+| the session was logged out, or the cookie is unknown or missing | already ended / untouched |
+
+Ending a family refuses its access tokens on their **next request** too
+(`sid` is checked with `ver` and `jti`), so a detected reuse or a logout does
+not wait out the access token's fifteen minutes. A refresh is never extended
+past the sign-in's absolute end, and the access token it returns is cut short
+to that end if needed. An unreachable session store is a `503` with
+`Retry-After`, and the cookie is left alone. Everything the new access token
+needs is read inside the rotation's own transaction, so nothing between spending
+the presented token and returning its successor can fail on the database and
+leave the browser holding a spent cookie.
+
+There is no grace window for a refresh token presented twice: two tabs racing
+one cookie are indistinguishable from a thief racing the browser. The console
+serialises its refreshes (one in flight per tab, and a Web Lock across tabs —
+or, outside a secure context where there is no Web Lock, a best-effort lock in
+`localStorage`), so the ways it meets this refusal are a response lost on the
+network after the server rotated, and two tabs of a plain-http dev stand
+winning the storage lock's narrow race — each costs a sign-in, not a session
+anyone else can use.
+
+`POST /api/auth/logout` ends the family its access token names and the one the
+cookie belongs to, and clears the cookie. The bearer token is optional when the
+cookie is sent: a console whose access token has already expired still holds an
+eight-hour refresh cookie, and logout with the cookie alone ends that family
+(`204`). With neither a live access token nor a cookie it is a `401`.
+`revoke-all` ends every family of the account. A step-up (`POST /api/auth/mfa/verify` with a bearer token) stays in
+its session: it stamps the family, so refreshed access tokens keep
+`mfa_verified_at` — the original time, never a new one, so a refresh does not
+extend a step-up past `OCTO_MFA_STEPUP_MINUTES`.
+
+The cookie is `SameSite=Strict` and scoped to `/api/auth`, so a cross-site page
+cannot make the browser present it — which matters because a forced rotation
+would otherwise be read as reuse and sign the user out. CORS still matters for
+a console served from a *sibling* origin: keep `OCTO_API_CORS` to the exact
+console origins (it is refused as `*` in `prod`).
+
+Tokens without a `sid` — anything minted before migration 0060 — are checked
+exactly as before and cannot be refreshed; they run out at their own `exp`.
 
 ### JWT signing key rotation
 

@@ -25,7 +25,7 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from api.auth import (
@@ -43,6 +43,7 @@ from api.auth import (
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.routes._audit import AuditDep
+from api.routes._session_cookie import issue_session, set_refresh_cookie
 from api.schemas import (
     MfaConfirmRequest,
     MfaDisableRequest,
@@ -54,6 +55,7 @@ from api.schemas import (
 from api.services import auth_audit
 from api.services import local_login
 from api.services import mfa as mfa_service
+from api.services import sessions as sessions_service
 from api.services import users as users_service
 from api.settings import Settings
 
@@ -217,6 +219,7 @@ def confirm_totp(
 def verify_mfa(
     body: MfaVerifyRequest,
     request: Request,
+    response: Response,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LoginResponse:
@@ -244,6 +247,10 @@ def verify_mfa(
         )
 
     break_glass = False
+    # The session family a step-up re-proves the factor for. ``None`` on the
+    # login leg, which opens a new one, and for a pre-refresh-token session,
+    # which has none to stamp and is given one (#314).
+    stepping_up: str | None = None
     if body.mfa_token:
         challenge = decode_pre_auth_token(settings, body.mfa_token)
         username = challenge.username
@@ -253,7 +260,9 @@ def verify_mfa(
         # carrying ``mfa_pending`` must be able to reach this, and so must one
         # that is merely stepping up. The dependency's enrolment gate would
         # otherwise decide that for us before this route is entered.
-        username = decode_token(settings, credentials.credentials).username
+        current = decode_token(settings, credentials.credentials)
+        username = current.username
+        stepping_up = current.session_id
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -286,8 +295,22 @@ def verify_mfa(
     # stamp and the deadline that measures it can never come from two sources.
     verified_at = mfa_service.now_utc()
     try:
-        token = create_access_token(settings, principal, mfa_verified_at=verified_at)
-    except LookupError as exc:
+        if stepping_up is not None:
+            # A step-up stays in the session it was made in: the family is
+            # stamped, so the access tokens refreshed from it keep the proof,
+            # and the refresh cookie the browser holds is still the right one.
+            session_end = sessions_service.record_step_up(settings, stepping_up, verified_at)
+            token = create_access_token(
+                settings,
+                principal,
+                session_id=stepping_up,
+                session_expires_at=session_end,
+                mfa_verified_at=verified_at,
+            )
+        else:
+            token, opened = issue_session(settings, principal, mfa_verified_at=verified_at)
+            set_refresh_cookie(response, settings, opened)
+    except (LookupError, PermissionError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
         ) from exc

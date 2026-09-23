@@ -61,7 +61,8 @@ export const en = {
 
   "auth.loading": "Loading session…",
   "auth.redirecting": "Redirecting to login…",
-  "session.expiringSoon": "Your session ends in {minutes} min. Sign in again to keep working.",
+  "session.expiringSoon": "Your session ends in {minutes} min because the console has been idle.",
+  "session.staySignedIn": "Stay signed in",
   "session.expired": "Your session has ended. Sign in again before you carry on — unsaved work here will not be sent.",
   "session.signInAgain": "Sign in again",
   "session.logoutUncertain": "The server did not confirm the sign-out — this session may still be active. End every session from the account menu.",
@@ -1520,7 +1521,8 @@ export const ru: Record<MsgKey, string> = {
 
   "auth.loading": "Загрузка сессии…",
   "auth.redirecting": "Переход на страницу входа…",
-  "session.expiringSoon": "Сессия завершится через {minutes} мин. Войдите заново, чтобы продолжить.",
+  "session.expiringSoon": "Сессия завершится через {minutes} мин: консолью давно не пользовались.",
+  "session.staySignedIn": "Остаться в системе",
   "session.expired": "Сессия истекла. Войдите заново — несохранённое на этой странице отправить не удастся.",
   "session.signInAgain": "Войти заново",
   "session.logoutUncertain": "Сервер не подтвердил выход — сессия могла остаться активной. Завершите все сессии в меню аккаунта.",

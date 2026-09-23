@@ -4,6 +4,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Refresh tokens, rotation with reuse detection, and an idle timeout for
+  console sessions** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
+  A sign-in now yields a short access token (`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES`,
+  15) and a refresh token in an `HttpOnly; Secure; SameSite=Strict;
+  Path=/api/auth` cookie, stored server-side only as `sha256`.
+  `POST /api/auth/refresh` exchanges the cookie for the next access token and
+  **rotates** it; a refresh token presented a second time ends the whole
+  session — its refresh token and, through the new `sid` claim, its access
+  tokens on their next request — and is written to the auth trail as
+  `refresh_token_reuse`. A refresh more than `OCTO_SESSION_IDLE_MINUTES` (30)
+  after the previous one is refused, and none extends a sign-in past
+  `OCTO_JWT_EXPIRE_MINUTES`. Password login, the MFA second leg and SSO all
+  issue the cookie; logout and `revoke-all` end it; a step-up stamps the
+  session so refreshed tokens keep, but never renew, `mfa_verified_at`.
+  Migration `0060_refresh_tokens` (`session_families`, `refresh_tokens`),
+  expand-only. The console renews silently — only after user activity since
+  the current token, so an unattended console still times out — and
+  serialises refreshes across tabs with a Web Lock (a best-effort
+  `localStorage` lock outside a secure context, i.e. a plain-http dev stand,
+  where two tabs racing can still cause a reuse sign-out), backing off for
+  `Retry-After` when a refresh fails. Logout works with the refresh cookie
+  alone, so an expired access token no longer leaves the cookie alive. New
+  `OCTO_REFRESH_COOKIE_SECURE` (on in `prod`, where `false` refuses startup;
+  off by default in `dev`, like HSTS).
+
+### Changed
+
+- **`OCTO_JWT_EXPIRE_MINUTES` is now the absolute session length, not the
+  access token's lifetime.** Console access tokens last
+  `OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` (15 minutes). A script that signs in with
+  a password and reuses the token for hours must now refresh it — or use a
+  service token, which is what automation should hold anyway. An idle timeout
+  no longer than the access token refuses startup in every environment.
+
 ## [0.46-0922] — 2026-09-22
 
 ### Added

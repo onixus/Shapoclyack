@@ -6,7 +6,7 @@ import urllib.parse
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from api.auth import (
     LoginRequest,
@@ -20,6 +20,7 @@ from api.auth import (
     create_access_token,
     create_pre_auth_token,
     get_current_user,
+    get_current_user_if_any,
     get_settings,
     require_path_tenant_permission,
     require_platform_permission,
@@ -54,6 +55,12 @@ from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
+from api.routes._session_cookie import (
+    REFRESH_COOKIE,
+    clear_refresh_cookie,
+    issue_session,
+    set_refresh_cookie,
+)
 from api.services import agents as agents_service
 from api.services import auth as auth_service
 from api.services import auth_audit
@@ -92,6 +99,7 @@ def _client_ip(request: Request, settings: Settings) -> str:
 def login(
     body: LoginRequest,
     request: Request,
+    response: Response,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LoginResponse:
     """Exchange console credentials for a bearer token, or for a challenge.
@@ -113,6 +121,11 @@ def login(
       enrolled — a session is issued carrying ``mfa_pending``, which reaches the
       enrolment routes and nothing else (:func:`api.auth.get_current_user`);
     * otherwise, exactly the session this endpoint has always returned.
+
+    A session is now two tokens (#314): the short-lived ``access_token`` in the
+    body, and a refresh token in an httpOnly cookie that
+    ``POST /api/auth/refresh`` exchanges for the next access token. A
+    challenge sets no cookie — nothing has been signed in yet.
     """
     client_ip = _client_ip(request, settings)
     try:
@@ -174,7 +187,7 @@ def login(
     # page instead of discovering it as a 403 on the dashboard.
     pending = mfa_service.required_for_role(settings, user.role.value)
     try:
-        token = create_access_token(settings, user)
+        token, opened = issue_session(settings, user)
     except LookupError as exc:
         # The account was deleted between the credential check and here. The
         # same refusal as a wrong password: a race with a deletion is not a
@@ -182,6 +195,7 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         ) from exc
+    set_refresh_cookie(response, settings, opened)
     if break_glass:
         local_login.record_break_glass(settings, username=user.username, client_ip=client_ip)
     return LoginResponse(
@@ -195,9 +209,92 @@ def login(
     )
 
 
+@router.post("/auth/refresh", response_model=LoginResponse)
+def refresh(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    """Exchange the refresh-token cookie for a new access token and a new cookie (#314).
+
+    Takes no bearer token — the access token may already have expired, which
+    is the point — and no body: the only input is the httpOnly cookie
+    ``POST /api/auth/login`` (or the MFA or SSO equivalent) set. Every refresh
+    **rotates** it: the presented token is spent and the response carries its
+    successor, so a copy taken at any moment is good for one exchange at most.
+
+    A refused refresh is a ``401`` that also clears the cookie, whichever of
+    these it was — a token already exchanged once (reuse: the whole session is
+    ended and the event written to the auth trail), the session's absolute
+    end (``OCTO_JWT_EXPIRE_MINUTES``), the idle timeout
+    (``OCTO_SESSION_IDLE_MINUTES``), a logout, or an account disabled, demoted
+    or revoked since the sign-in. One message for all of them, as for a dead
+    access token. An unreachable session store is a ``503``, as everywhere
+    else: the session was not refused, it could not be checked.
+    """
+    presented = request.cookies.get(REFRESH_COOKIE)
+    if not presented:
+        return _refresh_refused(settings, "No refresh token")
+    try:
+        rotated = sessions_service.rotate(settings, presented)
+    except sessions_service.RefreshTokenReused as exc:
+        # The one refusal worth an operator's attention: somebody other than
+        # the browser the session was issued to held a copy of its refresh
+        # token. Which of the two presented it first is unknowable, so both
+        # are now signed out.
+        # The address it was presented from is the first thing whoever reads
+        # this row needs (docs/operations.md § Sessions and revocation).
+        auth_audit.record_denied(
+            username=exc.username,
+            reason=auth_audit.REASON_REFRESH_REUSE,
+            detail=f"refresh token presented twice; session {exc.family_id} ended",
+            client_ip=_client_ip(request, settings),
+        )
+        return _refresh_refused(settings, "Session is no longer valid")
+    except PermissionError:
+        return _refresh_refused(settings, "Session is no longer valid")
+    except sessions_service.SessionStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store is unavailable, try again",
+            headers={"Retry-After": "5"},
+        ) from exc
+    # From here on the presented token is spent and committed, so nothing below
+    # may touch the database: a failure that answered without the successor
+    # cookie would leave the browser holding the spent one, and its next
+    # refresh would be read as theft. ``rotate`` returned everything needed.
+    try:
+        role = Role(rotated.role)
+    except ValueError:
+        # A role the table cannot spell is a broken row, not a viewer.
+        return _refresh_refused(settings, "Session is no longer valid")
+    token = create_access_token(
+        settings,
+        TokenUser(username=rotated.username, role=role),
+        session_id=rotated.family_id,
+        session_expires_at=rotated.expires_at,
+        mfa_verified_at=rotated.mfa_verified_at,
+        token_version=rotated.token_version,
+    )
+    answer = JSONResponse(
+        LoginResponse(access_token=token, role=role, username=rotated.username).model_dump(
+            mode="json"
+        )
+    )
+    set_refresh_cookie(answer, settings, rotated)
+    return answer
+
+
+def _refresh_refused(settings: Settings, detail: str) -> JSONResponse:
+    """A ``401`` that also takes the dead cookie out of the browser."""
+    answer = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": detail})
+    clear_refresh_cookie(answer, settings)
+    return answer
+
+
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
-    user: Annotated[TokenUser, Depends(get_current_user)],
+    request: Request,
+    user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     """End *this* session and no other (#314).
@@ -205,6 +302,12 @@ def logout(
     The presented token's ``jti`` goes on the denylist until its own ``exp``,
     so signing out on a laptop leaves the phone signed in. "Everywhere" is the
     next endpoint down.
+
+    The refresh-token half goes with it: the session family the access token
+    names is ended, and so is the one the cookie belongs to when that differs
+    (a browser that signed in twice holds the newer cookie), and the cookie is
+    cleared. Without that, signing out would leave an eight-hour credential in
+    the browser that could mint the next access token.
 
     Refused rather than answered with a 204 that did nothing when the presented
     credential has no ``jti`` to deny. In practice that is a console token
@@ -215,7 +318,24 @@ def logout(
     right: a service token is a credential, revoked with
     ``POST /api/tenants/{tenant_id}/service-tokens/{token_id}/revoke``, not a
     session.
+
+    The bearer token is optional when the cookie is there. A console whose
+    access token has already expired — or been revoked — still holds the
+    refresh cookie, and that is the credential worth ending: the cookie alone
+    ends its family and is cleared, ``204``. With neither a live session nor a
+    cookie there is nothing to end, and the answer is the ``401`` it has always
+    been.
     """
+    presented = request.cookies.get(REFRESH_COOKIE)
+    if user is None:
+        if not presented:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            )
+        sessions_service.end_session_by_refresh_token(settings, presented)
+        answer = Response(status_code=status.HTTP_204_NO_CONTENT)
+        clear_refresh_cookie(answer, settings)
+        return answer
     if user.jti is None or user.expires_at is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -228,7 +348,13 @@ def logout(
     sessions_service.revoke_token(
         settings, jti=user.jti, username=user.username, expires_at=user.expires_at
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if user.session_id is not None:
+        sessions_service.end_session(settings, user.session_id)
+    if presented:
+        sessions_service.end_session_by_refresh_token(settings, presented)
+    answer = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_refresh_cookie(answer, settings)
+    return answer
 
 
 @router.post("/auth/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
@@ -251,7 +377,11 @@ def revoke_own_sessions(
         sessions_service.revoke_all(settings, user.username)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    answer = Response(status_code=status.HTTP_204_NO_CONTENT)
+    # The generation bump has already made this browser's refresh token
+    # useless; clearing it only saves the console one refused refresh.
+    clear_refresh_cookie(answer, settings)
+    return answer
 
 
 @router.get("/auth/events", response_model=Page[AuthEventInfo])
@@ -505,6 +635,7 @@ def oidc_callback(
     # so an SSO session of a covered role is confined exactly like a password
     # one until it enrols.
     challenge: str | None = None
+    opened: sessions_service.OpenedSession | None = None
     try:
         if mfa_service.is_enabled(settings, token_user.username):
             challenge = create_pre_auth_token(
@@ -514,7 +645,7 @@ def oidc_callback(
             )
             token = ""
         else:
-            token = create_access_token(settings, token_user)
+            token, opened = issue_session(settings, token_user)
     except LookupError as exc:  # the account was deleted mid-callback
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Single sign-on failed"
@@ -538,7 +669,15 @@ def oidc_callback(
             # ``&``-separated parameters, so an unescaped path could append
             # parameters of its own to the URL the console is about to parse.
             landing = f"{landing}&next={urllib.parse.quote(next_url, safe='/')}"
-        return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
+        redirect = RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
+        # The refresh token rides in the cookie, never in the fragment: the
+        # fragment is read by script, which is exactly what the cookie is
+        # there to keep it away from. SameSite=Strict does not stop a cookie
+        # being *set* by the response to the IdP's top-level redirect, only
+        # being sent on one.
+        if opened is not None:
+            set_refresh_cookie(redirect, settings, opened)
+        return redirect
     if challenge:
         return LoginResponse(
             username=token_user.username,
@@ -546,9 +685,14 @@ def oidc_callback(
             mfa_token=challenge,
             expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
         )
-    return LoginResponse(
-        access_token=token, role=token_user.role, username=token_user.username
+    answer = JSONResponse(
+        LoginResponse(
+            access_token=token, role=token_user.role, username=token_user.username
+        ).model_dump(mode="json")
     )
+    if opened is not None:
+        set_refresh_cookie(answer, settings, opened)
+    return answer
 
 
 @router.post("/auth/agent/token", response_model=AgentTokenResponse)
