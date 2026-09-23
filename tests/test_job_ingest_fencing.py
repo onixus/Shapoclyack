@@ -34,6 +34,7 @@ from api.services import run_publisher
 from api.services import artifact_store
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
+from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
 from api.services.jobs import get_job
 from tests.conftest import approve_scan_scope, make_settings, requires_postgres
@@ -62,6 +63,12 @@ def settings(tmp_path: Path):
     jobs_service.reset_for_tests(base)
     run_publisher.reset_for_tests(base)
     return base
+
+
+
+def _ref(run_id, tenant: str = "default") -> artifact_keys.RunRef:
+    """Where an agent's run lands: under the job's tenant (#427)."""
+    return artifact_keys.run_ref(str(run_id), tenant)
 
 
 def _archive(marker: str) -> bytes:
@@ -111,7 +118,9 @@ def _ingest_leftovers(settings) -> list[str]:
     root = Path(settings.output_dir) / "runs"
     if not root.is_dir():
         return []
-    return sorted(child.name for child in root.iterdir() if child.name.startswith(".ingest-"))
+    # Beside the run, which since #427 is under the tenant: a helper that only
+    # looked at ``runs/`` itself would now answer "nothing left" for ever.
+    return sorted(child.name for child in root.rglob(".ingest-*"))
 
 
 def _expire_lease(settings, job_id: str) -> None:
@@ -166,7 +175,7 @@ def test_a_stalled_ingest_cannot_finish_the_attempt_that_replaced_it(settings, m
     assert row.finished_at is None
     # And nothing the rejected ingest extracted may be visible as this run's
     # artifacts: the staging directory is bound to the attempt, not to the run.
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert not (run_dir / "stale.json").exists()
 
 
@@ -211,7 +220,7 @@ def test_the_reissued_attempt_still_completes_after_the_stale_one_is_rejected(
     )
     assert done.status == "succeeded"
 
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert (run_dir / "fresh.json").exists()
     assert not (run_dir / "stale.json").exists()
 
@@ -336,7 +345,7 @@ def test_a_store_failure_leaves_the_run_owed_rather_than_lost(settings, monkeypa
     assert done.status == "succeeded"
     # The run is not visible yet, and the installation says so rather than
     # offering an empty scan.
-    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    assert not artifact_workspace.run_dir(settings, _ref(run_id), refresh=False).is_dir()
     owed = run_publisher.pending_publications(settings, job.job_id)
     assert [row.status for row in owed] == ["pending"]
     assert "bucket unreachable" in (owed[0].last_error or "")
@@ -353,7 +362,7 @@ def test_a_store_failure_leaves_the_run_owed_rather_than_lost(settings, monkeypa
     down["store"] = False
     assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
 
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert (run_dir / "fresh.json").is_file()
     assert run_publisher.pending_publications(settings, job.job_id) == []
     assert not staging.exists()
@@ -454,7 +463,7 @@ def test_a_deferred_publication_does_not_send_a_second_ingest_message(settings, 
     # the publication itself is not held open by the broker either.
     assert done.status == "succeeded"
     assert (
-        artifact_workspace.run_dir(settings, str(run_id), refresh=False) / "fresh.json"
+        artifact_workspace.run_dir(settings, _ref(run_id), refresh=False) / "fresh.json"
     ).is_file()
     assert published == []
     assert run_publisher.pending_publications(settings, job.job_id) == []
@@ -523,12 +532,12 @@ def test_a_run_is_never_visible_without_its_tenant_marker(settings, monkeypatch)
     )
 
     assert seen["marked_before_promotion"]
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id, tenant), refresh=False)
     marker = json.loads((run_dir / "tenant.json").read_text(encoding="utf-8"))
     assert marker["tenant_id"] == tenant
     assert marker["job_id"] == job.job_id
     # The listing's own reader, which is what puts a run in a tenant's drawer.
-    assert runs_service.run_tenant_of(settings, str(run_id)) == tenant
+    assert runs_service.run_tenant_of(settings, _ref(run_id, tenant)) == tenant
     assert runs_service.read_run_tenant(run_dir) == tenant
 
 
@@ -579,7 +588,7 @@ def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, 
     assert published == []
     # Not in the run directory, not in the store's listing, and not owed a
     # publication that would put it in either later.
-    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    assert not artifact_workspace.run_dir(settings, _ref(run_id), refresh=False).is_dir()
     assert artifact_workspace.run_ids(settings) == []
     assert run_publisher.pending_publications(settings, job.job_id) == []
     # And nothing of it is left on disk to be swept, promoted or found.
@@ -597,7 +606,7 @@ def test_a_rejected_result_reaches_neither_the_run_nor_the_ingest_bus(settings, 
         idempotency_key="upload-fresh",
     )
     assert [p["run_id"] for p in published] == [str(run_id)]
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert sorted(p.name for p in run_dir.iterdir()) == [
         "fresh.json",
         "summary.json",
@@ -659,7 +668,7 @@ def test_a_reap_during_the_publication_cannot_mix_two_attempts(settings, monkeyp
     assert done.status == "succeeded"
     assert jobs_service.claim_job(settings, "agent-1") is None
 
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert sorted(p.name for p in run_dir.iterdir()) == [
         "first.json",
         "summary.json",
@@ -694,14 +703,14 @@ def test_a_replica_killed_after_the_outcome_still_publishes_the_run(settings, mo
         idempotency_key="upload-fresh",
     )
     assert done.status == "succeeded"
-    assert not artifact_workspace.run_dir(settings, str(run_id), refresh=False).is_dir()
+    assert not artifact_workspace.run_dir(settings, _ref(run_id), refresh=False).is_dir()
     assert [row.status for row in run_publisher.pending_publications(settings, job.job_id)] == [
         "pending"
     ]
 
     # The reconciler in this or any other replica that can see the tree.
     assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
-    run_dir = artifact_workspace.run_dir(settings, str(run_id), refresh=False)
+    run_dir = artifact_workspace.run_dir(settings, _ref(run_id), refresh=False)
     assert (run_dir / "fresh.json").is_file()
     assert (run_dir / "tenant.json").is_file()
     assert run_publisher.pending_publications(settings, job.job_id) == []

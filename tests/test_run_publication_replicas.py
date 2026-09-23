@@ -477,7 +477,7 @@ def test_a_deferred_publication_puts_the_whole_run_in_the_bucket(tmp_path, monke
     artifact_workspace.reset_marker_cache()
     assert artifact_workspace.run_ids(reader) == [run_id]
     landed = sorted(
-        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))
     )
     assert landed == ["fresh.json", "summary.json", "tenant.json"]
     assert run_publisher.pending_publications(writer, job.job_id) == []
@@ -519,7 +519,7 @@ def test_a_tree_that_went_up_by_halves_is_not_left_in_the_bucket(tmp_path, monke
         "dead"
     ]
     # Nothing of the run is in the bucket, so nothing lists it.
-    assert list(store.list_prefix(keys.run_prefix(run_id))) == []
+    assert list(store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))) == []
     artifact_workspace.reset_marker_cache()
     assert artifact_workspace.run_ids(reader) == []
     # The scan is not gone, though: the extracted tree is still on the
@@ -629,7 +629,7 @@ def test_the_loser_of_a_publication_race_does_not_delete_the_published_run(
     artifact_workspace.reset_marker_cache()
     assert artifact_workspace.run_ids(reader) == [run_id]
     landed = sorted(
-        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))
     )
     assert landed == ["fresh.json", "summary.json", "tenant.json"]
     assert run_publisher.pending_publications(writer, job.job_id) == []
@@ -727,7 +727,7 @@ def test_a_loser_does_not_take_keys_back_out_of_a_tree_that_is_still_going_up(
 
     artifact_workspace.reset_marker_cache()
     landed = sorted(
-        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))
     )
     assert landed == ["fresh.json", "summary.json", "tenant.json"]
     assert artifact_workspace.run_ids(reader) == [run_id]
@@ -827,7 +827,7 @@ def test_a_peer_does_not_call_a_run_published_while_its_owner_is_still_uploading
     # And the owner, left to it, puts the whole tree up and closes the row.
     artifact_workspace.reset_marker_cache()
     landed = sorted(
-        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))
     )
     assert landed == ["fresh.json", "summary.json", "tenant.json"]
     assert artifact_workspace.run_ids(peer) == [run_id]
@@ -864,7 +864,7 @@ def test_a_rollback_removes_the_keys_this_attempt_wrote_and_no_others(
     store = artifact_store.get_store(writer)
     # Somebody else's key under this prefix: the run of a job that shared the
     # run id, or a hand-loaded artifact an operator put there.
-    store.put_bytes(keys.run_artifact(run_id, "not-ours.json"), b"{}\n")
+    store.put_bytes(keys.run_artifact(keys.run_ref(run_id, "default"), "not-ours.json"), b"{}\n")
     real_put = store.put_bytes
 
     def _refuses_halfway(key, data, **kwargs):
@@ -877,7 +877,7 @@ def test_a_rollback_removes_the_keys_this_attempt_wrote_and_no_others(
 
     assert done.status == "succeeded"
     left = sorted(entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(
-        keys.run_prefix(run_id)
+        keys.run_prefix(keys.run_ref(run_id, "default"))
     ))
     assert left == ["not-ours.json"]
     owed = run_publisher.pending_publications(writer, job.job_id)[0]

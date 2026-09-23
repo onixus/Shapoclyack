@@ -26,6 +26,8 @@ from api.services import agents as agents_service
 from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import tenants as tenants_service
+from api.services.artifact_store import keys as artifact_keys
+from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
 from tests.conftest import (
     approve_scan_scope,
@@ -39,6 +41,14 @@ from tests.conftest import (
 pytestmark = requires_postgres
 
 SETTINGS = {"job_execution_mode": "agent"}
+
+
+
+def _default_run_dir(settings: Settings, run_id: str) -> Path:
+    """Where an agent's run for the default tenant lands (``runs/_tenants/default``)."""
+    return artifact_workspace.run_dir(
+        settings, artifact_keys.run_ref(str(run_id), "default"), refresh=False
+    )
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -137,7 +147,7 @@ def test_a_running_scan_is_stopped_through_the_agent_and_keeps_what_it_produced(
     assert done.json()["exit_code"] == 143
 
     settings = _settings(tmp_path)
-    assert (settings.output_dir / "runs" / run_id / "findings.json").is_file()
+    assert (_default_run_dir(settings, run_id) / "findings.json").is_file()
 
 
 def test_a_scan_that_finished_before_the_stop_reached_it_keeps_its_result(
@@ -540,7 +550,7 @@ def test_a_late_partial_archive_is_kept_without_confirming_the_cancellation(
     )
 
     assert late.status_code == 200, late.text
-    assert (settings.output_dir / "runs" / run_id / "findings.json").is_file()
+    assert (_default_run_dir(settings, run_id) / "findings.json").is_file()
     job = late.json()
     assert job["status"] == "cancelled"
     # Untouched: the reaper's verdict, not this upload's.
@@ -608,7 +618,7 @@ def test_a_late_archive_from_an_agent_with_no_key_is_taken_once(tmp_path, monkey
     assert second.status_code == 422, second.text
     assert "already cancelled" in second.json()["detail"]
     # The run directory still holds the archive that was kept, and only it.
-    run_dir = settings.output_dir / "runs" / run_id
+    run_dir = _default_run_dir(settings, run_id)
     assert (run_dir / "findings.json").is_file()
     assert not (run_dir / "other.json").exists()
     # And the note the drawer shows was not doubled by the second attempt.
@@ -641,7 +651,7 @@ def test_an_archive_for_a_job_closed_long_ago_is_refused(tmp_path, monkeypatch):
 
     assert late.status_code == 422, late.text
     assert "already cancelled" in late.json()["detail"]
-    assert not (settings.output_dir / "runs" / run_id / "findings.json").exists()
+    assert not (_default_run_dir(settings, run_id) / "findings.json").exists()
 
 
 def test_a_confirmed_cancellation_still_says_who_asked_for_it(tmp_path, monkeypatch):
@@ -728,7 +738,6 @@ def test_the_grace_period_does_not_expire_under_a_confirming_upload(tmp_path, mo
     over while one is in flight."""
     from api.schemas import StartScanRequest
     from api.services import results_ingest
-    from api.services.artifact_store import workspace as artifact_workspace
 
     settings = _service_settings(tmp_path)
     settings.job_cancel_grace_seconds = 1
@@ -768,7 +777,7 @@ def test_the_grace_period_does_not_expire_under_a_confirming_upload(tmp_path, mo
     assert "Cancellation requested by operator" in (stopped.error or "")
     assert "did not confirm" not in (stopped.error or "")
     # And what the scan had produced before the signal is on disk.
-    run_dir = artifact_workspace.run_dir(settings, run_id, refresh=False)
+    run_dir = _default_run_dir(settings, run_id)
     assert sorted(p.name for p in run_dir.iterdir()) == [
         "partial.json",
         "summary.json",
@@ -793,7 +802,6 @@ def test_a_second_stop_does_not_kill_an_upload_still_inside_its_ingest_lease(
     """
     from api.schemas import StartScanRequest
     from api.services import results_ingest
-    from api.services.artifact_store import workspace as artifact_workspace
 
     settings = _service_settings(tmp_path)
     settings.job_cancel_grace_seconds = 300
@@ -851,7 +859,7 @@ def test_a_second_stop_does_not_kill_an_upload_still_inside_its_ingest_lease(
     uploader.join(30)
     assert "error" not in outcome, outcome.get("error")
     assert outcome["job"].status == job_states.CANCELLED  # type: ignore[union-attr]
-    run_dir = artifact_workspace.run_dir(settings, run_id, refresh=False)
+    run_dir = _default_run_dir(settings, run_id)
     assert (run_dir / "partial.json").is_file()
 
 

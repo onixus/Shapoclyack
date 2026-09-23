@@ -13,6 +13,7 @@ import logging
 import sys
 import threading
 import uuid
+from pathlib import Path
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,8 @@ from api.services import job_store
 from api.services import local_scan_executor
 from api.services import metrics as metrics_service
 from api.services import run_ids
+from api.services.artifact_store import keys as artifact_keys
+from api.services.artifact_store import workspace as artifact_workspace
 from api.services import scan_admission
 from api.services import scan_intents
 from api.services import scan_surface
@@ -184,6 +187,35 @@ def build_command(
     return command
 
 
+def _reserve_run_dir(settings: Settings, run_id: str) -> Path:
+    """Claim ``runs/<run_id>`` for a local scan with a custom run id, atomically.
+
+    The scanner writes that directory itself, into whatever is there, so two
+    scans given one run id -- two tenants, submitted together -- would write
+    one directory, and the first to finish would carry both into its tenant's
+    subtree (#427). A check that the directory is free is a race between two
+    requests; ``mkdir`` without ``exist_ok`` is the one step only one of them
+    can win.
+    """
+    path = Path(settings.output_dir) / "runs" / run_id
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir()
+    except FileExistsError:
+        raise ValueError(f"run_id {run_id!r} is already in use by an existing run") from None
+    return path
+
+
+def _release_run_dir(path: Path | None) -> None:
+    """Give back a reservation no job was created for. Only while it is empty."""
+    if path is None:
+        return
+    try:
+        path.rmdir()
+    except OSError:
+        _log.warning("Could not release the reserved run directory %s", path, exc_info=True)
+
+
 def start_scan(
     settings: Settings,
     request: StartScanRequest,
@@ -231,6 +263,13 @@ def start_scan(
     run_id = request.run_id
     if run_id:
         run_ids.validate(run_id)
+        if execution == "local" and artifact_workspace.run_exists(
+            settings, artifact_keys.run_ref(run_id)
+        ):
+            # A local scan writes ``runs/<run_id>`` itself, into whatever is
+            # already there: a flat run of another tenant, or the default's,
+            # would get this scan's files mixed into it (#427).
+            raise ValueError(f"run_id {run_id!r} is already in use by an existing run")
     if execution == "agent" and not run_id:
         run_id = run_ids.mint()
 
@@ -423,6 +462,13 @@ def start_scan(
         queued_at=_now(),
     )
 
+    # Reserved last, just before the row: every refusal above is then one that
+    # leaves nothing behind. Released on every way out below that creates no job.
+    reserved = (
+        _reserve_run_dir(settings, run_id)
+        if execution == "local" and request.run_id
+        else None
+    )
     try:
         with get_session(settings.postgres_url) as session:
             if agent_group:
@@ -450,10 +496,12 @@ def start_scan(
                 ),
             )
     except ValueError:
+        _release_run_dir(reserved)
         job_inputs.discard_wordlist(settings, job_id)
         job_inputs.discard(settings, job_id)
         raise
     except IntegrityError:
+        _release_run_dir(reserved)
         # Lost the race on (tenant_id, idempotency_key): another replica — or
         # this one, serving the client's retry concurrently — already created
         # the job. The caller wanted one scan for this key and there is one.

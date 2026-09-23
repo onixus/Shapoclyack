@@ -24,6 +24,24 @@ LOG = logging.getLogger("shapoclyack.runs")
 # belonging to the default tenant — the tenant every pre-P0 install scanned as.
 RUN_TENANT_FILE = "tenant.json"
 
+# Families kept in the output directory beside ``runs/``. The single-run layout
+# (run id ``default``) *is* the output directory, so without this every one of
+# them -- ``reports/<tenant>/`` included -- would be an artifact of that run.
+_OUTPUT_FAMILIES = frozenset(
+    family for family, where in artifact_keys.LOCAL_ROOT_BY_FAMILY.items() if where == "output"
+)
+
+
+def _outside_flat_run(run_id: str, rel: Path) -> bool:
+    """Whether ``rel`` inside the single-run layout belongs to another family."""
+    # Folded: on a case-insensitive filesystem (macOS, a Windows share)
+    # ``Reports/acme/r1.pdf`` opens the same file as ``reports/…``.
+    return (
+        run_id == workspace.FLAT_RUN_ID
+        and bool(rel.parts)
+        and rel.parts[0].casefold() in _OUTPUT_FAMILIES
+    )
+
 
 def _load_json(path: Path) -> Any | None:
     if not path.exists():
@@ -123,23 +141,23 @@ def _geo_map(run_dir: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _run_ids(settings: Settings) -> list[str]:
+def _run_refs(settings: Settings, *, tenant_id: str | None = None) -> list[artifact_keys.RunRef]:
     """Every run this installation can see, newest first.
 
-    Ids rather than directories since #336: on an object-storage backend a run
+    Refs rather than directories since #336: on an object-storage backend a run
     is not a directory until somebody asks for one, and enumerating the runs
     must not fetch them. The ordering is unchanged — ids are timestamps, so the
     name sorts the way the clock does.
     """
-    ids = workspace.run_ids(settings)
-    if ids:
-        return ids
+    refs = workspace.run_refs(settings, tenant_id=tenant_id)
+    if refs:
+        return refs
     # Flat layout fallback (per_run_output=false), local backend only: there is
     # no ``runs/`` subtree, the artifacts sit in output_dir itself.
     if (settings.output_dir / "summary.json").exists() or (
         settings.output_dir / "alive_ips.txt"
     ).exists():
-        return [workspace.FLAT_RUN_ID]
+        return [artifact_keys.run_ref(workspace.FLAT_RUN_ID)]
     return []
 
 
@@ -184,18 +202,112 @@ def _surface_from_marker(meta: Any) -> str | None:
     return None
 
 
-def run_tenant_of(settings: Settings, run_id: str) -> str:
+def run_tenant_of(settings: Settings, run: artifact_keys.RunRef | str) -> str:
     """Owner of a run, without materialising it.
 
-    One small object read (cached), which is what makes the tenant filter in
-    the listing affordable on a remote backend: the alternative is fetching
-    every run in the installation to look at one file in each.
+    A run in a tenant's subtree (#427) belongs to that tenant whatever its
+    marker says: the path is where the product put it, the marker is a file
+    inside an upload. For the flat layout the marker is all there is -- one
+    small object read (cached), which is what makes the tenant filter in the
+    listing affordable on a remote backend: the alternative is fetching every
+    run in the installation to look at one file in each.
     """
-    return _tenant_from_marker(workspace.read_run_marker(settings, run_id))
+    ref = artifact_keys.as_ref(run)
+    marked = _tenant_from_marker(workspace.read_run_marker(settings, ref))
+    if ref.tenant is None or artifact_keys.tenant_segment(marked) == ref.tenant:
+        return marked
+    # A segment is the tenant id itself unless the id predates validation and
+    # was hashed; that one's marker is what names it, and a marker that
+    # disagrees with the path is not believed.
+    return ref.tenant
 
 
-def run_surface_of(settings: Settings, run_id: str) -> str | None:
-    return _surface_from_marker(workspace.read_run_marker(settings, run_id))
+def run_surface_of(settings: Settings, run: artifact_keys.RunRef | str) -> str | None:
+    return _surface_from_marker(workspace.read_run_marker(settings, run))
+
+
+def _owned_by(settings: Settings, ref: artifact_keys.RunRef, tenant_id: str) -> bool:
+    """Whether ``tenant_id`` may read the run at ``ref``.
+
+    The whole tenant policy for runs, in one place. A tenant's own subtree is
+    its own by construction. A flat run -- every run from before #427, and a
+    CLI run -- is the tenant's only if its marker says so, with no marker
+    meaning the default tenant, exactly as before this release.
+    """
+    if ref.tenant is not None:
+        return ref.tenant == artifact_keys.tenant_segment(tenant_id)
+    return run_tenant_of(settings, ref) == tenant_id
+
+
+def resolve_run(
+    settings: Settings, run_id: str, *, tenant_id: str | None = None
+) -> artifact_keys.RunRef | None:
+    """Where ``run_id`` lives for this caller, or ``None`` when it may not see one.
+
+    With ``tenant_id``, the tenant's own subtree first and then the flat
+    location -- the fallback that keeps every run from before #427 readable
+    without moving a byte of it. The fallback is owner-checked *before* it
+    returns (:func:`_owned_by`), so a run id guessed from another tenant is
+    ``None`` through either path; the tenant-scoped path cannot name another
+    tenant at all.
+
+    Without ``tenant_id`` (a platform admin's fleet-wide view) the flat run
+    wins, as the only thing the id meant until now, then the first tenant
+    subtree holding the id. Two tenants holding one id is possible -- an id is
+    unique per tenant, not per installation, once a caller may choose it --
+    and the admin who needs the other one asks with that tenant selected.
+    """
+    own, flat = _run_locations(settings, run_id, tenant_id=tenant_id)
+    if tenant_id:
+        # Materialised without an owner check: the path is the check.
+        if own is not None and workspace.run_dir(settings, own).is_dir():
+            return own
+        # Checked before the flat run is fetched: an id from another tenant
+        # must not cost a transfer, and on a remote backend materialising
+        # first would let an unauthorised caller fill this pod's cache with
+        # runs they cannot read.
+        if flat is None or not _owned_by(settings, flat, tenant_id):
+            return None
+        return flat if workspace.run_dir(settings, flat).is_dir() else None
+    if flat is not None and workspace.run_dir(settings, flat).is_dir():
+        return flat
+    for ref in workspace.run_refs(settings):
+        if ref.tenant is not None and ref.run_id == run_id:
+            return ref if workspace.run_dir(settings, ref).is_dir() else None
+    return None
+
+
+def _run_locations(
+    settings: Settings, run_id: str, *, tenant_id: str | None
+) -> tuple[artifact_keys.RunRef | None, artifact_keys.RunRef | None]:
+    """``(own, flat)``: the two places ``run_id`` may be, either ``None`` if it cannot.
+
+    Built separately because they fail separately. A flat run id from before
+    anything validated ``--run-id`` (``nightly.2026-09-01``) is no tenant's
+    run id, and must still find its flat run.
+
+    The single-run layout (``per_run_output=false``, run id ``default``) is the
+    output directory itself, and ``runs/`` -- every run of every tenant -- is
+    inside it. It is only a run while nothing else is there: the moment
+    ``runs/`` exists, answering it would be a window onto all of them.
+    """
+    own = flat = None
+    if tenant_id:
+        try:
+            own = artifact_keys.run_ref(run_id, tenant_id)
+        except ValueError:
+            own = None
+    try:
+        flat = artifact_keys.run_ref(run_id)
+    except ValueError:
+        flat = None
+    if (
+        flat is not None
+        and flat.run_id == workspace.FLAT_RUN_ID
+        and (Path(settings.output_dir) / artifact_keys.RUNS).exists()
+    ):
+        flat = None
+    return own, flat
 
 
 def _run_tenant_marker(
@@ -248,7 +360,19 @@ def write_run_tenant(
     known at the same moment, written by the same two call sites, and a run
     listing already pays for this read.
     """
-    run_dir = workspace.scratch_run_dir(settings, run_id)
+    try:
+        # The owner's subtree when the run is there, the flat directory when
+        # it is not: a run that stayed flat is exactly the one whose marker is
+        # the only record of its owner.
+        ref = workspace.locate_written(settings, run_id, tenant_id)
+    except ValueError:
+        LOG.warning("Not tagging run %r: not a run id", run_id)
+        return False
+    if ref is None:
+        # Another tenant's flat run: its marker is the only record of who owns
+        # it, and this job does not get to rewrite it.
+        return False
+    run_dir = workspace.scratch_run_dir(settings, ref)
     if not run_dir.is_dir():
         return False
     try:
@@ -258,14 +382,14 @@ def write_run_tenant(
         # run list of every tenant on the installation (#336).
         workspace.publish_run_file(
             settings,
-            run_id,
+            ref,
             RUN_TENANT_FILE,
             _run_tenant_marker(tenant_id, job_id=job_id, surface=surface),
         )
     except (OSError, artifact_store.ArtifactStoreError):
         LOG.warning("Could not tag run %s with tenant %s", run_id, tenant_id, exc_info=True)
         return False
-    workspace.forget_run_marker(run_id)
+    workspace.forget_run_marker(ref)
     return True
 
 
@@ -288,40 +412,46 @@ def list_runs(
     O(page) instead of O(all runs). Sorting by a summary column would require
     reading every run and is deliberately not offered server-side.
 
-    ``tenant_id`` restricts the listing to runs owned by that tenant. Unlike the
-    other filters this one can't be answered from the directory name, so it
-    costs one small ``tenant.json`` read per run *before* slicing; pass ``None``
-    (platform admin, fleet-wide view) to skip those reads entirely.
+    ``tenant_id`` restricts the listing to runs owned by that tenant. A run in
+    the tenant's own subtree (#427) is answered from its path; a flat run from
+    before that costs one small ``tenant.json`` read *before* slicing. Pass
+    ``None`` (platform admin, fleet-wide view) to skip those reads entirely.
 
     ``surface`` (external/internal/mixed, or ``"unknown"`` for runs carrying no
     marker) reads the same file and is the same cost class: one read per run
     before slicing, paid only when the filter is asked for.
     """
-    ids = _run_ids(settings)
+    refs = _run_refs(settings, tenant_id=tenant_id or None)
     if q:
         needle = q.strip().lower()
-        ids = [run for run in ids if needle in run.lower()]
+        refs = [ref for ref in refs if needle in ref.run_id.lower()]
     if tenant_id:
-        ids = [run for run in ids if run_tenant_of(settings, run) == tenant_id]
+        refs = [ref for ref in refs if _owned_by(settings, ref, tenant_id)]
+        # One run, two copies: the tenant's own and a flat one of the same id.
+        # The path is the newer record of the two and it is the one
+        # :func:`resolve_run` opens, so it is the one listed.
+        own = {ref.run_id for ref in refs if ref.tenant is not None}
+        refs = [ref for ref in refs if ref.tenant is not None or ref.run_id not in own]
     if surface:
         wanted = None if surface == "unknown" else surface
-        ids = [run for run in ids if run_surface_of(settings, run) == wanted]
+        refs = [ref for ref in refs if run_surface_of(settings, ref) == wanted]
     if (order or "").lower() == "asc":
-        ids = list(reversed(ids))
-    page_ids, total = pagination.slice_page(ids, offset=offset, limit=limit)
+        refs = list(reversed(refs))
+    page_refs, total = pagination.slice_page(refs, offset=offset, limit=limit)
 
     results: list[RunSummary] = []
-    for run_id in page_ids:
+    for ref in page_refs:
+        run_id = ref.run_id
         # Only the page is materialised — which is the same promise the
         # docstring above always made about run_meta.json and summary.json,
         # now enforced by the cost of fetching rather than by care.
-        run_dir = workspace.run_dir(settings, run_id)
+        run_dir = workspace.run_dir(settings, ref)
         meta = _load_json(run_dir / "run_meta.json") or {}
         summary = _load_json(run_dir / "summary.json") or {}
         results.append(
             RunSummary(
                 run_id=run_id,
-                tenant_id=tenant_id or run_tenant_of(settings, run_id),
+                tenant_id=tenant_id or run_tenant_of(settings, ref),
                 profile=meta.get("profile") if isinstance(meta, dict) else None,
                 started_at=meta.get("started_at") if isinstance(meta, dict) else None,
                 config=meta.get("config") if isinstance(meta, dict) else None,
@@ -334,7 +464,7 @@ def list_runs(
                     summary.get("unconfirmed_findings") if isinstance(summary, dict) else None
                 ),
                 vulnerable_hosts=summary.get("vulnerable_hosts") if isinstance(summary, dict) else None,
-                surface=run_surface_of(settings, run_id),
+                surface=run_surface_of(settings, ref),
                 has_diff=(run_dir / "diff.json").exists(),
                 has_summary=(run_dir / "summary.json").exists(),
                 path=str(run_dir),
@@ -350,23 +480,39 @@ def get_run_dir(settings: Settings, run_id: str, *, tenant_id: str | None = None
     ``None`` — callers turn that into the same 404 as a missing run, so an id
     from a foreign tenant isn't confirmed to exist. Every run sub-resource
     (hosts/ports/vulns/diff/artifacts) goes through here, so scoping this one
-    function scopes all of them.
+    function scopes all of them. Where the run is looked for, and the owner
+    check on the flat layout, are :func:`resolve_run`.
     """
-    # Checked before the run is fetched: an id from another tenant must not
-    # cost a transfer, and on a remote backend materialising first would let an
-    # unauthorised caller fill this pod's cache with runs they cannot read.
-    if tenant_id and run_tenant_of(settings, run_id) != tenant_id:
+    ref = resolve_run(settings, run_id, tenant_id=tenant_id)
+    if ref is None:
         return None
-    candidate = workspace.run_dir(settings, run_id)
-    if not candidate.is_dir():
+    # Not re-fetched: resolve_run has just brought the working copy up to date.
+    return workspace.run_dir(settings, ref, refresh=False)
+
+
+def get_written_run_dir(settings: Settings, run_id: str, *, tenant_id: str) -> Path | None:
+    """The run a job of ``tenant_id`` produced, for the hooks that complete it.
+
+    Not :func:`get_run_dir`, which answers a *request* and refuses a flat run
+    whose marker names another tenant: the completion hooks run for the job
+    that wrote the run, and a flat run is there precisely when its marker may
+    not be (``workspace.locate_written``).
+    """
+    try:
+        ref = workspace.locate_written(settings, run_id, tenant_id)
+    except ValueError:
         return None
-    return candidate
+    if ref is None:
+        return None
+    candidate = workspace.run_dir(settings, ref)
+    return candidate if candidate.is_dir() else None
 
 
 def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = None) -> RunDetail | None:
-    run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
-    if run_dir is None:
+    ref = resolve_run(settings, run_id, tenant_id=tenant_id)
+    if ref is None:
         return None
+    run_dir = workspace.run_dir(settings, ref, refresh=False)
     artifacts = sorted(
         str(path.relative_to(run_dir))
         for path in run_dir.rglob("*")
@@ -374,10 +520,13 @@ def get_run_detail(settings: Settings, run_id: str, *, tenant_id: str | None = N
         and path.stat().st_size < 50_000_000
         and not is_screenshot_path(str(path.relative_to(run_dir)))
         and not is_restricted_artifact(str(path.relative_to(run_dir)))
+        and not (ref.tenant is None and _outside_flat_run(run_id, path.relative_to(run_dir)))
     )
     return RunDetail(
         run_id=run_id,
-        tenant_id=read_run_tenant(run_dir),
+        # The path's owner for a run in a tenant's subtree, the marker's for a
+        # flat one -- the same answer the listing gives for this run.
+        tenant_id=run_tenant_of(settings, ref),
         meta=_load_json(run_dir / "run_meta.json") or {},
         summary=_load_json(run_dir / "summary.json"),
         diff=_load_json(run_dir / "diff.json"),
@@ -740,7 +889,7 @@ def resolve_artifact(
     rel = _safe_relative(
         relative, allow_screenshots=allow_screenshots, allow_restricted=allow_restricted
     )
-    if rel is None:
+    if rel is None or _outside_flat_run(run_id, rel):
         return None
     target = (run_dir / rel).resolve()
     try:
@@ -797,12 +946,32 @@ def artifact_key(
     )
     if rel is None:
         return None
-    if tenant_id and run_tenant_of(settings, run_id) != tenant_id:
-        return None
-    key = artifact_keys.run_artifact(run_id, rel.as_posix())
-    if not artifact_store.get_store(settings).exists(key):
-        return None
-    return key
+    store = artifact_store.get_store(settings)
+    for ref in _key_candidates(settings, run_id, tenant_id=tenant_id):
+        key = artifact_keys.run_artifact(ref, rel.as_posix())
+        if store.exists(key):
+            return key
+    return None
+
+
+def _key_candidates(
+    settings: Settings, run_id: str, *, tenant_id: str | None
+) -> list[artifact_keys.RunRef]:
+    """The prefixes :func:`resolve_run` would open, in its order, unfetched.
+
+    For a presigned download, which must not materialise the run. The owner
+    check on the flat location is the same one and happens before any key
+    under it is looked at.
+    """
+    own, flat = _run_locations(settings, run_id, tenant_id=tenant_id)
+    if tenant_id:
+        candidates = [own] if own is not None else []
+        if flat is not None and _owned_by(settings, flat, tenant_id):
+            candidates.append(flat)
+        return candidates
+    return ([flat] if flat is not None else []) + [
+        ref for ref in workspace.run_refs(settings) if ref.tenant is not None and ref.run_id == run_id
+    ]
 
 
 def read_artifact_text(

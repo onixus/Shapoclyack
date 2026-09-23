@@ -2107,17 +2107,38 @@ know it.
 
 ### Run ownership
 
-The scanner itself has no tenant concept, so the API tags each completed run by
-writing `tenant.json` (`{"tenant_id": …}`) into the run directory — from
-`_run_job` for local execution and from `complete_job` for sensor uploads. Run
-listings, sub-resources (`hosts`/`ports`/`vulnerabilities`/`diff`), and both
-artifact endpoints are filtered by that marker.
+The scanner itself has no tenant concept, so the API files each completed run
+under its owner: `runs/_tenants/<tenant>/<run_id>` in the artifact store (and
+under `OCTO_OUTPUT_DIR` on the local backend), since
+[#427](https://github.com/onixus/Shapoclyack/issues/427). A sensor upload is
+extracted there directly; a local scan is moved there from the flat directory
+the scanner wrote. `tenant.json` (`{"tenant_id": …}`) is still written into the
+run, but for a run in a tenant's subtree the *path* decides who owns it: a
+marker that disagrees with it is not believed.
 
-A run **without** the marker reads as belonging to `default`: runs produced
-before this shipped, and any run created by invoking `scanner.main` directly
-outside the API, stay visible to the default tenant instead of disappearing.
-There is no backfill — if pre-existing runs belong to a customer tenant, write
-their `tenant.json` by hand before granting that customer access.
+A lookup by run id (`/runs/{id}` and its sub-resources, both artifact
+endpoints) asks the caller's tenant subtree first and then the flat
+`runs/<run_id>` of earlier releases. The flat run is served only if its
+`tenant.json` names the caller's tenant — checked before the run is fetched —
+so a run id guessed from another tenant is a `404` through either path. The run
+list shows the tenant's own subtree plus the flat runs its marker grants it; a
+run id present in both is listed once, from the subtree.
+
+A run id is unique **per tenant**: two tenants may hold the same one (a custom
+`run_id` on `POST /scans` is the tenant's to choose). With local execution a
+custom `run_id` that an existing flat run already has is refused, because the
+scanner writes `runs/<run_id>` itself, into whatever is there. A platform admin's
+fleet-wide view (no tenant selected) lists both, each with its `tenant_id`;
+opening one by id without a tenant selected resolves the flat run first and
+then the first tenant subtree holding the id, so select the tenant to open the
+other.
+
+A flat run **without** the marker reads as belonging to `default`: runs
+produced before tenant tagging shipped, and any run created by invoking
+`scanner.main` directly outside the API, stay visible to the default tenant
+instead of disappearing. There is no backfill — if pre-existing runs belong to
+a customer tenant, write their `tenant.json` by hand before granting that
+customer access.
 
 ## Artifact access
 

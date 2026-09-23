@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import run_ids
 from .config_schema import RuntimeConfig
 
 
@@ -14,10 +15,6 @@ class RunPaths:
     output_dir: Path
     state_dir: Path
     logs_dir: Path
-
-
-def _new_run_id() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _latest_run_pointer(state_base: Path) -> Path:
@@ -56,6 +53,12 @@ def resolve_run_paths(
         rid = run_id or "default"
         return RunPaths(run_id=rid, output_dir=output_base, state_dir=state_base, logs_dir=logs)
 
+    if run_id:
+        # A run id is a directory name here and a key prefix once the API
+        # ingests the run, so it is held to the same one-segment rule the API
+        # holds its own to.
+        run_ids.validate(run_id)
+
     if resume:
         resolved_id = run_id or _read_latest_run_id(state_base)
         if not resolved_id:
@@ -64,7 +67,7 @@ def resolve_run_paths(
                 f"{_latest_run_pointer(state_base)}"
             )
     else:
-        resolved_id = run_id or _new_run_id()
+        resolved_id = run_id or run_ids.mint()
         _write_latest_run_id(state_base, resolved_id)
 
     output_dir = output_base / "runs" / resolved_id

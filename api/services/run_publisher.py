@@ -92,6 +92,7 @@ from api.services import nats_outbox
 from api.services import results_ingest
 from api.services import run_completion
 from api.services import runs as runs_service
+from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
 
@@ -396,6 +397,7 @@ def _publish(settings: Settings, publication: _Publication) -> None:
     """
     staging = Path(publication.staging_path) if publication.staging_path else None
     run_id = publication.run_id
+    run = _run_ref(publication)
     if staging is not None and staging.is_dir():
         runs_service.stage_run_tenant(
             staging,
@@ -407,7 +409,7 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         # complete and marked the first time they can see it.
         written: list[str] = []
         try:
-            artifact_workspace.publish_run(settings, run_id, source=staging, written=written)
+            artifact_workspace.publish_run(settings, run, source=staging, written=written)
         except Exception as exc:
             # A remote backend uploads the tree file by file, and a store that
             # starts refusing halfway leaves keys under ``runs/<run_id>/``. A
@@ -434,8 +436,8 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         # The marker cache on a remote backend may hold a "no marker" answer
         # from a listing that asked about this run before it existed, and
         # reading that back is the default-tenant leak the marker prevents.
-        artifact_workspace.forget_run_marker(run_id)
-        artifact_workspace.promote_staging(settings, run_id, staging)
+        artifact_workspace.forget_run_marker(run)
+        artifact_workspace.promote_staging(settings, run, staging)
     elif not _tree_is_stored(settings, publication):
         raise _TreeIsGone(_TREE_IS_GONE)
     results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
@@ -464,7 +466,21 @@ def _tree_is_stored(settings: Settings, publication: _Publication) -> bool:
     """
     if publication.stored_at is None:
         return False
-    return artifact_workspace.run_exists(settings, publication.run_id)
+    if artifact_workspace.run_exists(settings, _run_ref(publication)):
+        return True
+    # Stored by a replica that predates #427, at the flat ``runs/<run_id>``:
+    # the tree is there and readable (``runs.resolve_run`` falls back to it),
+    # so it is not gone. Only if it is this tenant's, which its marker says.
+    flat = artifact_keys.run_ref(publication.run_id)
+    return (
+        artifact_workspace.run_exists(settings, flat)
+        and runs_service.run_tenant_of(settings, flat) == publication.tenant_id
+    )
+
+
+def _run_ref(publication: _Publication) -> artifact_keys.RunRef:
+    """Where this publication's run lives: under its tenant, since #427."""
+    return artifact_keys.run_ref(publication.run_id, publication.tenant_id)
 
 
 def _mark_stored(settings: Settings, publication: _Publication) -> None:
@@ -518,10 +534,11 @@ def _roll_back_upload(
             len(written),
         )
         return True
-    artifact_workspace.unpublish_run(settings, publication.run_id, only=written)
-    artifact_workspace.forget_run_marker(publication.run_id)
+    run = _run_ref(publication)
+    artifact_workspace.unpublish_run(settings, run, only=written)
+    artifact_workspace.forget_run_marker(run)
     try:
-        return not artifact_workspace.run_exists(settings, publication.run_id)
+        return not artifact_workspace.run_exists(settings, run)
     except Exception:  # noqa: BLE001 - the outage that refused the upload, again
         # Asked rather than assumed, because the answer is what the operator is
         # told: a store too broken to list is too broken to have been cleaned.

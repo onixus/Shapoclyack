@@ -47,8 +47,8 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     deleted = errors = kept = 0
     store = artifact_store.get_store(settings)
 
-    for run_id in workspace.run_ids(settings):
-        prefix = artifact_store.keys.run_artifact(run_id, "screenshots")
+    for run in workspace.run_refs(settings):
+        prefix = artifact_store.keys.run_artifact(run, "screenshots")
         try:
             entries = [
                 entry
@@ -68,7 +68,7 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
         # screenshots even when the files themselves were written later (a
         # re-upload, a restored backup). min() of the two, as before: whichever
         # says "older" wins.
-        run_written = _run_meta_modified(store, run_id)
+        run_written = _run_meta_modified(store, run)
         for entry in entries:
             try:
                 age_base = entry.modified
@@ -80,7 +80,7 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
                 store.delete(entry.key)
                 # The working copy on this pod goes too, or the image stays
                 # downloadable from whichever replica cached it.
-                (workspace.cache_root(settings) / run_id / "screenshots").joinpath(
+                (workspace.cache_root(settings) / run.path / "screenshots").joinpath(
                     entry.key.rsplit("/", 1)[-1]
                 ).unlink(missing_ok=True)
                 deleted += 1
@@ -98,10 +98,12 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     }
 
 
-def _run_meta_modified(store: artifact_store.ArtifactStore, run_id: str) -> float | None:
+def _run_meta_modified(
+    store: artifact_store.ArtifactStore, run: artifact_store.keys.RunRef
+) -> float | None:
     """When this run's metadata was written, or ``None`` when it has none."""
     try:
-        entry = store.stat(artifact_store.keys.run_artifact(run_id, "run_meta.json"))
+        entry = store.stat(artifact_store.keys.run_artifact(run, "run_meta.json"))
     except artifact_store.ArtifactStoreError:
         return None
     return entry.modified if entry is not None else None
