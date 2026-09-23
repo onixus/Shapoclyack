@@ -2599,6 +2599,72 @@ evictions. A single-replica install still has a moment of downtime during a
 drain; two or more replicas is the fix, not a different budget. The scheduler is
 separately protected by its PostgreSQL advisory-lock leadership mechanism.
 
+## Retro CVE matching
+
+What it is: [retro-cve-matching.md](retro-cve-matching.md). What an operator does:
+
+**After the upgrade that introduces it** (migration `0064`), once:
+
+```bash
+# In an API pod (same image, same environment):
+python3 scripts/backfill-asset-services.py
+```
+
+It reads the succeeded runs still inside `OCTO_RUN_RETENTION_DAYS` from the
+artifact store, oldest first, and records their listeners; `missing` counts runs
+already pruned. Safe to re-run, safe beside a live API, exit `1` only if some run
+could not be read (the log names it). The worker picks the rows up on its next
+tick.
+
+**To make it useful** — the committed dataset is a 23-CVE seed — take the
+opt-in and run the full harvest once, then let the daily CronJob merge
+increments:
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe   # or add the component
+
+# The full harvest, once, from a pod that mounts the enrichment volume
+# read-write — the enrichment-refresh CronJob's pod template is one (the API
+# pods mount it read-only):
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full \
+  -o /app/scanner/data/nvd-cpe/nvd-cpe-ranges.json
+```
+
+Outside Kubernetes run the same command against whatever `OCTO_NVD_CPE_DATABASE`
+points at.
+
+With the `shapoclyack-nvd` Secret the full harvest takes minutes; without it,
+hours (NVD's anonymous limit). Take the vendor advisory opt-in as well
+(`base/enrichment-advisories`): without real Debian/Ubuntu feeds most hits on
+Debian/Ubuntu banners stay `possible` and never become findings.
+
+**Expect a wave.** The first tick after a real dataset lands re-matches every
+listener and can create many findings at once. Webhook consumers get at most
+`OCTO_RETRO_MATCH_MAX_EVENTS` individual `asset.vulnerability.new` deliveries
+per tenant for that dataset version, then one aggregate
+(`data.aggregate: true`) per tick for the rest; the findings themselves are all
+in `GET /api/vulnerabilities?source=retro_match`. A matcher killed mid-wave
+(rolling update) loses no announcement: unannounced findings are published by
+the next tick, whichever replica leads it.
+
+**Watching it.** `GET /api/retro-match/status`: `dataset_version` (which file
+is being matched), `services_pending` (should drain to 0 within a few ticks of a
+refresh), `last_stats.errors` (listeners held off after an exception — each is
+retried with a backoff up to 6 h), `possible_matches` (hits waiting on a vendor
+answer). `nvd_cpe` on `GET /api/system` shows the file's age and whether it
+clears the floor.
+
+**Forcing a re-check** — after replacing the dataset by hand, or to re-derive
+verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset or
+advisory feed does this by itself; the button is for the cases the marker
+cannot see.
+
+**Rollback.** `0064` is expand-only. Rolling the image back leaves the tables
+unused and `retro_match` findings in the tracker as ordinary findings with an
+unfamiliar `source`; a downgrade of the schema drops the fingerprints (they are
+re-derivable by the backfill from runs still on disk) and the two
+`vulnerabilities` columns, not the findings.
+
 ## Enrichment data in a release build
 
 Image builds refresh GeoIP/ASN/CVSS4/EPSS/KEV before the image is sealed. A

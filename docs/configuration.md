@@ -259,6 +259,32 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+### NVD CPE ranges (retro CVE matching)
+
+The dataset [retro CVE matching](retro-cve-matching.md) re-asks about stored
+service fingerprints: NVD's per-CVE product/version windows, compacted, in the
+same directory, envelope and manifest as the overlays above (manifest key
+`nvd_cpe`, floor `5000` products, not required). Opt-in like the advisory
+feeds below, with a flag of its own.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_NVD_CPE_DATABASE` | `scanner/data/nvd-cpe/nvd-cpe-ranges.json` | Where the dataset is read from. Reloaded on mtime/size change, no restart |
+| `OCTO_NVD_CPE_FETCH_ENABLED` | `false` | Gate on every NVD request for this dataset. Unset, `api/services/cpe_ranges_fetch.py` refuses, `scripts/fetch-nvd-cpe.py` exits `3` and `scripts/fetch-enrichment.sh` prints a skip rather than a failure |
+| `NVD_API_KEY` | *(unset)* | Shared with the CVSS4 refresh. Raises NVD's limit from 5 to 50 requests per 30 s — the difference between hours and minutes for `--full` |
+
+```bash
+# Once, the whole corpus (replaces the file):
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full
+# Daily increment, merged (what fetch-enrichment.sh runs with the flag set):
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --last-mod-days 8
+```
+
+In Kubernetes: `kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe`
+(ConfigMap `shapoclyack-enrichment-nvd-cpe` + the CronJob at `2Gi`; composes
+with `base/enrichment-advisories`). The first `--full` harvest is not part of
+the CronJob — see [retro-cve-matching.md](retro-cve-matching.md#the-dataset--apiservicescpe_rangespy).
+
 ### Vendor advisory datasets
 
 The two advisory feeds behind [software→CVE matching](software-cve-matching.md)
@@ -868,6 +894,18 @@ Software→CVE findings in the vulnerability lifecycle (Track E, M3 — see
 | `OCTO_SOFTWARE_MATCH_BATCH_SIZE` | `100` | Devices per batch — per `SELECT`, per matcher run and per fold transaction. A tick takes as many batches as its budget allows, so this is a memory and statement-size knob, not the amount of work a tick does |
 | `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` | `60` | How long one tick may spend draining, shared across tenants. Whatever is left is still due and is taken by the next tick. Raise it on a large estate; a tick that repeatedly logs `out of tick budget` is the signal |
 | `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` | *(unset)* | Severity floor for creating a tracked finding: `critical`, `high`, `medium` or `low`. Unset means no floor. Applies **on top of** the built-in rule that only a match with a published fix becomes a finding at all — raise it when the SLA dashboard is drowning in low-severity backports. Raising it does **not** close the findings that fall below the new floor: they stay open and stop being re-tracked, because a change to this variable is not a remediation anybody performed |
+
+Retro CVE matching — stored service fingerprints re-matched against the NVD
+CPE-range dataset (see [retro-cve-matching.md](retro-cve-matching.md)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RETRO_MATCH_ENABLED` | `true` | Run the in-process worker. Leader-locked, safe in every replica. Off means nothing is matched — the fingerprints are still recorded, and a later start picks them all up |
+| `OCTO_RETRO_MATCH_INTERVAL_SECONDS` | `900` | Worker tick (minimum 10). A ceiling on how long a new dataset or a new fingerprint waits; a recorded run and `POST /api/retro-match/refresh` wake the worker early |
+| `OCTO_RETRO_MATCH_BATCH_SIZE` | `200` | Listeners per batch — a statement-size knob, not the work per tick |
+| `OCTO_RETRO_MATCH_TICK_BUDGET_SECONDS` | `60` | How long one tick may drain, shared across tenants. The first tick after a full NVD dataset lands re-matches the whole estate; raise this if the log keeps saying `out of tick budget` |
+| `OCTO_RETRO_MATCH_MAX_EVENTS` | `50` | Individual `new_cve` events per tenant **per dataset version**; once spent, each tick's new retro findings are announced as one aggregate event (`data.aggregate: true`). `0` sends only aggregates. Findings are created regardless |
+| `OCTO_RETRO_MATCH_MAX_AGE_DAYS` | `90` | Listeners not observed for longer than this are not matched (a closed port must not page months later). `0` disables the cut-off |
 
 Artifact storage ([#336](https://github.com/onixus/Shapoclyack/issues/336)):
 
