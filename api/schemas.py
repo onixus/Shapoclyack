@@ -1232,6 +1232,65 @@ class MfaStatus(BaseModel):
     # Whether ``POST /api/auth/mfa/totp/confirm`` will ask for the password.
     # False for an account that has none (SSO-provisioned).
     password_required: bool = True
+    # WebAuthn (#315). ``webauthn_available`` is whether this installation has
+    # a relying party configured at all; ``webauthn_credentials`` how many keys
+    # the account holds. The last two are the policy as it applies to this
+    # account's role: a key is required to sign in fully, and/or to step up.
+    webauthn_available: bool = False
+    webauthn_credentials: int = 0
+    phishing_resistant_required: bool = False
+    stepup_phishing_resistant: bool = False
+
+
+class WebAuthnAssertion(BaseModel):
+    """A WebAuthn ceremony's answer: the challenge it answers and the credential.
+
+    ``credential`` is the browser's ``PublicKeyCredential`` in its JSON form
+    (``id``, ``rawId``, ``response``, ``type``, base64url throughout) — the
+    shape ``PublicKeyCredential.toJSON()`` produces. It is passed to the
+    verification library as-is; nothing here interprets it.
+    """
+
+    challenge_id: str = Field(min_length=1, max_length=64)
+    credential: dict[str, Any]
+
+
+class WebAuthnOptionsRequest(BaseModel):
+    """Ask for assertion options: with the login's challenge token, or signed in."""
+
+    mfa_token: str | None = Field(default=None, max_length=4096)
+
+
+class WebAuthnOptionsResponse(BaseModel):
+    """Options for ``navigator.credentials.create()`` / ``.get()``.
+
+    ``public_key`` is the WebAuthn options object in its JSON form — binary
+    fields base64url-encoded — for ``PublicKeyCredential.parse*OptionsFromJSON``
+    or an equivalent decoder. ``challenge_id`` goes back with the response.
+    """
+
+    challenge_id: str
+    public_key: dict[str, Any]
+
+
+class WebAuthnRegisterRequest(WebAuthnAssertion):
+    """The authenticator's attestation, and what its owner wants to call it."""
+
+    name: str = Field(default="", max_length=64)
+
+
+class WebAuthnCredentialInfo(BaseModel):
+    """One registered key, as the inventory shows it. Carries nothing secret."""
+
+    id: str
+    name: str
+    credential_id: str
+    aaguid: str = ""
+    transports: list[str] = Field(default_factory=list)
+    backed_up: bool = False
+    device_type: str = ""
+    created_at: str | None = None
+    last_used_at: str | None = None
 
 
 class MfaSetupResponse(BaseModel):
@@ -1275,13 +1334,16 @@ class MfaVerifyRequest(BaseModel):
 
     ``mfa_token`` is the short-lived receipt ``POST /api/auth/login`` returned;
     omitting it means the caller already holds a session and is re-proving the
-    factor for step-up. Exactly one of ``code`` and ``recovery_code`` is
-    expected — the route refuses a request carrying neither.
+    factor for step-up. Exactly one of ``code``, ``recovery_code`` and
+    ``webauthn`` is expected — the route refuses a request carrying none. The
+    last is a security-key assertion answering a challenge from
+    ``POST /api/auth/mfa/webauthn/authenticate/options``.
     """
 
     mfa_token: str | None = Field(default=None, max_length=4096)
     code: str | None = _MFA_CODE
     recovery_code: str | None = _RECOVERY_CODE
+    webauthn: WebAuthnAssertion | None = None
 
 
 class MfaDisableRequest(BaseModel):

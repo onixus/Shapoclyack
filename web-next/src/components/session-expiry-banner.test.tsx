@@ -1,13 +1,21 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionExpiryBanner } from "@/components/session-expiry-banner";
-import { setAccessToken } from "@/lib/api";
+import { refreshAccessToken, setAccessToken } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { noteActivity } from "@/lib/session";
 import type { Me } from "@/lib/api";
 
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }) }));
+
+// The network half of silent refresh is covered in api.test.ts; here only
+// *whether* the banner asks for one matters.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  refreshAccessToken: vi.fn(async () => null),
+}));
 
 /** jsdom in this setup exposes no Storage implementation, so stand one up. */
 function installLocalStorage() {
@@ -23,8 +31,12 @@ function installLocalStorage() {
   });
 }
 
-/** A token shaped like the API's, carrying only the claim the banner reads. */
-function tokenExpiringIn(ms: number): string {
+/** A token shaped like the API's, carrying the claims the banner reads.
+ *
+ * `issuedAgoMs` decides whether the user counts as active: activity is noted
+ * at "now" at most, so a token issued in the future was issued after the last
+ * thing the user did — an idle console. */
+function tokenExpiringIn(ms: number, issuedAgoMs = -60 * 60 * 1000): string {
   const encode = (value: object) =>
     Buffer.from(JSON.stringify(value))
       .toString("base64")
@@ -32,7 +44,8 @@ function tokenExpiringIn(ms: number): string {
       .replace(/\//g, "_")
       .replace(/=+$/, "");
   const exp = Math.floor((Date.now() + ms) / 1000);
-  return `${encode({ alg: "HS256" })}.${encode({ sub: "operator", exp })}.signature`;
+  const iat = Math.floor((Date.now() - issuedAgoMs) / 1000);
+  return `${encode({ alg: "HS256" })}.${encode({ sub: "operator", exp, iat })}.signature`;
 }
 
 function signIn() {
@@ -49,10 +62,14 @@ function signIn() {
   });
 }
 
+const refresh = vi.mocked(refreshAccessToken);
+
 describe("SessionExpiryBanner", () => {
   beforeEach(() => {
     installLocalStorage();
     replace.mockClear();
+    refresh.mockClear();
+    refresh.mockImplementation(async () => null);
     useAuthStore.setState({ user: null });
   });
 
@@ -61,13 +78,49 @@ describe("SessionExpiryBanner", () => {
     setAccessToken(tokenExpiringIn(60 * 60 * 1000));
     render(<SessionExpiryBanner />);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("warns in the last five minutes", () => {
+  it("renews silently, with no banner, for a user who is at the console", async () => {
+    signIn();
+    setAccessToken(tokenExpiringIn(2 * 60 * 1000, 13 * 60 * 1000));
+    noteActivity(Date.now());
+    render(<SessionExpiryBanner />);
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("does not hammer the API when a silent refresh fails", async () => {
+    // Review finding on #434: a refresh that came back empty (503, 500, no
+    // network) re-rendered the banner, the effect saw the same "due" token and
+    // fired again — about 46 calls a second per tab, Retry-After ignored. A
+    // failure now waits for the next tick.
+    refresh.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(null), 5)),
+    );
+    signIn();
+    setAccessToken(tokenExpiringIn(2 * 60 * 1000, 13 * 60 * 1000));
+    noteActivity(Date.now());
+    render(<SessionExpiryBanner />);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns an idle console in the last five minutes instead of renewing it", async () => {
     signIn();
     setAccessToken(tokenExpiringIn(2 * 60 * 1000));
     render(<SessionExpiryBanner />);
     expect(screen.getByRole("status")).toHaveTextContent("ends in 2 min");
+    expect(refresh).not.toHaveBeenCalled();
+
+    // The button is the user coming back: it renews, and the banner goes.
+    refresh.mockImplementation(async () => {
+      setAccessToken(tokenExpiringIn(15 * 60 * 1000, 0));
+      return "renewed";
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Stay signed in" }));
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("stays once the session has actually expired", async () => {
@@ -79,9 +132,11 @@ describe("SessionExpiryBanner", () => {
     render(<SessionExpiryBanner />);
     expect(screen.getByRole("status")).toHaveTextContent("Your session has ended");
 
+    // The refresh is tried first and refused, so this really is the end.
     const logout = vi.fn(async () => "already-ended" as const);
     useAuthStore.setState({ logout });
     await userEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+    expect(refresh).toHaveBeenCalledOnce();
     expect(logout).toHaveBeenCalledOnce();
     expect(replace).toHaveBeenCalledWith("/login");
   });

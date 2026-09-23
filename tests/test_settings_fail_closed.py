@@ -53,6 +53,10 @@ _DECIDING_VARS = (
     "OCTO_JWT_SECRET_PREVIOUS",
     "OCTO_AGENT_JWT_SECRET",
     "OCTO_AGENT_JWT_SECRET_PREVIOUS",
+    "OCTO_JWT_EXPIRE_MINUTES",
+    "OCTO_ACCESS_TOKEN_EXPIRE_MINUTES",
+    "OCTO_SESSION_IDLE_MINUTES",
+    "OCTO_REFRESH_COOKIE_SECURE",
 )
 
 
@@ -631,3 +635,47 @@ def test_db_pool_leaves_room_for_the_leader_locks(clean_env: pytest.MonkeyPatch)
     clean_env.setenv("OCTO_DB_MAX_OVERFLOW", "0")
     untouched = load_settings()
     assert (untouched.db_pool_size, untouched.db_max_overflow) == (4, 0)
+
+
+def test_session_lifetimes_default_to_a_short_token_in_a_long_session(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """#314: fifteen-minute access tokens, refreshed within an eight-hour sign-in."""
+    _configure_prod(clean_env)
+    settings = load_settings()
+    assert settings.access_token_expire_minutes == 15
+    assert settings.jwt_expire_minutes == 480
+    assert settings.session_idle_minutes == 30
+    assert settings.refresh_cookie_secure is True
+
+
+def test_an_idle_timeout_no_longer_than_the_access_token_is_refused(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """The console refreshes once per access token, so such a timeout signs out active users.
+
+    Refused in dev as well: it is a mistake, not a development convenience.
+    """
+    clean_env.setenv("OCTO_ENV", ENV_DEV)
+    clean_env.setenv("OCTO_ACCESS_TOKEN_EXPIRE_MINUTES", "20")
+    clean_env.setenv("OCTO_SESSION_IDLE_MINUTES", "20")
+    with pytest.raises(InsecureConfigurationError, match="OCTO_SESSION_IDLE_MINUTES"):
+        load_settings()
+
+    # 0 is "off", not "shorter than the token".
+    clean_env.setenv("OCTO_SESSION_IDLE_MINUTES", "0")
+    assert load_settings().session_idle_minutes == 0
+
+
+def test_prod_refuses_a_refresh_cookie_without_secure(clean_env: pytest.MonkeyPatch) -> None:
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_REFRESH_COOKIE_SECURE", "false")
+    with pytest.raises(InsecureConfigurationError, match="OCTO_REFRESH_COOKIE_SECURE"):
+        load_settings()
+
+    # A dev stand on plain http is exactly what the switch is for, and dev
+    # defaults to it for the reason it defaults HSTS off.
+    clean_env.setenv("OCTO_ENV", ENV_DEV)
+    assert load_settings().refresh_cookie_secure is False
+    clean_env.delenv("OCTO_REFRESH_COOKIE_SECURE")
+    assert load_settings().refresh_cookie_secure is False

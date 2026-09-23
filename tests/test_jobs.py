@@ -307,7 +307,124 @@ def test_local_run_is_tagged_with_the_jobs_tenant(settings, monkeypatch):
     jobs_service._run_job(settings, job.job_id, ["true"])  # noqa: SLF001
 
     assert get_job(settings, job.job_id).status == "succeeded"
-    assert runs_service.read_run_tenant(run_dir) == "ten_a"
+    # Moved out of the flat directory the scanner wrote and into the owner's
+    # subtree (#427), with the marker travelling along.
+    owned = settings.output_dir / "runs" / "_tenants" / "ten_a" / "20260805T101500Z"
+    assert not run_dir.exists()
+    assert runs_service.read_run_tenant(owned) == "ten_a"
+
+
+def test_a_local_scan_does_not_take_over_another_tenants_flat_run(settings, monkeypatch):
+    """The scanner writes the flat ``runs/<run_id>`` and knows no tenants. When
+    that directory is an older run of *another* tenant, the job's tenant must
+    not be written over its marker -- through the real ``_run_job`` path, which
+    tags the run after adopting it (#427)."""
+    import subprocess
+    import types
+
+    from api.schemas import StartScanRequest
+
+    run_id = "20260805T101500Z"
+    flat = settings.output_dir / "runs" / run_id
+    flat.mkdir(parents=True)
+    (flat / "tenant.json").write_text(json.dumps({"tenant_id": "ten_b"}), encoding="utf-8")
+    (settings.state_dir / "latest_run.json").write_text(
+        json.dumps({"run_id": run_id}), encoding="utf-8"
+    )
+    tenants_service.create_tenant(tenant_id="ten_a", name="Tenant A")
+    tenants_service.create_tenant(tenant_id="ten_b", name="Tenant B")
+    approve_scan_scope(settings, "ten_a")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(jobs_service.threading, "Thread", _NoopThread)
+    job = jobs_service.start_scan(
+        settings, StartScanRequest(mode="balanced", tenant_id="ten_a"), username="admin"
+    )
+    jobs_service._run_job(settings, job.job_id, ["true"])  # noqa: SLF001
+
+    assert runs_service.read_run_tenant(flat) == "ten_b"
+    assert runs_service.get_run_dir(settings, run_id, tenant_id="ten_a") is None
+    assert runs_service.get_run_dir(settings, run_id, tenant_id="ten_b") == flat
+
+
+def test_a_custom_run_id_that_names_an_existing_flat_run_is_refused(settings):
+    """A local scan writes ``runs/<run_id>`` itself, so a run id already there
+    would be written *into* -- another tenant's run, or the default's."""
+    from api.schemas import StartScanRequest
+
+    (settings.output_dir / "runs" / "legacy-run").mkdir(parents=True)
+    with pytest.raises(ValueError, match="run_id"):
+        jobs_service.start_scan(
+            settings, StartScanRequest(mode="balanced", run_id="legacy-run"), username="admin"
+        )
+
+
+def test_two_tenants_submitting_one_custom_run_id_do_not_share_a_directory(
+    settings, monkeypatch
+):
+    """Both requests pass a "is it free" check made before either scanner has
+    written anything; only an atomic reservation lets exactly one through."""
+    from api.schemas import StartScanRequest
+
+    from api.services import job_submission
+
+    for tenant in ("ten_a", "ten_b"):
+        tenants_service.create_tenant(tenant_id=tenant, name=tenant)
+        approve_scan_scope(settings, tenant)
+    monkeypatch.setattr(jobs_service.threading, "Thread", _NoopThread)
+    # The race itself: both requests ran the "is it free" check before either
+    # had reserved anything, so the check answers "free" to both. What is left
+    # to stop the second is the reservation.
+    monkeypatch.setattr(job_submission.artifact_workspace, "run_exists", lambda *_a, **_k: False)
+
+    jobs_service.start_scan(
+        settings,
+        StartScanRequest(mode="balanced", tenant_id="ten_a", run_id="weekly"),
+        username="admin",
+    )
+    with pytest.raises(ValueError, match="run_id"):
+        jobs_service.start_scan(
+            settings,
+            StartScanRequest(mode="balanced", tenant_id="ten_b", run_id="weekly"),
+            username="admin",
+        )
+
+
+def test_a_local_scan_that_was_not_filed_under_its_tenant_says_so_on_the_job(
+    settings, monkeypatch
+):
+    import subprocess
+    import types
+
+    from api.schemas import StartScanRequest
+    from api.services import artifact_store
+    from api.services.artifact_store import workspace as artifact_workspace
+
+    run_id = "20260805T101500Z"
+    (settings.output_dir / "runs" / run_id).mkdir(parents=True)
+    (settings.state_dir / "latest_run.json").write_text(
+        json.dumps({"run_id": run_id}), encoding="utf-8"
+    )
+
+    def _refuse(*_a, **_k):
+        raise artifact_store.ArtifactStoreError("disk full")
+
+    monkeypatch.setattr(artifact_workspace, "adopt_local_run", _refuse)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(jobs_service.threading, "Thread", _NoopThread)
+    job = jobs_service.start_scan(settings, StartScanRequest(mode="balanced"), username="admin")
+    jobs_service._run_job(settings, job.job_id, ["true"])  # noqa: SLF001
+
+    row = get_job(settings, job.job_id)
+    assert row.status == "succeeded"
+    assert "not filed under its tenant: disk full" in (row.error or "")
 
 
 class _NoopThread:

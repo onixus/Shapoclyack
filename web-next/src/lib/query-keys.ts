@@ -52,6 +52,10 @@ export const queryKeys = {
    * username: it is always "mine", and a key that named the user would
    * survive a sign-out into the next person's session. */
   mfa: ["auth", "mfa"] as const,
+  /** The same account's registered security keys (#315). Under `mfa` so that
+   * invalidating the factor state — turning MFA off removes every key —
+   * refreshes the inventory with it. */
+  webauthnKeys: ["auth", "mfa", "webauthn"] as const,
   authEvents: (page?: PageParams, outcome?: string) =>
     ["auth", "events", outcome ?? null, pageKey(page)] as const,
   auditEvents: (page?: PageParams, filters?: Record<string, string | undefined>) =>

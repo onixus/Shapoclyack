@@ -326,7 +326,7 @@ are tracked in `docs/ui-ux-redesign-roadmap.md`.
 
 Tenant IDs created through the current API are constrained to a route- and NATS-safe representation. Legacy IDs that cannot be embedded injectively in NATS subjects use a reserved hash token rather than lossy character replacement, preventing two tenant IDs from collapsing onto one routing subject.
 
-Completed run directories carry `tenant.json`. Historical/direct scanner runs without that marker are treated as belonging to `default` for backward compatibility.
+Completed runs are stored under their tenant (`runs/_tenants/<tenant>/<run_id>`, #427) and carry `tenant.json`. Runs in the flat `runs/<run_id>` layout of earlier releases are still read, by the tenant their marker names; historical/direct scanner runs without that marker are treated as belonging to `default` for backward compatibility. Tenant IDs that are not a safe path segment are hashed into the reserved `h_` namespace, the same scheme the NATS subjects use.
 
 See [API and RBAC](api-and-rbac.md) for endpoint-level authorization behavior.
 

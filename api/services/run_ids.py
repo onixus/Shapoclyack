@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-import re
-import uuid
-from datetime import UTC, datetime
+# One minting function for every run in the product (#427): the scanner CLI
+# mints its own run ids, and before this they were the bare second the server
+# had given up in #421. The scanner owns the function because the scanner image
+# ships without ``api/``; the API image ships both.
+from scanner.pipeline.run_ids import RUN_ID_RE, mint, validate
 
-_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-
-
-def mint() -> str:
-    """A run id for a scan this server starts: the clock, and enough to be unique.
-
-    It was ``%Y%m%dT%H%M%SZ`` alone, and a second is not a lot: two jobs
-    claimed inside the same one were handed the *same* run id, so their
-    artifacts merged into one directory and one key prefix — across tenants,
-    since the prefix carries no owner (#311) — and a publication of either
-    that failed partway took the other's keys with it. The suffix goes after
-    the timestamp so that the ordering a run listing depends on (ids sorted
-    descending, which is the clock) is exactly as it was.
-    """
-    return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
-
-
-def validate(value: str) -> str:
-    """Refuse a run id that is not one safe path segment."""
-    if not _RUN_ID_RE.fullmatch(value):
-        raise ValueError("run_id must be 1-64 characters of [A-Za-z0-9_-]")
-    return value
+__all__ = ["RUN_ID_RE", "confirm", "mint", "validate"]
 
 
 def confirm(expected: str | None, offered: str | None) -> str | None:

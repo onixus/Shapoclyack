@@ -115,18 +115,21 @@ def run_job(
             # The scanner chose the run id and wrote the directory itself, so
             # this is the first moment the run can be put in the artifact
             # store (#336). Before the tagging below, and before the hooks:
-            # they all read the run back through the workspace.
+            # they all read the run back through the workspace. Adopted into
+            # the job's tenant (#427): the scanner has no idea whose scan it
+            # ran, and this is the first code that does.
             try:
                 artifact_workspace.adopt_local_run(
                     settings,
-                    str(run_id),
+                    artifact_store.keys.run_ref(str(run_id), tenant_id),
                     settings.output_dir / "runs" / str(run_id),
                 )
-            except artifact_store.ArtifactStoreError:
+            except (artifact_store.ArtifactStoreError, ValueError) as exc:
                 _log.exception(
                     "Could not publish run %s to the artifact store",
                     run_id,
                 )
+                run_completion.note_adoption_failed(settings, job_id, str(exc))
 
         if status == job_states.SUCCEEDED:
             # Tag the run before the asset upsert: an untagged run reads back

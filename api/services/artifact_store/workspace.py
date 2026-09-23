@@ -22,6 +22,14 @@ So a run keeps being a directory, and this module decides *which* one:
 A run is written locally and *published* when it is finished. It is not
 streamed to the store as the scanner writes it: a half-written run in object
 storage is a run another replica can list and read.
+
+Every function takes a run as a :class:`~.keys.RunRef` or a bare run id, and
+the bare id means the flat ``runs/<id>`` layout of every release before #427.
+A run owned by a known tenant lives at ``runs/_tenants/<tenant>/<id>`` -- in the
+store, under ``output_dir`` on the local backend, and in the working-copy cache
+-- so the same path is the same run everywhere. Which of the two a *reader* may
+open is not decided here: that is the tenant policy in
+``api/services/runs.py`` (``resolve_run``).
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from typing import TYPE_CHECKING
 
 from . import keys
 from .base import ArtifactStoreError
+from .keys import RunRef
 from . import get_store, is_remote
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -66,7 +75,7 @@ def cache_root(settings: Settings) -> Path:
     return Path(settings.state_dir) / "cache" / "runs"
 
 
-def scratch_run_dir(settings: Settings, run_id: str) -> Path:
+def scratch_run_dir(settings: Settings, run: RunRef | str) -> Path:
     """Where a *writer* builds a run before it is published.
 
     On the local backend this is the run's final home, so "publish" is a
@@ -74,14 +83,19 @@ def scratch_run_dir(settings: Settings, run_id: str) -> Path:
     cache -- the same directory a reader on this pod would get, so a scan that
     has just finished is readable here without a round trip.
     """
+    ref = keys.as_ref(run)
     if is_remote(settings):
-        return cache_root(settings) / run_id
-    if run_id == FLAT_RUN_ID:
+        return cache_root(settings) / ref.path
+    if _is_flat(ref):
         return Path(settings.output_dir)
-    return Path(settings.output_dir) / "runs" / run_id
+    return Path(settings.output_dir) / keys.RUNS / ref.path
 
 
-def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
+def _is_flat(ref: RunRef) -> bool:
+    return ref.tenant is None and ref.run_id == FLAT_RUN_ID
+
+
+def staging_run_dir(settings: Settings, run: RunRef | str, token: str) -> Path:
     """Where one *attempt's* upload is extracted before it is accepted.
 
     A run directory is named after the run, and a job keeps its run id across
@@ -94,7 +108,7 @@ def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
     A *sibling* of the run directory, and a dotted name: inside it would be
     uploaded with the run and listed by ``GET /api/runs/{id}`` as one of the
     scan's own artifacts, and a plain name in the cache root would be read as
-    a run of its own by :func:`run_ids`.
+    a run of its own by :func:`run_refs`.
 
     Taking one is also when the abandoned ones are collected. An ingest killed
     with its pod -- or one whose publication is recorded as owed and has run
@@ -106,9 +120,14 @@ def staging_run_dir(settings: Settings, run_id: str, token: str) -> Path:
     it. Hung off this call rather than a timer because it is the one moment the
     directory is known and an ingest is already paying for I/O.
     """
-    destination = scratch_run_dir(settings, run_id)
+    ref = keys.as_ref(run)
+    destination = scratch_run_dir(settings, ref)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _sweep_abandoned(destination.parent)
+    if ref.tenant is not None:
+        # And the flat root, where every ingest staged before #427: nothing
+        # stages there any more, so nothing else would ever collect them.
+        _sweep_abandoned(destination.parent.parent.parent)
     return destination.parent / f".ingest-{destination.name}-{token[:12]}"
 
 
@@ -139,7 +158,7 @@ def stage_upload_archive(staging: Path, archive_bytes: bytes) -> Path:
     return path
 
 
-def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
+def promote_staging(settings: Settings, run: RunRef | str, staging: Path) -> Path:
     """Move an accepted upload into the run's own directory. Answers where.
 
     Renamed when the run has no directory yet, which is every first upload and
@@ -147,8 +166,10 @@ def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
     the local executor or an earlier partial upload already wrote -- because
     the alternative is deleting artifacts this upload did not carry.
     """
-    destination = scratch_run_dir(settings, run_id)
+    destination = scratch_run_dir(settings, run)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if keys.as_ref(run).tenant is not None and not is_remote(settings):
+        guard_tenant_namespace(settings)
     if not destination.exists():
         try:
             staging.rename(destination)
@@ -156,7 +177,7 @@ def promote_staging(settings: Settings, run_id: str, staging: Path) -> Path:
         except OSError:
             # Across filesystems, or a directory that appeared between the
             # check and the rename. Copying is the same outcome, slower.
-            LOG.debug("Could not rename staged run %s into place", run_id, exc_info=True)
+            LOG.debug("Could not rename staged run %s into place", run, exc_info=True)
     shutil.copytree(staging, destination, dirs_exist_ok=True)
     # The tree only. The archive beside it is still owed to the ingest bus,
     # and the publisher drops it when the whole publication is done.
@@ -175,60 +196,164 @@ def discard_staging(staging: Path) -> None:
     staged_archive_path(staging).unlink(missing_ok=True)
 
 
-def run_dir(settings: Settings, run_id: str, *, refresh: bool = True) -> Path:
-    """A local directory holding ``run_id``'s artifacts.
+def run_dir(settings: Settings, run: RunRef | str, *, refresh: bool = True) -> Path:
+    """A local directory holding ``run``'s artifacts.
 
     The path is returned whether or not the run exists; callers already test
     ``is_dir()`` and turn the absence into a 404. ``refresh=False`` skips the
     store round trip for a caller that has just written the directory itself.
     """
+    ref = keys.as_ref(run)
     if not is_remote(settings):
-        return scratch_run_dir(settings, run_id)
-    if run_id == FLAT_RUN_ID:
+        return scratch_run_dir(settings, ref)
+    if _is_flat(ref):
         # The flat layout has no ``runs/<id>`` subtree to fetch, so there is
         # nothing to materialise. Answering with the local output directory
         # keeps a dev box that set per_run_output=false working; a remote
         # backend simply has no flat run to find.
         return Path(settings.output_dir)
-    local = cache_root(settings) / run_id
+    local = cache_root(settings) / ref.path
     if refresh:
-        _sync_run(settings, run_id, local)
+        _sync_run(settings, ref, local)
     return local
 
 
-def run_exists(settings: Settings, run_id: str) -> bool:
+def run_exists(settings: Settings, run: RunRef | str) -> bool:
+    ref = keys.as_ref(run)
     if not is_remote(settings):
-        return scratch_run_dir(settings, run_id).is_dir()
-    if run_id == FLAT_RUN_ID:
+        return scratch_run_dir(settings, ref).is_dir()
+    if _is_flat(ref):
         return Path(settings.output_dir).is_dir()
     store = get_store(settings)
-    return any(True for _ in store.list_prefix(keys.run_prefix(run_id)))
+    return any(True for _ in store.list_prefix(keys.run_prefix(ref)))
 
 
-def run_ids(settings: Settings) -> list[str]:
+#: Owner written into ``runs/_tenants/tenant.json``. Not a tenant id anyone can
+#: hold -- ids start with an alphanumeric -- so no principal owns it.
+NAMESPACE_OWNER = "_tenants"
+
+
+def guard_tenant_namespace(settings: Settings) -> None:
+    """Give ``runs/_tenants`` a ``tenant.json`` that names nobody.
+
+    For a replica still running the release before #427, during a rolling
+    update or after a downgrade. That code lists ``runs/_tenants`` as one flat
+    run, and a flat run with no marker is the default tenant's -- so without
+    this, ``GET /api/runs/_tenants`` served every tenant's runs to the default
+    tenant. With it, the old code finds an owner no principal is a member of.
+    Cheap to repeat: one existence check once the marker is there.
+    """
+    store = get_store(settings)
+    key = keys.normalize_key(f"{keys.tenant_runs_prefix()}/{RUN_MARKER}")
+    try:
+        if not store.exists(key):
+            store.put_bytes(
+                key, (json.dumps({"tenant_id": NAMESPACE_OWNER}, indent=2) + "\n").encode("utf-8")
+            )
+    except ArtifactStoreError:
+        # Fail-soft: only a pre-#427 replica reads this, and the run being
+        # written is not less valid for it. Logged, because an upgrade whose
+        # old replicas are still serving is exactly when it matters.
+        LOG.warning("Could not guard the tenant namespace under runs/", exc_info=True)
+
+
+def locate_written(settings: Settings, run_id: str, tenant_id: str) -> RunRef | None:
+    """Where a writer that knows the owner finds the run it has just produced.
+
+    The owner's subtree when the run is there, which is every run ingested or
+    adopted since #427; otherwise the flat location -- a local scan the move in
+    :func:`adopt_local_run` could not relocate, or a run from before it.
+
+    ``None`` when the flat run already names *another* owner. The scanner
+    writes ``runs/<run_id>`` whatever is there, so that directory can be an
+    older run of a different tenant the scan was written into; handing it to
+    this job would relabel that tenant's scan as this one's and feed it to
+    this tenant's inventory. A request on behalf of a user goes through
+    ``runs.resolve_run`` instead.
+    """
+    ref = keys.run_ref(run_id, tenant_id)
+    if scratch_run_dir(settings, ref).is_dir() or run_exists(settings, ref):
+        return ref
+    flat = keys.run_ref(run_id)
+    owner = str(read_run_marker(settings, flat).get("tenant_id") or "").strip()
+    if owner and owner != tenant_id:
+        LOG.warning(
+            "Run %s is flat and marked as %s's; not treating it as %s's", run_id, owner, tenant_id
+        )
+        return None
+    return flat
+
+
+def run_refs(settings: Settings, *, tenant_id: str | None = None) -> list[RunRef]:
     """Every run in the store, newest-looking first.
 
     Sorted by id descending, which is the ordering the run listing has always
     used: ids are timestamps, so the name sorts the way the clock does without
-    opening anything.
+    opening anything. Both layouts are listed -- the flat ``runs/<id>`` of
+    earlier releases and ``runs/_tenants/<tenant>/<id>`` -- and a run id that
+    appears in both is two entries, because it may be two runs.
+
+    With ``tenant_id``, the flat runs and only that tenant's own subtree: two
+    listing calls instead of two plus one per tenant. The flat runs are
+    *every* flat run -- their owner is in a file, not in the path, and deciding
+    whether one is the tenant's is the caller's policy, not this listing's.
 
     Names beginning with a dot are skipped. The filesystem backend lists what is
     in the directory, and a ``.DS_Store`` beside the runs would otherwise be a
     run in the console with nothing in it -- the previous implementation only
-    ever looked at directories and never had to say so.
+    ever looked at directories and never had to say so. So is any name that
+    could not be a run id in its layout: a hand-made directory under
+    ``runs/_tenants`` must not become a run a tenant can open.
     """
     store = get_store(settings)
+    refs: list[RunRef] = []
     try:
         children = list(store.list_children(keys.RUNS))
+        for name in children:
+            if name.startswith(".") or name == keys.TENANT_RUNS:
+                continue
+            try:
+                refs.append(keys.run_ref(name))
+            except ValueError:
+                continue
+        if keys.TENANT_RUNS in children:
+            if tenant_id is not None:
+                refs.extend(_tenant_refs(store, keys.tenant_segment(tenant_id)))
+            else:
+                for segment in store.list_children(keys.tenant_runs_prefix()):
+                    if not segment.startswith("."):
+                        refs.extend(_tenant_refs(store, segment))
     except ArtifactStoreError:
         LOG.warning("Could not list runs from the artifact store", exc_info=True)
         return []
-    return sorted((name for name in children if not name.startswith(".")), reverse=True)
+    return sorted(refs, key=lambda ref: (ref.run_id, ref.tenant or ""), reverse=True)
+
+
+def _tenant_refs(store, segment: str) -> list[RunRef]:
+    refs: list[RunRef] = []
+    for name in store.list_children(keys.tenant_runs_prefix(segment)):
+        if name.startswith("."):
+            continue
+        try:
+            ref = keys.run_ref(name, segment)
+        except ValueError:
+            continue
+        # ``run_ref`` encodes the tenant it is given, and a listed segment is
+        # already encoded -- so one that does not survive the round trip is not
+        # a subtree this code wrote, and nobody's runs are in it.
+        if ref.tenant == segment:
+            refs.append(ref)
+    return refs
+
+
+def run_ids(settings: Settings) -> list[str]:
+    """The ids of :func:`run_refs`, for callers that only count or compare them."""
+    return [ref.run_id for ref in run_refs(settings)]
 
 
 def publish_run(
     settings: Settings,
-    run_id: str,
+    run: RunRef | str,
     *,
     source: Path | None = None,
     written: list[str] | None = None,
@@ -244,19 +369,24 @@ def publish_run(
     keys that landed, so a caller that has to undo a transfer which raised
     halfway knows exactly what to undo -- see :func:`unpublish_run`.
     """
+    ref = keys.as_ref(run)
+    if ref.tenant is not None:
+        # On both backends: on the local one this is the only call a finished
+        # run is sure to pass through, and the old code reads the volume too.
+        guard_tenant_namespace(settings)
     if not is_remote(settings):
         return 0
-    directory = Path(source) if source is not None else scratch_run_dir(settings, run_id)
+    directory = Path(source) if source is not None else scratch_run_dir(settings, ref)
     if not directory.is_dir():
         return 0
     store = get_store(settings)
-    count = store.upload_tree(keys.run_prefix(run_id), directory, written=written)
-    _mark_synced(settings, run_id)
-    LOG.info("Published run %s to the artifact store (%d files)", run_id, count)
+    count = store.upload_tree(keys.run_prefix(ref), directory, written=written)
+    _mark_synced(settings, ref)
+    LOG.info("Published run %s to the artifact store (%d files)", ref.path, count)
     return count
 
 
-def adopt_local_run(settings: Settings, run_id: str, source: Path) -> int:
+def adopt_local_run(settings: Settings, run: RunRef | str, source: Path) -> int:
     """Publish a run the scanner wrote somewhere of its own choosing.
 
     A local scan is a subprocess handed ``--output-dir``; it picks the run id
@@ -266,14 +396,66 @@ def adopt_local_run(settings: Settings, run_id: str, source: Path) -> int:
     does not sit on the pod's disk twice, and marked synced so the hooks that
     run straight afterwards read it without a round trip.
 
-    A no-op on the local backend: the scanner already wrote the run where it
-    belongs.
+    On the local backend nothing is published, but a run with an owner still
+    moves: the scanner knows nothing of tenants and wrote the flat
+    ``runs/<run_id>``, and the owner's subtree is where this run is read from
+    (#427). A rename, within the one volume ``output_dir`` is.
     """
+    ref = keys.as_ref(run)
     source = Path(source)
-    if not is_remote(settings) or not source.is_dir():
+    if not source.is_dir():
         return 0
-    count = publish_run(settings, run_id, source=source)
-    destination = cache_root(settings) / run_id
+    if not is_remote(settings):
+        destination = scratch_run_dir(settings, ref)
+        if destination == source:
+            return 0
+        if (source / RUN_MARKER).exists():
+            # Never taken: a flat directory that already names an owner is an
+            # older run the scanner wrote into, not a fresh scan. It stays
+            # where it is -- flat, owned by what its marker says, which is the
+            # pre-#427 arrangement and no worse than it.
+            LOG.warning("Run %s is an existing flat run; leaving %s in place", ref.path, source)
+            return 0
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                # The tenant scanned under this run id before (a custom id,
+                # reused). Merged, as the scanner itself merged into the one
+                # flat directory before #427 and as ``promote_staging`` merges
+                # an upload -- left flat instead, the new scan has no marker
+                # and reads as the default tenant's.
+                shutil.copytree(source, destination, dirs_exist_ok=True)
+                shutil.rmtree(source, ignore_errors=True)
+            else:
+                source.rename(destination)
+        except OSError:
+            # Fail-soft: the scan is whole where it is (``copytree`` copies
+            # before anything is removed). But flat and unmarked it is the
+            # default tenant's, and with the tenant's own run beside it the
+            # marker written next goes there, not here -- so it is marked now.
+            # The segment is the tenant id unless the id was hashed; then the
+            # marker names nobody, which is the safe way to be wrong.
+            LOG.warning("Could not move run %s into %s", ref.path, destination, exc_info=True)
+            if ref.tenant is not None:
+                try:
+                    (source / RUN_MARKER).write_text(
+                        json.dumps({"tenant_id": ref.tenant}, indent=2) + "\n", encoding="utf-8"
+                    )
+                except OSError:
+                    LOG.error("Run %s is flat and unmarked at %s", ref.path, source, exc_info=True)
+            # Raised, not swallowed: a merge that failed partway has left the
+            # tenant's run holding part of this scan and the whole of it flat
+            # beside it, where the tenant's own copy shadows it. The caller
+            # records that on the job, which is where an operator will look.
+            raise ArtifactStoreError(
+                f"run {ref.path} could not be moved into {destination}; "
+                f"the complete scan was left at {source}"
+            )
+        if ref.tenant is not None:
+            guard_tenant_namespace(settings)
+        return 0
+    count = publish_run(settings, ref, source=source)
+    destination = cache_root(settings) / ref.path
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(destination, ignore_errors=True)
     try:
@@ -287,13 +469,15 @@ def adopt_local_run(settings: Settings, run_id: str, source: Path) -> int:
             shutil.copytree(source, destination, dirs_exist_ok=True)
             shutil.rmtree(source, ignore_errors=True)
         except OSError:
-            LOG.warning("Could not adopt the working copy of run %s", run_id, exc_info=True)
+            LOG.warning("Could not adopt the working copy of run %s", ref.path, exc_info=True)
             return count
-    _mark_synced(settings, run_id)
+    _mark_synced(settings, ref)
     return count
 
 
-def publish_run_file(settings: Settings, run_id: str, relative_path: str, data: bytes) -> None:
+def publish_run_file(
+    settings: Settings, run: RunRef | str, relative_path: str, data: bytes
+) -> None:
     """Write one file into a published run, locally and in the store.
 
     Exists for the markers written *after* a run is published -- ``tenant.json``
@@ -301,14 +485,15 @@ def publish_run_file(settings: Settings, run_id: str, relative_path: str, data: 
     it only to the local copy would leave every other replica reading the run
     as belonging to the default tenant.
     """
-    local = scratch_run_dir(settings, run_id) / relative_path
+    ref = keys.as_ref(run)
+    local = scratch_run_dir(settings, ref) / relative_path
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(data)
     if is_remote(settings):
-        get_store(settings).put_bytes(keys.run_artifact(run_id, relative_path), data)
+        get_store(settings).put_bytes(keys.run_artifact(ref, relative_path), data)
 
 
-def unpublish_run(settings: Settings, run_id: str, *, only: Sequence[str]) -> int:
+def unpublish_run(settings: Settings, run: RunRef | str, *, only: Sequence[str]) -> int:
     """Take back the keys one failed upload wrote. Answers how many went.
 
     For an upload that failed partway: ``upload_tree`` writes a key at a time,
@@ -331,6 +516,7 @@ def unpublish_run(settings: Settings, run_id: str, *, only: Sequence[str]) -> in
     that refused the upload, and the caller is already on its way to recording
     that failure. A no-op on the local backend, where nothing was uploaded.
     """
+    ref = keys.as_ref(run)
     named = [key for key in only if key]
     if not is_remote(settings) or not named:
         return 0
@@ -340,52 +526,54 @@ def unpublish_run(settings: Settings, run_id: str, *, only: Sequence[str]) -> in
         LOG.warning(
             "Could not remove the partial upload of run %s from the artifact store; "
             "it may be listed with files missing until the next attempt",
-            run_id,
+            ref.path,
             exc_info=True,
         )
         return 0
-    _forget_synced(settings, run_id)
+    _forget_synced(settings, ref)
     return removed
 
 
-def delete_run(settings: Settings, run_id: str) -> int:
+def delete_run(settings: Settings, run: RunRef | str) -> int:
     """Remove a run from the store and from this pod's working copy."""
+    ref = keys.as_ref(run)
     store = get_store(settings)
-    removed = store.delete_prefix(keys.run_prefix(run_id))
+    removed = store.delete_prefix(keys.run_prefix(ref))
     if is_remote(settings):
-        shutil.rmtree(cache_root(settings) / run_id, ignore_errors=True)
-        _forget_synced(settings, run_id)
+        shutil.rmtree(cache_root(settings) / ref.path, ignore_errors=True)
+        _forget_synced(settings, ref)
     return removed
 
 
-def forget_cached_run(settings: Settings, run_id: str) -> None:
+def forget_cached_run(settings: Settings, run: RunRef | str) -> None:
     """Drop this pod's working copy without touching the store."""
+    ref = keys.as_ref(run)
     if is_remote(settings):
-        shutil.rmtree(cache_root(settings) / run_id, ignore_errors=True)
-        _forget_synced(settings, run_id)
+        shutil.rmtree(cache_root(settings) / ref.path, ignore_errors=True)
+        _forget_synced(settings, ref)
 
 
 # -- materialisation ------------------------------------------------------
 
 
-def _marker_path(settings: Settings, run_id: str) -> Path:
-    return cache_root(settings) / SYNC_DIR / f"{run_id}.json"
+def _marker_path(settings: Settings, ref: RunRef) -> Path:
+    return cache_root(settings) / SYNC_DIR / f"{ref.path}.json"
 
 
-def _mark_synced(settings: Settings, run_id: str) -> None:
-    marker = _marker_path(settings, run_id)
+def _mark_synced(settings: Settings, ref: RunRef) -> None:
+    marker = _marker_path(settings, ref)
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"synced_at": time.time()}), encoding="utf-8")
     except OSError:
         # A working copy without a marker is re-fetched next time. Wasteful,
         # never wrong, and not worth failing a publish over.
-        LOG.debug("Could not write the sync marker for run %s", run_id, exc_info=True)
+        LOG.debug("Could not write the sync marker for run %s", ref.path, exc_info=True)
 
 
-def _synced_age(settings: Settings, run_id: str) -> float | None:
+def _synced_age(settings: Settings, ref: RunRef) -> float | None:
     try:
-        payload = json.loads(_marker_path(settings, run_id).read_text(encoding="utf-8"))
+        payload = json.loads(_marker_path(settings, ref).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     synced_at = payload.get("synced_at")
@@ -394,15 +582,15 @@ def _synced_age(settings: Settings, run_id: str) -> float | None:
     return max(0.0, time.time() - float(synced_at))
 
 
-def _forget_synced(settings: Settings, run_id: str) -> None:
+def _forget_synced(settings: Settings, ref: RunRef) -> None:
     try:
-        _marker_path(settings, run_id).unlink(missing_ok=True)
+        _marker_path(settings, ref).unlink(missing_ok=True)
     except OSError:
-        LOG.debug("Could not drop the sync marker for run %s", run_id, exc_info=True)
+        LOG.debug("Could not drop the sync marker for run %s", ref.path, exc_info=True)
 
 
-def _sync_run(settings: Settings, run_id: str, local: Path) -> None:
-    """Bring the working copy of ``run_id`` up to date, if it is not already.
+def _sync_run(settings: Settings, ref: RunRef, local: Path) -> None:
+    """Bring the working copy of ``ref`` up to date, if it is not already.
 
     The freshness window exists because a run is *almost* immutable: it is
     published once and then gains, at most, the markers a completing job
@@ -412,7 +600,7 @@ def _sync_run(settings: Settings, run_id: str, local: Path) -> None:
     long a replica can disagree with the store.
     """
     ttl = max(0, int(settings.artifact_cache_ttl_seconds))
-    age = _synced_age(settings, run_id)
+    age = _synced_age(settings, ref)
     if age is not None and age <= ttl and local.is_dir():
         return
     # One fetch per run at a time in this process. Without it, the four
@@ -420,36 +608,36 @@ def _sync_run(settings: Settings, run_id: str, local: Path) -> None:
     # start their own transfer of the same directory and then race to rename
     # it into place. Re-checked inside, so the three that waited take the copy
     # the first one brought down.
-    with _run_lock(run_id):
-        age = _synced_age(settings, run_id)
+    with _run_lock(ref.path):
+        age = _synced_age(settings, ref)
         if age is not None and age <= ttl and local.is_dir():
             return
-        _fetch_run(settings, run_id, local)
+        _fetch_run(settings, ref, local)
 
 
 _FETCH_LOCKS: dict[str, threading.Lock] = {}
 _FETCH_LOCKS_GUARD = threading.Lock()
 
 
-def _run_lock(run_id: str) -> threading.Lock:
+def _run_lock(path: str) -> threading.Lock:
     with _FETCH_LOCKS_GUARD:
-        # Never evicted: one Lock per run id this process has fetched, a few
+        # Never evicted: one Lock per run this process has fetched, a few
         # dozen bytes each, against a cache that is bounded in gigabytes.
         # Clearing them would need a second lock to be safe about it.
-        lock = _FETCH_LOCKS.get(run_id)
+        lock = _FETCH_LOCKS.get(path)
         if lock is None:
             lock = threading.Lock()
-            _FETCH_LOCKS[run_id] = lock
+            _FETCH_LOCKS[path] = lock
         return lock
 
 
-def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
+def _fetch_run(settings: Settings, ref: RunRef, local: Path) -> None:
     store = get_store(settings)
-    prefix = keys.run_prefix(run_id)
+    prefix = keys.run_prefix(ref)
     try:
         entries = list(store.list_prefix(prefix))
     except ArtifactStoreError:
-        LOG.warning("Could not list run %s in the artifact store", run_id, exc_info=True)
+        LOG.warning("Could not list run %s in the artifact store", ref.path, exc_info=True)
         return
     if not entries:
         # Nothing in the store under this id. Any working copy is a leftover
@@ -457,9 +645,9 @@ def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
         # a deleted run go on being served by whichever pod happened to cache
         # it.
         shutil.rmtree(local, ignore_errors=True)
-        _forget_synced(settings, run_id)
+        _forget_synced(settings, ref)
         return
-    _evict_cache(settings, keep=run_id)
+    _evict_cache(settings, keep=ref.path)
     # Unique per attempt: this process serialises its own fetches, but a second
     # pod sharing the cache directory -- or a replica restarted mid-fetch --
     # must not be able to delete a staging tree somebody else is filling.
@@ -468,7 +656,7 @@ def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
         store.download_tree(prefix, staging)
     except ArtifactStoreError:
         shutil.rmtree(staging, ignore_errors=True)
-        LOG.warning("Could not materialise run %s", run_id, exc_info=True)
+        LOG.warning("Could not materialise run %s", ref.path, exc_info=True)
         return
     # Swapped in rather than written in place: a request reading the working
     # copy while it is refreshed would otherwise see a directory that is
@@ -479,14 +667,14 @@ def _fetch_run(settings: Settings, run_id: str, local: Path) -> None:
             local.rename(previous)
         staging.rename(local)
     except OSError:
-        LOG.warning("Could not swap in the working copy of run %s", run_id, exc_info=True)
+        LOG.warning("Could not swap in the working copy of run %s", ref.path, exc_info=True)
         shutil.rmtree(staging, ignore_errors=True)
         return
     finally:
         shutil.rmtree(previous, ignore_errors=True)
     # Marked only once the copy is in place: a crash between the two costs one
     # needless re-fetch, where marking first would serve a half-swapped run.
-    _mark_synced(settings, run_id)
+    _mark_synced(settings, ref)
 
 
 #: How long a half-finished transfer may sit in the cache before it is assumed
@@ -568,21 +756,58 @@ def _evict_cache(settings: Settings, *, keep: str) -> None:
     if not root.is_dir():
         return
     _sweep_abandoned(root)
-    copies: list[tuple[float, int, Path]] = []
-    for child in root.iterdir():
-        if not child.is_dir() or child.name == keep or child.name.startswith("."):
+    copies: list[tuple[float, int, Path, RunRef]] = []
+    for ref, child in _cached_copies(root):
+        if ref.path == keep:
             continue
-        age = _synced_age(settings, child.name)
-        copies.append((age if age is not None else float("inf"), _directory_size(child), child))
-    total = sum(size for _, size, _ in copies)
+        age = _synced_age(settings, ref)
+        copies.append(
+            (age if age is not None else float("inf"), _directory_size(child), child, ref)
+        )
+    total = sum(size for _, size, _, _ in copies)
     if total <= budget:
         return
-    for _, size, path in sorted(copies, key=lambda item: item[0], reverse=True):
+    for _, size, path, ref in sorted(copies, key=lambda item: item[0], reverse=True):
         if total <= budget:
             return
         shutil.rmtree(path, ignore_errors=True)
-        _forget_synced(settings, path.name)
+        _forget_synced(settings, ref)
         total -= size
+
+
+def _cached_copies(root: Path) -> list[tuple[RunRef, Path]]:
+    """Every working copy under the cache root, in both layouts.
+
+    A tenant's copies are two levels down (``_tenants/<tenant>/<id>``), and the
+    ``_tenants`` directory itself is not a copy: taken for one, it is every
+    tenant's runs evicted as a single oldest entry. Each tenant directory also
+    gets the abandoned-transfer sweep the root gets, because a fetch or an
+    ingest stages beside its run -- which, for a tenant's run, is in there.
+    """
+    found: list[tuple[RunRef, Path]] = []
+    for child in root.iterdir():
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name != keys.TENANT_RUNS:
+            try:
+                found.append((keys.run_ref(child.name), child))
+            except ValueError:
+                continue
+            continue
+        for tenant_dir in child.iterdir():
+            if not tenant_dir.is_dir() or tenant_dir.name.startswith("."):
+                continue
+            _sweep_abandoned(tenant_dir)
+            for copy in tenant_dir.iterdir():
+                if not copy.is_dir() or copy.name.startswith("."):
+                    continue
+                try:
+                    ref = keys.run_ref(copy.name, tenant_dir.name)
+                except ValueError:
+                    continue
+                if ref.tenant == tenant_dir.name:
+                    found.append((ref, copy))
+    return found
 
 
 # -- cheap per-run metadata ----------------------------------------------
@@ -597,7 +822,7 @@ _MARKER_CACHE: dict[str, tuple[float, dict]] = {}
 _MARKER_LOCK = threading.Lock()
 
 
-def read_run_marker(settings: Settings, run_id: str) -> dict:
+def read_run_marker(settings: Settings, run: RunRef | str) -> dict:
     """``tenant.json`` for one run, as a dict. ``{}`` when there is none.
 
     A run written before the marker existed has none, and so does a run
@@ -610,18 +835,19 @@ def read_run_marker(settings: Settings, run_id: str) -> dict:
     as a working copy, because the listing asks for every run's marker on
     every page view.
     """
+    ref = keys.as_ref(run)
     if not is_remote(settings):
-        return _read_marker_file(scratch_run_dir(settings, run_id) / RUN_MARKER)
+        return _read_marker_file(scratch_run_dir(settings, ref) / RUN_MARKER)
     ttl = max(0, int(settings.artifact_cache_ttl_seconds))
     now = time.time()
     with _MARKER_LOCK:
-        cached = _MARKER_CACHE.get(run_id)
+        cached = _MARKER_CACHE.get(ref.path)
         if cached is not None and now - cached[0] <= ttl:
             return cached[1]
     store = get_store(settings)
     try:
         payload = json.loads(
-            store.get_bytes(keys.run_artifact(run_id, RUN_MARKER)).decode("utf-8")
+            store.get_bytes(keys.run_artifact(ref, RUN_MARKER)).decode("utf-8")
         )
     except Exception:  # noqa: BLE001 - absent, unreadable or not JSON are one case
         payload = {}
@@ -632,14 +858,15 @@ def read_run_marker(settings: Settings, run_id: str) -> dict:
         # thousand runs cannot grow the process without limit.
         if len(_MARKER_CACHE) > 20000:
             _MARKER_CACHE.clear()
-        _MARKER_CACHE[run_id] = (now, marker)
+        _MARKER_CACHE[ref.path] = (now, marker)
     return marker
 
 
-def forget_run_marker(run_id: str) -> None:
+def forget_run_marker(run: RunRef | str) -> None:
     """Drop one run's cached marker, after this replica has rewritten it."""
+    ref = keys.as_ref(run)
     with _MARKER_LOCK:
-        _MARKER_CACHE.pop(run_id, None)
+        _MARKER_CACHE.pop(ref.path, None)
 
 
 def reset_marker_cache() -> None:

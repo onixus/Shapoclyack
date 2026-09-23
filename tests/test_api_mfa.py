@@ -487,6 +487,90 @@ def test_step_up_does_not_apply_to_an_account_without_a_factor(tmp_path, monkeyp
     assert response.status_code == 201
 
 
+def test_a_refreshed_session_keeps_its_step_up_and_does_not_renew_it(
+    tmp_path, monkeypatch, clock
+):
+    """Refresh tokens (#314) must neither lose a step-up nor make an old one look new.
+
+    Losing it would send an admin back to the code prompt every fifteen
+    minutes; renewing it would turn one code into a standing authority to mint
+    credentials for as long as the console keeps refreshing.
+    """
+    client = configured_client(tmp_path, monkeypatch, mfa_stepup_minutes=15)
+    signed_in = client.post(
+        "/api/auth/login", json={"username": "admin", "password": TEST_USERS["admin"]}
+    )
+    headers = bearer(signed_in.json()["access_token"])
+    cookie = {"Cookie": _refresh_cookie(signed_in)}
+    secret, _ = enrol(client, headers, clock)
+
+    stepped_up = client.post(
+        "/api/auth/mfa/verify", headers=headers, json={"code": clock.next_code(secret)}
+    )
+    assert stepped_up.status_code == 200, stepped_up.text
+    # A step-up stays in the session it was made in: no second cookie.
+    assert _refresh_cookie(stepped_up) is None
+
+    refreshed = client.post("/api/auth/refresh", headers=cookie)
+    assert refreshed.status_code == 200, refreshed.text
+    assert (
+        client.post(
+            "/api/tenants/default/provisioning-keys",
+            headers=bearer(refreshed.json()["access_token"]),
+            json={"label": "after-refresh"},
+        ).status_code
+        == 201
+    )
+
+    clock.advance(16 * 60)
+    again = client.post("/api/auth/refresh", headers={"Cookie": _refresh_cookie(refreshed)})
+    assert again.status_code == 200, again.text
+    stale = client.post(
+        "/api/tenants/default/provisioning-keys",
+        headers=bearer(again.json()["access_token"]),
+        json={"label": "stale"},
+    )
+    assert stale.status_code == 403
+    assert "multi-factor" in stale.json()["detail"]
+
+
+def test_the_second_leg_of_an_mfa_login_opens_a_refreshable_session(
+    tmp_path, monkeypatch, clock
+):
+    client = configured_client(tmp_path, monkeypatch)
+    secret, _ = enrol(client, auth_headers(client, "admin"), clock)
+    challenge = password_login(client)
+    # The first leg signs nobody in, so it hands out nothing to refresh with.
+    assert _refresh_cookie_from_login(client) is None
+
+    verified = client.post(
+        "/api/auth/mfa/verify",
+        json={"mfa_token": challenge["mfa_token"], "code": clock.next_code(secret)},
+    )
+    assert verified.status_code == 200, verified.text
+    refreshed = client.post("/api/auth/refresh", headers={"Cookie": _refresh_cookie(verified)})
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["username"] == "admin"
+
+
+def _refresh_cookie(response) -> str | None:
+    """``name=value`` of the refresh cookie a response set, or ``None``."""
+    from api.routes._session_cookie import REFRESH_COOKIE
+
+    for header in response.headers.get_list("set-cookie"):
+        if header.startswith(f"{REFRESH_COOKIE}="):
+            return header.split(";", 1)[0]
+    return None
+
+
+def _refresh_cookie_from_login(client) -> str | None:
+    response = client.post(
+        "/api/auth/login", json={"username": "admin", "password": TEST_USERS["admin"]}
+    )
+    assert response.json()["mfa_required"] is True
+    return _refresh_cookie(response)
+
+
 # --------------------------------------------------------------------------- #
 # Break-glass local login
 # --------------------------------------------------------------------------- #

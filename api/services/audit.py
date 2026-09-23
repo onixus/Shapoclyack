@@ -66,6 +66,10 @@ ACTION_USER_DELETE = "user.delete"
 ACTION_USER_MFA_ENABLE = "user.mfa_enable"
 ACTION_USER_MFA_DISABLE = "user.mfa_disable"
 ACTION_USER_MFA_RESET = "user.mfa_reset"
+# A security key or passkey added to, or removed from, one's own account
+# (#315). The admin reset removes keys too, and is recorded as the reset.
+ACTION_USER_WEBAUTHN_REGISTER = "user.webauthn_register"
+ACTION_USER_WEBAUTHN_REVOKE = "user.webauthn_revoke"
 # A password login accepted on an installation where SSO is the ordinary way in
 # and ``OCTO_LOCAL_LOGIN=break-glass`` (#315). Its own action so that "somebody
 # used the emergency door" is a filter rather than an inference from the login

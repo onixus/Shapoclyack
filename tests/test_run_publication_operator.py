@@ -178,7 +178,9 @@ def test_a_dead_publication_is_requeued_and_published_and_the_job_stops_saying_o
     later = jobs_service._now() + timedelta(hours=1)  # noqa: SLF001
     assert run_publisher.reconcile_once(settings, now=later)["published"] == 1
     assert run_publisher.pending_publications(settings, job_id) == []
-    assert artifact_workspace.run_exists(settings, run_id)
+    # Under its tenant since #427, and not at the flat path as well.
+    assert artifact_workspace.run_exists(settings, keys.run_ref(run_id, "default"))
+    assert not artifact_workspace.run_exists(settings, keys.run_ref(run_id))
     assert "run not published" not in (jobs_service.get_job(settings, job_id).error or "")
 
 
@@ -288,7 +290,7 @@ def test_a_requeue_is_refused_while_an_attempt_at_the_dead_row_is_still_running(
     # The attempt the operator would have raced finished the job itself.
     assert run_publisher.pending_publications(settings, job.job_id) == []
     assert run_publisher.requeue_publication(settings, publication_id) is None
-    assert artifact_workspace.run_exists(settings, run_id)
+    assert artifact_workspace.run_exists(settings, keys.run_ref(run_id, "default"))
     # And the job says so. The peer's ``dead`` left a "not published" note on
     # it, and the attempt that then published the run had taken its snapshot
     # before the row died — with no error on it. Deciding from that snapshot
@@ -384,9 +386,13 @@ def test_an_attempt_that_slept_through_a_requeue_does_not_take_back_the_new_uplo
 
     artifact_workspace.reset_marker_cache()
     landed = sorted(
-        entry.key.rsplit("/", 1)[-1] for entry in store.list_prefix(keys.run_prefix(run_id))
+        entry.key.rsplit("/", 1)[-1]
+        for entry in store.list_prefix(keys.run_prefix(keys.run_ref(run_id, "default")))
     )
     assert landed == ["fresh.json", "summary.json", "tenant.json"]
+    # Both attempts wrote, and the stale one rolled back, the tenant's keys —
+    # nothing went to (or was taken from) the flat ``runs/<run_id>/``.
+    assert list(store.list_prefix(keys.run_prefix(keys.run_ref(run_id)))) == []
     assert artifact_workspace.run_ids(reader) == [run_id]
     assert run_publisher.pending_publications(writer, job.job_id) == []
 
@@ -738,6 +744,35 @@ def test_a_note_written_by_the_previous_release_is_cleared_whole(tmp_path, monke
     assert run_publisher.reconcile_once(settings)["published"] == 1
 
     assert jobs_service.get_job(settings, job_id).error == f"Cancellation requested by op{after}"
+
+
+def test_clearing_a_note_leaves_the_tenant_filing_note_after_it(tmp_path, monkeypatch):
+    """#427 appends its own note — a local scan not filed under its tenant.
+
+    A 0.46 publication note has no end of its own but the next known prefix, so
+    a writer missing from ``_NOTE_PREFIXES`` is eaten along with it.
+    """
+    settings = _replica(tmp_path, "pod-a")
+    _serve(settings)
+    monkeypatch.setattr(run_completion, "notify_channels_best_effort", lambda *_a, **_k: None)
+    job_id, _run_id, publication_id = _dead_run(settings, monkeypatch)
+    legacy = (
+        f"; run not published (publication {publication_id}): "
+        "the extracted upload is no longer on disk; this run needs a re-scan or a manual load"
+    )
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, job_id).error = None
+    run_completion.note_adoption_failed(settings, job_id, "left at runs/weekly; copy it by hand")
+    with get_session(settings.postgres_url) as session:
+        job = session.get(models.Job, job_id)
+        filing = job.error
+        job.error = f"{legacy}{filing}"
+        session.get(models.RunPublication, publication_id).last_error = "a later reason"
+    settings.run_publication_max_attempts = 3
+    assert run_publisher.requeue_publication(settings, publication_id) is not None
+    assert run_publisher.reconcile_once(settings)["published"] == 1
+
+    assert jobs_service.get_job(settings, job_id).error == filing
 
 
 def _waiting_on_a_lock(settings) -> int:

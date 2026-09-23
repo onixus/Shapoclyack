@@ -821,8 +821,8 @@ def _record_event(
 # --------------------------------------------------------------------------
 
 
-def _run_findings(settings: Settings, run_id: str) -> list[dict[str, Any]]:
-    run_dir = runs_service.get_run_dir(settings, run_id)
+def _run_findings(settings: Settings, run_id: str, *, tenant_id: str) -> list[dict[str, Any]]:
+    run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return []
     raw = runs_service._load_json(run_dir / "vulnerabilities.json")  # noqa: SLF001
@@ -908,7 +908,7 @@ def register_findings_from_run(
     finds every row and updates it. That matters because both job completion
     paths (local scan, agent upload) can be retried.
     """
-    entries = _run_findings(settings, run_id)
+    entries = _run_findings(settings, run_id, tenant_id=tenant_id)
     if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
         return RegisterStats(0, 0, 0, 0, 0)
 
@@ -917,7 +917,7 @@ def register_findings_from_run(
     # the verification block below.
 
     scorer = get_scorer()
-    run_dir = runs_service.get_run_dir(settings, run_id)
+    run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
     cdn_waf = index_cdn_waf(
         runs_service._load_json(run_dir / "fingerprint.json") if run_dir is not None else None  # noqa: SLF001
     )

@@ -1,7 +1,7 @@
 """Run publications: a lease an operator can read, and a fence that only moves forward
 
 Revision ID: 0062_run_publication_lease
-Revises: 0059_nats_outbox
+Revises: 0061_webauthn_credentials
 Create Date: 2026-09-23
 
 #425 gives a ``dead`` publication two buttons — requeue and discard — and both
@@ -66,7 +66,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0062_run_publication_lease"
-down_revision: Union[str, None] = "0059_nats_outbox"
+down_revision: Union[str, None] = "0061_webauthn_credentials"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -47,6 +47,11 @@ def test_login_and_me():
         "mfa_enabled": False,
         "mfa_required": False,
         "mfa_pending": False,
+        # And its WebAuthn half: no key policy, and a password-only session
+        # that proved no second factor at all.
+        "phishing_resistant_required": False,
+        "phishing_resistant_pending": False,
+        "mfa_method": None,
     }
 
 
