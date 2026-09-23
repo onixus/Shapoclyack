@@ -1,0 +1,21 @@
+# The daily NVD CPE-range refresh is incremental, but an incremental merge
+# still reads the whole dataset on the volume, re-keys it and writes it back:
+# after a full harvest that is a few million range statements, several hundred
+# MB once it is Python. The base's 1Gi is sized for GeoIP/CVSS4/EPSS/KEV; this
+# raises it for the job that takes the opt-in, and only for that job -- the same
+# reasoning, and the same ceiling, as base/enrichment-advisories. Applying both
+# components is fine: the two patches set the same value.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enrichment-refresh
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: fetch-enrichment
+              resources:
+                limits:
+                  memory: 2Gi

@@ -217,6 +217,44 @@ def insert_if_absent(session: Session, row: object, key: str) -> bool:
     return True
 
 
+def insert_or_skip(session: Session, row: object, *, conflict: list[str]) -> bool:
+    """``INSERT … ON CONFLICT (conflict) DO NOTHING RETURNING pk`` for an ORM row.
+
+    The race :func:`insert_if_absent` handles, without its SAVEPOINT. A fold
+    that inserts hundreds of rows in one transaction took one subtransaction
+    per row that way, and past 64 of them Postgres's per-backend subxid cache
+    overflows and every other session's visibility checks slow down — a cost
+    one ingest paid on behalf of the whole database. Here losing the race is
+    simply "no row returned", in the same statement.
+
+    ``row`` is a transient mapped instance; attributes left ``None`` are not
+    sent, so the columns' own defaults apply exactly as on a flush. The row
+    is *not* added to the session: callers that need it load it back. Returns
+    True when this statement inserted it.
+    """
+    mapper = inspect(row).mapper
+    values = {}
+    for attr in mapper.column_attrs:
+        value = getattr(row, attr.key)
+        if value is not None:
+            values[attr.columns[0].key] = value
+    table = mapper.local_table
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:  # pragma: no cover - the two backends this project runs on
+        return insert_if_absent(session, row, str(values))
+    stmt = (
+        insert(table)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=conflict)
+        .returning(*table.primary_key.columns)
+    )
+    return session.execute(stmt).first() is not None
+
+
 def reset_for_tests() -> None:
     """Dispose the cached engine so a new URL (or a fresh test DB) takes effect."""
     global _engine, _engine_url, _SessionLocal, _pool_options

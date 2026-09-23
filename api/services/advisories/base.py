@@ -23,6 +23,7 @@ write one of these files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -167,6 +168,12 @@ class AdvisoryDataset:
     index: dict[tuple[str, str], tuple[AdvisoryRecord, ...]] | None = None
     present: bool = False
     error: str | None = None
+    #: Release codenames with any record, computed once at load: the retro
+    #: matcher asks for them per CVE per listener, and a set over every record
+    #: of a tens-of-megabytes feed is not a per-call cost.
+    releases: tuple[str, ...] = ()
+    #: Digest of the statements themselves (see :func:`load_dataset`).
+    digest: str = ""
 
     def lookup(self, release: str, source_package: str) -> tuple[AdvisoryRecord, ...]:
         return (self.index or {}).get((release, source_package), ())
@@ -207,6 +214,20 @@ def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     for record in records:
         index.setdefault((record.release, record.source_package), []).append(record)
 
+    # What the dataset says, independent of when it was fetched and of entry
+    # order: the retro matcher re-matches the estate when this moves, and a
+    # daily refresh that re-stamped ``updated`` over the same statements must
+    # not be a reason to (api/services/retro_match_worker.py).
+    digest = hashlib.sha256(
+        "\n".join(
+            sorted(
+                f"{r.release}|{r.source_package}|{','.join(r.cve_ids)}|{r.state}|"
+                f"{r.fixed_version or ''}|{r.advisory_id}"
+                for r in records
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
     return AdvisoryDataset(
         source=str(payload.get("source") or "") or None,
         updated=updated,
@@ -214,6 +235,8 @@ def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
         records=tuple(records),
         index={key: tuple(value) for key, value in index.items()},
         present=True,
+        releases=tuple(sorted({record.release for record in records})),
+        digest=digest,
     )
 
 
@@ -280,7 +303,11 @@ class JsonAdvisoryProvider:
         return self.dataset().source
 
     def releases(self) -> tuple[str, ...]:
-        return tuple(sorted({record.release for record in self.dataset().records}))
+        return self.dataset().releases
+
+    def content_digest(self) -> str:
+        """Digest of what the loaded dataset says; ``""`` when nothing is loaded."""
+        return self.dataset().digest
 
     def advisories_for(
         self, *, release: str, source_package: str

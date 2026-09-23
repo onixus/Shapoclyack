@@ -208,6 +208,11 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
         or "scanner/data/advisories/debian-advisories.json",
         "advisories_ubuntu": os.environ.get("OCTO_UBUNTU_ADVISORY_DATABASE")
         or "scanner/data/advisories/ubuntu-advisories.json",
+        # NVD CPE ranges behind retro CVE matching. Same question as above: a
+        # retro matcher on a stale range file silently misses every CVE
+        # published since, and says nothing about it.
+        "nvd_cpe": os.environ.get("OCTO_NVD_CPE_DATABASE")
+        or "scanner/data/nvd-cpe/nvd-cpe-ranges.json",
     }
     manifest = enrichment_manifest()
     return [_stat_db(name, path, manifest) for name, path in paths.items()]

@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func, or_, select
 
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_session, insert_or_skip
 from api.services import audit as audit_service
 from api.services import exploit_evidence
 from api.services import metrics
@@ -158,8 +158,10 @@ DEFAULT_FP_SUPPRESS_DAYS = 90
 TICKET_SYSTEMS = ("jira", "servicenow", "smax", "defectdojo", "other")
 
 #: Which observer produced a finding. ``scan`` is this module's own path;
-#: ``endpoint_software`` is ``api/services/software_findings.py``.
-SOURCES = ("scan", "endpoint_software")
+#: ``endpoint_software`` is ``api/services/software_findings.py``;
+#: ``retro_match`` is ``api/services/retro_findings.py`` — a stored service
+#: fingerprint re-matched against the NVD range dataset.
+SOURCES = ("scan", "endpoint_software", "retro_match")
 
 #: Why a finding is closed. Never taken from a request body — the value of
 #: ``machine_verified`` is that it cannot be self-attested. ``patched`` is the
@@ -991,7 +993,7 @@ def register_findings_from_run(
                     severity=severity,
                     criticality=asset.asset_criticality,
                 )
-                row = models.Vulnerability(
+                candidate = models.Vulnerability(
                     vuln_id=f"vln_{uuid.uuid4().hex[:16]}",
                     tenant_id=tenant_id,
                     asset_id=asset.asset_id,
@@ -1019,26 +1021,42 @@ def register_findings_from_run(
                     updated_at=now,
                     **latest,
                 )
-                session.add(row)
-                session.flush()
-                created += 1
-                _record_event(
-                    session,
-                    vuln_id=row.vuln_id,
-                    tenant_id=tenant_id,
-                    kind="observed",
-                    occurred_at=now,
-                    to_state=vuln_states.OPEN,
-                    detail={
-                        "run_id": run_id,
-                        "first_seen": True,
-                        "severity": severity,
-                        "due_at": _iso(row.due_at),
-                        "sla_days": days,
-                        "sla_source": source,
-                    },
-                )
-                continue
+                # ON CONFLICT DO NOTHING: another writer can commit this very
+                # key between the read above and this insert — the retro
+                # matcher (retro_findings.py) shares the key by design. A bare
+                # flush would abort the whole run's transaction on the unique
+                # constraint and every finding of the run with it; losing the
+                # race instead means the row exists, and this observation
+                # updates it like any re-observation. Not a SAVEPOINT: this
+                # loop inserts every new finding of the run in one
+                # transaction, and a subtransaction per row overflows
+                # Postgres's subxid cache past 64 (engine.insert_or_skip).
+                if insert_or_skip(session, candidate, conflict=["tenant_id", "finding_key"]):
+                    row = candidate
+                    created += 1
+                    _record_event(
+                        session,
+                        vuln_id=row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="observed",
+                        occurred_at=now,
+                        to_state=vuln_states.OPEN,
+                        detail={
+                            "run_id": run_id,
+                            "first_seen": True,
+                            "severity": severity,
+                            "due_at": _iso(row.due_at),
+                            "sla_days": days,
+                            "sla_source": source,
+                        },
+                    )
+                    continue
+                row = session.execute(
+                    select(models.Vulnerability).where(
+                        models.Vulnerability.tenant_id == tenant_id,
+                        models.Vulnerability.finding_key == key,
+                    )
+                ).scalar_one()
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what
@@ -1059,6 +1077,14 @@ def register_findings_from_run(
             row.observation_count += 1
             row.updated_at = now
             reobserved += 1
+            if row.source == "retro_match":
+                # A scan has now observed what the retro matcher inferred from
+                # a stored banner. Same key, same row (retro_findings.py): it
+                # becomes a scan finding, verifiable and closable the scan way,
+                # and stops claiming a confidence it no longer needs. The
+                # evidence stays as the record of how it was first found.
+                row.source = "scan"
+                row.match_confidence = None
 
             if outcome == FP_HELD:
                 fp_suppressed_observations += 1
@@ -1313,6 +1339,8 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "fp_suppress_until": _iso(row.fp_suppress_until),
         "fp_observations": row.fp_observations,
         "fp_suppressed": _fp_suppressed(row, now),
+        "match_confidence": row.match_confidence,
+        "match_evidence": dict(row.match_evidence) if row.match_evidence else None,
     }
 
 
@@ -1627,6 +1655,19 @@ def trigger_verification(
                 "installed package, so a 'machine verified' closure from one would be "
                 "false. It is verified by the next accepted inventory snapshot from "
                 "its device."
+            )
+        if row.source == "retro_match":
+            # The same trap from the other side: the retro finding came from a
+            # stored banner and a range statement, and the re-scan's CVE
+            # checks may simply not know this CVE. Its silence would close the
+            # finding as machine-verified. A rescan that *does* see it turns it
+            # into a scan finding, which is verifiable (register_findings_from_run).
+            raise VerificationDispatchError(
+                f"Vulnerability '{vuln_id}' was inferred by retro matching from a stored "
+                "service fingerprint, which a verification scan cannot disprove: the "
+                "scan's own CVE checks may not cover it, and their silence would read as "
+                "a fix. Re-scan the asset — if the scan observes it, it becomes a scan "
+                "finding and can be verified — or close it with a reason."
             )
         previous = row.state
         # Goes through the same state machine as an operator's move: a closed

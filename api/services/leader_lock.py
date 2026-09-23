@@ -64,6 +64,10 @@ SLA_ESCALATION_LOCK_ID = 5
 # the same tenant's tickets and write the same lifecycle events. Id 5 went to
 # the SLA-escalation worker (#349), which lands in the same wave.
 TICKET_SYNC_LOCK_ID = 6
+# The retro CVE matcher (docs/retro-cve-matching.md). Leader-locked like the
+# software matcher, and for one more reason: besides writing lifecycle events
+# it publishes ``new_cve`` events, which a second replica would send again.
+RETRO_MATCH_LOCK_ID = 7
 
 
 class LeaderLock:

@@ -6,6 +6,50 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
+  used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
+  NSE), so a CVE published after the scan was invisible until the next one.
+  Every succeeded run now records each open listener's product, version, banner
+  and nmap CPE in `asset_services` (migration `0064`, expand-only;
+  `scripts/backfill-asset-services.py` reads the runs already on disk), and a
+  leader-locked worker re-matches them against an offline NVD CPE-range dataset
+  (`scanner/data/nvd-cpe/`, `OCTO_NVD_CPE_DATABASE`) whenever the dataset, a
+  vendor advisory feed or a fingerprint changes. Debian/Ubuntu builds — named
+  by the listener's banner (`OpenSSH_9.2p1 Debian-2+deb12u3`), or by the host:
+  another listener's banner, the scan's OS guess (new `asset_os`) — are checked
+  against the vendor advisories for backports, with the vendor's severity and
+  the endpoint matcher's tracking rules; hits a likely distribution build may
+  have backported (a Linux host of unknown distribution, RHEL, …) are recorded
+  as `possible` on the service and are not findings. Versions nmap itself
+  doubts (`3.X - 4.X`, `or later`, major-only CPEs) and OpenSSH for Windows are
+  not matched. Findings land in the tracker
+  with `source = retro_match`, `match_confidence` (`vendor_advisory` |
+  `version_range`) and `match_evidence`, under the scan path's own
+  `finding_key`, so a scan and the matcher never make two rows; retro never
+  closes or reopens a finding, and a retro finding cannot be machine-verified.
+  New findings are published as `new_cve` asset events (so
+  `asset.vulnerability.new` webhooks fire) at least once — the announcement is
+  recorded on the finding, so a killed worker's findings are announced by the
+  next tick — with at most `OCTO_RETRO_MATCH_MAX_EVENTS` individual events per
+  tenant per dataset version and one aggregate event per tick for the rest.
+  A CVE the matcher announced is not announced again by the scan's diff.
+  The matcher runs only when the *content* of the NVD or vendor datasets, or a
+  fingerprint, changes. The scan path's finding insert is now `INSERT … ON
+  CONFLICT DO NOTHING`, so a retro finding committed between a scan's read and
+  write no longer fails the whole run's fold. Merging two assets keeps both
+  assets' fingerprints. New routes `GET /api/retro-match/status`,
+  `POST /api/retro-match/refresh` (operator), `GET /api/assets/{id}/services`.
+  Opt-in refresh `scripts/fetch-nvd-cpe.py` (`OCTO_NVD_CPE_FETCH_ENABLED`,
+  full, or incremental from the file's `covered_until` so an outage leaves no
+  hole; a partial harvest is never published; NVD API 2.0), wired into `fetch-enrichment.sh`, the
+  enrichment manifest (`nvd_cpe`), `GET /api/system`, and a k8s component
+  `base/enrichment-nvd-cpe`. New settings `OCTO_RETRO_MATCH_*`. The console
+  shows the source and confidence on findings, the services on the asset page,
+  and the matcher's status with a re-check button. `scanner/pipeline/report.py`
+  keeps nmap's `<cpe>` and `extrainfo`, which it used to drop. See
+  [docs/retro-cve-matching.md](docs/retro-cve-matching.md) — including what it
+  does not cover.
+
 - **Refresh tokens, rotation with reuse detection, and an idle timeout for
   console sessions** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
   A sign-in now yields a short access token (`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES`,

@@ -45,6 +45,8 @@ def test_system_status_shape():
         "asn",
         "advisories_debian",
         "advisories_ubuntu",
+        # The NVD CPE ranges behind retro CVE matching, for the same reason.
+        "nvd_cpe",
     }
     for db in body["enrichment"]:
         assert "stale" in db

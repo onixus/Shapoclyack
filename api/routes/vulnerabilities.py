@@ -518,9 +518,10 @@ def list_vulnerabilities(
     source: Annotated[
         str | None,
         Query(
-            description="scan | endpoint_software — which observer found it. "
-            "Software findings come from the endpoint inventory and are "
-            "verified by the next snapshot, not by a re-scan."
+            description="scan | endpoint_software | retro_match — which observer "
+            "found it. Software findings come from the endpoint inventory and are "
+            "verified by the next snapshot, not by a re-scan; retro findings were "
+            "inferred from a stored service fingerprint and the NVD range dataset."
         ),
     ] = None,
     network_exposure: Annotated[
