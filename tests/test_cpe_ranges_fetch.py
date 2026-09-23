@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import UTC, datetime, timedelta
 import os
 import subprocess
 import urllib.parse
@@ -19,6 +20,12 @@ import pytest
 from api.services import cpe_ranges, cpe_ranges_fetch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _seed_covered(until: datetime) -> dict:
+    payload = json.loads((REPO_ROOT / "scanner/data/nvd-cpe/nvd-cpe-ranges.json").read_text())
+    payload["covered_until"] = until.isoformat(timespec="seconds")
+    return payload
 
 
 def _cve(cve_id: str, matches: list[dict], *, score: float = 8.1, status: str = "Analyzed") -> dict:
@@ -156,8 +163,12 @@ def test_harvest_pages_until_the_total_and_sends_the_window(monkeypatch) -> None
         {"totalResults": 2, "vulnerabilities": [other]},
     ]
     seen: list[str] = []
+    now = datetime.now(UTC)
     result = cpe_ranges_fetch.harvest(
-        last_mod_days=8, sleep_seconds=0, opener=_opener(pages, seen), retries=0
+        window=(now - timedelta(days=8), now),
+        sleep_seconds=0,
+        opener=_opener(pages, seen),
+        retries=0,
     )
     assert result.complete and result.pages == 2
     assert set(result.statements) == {"CVE-2024-6387", "CVE-2023-48795"}
@@ -178,7 +189,11 @@ def test_a_failed_page_marks_the_harvest_incomplete(monkeypatch) -> None:
 def test_the_window_is_capped_like_nvd_caps_it(monkeypatch) -> None:
     monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
     with pytest.raises(ValueError, match="120"):
-        cpe_ranges_fetch.harvest(last_mod_days=121, opener=lambda *a, **k: pytest.fail("fetched"))
+        now = datetime.now(UTC)
+        cpe_ranges_fetch.harvest(
+            window=(now - timedelta(days=121), now),
+            opener=lambda *a, **k: pytest.fail("fetched"),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +224,7 @@ def test_cli_does_not_publish_an_incomplete_harvest(monkeypatch, tmp_path: Path)
     monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
     cli = _cli()
     out = tmp_path / "ranges.json"
-    out.write_text((REPO_ROOT / "scanner/data/nvd-cpe/nvd-cpe-ranges.json").read_text(), encoding="utf-8")
+    out.write_text(json.dumps(_seed_covered(datetime.now(UTC))), encoding="utf-8")
     before = out.read_bytes()
     incomplete = cpe_ranges_fetch.Harvest(complete=False)
     monkeypatch.setattr(cpe_ranges_fetch, "harvest", lambda **kwargs: incomplete)
@@ -246,7 +261,7 @@ def test_cli_merges_an_increment_into_the_existing_file(monkeypatch, tmp_path: P
     monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
     cli = _cli()
     out = tmp_path / "ranges.json"
-    out.write_text((REPO_ROOT / "scanner/data/nvd-cpe/nvd-cpe-ranges.json").read_text(), encoding="utf-8")
+    out.write_text(json.dumps(_seed_covered(datetime.now(UTC))), encoding="utf-8")
     fresh = cpe_ranges_fetch.Harvest()
     fresh.add_page(
         {"vulnerabilities": [_cve("CVE-2099-0001", [
@@ -300,3 +315,103 @@ def test_the_manifest_floors_the_dataset_and_reports_the_seed_as_a_stub(tmp_path
     assert record["present"] and record["entries"] == 8
     assert record["usable"] is False
     assert manifest._JSON_DATASETS["nvd_cpe"][2] is False
+
+
+# --------------------------------------------------------------------------
+# Review of PR #444: a partial harvest must not pass as a complete one, and an
+# increment must not leave a hole
+# --------------------------------------------------------------------------
+
+
+def test_an_empty_page_before_the_end_marks_the_harvest_incomplete(monkeypatch) -> None:
+    """NVD answering 200 with no vulnerabilities on page 2 of 3 used to end
+    the loop as if the corpus were exhausted — and publish two thirds of it."""
+    monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
+    pages = [
+        {"totalResults": 5, "startIndex": 0, "vulnerabilities": [REGRESSHION]},
+        {"totalResults": 5, "startIndex": 1, "vulnerabilities": []},
+    ]
+    result = cpe_ranges_fetch.harvest(sleep_seconds=0, opener=_opener(pages, []), retries=0)
+    assert result.complete is False
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"message": "error", "vulnerabilities": []},  # no totalResults: an error body
+        {"totalResults": 2, "startIndex": 0, "vulnerabilities": [REGRESSHION]},  # wrong offset
+    ],
+)
+def test_a_page_that_cannot_be_the_rest_marks_the_harvest_incomplete(monkeypatch, second) -> None:
+    monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
+    pages = [{"totalResults": 2, "startIndex": 0, "vulnerabilities": [REGRESSHION]}, second]
+    result = cpe_ranges_fetch.harvest(sleep_seconds=0, opener=_opener(pages, []), retries=0)
+    assert result.complete is False
+
+
+def test_the_increment_continues_from_the_files_coverage_not_eight_days_back() -> None:
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    existing = {"covered_until": "2026-09-01T03:00:00+00:00", "entries": {}}
+    start, end = cpe_ranges_fetch.increment_window(existing, now=now)
+    assert end == now
+    assert start == datetime(2026, 8, 31, 3, 0, tzinfo=UTC)  # a day of overlap
+
+
+def test_a_file_without_covered_until_continues_from_its_updated_date() -> None:
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    start, _ = cpe_ranges_fetch.increment_window({"updated": "2026-09-10"}, now=now)
+    assert start == datetime(2026, 9, 9, tzinfo=UTC)
+
+
+def test_a_gap_beyond_nvds_window_requires_a_full_harvest() -> None:
+    now = datetime(2026, 9, 23, tzinfo=UTC)
+    with pytest.raises(cpe_ranges_fetch.WindowError, match="--full"):
+        cpe_ranges_fetch.increment_window({"covered_until": "2026-05-01T00:00:00+00:00"}, now=now)
+
+
+def test_an_explicit_window_that_would_leave_a_hole_is_refused() -> None:
+    now = datetime(2026, 9, 23, tzinfo=UTC)
+    with pytest.raises(cpe_ranges_fetch.WindowError, match="would be lost"):
+        cpe_ranges_fetch.increment_window(
+            {"covered_until": "2026-09-01T00:00:00+00:00"}, now=now, last_mod_days=8
+        )
+
+
+def test_the_merged_dataset_says_what_it_covers_not_when_it_was_written() -> None:
+    harvest = cpe_ranges_fetch.Harvest(covered_until=datetime(2026, 9, 1, 6, 0, tzinfo=UTC))
+    harvest.add_page({"vulnerabilities": [REGRESSHION]}, parts=("a",))
+    merged = cpe_ranges_fetch.merge(None, harvest, replace=True)
+    assert merged["updated"] == "2026-09-01"
+    assert merged["covered_until"] == "2026-09-01T06:00:00+00:00"
+
+
+def test_cli_after_a_long_outage_fails_and_says_run_full(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
+    cli = _cli()
+    out = tmp_path / "ranges.json"
+    out.write_text(json.dumps(_seed_covered(datetime.now(UTC) - timedelta(days=200))), encoding="utf-8")
+    before = out.read_bytes()
+    monkeypatch.setattr(cpe_ranges_fetch, "harvest", lambda **kwargs: pytest.fail("harvested"))
+    monkeypatch.setattr("sys.argv", ["fetch-nvd-cpe.py", "-o", str(out)])
+    assert cli.main() == cli.EXIT_FAILED
+    assert "--full" in capsys.readouterr().err
+    assert out.read_bytes() == before
+
+
+def test_cli_asks_nvd_for_the_whole_gap(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
+    cli = _cli()
+    out = tmp_path / "ranges.json"
+    covered = datetime.now(UTC) - timedelta(days=30)
+    out.write_text(json.dumps(_seed_covered(covered)), encoding="utf-8")
+    asked: dict = {}
+
+    def fake(**kwargs):
+        asked.update(kwargs)
+        return cpe_ranges_fetch.Harvest(covered_until=kwargs["window"][1])
+
+    monkeypatch.setattr(cpe_ranges_fetch, "harvest", fake)
+    monkeypatch.setattr("sys.argv", ["fetch-nvd-cpe.py", "-o", str(out)])
+    assert cli.main() == cli.EXIT_OK
+    start, end = asked["window"]
+    assert start <= covered and end - start >= timedelta(days=30)

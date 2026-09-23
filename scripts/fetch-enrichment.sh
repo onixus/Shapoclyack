@@ -219,13 +219,16 @@ fi
 
 # NVD CPE ranges for retro CVE matching (docs/retro-cve-matching.md). Opt-in
 # like the advisories and for a bigger reason: the full corpus is a multi-hour
-# anonymous harvest. The daily run is incremental -- CVEs NVD modified in the
-# last eight days, merged into what is on the volume -- so the one-time
-# `fetch-nvd-cpe.py --full` has to have been run for this to be coverage rather
-# than a week of changes on top of the seed. Same exit-code handling as above.
+# anonymous harvest. The daily run is incremental -- CVEs NVD modified since the
+# file on the volume's coverage ends (its covered_until), merged into it, so a
+# job that was down for two weeks catches up instead of skipping them -- and it
+# fails (and says run --full) when that is more than NVD's 120-day window
+# behind, which the committed seed soon is. The one-time
+# `fetch-nvd-cpe.py --full` is what makes this coverage. Same exit-code
+# handling as above.
 if nvd_cpe_fetch_enabled; then
   run nvd_cpe "nvd cpe ranges (incremental)" \
-    python3 "$ROOT/scripts/fetch-nvd-cpe.py" --last-mod-days 8 \
+    python3 "$ROOT/scripts/fetch-nvd-cpe.py" \
     -o "$DEST/nvd-cpe/nvd-cpe-ranges.json"
 else
   echo "==> nvd cpe ranges: skipped (opt-in; set OCTO_NVD_CPE_FETCH_ENABLED=true to refresh)"

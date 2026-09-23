@@ -169,6 +169,8 @@ class Harvest:
     info: dict[str, dict[str, Any]] = field(default_factory=dict)
     complete: bool = True
     pages: int = 0
+    #: The last modification time this harvest vouches for (see :func:`harvest`).
+    covered_until: datetime | None = None
 
     def add_page(self, payload: dict[str, Any], *, parts: Iterable[str]) -> None:
         for item in payload.get("vulnerabilities") or []:
@@ -208,11 +210,16 @@ def merge(existing: dict[str, Any] | None, harvest: Harvest, *, replace: bool) -
         if statements and cve_id in harvest.info:
             cves[cve_id] = harvest.info[cve_id]
     referenced = {s["cve"] for statements in entries.values() for s in statements}
+    # What the file can vouch for, not when it was written: a merge that ran
+    # today over an eight-day window after a month offline must not read as
+    # fresh (the next increment starts from here, see increment_window).
+    covered = harvest.covered_until or datetime.now(UTC)
     return {
         "version": 1,
         "source": cpe_ranges.SOURCE,
         "origin_url": NVD_URL,
-        "updated": datetime.now(UTC).date().isoformat(),
+        "updated": covered.date().isoformat(),
+        "covered_until": covered.astimezone(UTC).isoformat(timespec="seconds"),
         "parts": sorted({key.split(":", 1)[0] for key in entries}) or list(DEFAULT_PARTS),
         "cves": {cve: cves[cve] for cve in sorted(cves) if cve in referenced},
         # Sorted within each product too, so the file is the same bytes for the
@@ -267,7 +274,7 @@ def _fetch_page(
 
 def harvest(
     *,
-    last_mod_days: int | None = None,
+    window: tuple[datetime, datetime] | None = None,
     parts: Iterable[str] = DEFAULT_PARTS,
     api_key: str | None = None,
     sleep_seconds: float | None = None,
@@ -276,12 +283,22 @@ def harvest(
     retries: int = 5,
     now: datetime | None = None,
 ) -> Harvest:
-    """Page through NVD. ``last_mod_days`` None is the whole corpus.
+    """Page through NVD: CVEs last modified inside ``window``, or all of them.
 
     Serial on purpose: the anonymous limit leaves no room to overlap requests,
-    and with a key a daily incremental is a handful of pages. A page that fails
-    after its retries marks the harvest incomplete; the caller decides whether
-    to publish (``scripts/fetch-nvd-cpe.py`` does not).
+    and with a key a daily incremental is a handful of pages. The harvest is
+    marked incomplete — and ``scripts/fetch-nvd-cpe.py`` then refuses to
+    publish it — whenever what came back cannot be the whole answer:
+
+    * a page failed after its retries;
+    * a page carried no ``totalResults`` (an error body with a 200);
+    * a page answered for a different ``startIndex`` than was asked;
+    * a page came back empty while ``totalResults`` says there is more.
+
+    ``covered_until`` is what the result can vouch for: the window's end, or
+    for a full harvest the moment it started (a CVE modified while the pages
+    were being read may be on a page already passed; the next increment,
+    which starts there, catches it).
     """
     if not fetch_enabled():
         raise FetchDisabledError(
@@ -291,15 +308,18 @@ def harvest(
     if sleep_seconds is None:
         sleep_seconds = SLEEP_KEYED if api_key else SLEEP_ANONYMOUS
     base: dict[str, Any] = {"resultsPerPage": PAGE_SIZE}
-    if last_mod_days:
-        if last_mod_days > MAX_LAST_MOD_DAYS:
-            raise ValueError(f"last_mod_days cannot exceed {MAX_LAST_MOD_DAYS} (NVD API limit)")
-        end = now or datetime.now(UTC)
-        start = end - timedelta(days=last_mod_days)
+    started = now or datetime.now(UTC)
+    result = Harvest(covered_until=started)
+    if window is not None:
+        start, end = window
+        if end - start > timedelta(days=MAX_LAST_MOD_DAYS):
+            raise ValueError(
+                f"a lastMod window cannot exceed {MAX_LAST_MOD_DAYS} days (NVD API limit)"
+            )
         fmt = "%Y-%m-%dT%H:%M:%S.000"
         base.update({"lastModStartDate": start.strftime(fmt), "lastModEndDate": end.strftime(fmt)})
+        result.covered_until = end
 
-    result = Harvest()
     start_index = 0
     total: int | None = None
     while total is None or start_index < total:
@@ -312,7 +332,12 @@ def harvest(
             opener=opener,
             retries=retries,
         )
-        if payload is None:
+        if payload is None or "totalResults" not in payload:
+            result.complete = False
+            break
+        echoed = payload.get("startIndex")
+        if echoed is not None and int(echoed) != start_index:
+            LOG.warning("nvd-cpe: asked for startIndex %d, got %s", start_index, echoed)
             result.complete = False
             break
         if total is None:
@@ -321,9 +346,85 @@ def harvest(
         result.add_page(payload, parts=parts)
         returned = len(payload.get("vulnerabilities") or [])
         if not returned:
+            if start_index < total:
+                # An empty page before the end is an outage, not the end: the
+                # CVEs on the pages not read would be missing from a dataset
+                # that says it is complete.
+                LOG.warning(
+                    "nvd-cpe: empty page at startIndex %d of %d; harvest incomplete",
+                    start_index,
+                    total,
+                )
+                result.complete = False
             break
         start_index += returned
     return result
+
+
+#: Overlap with the previous window, so a CVE modified in the last minutes
+#: before the previous run's end is not lost to clock skew or NVD's indexing lag.
+WINDOW_OVERLAP = timedelta(days=1)
+
+
+class WindowError(ValueError):
+    """No incremental window can be honest: the caller must run ``--full``."""
+
+
+def covered_until(existing: dict[str, Any] | None) -> datetime | None:
+    """How far an existing dataset's NVD content reaches.
+
+    ``covered_until`` when a harvest wrote it; else ``updated`` (a seed or an
+    older file) read as the start of that day, which errs towards fetching
+    more rather than less.
+    """
+    if not existing:
+        return None
+    for key in ("covered_until", "updated"):
+        value = str(existing.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def increment_window(
+    existing: dict[str, Any] | None,
+    *,
+    now: datetime,
+    last_mod_days: int | None = None,
+) -> tuple[datetime, datetime]:
+    """The ``lastMod`` window that continues ``existing`` without a hole.
+
+    From where the file's coverage ends (less :data:`WINDOW_OVERLAP`) to now.
+    A fixed eight-day window lost everything NVD changed while the job was
+    down longer than that, and stamped the result as today's. Refuses when
+    no window can close the gap: nothing to continue, or more than NVD's
+    120-day limit behind. ``last_mod_days`` asks for an explicit window and is
+    refused if it would start after the coverage ends.
+    """
+    reach = covered_until(existing)
+    if reach is None:
+        raise WindowError("there is no dataset to continue; run --full to build one")
+    start = reach - WINDOW_OVERLAP
+    if last_mod_days is not None:
+        asked = now - timedelta(days=last_mod_days)
+        if asked > start:
+            raise WindowError(
+                f"--last-mod-days {last_mod_days} starts at {asked:%Y-%m-%d}, after the dataset's "
+                f"coverage ends ({reach:%Y-%m-%d}); the CVEs modified in between would be lost. "
+                "Omit it to continue from the coverage, or run --full"
+            )
+        start = asked
+    if now - start > timedelta(days=MAX_LAST_MOD_DAYS):
+        raise WindowError(
+            f"the dataset's coverage ends {reach:%Y-%m-%d}, more than {MAX_LAST_MOD_DAYS} days ago "
+            "(NVD's limit for one lastMod window); run --full to rebuild it"
+        )
+    return start, now
 
 
 def load_existing(path: Path) -> dict[str, Any] | None:

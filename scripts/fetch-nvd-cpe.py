@@ -12,11 +12,14 @@ Two modes:
                    meant to be run by hand once (and after a long outage), like
                    ``fetch-cvss4-db.py --full``. Refused unless the result
                    clears the dataset's floor in scripts/enrichment_manifest.py.
-  --last-mod-days  Incremental (the default, 8 days): CVEs NVD modified in the
-                   window, *merged* into the existing file. This is what
-                   scripts/fetch-enrichment.sh runs daily. Refused if the
-                   existing file is there but unreadable — merging a week of
-                   NVD over nothing would publish it as the whole dataset.
+  (default)        Incremental: CVEs NVD modified since the existing file's
+                   coverage ends (``covered_until``, less a day of overlap),
+                   *merged* into it. This is what scripts/fetch-enrichment.sh
+                   runs daily. Refused if the file is unreadable, or if its
+                   coverage ends more than 120 days ago (NVD's window limit) —
+                   the gap cannot be closed incrementally; run --full.
+  --last-mod-days  An explicit incremental window; refused if it would start
+                   after the coverage ends.
 
 Either way the download lands on a staging path beside the destination and is
 promoted by a rename only once it passes, and a harvest with a failed page is
@@ -38,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from datetime import UTC, datetime
 import sys
 from pathlib import Path
 
@@ -72,8 +76,12 @@ def main() -> int:
     mode.add_argument(
         "--last-mod-days",
         type=int,
-        default=8,
-        help=f"Incremental window in days (default 8, max {cpe_ranges_fetch.MAX_LAST_MOD_DAYS})",
+        default=None,
+        help="Incremental window in days. Default: from where the existing file's "
+        "coverage ends to now, so no change is skipped however long the job was "
+        f"down (at most {cpe_ranges_fetch.MAX_LAST_MOD_DAYS} days, NVD's limit; "
+        "beyond that, --full). An explicit value that would start after the "
+        "coverage ends is refused",
     )
     parser.add_argument(
         "-o",
@@ -101,6 +109,14 @@ def main() -> int:
     # platform CPE is the host, not the listener — see retro_match.product_keys),
     # and the operating-system half of NVD would double the file for nothing.
     parts = cpe_ranges_fetch.DEFAULT_PARTS
+    if not cpe_ranges_fetch.fetch_enabled():
+        # Before anything else: "nobody opted in" is exit 3 whatever the file
+        # on disk looks like.
+        print(
+            "skipped: NVD CPE fetching is off by default; set OCTO_NVD_CPE_FETCH_ENABLED=true",
+            file=sys.stderr,
+        )
+        return EXIT_DISABLED
     output: Path = args.output
     staging = output.with_suffix(output.suffix + ".fetch")
     api_key = os.environ.get("NVD_API_KEY") or None
@@ -113,11 +129,20 @@ def main() -> int:
         return EXIT_FAILED
     before = len((existing or {}).get("entries") or {})
 
-    label = "full" if args.full else f"last {args.last_mod_days}d"
+    window = None
+    if not args.full:
+        try:
+            window = cpe_ranges_fetch.increment_window(
+                existing, now=datetime.now(UTC), last_mod_days=args.last_mod_days
+            )
+        except cpe_ranges_fetch.WindowError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+    label = "full" if window is None else f"{window[0]:%Y-%m-%dT%H:%M} .. {window[1]:%Y-%m-%dT%H:%M}"
     print(f"==> nvd-cpe ({label}, parts={','.join(parts)}, key={'yes' if api_key else 'no'})", flush=True)
     try:
         harvest = cpe_ranges_fetch.harvest(
-            last_mod_days=None if args.full else args.last_mod_days,
+            window=window,
             parts=parts,
             api_key=api_key,
             sleep_seconds=args.sleep,
@@ -131,7 +156,8 @@ def main() -> int:
 
     if not harvest.complete:
         print(
-            f"error: a page failed after retries ({harvest.pages} read); refusing to publish "
+            f"error: the harvest is incomplete (a page failed, came back empty before the "
+            f"end, or answered for the wrong offset; {harvest.pages} read); refusing to publish "
             f"a partial harvest over {output}",
             file=sys.stderr,
         )
