@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,7 +54,7 @@ SOURCE = "nvd-cve-api-2.0"
 RANGE_KEYS = ("v", "si", "se", "ei", "ee")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CpeRange:
     """One NVD statement: ``cve`` affects ``product`` in this version window.
 
@@ -68,6 +69,16 @@ class CpeRange:
     start_excluding: str | None = None
     end_including: str | None = None
     end_excluding: str | None = None
+
+    def parts(self) -> tuple[str | None, ...]:
+        return (
+            self.cve,
+            self.exact,
+            self.start_including,
+            self.start_excluding,
+            self.end_including,
+            self.end_excluding,
+        )
 
     def describe(self) -> str:
         """The window as an operator reads it, for a finding's evidence."""
@@ -98,7 +109,9 @@ class CpeRangeDataset:
     updated: str | None = None
     marker: str | None = None
     index: dict[str, tuple[CpeRange, ...]] = field(default_factory=dict)
-    cves: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: CVE → ``(cvss, severity, published)`` as loaded; a dict per CVE is
+    #: accepted too (tests build datasets by hand).
+    cves: dict[str, Any] = field(default_factory=dict)
     statements: int = 0
     present: bool = False
     error: str | None = None
@@ -111,12 +124,21 @@ class CpeRangeDataset:
         return self.index.get(key, ())
 
     def cve_info(self, cve: str) -> dict[str, Any]:
-        return self.cves.get(cve, {})
+        info = self.cves.get(cve)
+        if isinstance(info, tuple):
+            cvss, severity, published = info
+            return {"cvss": cvss, "severity": severity, "published": published}
+        return info or {}
 
 
 def _text(value: Any) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def _interned(value: Any) -> str | None:
+    text = _text(value)
+    return sys.intern(text) if text else None
 
 
 def _coerce_range(raw: Any) -> CpeRange | None:
@@ -133,11 +155,11 @@ def _coerce_range(raw: Any) -> CpeRange | None:
     cve = str(raw.get("cve") or "").strip().upper()
     if not cve.startswith("CVE-"):
         return None
-    values = {key: _text(raw.get(key)) for key in RANGE_KEYS}
+    values = {key: _interned(raw.get(key)) for key in RANGE_KEYS}
     if not any(values.values()):
         return None
     return CpeRange(
-        cve=cve,
+        cve=sys.intern(cve),
         exact=values["v"],
         start_including=values["si"],
         start_excluding=values["se"],
@@ -147,7 +169,21 @@ def _coerce_range(raw: Any) -> CpeRange | None:
 
 
 def load_dataset(path: Path) -> CpeRangeDataset:
-    """Read one dataset. Fail-soft, like every enrichment overlay."""
+    """Read one dataset. Fail-soft, like every enrichment overlay.
+
+    Built for the full corpus (tens of thousands of products, millions of
+    statements) living in every API replica, so memory is a design constraint
+    here, measured in docs/retro-cve-matching.md (*Memory*):
+
+    * the parsed JSON is consumed as the index is built (``popitem``), so the
+      raw document and the index are not both whole at the peak;
+    * statements are slotted tuples-in-disguise (:class:`CpeRange`), version
+      strings and CVE ids are interned — "2.4" and "CVE-2021-44228" occur
+      thousands of times and are stored once;
+    * per-CVE metadata is a tuple, not a dict per CVE;
+    * the content digest is streamed into a hash rather than built as one
+      canonical string.
+    """
     try:
         raw_bytes = path.read_bytes()
     except FileNotFoundError:
@@ -156,10 +192,11 @@ def load_dataset(path: Path) -> CpeRangeDataset:
         LOG.warning("cpe-ranges: cannot read %s: %s", path, exc)
         return CpeRangeDataset(error=f"unreadable: {exc}")
     try:
-        payload = json.loads(raw_bytes.decode("utf-8"))
+        payload = json.loads(raw_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         LOG.warning("cpe-ranges: %s is not valid JSON: %s", path, exc)
         return CpeRangeDataset(present=True, error=f"invalid JSON: {exc}")
+    del raw_bytes
     if not isinstance(payload, dict):
         return CpeRangeDataset(present=True, error="not an object")
     entries = payload.get("entries")
@@ -168,8 +205,9 @@ def load_dataset(path: Path) -> CpeRangeDataset:
 
     index: dict[str, tuple[CpeRange, ...]] = {}
     statements = dropped = 0
-    for key, raw_ranges in entries.items():
-        product_key = str(key).strip().lower()
+    while entries:
+        key, raw_ranges = entries.popitem()
+        product_key = sys.intern(str(key).strip().lower())
         if product_key.count(":") != 2 or not isinstance(raw_ranges, list):
             dropped += 1
             continue
@@ -186,46 +224,58 @@ def load_dataset(path: Path) -> CpeRangeDataset:
     if dropped:
         LOG.warning("cpe-ranges: dropped %d unusable statements from %s", dropped, path)
 
-    cves: dict[str, dict[str, Any]] = {}
+    cves: dict[str, tuple[float | None, str | None, str | None]] = {}
     raw_cves = payload.get("cves")
     if isinstance(raw_cves, dict):
-        for cve, info in raw_cves.items():
-            if isinstance(info, dict):
-                cves[str(cve).strip().upper()] = info
+        while raw_cves:
+            cve, info = raw_cves.popitem()
+            if not isinstance(info, dict):
+                continue
+            cvss = info.get("cvss")
+            try:
+                score = float(cvss) if cvss is not None else None
+            except (TypeError, ValueError):
+                score = None
+            severity = _text(info.get("severity"))
+            published = _text(info.get("published"))
+            cves[sys.intern(str(cve).strip().upper())] = (
+                score,
+                sys.intern(severity) if severity else None,
+                sys.intern(published) if published else None,
+            )
 
-    updated = _text(payload.get("updated"))
-    # Over what the dataset *says*, canonically ordered — not over the bytes.
-    # A daily refresh re-stamps ``updated`` and re-appends the week's CVEs even
-    # when NVD changed nothing, and a byte digest would then re-match the whole
-    # estate every night for nothing.
-    canonical = json.dumps(
-        {
-            "entries": {
-                key: sorted(
-                    (
-                        [s.cve, s.exact, s.start_including, s.start_excluding,
-                         s.end_including, s.end_excluding]
-                        for s in statements
-                    ),
-                    key=lambda item: [part or "" for part in item],
-                )
-                for key, statements in index.items()
-            },
-            "cves": cves,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return CpeRangeDataset(
         source=_text(payload.get("source")),
-        updated=updated,
-        marker=f"nvd:{digest}",
+        updated=_text(payload.get("updated")),
+        marker=f"nvd:{_content_digest(index, cves)}",
         index=index,
         cves=cves,
         statements=statements,
         present=True,
     )
+
+
+def _content_digest(
+    index: dict[str, tuple[CpeRange, ...]],
+    cves: dict[str, tuple[float | None, str | None, str | None]],
+) -> str:
+    """Over what the dataset *says*, canonically ordered — not over the bytes.
+
+    A daily refresh re-stamps ``updated`` and re-appends the week's CVEs even
+    when NVD changed nothing, and a byte digest would then re-match the whole
+    estate every night for nothing. Streamed into the hash product by product.
+    """
+    digest = hashlib.sha256()
+    for key in sorted(index):
+        digest.update(key.encode("utf-8"))
+        for row in sorted("|".join(part or "" for part in s.parts()) for s in index[key]):
+            digest.update(b"\n")
+            digest.update(row.encode("utf-8"))
+        digest.update(b"\x00")
+    for cve in sorted(cves):
+        score, severity, published = cves[cve]
+        digest.update(f"{cve}|{score}|{severity}|{published}\n".encode("utf-8"))
+    return digest.hexdigest()[:16]
 
 
 class _Holder:
@@ -249,6 +299,11 @@ class _Holder:
             key = (str(path), 0.0, -1)
         with self._lock:
             if self._dataset is None or self._key != key:
+                # Let go of the old corpus before parsing the new one: holding
+                # both at the parse's peak was the reload's whole excess. A
+                # caller mid-sweep keeps its own reference, which is the
+                # dataset its marker names; nothing else needs the old one.
+                self._dataset = None
                 self._dataset = load_dataset(path)
                 self._key = key
             return self._dataset
