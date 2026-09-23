@@ -1958,3 +1958,14 @@ def load_settings() -> Settings:
             )
 
     return settings
+
+
+if __name__ == "__main__":  # pragma: no cover - module entrypoint
+    from api.settings_cli import main as settings_cli_main
+
+    raise SystemExit(
+        settings_cli_main(
+            load_settings_fn=load_settings,
+            insecure_error_type=InsecureConfigurationError,
+        )
+    )
