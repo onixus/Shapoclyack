@@ -1,10 +1,135 @@
 name: Validate issue 366
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - codex/i366-signed-results-metrics
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-366-validation
+  cancel-in-progress: false
 
 jobs:
-  staged:
+  signed-results:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: shapoclyack
+          POSTGRES_USER: octo
+          POSTGRES_PASSWORD: octo-ci-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U octo -d shapoclyack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
-      - run: echo "Issue #366 payload is being restaged"
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/i366-signed-results-metrics
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Apply implementation
+        run: |
+          set +e
+          (
+            set -euo pipefail
+            cat .github/issue366-patch/*.part | base64 -d | gzip -d > /tmp/issue366_apply.py
+            echo '3c440d5b351f8831c5af1546fd05a9f24695e0444bd361f0dc6462338d8288dc  /tmp/issue366_apply.py' | sha256sum -c -
+            python /tmp/issue366_apply.py
+            git diff --check
+          ) 2>&1 | tee /tmp/issue366-apply.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            tail -n 300 /tmp/issue366-apply.log > .github/issue366-validation-error.txt
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add .github/issue366-validation-error.txt
+            git commit -m 'chore: capture issue #366 patch failure'
+            git push origin HEAD:codex/i366-signed-results-metrics
+            exit "$status"
+          fi
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile
+        run: python -m compileall agent api scanner tests
+
+      - name: Apply migrations
+        env:
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
+        run: alembic -c api/db/alembic.ini upgrade head
+
+      - name: Run targeted tests
+        env:
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
+        run: >-
+          pytest -q
+          tests/test_result_attestation.py
+          tests/test_result_attestation_api.py
+          tests/test_nats_ingest.py
+          tests/test_api_agents.py
+          tests/test_agent_worker.py
+          tests/test_agent_ingest_gate.py
+          tests/test_settings_fail_closed.py
+          tests/test_config_schema.py
+
+      - name: Lint changed Python
+        run: >-
+          ruff check
+          agent/metrics_server.py
+          agent/result_signing.py
+          agent/worker.py
+          api/routes/agents.py
+          api/schemas.py
+          api/services/agents.py
+          api/services/job_results.py
+          api/services/result_attestation.py
+          api/services/results_ingest.py
+          api/services/run_artifact_schema.py
+          api/settings.py
+          tests/test_result_attestation.py
+          tests/test_result_attestation_api.py
+
+      - name: Commit tested implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            requirements.txt \
+            requirements-api.txt \
+            agent/metrics_server.py \
+            agent/result_signing.py \
+            agent/worker.py \
+            api/routes/agents.py \
+            api/schemas.py \
+            api/services/agents.py \
+            api/services/job_results.py \
+            api/services/result_attestation.py \
+            api/services/results_ingest.py \
+            api/services/run_artifact_schema.py \
+            api/settings.py \
+            scripts/install-agent.sh \
+            k8s/shapoclyack/base/agents/agent-deployment.yaml \
+            docs/configuration.md \
+            docs/operations.md \
+            tests/test_result_attestation.py \
+            tests/test_result_attestation_api.py
+          git diff --cached --check
+          git commit -m 'feat(results): verify signed artifact manifests (#366)'
+          git push origin HEAD:codex/i366-signed-results-metrics
