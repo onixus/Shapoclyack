@@ -54,6 +54,7 @@ def test_rules_file_has_every_slo_and_both_scheduler_invariants():
         "ShapoclyackSchedulerSplitBrain",
         "ShapoclyackSchedulerNoLeader",
         "ShapoclyackNatsOutboxBacklog",
+        "ShapoclyackNatsOutboxAssetEventsBacklog",
         "ShapoclyackNatsOutboxDead",
         "ShapoclyackNatsOutboxDropping",
         "ShapoclyackAssetEventsSkipped",
@@ -84,3 +85,10 @@ def test_scheduler_alerts_require_the_series_to_exist():
     assert "count(octo_scheduler_is_leader) > 0" in text
     assert "for: 5m" in text
     assert "for: 10m" in text
+
+
+def test_nats_outbox_alerts_are_split_by_kind():
+    text = RULES.read_text(encoding="utf-8")
+    assert 'octo_nats_outbox_backlog{kind="ingest",status="stale"}' in text
+    assert 'octo_nats_outbox_backlog{kind="asset_event",status="stale"}' in text
+    assert "max by (kind) (octo_nats_outbox_backlog{status=\"dead\"})" in text

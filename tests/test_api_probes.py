@@ -165,7 +165,7 @@ def test_an_unrecovered_publish_backlog_is_its_own_check(tmp_path, monkeypatch):
     report = health_service.check_readiness(settings)
     assert report.ready is True
     assert report.healthy is False
-    assert report.checks == {"postgres": "ok", "nats": "ok", "ingest_backlog": "error"}
+    assert report.checks == {"postgres": "ok", "nats": "ok", "nats_outbox": "error"}
 
 
 def test_no_broker_configured_means_no_backlog_check(tmp_path, monkeypatch):

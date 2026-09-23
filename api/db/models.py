@@ -2750,6 +2750,10 @@ class NatsOutboxEntry(Base):
         # The reconciler's predicate: due pending rows, oldest first. It runs on
         # every replica on a timer, so it must not scan the table.
         Index("ix_nats_outbox_due", "status", "next_attempt_at"),
+        # The reserved ingest claim window filters by kind before ordering.
+        Index(
+            "ix_nats_outbox_kind_due", "status", "kind", "next_attempt_at"
+        ),
         # The health probe's predicate: pending rows older than the alert
         # window. ``/readyz`` asks for it on every replica on the kubelet's
         # period, and without this index that is a scan of every pending row —

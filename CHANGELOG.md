@@ -524,7 +524,7 @@ All notable changes to Shapoclyack are documented in this file.
   went down with it. The capability matrix behind the decision is in
   [docs/high-availability.md](docs/high-availability.md) § *What a NATS outage
   costs*. `/readyz` now fails only on Postgres; the broker is reported and
-  degrades `/api/health`, alongside a new `ingest_backlog` check that names the
+  degrades `/api/health`, alongside a new `nats_outbox` check that names the
   publications the outbox above has not recovered — because availability must
   not hide analytics falling behind. The two are one decision: NATS must not go
   back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not

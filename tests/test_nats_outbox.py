@@ -7,7 +7,7 @@ Two defects at once, and the tests are split the same way:
   gone. Everything below the first divider is about that message surviving.
 * NATS decided ``/readyz``, so the same outage emptied the Service of every API
   replica. That half is in ``tests/test_api_probes.py``, because it is a
-  statement about the probes; the ``ingest_backlog`` check that replaced it
+  statement about the probes; the ``nats_outbox`` check that replaced it
   reads the counts this module tests.
 """
 
@@ -452,7 +452,7 @@ def test_readyz_reports_a_backlog_that_is_actually_in_the_table(tmp_path, monkey
 
     clean = client.get("/readyz")
     assert clean.status_code == 200
-    assert clean.json()["checks"]["ingest_backlog"] == "ok"
+    assert clean.json()["checks"]["nats_outbox"] == "ok"
 
     # Older than nats_outbox_backlog_alert_seconds: a broker restart is not a
     # backlog, an hour of unrecovered publications is.
@@ -462,7 +462,7 @@ def test_readyz_reports_a_backlog_that_is_actually_in_the_table(tmp_path, monkey
     assert response.status_code == 200, "a backlog must not empty the Service"
     body = response.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["ingest_backlog"] == "error"
+    assert body["checks"]["nats_outbox"] == "error"
     assert body["checks"]["postgres"] == "ok"
 
 
@@ -752,6 +752,72 @@ def test_the_claim_window_covers_the_whole_batch_not_one_row(tmp_path, monkeypat
     assert len(claimed) == 3
     per_row = max(30, settings.nats_outbox_retry_base_seconds)
     assert deadlines == [now + timedelta(seconds=per_row * 3)] * 3
+
+
+def test_mixed_backlog_reserves_half_the_batch_for_ingest(tmp_path, monkeypatch):
+    """A thousand old webhook events must not hide the next run publication."""
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    envelopes = [
+        {
+            "kind": "new_cve",
+            "tenant_id": "default",
+            "event_id": f"event-priority-{index}",
+        }
+        for index in range(6)
+    ]
+    assert nats_outbox.record_undelivered_asset_events(settings, envelopes) == 6
+    for index in range(3):
+        _record_one(settings, job_id=f"job-priority-{index}")
+
+    now = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=1)
+    with get_session(settings.postgres_url) as session:
+        claimed = nats_outbox._claim_due(  # noqa: SLF001 - claim policy is the subject
+            session, now=now, limit=4, settings=settings
+        )
+        kinds = [row.kind for row in claimed]
+
+    assert kinds == [
+        nats_outbox.KIND_INGEST,
+        nats_outbox.KIND_INGEST,
+        nats_outbox.KIND_ASSET_EVENT,
+        nats_outbox.KIND_ASSET_EVENT,
+    ]
+
+
+def test_backlog_and_gauge_are_split_by_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(
+        tmp_path, nats_url=NATS_URL, nats_outbox_backlog_alert_seconds=300
+    )
+    _record_one(settings, job_id="job-kind-metric")
+    nats_outbox.record_undelivered_asset_events(
+        settings,
+        [
+            {
+                "kind": "new_cve",
+                "tenant_id": "default",
+                "event_id": "event-kind-metric",
+            }
+        ],
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        for row in session.query(models.NatsOutboxEntry).all():
+            row.created_at = now - timedelta(hours=1)
+
+    assert nats_outbox.backlog_by_kind(settings, now=now) == {
+        nats_outbox.KIND_INGEST: {"pending": 1, "dead": 0, "stale": 1},
+        nats_outbox.KIND_ASSET_EVENT: {"pending": 1, "dead": 0, "stale": 1},
+    }
+
+    nats_outbox._refresh_backlog_gauge(settings)  # noqa: SLF001
+
+    for kind in (nats_outbox.KIND_INGEST, nats_outbox.KIND_ASSET_EVENT):
+        assert nats_outbox.metrics_service.REGISTRY.get_sample_value(
+            "octo_nats_outbox_backlog",
+            {"kind": kind, "status": "stale"},
+        ) == 1.0
 
 
 def test_a_refused_legacy_subject_does_not_hold_the_run_back():

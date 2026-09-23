@@ -322,8 +322,8 @@ def record_failed_publish(
         return outbox_id
     metrics_service.NATS_OUTBOX_TOTAL.labels(kind=kind, outcome="recorded").inc()
     LOG.warning(
-        "Recorded refused %s publish job=%s run=%s as %s; the analytical projection "
-        "lags until the broker accepts it",
+        "Recorded refused %s publish job=%s run=%s as %s; its downstream "
+        "consumer waits until the broker accepts it",
         subject,
         job_id,
         run_id,
@@ -398,39 +398,60 @@ def record_undelivered_asset_events(
     return recorded
 
 
-def backlog(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
-    """Counts an operator (and ``/api/health``) reads: what is owed and how old.
+def backlog_by_kind(
+    settings: Settings, *, now: datetime | None = None
+) -> dict[str, dict[str, int]]:
+    """Count what the outbox owes, split by publication kind and status.
 
-    ``stale`` is the pending rows older than ``nats_outbox_backlog_alert_seconds``,
-    which is the number that means "this is not a broker restart any more".
+    ``stale`` is the pending rows older than
+    ``nats_outbox_backlog_alert_seconds``. Both known kinds are always present,
+    including after their queue drains, so the Prometheus gauge publishes an
+    explicit zero instead of leaving an old sample behind.
     """
     moment = now or _now()
     cutoff = moment - timedelta(seconds=settings.nats_outbox_backlog_alert_seconds)
-    # One pass, not two. ``/readyz`` runs this on every replica on the kubelet's
-    # period, so a second full aggregate over the same table doubled a cost that
-    # grows exactly when the database is already having a bad day. The stale
-    # count rides along as a conditional aggregate over the same GROUP BY, and
-    # ``ix_nats_outbox_stale`` (``status, created_at``) covers the predicate,
-    # which nothing indexed before.
+    # One pass, not one query per kind. ``/readyz`` runs this on every replica,
+    # so the grouping has to add observability without multiplying work on the
+    # database exactly when a broker outage has made the table large.
     stale_count = func.count(
         case((models.NatsOutboxEntry.created_at < cutoff, 1), else_=None)
     )
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
-            select(models.NatsOutboxEntry.status, func.count(), stale_count).group_by(
-                models.NatsOutboxEntry.status
+            select(
+                models.NatsOutboxEntry.kind,
+                models.NatsOutboxEntry.status,
+                func.count(),
+                stale_count,
+            ).group_by(
+                models.NatsOutboxEntry.kind,
+                models.NatsOutboxEntry.status,
             )
         ).all()
-    counts = {STATUS_PENDING: 0, STATUS_DEAD: 0}
-    stale = 0
-    for status, count, older_than_cutoff in rows:
-        counts[str(status)] = int(count)
-        if str(status) == STATUS_PENDING:
-            stale = int(older_than_cutoff)
+
+    counts = {
+        kind: {"pending": 0, "dead": 0, "stale": 0}
+        for kind in (KIND_INGEST, KIND_ASSET_EVENT)
+    }
+    for kind, status, count, older_than_cutoff in rows:
+        per_kind = counts.setdefault(
+            str(kind), {"pending": 0, "dead": 0, "stale": 0}
+        )
+        status_name = str(status)
+        if status_name in (STATUS_PENDING, STATUS_DEAD):
+            per_kind[status_name] = int(count)
+        if status_name == STATUS_PENDING:
+            per_kind["stale"] = int(older_than_cutoff or 0)
+    return counts
+
+
+def backlog(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
+    """Return backward-compatible totals across every publication kind."""
+    counts = backlog_by_kind(settings, now=now)
     return {
-        "pending": counts.get(STATUS_PENDING, 0),
-        "dead": counts.get(STATUS_DEAD, 0),
-        "stale": stale,
+        "pending": sum(by_status["pending"] for by_status in counts.values()),
+        "dead": sum(by_status["dead"] for by_status in counts.values()),
+        "stale": sum(by_status["stale"] for by_status in counts.values()),
     }
 
 
@@ -464,36 +485,69 @@ def _retry_delay_seconds(attempts: int, settings: Settings) -> int:
 
 
 def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> list[Any]:
-    """Take up to ``limit`` due rows, pushing them out of the due window.
+    """Take due rows while reserving capacity for ingest publications.
 
-    ``FOR UPDATE SKIP LOCKED`` plus a bumped ``next_attempt_at`` is what makes
-    the reconciler safe in every replica: peers divide the backlog instead of
-    republishing the same megabytes in parallel.
+    Up to half of each batch is claimed from ``kind=ingest`` first. The rest is
+    filled from the ordinary FIFO across all kinds, and an unused reservation
+    is returned to that FIFO. A run that queued hundreds of asset events can
+    therefore delay some webhook fan-out, but cannot put the next run's
+    ClickHouse publication behind the whole burst; asset events still receive
+    at least half of a mixed batch and all of an ingest-free one.
+
+    ``FOR UPDATE SKIP LOCKED`` plus a bumped ``next_attempt_at`` keeps the
+    reconciler safe in every replica: peers divide both claim windows rather
+    than republishing the same rows in parallel.
     """
-    rows = list(
-        session.execute(
-            select(models.NatsOutboxEntry)
-            .where(
-                models.NatsOutboxEntry.status == STATUS_PENDING,
-                models.NatsOutboxEntry.next_attempt_at <= now,
+    if limit <= 0:
+        return []
+
+    def _take(
+        *,
+        query_limit: int,
+        kind: str | None = None,
+        excluded_ids: set[str] | None = None,
+    ) -> list[Any]:
+        if query_limit <= 0:
+            return []
+        query = select(models.NatsOutboxEntry).where(
+            models.NatsOutboxEntry.status == STATUS_PENDING,
+            models.NatsOutboxEntry.next_attempt_at <= now,
+        )
+        if kind is not None:
+            query = query.where(models.NatsOutboxEntry.kind == kind)
+        if excluded_ids:
+            query = query.where(
+                ~models.NatsOutboxEntry.outbox_id.in_(tuple(excluded_ids))
             )
-            .order_by(models.NatsOutboxEntry.next_attempt_at)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        ).scalars().all()
-    )
+        return list(
+            session.execute(
+                query.order_by(
+                    models.NatsOutboxEntry.next_attempt_at,
+                    models.NatsOutboxEntry.created_at,
+                    models.NatsOutboxEntry.outbox_id,
+                )
+                .limit(query_limit)
+                .with_for_update(skip_locked=True)
+            ).scalars().all()
+        )
+
+    reserved_for_ingest = max(1, limit // 2)
+    rows = _take(query_limit=reserved_for_ingest, kind=KIND_INGEST)
+    remaining = limit - len(rows)
+    if remaining:
+        rows.extend(
+            _take(
+                query_limit=remaining,
+                excluded_ids={str(row.outbox_id) for row in rows},
+            )
+        )
+
     # The window has to cover the *whole* batch, not one row. ``reconcile_once``
     # commits this transaction — releasing the locks — and only then publishes
-    # the claimed rows one by one, so the last row of a batch sits claimed for
-    # as long as every row before it takes. One ingest body is up to ~5.3 MB of
-    # base64 and ``publish_json`` retries three times on the way, so a batch of
-    # ``nats_outbox_batch_size`` is tens of megabytes: a flat 30 s expired
-    # mid-batch and a peer replica claimed and republished the same rows in
-    # parallel — doubled traffic, doubled ``attempts`` (so a false ``dead``
-    # sooner) and duplicates on the stream.
-    # Being generous costs the reverse case: a replica that dies mid-batch
-    # leaves its rows waiting one window rather than 30 s. That is the cheaper
-    # mistake — the backlog is already behind, and duplicate publishes are not.
+    # the claimed rows one by one, so the last row sits claimed for as long as
+    # every row before it takes. One ingest body is up to ~5.3 MB of base64 and
+    # ``publish_json`` retries three times, so a flat 30 s window can expire in
+    # the middle of a batch and let a peer republish the same rows.
     per_row = max(30, settings.nats_outbox_retry_base_seconds)
     visibility = timedelta(seconds=per_row * max(1, len(rows)))
     for row in rows:
@@ -604,7 +658,7 @@ def _record_attempt(settings: Settings, *, outbox_id: str, ok: bool, now: dateti
             row.next_attempt_at = None
             LOG.error(
                 "Outbox entry %s is dead after %s attempts (subject=%s job=%s run=%s); "
-                "the analytical projection will not have this run until it is replayed",
+                "its downstream effect will not happen until it is replayed",
                 outbox_id,
                 row.attempts,
                 row.subject,
@@ -679,7 +733,7 @@ def discard_dead(
         for row in _dead_rows(session, tenant_id=tenant_id, outbox_id=outbox_id):
             LOG.warning(
                 "Discarding dead outbox entry %s (subject=%s job=%s run=%s attempts=%s); "
-                "this run is not reaching the analytical projection",
+                "its downstream effect will not happen",
                 row.outbox_id,
                 row.subject,
                 row.job_id,
@@ -713,12 +767,18 @@ def _dead_rows(
 
 def _refresh_backlog_gauge(settings: Settings) -> None:
     try:
-        counts = backlog(settings)
+        counts = backlog_by_kind(settings)
     except Exception:  # noqa: BLE001
         LOG.debug("Could not refresh the outbox gauge", exc_info=True)
         return
-    for status, value in counts.items():
-        metrics_service.NATS_OUTBOX_BACKLOG.labels(status=status).set(value)
+    # Clear first so a kind that disappears (including an old/unknown kind)
+    # cannot leave a stale non-zero child in the process registry.
+    metrics_service.NATS_OUTBOX_BACKLOG.clear()
+    for kind, by_status in counts.items():
+        for status, value in by_status.items():
+            metrics_service.NATS_OUTBOX_BACKLOG.labels(
+                kind=kind, status=status
+            ).set(value)
 
 
 class OutboxReconciler:
