@@ -354,9 +354,14 @@ and not the next is not a ceiling:
 * **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
-  fragile run turns it off entirely. For a tenant that is throttled rather than
-  silenced, `nuclei.rate_limit` is held to `per_host_rate` and
-  `nuclei.concurrency` to `max_host_concurrency`.
+  fragile run turns it off entirely. It also turns fingerprint HTTP requests
+  and browser screenshots off, and disables only the **direct-handshake
+  fallback** of TLS posture. TLS posture itself stays enabled so it may parse
+  certificate evidence already present in NSE/Pulse artifacts without opening
+  a new connection. For a tenant that is throttled rather than silenced,
+  `nuclei.rate_limit` is held to `per_host_rate` and every active secondary
+  pool (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
+  `screenshots.concurrency`) is held to `max_host_concurrency`.
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
@@ -373,6 +378,10 @@ and not the next is not a ceiling:
   never raise. A config that already spells one host at a time as
   `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse as
   `--host-first`, which is stricter than any number a policy could put there.
+  The TLS fallback, fingerprint and screenshot pools are endpoint workers rather
+  than batch workers, but the same ceiling applies to them: a fragile run never
+  has more than one active connection from any of those stages, and in fact
+  disables their active work as described above.
 * **The avoid-list of fieldbus ports** is every stage that puts a port on the
   wire, not only the port scan. The port scan gets `-exclude-ports`. Discovery's
   TCP probe step — which chooses a port list of its own, and which an
@@ -389,6 +398,31 @@ and not the next is not a ceiling:
   `exit 1` and an estate that reads as dead. This is what `ports.exclude_ports` says in
   `scanner/config/default.yaml`: ports no scan started from this config may
   touch.
+
+Every secondary stage that opens fresh connections to scanned hosts is
+registered in `SECONDARY_ACTIVE_STAGE_POLICIES` (`scanner/pipeline/scan_policy.py`)
+with its concurrency field and the switch that suppresses its active work, and
+runs through the guarded wrapper `_run_policy_controlled_secondary_stage`.
+Every other stage is listed in `NON_SECONDARY_ACTIVE_STAGES` with the reason it
+is not one: a primary stage held by policy fields of its own, a third-party or
+DNS source, or artifact-only work.
+
+The guarantee is a test, not the wrapper. `tests/test_scanner_scan_policy.py`
+parses `scanner/main.py`, collects the stage name of every `_run_stage` and
+guarded-wrapper call, and fails when a name is in neither registry, when a
+registered active stage bypasses the wrapper, or when a stage name is not a
+string literal it can check. Adding a stage therefore requires a written policy
+decision before CI goes green. The wrapper is the runtime backstop on top: it
+stops the run if it is handed a name with no contract, but it only sees names
+passed to it. Work run outside both wrappers is invisible to either check, so
+new network work belongs in a stage.
+
+Being outside the secondary registry is not the same as sending nothing to the
+target's infrastructure. Two such stages are bounded by count, not by the
+tenant policy: `dns_hygiene` with `axfr_probe` on (see
+[Active checks and target authorization](#active-checks-and-target-authorization)),
+and `mail_posture`, which fetches `https://mta-sts.<domain>/.well-known/mta-sts.txt`
+once per seed domain through the public-address-only HTTP client.
 
 **Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a
