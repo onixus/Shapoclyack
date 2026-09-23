@@ -1,6 +1,8 @@
 import axios from "axios";
+import { activeSinceIssued, lastActivity } from "@/lib/session";
 import { isStepUpRefusal, useStepUpStore } from "@/lib/step-up";
-import type { AxiosError } from "axios";
+import type { WebAuthnAnswer, WebAuthnOptions } from "@/lib/webauthn";
+import type { AxiosError, InternalAxiosRequestConfig } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
 const TENANT_KEY = "shapoclyack_active_tenant";
@@ -68,10 +70,208 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/** For the requests that set, send or clear the refresh-token cookie (#314).
+ * Same-origin requests carry cookies anyway; this is for a console served from
+ * a different origin than `NEXT_PUBLIC_API_BASE_URL`. Only these calls: the
+ * cookie is scoped to `/api/auth`, and nothing else needs credentials. */
+const WITH_REFRESH_COOKIE = { withCredentials: true } as const;
+
+/** Routes whose 401 is the answer rather than an expired access token: retrying
+ * them after a refresh would either loop (`/auth/refresh` itself) or turn a
+ * refused credential into a second attempt nobody asked for. */
+const REFRESH_EXEMPT = [
+  "/auth/login",
+  "/auth/refresh",
+  "/auth/logout",
+  "/auth/mfa/verify",
+  "/auth/sessions/revoke-all",
+];
+
+/** Name of the Web Lock that serialises refreshes across this origin's tabs. */
+const REFRESH_LOCK = "shapoclyack-session-refresh";
+
+let refreshInFlight: Promise<string | null> | null = null;
+
+type LockManagerLike = {
+  request: <T>(name: string, callback: () => Promise<T>) => Promise<T>;
+};
+
+/** Run `fn` holding the cross-tab refresh lock: a Web Lock where the browser
+ * has one, the storage lock below where it does not. */
+function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks =
+    typeof navigator !== "undefined"
+      ? (navigator as unknown as { locks?: LockManagerLike }).locks
+      : undefined;
+  return locks?.request ? locks.request(REFRESH_LOCK, fn) : withStorageLock(fn);
+}
+
+/** localStorage key of the fallback cross-tab refresh lock. */
+export const REFRESH_STORAGE_LOCK = "shapoclyack_refresh_lock";
+
+/** Identifies this tab as the holder of the storage lock. */
+const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+type StorageLock = { owner: string; expires: number };
+
+function readStorageLock(): StorageLock | null {
+  try {
+    const raw = window.localStorage.getItem(REFRESH_STORAGE_LOCK);
+    return raw ? (JSON.parse(raw) as StorageLock) : null;
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A best-effort cross-tab mutex in localStorage, for where `navigator.locks`
+ * is missing — it exists only in a secure context, so a dev stand served over
+ * plain http (the reason `OCTO_REFRESH_COOKIE_SECURE` can be off) has none.
+ *
+ * Claim, wait `settleMs`, and hold only if the claim is still ours: storage
+ * writes are not atomic across tabs, so two tabs can both write, but only the
+ * last write survives the wait. It narrows the race to that window rather than
+ * closing it — the Web Lock is the real answer and is used wherever it exists.
+ * A claim carries an expiry, so a tab closed mid-refresh does not wedge the
+ * others; and a tab that cannot get the lock within `ttlMs` proceeds rather
+ * than hanging, because a hung console is worse than a rare reuse sign-out.
+ * Without storage at all (private mode throwing on access) `fn` just runs. */
+export async function withStorageLock<T>(
+  fn: () => Promise<T>,
+  { ttlMs = 10_000, pollMs = 50, settleMs = 30 } = {},
+): Promise<T> {
+  if (typeof window === "undefined") return fn();
+  const giveUpAt = Date.now() + ttlMs;
+  let held = false;
+  try {
+    for (;;) {
+      const current = readStorageLock();
+      const now = Date.now();
+      if (!current || current.expires <= now || current.owner === TAB_ID) {
+        window.localStorage.setItem(
+          REFRESH_STORAGE_LOCK,
+          JSON.stringify({ owner: TAB_ID, expires: now + ttlMs }),
+        );
+        await sleep(settleMs);
+        if (readStorageLock()?.owner === TAB_ID) {
+          held = true;
+          break;
+        }
+      } else if (now >= giveUpAt) {
+        break;
+      }
+      await sleep(pollMs);
+    }
+  } catch {
+    // No usable storage: nothing to coordinate with, so nothing to wait for.
+  }
+  try {
+    return await fn();
+  } finally {
+    if (held && readStorageLock()?.owner === TAB_ID) {
+      try {
+        window.localStorage.removeItem(REFRESH_STORAGE_LOCK);
+      } catch {
+        // Expiry releases it instead.
+      }
+    }
+  }
+}
+
+/** How long to leave the refresh endpoint alone after it failed without
+ * refusing — a 5xx with no `Retry-After`, or no answer at all. One banner tick. */
+const REFRESH_BACKOFF_MS = 15_000;
+
+/** No refresh is attempted before this (epoch ms). Set from `Retry-After` on a
+ * 503/429 and from the back-off above on anything else that was not a refusal,
+ * so an outage is not met with a refresh per render. */
+let refreshNotBefore = 0;
+
+function backOffAfter(error: unknown): void {
+  if (!axios.isAxiosError(error)) {
+    refreshNotBefore = Date.now() + REFRESH_BACKOFF_MS;
+    return;
+  }
+  const status = error.response?.status;
+  // A 401 is an answer — the session is over and the interceptor has already
+  // signed the console out — so there is nothing to back off from.
+  if (status === 401) return;
+  const retryAfter = Number(error.response?.headers?.["retry-after"]);
+  refreshNotBefore =
+    Date.now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : REFRESH_BACKOFF_MS);
+}
+
+/** Exchange the refresh-token cookie for a new access token (#314).
+ *
+ * Returns the new token, or `null` when the session could not be extended —
+ * refused (the 401 goes through the interceptor below, which signs the console
+ * out) or unreachable.
+ *
+ * Serialised twice over, because the server treats a refresh token presented
+ * twice as stolen and ends the session: one refresh at a time in this tab (the
+ * in-flight promise is shared), and one at a time across tabs (a Web Lock, or
+ * the storage lock where there is none). Inside the lock the stored token is
+ * compared with the one this tab started from — if another tab refreshed while
+ * this one waited, its token is used and the cookie, which that tab has
+ * already rotated, is left alone.
+ *
+ * After a failure that was not a refusal it answers `null` without asking
+ * again until `Retry-After` (or one banner tick) has passed. */
+export function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight && Date.now() < refreshNotBefore) return Promise.resolve(null);
+  if (!refreshInFlight) {
+    const startedWith = getAccessToken();
+    refreshInFlight = withRefreshLock(async () => {
+      const current = getAccessToken();
+      if (current && current !== startedWith) return current;
+      try {
+        const { data } = await api.post<LoginResult>(
+          "/auth/refresh",
+          null,
+          WITH_REFRESH_COOKIE,
+        );
+        if (!data.access_token) return null;
+        setAccessToken(data.access_token);
+        return data.access_token;
+      } catch (error) {
+        backOffAfter(error);
+        return null;
+      }
+    }).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+function isRefreshExempt(url: string | undefined): boolean {
+  const path = (url ?? "").split("?")[0];
+  return REFRESH_EXEMPT.some((exempt) => path === exempt || path.endsWith(exempt));
+}
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error?.response?.status === 401 && typeof window !== "undefined") {
+      // An expired access token is renewed once and the request replayed — but
+      // only for a user who has touched the console since the token was minted
+      // (`@/lib/session`). A console left polling on its own is let go, which
+      // is what the idle timeout is for.
+      const config = error.config as (InternalAxiosRequestConfig & { _refreshed?: boolean }) | undefined;
+      if (
+        config &&
+        !config._refreshed &&
+        !isRefreshExempt(config.url) &&
+        activeSinceIssued(getAccessToken(), lastActivity())
+      ) {
+        const token = await refreshAccessToken();
+        if (token) {
+          config._refreshed = true;
+          config.headers.Authorization = `Bearer ${token}`;
+          return api.request(config);
+        }
+      }
       setAccessToken(null);
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -243,6 +443,13 @@ export type Me = {
   mfa_enabled?: boolean;
   mfa_required?: boolean;
   mfa_pending?: boolean;
+  /** The security-key half (#315): policy wants a key of this role, and this
+   * session was proved with a code instead — so it is confined to the
+   * security page until it is re-proved with a key. */
+  phishing_resistant_required?: boolean;
+  phishing_resistant_pending?: boolean;
+  /** Which factor proved this session: "totp", "recovery", "webauthn". */
+  mfa_method?: string | null;
 };
 
 /** The API resolves the tenant from the caller's memberships when the request
@@ -1036,7 +1243,11 @@ export type LoginResult = {
 
 export async function login(username: string, password: string): Promise<LoginResult> {
   try {
-    const { data } = await api.post<LoginResult>("/auth/login", { username, password });
+    const { data } = await api.post<LoginResult>(
+      "/auth/login",
+      { username, password },
+      WITH_REFRESH_COOKIE,
+    );
     // Only a real session is stored. Storing the challenge token would put a
     // credential that opens one endpoint into the slot every request reads
     // from, and every one of those requests would 401.
@@ -1057,13 +1268,20 @@ export async function verifyMfa(body: {
   mfa_token?: string | null;
   code?: string;
   recovery_code?: string;
+  /** A signed security-key assertion (#315), in place of a code. */
+  webauthn?: WebAuthnAnswer;
 }): Promise<LoginResult> {
   try {
-    const { data } = await api.post<LoginResult>("/auth/mfa/verify", {
-      mfa_token: body.mfa_token ?? undefined,
-      code: body.code || undefined,
-      recovery_code: body.recovery_code || undefined,
-    });
+    const { data } = await api.post<LoginResult>(
+      "/auth/mfa/verify",
+      {
+        mfa_token: body.mfa_token ?? undefined,
+        code: body.code || undefined,
+        recovery_code: body.recovery_code || undefined,
+        webauthn: body.webauthn,
+      },
+      WITH_REFRESH_COOKIE,
+    );
     if (data.access_token) setAccessToken(data.access_token);
     return data;
   } catch (error) {
@@ -1083,6 +1301,26 @@ export type MfaStatus = {
   /** Whether confirming an enrolment will ask for the password. False for an
    * SSO-provisioned account, which has none to give. */
   password_required: boolean;
+  /** Security keys (#315). Optional so an API older than WebAuthn still
+   * renders the panel — it simply has no key section. */
+  webauthn_available?: boolean;
+  webauthn_credentials?: number;
+  phishing_resistant_required?: boolean;
+  stepup_phishing_resistant?: boolean;
+};
+
+/** One registered security key or passkey. Nothing here is secret. */
+export type WebAuthnKey = {
+  id: string;
+  name: string;
+  credential_id: string;
+  aaguid: string;
+  transports: string[];
+  /** Synced to a cloud account (a passkey) rather than bound to one device. */
+  backed_up: boolean;
+  device_type: string;
+  created_at: string | null;
+  last_used_at: string | null;
 };
 
 export type MfaSetup = {
@@ -1148,6 +1386,62 @@ export async function disableMfa(body: {
   }
 }
 
+/** Creation options for a new key on this account (#315). Needs a recent
+ * verification; the 403 otherwise raises the step-up prompt like any other. */
+export async function beginKeyRegistration(): Promise<WebAuthnOptions> {
+  try {
+    const { data } = await api.post<WebAuthnOptions>("/auth/mfa/webauthn/register/options");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function finishKeyRegistration(
+  answer: WebAuthnAnswer,
+  name: string,
+): Promise<WebAuthnKey> {
+  try {
+    const { data } = await api.post<WebAuthnKey>("/auth/mfa/webauthn/register/verify", {
+      ...answer,
+      name,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Request options naming this account's keys: for a login's second leg (with
+ * the challenge token) or for a step-up (without it, on the session). */
+export async function beginKeyAuthentication(mfaToken?: string | null): Promise<WebAuthnOptions> {
+  try {
+    const { data } = await api.post<WebAuthnOptions>("/auth/mfa/webauthn/authenticate/options", {
+      mfa_token: mfaToken ?? undefined,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchWebAuthnKeys(): Promise<WebAuthnKey[]> {
+  try {
+    const { data } = await api.get<WebAuthnKey[]>("/auth/mfa/webauthn/credentials");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeWebAuthnKey(id: string): Promise<void> {
+  try {
+    await api.delete(`/auth/mfa/webauthn/credentials/${encodeURIComponent(id)}`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 /** Clear another account's second factor and end its sessions. Admin only. */
 export async function resetUserMfa(username: string): Promise<MfaStatus> {
   try {
@@ -1182,7 +1476,7 @@ export type LogoutOutcome = "ended" | "already-ended" | "uncertain";
 export async function logout(): Promise<LogoutOutcome> {
   let outcome: LogoutOutcome = "ended";
   try {
-    await api.post("/auth/logout");
+    await api.post("/auth/logout", null, WITH_REFRESH_COOKIE);
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
     if (status === 401 || status === 403) {
@@ -1198,7 +1492,7 @@ export async function logout(): Promise<LogoutOutcome> {
 /** The fallback path of `logout()`: succeeded or not, no message to render. */
 async function revokeAllQuietly(): Promise<boolean> {
   try {
-    await api.post("/auth/sessions/revoke-all");
+    await api.post("/auth/sessions/revoke-all", null, WITH_REFRESH_COOKIE);
     return true;
   } catch {
     return false;
@@ -1212,7 +1506,7 @@ async function revokeAllQuietly(): Promise<boolean> {
  * they choose, and the local token is kept because nothing was ended. */
 export async function revokeAllSessions() {
   try {
-    await api.post("/auth/sessions/revoke-all");
+    await api.post("/auth/sessions/revoke-all", null, WITH_REFRESH_COOKIE);
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

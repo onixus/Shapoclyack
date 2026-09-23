@@ -19,3 +19,6 @@ opentelemetry-api==1.31.1
 opentelemetry-sdk==1.31.1
 opentelemetry-exporter-otlp-proto-http==1.31.1
 opentelemetry-instrumentation-fastapi==0.52b1
+# WebAuthn / passkeys (#315): attestation and assertion verification. Pulls
+# cbor2, pyOpenSSL and pyasn1; the signature checks go through cryptography.
+webauthn==3.0.0

@@ -7,7 +7,9 @@ Six routes, and the split between them is the whole design:
   holds (the password, a live code, or both);
 * ``POST /auth/mfa/verify``, which is two things wearing one name: the second
   leg of a login (it takes the challenge token from ``POST /auth/login``) and
-  the step-up an already-signed-in admin does before minting a credential;
+  the step-up an already-signed-in admin does before minting a credential —
+  with a code, or with a security key (the ceremony's other routes are in
+  ``api/routes/passkeys.py``);
 * ``POST /users/{username}/mfa/reset``, the only way a factor comes off an
   account without the factor — platform admin, audited, and it ends the
   account's sessions.
@@ -25,7 +27,7 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from api.auth import (
@@ -43,6 +45,7 @@ from api.auth import (
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.routes._audit import AuditDep
+from api.routes._session_cookie import issue_session, set_refresh_cookie
 from api.schemas import (
     MfaConfirmRequest,
     MfaDisableRequest,
@@ -54,6 +57,8 @@ from api.schemas import (
 from api.services import auth_audit
 from api.services import local_login
 from api.services import mfa as mfa_service
+from api.services import sessions as sessions_service
+from api.services import passkeys as passkeys_service
 from api.services import users as users_service
 from api.settings import Settings
 
@@ -217,6 +222,7 @@ def confirm_totp(
 def verify_mfa(
     body: MfaVerifyRequest,
     request: Request,
+    response: Response,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LoginResponse:
@@ -236,42 +242,99 @@ def verify_mfa(
     key, so guessing six digits costs an attacker the same five attempts per
     window that guessing a password does — and lands in the same trail with
     ``reason=mfa_failed``.
+
+    The factor is a code, a recovery code, or — since WebAuthn landed — a
+    security-key assertion answering a challenge from
+    ``POST /api/auth/mfa/webauthn/authenticate/options`` that was bound to the
+    same token presented here. Which one was accepted rides in the new
+    session as ``mfa_method``: the phishing-resistant policy reads it.
     """
-    if not (body.code or body.recovery_code):
+    if body.webauthn is not None and (body.code or body.recovery_code):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="supply either 'code' or 'recovery_code'",
+            detail="supply one factor: 'code', 'recovery_code' or 'webauthn'",
+        )
+    if not (body.code or body.recovery_code or body.webauthn is not None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="supply either 'code', 'recovery_code' or 'webauthn'",
+        )
+    if body.webauthn is not None and not passkeys_service.available(settings):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="WebAuthn is not configured on this installation",
         )
 
     break_glass = False
+    # The session family a step-up re-proves the factor for. ``None`` on the
+    # login leg, which opens a new one, and for a pre-refresh-token session,
+    # which has none to stamp and is given one (#314).
+    stepping_up: str | None = None
     if body.mfa_token:
         challenge = decode_pre_auth_token(settings, body.mfa_token)
         username = challenge.username
         break_glass = challenge.break_glass
+        binding = challenge.jti
     elif credentials is not None and credentials.scheme.lower() == "bearer":
         # decode_token rather than the get_current_user dependency: a session
         # carrying ``mfa_pending`` must be able to reach this, and so must one
         # that is merely stepping up. The dependency's enrolment gate would
         # otherwise decide that for us before this route is entered.
-        username = decode_token(settings, credentials.credentials).username
+        current = decode_token(settings, credentials.credentials)
+        username = current.username
+        stepping_up = current.session_id
+        # A WebAuthn challenge asked for on a session is bound to its family,
+        # not to one access token: a refresh between the options and the
+        # answer rotates the token but not the family (#314).
+        binding = passkeys_service.session_binding(current.session_id, current.jti)
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="supply the challenge token from POST /api/auth/login, or sign in first",
         )
 
-    client_ip = _client_ip(request, settings)
-    accepted = _check_under_limiter(
-        request,
-        settings,
-        username,
-        lambda: mfa_service.verify(
+    # Which factor was accepted, for the session's ``mfa_method`` claim. Set
+    # inside the limiter's callback, which is the only place that knows.
+    accepted_factor: dict[str, str] = {}
+
+    def _prove() -> None:
+        if body.webauthn is not None:
+            if not binding:
+                # A WebAuthn challenge is bound to the token that asked for it,
+                # and a token with no id cannot have asked for one.
+                raise PermissionError("that security key response is not valid")
+            accepted_factor["method"] = passkeys_service.verify_assertion(
+                settings,
+                username,
+                binding=binding,
+                challenge_id=body.webauthn.challenge_id,
+                credential=body.webauthn.credential,
+            )
+            return
+        accepted_factor["method"] = mfa_service.verify(
             settings, username, code=body.code, recovery_code=body.recovery_code
-        ),
-    )
+        )
+
+    client_ip = _client_ip(request, settings)
+    accepted = _check_under_limiter(request, settings, username, _prove)
     if not accepted:
+        # Which factor was refused, so the message is about what the user
+        # actually presented. And which status: on the login leg there is no
+        # session and 401 is what the second leg has always answered; on a
+        # step-up the *session* is fine and only the proof was refused — the
+        # console signs out on every 401, so a stale challenge from another tab
+        # would otherwise end a perfectly good session (#437 review).
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
+            status_code=(
+                status.HTTP_401_UNAUTHORIZED
+                if body.mfa_token
+                else status.HTTP_403_FORBIDDEN
+            ),
+            detail=(
+                "that security key response is not valid"
+                if body.webauthn is not None
+                else "that code is not valid"
+            ),
         )
 
     record = users_service.get_user(username)
@@ -285,9 +348,32 @@ def verify_mfa(
     # The same clock the step-up check reads (``mfa_service.now_utc``), so the
     # stamp and the deadline that measures it can never come from two sources.
     verified_at = mfa_service.now_utc()
+    method = accepted_factor.get("method")
     try:
-        token = create_access_token(settings, principal, mfa_verified_at=verified_at)
-    except LookupError as exc:
+        if stepping_up is not None:
+            # A step-up stays in the session it was made in: the family is
+            # stamped, so the access tokens refreshed from it keep the proof,
+            # and the refresh cookie the browser holds is still the right one.
+            # The method goes with the time, in one write: a code-proved
+            # step-up after a key-proved sign-in must not leave "webauthn"
+            # standing next to a newer, weaker proof.
+            session_end = sessions_service.record_step_up(
+                settings, stepping_up, verified_at, method=method
+            )
+            token = create_access_token(
+                settings,
+                principal,
+                session_id=stepping_up,
+                session_expires_at=session_end,
+                mfa_verified_at=verified_at,
+                mfa_method=method,
+            )
+        else:
+            token, opened = issue_session(
+                settings, principal, mfa_verified_at=verified_at, mfa_method=method
+            )
+            set_refresh_cookie(response, settings, opened)
+    except (LookupError, PermissionError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="that code is not valid"
         ) from exc
@@ -310,12 +396,29 @@ def disable_mfa(
     somebody who has stolen a token holds neither of the two things this asks
     for. There is deliberately no admin route that does this *to* another
     account without recording it as a reset — see below.
+
+    Where the key policy covers the account and it holds a security key, the
+    session must also have been proved recently *with* that key (#315):
+    disabling removes the keys, and a relayed password and code must not be a
+    way to clear the owner's keys and enrol the phisher's. Checked before the
+    limiter, so a refusal here spends neither the code nor an attempt; the 403
+    carries the step-up sentence, so the console raises its prompt.
     """
     if not (body.code or body.recovery_code):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="supply either 'code' or 'recovery_code'",
         )
+    try:
+        passkeys_service.check_disable_proof(
+            settings,
+            user.username,
+            role=user.role.value,
+            mfa_verified_at=user.mfa_verified_at,
+            mfa_method=user.mfa_method,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     def _both() -> None:
         mfa_service.check_password(settings, user.username, body.password)

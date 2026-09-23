@@ -1792,6 +1792,38 @@ sessions alone, so a reconcile loop against a directory does not sign the
 tenant out on every pass. The route list is in
 [api-and-rbac.md](api-and-rbac.md#sessions-logout-and-revocation).
 
+**Refresh tokens and the idle timeout** (migration `0060_refresh_tokens`). A
+console access token lives `OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` (15) and is renewed
+from an httpOnly cookie within a sign-in that ends after
+`OCTO_JWT_EXPIRE_MINUTES` (8 hours) or after `OCTO_SESSION_IDLE_MINUTES` (30)
+without a refresh, whichever comes first. Each sign-in is one row in
+`session_families`, and the row says why it ended:
+
+```sql
+SELECT family_id, username, created_at, last_used_at, expires_at, revoked_at, revoked_reason
+  FROM session_families WHERE username = 'alice' ORDER BY created_at DESC LIMIT 20;
+```
+
+`revoked_reason` is `logout`, `revoked` (revoke-all, disable, demote, password),
+`idle`, `expired` — or `reuse`, which is the one to act on: a refresh token was
+presented after it had been spent, meaning a second party held a copy. The same
+event is in the auth trail as `outcome=denied`, `reason=refresh_token_reuse`
+(`GET /api/auth/events?outcome=denied`), with the client address it was
+presented from in `client_ip` — behind a proxy, only as good as
+`OCTO_TRUSTED_PROXIES` makes it. The session is already ended by then;
+what is left is finding out where the copy came from (a shared browser profile,
+a synced cookie store, malware on the workstation) and, if in doubt,
+`POST /api/users/{username}/sessions/revoke-all` plus a password reset.
+
+Neither table needs a worker: families past their absolute end are deleted at
+the next sign-in (their refresh tokens go with them by `ON DELETE CASCADE`), so
+the table holds roughly "sign-ins in the last `OCTO_JWT_EXPIRE_MINUTES`", with
+about one `refresh_tokens` row per ten minutes of each.
+
+Downgrading past `0060` drops both tables and with them every refresh token:
+consoles keep their current access token for at most fifteen minutes and then
+sign in again. Nothing needs draining first.
+
 **If Postgres is unreachable**, the check cannot be made and authenticated
 requests answer `503` with `Retry-After: 5`, not `401`. That distinction is
 operational: a 401 would sign every console in the fleet out over a database
@@ -1873,6 +1905,40 @@ If `OCTO_MFA_REQUIRED_ROLES` names the account's role, its next login is a
 session confined to the enrolment flow, so the reset does not leave it locked
 out — it leaves it in front of the setup page.
 
+**A lost security key** is the same procedure. The reset removes every
+registered key along with the authenticator secret and the recovery codes (the
+audit row's `before.webauthn_credentials` says how many), so the lost key stops
+working the moment the reset lands. Somebody who still holds another key or
+their phone does not need an admin: they remove the lost key themselves on the
+Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
+recorded as `user.webauthn_revoke`.
+
+### Rolling out security keys
+
+WebAuthn needs a relying party the browser agrees with, and getting it wrong
+after keys are registered orphans them, so settle it first:
+
+1. Set `OCTO_WEBAUTHN_RP_ID` to the console's hostname (or a registrable
+   parent of it) and `OCTO_WEBAUTHN_ORIGINS` to the exact origin the console is
+   served from — `https://shapoclyack.example.com`, not the API's internal URL.
+   Both default to `OCTO_PUBLIC_BASE_URL`, which is right when the console and
+   the API share it. The console must be on `https` (or `localhost`): browsers
+   do not expose WebAuthn anywhere else.
+2. Let administrators register keys (Security page → *Security keys and
+   passkeys*). Each needs the authenticator app enrolled first and a recent
+   verification.
+3. Only then set `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin` (and, if wanted,
+   `OCTO_MFA_STEPUP_PHISHING_RESISTANT=true`). An admin without a key is not
+   locked out: a code-verified session is confined to the Security page, where
+   it can register one. Watch `octo_mfa_verifications_total{outcome="webauthn_failure"}`
+   in the first days — a spike is usually a wrong origin, and the API log names
+   the reason for each refusal.
+
+Changing `OCTO_WEBAUTHN_RP_ID` later invalidates every registered key: the
+authenticator binds each credential to the RP ID it was created for. Treat it
+like a domain migration — keys have to be registered again, and until then the
+authenticator app is the way in.
+
 ### Break-glass local login
 
 On an installation with SSO configured, `OCTO_LOCAL_LOGIN=break-glass` reserves
@@ -1931,8 +1997,12 @@ token with them. `OCTO_JWT_SECRET_PREVIOUS` makes it a window instead.
    `OCTO_JWT_SECRET_PREVIOUS` to the old one (comma-separated if you are
    retiring more than one). From this deploy on, new tokens are signed with the
    new key and old ones still verify.
-3. **Wait out the window.** `OCTO_JWT_EXPIRE_MINUTES` for console sessions
-   (default 8 hours) and `OCTO_AGENT_JWT_EXPIRE_MINUTES` for sensors and
+3. **Wait out the window.** `OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` for console
+   sessions (default 15 minutes: refresh tokens are not JWTs, and every refresh
+   after the deploy signs with the new key — but give it
+   `OCTO_JWT_EXPIRE_MINUTES`, 8 hours, if any console may still hold a token
+   minted before migration 0060, which has no refresh behind it) and
+   `OCTO_AGENT_JWT_EXPIRE_MINUTES` for sensors and
    endpoint Agents (default 2 hours). Every replica must carry the same pair throughout — a replica
    missing the previous key refuses the tokens its neighbours accept.
 4. **Deploy again with `OCTO_JWT_SECRET_PREVIOUS` removed.** The old key stops

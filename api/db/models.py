@@ -149,6 +149,69 @@ class User(Base):
     )
 
 
+class WebAuthnCredential(Base):
+    """One registered security key or passkey (migration 0061, #315).
+
+    Nothing here is secret: the private key never leaves the authenticator,
+    and what the relying party keeps is the public key and the counter it
+    checks the next assertion against. That is why, unlike ``mfa_secret``, none
+    of these columns goes through the secret envelope.
+
+    ``credential_id`` is the base64url ``rawId`` the browser reports, unique
+    across the installation — the spec makes it so, and a second account
+    presenting the same id is a replay of somebody else's registration.
+    ``sign_count`` is advanced by every accepted assertion under a row lock; an
+    assertion that does not move it past the stored value is refused as a
+    possible clone (authenticators that always report ``0`` are exempt, per
+    the spec, and the library applies that rule).
+    """
+
+    __tablename__ = "webauthn_credentials"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    credential_id: Mapped[str] = mapped_column(unique=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    # What the owner called it ("YubiKey on the keyring"), for the inventory.
+    name: Mapped[str] = mapped_column(default="")
+    aaguid: Mapped[str] = mapped_column(default="")
+    transports: Mapped[list] = mapped_column(JSON, default=list)
+    # Whether the authenticator reported the credential as synced to a cloud
+    # account (a passkey) rather than bound to one device (a security key).
+    backed_up: Mapped[bool] = mapped_column(default=False)
+    device_type: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class WebAuthnChallenge(Base):
+    """The server half of a WebAuthn ceremony in flight (migration 0061, #315).
+
+    Written by an options endpoint and **deleted** by the verification that
+    spends it — before the response is checked, so a failed attempt burns it
+    too. ``binding`` is the ``jti`` of the token that asked for the challenge:
+    a challenge minted for one login or one session cannot be spent by another.
+    """
+
+    __tablename__ = "webauthn_challenges"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    purpose: Mapped[str]  # register | authenticate
+    binding: Mapped[str]
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    # The address that asked: the options rate limit is per (account, address),
+    # so somebody else holding the password cannot spend the owner's budget.
+    client_ip: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
 class ServiceToken(Base):
     """A non-interactive API credential, scoped to one tenant (Track E).
 
@@ -319,6 +382,81 @@ class RevokedToken(Base):
     # The ``exp`` of the token this row refuses. Naive UTC like every other
     # timestamp in this schema.
     expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class SessionFamily(Base):
+    """One console sign-in and every refresh token it has been rotated through (#314).
+
+    A login, an SSO callback or the second leg of an MFA login opens one of
+    these; ``POST /api/auth/refresh`` extends it; nothing else creates a row.
+    The access tokens minted for it quote ``family_id`` as their ``sid`` claim,
+    so ending the family ends them too, on the next request rather than at
+    their own ``exp``.
+
+    Three clocks, all naive UTC:
+
+    * ``expires_at`` — the absolute end, ``OCTO_JWT_EXPIRE_MINUTES`` after the
+      sign-in. Refreshing never moves it: a stolen refresh token rotated
+      forever still stops here.
+    * ``last_used_at`` — the last sign-in or refresh. A refresh further than
+      ``OCTO_SESSION_IDLE_MINUTES`` from it is refused: the idle timeout.
+    * ``revoked_at`` — set by logout, by a refresh token presented twice
+      (``revoked_reason='reuse'``), and by the idle and absolute refusals, so
+      the row says why the session ended rather than only that it did.
+
+    ``token_version`` is the account's generation at sign-in. A refresh is
+    refused once the account's has moved on, which is how disable, demote,
+    password change and ``revoke-all`` reach the refresh token as well as the
+    access token — none of them has to know this table exists.
+
+    ``mfa_verified_at`` is carried from the session that proved the factor to
+    every access token refreshed from it, so a refresh neither loses a step-up
+    nor makes an old one look new.
+    """
+
+    __tablename__ = "session_families"
+
+    family_id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    token_version: Mapped[int]
+    created_at: Mapped[datetime]
+    # The sweep in ``api/services/sessions.py`` reads this index.
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    last_used_at: Mapped[datetime]
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Which factor ``mfa_verified_at`` was proved with (``totp``, ``recovery``,
+    # ``webauthn``; migration 0061, #315). Always written together with it —
+    # a newer proof by a weaker factor must replace the label as well as the
+    # time — and carried into every refreshed access token.
+    mfa_method: Mapped[str | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(default=None)
+
+
+class RefreshToken(Base):
+    """One refresh token of a :class:`SessionFamily`, stored as its digest (#314).
+
+    The browser holds the plaintext in an httpOnly cookie; this row holds
+    ``sha256`` of it. A plain digest rather than bcrypt, unlike a password or a
+    service token: the value is 256 random bits the server chose, so there is
+    nothing to brute-force, and the lookup has to be by the digest itself.
+
+    ``used_at`` is set the moment the token is exchanged. A second presentation
+    of a row that already has one is the reuse the rotation exists to detect —
+    one of the two presenters is not the browser the session was issued to —
+    and ends the whole family.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    token_hash: Mapped[str] = mapped_column(primary_key=True)
+    family_id: Mapped[str] = mapped_column(
+        ForeignKey("session_families.family_id", ondelete="CASCADE"), index=True
+    )
+    issued_at: Mapped[datetime]
+    used_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class AuthEvent(Base):

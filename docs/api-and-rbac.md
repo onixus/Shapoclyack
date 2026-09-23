@@ -78,15 +78,17 @@ Two claims and one header carry this:
 |---|---|---|
 | `ver` | claim | The account's `token_version` when the token was minted. A mismatch is a 401 |
 | `jti` | claim | Per-token id. What `POST /api/auth/logout` puts on the denylist |
+| `sid` | claim | The session family (one per sign-in) the token was refreshed within. An ended family is a 401 — see [Refresh tokens](#refresh-tokens-and-the-idle-timeout) |
 | `kid` | header | Which signing key signed it — see [Key rotation](#jwt-signing-key-rotation) |
 
 ```http
+POST /api/auth/refresh                          # cookie only — next access token, rotated cookie
 POST /api/auth/logout                           # any role — ends this session only
 POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
 POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
 ```
 
-All three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
+The last three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
 until its own `exp` and is idempotent; the two `revoke-all` routes increment
 `users.token_version`, which invalidates every token quoting the old value —
 including the caller's own, which is the point. `revoke-all` on an account that
@@ -119,6 +121,74 @@ of the account, the one making the request included: the console lands back on
 the login form. That is deliberate — a rotation is usually "somebody may have
 my password", and the session that survives it is the one that mattered.
 
+### Refresh tokens and the idle timeout
+
+A console session is two tokens. The **access token** is the bearer token
+above, returned in the body of `POST /api/auth/login`, of the second leg of
+`POST /api/auth/mfa/verify` and of the SSO callback; it lives
+`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` (15 by default). The **refresh token** is set
+by the same responses as a cookie and never appears in a body or a URL:
+
+```http
+Set-Cookie: shapoclyack_refresh=…; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=…
+```
+
+```http
+POST /api/auth/refresh      # no bearer token, no body — the cookie is the credential
+```
+
+answers `200` with the same body as a login (`access_token`, `role`,
+`username`) and a **new** cookie: every refresh rotates the refresh token, and
+the one presented is spent. The server keeps only `sha256` of each refresh
+token (`refresh_tokens`), grouped into one row per sign-in
+(`session_families`), whose id every access token carries as its `sid` claim.
+
+| Refused with `401` (cookie cleared) when | The session family is |
+|---|---|
+| the refresh token was **already used** — somebody else holds a copy | ended (`reuse`), and a `denied` / `refresh_token_reuse` row, with the client address it was presented from, is written to `GET /api/auth/events` |
+| `OCTO_JWT_EXPIRE_MINUTES` have passed since the sign-in | ended (`expired`) |
+| more than `OCTO_SESSION_IDLE_MINUTES` since the last refresh | ended (`idle`) |
+| the account was disabled, deleted, demoted, had its password changed or its sessions revoked | ended (`revoked`) |
+| the session was logged out, or the cookie is unknown or missing | already ended / untouched |
+
+Ending a family refuses its access tokens on their **next request** too
+(`sid` is checked with `ver` and `jti`), so a detected reuse or a logout does
+not wait out the access token's fifteen minutes. A refresh is never extended
+past the sign-in's absolute end, and the access token it returns is cut short
+to that end if needed. An unreachable session store is a `503` with
+`Retry-After`, and the cookie is left alone. Everything the new access token
+needs is read inside the rotation's own transaction, so nothing between spending
+the presented token and returning its successor can fail on the database and
+leave the browser holding a spent cookie.
+
+There is no grace window for a refresh token presented twice: two tabs racing
+one cookie are indistinguishable from a thief racing the browser. The console
+serialises its refreshes (one in flight per tab, and a Web Lock across tabs —
+or, outside a secure context where there is no Web Lock, a best-effort lock in
+`localStorage`), so the ways it meets this refusal are a response lost on the
+network after the server rotated, and two tabs of a plain-http dev stand
+winning the storage lock's narrow race — each costs a sign-in, not a session
+anyone else can use.
+
+`POST /api/auth/logout` ends the family its access token names and the one the
+cookie belongs to, and clears the cookie. The bearer token is optional when the
+cookie is sent: a console whose access token has already expired still holds an
+eight-hour refresh cookie, and logout with the cookie alone ends that family
+(`204`). With neither a live access token nor a cookie it is a `401`.
+`revoke-all` ends every family of the account. A step-up (`POST /api/auth/mfa/verify` with a bearer token) stays in
+its session: it stamps the family, so refreshed access tokens keep
+`mfa_verified_at` — the original time, never a new one, so a refresh does not
+extend a step-up past `OCTO_MFA_STEPUP_MINUTES`.
+
+The cookie is `SameSite=Strict` and scoped to `/api/auth`, so a cross-site page
+cannot make the browser present it — which matters because a forced rotation
+would otherwise be read as reuse and sign the user out. CORS still matters for
+a console served from a *sibling* origin: keep `OCTO_API_CORS` to the exact
+console origins (it is refused as `*` in `prod`).
+
+Tokens without a `sid` — anything minted before migration 0060 — are checked
+exactly as before and cannot be refreshed; they run out at their own `exp`.
+
 ### JWT signing key rotation
 
 `OCTO_JWT_SECRET_PREVIOUS` is a comma-separated list of retired keys that are
@@ -146,16 +216,24 @@ HMAC-SHA-1, six digits, thirty seconds) plus ten single-use recovery codes
 default and enrolled by the account itself** — an upgrade changes nothing until
 somebody enrols or an operator sets `OCTO_MFA_REQUIRED_ROLES`.
 
-WebAuthn / passkeys, the other half of #315, are **not** implemented.
+On top of the authenticator app an account can register **security keys and
+passkeys** (WebAuthn / FIDO2) — the phishing-resistant factor; see
+[Security keys and passkeys](#security-keys-and-passkeys) below. TOTP stays a
+supported factor: a key is an addition, not a migration.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/auth/mfa` | session | The caller's own state: enabled, setup pending, recovery codes left, whether policy requires it |
+| `GET /api/auth/mfa` | session | The caller's own state: enabled, setup pending, recovery codes left, whether policy requires it, how many keys it holds and whether the key policy applies to it |
 | `POST /api/auth/mfa/totp/setup` | session | Mints an unconfirmed secret and returns it with its `otpauth://` URI. Nothing is enabled yet |
 | `POST /api/auth/mfa/totp/confirm` | session | `{"code":"123456","password":…}`. Turns the factor on and returns the ten recovery codes **once**. The password is required for any account that has one — enrolling a factor must cost what removing one does, or a stolen session could enrol its own and lock the owner out |
-| `POST /api/auth/mfa/verify` | challenge token *or* session | Second leg of a login, or a step-up on a live session |
-| `POST /api/auth/mfa/disable` | session | `{"password":…, "code"\|"recovery_code":…}`. Both are required |
-| `POST /api/users/{username}/mfa/reset` | platform admin + step-up | Clears the factor, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
+| `POST /api/auth/mfa/verify` | challenge token *or* session | Second leg of a login, or a step-up on a live session — with `code`, `recovery_code` or `webauthn` |
+| `POST /api/auth/mfa/disable` | session | `{"password":…, "code"\|"recovery_code":…}`. Both are required. Removes every registered security key with the rest of the factor |
+| `POST /api/users/{username}/mfa/reset` | platform admin + step-up | Clears the factor **and every security key**, bumps `token_version` (ends the account's sessions), audited as `user.mfa_reset` |
+| `POST /api/auth/mfa/webauthn/register/options` | session + recent verification | Creation options for a new key; 409 without an enrolled authenticator app or without a relying party |
+| `POST /api/auth/mfa/webauthn/register/verify` | session + recent verification | `{"challenge_id":…, "credential":{…}, "name":…}`. Verifies the attestation and stores the key (201); audited as `user.webauthn_register`. 400 for a response that does not verify |
+| `POST /api/auth/mfa/webauthn/authenticate/options` | challenge token *or* session | `{"mfa_token":…}` on a login, `{}` on a session. Request options naming the account's keys; 409 if it holds none |
+| `GET /api/auth/mfa/webauthn/credentials` | session | The caller's own keys: name, credential id, transports, passkey or device-bound, added / last used. No key material |
+| `DELETE /api/auth/mfa/webauthn/credentials/{id}` | session + step-up | Removes one of the caller's own keys (204); another account's id is 404. Audited as `user.webauthn_revoke` |
 
 ### The two-leg login
 
@@ -252,6 +330,110 @@ window. The console raises a code dialog on that 403 and asks the user to
 repeat the action — the refused request is **not** replayed, because it never
 reached the server and silently repeating a `POST` nobody saw succeed is worse
 than asking again.
+
+### Security keys and passkeys
+
+A WebAuthn assertion is signed over the origin the browser actually saw and the
+relying-party ID the key was registered for, so a look-alike login page that
+relays a password and a TOTP code in real time gets a signature this
+installation refuses. Attestation and assertions are verified with
+[`py_webauthn`](https://github.com/duo-labs/py_webauthn) (`webauthn` in
+`requirements-api.txt`); nothing in the repository does the cryptography
+itself.
+
+**Relying party.** `OCTO_WEBAUTHN_RP_ID` and `OCTO_WEBAUTHN_ORIGINS`
+([configuration](configuration.md)), derived from `OCTO_PUBLIC_BASE_URL` when
+unset — never from the request's `Host` or `Origin`, which are written by the
+party the check is against. With neither, every WebAuthn route answers 409 and
+TOTP works as before.
+
+**A key is added on top of the authenticator app.** Registration is refused
+(409) until TOTP is enrolled: the recovery codes, "turn it off" and the admin
+reset belong to that enrolment, and a key extends it. Turning MFA off or an
+admin reset removes every key with the rest of the factor.
+
+**Registration costs a recent verification** — the step-up window — so a stolen
+session cannot plant a key of its own. The 403 carries the step-up sentence and
+the console raises its re-verify prompt. Where the key policy below applies and
+the account already holds a key, that verification must itself have been a key.
+
+**Ceremonies.** Both are *options → browser → verify*:
+
+1. `…/register/options` or `…/authenticate/options` returns
+   `{"challenge_id":…, "public_key":{…}}` — the WebAuthn options object in its
+   JSON form (binary fields base64url);
+2. the browser calls `navigator.credentials.create()` / `.get()`;
+3. the `PublicKeyCredential` JSON goes back with the `challenge_id` —
+   to `…/register/verify`, or as `{"webauthn":{"challenge_id":…,"credential":{…}}}`
+   to `POST /api/auth/mfa/verify` (with `mfa_token` on a login, on the session
+   for a step-up).
+
+A challenge is **single-use** (the verification deletes it *before* checking
+the response, so a failed attempt spends it too), lives five minutes, and is
+bound to the account, the ceremony and what asked for it — the challenge
+token's `jti` on a login, the **session family** (`sid`) on a signed-in
+session, so a refresh of the access token between the options and the answer
+does not break the ceremony. Asking for challenges is limited, and the limit
+refuses the asker — it never evicts an open challenge: at most 10 open per
+binding (one login, one session) and 30 per (account, client address). Over
+either, the options call is `429` with `Retry-After`. Somebody else who knows
+the password therefore cannot push the owner's in-flight challenge out.
+The key's **signature counter** is checked and advanced under
+a row lock: an assertion whose counter does not move past the stored value is
+refused as a possible clone (authenticators that always report `0`, as most
+synced passkeys do, are exempt per the spec). Attestation is `none`: this
+installation keeps no trust store of authenticator vendors.
+
+A refused key response on `/mfa/verify` answers `that security key response
+is not valid` (a refused code, `that code is not valid`); the reason is logged,
+not returned, and the attempt goes through the login limiter like a wrong code.
+The status depends on the leg: **401** on the login leg (with `mfa_token`,
+there is no session yet), **403** on a step-up (bearer) — the session is fine,
+only the proof was refused, and the console ends the session on any 401. This
+applies to codes as well as keys.
+
+The session a verification mints carries `mfa_method` (`totp`, `recovery` or
+`webauthn`) next to `mfa_verified_at`, and so does its session family
+(`session_families.mfa_method`): a refreshed access token keeps the method the
+session was proved with. A step-up writes the new time **and** the new method in
+one `UPDATE` — a code step-up after a key sign-in makes the session code-proved.
+`GET /api/auth/me` echoes it.
+
+### Requiring a phishing-resistant factor
+
+`OCTO_MFA_PHISHING_RESISTANT_ROLES` names roles whose sessions count as fully
+signed in **only when the factor was a key**. Such a role is implicitly in
+`OCTO_MFA_REQUIRED_ROLES`. A session of it proved with a code (or a recovery
+code) is confined exactly like `mfa_pending` — 403 on everything but
+`/api/auth/mfa*`, `/api/auth/me` and the two ways out, with a detail naming
+the security key — and `GET /api/auth/me` reports `phishing_resistant_pending`.
+From there it can register a key (bootstrapped by the code it signed in with:
+there is no other factor to prove) and then verify with it. Decided per
+request from the policy and the token's `mfa_method` claim, with no query.
+
+`OCTO_MFA_STEPUP_PHISHING_RESISTANT=true` makes every [step-up](#step-up) —
+the credential and account-administration list above, and removing a key —
+demand that the recent verification was a key, for every account with MFA
+enabled; the listed roles get this regardless. A code-proved step-up then gets
+the same 403 marker with "security key" in it.
+
+Under either setting, `POST /api/auth/mfa/disable` on an account that holds a
+key also needs the session to have been proved recently **with that key** (403
+with the step-up sentence otherwise). Disabling removes the keys, so without
+this a relayed password and code would clear the owner's keys and let the
+attacker's key become the account's "first" one — which only a code bootstraps.
+
+Removing a key (`DELETE …/credentials/{id}`) does **not** end sessions that key
+proved; to cut off a stolen key's sessions as well, use "sign out everywhere"
+(`POST /api/auth/sessions/revoke-all`) or the admin MFA reset.
+
+Under `OCTO_ENV=prod` the API refuses to start with either setting and no
+derivable relying party: every covered administrator would be confined to a
+page whose one action answers 409. It also refuses — whenever WebAuthn is
+configured explicitly or a policy uses it — an IP address as the RP ID, an
+origin that is not `https` (`localhost` excepted), and an RP ID that is not the
+host of every origin or a parent domain of it: browsers refuse the first and
+the last, and the middle makes the origin check worth nothing.
 
 ### Break-glass local login
 
@@ -350,7 +532,8 @@ One row per administrative change, with the resource before and after it:
 | `user.create`, `user.role_change`, `user.disable`, `user.delete` | `POST /api/users`, `PUT /api/users/{u}/role`, `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` |
 | `user.password_reset` | `PUT /api/users/{u}/password` — an admin resetting someone else's password is one request away from acting as them. `before`/`after` carry the `password_changed_at` that moved, never the password |
 | `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
-| `user.mfa_enable`, `user.mfa_disable` | `POST /api/auth/mfa/totp/confirm`, `POST /api/auth/mfa/disable` — the account enrolling or removing its own second factor; the admin-side reset is `user.mfa_reset` |
+| `user.mfa_enable`, `user.mfa_disable` | `POST /api/auth/mfa/totp/confirm`, `POST /api/auth/mfa/disable` — the account enrolling or removing its own second factor; the admin-side reset is `user.mfa_reset`. Disable and reset record how many security keys went with it (`webauthn_credentials`) |
+| `user.webauthn_register`, `user.webauthn_revoke` | `POST /api/auth/mfa/webauthn/register/verify`, `DELETE /api/auth/mfa/webauthn/credentials/{id}` — a security key added to or removed from one's own account (key id, name, AAGUID; no key material) |
 | `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |

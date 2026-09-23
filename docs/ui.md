@@ -114,16 +114,48 @@ action: it ends every session of the account on every device, this browser
 included, and lands on the login form. Unlike sign-out it keeps the local token
 when the server refuses, because in that case nothing was ended.
 
-Five minutes before the session ends, a banner above the header says how long
-is left and offers **Sign in again**. The countdown is read from the token's own
-`exp` (`src/lib/session.ts`) and decides nothing — the API verifies signature,
-account, generation and denylist on every request. There is no silent renewal
-yet: refresh tokens are still open on #314, so the banner says what will happen
-rather than quietly preventing it. Once the token has actually expired the
-banner stays and turns red — "your session has ended" — instead of
-disappearing at zero: nothing else on the page changes at that moment, and the
-next request is the hard redirect to `/login` that `src/lib/api.ts` has always
-done on a `401`, taking any open form with it.
+**Silent refresh.** The access token lives fifteen minutes
+(`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES`); the console renews it through
+`POST /api/auth/refresh` from an httpOnly cookie it cannot read, so a signed-in
+user who keeps working is not sent to the login form until the sign-in's
+absolute end (`OCTO_JWT_EXPIRE_MINUTES`, eight hours). It renews in two places:
+ahead of expiry, on the banner's fifteen-second tick, once the token is inside
+its last five minutes (or the second half of its life, if that is shorter); and
+on a `401`, where the request is replayed once with the new token.
+
+Both only for a user who has touched the console — pointer, key, wheel or touch
+— **since the current token was minted**, which is what keeps the idle timeout
+meaningful: a dashboard left open polls the API every few seconds, and if that
+alone renewed the session nobody would ever be timed out. A page load counts as
+activity, so reopening the console within the idle window picks the session up
+where it was. Refreshes are serialised — one in flight per tab, and one at a
+time across tabs through a Web Lock, with a tab that waited taking the token
+the other one got — because the API treats a refresh token presented twice as
+stolen and ends the session (`src/lib/api.ts`). `navigator.locks` exists only in
+a secure context, so on a dev stand served over plain http the console falls
+back to a lock in `localStorage`. That one is best-effort — storage writes are
+not atomic across tabs — and two tabs refreshing in the same few milliseconds
+can still sign the user out; over https the Web Lock closes it.
+
+A refresh that fails without being refused (a `503`, a `5xx`, no network) is
+not retried until the `Retry-After` it came with, or fifteen seconds, has
+passed — an API that is down is not met with a refresh per render.
+
+**Sign out** works after the access token has expired: the refresh cookie is
+the credential that outlives it, and the API ends its session from the cookie
+alone.
+
+When the user has been idle, the banner above the header says how long is left
+and offers **Stay signed in**, which renews the session if the server still
+allows it. The countdown is read from the token's own `exp`
+(`src/lib/session.ts`) and decides nothing — the API verifies signature,
+account, generation, denylist and session on every request, and enforces the
+idle timeout itself. Once the token has actually expired the banner stays and
+turns red — "your session has ended" — instead of disappearing at zero; its
+**Sign in again** still tries a refresh first (the session behind an expired
+access token may be inside the idle window) and goes to `/login` only when that
+is refused. A refused refresh anywhere is the hard redirect to `/login` that
+`src/lib/api.ts` has always done on a `401`.
 
 Changing your own password on **My account** ends every session of the account,
 this one included, so the console lands on the login form.
@@ -181,6 +213,40 @@ which is wider than the credential screens — creating an account, resetting a
 password, changing a role, setting a verified address, resetting somebody's
 MFA, replacing a scan scope, and the **Deploy Agent** button on the sensors
 page.
+
+#### Security keys and passkeys
+
+Below the authenticator panel, `/security` lists the account's **security keys
+and passkeys** and adds or removes them (#315). The section is not rendered at
+all on an installation with no WebAuthn relying party
+(`MfaStatus.webauthn_available`), and until the authenticator app is enrolled
+it says a key is added on top of one and offers no button. Each key shows its
+name, whether it is a synced passkey or bound to one device, when it was added
+and when it was last used; nothing about the key material is fetched.
+
+**Add a security key** fetches creation options, runs the browser's own prompt
+(`navigator.credentials.create`) and posts the result. The conversion between
+the API's base64url JSON and the browser's ArrayBuffers lives in
+`src/lib/webauthn.ts` — no helper library, no key material that the browser did
+not produce. Adding a key needs a recent verification, so a stale session gets
+the step-up dialog from the API's 403 and presses the button again afterwards,
+as everywhere else. **Remove** is behind the same step-up.
+
+At the login code step, **Use a security key** asks for a challenge bound to
+that login's token and signs it; the step-up dialog has the same button. Both
+appear only when the browser exposes WebAuthn (an `https` page or
+`localhost`); whether the account actually holds a key is the server's answer,
+shown as the error line if not. A prompt the user cancels or lets time out (the browser's
+`NotAllowedError`) is said in the console's own words rather than the browser's
+English. A refused key or code on a step-up is a `403` from the API, so it
+stays in the dialog as an error instead of signing the console out.
+
+When `OCTO_MFA_PHISHING_RESISTANT_ROLES` names your role and the session was
+verified with a code, the API confines it like an unfinished enrolment
+(`phishing_resistant_pending` on `/api/auth/me`). The same amber banner says so
+in its own words and sends you to `/security`; once a key is registered, **Verify
+with your key now** re-proves the session with it, and the confinement lifts
+on the new token.
 
 The login form also reads `local_login` from `GET /api/auth/sso` and says when
 password sign-in is disabled or reserved for break-glass accounts. It still
