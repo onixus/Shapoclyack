@@ -19,7 +19,9 @@ def test_playwright_is_pinned_outside_the_api_requirements():
         if line.strip() and not line.lstrip().startswith("#")
     ]
     assert requirements == ["playwright==1.63.0"]
-    assert "playwright" not in (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+    assert "playwright" not in (ROOT / "requirements.txt").read_text(
+        encoding="utf-8"
+    ).lower()
     assert "playwright" not in (ROOT / "requirements-api.txt").read_text(
         encoding="utf-8"
     ).lower()
@@ -35,7 +37,10 @@ def test_scanner_images_install_shared_chromium_headless_shell():
         assert "python /app/scripts/check-playwright-runtime.py" in text, path
 
         smoke_position = text.index("python /app/scripts/check-playwright-runtime.py")
-        user_positions = [text.rfind("USER scanner", 0, smoke_position), text.rfind("USER octo", 0, smoke_position)]
+        user_positions = [
+            text.rfind("USER scanner", 0, smoke_position),
+            text.rfind("USER octo", 0, smoke_position),
+        ]
         assert max(user_positions) >= 0, f"{path} runs the browser smoke check as root"
 
 
@@ -62,6 +67,6 @@ def test_docs_no_longer_claim_official_images_lack_playwright():
     default_config = (ROOT / "scanner/config/default.yaml").read_text(encoding="utf-8")
 
     assert "not baked into the default image" not in configuration
-    assert "official scanner and all-in-one images include" in configuration
+    assert "official scanner and all-in-one images include" in configuration.lower()
     assert "Playwright 1.63.0" in third_party
-    assert "scanner/all-in-one images include Chromium" in default_config
+    assert "scanner/all-in-one images include chromium" in default_config.lower()
