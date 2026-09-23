@@ -124,6 +124,21 @@ All notable changes to Shapoclyack are documented in this file.
 - Local scans on the local backend no longer write a `diff.json` against the
   installation's previous run, which could belong to another tenant; the
   previous run has moved into its tenant's subtree by then.
+- **The NATS outbox backlog is reported per kind, and the outbox drains both
+  kinds in every batch (#424).** **Breaking for dashboards, alerts and probe
+  consumers:** the check in `/readyz` and `/api/health` is renamed
+  `checks.ingest_backlog` → `checks.nats_outbox` (it covers asset events, not
+  only ingest), and `octo_nats_outbox_backlog` is labelled `{kind,status}`
+  instead of `{status}` — a rule on `octo_nats_outbox_backlog{status="stale"}`
+  now matches one series per kind, so wrap it in `max()` or `max by (kind)`;
+  the bundled rules in `k8s/shapoclyack/examples/` are updated. A reconcile
+  batch gives ingest `floor(n/2)` slots and asset events the rest, each lane
+  oldest first, so an asset-event burst no longer delays the next run's
+  ClickHouse publish and an ingest backlog no longer holds webhooks back;
+  `OCTO_NATS_OUTBOX_BATCH_SIZE=1` is plain FIFO across kinds. Migration
+  `0063_nats_outbox_kind_due` (an index, expand-only). The gauge is updated in
+  place rather than cleared and rebuilt, so a scrape can no longer catch it
+  empty.
 
 ### Fixed
 
@@ -524,7 +539,7 @@ All notable changes to Shapoclyack are documented in this file.
   went down with it. The capability matrix behind the decision is in
   [docs/high-availability.md](docs/high-availability.md) § *What a NATS outage
   costs*. `/readyz` now fails only on Postgres; the broker is reported and
-  degrades `/api/health`, alongside a new `nats_outbox` check that names the
+  degrades `/api/health`, alongside a new `ingest_backlog` check that names the
   publications the outbox above has not recovered — because availability must
   not hide analytics falling behind. The two are one decision: NATS must not go
   back into `BLOCKING_CHECKS` while the outbox exists, and the outbox must not

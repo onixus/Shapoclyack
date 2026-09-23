@@ -2520,11 +2520,15 @@ Bounds worth knowing before an incident:
 * Ingest messages and asset-event envelopes are recorded. Job offers are
   not (the job row is in Postgres and a sensor claims over HTTP), and audit
   events are not — their database row is already durable.
-* Each reconcile batch reserves up to half of its slots for due `kind=ingest`
-  rows, then fills the rest from the shared FIFO. An unused reservation returns
-  to the FIFO. A large asset-event burst therefore cannot put the next run's
-  ClickHouse publish behind the whole burst, while asset events continue to
-  drain in every mixed batch.
+* A reconcile batch has two lanes: due `kind=ingest` rows take up to
+  `floor(batch/2)` slots, due asset events the rest (`ceil(batch/2)`), each
+  lane oldest first, and a lane with nothing due gives its slots to the other.
+  Whichever kind is older, both drain in every mixed batch: an asset-event
+  burst cannot put the next run's ClickHouse publish behind the whole burst,
+  and an ingest backlog cannot hold webhook fan-out (`asset.vulnerability.new`
+  included) behind itself. `OCTO_NATS_OUTBOX_BATCH_SIZE=1` cannot be split and
+  is plain FIFO across kinds — no priority for ingest, and no starvation of
+  either; use at least `2` if ingest should not queue behind asset events.
 * The table grows with the outage. Ingest entries hold a run archive; asset
   events hold smaller envelopes. Size Postgres accordingly, or accept the dead
   end: `OCTO_NATS_OUTBOX_ENABLED=false` makes refused publishes a logged loss.

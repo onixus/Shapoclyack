@@ -485,18 +485,37 @@ def _retry_delay_seconds(attempts: int, settings: Settings) -> int:
 
 
 def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> list[Any]:
-    """Take due rows while reserving capacity for ingest publications.
+    """Take up to ``limit`` due rows, split between ingest and everything else.
 
-    Up to half of each batch is claimed from ``kind=ingest`` first. The rest is
-    filled from the ordinary FIFO across all kinds, and an unused reservation
-    is returned to that FIFO. A run that queued hundreds of asset events can
-    therefore delay some webhook fan-out, but cannot put the next run's
-    ClickHouse publication behind the whole burst; asset events still receive
-    at least half of a mixed batch and all of an ingest-free one.
+    Two lanes, each with a guaranteed share of every batch of two or more:
+
+    1. ``kind=ingest``, oldest first, up to ``limit // 2``;
+    2. every other kind (today ``asset_event``), oldest first, up to the rest;
+    3. whatever a lane left unused goes to the other one — in practice more
+       ingest, because the second lane already asked for all it could take.
+
+    So each kind drains in every mixed batch whichever of them is older: a run
+    that queued hundreds of asset events cannot put the next run's ClickHouse
+    publication behind the whole burst, and an ingest backlog cannot hold
+    webhook fan-out (``asset.vulnerability.new`` included) behind itself.
+    Ingest receives at least ``limit // 2`` slots of a mixed batch, asset
+    events at least ``limit - limit // 2``, and a lane with nothing due gives
+    all of its slots to the other.
+
+    A batch of one (``OCTO_NATS_OUTBOX_BATCH_SIZE=1``) cannot be split, so it
+    is plain FIFO across kinds on ``next_attempt_at``: no priority, and no
+    starvation either — a row that is due waits only for rows that were due
+    before it, and a row that has not been claimed keeps its place.
+
+    The windows run in one transaction, and ``SKIP LOCKED`` skips only the
+    rows a *peer* holds: a row this transaction locked in an earlier window is
+    not locked to itself, so every later window excludes the ids already taken.
+    Otherwise the same row is claimed twice, charged two attempts and
+    published twice.
 
     ``FOR UPDATE SKIP LOCKED`` plus a bumped ``next_attempt_at`` keeps the
-    reconciler safe in every replica: peers divide both claim windows rather
-    than republishing the same rows in parallel.
+    reconciler safe in every replica: peers divide both lanes rather than
+    republishing the same rows in parallel.
     """
     if limit <= 0:
         return []
@@ -505,6 +524,7 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
         *,
         query_limit: int,
         kind: str | None = None,
+        other_than_kind: str | None = None,
         excluded_ids: set[str] | None = None,
     ) -> list[Any]:
         if query_limit <= 0:
@@ -515,6 +535,8 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
         )
         if kind is not None:
             query = query.where(models.NatsOutboxEntry.kind == kind)
+        if other_than_kind is not None:
+            query = query.where(models.NatsOutboxEntry.kind != other_than_kind)
         if excluded_ids:
             query = query.where(
                 ~models.NatsOutboxEntry.outbox_id.in_(tuple(excluded_ids))
@@ -531,13 +553,19 @@ def _claim_due(session, *, now: datetime, limit: int, settings: Settings) -> lis
             ).scalars().all()
         )
 
-    reserved_for_ingest = max(1, limit // 2)
-    rows = _take(query_limit=reserved_for_ingest, kind=KIND_INGEST)
-    remaining = limit - len(rows)
-    if remaining:
+    if limit == 1:
+        rows = _take(query_limit=1)
+    else:
+        rows = _take(query_limit=limit // 2, kind=KIND_INGEST)
+        rows.extend(
+            _take(query_limit=limit - len(rows), other_than_kind=KIND_INGEST)
+        )
+        # The second lane asked for every slot the first one left, so a short
+        # batch here means it ran dry: the rest is more ingest.
         rows.extend(
             _take(
-                query_limit=remaining,
+                query_limit=limit - len(rows),
+                kind=KIND_INGEST,
                 excluded_ids={str(row.outbox_id) for row in rows},
             )
         )
@@ -771,14 +799,31 @@ def _refresh_backlog_gauge(settings: Settings) -> None:
     except Exception:  # noqa: BLE001
         LOG.debug("Could not refresh the outbox gauge", exc_info=True)
         return
-    # Clear first so a kind that disappears (including an old/unknown kind)
-    # cannot leave a stale non-zero child in the process registry.
-    metrics_service.NATS_OUTBOX_BACKLOG.clear()
-    for kind, by_status in counts.items():
-        for status, value in by_status.items():
-            metrics_service.NATS_OUTBOX_BACKLOG.labels(
-                kind=kind, status=status
-            ).set(value)
+    gauge = metrics_service.NATS_OUTBOX_BACKLOG
+    current = {
+        (kind, status): value
+        for kind, by_status in counts.items()
+        for status, value in by_status.items()
+    }
+    # Overwrite in place, never ``clear()`` and rebuild: a scrape between the
+    # two read every backlog series as absent, which is a gap on the panels and
+    # an alert starting over, not a zero. ``backlog_by_kind`` always reports
+    # both known kinds, so a drained queue is an explicit 0; only a combination
+    # that no longer exists at all (a kind from an older release whose rows are
+    # gone) is removed, and removing it cannot hide a series that is still due.
+    for (kind, status), value in current.items():
+        gauge.labels(kind=kind, status=status).set(value)
+    published = {
+        (sample.labels["kind"], sample.labels["status"])
+        for metric in gauge.collect()
+        for sample in metric.samples
+    }
+    for kind, status in published - current.keys():
+        try:
+            gauge.remove(kind, status)
+        except KeyError:
+            # A concurrent refresh removed it first; the outcome is the same.
+            pass
 
 
 class OutboxReconciler:
