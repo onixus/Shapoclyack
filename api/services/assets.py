@@ -278,6 +278,52 @@ def _repoint_findings(session, *, tenant_id: str, absorbed_id: str, survivor_id:
         session.delete(row)
 
 
+def _merge_fingerprints(session, *, survivor_id: str, absorbed_id: str) -> None:
+    """Carry the absorbed asset's listeners and OS guess to the survivor.
+
+    Without this the ``ON DELETE CASCADE`` on ``asset_services`` (migration
+    0064) silently dropped every fingerprint of the absorbed asset, and the
+    retro matcher lost the host until its next scan. On a clash of
+    ``(port, protocol)`` — or of the one OS row — the fresher observation
+    stays. Every surviving listener is re-queued: the host hint the matcher
+    derives from its neighbours has just changed.
+    """
+    for row in session.execute(
+        select(models.AssetService).where(models.AssetService.asset_id == absorbed_id)
+    ).scalars().all():
+        clash = session.execute(
+            select(models.AssetService).where(
+                models.AssetService.asset_id == survivor_id,
+                models.AssetService.port == row.port,
+                models.AssetService.protocol == row.protocol,
+            )
+        ).scalar_one_or_none()
+        if clash is None:
+            row.asset_id = survivor_id
+            continue
+        if row.last_seen_at > clash.last_seen_at:
+            session.delete(clash)
+            session.flush()
+            row.asset_id = survivor_id
+        else:
+            session.delete(row)
+    absorbed_os = session.get(models.AssetOs, absorbed_id)
+    if absorbed_os is not None:
+        survivor_os = session.get(models.AssetOs, survivor_id)
+        if survivor_os is None or absorbed_os.last_seen_at > survivor_os.last_seen_at:
+            if survivor_os is not None:
+                session.delete(survivor_os)
+                session.flush()
+            absorbed_os.asset_id = survivor_id
+        else:
+            session.delete(absorbed_os)
+    session.flush()
+    for row in session.execute(
+        select(models.AssetService).where(models.AssetService.asset_id == survivor_id)
+    ).scalars():
+        row.matched_dataset_version = None
+
+
 def _merge_assets(
     session,
     *,
@@ -336,6 +382,7 @@ def _merge_assets(
             tag.asset_id = survivor.asset_id
         else:
             session.delete(tag)
+    _merge_fingerprints(session, survivor_id=survivor.asset_id, absorbed_id=absorbed.asset_id)
     session.flush()
     session.delete(absorbed)
     survivor.last_seen = now

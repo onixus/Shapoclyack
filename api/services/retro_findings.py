@@ -55,6 +55,7 @@ tick (``data.aggregate = true``). Every finding is created regardless.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import uuid
@@ -65,7 +66,7 @@ from typing import Any
 from sqlalchemy import case, func, select, update
 
 from api.db import models
-from api.db.engine import get_session, insert_if_absent
+from api.db.engine import get_session, insert_if_absent, insert_or_skip
 from api.services import retro_match, vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.cpe_ranges import CpeRangeDataset
@@ -113,6 +114,10 @@ class RetroStats:
     possible: int = 0
     fixed: int = 0
     not_affected: int = 0
+    #: The vendor says affected and has no fix yet: reported, not tracked.
+    unfixed: int = 0
+    #: Vendor verdicts under OCTO_SOFTWARE_FINDING_MIN_SEVERITY.
+    below_floor: int = 0
     created: int = 0
     refreshed: int = 0
     #: A scan's own finding already carries the key; left to the scan.
@@ -142,8 +147,11 @@ def _fingerprint(row: models.AssetService) -> retro_match.Fingerprint:
 
 
 def _summary(outcome: retro_match.MatchOutcome, *, status: str) -> dict[str, Any]:
+    # "Possible" (backport unknown) and "unfixed" (the vendor says affected,
+    # no fix yet): the statements that are deliberately not tracked findings,
+    # each labelled with which of the two it is.
     possible = sorted(
-        (m for m in outcome.matches if m.verdict == retro_match.POSSIBLE),
+        (m for m in outcome.matches if m.verdict in (retro_match.POSSIBLE, retro_match.UNFIXED)),
         key=lambda m: (_SEVERITY_RANK.get(m.severity, 0), m.cvss or 0.0),
         reverse=True,
     )
@@ -157,6 +165,7 @@ def _summary(outcome: retro_match.MatchOutcome, *, status: str) -> dict[str, Any
                 "cve": m.cve,
                 "severity": m.severity,
                 "cvss": m.cvss,
+                "verdict": m.verdict,
                 "reason": (m.evidence.get("advisory") or {}).get("reason"),
             }
             for m in possible[:POSSIBLE_SAMPLE]
@@ -204,6 +213,43 @@ def _latest(
     }
 
 
+#: As ``software_findings._SEVERITY_ALIASES``.
+_SEVERITY_ALIASES = {"negligible": "low"}
+
+
+def _passes_floor(severity: str, floor: str) -> bool:
+    if not floor or floor not in _SEVERITY_RANK:
+        return True
+    return _SEVERITY_RANK.get(severity, 0) >= _SEVERITY_RANK[floor]
+
+
+def _host_hint(
+    session: Any, *, tenant_id: str, service: models.AssetService
+) -> retro_match.DistroHint | None:
+    """What the rest of the asset says about its distribution
+    (``retro_match.host_hint``): the other listeners' banners, the OS guess,
+    and any platform CPE."""
+    siblings = session.execute(
+        select(
+            models.AssetService.version, models.AssetService.banner, models.AssetService.cpe
+        ).where(
+            models.AssetService.tenant_id == tenant_id,
+            models.AssetService.asset_id == service.asset_id,
+            models.AssetService.id != service.id,
+        )
+    ).all()
+    guess = session.get(models.AssetOs, service.asset_id)
+    return retro_match.host_hint(
+        os_names=[guess.os_name] if guess is not None and guess.tenant_id == tenant_id else [],
+        banners=[f"{version or ''} {banner or ''}".strip() for version, banner, _ in siblings],
+        cpes=[
+            str(cpe)
+            for cpes in [service.cpe or [], *(row[2] or [] for row in siblings)]
+            for cpe in cpes
+        ],
+    )
+
+
 def _find(session: Any, *, tenant_id: str, key: str, lock: bool) -> models.Vulnerability | None:
     query = select(models.Vulnerability).where(
         models.Vulnerability.tenant_id == tenant_id,
@@ -227,6 +273,7 @@ def _fold_service(
     lookup: retro_match.AdvisoryLookup,
     max_age_days: int,
     now: datetime,
+    min_severity: str = "",
 ) -> tuple[RetroStats, dict[str, Any]]:
     """One listener: ``(stats, match summary)``. Raises on anything unexpected;
     the caller owns the transaction and the backoff."""
@@ -240,7 +287,12 @@ def _fold_service(
     if asset is None or asset.tenant_id != tenant_id:  # pragma: no cover - FK cascade
         return stats, {"status": "no_asset"}
 
-    outcome = retro_match.match(_fingerprint(service), dataset, lookup=lookup)
+    outcome = retro_match.match(
+        _fingerprint(service),
+        dataset,
+        lookup=lookup,
+        host=_host_hint(session, tenant_id=tenant_id, service=service),
+    )
     if outcome.reason:
         return stats, _summary(outcome, status=outcome.reason)
     stats.assessed = 1
@@ -249,11 +301,22 @@ def _fold_service(
     stats.possible = counts[retro_match.POSSIBLE]
     stats.fixed = counts[retro_match.FIXED]
     stats.not_affected = counts[retro_match.NOT_AFFECTED]
+    stats.unfixed = counts[retro_match.UNFIXED]
 
     port = str(service.port)
     for match in outcome.matches:
         if not match.is_finding:
             continue
+        if match.confidence == retro_match.CONFIDENCE_VENDOR:
+            # The endpoint matcher's rules for a vendor statement, so one
+            # vendor verdict is not tracked two ways: ``negligible`` is folded
+            # into ``low`` (a real judgement about a real fix), and
+            # OCTO_SOFTWARE_FINDING_MIN_SEVERITY is the floor.
+            severity = _SEVERITY_ALIASES.get(match.severity, match.severity)
+            if not _passes_floor(severity, min_severity):
+                stats.below_floor += 1
+                continue
+            match = dataclasses.replace(match, severity=severity)
         key = vulns_service.finding_key(
             asset_id=asset.asset_id, cve=match.cve, script_id=None, port=port
         )
@@ -299,7 +362,7 @@ def _fold_service(
                 match_announced_at=None,
                 **latest,
             )
-            if insert_if_absent(session, candidate, f"retro {key}"):
+            if insert_or_skip(session, candidate, conflict=["tenant_id", "finding_key"]):
                 stats.created += 1
                 vulns_service._record_event(  # noqa: SLF001
                     session,
@@ -402,6 +465,7 @@ def fold_services(
     stats = RetroStats()
     now = _now()
     max_age_days = int(settings.retro_match_max_age_days)
+    min_severity = str(getattr(settings, "software_finding_min_severity", "") or "").strip().lower()
     for service_id in service_ids:
         try:
             with get_session(settings.postgres_url) as session:
@@ -417,6 +481,7 @@ def fold_services(
                     lookup=lookup,
                     max_age_days=max_age_days,
                     now=now,
+                    min_severity=min_severity,
                 )
                 service.match_summary = summary
                 service.matched_dataset_version = marker
@@ -645,6 +710,53 @@ def announce_pending(settings: Settings, *, tenant_id: str, marker: str) -> dict
         state.events_suppressed = int(state.events_suppressed or 0) + result["summarised"]
     result["announced"] = len(pending)
     return result
+
+
+def already_announced(
+    settings: Settings, *, tenant_id: str, envelopes: list[dict[str, Any]]
+) -> set[str]:
+    """Event ids of ``new_cve`` envelopes (from a run's diff) whose finding the
+    retro matcher has already announced.
+
+    Keyed exactly as the tracker keys the finding — asset, CVE, port — so it
+    is the same finding whichever path found it first. ``match_announced_at``
+    survives a scan taking the row over, which is the case this exists for.
+    """
+    wanted = [
+        e
+        for e in envelopes
+        if e.get("kind") == "new_cve" and (e.get("data") or {}).get("cve") and e.get("host")
+    ]
+    if not wanted:
+        return set()
+    announced: set[str] = set()
+    with get_session(settings.postgres_url) as session:
+        assets: dict[str, Any] = {}
+        for envelope in wanted:
+            host = str(envelope["host"])
+            if host not in assets:
+                assets[host] = vulns_service._asset_for_finding(  # noqa: SLF001
+                    session, tenant_id=tenant_id, host=host
+                )
+            asset = assets[host]
+            if asset is None:
+                continue
+            port = envelope.get("port")
+            key = vulns_service.finding_key(
+                asset_id=asset.asset_id,
+                cve=str(envelope["data"]["cve"]),
+                script_id=None,
+                port=str(port) if port is not None else None,
+            )
+            stamped = session.execute(
+                select(models.Vulnerability.match_announced_at).where(
+                    models.Vulnerability.tenant_id == tenant_id,
+                    models.Vulnerability.finding_key == key,
+                )
+            ).scalar_one_or_none()
+            if stamped is not None:
+                announced.add(str(envelope["event_id"]))
+    return announced
 
 
 def _state_row(session: Any, tenant_id: str) -> models.RetroMatchState:

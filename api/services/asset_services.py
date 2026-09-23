@@ -38,16 +38,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from api.db import models
-from api.db.engine import get_session, insert_if_absent
+from api.db.engine import get_session, insert_or_skip
 from api.services import job_states
 from api.services import runs as runs_service
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
 from scanner.pipeline.report import _parse_nmap_xml
-from scanner.pipeline.service_schema import ServiceRecord
+from scanner.pipeline.service_schema import OsRecord, ServiceRecord
 
 LOG = logging.getLogger("shapoclyack.asset-services")
 
@@ -169,6 +169,99 @@ def fingerprints_from_run_dir(run_dir: Path) -> list[dict[str, Any]]:
     return list(merged.values())
 
 
+def os_guesses_from_run_dir(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """The best OS guess per host a run made: ``{host: {name, accuracy, source}}``.
+
+    nmap's ``osmatch`` list and Pulse's ``os.json``, highest accuracy wins.
+    Read for the retro matcher's host hint (``retro_match.host_hint``), which
+    treats it as a guess: it can only make a match less certain or send it to
+    the vendor, never create a finding on its own.
+    """
+    best: dict[str, dict[str, Any]] = {}
+
+    def offer(host: str, name: str, accuracy: Any, source: str) -> None:
+        host, name = _clip(host, FIELD_MAX), _clip(name, FIELD_MAX)
+        if not host or not name:
+            return
+        try:
+            score = int(float(accuracy))
+        except (TypeError, ValueError):
+            score = 0
+        current = best.get(host)
+        if current is None or score > (current["accuracy"] or 0):
+            best[host] = {"name": name, "accuracy": score, "source": source}
+
+    nmap_dir = run_dir / "nmap"
+    if nmap_dir.is_dir():
+        _, os_matches, _ = _parse_nmap_xml(nmap_dir)
+        for entry in os_matches:
+            offer(str(entry.get("host") or ""), str(entry.get("name") or ""), entry.get("accuracy"), "nmap")
+    raw_os = _load_json(run_dir / "os.json")
+    if isinstance(raw_os, list):
+        for row in raw_os:
+            try:
+                record = OsRecord.model_validate(row)
+            except Exception:  # noqa: BLE001 - one malformed row is not the run
+                continue
+            offer(record.ip, record.detail or record.family, record.confidence, record.source or "pulse")
+    return best
+
+
+def _record_os(
+    session: Any,
+    *,
+    tenant_id: str,
+    asset_id: str,
+    guess: dict[str, Any],
+    run_id: str,
+    now: datetime,
+) -> bool:
+    """Keep the newest scan's guess for the asset. True when what the matcher
+    reads (the name) changed."""
+    row = session.get(models.AssetOs, asset_id, with_for_update=True)
+    if row is None:
+        candidate = models.AssetOs(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            os_name=guess["name"],
+            accuracy=guess["accuracy"],
+            source=guess["source"],
+            last_seen_at=now,
+            last_run_id=run_id,
+        )
+        if insert_or_skip(session, candidate, conflict=["asset_id"]):
+            return True
+        row = session.get(models.AssetOs, asset_id, with_for_update=True)
+        if row is None:  # pragma: no cover - deleted with its asset meanwhile
+            return False
+    if now < row.last_seen_at:
+        return False
+    changed = row.os_name != guess["name"]
+    row.os_name = guess["name"]
+    row.accuracy = guess["accuracy"]
+    row.source = guess["source"]
+    row.last_seen_at = now
+    row.last_run_id = run_id
+    return changed
+
+
+def _requeue_asset(session: Any, *, tenant_id: str, asset_id: str) -> None:
+    """Every listener of the asset is due again.
+
+    What the matcher concludes about one listener depends on the others (a
+    Debian revision on port 22 is the host hint for Exim on port 25) and on
+    the OS guess, so a change to any of them is a change to all of them.
+    """
+    session.execute(
+        update(models.AssetService)
+        .where(
+            models.AssetService.tenant_id == tenant_id,
+            models.AssetService.asset_id == asset_id,
+        )
+        .values(matched_dataset_version=None)
+    )
+
+
 def record_run(
     settings: Settings,
     *,
@@ -176,44 +269,59 @@ def record_run(
     run_id: str,
     observed_at: datetime | None = None,
 ) -> dict[str, int]:
-    """Upsert a succeeded run's fingerprints. Idempotent per run.
+    """Upsert a succeeded run's fingerprints and OS guesses. Idempotent per run.
 
-    ``observed_at`` defaults to now; the backfill passes the job's
-    ``finished_at`` so a run from June does not claim to be today's
-    observation. Assets must already be upserted from the run — a listener on
-    a host that never became an asset is skipped, as a finding would be.
+    ``observed_at`` defaults to now; the projection passes the job's
+    ``finished_at`` and the backfill its runs' so a run from June does not
+    claim to be today's observation. Assets must already be upserted from the
+    run — a listener on a host that never became an asset is skipped, as a
+    finding would be.
     """
     stats = {"seen": 0, "created": 0, "changed": 0, "unchanged": 0, "stale": 0, "skipped": 0}
     run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return stats
     fingerprints = fingerprints_from_run_dir(run_dir)
+    guesses = os_guesses_from_run_dir(run_dir)
     stats["seen"] = len(fingerprints)
-    if not fingerprints:
+    if not fingerprints and not guesses:
         return stats
     now = vulns_service._naive(observed_at) if observed_at else _now()  # noqa: SLF001
 
     with get_session(settings.postgres_url) as session:
         assets: dict[str, models.Asset | None] = {}
-        for fp in fingerprints:
-            if fp["host"] not in assets:
-                assets[fp["host"]] = vulns_service._asset_for_finding(  # noqa: SLF001
-                    session, tenant_id=tenant_id, host=fp["host"]
+
+        def asset_for(host: str) -> models.Asset | None:
+            if host not in assets:
+                assets[host] = vulns_service._asset_for_finding(  # noqa: SLF001
+                    session, tenant_id=tenant_id, host=host
                 )
-            asset = assets[fp["host"]]
+            return assets[host]
+
+        moved: set[str] = set()
+        for fp in fingerprints:
+            asset = asset_for(fp["host"])
             if asset is None:
                 stats["skipped"] += 1
                 continue
             outcome = _upsert(session, tenant_id=tenant_id, asset_id=asset.asset_id, fp=fp, run_id=run_id, now=now)
             stats[outcome] += 1
+            if outcome in ("created", "changed"):
+                moved.add(asset.asset_id)
+        for host, guess in guesses.items():
+            asset = asset_for(host)
+            if asset is not None and _record_os(
+                session, tenant_id=tenant_id, asset_id=asset.asset_id, guess=guess, run_id=run_id, now=now
+            ):
+                moved.add(asset.asset_id)
+        for asset_id in moved:
+            _requeue_asset(session, tenant_id=tenant_id, asset_id=asset_id)
 
-    if stats["created"] or stats["changed"]:
+    if moved:
         from api.services import retro_match_worker
 
         retro_match_worker.notify()
     return stats
-
-
 def _select_row(session: Any, *, tenant_id: str, asset_id: str, fp: dict[str, Any]) -> models.AssetService | None:
     return session.execute(
         select(models.AssetService)
@@ -259,7 +367,9 @@ def _upsert(
         )
         # Two replicas projecting the same run (an agent upload retried into a
         # second pod) race on the unique key; the loser updates the winner's row.
-        if insert_if_absent(session, candidate, f"{asset_id}:{fp['port']}/{fp['protocol']}"):
+        if insert_or_skip(
+            session, candidate, conflict=["tenant_id", "asset_id", "port", "protocol"]
+        ):
             return "created"
         row = _select_row(session, tenant_id=tenant_id, asset_id=asset_id, fp=fp)
         if row is None:  # pragma: no cover - the winner's row was deleted under us

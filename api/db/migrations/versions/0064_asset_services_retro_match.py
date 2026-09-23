@@ -15,6 +15,11 @@ fingerprints to outlive the run directory they came from. Expand-only:
     from runs still on disk. ``matched_dataset_version`` is the retro worker's
     durable queue. CASCADE on both tenant and asset, like the findings.
 
+``asset_os``
+    The newest scan's OS guess per asset (nmap ``osmatch`` / Pulse
+    ``os.json``). Read by the matcher for listeners whose own banner names no
+    distribution. CASCADE on tenant and asset.
+
 ``retro_match_state``
     Per-tenant bookkeeping for ``GET /api/retro-match/status``: last sweep,
     dataset marker, totals. Not a queue.
@@ -100,6 +105,28 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "asset_os",
+        sa.Column(
+            "asset_id",
+            sa.String(),
+            sa.ForeignKey("assets.asset_id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tenant_id",
+            sa.String(),
+            sa.ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("os_name", sa.String(), nullable=False, server_default=""),
+        sa.Column("accuracy", sa.Integer(), nullable=True),
+        sa.Column("source", sa.String(), nullable=False, server_default=""),
+        sa.Column("last_seen_at", sa.DateTime(), nullable=False),
+        sa.Column("last_run_id", sa.String(), nullable=True),
+    )
+    op.create_index("ix_asset_os_tenant_id", "asset_os", ["tenant_id"])
+
+    op.create_table(
         "retro_match_state",
         sa.Column(
             "tenant_id",
@@ -142,6 +169,8 @@ def downgrade() -> None:
     op.drop_column("vulnerabilities", "match_evidence")
     op.drop_column("vulnerabilities", "match_confidence")
     op.drop_table("retro_match_state")
+    op.drop_index("ix_asset_os_tenant_id", table_name="asset_os")
+    op.drop_table("asset_os")
     op.drop_index("ix_asset_services_match_due", table_name="asset_services")
     op.drop_index("ix_asset_services_asset_id", table_name="asset_services")
     op.drop_index("ix_asset_services_tenant_id", table_name="asset_services")

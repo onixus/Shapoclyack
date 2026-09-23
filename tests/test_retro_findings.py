@@ -21,7 +21,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from api.db import models
 from api.db.engine import get_session
@@ -44,9 +44,12 @@ pytestmark = requires_postgres
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SEED = REPO_ROOT / "scanner" / "data" / "nvd-cpe" / "nvd-cpe-ranges.json"
 
-#: OpenSSH 7.4 with nmap's CPE: four seed CVEs by range, no distribution hint.
-#: Apache 2.4.49 with a Debian revision the seed advisories say nothing about:
-#: every NVD hit is ``possible`` and none is a finding.
+#: Two hosts, on purpose: a Debian banner on one listener is a host hint for
+#: every other listener of the same asset (retro_match.host_hint).
+#: ``{ip}``: OpenSSH 7.4 with nmap's CPE, nothing on the host names a
+#: distribution — four seed CVEs by range.
+#: ``{ip2}``: Apache 2.4.49 "(Debian)", which the seed advisories say nothing
+#: about — every NVD hit is ``possible`` and none is a finding.
 NMAP_XML = """<?xml version="1.0"?>
 <nmaprun>
   <host>
@@ -58,6 +61,11 @@ NMAP_XML = """<?xml version="1.0"?>
           <cpe>cpe:/a:openbsd:openssh:7.4</cpe>
         </service>
       </port>
+    </ports>
+  </host>
+  <host>
+    <address addr="{ip2}" addrtype="ipv4"/>
+    <ports>
       <port protocol="tcp" portid="80">
         <state state="open"/>
         <service name="http" product="Apache httpd" version="2.4.49" extrainfo="(Debian)">
@@ -102,8 +110,10 @@ def write_run(
     """A finished run on disk, its assets upserted — what a projection sees."""
     run_dir = settings.output_dir / "runs" / run_id
     (run_dir / "nmap").mkdir(parents=True, exist_ok=True)
-    (run_dir / "alive_hosts.json").write_text(json.dumps([{"host": ip}]), encoding="utf-8")
-    (run_dir / "nmap" / f"{ip}.xml").write_text(xml.format(ip=ip), encoding="utf-8")
+    ip2 = f"{ip}0"
+    hosts = [{"host": ip}] + ([{"host": ip2}] if "{ip2}" in xml else [])
+    (run_dir / "alive_hosts.json").write_text(json.dumps(hosts), encoding="utf-8")
+    (run_dir / "nmap" / f"{ip}.xml").write_text(xml.format(ip=ip, ip2=ip2), encoding="utf-8")
     (run_dir / "vulnerabilities.json").write_text(json.dumps(findings or []), encoding="utf-8")
     if tenant_id != tenants_service.DEFAULT_TENANT_ID:
         runs_service.write_run_tenant(settings, run_id, tenant_id)
@@ -231,7 +241,7 @@ def test_the_projection_records_fingerprints_for_a_succeeded_run_only(settings) 
     )
     with get_session(settings.postgres_url) as session:
         hosts = set(session.scalars(select(models.AssetService.host)).all())
-    assert hosts == {"10.0.0.5"}
+    assert hosts == {"10.0.0.5", "10.0.0.50"}
 
 
 # --------------------------------------------------------------------------
@@ -795,20 +805,25 @@ def test_services_route_shows_the_listeners_and_hides_other_tenants(client, sett
     write_run(settings, "run-other", ip="10.9.9.9", tenant_id="ten_other")
     asset_services.record_run(settings, tenant_id="ten_other", run_id="run-other")
     with get_session(settings.postgres_url) as session:
-        own = session.scalars(
-            select(models.AssetService.asset_id).where(models.AssetService.tenant_id == "default")
-        ).first()
+        own = dict(
+            session.execute(
+                select(models.AssetService.port, models.AssetService.asset_id).where(
+                    models.AssetService.tenant_id == "default"
+                )
+            ).all()
+        )
         foreign = session.scalars(
             select(models.AssetService.asset_id).where(models.AssetService.tenant_id == "ten_other")
         ).first()
     viewer = auth_headers(client, "viewer")
 
-    response = client.get(f"/api/assets/{own}/services", headers=viewer)
-    assert response.status_code == 200
-    body = {row["port"]: row for row in response.json()}
-    assert body[22]["match_status"] == "matched"
-    assert body[22]["match_counts"]["vulnerable"] == len(OPENSSH_74_CVES)
-    assert {c["cve"] for c in body[80]["possible_cves"]} >= {"CVE-2021-41773"}
+    ssh = client.get(f"/api/assets/{own[22]}/services", headers=viewer)
+    assert ssh.status_code == 200
+    (row,) = ssh.json()
+    assert row["match_status"] == "matched"
+    assert row["match_counts"]["vulnerable"] == len(OPENSSH_74_CVES)
+    (web,) = client.get(f"/api/assets/{own[80]}/services", headers=viewer).json()
+    assert {c["cve"] for c in web["possible_cves"]} >= {"CVE-2021-41773"}
 
     assert client.get(f"/api/assets/{foreign}/services", headers=viewer).status_code == 404
 
@@ -878,3 +893,217 @@ def test_reset_for_tests_empties_the_new_tables(settings) -> None:
     with get_session(POSTGRES_URL) as session:
         assert session.scalar(select(func.count()).select_from(models.AssetService)) == 0
         assert session.scalar(select(func.count()).select_from(models.RetroMatchState)) == 0
+
+
+# --------------------------------------------------------------------------
+# Review of PR #444
+# --------------------------------------------------------------------------
+
+EXIM_HOST_XML = """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <address addr="{ip}" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="25">
+        <state state="open"/>
+        <service name="smtp" product="Exim smtpd" version="4.92">
+          <cpe>cpe:/a:exim:exim:4.92</cpe>
+        </service>
+      </port>
+      {extra}
+    </ports>
+    {os}
+  </host>
+</nmaprun>
+"""
+DEBIAN_SSH_PORT = """<port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="7.9p1 Debian 10+deb10u2" extrainfo="protocol 2.0">
+          <cpe>cpe:/a:openbsd:openssh:7.9p1</cpe>
+        </service>
+      </port>"""
+LINUX_OS = '<os><osmatch name="Linux 4.15 - 5.8" accuracy="96"/></os>'
+
+
+def _exim_host(settings, run_id: str, *, extra: str = "", os_block: str = "") -> None:
+    xml = EXIM_HOST_XML.replace("{extra}", extra).replace("{os}", os_block)
+    write_run(settings, run_id, ip="10.0.0.25", xml=xml)
+    asset_services.record_run(settings, tenant_id="default", run_id=run_id)
+
+
+def _exim_findings(settings) -> list[models.Vulnerability]:
+    return [row for row in retro_rows(settings) if row.port == "25"]
+
+
+def test_exim_alone_on_a_silent_host_is_a_range_finding(settings) -> None:
+    _exim_host(settings, "run-exim")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert {row.cve for row in _exim_findings(settings)} == {"CVE-2019-15846", "CVE-2020-28017"}
+
+
+def test_exim_next_to_a_debian_openssh_is_not_a_range_finding(settings) -> None:
+    """Exim 4.92 on buster says nothing about Debian; its neighbour on port 22
+    does. The first cut gave it two critical range findings with deadlines —
+    for CVEs Debian backported into 4.92-8+deb10uN."""
+    _exim_host(settings, "run-exim", extra=DEBIAN_SSH_PORT)
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert _exim_findings(settings) == []
+    with get_session(settings.postgres_url) as session:
+        exim = session.scalars(
+            select(models.AssetService).where(models.AssetService.port == 25)
+        ).one()
+        assert exim.match_summary["counts"]["possible"] == 2
+        assert exim.match_summary["counts"]["vulnerable"] == 0
+
+
+def test_exim_on_a_host_nmap_calls_linux_is_not_a_range_finding(settings) -> None:
+    _exim_host(settings, "run-exim", os_block=LINUX_OS)
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert _exim_findings(settings) == []
+    with get_session(settings.postgres_url) as session:
+        guess = session.scalars(select(models.AssetOs)).one()
+        assert guess.os_name == "Linux 4.15 - 5.8"
+
+
+def test_a_new_neighbour_requeues_the_other_listeners_of_the_asset(settings) -> None:
+    _exim_host(settings, "run-1")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert len(_exim_findings(settings)) == 2
+    _exim_host(settings, "run-2", extra=DEBIAN_SSH_PORT)
+    with get_session(settings.postgres_url) as session:
+        exim = session.scalars(
+            select(models.AssetService).where(models.AssetService.port == 25)
+        ).one()
+        assert exim.matched_dataset_version is None
+
+
+def test_nmaps_vsftpd_cpe_finds_the_seed_cve_end_to_end(settings) -> None:
+    xml = """<?xml version="1.0"?>
+<nmaprun><host><address addr="{ip}" addrtype="ipv4"/><ports>
+<port protocol="tcp" portid="21"><state state="open"/>
+<service name="ftp" product="vsftpd" version="3.0.3"><cpe>cpe:/a:vsftpd:vsftpd:3.0.3</cpe></service>
+</port></ports></host></nmaprun>"""
+    write_run(settings, "run-ftp", ip="10.0.0.21", xml=xml)
+    asset_services.record_run(settings, tenant_id="default", run_id="run-ftp")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert {row.cve for row in retro_rows(settings)} == {"CVE-2021-30047"}
+
+
+def test_merging_assets_keeps_the_absorbed_assets_fingerprints(settings) -> None:
+    """The identity correlator merges an IP-only asset into its FQDN twin; the
+    ON DELETE CASCADE then took the absorbed asset's listeners with it."""
+    from api.services import assets as assets_module
+
+    write_run(settings, "run-a", ip="10.0.0.5")
+    write_run(settings, "run-b", ip="10.0.0.7")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-a")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-b")
+    with get_session(settings.postgres_url) as session:
+        ids = dict(
+            session.execute(
+                select(models.AssetService.host, models.AssetService.asset_id)
+            ).all()
+        )
+        survivor = session.get(models.Asset, ids["10.0.0.5"])
+        absorbed = session.get(models.Asset, ids["10.0.0.7"])
+        # A fresher port-22 row on the absorbed asset, and a clash on 22.
+        session.execute(
+            update(models.AssetService)
+            .where(models.AssetService.asset_id == absorbed.asset_id, models.AssetService.port == 22)
+            .values(last_seen_at=asset_services._now() + timedelta(hours=1), version="9.8p1")  # noqa: SLF001
+        )
+        assets_module._merge_assets(  # noqa: SLF001
+            session,
+            tenant_id="default",
+            survivor=survivor,
+            absorbed=absorbed,
+            now=asset_services._now(),  # noqa: SLF001
+        )
+    with get_session(settings.postgres_url) as session:
+        rows = session.scalars(
+            select(models.AssetService).where(models.AssetService.asset_id == ids["10.0.0.5"])
+        ).all()
+        by_port = {row.port: row for row in rows}
+        assert set(by_port) == {22}
+        assert by_port[22].version == "9.8p1"  # the fresher of the two
+
+
+def test_a_whole_run_folds_without_a_savepoint_per_finding(settings) -> None:
+    """One subtransaction per new finding overflows Postgres's 64-entry subxid
+    cache on a large run and slows every other session's visibility checks."""
+    from sqlalchemy import event
+
+    from api.db.engine import get_engine
+
+    findings = [
+        {"host": "10.0.0.5", "port": str(1000 + i), "cve": f"CVE-2024-{10000 + i}", "severity": "low"}
+        for i in range(80)
+    ]
+    write_run(settings, "run-big", findings=findings)
+    savepoints: list[str] = []
+
+    def spy(conn, cursor, statement, parameters, context, executemany):
+        if statement.strip().upper().startswith("SAVEPOINT"):
+            savepoints.append(statement)
+
+    engine = get_engine(settings.postgres_url)
+    event.listen(engine, "before_cursor_execute", spy)
+    try:
+        stats = vulns.register_findings_from_run(settings, tenant_id="default", run_id="run-big")
+        asset_services.record_run(settings, tenant_id="default", run_id="run-big")
+    finally:
+        event.remove(engine, "before_cursor_execute", spy)
+    assert stats.created == 80
+    assert savepoints == []
+
+
+def test_a_cve_the_matcher_announced_is_not_announced_again_by_the_scans_diff(
+    settings, monkeypatch, tmp_path
+) -> None:
+    """Retro said CVE-2023-48795 on port 22; days later a scan sees it for the
+    first time and its diff.json says new_cve again — a second webhook for one
+    finding."""
+    from api.services import asset_events
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        asset_events,
+        "publish_events",
+        lambda url, envelopes, settings=None: sent.extend(envelopes) or len(envelopes),
+    )
+    settings.nats_url = "nats://example.invalid:4222"
+    write_run(settings, "run-1")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert "CVE-2023-48795" in {e["data"].get("cve") for e in sent}
+    sent.clear()
+
+    write_run(
+        settings,
+        "run-2",
+        findings=[
+            {"host": "10.0.0.5", "port": "22", "cve": "CVE-2023-48795", "severity": "medium"},
+            {"host": "10.0.0.5", "port": "443", "cve": "CVE-2024-0001", "severity": "high"},
+        ],
+    )
+    vulns.register_findings_from_run(settings, tenant_id="default", run_id="run-2")
+    run_dir = settings.output_dir / "runs" / "run-2"
+    (run_dir / "diff.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {"kind": "new_cve", "host": "10.0.0.5", "port": "22", "cve": "CVE-2023-48795"},
+                    {"kind": "new_cve", "host": "10.0.0.5", "port": "443", "cve": "CVE-2024-0001"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    asset_events.publish_run_events(
+        nats_url=settings.nats_url,
+        run_dir=run_dir,
+        tenant_id="default",
+        run_id="run-2",
+        settings=settings,
+    )
+    assert [e["data"]["cve"] for e in sent] == ["CVE-2024-0001"]

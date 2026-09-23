@@ -173,6 +173,7 @@ def reset_for_tests() -> None:
         # Would cascade with the asset (FK ON DELETE CASCADE, migration 0064);
         # listed so a reader of this function sees every table it empties.
         session.query(models.AssetService).delete()
+        session.query(models.AssetOs).delete()
         session.query(models.Asset).delete()
         session.query(models.RetroMatchState).delete()
         # The IP<->FQDN correlation trail (P4.2) has no foreign key to either

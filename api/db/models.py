@@ -2854,6 +2854,33 @@ class AssetService(Base):
     )
 
 
+class AssetOs(Base):
+    """The operating system a scan guessed for an asset (retro matching).
+
+    One row per asset, the best guess of the newest scan: nmap's top
+    ``osmatch`` or Pulse's ``os.json``. The retro matcher reads it for a
+    listener whose own banner names no distribution — "Linux 5.x" or "Ubuntu
+    20.04" is what separates Exim 4.92 from a distribution build nobody can
+    see into (docs/retro-cve-matching.md). A guess, and treated as one: it can
+    only make a match *less* certain or send it to the vendor, never create a
+    finding by itself.
+    """
+
+    __tablename__ = "asset_os"
+
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.asset_id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
+    )
+    os_name: Mapped[str] = mapped_column(default="")
+    accuracy: Mapped[int | None] = mapped_column(default=None)
+    source: Mapped[str] = mapped_column(default="")
+    last_seen_at: Mapped[datetime]
+    last_run_id: Mapped[str | None] = mapped_column(default=None)
+
+
 class RetroMatchState(Base):
     """Per-tenant bookkeeping of the retro matcher, for the status route.
 

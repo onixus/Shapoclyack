@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func, or_, select
 
 from api.db import models
-from api.db.engine import get_session, insert_if_absent
+from api.db.engine import get_session, insert_or_skip
 from api.services import audit as audit_service
 from api.services import exploit_evidence
 from api.services import metrics
@@ -1021,14 +1021,17 @@ def register_findings_from_run(
                     updated_at=now,
                     **latest,
                 )
-                # In a SAVEPOINT: another writer can commit this very key
-                # between the read above and this insert — the retro matcher
-                # (retro_findings.py) shares the key by design. A bare flush
-                # would abort the whole run's transaction on the unique
+                # ON CONFLICT DO NOTHING: another writer can commit this very
+                # key between the read above and this insert — the retro
+                # matcher (retro_findings.py) shares the key by design. A bare
+                # flush would abort the whole run's transaction on the unique
                 # constraint and every finding of the run with it; losing the
                 # race instead means the row exists, and this observation
-                # updates it like any re-observation.
-                if insert_if_absent(session, candidate, f"vulnerability {key}"):
+                # updates it like any re-observation. Not a SAVEPOINT: this
+                # loop inserts every new finding of the run in one
+                # transaction, and a subtransaction per row overflows
+                # Postgres's subxid cache past 64 (engine.insert_or_skip).
+                if insert_or_skip(session, candidate, conflict=["tenant_id", "finding_key"]):
                     row = candidate
                     created += 1
                     _record_event(
