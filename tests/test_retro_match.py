@@ -172,7 +172,7 @@ def test_parse_cpe(name: str, expected) -> None:
             "banner",
             "8.9p1",
         ),
-        (rm.Fingerprint(product="", banner="220 (vsFTPd 3.0.3)"), ("a:vsftpd_project:vsftpd", "a:beasts:vsftpd"), "banner", "3.0.3"),
+        (rm.Fingerprint(product="", banner="220 (vsFTPd 3.0.3)"), ("a:vsftpd_project:vsftpd",), "banner", "3.0.3"),
         (rm.Fingerprint(product="", banner="220 ProFTPD 1.3.5 Server (Debian)"), ("a:proftpd:proftpd",), "banner", "1.3.5"),
         (rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)"), ("a:f5:nginx", "a:nginx:nginx"), "banner", "1.18.0"),
     ],
@@ -343,7 +343,8 @@ def _record(state: str, *, fixed: str | None = None, release: str = "bookworm") 
 @pytest.mark.parametrize(
     ("records", "version", "verdict"),
     [
-        ([_record("open")], "9.2p1 Debian 2+deb12u9", "vulnerable"),
+        # Affected, no fix published: reported, not tracked (endpoint rule).
+        ([_record("open")], "9.2p1 Debian 2+deb12u9", "unfixed"),
         ([_record("not_affected")], "9.2p1 Debian 2+deb12u1", "not_affected"),
         ([_record("resolved", fixed="1:9.2p1-2+deb12u2")], "9.2p1 Debian 2+deb12u2", "fixed"),
         ([_record("resolved", fixed="1:9.2p1-2+deb12u2")], "9.2p1 Debian 2+deb12u1", "vulnerable"),
@@ -483,3 +484,220 @@ def test_a_bad_dataset_is_reported_not_raised(tmp_path: Path, content, error) ->
     loaded = cpe_ranges.load_dataset(path)
     assert not loaded.available
     assert loaded.error.startswith(error)
+
+
+# --------------------------------------------------------------------------
+# Review of PR #444: uncertain versions, CPE aliases, host OS, vendor severity
+# --------------------------------------------------------------------------
+
+
+def _one(key: str, *ranges: CpeRange, severity: str = "high") -> cpe_ranges.CpeRangeDataset:
+    return cpe_ranges.CpeRangeDataset(
+        marker="t",
+        index={key: tuple(ranges)},
+        cves={r.cve: {"severity": severity, "cvss": 8.0} for r in ranges},
+        present=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "key", "statement"),
+    [
+        # nmap's own uncertainty, copied verbatim into the version field.
+        (
+            rm.Fingerprint(product="Samba smbd", version="3.X - 4.X", cpe=("cpe:/a:samba:samba",)),
+            "a:samba:samba",
+            CpeRange("CVE-2017-7494", start_including="3.5.0", end_excluding="4.4.14"),
+        ),
+        (
+            rm.Fingerprint(product="Samba smbd", version="4.x"),
+            "a:samba:samba",
+            CpeRange("CVE-2021-44142", end_excluding="4.13.17"),
+        ),
+        (
+            rm.Fingerprint(product="vsftpd", version="2.0.8 or later", cpe=("cpe:/a:vsftpd:vsftpd",)),
+            "a:vsftpd_project:vsftpd",
+            CpeRange("CVE-2015-1419", end_including="3.0.2"),
+        ),
+        (
+            rm.Fingerprint(product="vsftpd", version="2.0.8 or later"),
+            "a:vsftpd_project:vsftpd",
+            CpeRange("CVE-2015-1419", end_including="3.0.2"),
+        ),
+        # A CPE that pins only the major version: "4" is every Exim 4.
+        (
+            rm.Fingerprint(product="Exim smtpd", version="4.X", cpe=("cpe:/a:exim:exim:4",)),
+            "a:exim:exim",
+            CpeRange("CVE-2019-10149", start_including="4.87", end_including="4.91"),
+        ),
+        (
+            rm.Fingerprint(product="Exim smtpd", cpe=("cpe:/a:exim:exim:4",)),
+            "a:exim:exim",
+            CpeRange("CVE-2019-10149", start_including="4.87", end_including="4.91"),
+        ),
+    ],
+)
+def test_an_uncertain_version_is_no_version_not_a_finding(fingerprint, key, statement) -> None:
+    outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None)
+    assert outcome.matches == ()
+    assert outcome.reason == "no_version"
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        rm.Fingerprint(product="OpenSSH", version="for_Windows_8.1", cpe=("cpe:/a:openbsd:openssh:for_windows_8.1",)),
+        rm.Fingerprint(product="OpenSSH", version="for_Windows_8.1"),
+        rm.Fingerprint(product="ssh", banner="SSH-2.0-OpenSSH_for_Windows_8.1"),
+    ],
+)
+def test_openssh_for_windows_is_not_openbsd_openssh(fingerprint) -> None:
+    """Microsoft's port has its own versions and its own advisories; matched
+    against openbsd:openssh a Windows Server got CVE-2024-6387 and three more."""
+    dataset = _one(
+        "a:openbsd:openssh",
+        CpeRange("CVE-2024-6387", start_including="8.5", end_excluding="9.8"),
+        CpeRange("CVE-2023-38408", end_excluding="9.3p2"),
+    )
+    outcome = rm.match(fingerprint, dataset, lookup=lambda _d: None)
+    assert outcome.matches == ()
+    assert "a:openbsd:openssh" not in outcome.product_keys
+
+
+@pytest.mark.parametrize(
+    ("cpe", "key"),
+    [
+        ("cpe:/a:vsftpd:vsftpd:3.0.3", "a:vsftpd_project:vsftpd"),
+        ("cpe:/a:matt_johnston:dropbear_ssh_server:2019.78", "a:dropbear_ssh_project:dropbear_ssh"),
+        ("cpe:/a:redislabs:redis:6.0.9", "a:redis:redis"),
+    ],
+)
+def test_nmap_cpe_names_reach_the_nvd_key(cpe, key) -> None:
+    keys, via, _ = rm.product_keys(rm.Fingerprint(cpe=(cpe,)))
+    assert key in keys and via == "cpe"
+
+
+def test_vsftpd_with_nmaps_cpe_finds_the_seed_cve(seed) -> None:
+    outcome = rm.match(
+        rm.Fingerprint(product="vsftpd", version="3.0.3", cpe=("cpe:/a:vsftpd:vsftpd:3.0.3",)),
+        seed,
+        lookup=advisories.get_provider,
+    )
+    assert [(m.cve, m.verdict) for m in outcome.matches] == [("CVE-2021-30047", "vulnerable")]
+
+
+def test_a_cpe_key_the_dataset_lacks_falls_back_to_the_product_table() -> None:
+    """An nmap CPE nobody aliased yet must not blind the product table."""
+    dataset = _one("a:exim:exim", CpeRange("CVE-2019-15846", end_excluding="4.92.2"))
+    outcome = rm.match(
+        rm.Fingerprint(product="Exim smtpd", version="4.92", cpe=("cpe:/a:someone:exim_server:4.92",)),
+        dataset,
+        lookup=lambda _d: None,
+    )
+    assert [m.cve for m in outcome.matches] == ["CVE-2019-15846"]
+
+
+EXIM_DEBIAN = rm.Fingerprint(product="Exim smtpd", version="4.92")
+EXIM_RANGE = _one("a:exim:exim", CpeRange("CVE-2019-15846", end_excluding="4.92.2"), severity="critical")
+
+
+def test_a_daemon_on_a_known_debian_host_goes_to_the_vendor() -> None:
+    """Exim 4.92 on buster: the banner says nothing, the host does. Debian
+    fixed CVE-2019-15846 in 4.92-8+deb10u2 — same upstream, revision unknown:
+    the backport question, unanswered, so possible, not a range finding."""
+    provider = _Provider([
+        advisory_base.AdvisoryRecord(
+            advisory_id="DSA-4517-1", cve_ids=("CVE-2019-15846",), release="buster",
+            source_package="exim4", fixed_version="4.92-8+deb10u2", state="resolved", provider="fake",
+        )
+    ])
+    outcome = rm.match(
+        EXIM_DEBIAN, EXIM_RANGE, lookup=lambda _d: provider, host=rm.DistroHint("debian", "buster")
+    )
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("possible", "backport_possible")]
+    assert outcome.matches[0].evidence["distro_source"] == "host"
+
+
+def test_a_daemon_older_than_the_vendor_fix_on_a_known_host_is_a_vendor_finding() -> None:
+    provider = _Provider([
+        advisory_base.AdvisoryRecord(
+            advisory_id="DSA-1", cve_ids=("CVE-2019-15846",), release="buster",
+            source_package="exim4", fixed_version="4.93-1", state="resolved", provider="fake",
+            severity="high",
+        )
+    ])
+    outcome = rm.match(
+        EXIM_DEBIAN, EXIM_RANGE, lookup=lambda _d: provider, host=rm.DistroHint("debian", "buster")
+    )
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("vulnerable", "vendor_advisory")]
+
+
+def test_a_distro_packaged_daemon_on_a_linux_host_of_unknown_distro_is_possible() -> None:
+    outcome = rm.match(EXIM_DEBIAN, EXIM_RANGE, lookup=lambda _d: None, host=rm.DistroHint("linux"))
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("possible", "backport_possible")]
+    assert outcome.matches[0].evidence["advisory"]["reason"] == "distro_packaged_on_linux"
+
+
+def test_no_sign_of_a_distribution_anywhere_is_still_a_range_finding() -> None:
+    outcome = rm.match(EXIM_DEBIAN, EXIM_RANGE, lookup=lambda _d: None, host=None)
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("vulnerable", "version_range")]
+
+
+def test_a_product_not_built_by_distributions_ignores_the_host_hint() -> None:
+    dataset = _one("a:microsoft:internet_information_services", CpeRange("CVE-2017-7269", exact="6.0"))
+    outcome = rm.match(
+        rm.Fingerprint(product="Microsoft IIS httpd", version="6.0"),
+        dataset,
+        lookup=lambda _d: None,
+        host=rm.DistroHint("linux"),
+    )
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("vulnerable", "version_range")]
+
+
+def _debian_openssh(state: str, severity: str, fixed: str | None = None) -> _Provider:
+    return _Provider([
+        advisory_base.AdvisoryRecord(
+            advisory_id="CVE-2023-48795", cve_ids=("CVE-2023-48795",), release="bookworm",
+            source_package="openssh", fixed_version=fixed, state=state, provider="fake",
+            severity=severity,
+        )
+    ])
+
+
+def test_a_vendor_open_negligible_statement_is_not_a_finding() -> None:
+    """Debian: open, unimportant. The first cut turned it into a
+    vendor_advisory finding with NVD's "high" and a deadline."""
+    dataset = _one("a:openbsd:openssh", CpeRange("CVE-2023-48795", end_excluding="9.6"))
+    outcome = rm.match(
+        rm.Fingerprint(product="OpenSSH", version="9.2p1 Debian 2+deb12u3"),
+        dataset,
+        lookup=lambda _d: _debian_openssh("open", "negligible"),
+    )
+    (only,) = outcome.matches
+    assert only.is_finding is False
+    assert only.severity == "negligible"
+
+
+def test_a_vendor_verdict_carries_the_vendors_severity() -> None:
+    dataset = _one("a:openbsd:openssh", CpeRange("CVE-2023-48795", end_excluding="9.6"), severity="high")
+    outcome = rm.match(
+        rm.Fingerprint(product="OpenSSH", version="9.2p1 Debian 2+deb12u1"),
+        dataset,
+        lookup=lambda _d: _debian_openssh("resolved", "medium", fixed="1:9.2p1-2+deb12u2"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence, only.severity) == ("vulnerable", "vendor_advisory", "medium")
+    assert only.evidence["nvd_severity"] == "high"
+
+
+def test_a_vendor_open_statement_with_a_real_severity_is_unfixed_not_tracked() -> None:
+    """The endpoint matcher's rule: a vendor statement with no published fix
+    is real risk with nothing to run, so it is reported, not given a deadline."""
+    dataset = _one("a:openbsd:openssh", CpeRange("CVE-2023-48795", end_excluding="9.6"))
+    outcome = rm.match(
+        rm.Fingerprint(product="OpenSSH", version="9.2p1 Debian 2+deb12u3"),
+        dataset,
+        lookup=lambda _d: _debian_openssh("open", "high"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.is_finding) == ("unfixed", False)

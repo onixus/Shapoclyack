@@ -55,7 +55,11 @@ NOT_AFFECTED = "not_affected"
 #: NVD says affected and a distribution is visible whose answer we could not
 #: get. Recorded on the service, never a tracked finding.
 POSSIBLE = "possible"
-VERDICTS = (VULNERABLE, FIXED, NOT_AFFECTED, POSSIBLE)
+#: The distribution says affected and has published no fix. The endpoint
+#: matcher's rule (software_findings.is_trackable): real risk with nothing to
+#: run, so it is reported on the service and not given a deadline.
+UNFIXED = "unfixed"
+VERDICTS = (VULNERABLE, FIXED, NOT_AFFECTED, POSSIBLE, UNFIXED)
 
 #: The vendor's own advisory decided it (Debian tracker / Ubuntu USN).
 CONFIDENCE_VENDOR = "vendor_advisory"
@@ -71,6 +75,10 @@ CONFIDENCES = (CONFIDENCE_VENDOR, CONFIDENCE_RANGE, CONFIDENCE_BACKPORT)
 REASON_UNKNOWN_PRODUCT = "unknown_product"
 REASON_NO_VERSION = "no_version"
 REASON_NO_DATASET = "no_dataset"
+
+#: ``DistroHint.distro`` for a host known to run Linux whose distribution is
+#: not (nmap OS detection, a ``linux_kernel`` CPE).
+LINUX = "linux"
 
 # --------------------------------------------------------------------------
 # Upstream version comparison
@@ -201,7 +209,9 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     # carry the first key, new ones the second.
     "nginx": ("a:f5:nginx", "a:nginx:nginx"),
     "openssl": ("a:openssl:openssl",),
-    "vsftpd": ("a:vsftpd_project:vsftpd", "a:beasts:vsftpd"),
+    # NVD's CPE dictionary has only vsftpd_project:vsftpd (checked 2026-09-23:
+    # 42 names, none under beasts); beasts is nmap's name, aliased below.
+    "vsftpd": ("a:vsftpd_project:vsftpd",),
     "proftpd": ("a:proftpd:proftpd",),
     "exim smtpd": ("a:exim:exim",),
     "exim": ("a:exim:exim",),
@@ -212,22 +222,36 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     "microsoft-iis": ("a:microsoft:internet_information_services", "a:microsoft:iis"),
     "lighttpd": ("a:lighttpd:lighttpd",),
     "postfix smtpd": ("a:postfix:postfix",),
-    "dropbear sshd": ("a:dropbear_ssh_project:dropbear_ssh",),
+    # NVD carries Dropbear under both vendors (62 and 40 CPE names).
+    "dropbear sshd": ("a:dropbear_ssh_project:dropbear_ssh", "a:matt_johnston:dropbear_ssh_server"),
     "isc bind": ("a:isc:bind",),
     "dnsmasq": ("a:thekelleys:dnsmasq",),
     "samba smbd": ("a:samba:samba",),
     "apache tomcat": ("a:apache:tomcat",),
-    "redis key-value store": ("a:redis:redis",),
+    # And Redis under two (246 redis:redis, 260 redislabs:redis names).
+    "redis key-value store": ("a:redis:redis", "a:redislabs:redis"),
 }
 
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
-#: some NVD renames; without these an nginx CPE from nmap matches nothing.
+#: some NVD renames, and names some vendors its own way; without these an nginx
+#: or vsftpd CPE from nmap matches nothing. Checked against NVD's CPE
+#: dictionary on 2026-09-23.
 CPE_ALIASES: dict[str, tuple[str, ...]] = {
     "a:igor_sysoev:nginx": ("a:f5:nginx", "a:nginx:nginx"),
     "a:nginx:nginx": ("a:nginx:nginx", "a:f5:nginx"),
     "a:f5:nginx": ("a:f5:nginx", "a:nginx:nginx"),
-    "a:beasts:vsftpd": ("a:vsftpd_project:vsftpd", "a:beasts:vsftpd"),
-    "a:vsftpd_project:vsftpd": ("a:vsftpd_project:vsftpd", "a:beasts:vsftpd"),
+    "a:beasts:vsftpd": ("a:vsftpd_project:vsftpd",),
+    "a:vsftpd:vsftpd": ("a:vsftpd_project:vsftpd",),
+    "a:matt_johnston:dropbear_ssh_server": (
+        "a:dropbear_ssh_project:dropbear_ssh",
+        "a:matt_johnston:dropbear_ssh_server",
+    ),
+    "a:dropbear_ssh_project:dropbear_ssh": (
+        "a:dropbear_ssh_project:dropbear_ssh",
+        "a:matt_johnston:dropbear_ssh_server",
+    ),
+    "a:redislabs:redis": ("a:redis:redis", "a:redislabs:redis"),
+    "a:redis:redis": ("a:redis:redis", "a:redislabs:redis"),
     "a:microsoft:iis": ("a:microsoft:internet_information_services", "a:microsoft:iis"),
     "a:microsoft:internet_information_services": (
         "a:microsoft:internet_information_services",
@@ -245,17 +269,29 @@ SOURCE_PACKAGES: dict[str, tuple[str, ...]] = {
     "a:nginx:nginx": ("nginx",),
     "a:openssl:openssl": ("openssl",),
     "a:vsftpd_project:vsftpd": ("vsftpd",),
-    "a:beasts:vsftpd": ("vsftpd",),
     "a:proftpd:proftpd": ("proftpd-dfsg",),
     "a:exim:exim": ("exim4",),
     "a:lighttpd:lighttpd": ("lighttpd",),
     "a:postfix:postfix": ("postfix",),
     "a:dropbear_ssh_project:dropbear_ssh": ("dropbear",),
+    "a:matt_johnston:dropbear_ssh_server": ("dropbear",),
     "a:isc:bind": ("bind9",),
     "a:thekelleys:dnsmasq": ("dnsmasq",),
     "a:samba:samba": ("samba",),
     "a:redis:redis": ("redis",),
+    "a:redislabs:redis": ("redis",),
 }
+
+#: Products whose server builds come overwhelmingly from the distribution's own
+#: packages: every key with a Debian/Ubuntu source package above. They are the
+#: daemons of a base or standard server install (sshd, the MTA, the resolver,
+#: file sharing) or the web servers every distribution ships in main, and on a
+#: Linux host a banner that names no distribution is far more often a
+#: distribution build with ``ServerTokens``-style minimal banners than an
+#: upstream tarball. For them, a host known to be Linux is reason enough to
+#: doubt an NVD range. IIS and Tomcat are not here: Windows ships the first,
+#: and the second is routinely run from Apache's own tarballs.
+DISTRO_PACKAGED = frozenset(SOURCE_PACKAGES)
 
 #: How the product appears inside a raw banner, for a fingerprint whose prober
 #: reported no version field (``SSH-2.0-OpenSSH_8.2p1 …``, ``Server: nginx/1.18.0``).
@@ -273,6 +309,17 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 _VERSION_TOKEN_RE = re.compile(r"v?(\d+(?:\.\d+)*[a-z0-9.~+]*)", re.IGNORECASE)
+
+#: How nmap says it does not know: ``3.X - 4.X``, ``4.x``, ``2.0.8 or later``,
+#: ``2.4.X``. Matching any of these as a version turned a guess into a finding.
+_UNCERTAIN_VERSION = re.compile(
+    r"(?:^|[.\s])[xX*](?:$|[.\s])|\bor (?:later|earlier|newer|older)\b|\s-\s|\bor\b|\+$",
+)
+#: OpenSSH for Windows — Microsoft's port, versioned and patched on its own
+#: (``OpenSSH_for_Windows_8.1``). NVD has no CPE for it (keyword search of the
+#: CPE dictionary, 2026-09-23), so it is recognised only to be *not* matched
+#: against openbsd:openssh.
+_OPENSSH_FOR_WINDOWS = re.compile(r"for[_ ]windows", re.IGNORECASE)
 
 
 def normalize_product(value: str | None) -> str:
@@ -323,13 +370,29 @@ class Fingerprint:
         return " ".join(part for part in (self.version, self.banner) if part)
 
 
-def product_keys(fingerprint: Fingerprint) -> tuple[tuple[str, ...], str, str | None]:
+def _is_openssh_for_windows(fingerprint: Fingerprint) -> bool:
+    return any(
+        _OPENSSH_FOR_WINDOWS.search(text)
+        for text in (fingerprint.version, fingerprint.banner, *fingerprint.cpe)
+        if text
+    )
+
+
+def product_keys(
+    fingerprint: Fingerprint, *, known: Callable[[str], bool] | None = None
+) -> tuple[tuple[str, ...], str, str | None]:
     """``(NVD keys, via, cpe version)`` for a fingerprint, keys best first.
 
     ``via`` is ``cpe``, ``product_table`` or ``banner`` (``""`` when nothing
     knows the product), recorded in the evidence so an operator can see
     whether the vendor was the prober's statement or our table's.
+
+    ``known`` answers "does the dataset have this key". CPE keys it does not
+    know are not the end of the question: nmap names some vendors its own way,
+    and an alias nobody has added yet must not blind the product table.
     """
+    if _is_openssh_for_windows(fingerprint):
+        return (), "", None
     keys: list[str] = []
     cpe_version: str | None = None
     for name in fingerprint.cpe:
@@ -345,11 +408,13 @@ def product_keys(fingerprint: Fingerprint) -> tuple[tuple[str, ...], str, str | 
             continue
         keys.extend(CPE_ALIASES.get(key, (key,)))
         cpe_version = cpe_version or version
-    if keys:
+    if keys and (known is None or any(known(key) for key in keys)):
         return tuple(dict.fromkeys(keys)), "cpe", cpe_version
     table = PRODUCT_TABLE.get(normalize_product(fingerprint.product))
     if table:
-        return table, "product_table", None
+        # The CPE's version is still the prober's statement about this
+        # listener, whatever it called the vendor.
+        return table, "product_table", cpe_version
     # A prober that reported no product (or a generic one: Pulse's "ssh") may
     # still have kept the banner, and ``SSH-2.0-OpenSSH_8.2p1`` names its
     # product as plainly as nmap would. Only a name *immediately followed by a
@@ -358,7 +423,9 @@ def product_keys(fingerprint: Fingerprint) -> tuple[tuple[str, ...], str, str | 
     banner = fingerprint.banner or ""
     for key, names in _BANNER_NAMES.items():
         if any(_banner_version(banner, name) for name in names):
-            return CPE_ALIASES.get(key, (key,)), "banner", None
+            return CPE_ALIASES.get(key, (key,)), "banner", cpe_version
+    if keys:
+        return tuple(dict.fromkeys(keys)), "cpe", cpe_version
     return (), "", None
 
 
@@ -369,28 +436,45 @@ def _banner_version(banner: str, name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _usable(version: str | None) -> str | None:
+    """``version`` if it pins a release, else ``None``.
+
+    Starts with a digit and has at least two components: a bare ``4`` (nmap's
+    ``cpe:/a:exim:exim:4``) is every Exim 4, and an NVD range compared against
+    it answers for versions the host may not run.
+    """
+    if not version or not version[0].isdigit() or "." not in version:
+        return None
+    return version
+
+
 def upstream_version(fingerprint: Fingerprint, keys: Iterable[str], cpe_version: str | None) -> str | None:
     """The upstream version the fingerprint discloses, or ``None``.
 
-    The CPE's version first, then the first version-shaped token of the
-    prober's ``version`` field (``8.2p1`` out of ``8.2p1 Ubuntu 4ubuntu0.5``),
-    then the product's own name in the raw banner (``OpenSSH_8.2p1``). Never a
-    number found just anywhere in the banner: ``protocol 2.0`` is not a version
-    of OpenSSH.
+    The prober's own doubt wins over everything: a ``version`` field that says
+    ``3.X - 4.X``, ``4.x`` or ``2.0.8 or later`` is nmap declining to name a
+    version, and no source below may name one for it. Otherwise the CPE's
+    version, then the first version-shaped token of the ``version`` field
+    (``8.2p1`` out of ``8.2p1 Ubuntu 4ubuntu0.5``), then the product's own name
+    in the raw banner (``OpenSSH_8.2p1``). Never a number found just anywhere
+    in the banner: ``protocol 2.0`` is not a version of OpenSSH. Whatever is
+    found must pin a release (:func:`_usable`).
     """
+    raw = (fingerprint.version or "").strip()
+    if raw and _UNCERTAIN_VERSION.search(raw):
+        return None
     if cpe_version:
-        return cpe_version
-    head = (fingerprint.version or "").strip().split()
+        return _usable(cpe_version)
+    head = raw.split()
     if head:
         match = _VERSION_TOKEN_RE.fullmatch(head[0].rstrip(".,;"))
-        if match:
-            return match.group(1)
+        return _usable(match.group(1)) if match else None
     banner = fingerprint.banner or ""
     for key in keys:
         for name in _BANNER_NAMES.get(key, ()):
             version = _banner_version(banner, name)
             if version:
-                return version
+                return _usable(version)
     return None
 
 
@@ -554,7 +638,7 @@ def _judge_release(
         return POSSIBLE, {"reason": "no_vendor_statement"}
     if any(record.state == advisory_base.STATE_OPEN for record in records):
         record = next(r for r in records if r.state == advisory_base.STATE_OPEN)
-        return VULNERABLE, _advisory_evidence(record)
+        return UNFIXED, _advisory_evidence(record)
     resolved = [r for r in records if r.state == advisory_base.STATE_RESOLVED and r.fixed_version]
     if not resolved:
         return NOT_AFFECTED, _advisory_evidence(records[0])
@@ -598,6 +682,7 @@ def _advisory_evidence(record: advisory_base.AdvisoryRecord) -> dict[str, Any]:
         "release": record.release,
         "state": record.state,
         "fixed_version": record.fixed_version,
+        "severity": record.severity,
         "feed_date": record.feed_date,
     }
 
@@ -671,6 +756,8 @@ class Match:
 
     @property
     def is_finding(self) -> bool:
+        """Vulnerable — which for a vendor verdict means a published fix the
+        host is below. Severity floors are the fold's (``retro_findings``)."""
         return self.verdict == VULNERABLE
 
 
@@ -699,26 +786,72 @@ def _severity(info: dict[str, Any]) -> tuple[str, float | None]:
     return (severity if severity in _SEVERITIES else "unknown"), score
 
 
+def host_hint(*, os_names: Iterable[str], banners: Iterable[str], cpes: Iterable[str]) -> DistroHint | None:
+    """What the *host* gives away about its distribution, for a listener whose
+    own banner says nothing.
+
+    From the other listeners of the same asset first — ``OpenSSH_9.2p1
+    Debian-2+deb12u3`` pins the host to bookworm for its Exim too — then from
+    OS detection (``Ubuntu 20.04``, ``Linux 5.4``), then from a
+    ``linux_kernel`` platform CPE. A package *revision* is never carried over:
+    it belongs to the package that disclosed it. ``None`` when nothing points
+    at a Linux distribution, which is when an NVD range stays a finding.
+    """
+    best: DistroHint | None = None
+    for text in banners:
+        hint = distro_hint(text)
+        if not hint.visible:
+            continue
+        candidate = DistroHint(hint.distro, hint.release)
+        if best is None or (best.release is None and candidate.release):
+            best = candidate
+    if best is not None:
+        return best
+    for name in os_names:
+        lowered = (name or "").lower()
+        if not lowered or "windows" in lowered:
+            continue
+        hint = distro_hint(name)
+        if hint.visible:
+            release = hint.release
+            if hint.distro in package_identity.SUPPORTED_DISTROS and not release:
+                release = package_identity.resolve_distro(
+                    os_family="linux", os_name=name, os_version=name
+                ).release
+            return DistroHint(hint.distro, release)
+        if "linux" in lowered:
+            best = DistroHint(LINUX)
+    if best is not None:
+        return best
+    if any((parse_cpe(cpe) or ("",))[0] == "o:linux:linux_kernel" for cpe in cpes):
+        return DistroHint(LINUX)
+    return None
+
+
 def match(
     fingerprint: Fingerprint,
     dataset: CpeRangeDataset,
     *,
     lookup: AdvisoryLookup,
+    host: DistroHint | None = None,
 ) -> MatchOutcome:
     """Every CVE the dataset says this fingerprint carries, with a verdict each.
 
     ``lookup`` is ``advisories.get_provider``; injected so a test can hand the
-    matcher a provider without touching the environment.
+    matcher a provider without touching the environment. ``host`` is
+    :func:`host_hint` for the listener's asset: used only when the listener's
+    own banner names no distribution, and only for a product distributions
+    build (:data:`DISTRO_PACKAGED`).
     """
     if not dataset.available:
         return MatchOutcome(reason=REASON_NO_DATASET)
-    keys, via, cpe_version = product_keys(fingerprint)
+    keys, via, cpe_version = product_keys(fingerprint, known=lambda key: bool(dataset.ranges_for(key)))
     if not keys:
         return MatchOutcome(reason=REASON_UNKNOWN_PRODUCT)
     upstream = upstream_version(fingerprint, keys, cpe_version)
     if not upstream:
         return MatchOutcome(reason=REASON_NO_VERSION, product_keys=keys)
-    hint = distro_hint(fingerprint.text)
+    own = distro_hint(fingerprint.text)
 
     # One statement per CVE: the first product key that covers the version
     # wins, so nginx:nginx and f5:nginx naming the same CVE is one match.
@@ -734,6 +867,9 @@ def match(
     shipping: dict[tuple[str, str], list[str]] = {}
     for cve, (key, statement) in sorted(hits.items()):
         severity, cvss = _severity(dataset.cve_info(cve))
+        hint, hint_source = own, "banner"
+        if not own.visible and host is not None and key in DISTRO_PACKAGED:
+            hint, hint_source = host, "host"
         evidence: dict[str, Any] = {
             "product": fingerprint.product or None,
             "version": fingerprint.version or None,
@@ -746,12 +882,19 @@ def match(
         }
         if hint.visible:
             evidence["distro"] = hint.distro
+            evidence["distro_source"] = hint_source
             if hint.release:
                 evidence["distro_release"] = hint.release
             if hint.revision:
                 evidence["distro_revision"] = hint.revision
         if not hint.visible:
             verdict, confidence = VULNERABLE, CONFIDENCE_RANGE
+        elif hint.distro == LINUX:
+            # A Linux host, distribution unknown, and a daemon distributions
+            # build: an NVD range is not evidence against a backport we cannot
+            # see (DISTRO_PACKAGED).
+            verdict, confidence = POSSIBLE, CONFIDENCE_BACKPORT
+            evidence["advisory"] = {"reason": "distro_packaged_on_linux"}
         elif hint.distro in package_identity.SUPPORTED_DISTROS:
             verdict, advisory = vendor_verdict(
                 hint,
@@ -763,6 +906,13 @@ def match(
             )
             evidence["advisory"] = advisory
             confidence = CONFIDENCE_VENDOR if verdict != POSSIBLE else CONFIDENCE_BACKPORT
+            vendor_severity = str(advisory.get("severity") or "unknown").lower()
+            if verdict != POSSIBLE and vendor_severity != "unknown":
+                # The vendor's judgement of its own build wins over NVD's of
+                # the upstream code: Debian's "unimportant" is a statement
+                # about exactly this package.
+                evidence["nvd_severity"] = severity
+                severity = vendor_severity
         else:
             verdict, confidence = POSSIBLE, CONFIDENCE_BACKPORT
             evidence["advisory"] = {"reason": "unsupported_distro"}
