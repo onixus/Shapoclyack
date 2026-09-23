@@ -129,7 +129,12 @@ batching:
   # IPv4 networks larger than this prefix are split into /ipv4_prefix batches
   # (e.g. a /16 becomes 256 x /24). Finer than /20 for resume (realistic bench).
   ipv4_prefix: 24
-  # Single IPs / IPv6 / small nets are grouped into batches of this many targets.
+  # IPv6 networks broader than /120 are split into /120 batches. A wide
+  # network such as /64 is refused before expansion when it would exceed the
+  # explicit batch cap; IPv6 address space is not a to-do list.
+  ipv6_prefix: 120
+  max_ipv6_batches: 4096
+  # Single IPs and small nets are grouped into batches of this many targets.
   max_targets_per_batch: 1024
 
 discovery:
@@ -153,6 +158,18 @@ discovery:
     tool: fping
     timeout_ms: 500
     retries: 1
+  # Directly attached IPv4 segments only. ARP discovers silent hosts; the
+  # optional UDP pass records mDNS/NetBIOS names. Empty networks derives only
+  # in-scope private/link-local ranges and still honours max_hosts.
+  l2:
+    enabled: false
+    networks: []
+    interface: ""
+    mdns: true
+    netbios: true
+    max_hosts: 4096
+    max_rate: 1000
+    timeout_seconds: 120
   tcp_probe:
     enabled: false
     ports: [80, 443, 22]

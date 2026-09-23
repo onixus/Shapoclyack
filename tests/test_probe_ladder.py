@@ -27,6 +27,12 @@ def test_parse_naabu_host_lines_host_port():
     assert parse_naabu_host_lines("10.0.0.1:80\n10.0.0.2:443\n") == ["10.0.0.1", "10.0.0.2"]
 
 
+def test_parse_naabu_host_lines_keeps_ipv6_intact():
+    assert parse_naabu_host_lines(
+        "2001:db8::1\n[2001:db8::2]:443/tcp\n"
+    ) == ["2001:db8::1", "2001:db8::2"]
+
+
 def test_run_probe_ladder_icmp_then_tcp_then_naabu(tmp_path: Path, monkeypatch):
     discovery = DiscoveryConfig(
         icmp=IcmpDiscoveryConfig(enabled=True),
@@ -150,3 +156,32 @@ def test_icmp_ping_filter_splits_alive_and_pending(tmp_path: Path, monkeypatch):
     )
     assert alive == ["10.0.0.1", "10.0.0.3"]
     assert pending == ["10.0.0.2"]
+
+
+def test_icmp_ping_filter_runs_one_explicit_command_per_address_family(
+    tmp_path: Path, monkeypatch
+):
+    icmp = IcmpDiscoveryConfig(enabled=True, timeout_ms=300, retries=0)
+    commands: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        commands.append(command)
+        result = MagicMock()
+        result.stdout = "2001:db8::1\n" if "-6" in command else "10.0.0.1\n"
+        return result
+
+    monkeypatch.setattr("scanner.pipeline.icmp_discover.run_command", fake_run_command)
+    alive, pending = icmp_ping_filter(
+        ["10.0.0.1", "10.0.0.2", "2001:db8::1", "2001:db8::2"],
+        tmp_path,
+        icmp,
+        timeout=30,
+        retries=0,
+        tag="mixed",
+    )
+
+    assert alive == ["10.0.0.1", "2001:db8::1"]
+    assert pending == ["10.0.0.2", "2001:db8::2"]
+    assert len(commands) == 2
+    assert any("-4" in command for command in commands)
+    assert any("-6" in command for command in commands)

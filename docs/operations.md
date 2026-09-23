@@ -72,7 +72,10 @@ The directory can contain:
 
 - run metadata and normalized summaries;
 - resolved and alive hosts;
+- `l2_discovery.json` when directly attached ARP/mDNS/NetBIOS discovery is enabled;
 - open ports and service aggregates;
+- `hosts_without_open_ports.json`, the alive inventory that answered discovery but
+  exposed no port from this run's scanned set;
 - Nmap XML and tool logs;
 - vulnerability and enrichment JSON;
 - Markdown, HTML, and PDF reports;
@@ -134,6 +137,38 @@ should always be exactly 1.
 A tick the tenant's maintenance calendar forbids is deferred to the moment the
 block lifts rather than skipped — see
 [Maintenance windows and the change freeze](#maintenance-windows-and-the-change-freeze).
+
+## Internal L2 and IPv6 discovery
+
+IPv6 ranges use bounded subnet batching. The shipped `/120` threshold makes a
+`/116` sixteen resumable batches; a `/64` is refused because it would require
+2^56 of them. This is intentional. A 128-bit address space does not become
+finite because somebody put it in YAML. The error names the calculated count
+and `batching.max_ipv6_batches`; narrow the target rather than relying on a
+partial prefix walk. fping discovery runs separate `-4` and `-6` invocations,
+and bracketed IPv6 endpoints remain intact through naabu parsing and reporting.
+
+Directly attached discovery is disabled by default. Enable `discovery.l2` only
+on a sensor whose interface is actually connected to the authorized segment.
+The stage:
+
+1. selects configured networks that are wholly contained in this run's target
+   scope, or derives private/link-local IPv4 targets when the list is empty;
+2. refuses networks once their combined usable address count would exceed
+   `max_hosts`;
+3. runs bounded nmap ARP discovery and records MAC/vendor evidence;
+4. optionally probes the ARP-alive hosts for NetBIOS and mDNS names.
+
+The artifact records every skipped network and reason (`outside_scan_scope`,
+`host_cap_exceeded`, missing nmap, or command failure). ARP-alive hosts seed the
+ordinary discovery result, so a device that ignores routed ICMP/TCP probes still
+continues into port scanning. Link-local names are marked `l2`; they are not
+misrepresented as forward DNS.
+
+Every report also writes `hosts_without_open_ports.json` and the corresponding
+summary count. These are real discovered devices whose scanned port set was
+empty, not failed scans. Review them for hosts that only expose an avoided,
+UDP-only, or nonstandard service before deciding they are irrelevant.
 
 ## Diffs and events
 

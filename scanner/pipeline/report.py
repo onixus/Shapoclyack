@@ -17,6 +17,7 @@ from .cvss4 import Cvss4Database, enrich_vulnerabilities
 from .asn_enrich import AsnDatabase, enrich_hosts_asn
 from .geoip import GeoIpDatabase, attach_geo_to_records, enrich_hosts_geo
 from .pulse_probe import load_service_artifacts
+from .protocol import parse_endpoint
 from .sarif_report import build_sarif_report
 from .utils import save_json
 
@@ -337,6 +338,13 @@ def build_reports(
         if geo_map
     )
 
+    open_hosts = {
+        endpoint.host
+        for raw in open_ports
+        if (endpoint := parse_endpoint(raw)) is not None
+    }
+    hosts_without_open_ports = sorted(set(alive_hosts) - open_hosts)
+
     best_os_by_host: dict[str, dict] = {}
     for match in os_matches:
         host = match["host"]
@@ -349,6 +357,7 @@ def build_reports(
         "alive_hosts": len(alive_hosts),
         "alive_hosts_with_names": hosts_with_names,
         "open_host_port_pairs": len(open_ports),
+        "alive_hosts_without_open_ports": len(hosts_without_open_ports),
         "nmap_open_services": len(findings),
         "open_services_source": services_source,
         "os_detected_hosts": len(best_os_by_host),
@@ -402,6 +411,8 @@ def build_reports(
     ]
     # Always export so the Web UI can list targets (with GeoIP when available).
     save_json(output_dir / "alive_hosts.json", alive_rows)
+    no_port_rows = [row for row in alive_rows if row["host"] in set(hosts_without_open_ports)]
+    save_json(output_dir / "hosts_without_open_ports.json", no_port_rows)
     if geo_map:
         save_json(output_dir / "geoip.json", geo_map)
 
@@ -471,6 +482,8 @@ def build_reports(
             f"- Alive hosts: {summary['alive_hosts']}",
             f"- Alive hosts with resolved names: {summary['alive_hosts_with_names']}",
             f"- Open host:port pairs: {summary['open_host_port_pairs']}",
+            f"- Alive hosts without an open scanned port: "
+            f"{summary['alive_hosts_without_open_ports']}",
             f"- Parsed open services from {summary['open_services_source']}: "
             f"{summary['nmap_open_services']}",
             f"- Hosts with OS detected: {summary['os_detected_hosts']}",
@@ -488,6 +501,19 @@ def build_reports(
                 md_lines.append(f"- {country}: {count}")
         else:
             md_lines.append("- none (GeoIP database empty or disabled)")
+
+        md_lines += ["", "## Alive hosts without an open scanned port"]
+        if hosts_without_open_ports:
+            for host in hosts_without_open_ports[:100]:
+                name = _lookup_hostname(hostnames, host)
+                md_lines.append(f"- {host}" + (f" ({name})" if name else ""))
+            if len(hosts_without_open_ports) > 100:
+                md_lines.append(
+                    f"- ... and {len(hosts_without_open_ports) - 100} more "
+                    "(see hosts_without_open_ports.json)"
+                )
+        else:
+            md_lines.append("- none")
 
         md_lines += ["", "## Top Services"]
         for service, count in summary["top_services"]:

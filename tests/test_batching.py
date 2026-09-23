@@ -20,10 +20,32 @@ def test_expand_groups_singletons_into_chunks():
     assert [len(ms) for _, ms in batches] == [4, 4, 2]
 
 
-def test_expand_does_not_split_ipv6():
-    batches = expand_batches(["2001:db8::/32"], ipv4_prefix=20)
+def test_expand_splits_bounded_ipv6_networks():
+    batches = expand_batches(
+        ["2001:db8::/116"],
+        ipv6_prefix=120,
+        max_ipv6_batches=32,
+    )
+    assert len(batches) == 16
+    assert batches[0][1] == ["2001:db8::/120"]
+    assert batches[-1][1] == ["2001:db8::f00/120"]
+
+
+def test_expand_refuses_unbounded_ipv6_materialization():
+    import pytest
+
+    with pytest.raises(ValueError, match="would create"):
+        expand_batches(
+            ["2001:db8::/64"],
+            ipv6_prefix=120,
+            max_ipv6_batches=4096,
+        )
+
+
+def test_expand_keeps_small_ipv6_net_as_one_member():
+    batches = expand_batches(["2001:db8::/124"], ipv6_prefix=120)
     assert len(batches) == 1
-    assert batches[0][1] == ["2001:db8::/32"]
+    assert batches[0][1] == ["2001:db8::/124"]
 
 
 def test_expand_keeps_small_ipv4_net_as_single_member():

@@ -53,6 +53,8 @@ def _make_batches(config: AppConfig, items: list[str]) -> list[tuple[str, list[s
         return expand_batches(
             items,
             ipv4_prefix=batching.ipv4_prefix,
+            ipv6_prefix=batching.ipv6_prefix,
+            max_ipv6_batches=batching.max_ipv6_batches,
             max_targets_per_batch=batching.max_targets_per_batch,
         )
     return single_batch(items)

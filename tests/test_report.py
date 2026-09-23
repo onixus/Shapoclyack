@@ -163,3 +163,37 @@ def test_build_reports_merges_extra_vulnerabilities(tmp_path: Path):
     md = (output_dir / "summary.md").read_text(encoding="utf-8")
     assert "Vulnerabilities" in md
     assert "CRITICAL" in md
+
+
+def test_build_reports_lists_alive_hosts_without_open_ports(tmp_path: Path):
+    nmap_dir = _setup(tmp_path)
+    output_dir = tmp_path / "out-no-ports"
+    output_dir.mkdir()
+
+    build_reports(
+        output_dir=output_dir,
+        total_targets=3,
+        alive_hosts=["10.0.0.5", "10.0.0.6", "2001:db8::1"],
+        open_ports=["10.0.0.5:22", "[2001:db8::1]:443/tcp"],
+        nmap_dir=nmap_dir,
+        markdown_summary=True,
+        html_summary=False,
+        csv_export=False,
+        json_export=True,
+        hostnames_map={
+            "10.0.0.6": {"names": ["silent.local"], "primary": "silent.local"}
+        },
+    )
+
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["alive_hosts_without_open_ports"] == 1
+    rows = json.loads(
+        (output_dir / "hosts_without_open_ports.json").read_text(encoding="utf-8")
+    )
+    assert len(rows) == 1
+    assert rows[0]["host"] == "10.0.0.6"
+    assert rows[0]["hostname"] == "silent.local"
+    assert rows[0]["names"] == ["silent.local"]
+    markdown = (output_dir / "summary.md").read_text(encoding="utf-8")
+    assert "Alive hosts without an open scanned port: 1" in markdown
+    assert "10.0.0.6 (silent.local)" in markdown

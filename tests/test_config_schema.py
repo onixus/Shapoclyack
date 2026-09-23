@@ -181,6 +181,8 @@ def test_default_yaml_adaptive_discovery():
     assert cfg.discovery.verify.enabled is True
     assert cfg.discovery.verify.rate == 1250
     assert cfg.batching.ipv4_prefix == 24
+    assert cfg.batching.ipv6_prefix == 120
+    assert cfg.batching.max_ipv6_batches == 4096
     assert cfg.batching.max_targets_per_batch == 1024
     assert cfg.runtime.skip_nse is False
     assert cfg.profiles["balanced"].discover_rate == 4000
@@ -195,6 +197,8 @@ def test_k8s_yaml_discovery_completeness_knobs():
     assert cfg.discovery.verify.rate == 1250
     assert cfg.discovery.adaptive.wave2_rate == 2500
     assert cfg.batching.ipv4_prefix == 24
+    assert cfg.batching.ipv6_prefix == 120
+    assert cfg.batching.max_ipv6_batches == 4096
     assert cfg.batching.max_targets_per_batch == 1024
     # Keep reverse DNS and vuln-offline — not bench-only settings.
     assert cfg.discovery.hostnames.reverse is True
@@ -395,3 +399,21 @@ def test_extend_web_ports_with_custom_leaves_a_full_range_sweep_alone():
     over_cap = at_cap | {9100}
     assert len(over_cap) == MAX_CUSTOM_WEB_PORTS + 1
     assert extend_web_ports_with_custom([80], [443], over_cap) == ([80], [443])
+
+
+def test_l2_config_rejects_ipv6_network():
+    raw = _minimal_config(
+        discovery={"l2": {"enabled": True, "networks": ["2001:db8::/64"]}}
+    )
+    with pytest.raises(ValidationError, match="IPv4"):
+        load_config(raw)
+
+
+def test_default_yaml_l2_is_safe_and_disabled():
+    import yaml
+
+    text = Path("scanner/config/default.yaml").read_text(encoding="utf-8")
+    cfg = AppConfig.model_validate(yaml.safe_load(text))
+    assert cfg.discovery.l2.enabled is False
+    assert cfg.discovery.l2.networks == []
+    assert cfg.discovery.l2.max_hosts == 4096

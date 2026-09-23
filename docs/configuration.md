@@ -38,7 +38,7 @@ value on the System page rather than assuming the file was applied.
 |---|---|---|
 | `runtime` | Speed profile, output/state/log directories, timeouts, retries, per-stage concurrency, `skip_nse` | [Profiles](#profiles), [Operations](operations.md) |
 | `profiles` | The named speed profiles `runtime.mode` selects | [Profiles](#profiles) |
-| `batching` | Splitting a large scope into IPv4-prefix batches | [Scan performance](scan-performance.md), [Architecture](architecture.md) |
+| `batching` | Bounded IPv4/IPv6 subnet batching | [Scan performance](scan-performance.md), [Architecture](architecture.md) |
 | `discovery` | Alive-host discovery: source, discovery profile, CT logs, brute force, Cloudflare, ASN, cloud resources, domain monitoring, delta | [Discovery modules](#discovery-modules), [Scan performance](scan-performance.md) |
 | `ports` | Port stage: protocol, port lists, UDP top-N, naabu scan type | [Protocol selection](#protocol-selection) |
 | `nse_profiles` | Named NSE script sets a speed profile can reference | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
@@ -96,6 +96,32 @@ the more exhaustive setting, which is why it is the right first run.
 Exact values are defined in the active YAML
 (`scanner/config/default.yaml`) and in `scanner/pipeline/discovery_profiles.py`.
 Do not treat the tables as a fixed performance guarantee.
+
+### IPv6 batching and directly attached discovery
+
+`batching.ipv6_prefix` defaults to `/120`. A wider IPv6 network is split into
+that prefix before discovery and port scanning, but only while the result stays
+under `batching.max_ipv6_batches` (4096 by default). A target such as `/64`
+therefore fails configuration at run time with the calculated batch count
+instead of expanding an effectively unbounded address space or silently
+scanning only its first 65,536 addresses. Narrow IPv6 scope to known subnets or
+addresses; raising the cap is an explicit capacity decision.
+
+`discovery.icmp` invokes fping once per address family. IPv4 uses `-4`, IPv6
+uses `-6`, so a mixed batch does not let the binary's default family silently
+skip half the targets.
+
+For a sensor attached to an internal Ethernet segment, `discovery.l2.enabled`
+adds an opt-in nmap ARP sweep. It never widens scan scope: configured
+`discovery.l2.networks` must be contained in the run targets, and an empty list
+derives only in-scope private/link-local IPv4 networks. `max_hosts` bounds work
+before a packet is sent and `max_rate` is lowered by the tenant scan policy.
+After ARP, optional UDP/137 NetBIOS and UDP/5353 mDNS probes record names in
+`l2_discovery.json` and merge them into `hostnames.json` under the separate
+`l2` field. A fragile/`skip_service_probe` policy leaves ARP discovery on but
+disables those protocol-specific name probes. Nmap absence or insufficient raw
+socket privileges is recorded in the artifact rather than disguised as an
+empty network.
 
 ## Input contract
 
