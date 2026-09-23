@@ -402,6 +402,16 @@ demand that the recent verification was a key, for every account with MFA
 enabled; the listed roles get this regardless. A code-proved step-up then gets
 the same 403 marker with "security key" in it.
 
+Under either setting, `POST /api/auth/mfa/disable` on an account that holds a
+key also needs the session to have been proved recently **with that key** (403
+with the step-up sentence otherwise). Disabling removes the keys, so without
+this a relayed password and code would clear the owner's keys and let the
+attacker's key become the account's "first" one — which only a code bootstraps.
+
+Removing a key (`DELETE …/credentials/{id}`) does **not** end sessions that key
+proved; to cut off a stolen key's sessions as well, use "sign out everywhere"
+(`POST /api/auth/sessions/revoke-all`) or the admin MFA reset.
+
 Under `OCTO_ENV=prod` the API refuses to start with either setting and no
 derivable relying party: every covered administrator would be confined to a
 page whose one action answers 409.

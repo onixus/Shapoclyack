@@ -557,6 +557,56 @@ def test_a_second_key_under_the_policy_costs_the_first_one(tmp_path, monkeypatch
     assert "one you already hold" in refused.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [{"mfa_phishing_resistant_roles": ["admin"]}, {"mfa_stepup_phishing_resistant": True}],
+    ids=["role", "stepup"],
+)
+def test_a_relayed_code_cannot_turn_mfa_off_and_take_the_keys_with_it(
+    tmp_path, monkeypatch, clock, policy
+):
+    # The side door around the key policy: a phishing kit relays the password
+    # and a TOTP code, the resulting code-proved session calls disable — which
+    # removes the owner's keys — and then enrols its own app and key from an
+    # account that "has no key yet". Where policy wants a key and the account
+    # holds one, turning the factor off must cost that key.
+    from tests.conftest import TEST_USERS
+
+    client = _client(tmp_path, monkeypatch, **policy)
+    headers = auth_headers(client, "admin")
+    secret, _ = enrol(client, headers, clock)
+    key = SoftAuthenticator(ORIGIN)
+    _register(client, _step_up(client, headers, clock, secret), key)
+
+    challenge = password_login(client)["mfa_token"]
+    relayed = client.post(
+        "/api/auth/mfa/verify", json={"mfa_token": challenge, "code": clock.next_code(secret)}
+    )
+    phished = bearer(relayed.json()["access_token"])
+    refused = client.post(
+        "/api/auth/mfa/disable",
+        headers=phished,
+        json={"password": TEST_USERS["admin"], "code": clock.next_code(secret)},
+    )
+    assert refused.status_code == 403
+    assert "needs a recent multi-factor verification" in refused.json()["detail"]
+    # Nothing was removed by the attempt.
+    assert client.get("/api/auth/mfa", headers=phished).json()["webauthn_credentials"] == 1
+
+    # The owner, stepping up with the key, can still turn it off.
+    options = client.post(
+        "/api/auth/mfa/webauthn/authenticate/options", headers=phished, json={}
+    ).json()
+    by_key = _verify(client, None, options["challenge_id"], key.get(options["public_key"]), phished)
+    done = client.post(
+        "/api/auth/mfa/disable",
+        headers=bearer(by_key.json()["access_token"]),
+        json={"password": TEST_USERS["admin"], "code": clock.next_code(secret)},
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["webauthn_credentials"] == 0
+
+
 def test_the_phishing_resistant_policy_needs_a_relying_party_in_prod(tmp_path, monkeypatch):
     # A key-only policy with nothing to register a key against confines every
     # listed role to a page whose one action answers 409: an admin lockout.

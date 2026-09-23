@@ -332,6 +332,41 @@ def check_registration_proof(
         )
 
 
+def check_disable_proof(
+    settings: Settings,
+    username: str,
+    *,
+    role: str,
+    mfa_verified_at: datetime | None,
+    mfa_method: str | None,
+) -> None:
+    """Whether this session may turn MFA off. ``PermissionError`` if not.
+
+    Turning MFA off removes every key (``mfa._clear``). Where policy wants a
+    key of this account (:func:`stepup_requires_webauthn`) and the account
+    holds one, the password and a code are not enough: a phishing kit relays
+    exactly those two, and disable would then clear the owner's keys and leave
+    an account whose *first* key — the attacker's — needs only a code. So the
+    session must have been proved recently with a key. Accounts the policy
+    does not cover, or that hold no key yet, are unchanged.
+    """
+    from api.services import mfa as mfa_service
+
+    if not stepup_requires_webauthn(settings, role) or not has_credentials(settings, username):
+        return
+    deadline = mfa_service.stepup_deadline(mfa_verified_at, settings)
+    if (
+        mfa_method != FACTOR_WEBAUTHN
+        or deadline is None
+        or deadline <= mfa_service.now_utc()
+    ):
+        raise PermissionError(
+            "turning multi-factor authentication off needs a recent multi-factor "
+            "verification with a security key you hold; re-verify with "
+            "POST /api/auth/mfa/verify using the key"
+        )
+
+
 def begin_registration(settings: Settings, username: str, *, binding: str) -> dict[str, Any]:
     """Issue ``PublicKeyCredentialCreationOptions`` for a new key.
 

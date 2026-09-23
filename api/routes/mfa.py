@@ -381,12 +381,29 @@ def disable_mfa(
     somebody who has stolen a token holds neither of the two things this asks
     for. There is deliberately no admin route that does this *to* another
     account without recording it as a reset — see below.
+
+    Where the key policy covers the account and it holds a security key, the
+    session must also have been proved recently *with* that key (#315):
+    disabling removes the keys, and a relayed password and code must not be a
+    way to clear the owner's keys and enrol the phisher's. Checked before the
+    limiter, so a refusal here spends neither the code nor an attempt; the 403
+    carries the step-up sentence, so the console raises its prompt.
     """
     if not (body.code or body.recovery_code):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="supply either 'code' or 'recovery_code'",
         )
+    try:
+        passkeys_service.check_disable_proof(
+            settings,
+            user.username,
+            role=user.role.value,
+            mfa_verified_at=user.mfa_verified_at,
+            mfa_method=user.mfa_method,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     def _both() -> None:
         mfa_service.check_password(settings, user.username, body.password)
