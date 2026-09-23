@@ -735,14 +735,14 @@ republished when the broker returns.
 |---|---|---|
 | `OCTO_NATS_OUTBOX_ENABLED` | `true` | Record a publication the broker refused in the `nats_outbox` table and republish it when NATS returns. **This is what lets NATS be a non-blocking readiness check.** With it off there is nowhere to write a refused message down, so the publication that owns the bus hop fails instead of closing: the run's `run_publications` row retries, ends `dead` and takes the run's own projections with it. That is the one configuration in which a broker outage still costs a scan — loudly rather than silently, but it costs it. See [operations.md § NATS outbox](operations.md#nats-outbox) |
 | `OCTO_NATS_OUTBOX_INTERVAL_SECONDS` | `30` | How often this replica drains the due end of the outbox. Floored at 1 |
-| `OCTO_NATS_OUTBOX_BATCH_SIZE` | `10` | Entries republished per tick. Small on purpose, unlike the webhook dispatcher's 50: one ingest entry carries a run archive, so a batch is megabytes held in the process at once |
+| `OCTO_NATS_OUTBOX_BATCH_SIZE` | `10` | Entries republished per tick. Small on purpose, unlike the webhook dispatcher's 50: one ingest entry carries a run archive, so a batch is megabytes held in the process at once. Split between `kind=ingest` (`floor(n/2)`) and asset events (the rest), unused slots going to the other kind; `1` is plain FIFO across kinds — see `docs/operations.md` |
 | `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` | `20` | Republish attempts before an entry goes `dead` and waits for an operator (`nats_outbox.requeue_dead`). At the default backoff that is close to four hours of retrying |
 | `OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` | `15` | First backoff after a failed republish; doubles per attempt |
 | `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS` | `900` | Cap on that backoff |
 | `OCTO_NATS_INGEST_DEDUPE_SECONDS` | `86400` | JetStream duplicate window on the `INGEST` stream, clamped to `OCTO_NATS_INGEST_MAX_AGE_SECONDS` unless that is `0` (unbounded retention), which does **not** switch dedupe off. Wide enough to cover the whole retry schedule above: a publish whose ack timed out after the server stored it is a genuine duplicate on replay, and JetStream's own 2-minute default is shorter than a single backoff |
-| `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `ingest_backlog: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
+| `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `nats_outbox: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
 
-The unrecovered backlog is the `ingest_backlog` check on `/readyz` and
+The unrecovered backlog is the `nats_outbox` check on `/readyz` and
 `/api/health` and the `octo_nats_outbox_backlog` gauge; draining it is
 [operations.md § NATS outbox](operations.md#nats-outbox).
 

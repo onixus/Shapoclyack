@@ -187,7 +187,7 @@ def reset_for_tests() -> None:
         session.query(models.WebhookDelivery).delete()
         # No FK to tenants, so nothing cascades into them: without these two
         # lines a test that uploads a result with OCTO_NATS_URL set leaves a
-        # row, and the next test to read /readyz gets an ``ingest_backlog`` or
+        # row, and the next test to read /readyz gets an ``nats_outbox`` or
         # ``run_publications`` error it never created — an order-dependent
         # flake, and one that also makes "is this run still owed a
         # publication?" answer about somebody else's run.

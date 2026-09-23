@@ -2430,16 +2430,16 @@ installation with a healthy broker has an empty table.
 
 What an operator sees:
 
-* `/readyz` and `/api/health` carry an `ingest_backlog` check next to `nats`.
-  It is `error` when something has been owed for longer than
+* `/readyz` and `/api/health` carry a `nats_outbox` check next to `nats`.
+  It is `error` when any kind has been owed for longer than
   `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` (default 300), or when any entry has
   gone `dead`. Both endpoints stay 200 — this degrades the installation, it
-  does not unready the replica.
-* `octo_nats_outbox_backlog{status="pending"|"stale"|"dead"}` — a cluster-wide
-  count, so aggregate with `max()`, not `sum()`. **This is the series to alert
-  on:** `stale` or `dead` above zero means HTTP is healthy while the analytical
-  projection is behind, which is exactly what relaxing the readiness check
-  could otherwise hide.
+  does not unready the replica. `kind=ingest` means the ClickHouse projection
+  is behind; `kind=asset_event` means webhook fan-out is behind.
+* `octo_nats_outbox_backlog{kind,status}` — a cluster-wide count, so aggregate
+  with `max by (kind, status)`, not `sum()`. `status="stale"` or `"dead"` above
+  zero identifies both the delayed downstream and whether the reconciler can
+  still recover it without an operator.
 * `octo_nats_outbox_total{kind,outcome}` — `recorded`, `republished`, `dead`,
   `superseded` (a recorded message a later attempt of the same publication
   delivered anyway, so the row was dropped instead of republished),
@@ -2503,10 +2503,14 @@ print(nats_outbox.backlog(settings))
 with get_session(settings.postgres_url) as session:
     for row in session.execute(
         select(
+            models.NatsOutboxEntry.kind,
             models.NatsOutboxEntry.status,
             func.count(),
             func.min(models.NatsOutboxEntry.created_at),
-        ).group_by(models.NatsOutboxEntry.status)
+        ).group_by(
+            models.NatsOutboxEntry.kind,
+            models.NatsOutboxEntry.status,
+        )
     ):
         print(row)
 "
@@ -2544,16 +2548,24 @@ Bounds worth knowing before an incident:
 * `dead` is the only status that needs a human, and it has exactly two exits:
   `requeue_dead` for entries that failed because the outage outlasted the
   retries, and `discard_dead` for entries an operator has decided against.
-  Until one of them is used, `ingest_backlog` stays `error` and
-  `octo_nats_outbox_backlog{status="dead"}` stays non-zero — the degraded
+  Until one of them is used, `nats_outbox` stays `error` and
+  `octo_nats_outbox_backlog{kind,status="dead"}` stays non-zero — the degraded
   signal does not expire on its own, by design.
-* Only ingest messages are recorded. A job offer is not (the job row is in
-  Postgres and a sensor claims over HTTP), and asset/audit events are not —
-  those are skipped and counted, see the matrix.
-* The table grows with the outage. Each entry holds one run archive, so size
-  the database accordingly, or accept the dead end: an installation that would
-  rather re-scan than keep the bodies sets `OCTO_NATS_OUTBOX_ENABLED=false`,
-  which makes a refused publish a logged loss again.
+* Ingest messages and asset-event envelopes are recorded. Job offers are
+  not (the job row is in Postgres and a sensor claims over HTTP), and audit
+  events are not — their database row is already durable.
+* A reconcile batch has two lanes: due `kind=ingest` rows take up to
+  `floor(batch/2)` slots, due asset events the rest (`ceil(batch/2)`), each
+  lane oldest first, and a lane with nothing due gives its slots to the other.
+  Whichever kind is older, both drain in every mixed batch: an asset-event
+  burst cannot put the next run's ClickHouse publish behind the whole burst,
+  and an ingest backlog cannot hold webhook fan-out (`asset.vulnerability.new`
+  included) behind itself. `OCTO_NATS_OUTBOX_BATCH_SIZE=1` cannot be split and
+  is plain FIFO across kinds — no priority for ingest, and no starvation of
+  either; use at least `2` if ingest should not queue behind asset events.
+* The table grows with the outage. Ingest entries hold a run archive; asset
+  events hold smaller envelopes. Size Postgres accordingly, or accept the dead
+  end: `OCTO_NATS_OUTBOX_ENABLED=false` makes refused publishes a logged loss.
 
 ### Per-tenant job stream
 
