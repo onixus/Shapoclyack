@@ -1,6 +1,7 @@
 import axios from "axios";
 import { activeSinceIssued, lastActivity } from "@/lib/session";
 import { isStepUpRefusal, useStepUpStore } from "@/lib/step-up";
+import type { WebAuthnAnswer, WebAuthnOptions } from "@/lib/webauthn";
 import type { AxiosError, InternalAxiosRequestConfig } from "axios";
 
 const TOKEN_KEY = "shapoclyack_access_token";
@@ -442,6 +443,13 @@ export type Me = {
   mfa_enabled?: boolean;
   mfa_required?: boolean;
   mfa_pending?: boolean;
+  /** The security-key half (#315): policy wants a key of this role, and this
+   * session was proved with a code instead — so it is confined to the
+   * security page until it is re-proved with a key. */
+  phishing_resistant_required?: boolean;
+  phishing_resistant_pending?: boolean;
+  /** Which factor proved this session: "totp", "recovery", "webauthn". */
+  mfa_method?: string | null;
 };
 
 /** The API resolves the tenant from the caller's memberships when the request
@@ -1260,6 +1268,8 @@ export async function verifyMfa(body: {
   mfa_token?: string | null;
   code?: string;
   recovery_code?: string;
+  /** A signed security-key assertion (#315), in place of a code. */
+  webauthn?: WebAuthnAnswer;
 }): Promise<LoginResult> {
   try {
     const { data } = await api.post<LoginResult>(
@@ -1268,6 +1278,7 @@ export async function verifyMfa(body: {
         mfa_token: body.mfa_token ?? undefined,
         code: body.code || undefined,
         recovery_code: body.recovery_code || undefined,
+        webauthn: body.webauthn,
       },
       WITH_REFRESH_COOKIE,
     );
@@ -1290,6 +1301,26 @@ export type MfaStatus = {
   /** Whether confirming an enrolment will ask for the password. False for an
    * SSO-provisioned account, which has none to give. */
   password_required: boolean;
+  /** Security keys (#315). Optional so an API older than WebAuthn still
+   * renders the panel — it simply has no key section. */
+  webauthn_available?: boolean;
+  webauthn_credentials?: number;
+  phishing_resistant_required?: boolean;
+  stepup_phishing_resistant?: boolean;
+};
+
+/** One registered security key or passkey. Nothing here is secret. */
+export type WebAuthnKey = {
+  id: string;
+  name: string;
+  credential_id: string;
+  aaguid: string;
+  transports: string[];
+  /** Synced to a cloud account (a passkey) rather than bound to one device. */
+  backed_up: boolean;
+  device_type: string;
+  created_at: string | null;
+  last_used_at: string | null;
 };
 
 export type MfaSetup = {
@@ -1350,6 +1381,62 @@ export async function disableMfa(body: {
       recovery_code: body.recovery_code || undefined,
     });
     return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Creation options for a new key on this account (#315). Needs a recent
+ * verification; the 403 otherwise raises the step-up prompt like any other. */
+export async function beginKeyRegistration(): Promise<WebAuthnOptions> {
+  try {
+    const { data } = await api.post<WebAuthnOptions>("/auth/mfa/webauthn/register/options");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function finishKeyRegistration(
+  answer: WebAuthnAnswer,
+  name: string,
+): Promise<WebAuthnKey> {
+  try {
+    const { data } = await api.post<WebAuthnKey>("/auth/mfa/webauthn/register/verify", {
+      ...answer,
+      name,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Request options naming this account's keys: for a login's second leg (with
+ * the challenge token) or for a step-up (without it, on the session). */
+export async function beginKeyAuthentication(mfaToken?: string | null): Promise<WebAuthnOptions> {
+  try {
+    const { data } = await api.post<WebAuthnOptions>("/auth/mfa/webauthn/authenticate/options", {
+      mfa_token: mfaToken ?? undefined,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchWebAuthnKeys(): Promise<WebAuthnKey[]> {
+  try {
+    const { data } = await api.get<WebAuthnKey[]>("/auth/mfa/webauthn/credentials");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function revokeWebAuthnKey(id: string): Promise<void> {
+  try {
+    await api.delete(`/auth/mfa/webauthn/credentials/${encodeURIComponent(id)}`);
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }

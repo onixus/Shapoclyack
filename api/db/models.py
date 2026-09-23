@@ -149,6 +149,69 @@ class User(Base):
     )
 
 
+class WebAuthnCredential(Base):
+    """One registered security key or passkey (migration 0061, #315).
+
+    Nothing here is secret: the private key never leaves the authenticator,
+    and what the relying party keeps is the public key and the counter it
+    checks the next assertion against. That is why, unlike ``mfa_secret``, none
+    of these columns goes through the secret envelope.
+
+    ``credential_id`` is the base64url ``rawId`` the browser reports, unique
+    across the installation — the spec makes it so, and a second account
+    presenting the same id is a replay of somebody else's registration.
+    ``sign_count`` is advanced by every accepted assertion under a row lock; an
+    assertion that does not move it past the stored value is refused as a
+    possible clone (authenticators that always report ``0`` are exempt, per
+    the spec, and the library applies that rule).
+    """
+
+    __tablename__ = "webauthn_credentials"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    credential_id: Mapped[str] = mapped_column(unique=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    # What the owner called it ("YubiKey on the keyring"), for the inventory.
+    name: Mapped[str] = mapped_column(default="")
+    aaguid: Mapped[str] = mapped_column(default="")
+    transports: Mapped[list] = mapped_column(JSON, default=list)
+    # Whether the authenticator reported the credential as synced to a cloud
+    # account (a passkey) rather than bound to one device (a security key).
+    backed_up: Mapped[bool] = mapped_column(default=False)
+    device_type: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class WebAuthnChallenge(Base):
+    """The server half of a WebAuthn ceremony in flight (migration 0061, #315).
+
+    Written by an options endpoint and **deleted** by the verification that
+    spends it — before the response is checked, so a failed attempt burns it
+    too. ``binding`` is the ``jti`` of the token that asked for the challenge:
+    a challenge minted for one login or one session cannot be spent by another.
+    """
+
+    __tablename__ = "webauthn_challenges"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), index=True
+    )
+    purpose: Mapped[str]  # register | authenticate
+    binding: Mapped[str]
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    # The address that asked: the options rate limit is per (account, address),
+    # so somebody else holding the password cannot spend the owner's budget.
+    client_ip: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+
+
 class ServiceToken(Base):
     """A non-interactive API credential, scoped to one tenant (Track E).
 
@@ -363,6 +426,11 @@ class SessionFamily(Base):
     expires_at: Mapped[datetime] = mapped_column(index=True)
     last_used_at: Mapped[datetime]
     mfa_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Which factor ``mfa_verified_at`` was proved with (``totp``, ``recovery``,
+    # ``webauthn``; migration 0061, #315). Always written together with it —
+    # a newer proof by a weaker factor must replace the label as well as the
+    # time — and carried into every refreshed access token.
+    mfa_method: Mapped[str | None] = mapped_column(default=None)
     revoked_at: Mapped[datetime | None] = mapped_column(default=None)
     revoked_reason: Mapped[str | None] = mapped_column(default=None)
 

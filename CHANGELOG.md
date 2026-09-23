@@ -31,8 +31,45 @@ All notable changes to Shapoclyack are documented in this file.
   `OCTO_REFRESH_COOKIE_SECURE` (on in `prod`, where `false` refuses startup;
   off by default in `dev`, like HSTS).
 
+- **Security keys and passkeys (WebAuthn / FIDO2) as a second factor**
+  ([#315](https://github.com/onixus/Shapoclyack/issues/315)). An account with
+  the authenticator app enrolled can register keys and use one instead of a
+  code at login (password or SSO) and for step-up. Ceremony endpoints under
+  `/api/auth/mfa/webauthn/…` (register options/verify, authenticate options;
+  the signed answer goes to `POST /api/auth/mfa/verify` as `webauthn`), an
+  inventory and self-service removal, all audited (`user.webauthn_register`,
+  `user.webauthn_revoke`). Attestation and assertions are verified with
+  `py_webauthn` (`webauthn==3.0.0`, new in `requirements-api.txt`). Challenges
+  are single-use, expire after five minutes and are bound to the login's
+  challenge token or to the session family, so a token refresh mid-ceremony is
+  harmless; asking for them is limited per binding and per (account, address)
+  with a 429, never by evicting another open challenge. The signature counter
+  is checked and advanced under a row lock. Relying party: `OCTO_WEBAUTHN_RP_ID` / `OCTO_WEBAUTHN_ORIGINS` /
+  `OCTO_WEBAUTHN_RP_NAME`, defaulting to `OCTO_PUBLIC_BASE_URL`. Turning MFA
+  off and the admin MFA reset remove every key. Migration
+  `0061_webauthn_credentials` (two new tables and a nullable
+  `session_families.mfa_method`, additive; chained after `0060_refresh_tokens`). Console: a *Security
+  keys and passkeys* section on `/security`, and **Use a security key** on the
+  login code step and in the step-up dialog. TOTP stays a supported factor.
+- **Requiring a phishing-resistant factor.** `OCTO_MFA_PHISHING_RESISTANT_ROLES`
+  names roles whose sessions count as fully signed in only when proved with a
+  key; a code-proved session of such a role is confined to the MFA routes (where
+  it can register a key) rather than refused. `OCTO_MFA_STEPUP_PHISHING_RESISTANT`
+  makes every step-up demand a key, and under either one disabling MFA or
+  removing a key costs a recent key proof. Sessions carry `mfa_method` next to
+  `mfa_verified_at`, in the access token and in the session family (so it
+  survives a refresh, and a code step-up replaces it), and `GET /api/auth/me` reports `mfa_method`,
+  `phishing_resistant_required` and `phishing_resistant_pending`. `prod` refuses
+  to start with either setting and no derivable relying party, and with an IP
+  RP ID, a non-https origin or an RP ID that is not a suffix of every origin.
+
 ### Changed
 
+- **A refused second factor on a step-up is `403`, not `401`.**
+  `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
+  response used to answer `401`, which the console treats as "session over"
+  and signs out on. The session was fine; only the proof was refused. The
+  login leg (with `mfa_token`) still answers `401`.
 - **`OCTO_JWT_EXPIRE_MINUTES` is now the absolute session length, not the
   access token's lifetime.** Console access tokens last
   `OCTO_ACCESS_TOKEN_EXPIRE_MINUTES` (15 minutes). A script that signs in with

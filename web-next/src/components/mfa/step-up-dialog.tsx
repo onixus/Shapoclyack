@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import { useStepUpStore } from "@/lib/step-up";
+import { isCancelledCeremony, isWebAuthnSupported } from "@/lib/webauthn";
 
 /**
  * "Enter a code to carry on", raised by the 403 the API answers a stale
@@ -37,9 +38,32 @@ export function StepUpDialog() {
   const detail = useStepUpStore((state) => state.detail);
   const clear = useStepUpStore((state) => state.clear);
   const verifyMfa = useAuthStore((state) => state.verifyMfa);
+  const verifyWithKey = useAuthStore((state) => state.verifyWithKey);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /** Step up with a security key (#315) — the only way through when policy
+   * wants a key, and simply the quicker one for anybody who holds one. */
+  async function onUseKey() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await verifyWithKey();
+      toast.success(t("mfa.stepup.done"));
+      clear();
+    } catch (err) {
+      setError(
+        isCancelledCeremony(err)
+          ? t("mfa.keys.cancelled")
+          : err instanceof Error
+            ? err.message
+            : t("login.failed"),
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -95,6 +119,16 @@ export function StepUpDialog() {
             ) : null}
           </div>
           <DialogFooter>
+            {isWebAuthnSupported() ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={submitting}
+                onClick={() => void onUseKey()}
+              >
+                {t("mfa.stepup.useKey")}
+              </Button>
+            ) : null}
             <Button type="submit" disabled={submitting}>
               {submitting ? t("login.mfa.submitting") : t("login.mfa.submit")}
             </Button>

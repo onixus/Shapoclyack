@@ -214,6 +214,40 @@ password, changing a role, setting a verified address, resetting somebody's
 MFA, replacing a scan scope, and the **Deploy Agent** button on the sensors
 page.
 
+#### Security keys and passkeys
+
+Below the authenticator panel, `/security` lists the account's **security keys
+and passkeys** and adds or removes them (#315). The section is not rendered at
+all on an installation with no WebAuthn relying party
+(`MfaStatus.webauthn_available`), and until the authenticator app is enrolled
+it says a key is added on top of one and offers no button. Each key shows its
+name, whether it is a synced passkey or bound to one device, when it was added
+and when it was last used; nothing about the key material is fetched.
+
+**Add a security key** fetches creation options, runs the browser's own prompt
+(`navigator.credentials.create`) and posts the result. The conversion between
+the API's base64url JSON and the browser's ArrayBuffers lives in
+`src/lib/webauthn.ts` — no helper library, no key material that the browser did
+not produce. Adding a key needs a recent verification, so a stale session gets
+the step-up dialog from the API's 403 and presses the button again afterwards,
+as everywhere else. **Remove** is behind the same step-up.
+
+At the login code step, **Use a security key** asks for a challenge bound to
+that login's token and signs it; the step-up dialog has the same button. Both
+appear only when the browser exposes WebAuthn (an `https` page or
+`localhost`); whether the account actually holds a key is the server's answer,
+shown as the error line if not. A prompt the user cancels or lets time out (the browser's
+`NotAllowedError`) is said in the console's own words rather than the browser's
+English. A refused key or code on a step-up is a `403` from the API, so it
+stays in the dialog as an error instead of signing the console out.
+
+When `OCTO_MFA_PHISHING_RESISTANT_ROLES` names your role and the session was
+verified with a code, the API confines it like an unfinished enrolment
+(`phishing_resistant_pending` on `/api/auth/me`). The same amber banner says so
+in its own words and sends you to `/security`; once a key is registered, **Verify
+with your key now** re-proves the session with it, and the confinement lifts
+on the new token.
+
 The login form also reads `local_login` from `GET /api/auth/sso` and says when
 password sign-in is disabled or reserved for break-glass accounts. It still
 renders the form under the notice: a break-glass operator has to be able to type

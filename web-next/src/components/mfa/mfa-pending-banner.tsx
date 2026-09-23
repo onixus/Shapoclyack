@@ -26,8 +26,11 @@ export function MfaPendingBanner() {
   const router = useRouter();
   const pathname = usePathname();
   const pending = useAuthStore((state) => state.user?.mfa_pending ?? false);
+  // The key policy confines a session the same way (#315): signed in with a
+  // code where this role needs a security key. Same page, different words.
+  const keyPending = useAuthStore((state) => state.user?.phishing_resistant_pending ?? false);
 
-  if (!pending || pathname === SETUP_PATH) return null;
+  if (!(pending || keyPending) || pathname === SETUP_PATH) return null;
 
   return (
     <div
@@ -37,7 +40,16 @@ export function MfaPendingBanner() {
       <span className="flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 shrink-0" />
         <span>
-          <strong className="font-semibold">{t("mfa.banner.title")}</strong> {t("mfa.banner.body")}
+          {pending ? (
+            <>
+              <strong className="font-semibold">{t("mfa.banner.title")}</strong> {t("mfa.banner.body")}
+            </>
+          ) : (
+            <>
+              <strong className="font-semibold">{t("mfa.banner.keyTitle")}</strong>{" "}
+              {t("mfa.banner.keyBody")}
+            </>
+          )}
         </span>
       </span>
       <Button type="button" size="sm" variant="outline" onClick={() => router.push(SETUP_PATH)}>

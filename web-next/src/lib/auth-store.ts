@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import {
+  beginKeyAuthentication,
   fetchMe,
   getAccessToken,
   getActiveTenant,
@@ -15,6 +16,7 @@ import {
   type Me,
 } from "@/lib/api";
 import { canOperate as canOperateIn } from "@/lib/authz";
+import { signWithKey } from "@/lib/webauthn";
 
 export { can, holdsPermission, isTenantAdmin, tenantRole } from "@/lib/authz";
 
@@ -44,6 +46,11 @@ type AuthState = {
   /** Second leg of a login, or a step-up on the current session. */
   verifyMfa: (input: { mfaToken?: string | null; code?: string; recoveryCode?: string }) =>
     Promise<void>;
+  /** The same, proved with a security key (#315): fetches a challenge bound to
+   * `mfaToken` (a login) or to the current session (a step-up), has the
+   * browser sign it, and presents the signature. Rejects if the user cancels
+   * the browser prompt or the account holds no key. */
+  verifyWithKey: (mfaToken?: string | null) => Promise<void>;
   /** Ends the session on the server as well as in this browser (#314), which
    * is why it is a promise now: forgetting the token locally left it working
    * for anyone who had copied it. The outcome is returned so the caller can
@@ -148,6 +155,12 @@ export const useAuthStore = create<AuthState>((set) => ({
     // Deliberately re-read rather than derived from the verify response: this
     // is also the step-up path, where the store already holds a principal and
     // the only thing that changed is what the *token* now proves.
+    await useAuthStore.getState().hydrate();
+  },
+  async verifyWithKey(mfaToken) {
+    const options = await beginKeyAuthentication(mfaToken);
+    const answer = await signWithKey(options);
+    await apiVerifyMfa({ mfa_token: mfaToken, webauthn: answer });
     await useAuthStore.getState().hydrate();
   },
   async logout() {

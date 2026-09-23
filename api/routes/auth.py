@@ -69,6 +69,7 @@ from api.services import local_login
 from api.services import memberships as memberships_service
 from api.services import mfa as mfa_service
 from api.services import oidc as oidc_service
+from api.services import passkeys as passkeys_service
 from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_policy
@@ -273,6 +274,7 @@ def refresh(
         session_id=rotated.family_id,
         session_expires_at=rotated.expires_at,
         mfa_verified_at=rotated.mfa_verified_at,
+        mfa_method=rotated.mfa_method,
         token_version=rotated.token_version,
     )
     answer = JSONResponse(
@@ -476,6 +478,11 @@ def me(
         mfa_enabled=mfa_service.is_enabled(settings, user.username),
         mfa_required=mfa_service.required_for_role(settings, user.role.value),
         mfa_pending=user.mfa_pending,
+        phishing_resistant_required=passkeys_service.phishing_resistant_required(
+            settings, user.role.value
+        ),
+        phishing_resistant_pending=user.phishing_resistant_pending,
+        mfa_method=user.mfa_method,
     )
 
 

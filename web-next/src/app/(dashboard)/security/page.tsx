@@ -2,6 +2,7 @@
 
 import { ShieldCheck } from "lucide-react";
 import { MfaPanel } from "@/components/mfa/mfa-panel";
+import { SecurityKeysPanel } from "@/components/mfa/security-keys-panel";
 import { PageHeader } from "@/components/page-header";
 import { useT } from "@/lib/i18n";
 
@@ -26,6 +27,7 @@ export default function SecurityPage() {
         tone="emerald"
       />
       <MfaPanel />
+      <SecurityKeysPanel />
     </div>
   );
 }

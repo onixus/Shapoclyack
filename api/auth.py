@@ -91,6 +91,13 @@ class TokenUser(BaseModel):
     # the family (#314). ``None`` for a service token and for a console token
     # minted before refresh tokens existed.
     session_id: str | None = None
+    # Which factor ``mfa_verified_at`` was proved with — ``totp``,
+    # ``recovery`` or ``webauthn`` — read from the same claim for the same
+    # reason. The phishing-resistant policy (``OCTO_MFA_PHISHING_RESISTANT_ROLES``)
+    # reads it; ``phishing_resistant_pending`` is that policy's verdict, derived
+    # per request like ``mfa_pending`` and confining the session the same way.
+    mfa_method: str | None = None
+    phishing_resistant_pending: bool = False
 
 
 class TenantPrincipal(BaseModel):
@@ -190,6 +197,12 @@ class MeResponse(BaseModel):
     mfa_enabled: bool = False
     mfa_required: bool = False
     mfa_pending: bool = False
+    # The WebAuthn half of the same picture: whether policy wants a key of this
+    # account's role, and whether *this* session was proved with something
+    # else and is confined until it is re-proved with one.
+    phishing_resistant_required: bool = False
+    phishing_resistant_pending: bool = False
+    mfa_method: str | None = None
 
 
 def hash_password(password: str) -> str:
@@ -233,6 +246,7 @@ def create_access_token(
     session_expires_at: datetime,
     mfa_verified_at: datetime | None = None,
     token_version: int | None = None,
+    mfa_method: str | None = None,
 ) -> str:
     """Mint a console session token (#314).
 
@@ -271,6 +285,9 @@ def create_access_token(
     Its lifetime is ``OCTO_ACCESS_TOKEN_EXPIRE_MINUTES``, never past the
     family's absolute end — a refresh at 7h59m does not buy a token that
     outlives the eight-hour session.
+    ``mfa_method`` rides next to it: *which* factor was proved, so that a
+    policy requiring a phishing-resistant one can tell a security key from a
+    relayed code. It is a fact about this session, like the timestamp.
     """
     from api.core.security import jwt_kid
     from api.services import sessions as sessions_service
@@ -291,6 +308,8 @@ def create_access_token(
     }
     if mfa_verified_at is not None:
         payload["mfa_verified_at"] = int(mfa_verified_at.timestamp())
+        if mfa_method:
+            payload["mfa_method"] = mfa_method
     return jwt.encode(
         payload,
         settings.jwt_secret,
@@ -463,6 +482,13 @@ def decode_token(settings: Settings, token: str) -> TokenUser:
             if isinstance(verified_at, (int, float))
             else None
         ),
+        # Only alongside a timestamp: a method with no proof time is not a
+        # proof of anything, and a hand-edited token cannot get this far anyway.
+        mfa_method=(
+            str(payload["mfa_method"])
+            if isinstance(verified_at, (int, float)) and isinstance(payload.get("mfa_method"), str)
+            else None
+        ),
     )
 
 
@@ -477,6 +503,9 @@ class PreAuthChallenge(BaseModel):
 
     username: str
     break_glass: bool = False
+    # The token's own id. A WebAuthn challenge issued on this login is bound to
+    # it (#315), so a challenge cannot be carried over to a different login.
+    jti: str | None = None
 
 
 def create_pre_auth_token(
@@ -555,7 +584,11 @@ def decode_pre_auth_token(settings: Settings, token: str) -> PreAuthChallenge:
             detail="Session store is unavailable, try again",
             headers={"Retry-After": "5"},
         ) from exc
-    return PreAuthChallenge(username=username, break_glass=bool(payload.get("bg")))
+    return PreAuthChallenge(
+        username=username,
+        break_glass=bool(payload.get("bg")),
+        jti=str(payload["jti"]) if payload.get("jti") else None,
+    )
 
 
 def decode_agent_token(settings: Settings, token: str) -> AgentPrincipal:
@@ -668,7 +701,9 @@ def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
     the policy applying to sessions that predate it; the alternative was a
     claim, and a claim is a promise made once about a fact that changes.
     """
-    if not settings.mfa_required_roles:
+    # Either list makes a role MFA-required (``mfa.required_for_role``): a
+    # role that must hold a key must hold a factor at all.
+    if not (settings.mfa_required_roles or settings.mfa_phishing_resistant_roles):
         return False
     from api.services import mfa as mfa_service
 
@@ -677,26 +712,52 @@ def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
     return not mfa_service.is_enabled(settings, user.username)
 
 
-def _enforce_mfa_enrolment(request: Request) -> None:
+def _owes_phishing_resistant_factor(settings: Settings, user: TokenUser) -> bool:
+    """Whether this session was proved with a code where a key is required (#315).
+
+    Decided from the policy and the session's own ``mfa_method`` claim, with no
+    query: which factor *this* session was proved with is a fact about the
+    token, and the policy is configuration. An account that has not enrolled at
+    all is :func:`_owes_enrolment`'s case and is confined there first.
+    """
+    if not settings.mfa_phishing_resistant_roles:
+        return False
+    from api.services import passkeys as passkeys_service
+
+    if not passkeys_service.phishing_resistant_required(settings, user.role.value):
+        return False
+    return user.mfa_method != passkeys_service.FACTOR_WEBAUTHN
+
+
+_ENROLMENT_REQUIRED_DETAIL = (
+    "This installation requires multi-factor authentication for your role. "
+    "Enrol an authenticator with POST /api/auth/mfa/totp/setup before using "
+    "the rest of the API."
+)
+#: Worded for the console as well as for a script: "security key" is what the
+#: banner keys on, the two endpoints are what a script needs.
+_PHISHING_RESISTANT_REQUIRED_DETAIL = (
+    "This installation requires a security key (WebAuthn) for your role. "
+    "Register one with POST /api/auth/mfa/webauthn/register/options, then sign "
+    "in with it through POST /api/auth/mfa/verify."
+)
+
+
+def _enforce_mfa_enrolment(request: Request, detail: str = _ENROLMENT_REQUIRED_DETAIL) -> None:
     """Confine a session that owes this installation a second factor (#315).
 
     The account is in a role ``OCTO_MFA_REQUIRED_ROLES`` names and has not
-    enrolled. Refusing the *login* would leave nobody able to enrol, so the
-    session exists and is worth exactly one thing: setting up MFA. Everything
-    else is a 403 that names the endpoint to go to, which is what the console
-    turns into its banner.
+    enrolled — or, with ``detail`` naming it, a role
+    ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` names whose session was proved with a
+    code rather than a key. Refusing the *login* would leave nobody able to
+    enrol, so the session exists and is worth exactly one thing: setting up
+    the factor. Everything else is a 403 that names the endpoint to go to,
+    which is what the console turns into its banner.
     """
     path = request.url.path.rstrip("/") or request.url.path
     if any(path == allowed or path.startswith(f"{allowed}/") for allowed in _MFA_PENDING_ALLOWED_PATHS):
         return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=(
-            "This installation requires multi-factor authentication for your role. "
-            "Enrol an authenticator with POST /api/auth/mfa/totp/setup before using "
-            "the rest of the API."
-        ),
-    )
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 def get_current_user(
@@ -722,6 +783,9 @@ def get_current_user(
     if _owes_enrolment(settings, user):
         user.mfa_pending = True
         _enforce_mfa_enrolment(request)
+    elif _owes_phishing_resistant_factor(settings, user):
+        user.phishing_resistant_pending = True
+        _enforce_mfa_enrolment(request, _PHISHING_RESISTANT_REQUIRED_DETAIL)
     return user
 
 
@@ -777,8 +841,14 @@ def require_step_up(
     Only for accounts that have MFA enabled. An installation that has not
     adopted MFA behaves exactly as it did, which is what makes this safe to
     turn on for everyone at once rather than behind a flag.
+
+    Where policy asks for a phishing-resistant factor — the account's role is
+    in ``OCTO_MFA_PHISHING_RESISTANT_ROLES``, or
+    ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` is on — the recent proof must also
+    have been a WebAuthn assertion (the session's ``mfa_method``).
     """
     from api.services import mfa as mfa_service
+    from api.services import passkeys as passkeys_service
 
     if getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is not None:
         # A service token is a credential with its own expiry and revocation,
@@ -800,7 +870,22 @@ def require_step_up(
     # directly is a check whose expiry cannot be tested, and an expiry nobody
     # tests is a setting that can quietly stop meaning anything.
     if deadline is not None and deadline > mfa_service.now_utc():
-        return user
+        if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN or not (
+            passkeys_service.stepup_requires_webauthn(settings, user.role.value)
+        ):
+            return user
+        # Recent, but proved with a code where policy wants a key. Same marker
+        # sentence as the stale case, so the console raises the same prompt —
+        # it offers the key there.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This operation needs a recent multi-factor verification with a "
+                "security key (WebAuthn); a code does not satisfy this "
+                "installation's policy. Re-verify with POST /api/auth/mfa/verify "
+                "using a registered key and retry with the token it returns."
+            ),
+        )
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=(

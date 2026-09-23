@@ -155,7 +155,9 @@ MFA_VERIFICATIONS_TOTAL = Counter(
     "setup_success, setup_failure). 'recovery' is a sign-in that spent a "
     "recovery code rather than an authenticator code (#315): it is a success, "
     "and a rate worth watching — a user burning codes has lost their phone, "
-    "and a spike across accounts is an incident.",
+    "and a spike across accounts is an incident. The webauthn_* outcomes "
+    "(webauthn_success, webauthn_failure, webauthn_setup_success, "
+    "webauthn_setup_failure) are the same checks made with a security key.",
     ["outcome"],
     registry=REGISTRY,
 )

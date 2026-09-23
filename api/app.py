@@ -29,6 +29,7 @@ from api.routes import endpoint_inventory as endpoint_inventory_routes
 from api.routes import jobs as jobs_routes
 from api.routes import maintenance as maintenance_routes
 from api.routes import mfa as mfa_routes
+from api.routes import passkeys as passkeys_routes
 from api.routes import promoted_domains as promoted_domains_routes
 from api.routes import adoption as adoption_routes
 from api.routes import usage as usage_routes
@@ -360,6 +361,7 @@ def create_app() -> FastAPI:
     app.include_router(wordlists_routes.router, prefix="/api")
     app.include_router(users_routes.router, prefix="/api")
     app.include_router(mfa_routes.router, prefix="/api")
+    app.include_router(passkeys_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
     app.include_router(rbac_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
