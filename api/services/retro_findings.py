@@ -210,7 +210,11 @@ def _find(session: Any, *, tenant_id: str, key: str, lock: bool) -> models.Vulne
         models.Vulnerability.finding_key == key,
     )
     if lock:
-        query = query.with_for_update()
+        # NOWAIT, not a wait capped by LOCK_TIMEOUT: lock_timeout bounds each
+        # wait on its own, and a retro transaction that waited 400 ms twice
+        # could still outlast the scan's deadlock_timeout and make the scan
+        # the victim. A retro row the scan holds is simply skipped this time.
+        query = query.with_for_update(nowait=True)
     return session.execute(query).scalar_one_or_none()
 
 
