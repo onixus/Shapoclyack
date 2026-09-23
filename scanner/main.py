@@ -183,7 +183,9 @@ def _run_policy_controlled_secondary_stage(stage: str, func):  # type: ignore[no
     """Run network-active follow-up work only when its policy contract exists.
 
     New secondary stages that open connections must use this wrapper. An
-    unregistered name stops the run rather than bypassing tenant ceilings.
+    unregistered name stops the run rather than bypassing tenant ceilings; a
+    stage that skips the wrapper altogether is caught by the stage
+    classification test instead (see ``NON_SECONDARY_ACTIVE_STAGES``).
     """
     require_secondary_active_stage_policy(stage)
     return _run_stage(stage, func)

@@ -399,13 +399,30 @@ and not the next is not a ceiling:
   `scanner/config/default.yaml`: ports no scan started from this config may
   touch.
 
-Every secondary stage that opens fresh connections is registered in
-`SECONDARY_ACTIVE_STAGE_POLICIES` and invoked through the guarded pipeline
-wrapper. The registry names both its concurrency field and the switch that
-suppresses active work. An unregistered name stops the run, and a regression
-test enumerates the guarded call sites in `scanner/main.py`; adding a network
-stage therefore requires an explicit policy decision rather than inheriting an
-unbounded local default by accident.
+Every secondary stage that opens fresh connections to scanned hosts is
+registered in `SECONDARY_ACTIVE_STAGE_POLICIES` (`scanner/pipeline/scan_policy.py`)
+with its concurrency field and the switch that suppresses its active work, and
+runs through the guarded wrapper `_run_policy_controlled_secondary_stage`.
+Every other stage is listed in `NON_SECONDARY_ACTIVE_STAGES` with the reason it
+is not one: a primary stage held by policy fields of its own, a third-party or
+DNS source, or artifact-only work.
+
+The guarantee is a test, not the wrapper. `tests/test_scanner_scan_policy.py`
+parses `scanner/main.py`, collects the stage name of every `_run_stage` and
+guarded-wrapper call, and fails when a name is in neither registry, when a
+registered active stage bypasses the wrapper, or when a stage name is not a
+string literal it can check. Adding a stage therefore requires a written policy
+decision before CI goes green. The wrapper is the runtime backstop on top: it
+stops the run if it is handed a name with no contract, but it only sees names
+passed to it. Work run outside both wrappers is invisible to either check, so
+new network work belongs in a stage.
+
+Being outside the secondary registry is not the same as sending nothing to the
+target's infrastructure. Two such stages are bounded by count, not by the
+tenant policy: `dns_hygiene` with `axfr_probe` on (see
+[Active checks and target authorization](#active-checks-and-target-authorization)),
+and `mail_posture`, which fetches `https://mta-sts.<domain>/.well-known/mta-sts.txt`
+once per seed domain through the public-address-only HTTP client.
 
 **Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a

@@ -48,12 +48,56 @@ class ScanPolicyError(ValueError):
 #: passive parsing of NSE/Pulse evidence already collected by another stage.
 #:
 #: Pipeline call sites go through :func:`require_secondary_active_stage_policy`,
-#: so adding a new active stage without declaring how policy controls it fails
-#: closed instead of silently creating another route around the tenant ceiling.
+#: which stops the run on a name missing here. That runtime guard only sees the
+#: names handed to it, though: what makes a new stage impossible to add without
+#: a decision is that every stage in ``scanner/main.py`` must appear either here
+#: or in :data:`NON_SECONDARY_ACTIVE_STAGES`, and a regression test enforces it.
 SECONDARY_ACTIVE_STAGE_POLICIES: dict[str, tuple[str, str]] = {
     "tls_posture": ("probe_concurrency", "probe_fallback"),
     "fingerprint": ("concurrency", "enabled"),
     "screenshots": ("concurrency", "enabled"),
+}
+
+#: Every other pipeline stage, with the reason it is not a secondary active
+#: stage. A stage name in ``scanner/main.py`` that is in neither registry fails
+#: ``tests/test_scanner_scan_policy.py``: the author has to say which kind of
+#: stage it is before it can ship.
+#:
+#: The reasons are claims about what the stage puts on the wire, checked
+#: against its module. "Not secondary active" is not "sends nothing to the
+#: target's infrastructure" — ``dns_hygiene`` and ``mail_posture`` below each
+#: have one such request, bounded by count rather than by the tenant policy.
+NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
+    # Primary stages: each is held by policy fields of its own in apply_policy.
+    "discover": "primary: discover_rate, wave2/verify/tcp_probe rates, icmp period, discover_concurrency",
+    "ports": "primary: port_rate, per_host_rate, ports_concurrency, avoid_ports",
+    "verify_alive": "primary: discovery.verify.rate held to max_discover_rate",
+    "pulse": "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe",
+    "nse": "primary: nse_max_rate, nse_concurrency; off with skip_service_probe",
+    "nuclei": "primary: rate_limit, concurrency; off with skip_service_probe",
+    # Third-party sources and DNS: no connection to an address in scope.
+    "cloudflare": "Cloudflare API zone export",
+    "ct": "CT log APIs (crt.sh, certspotter, OTX) and DNS lookups through resolvers",
+    "asn": "DNS lookups and a public BGP/ASN API",
+    "ownership": "RDAP servers through safe_http",
+    "cloud": "HTTP to cloud storage provider endpoints, not to in-scope addresses",
+    "resolve": "dnsx lookups through resolvers",
+    "discover-hostnames": "dnsx PTR lookups through resolvers",
+    "domain_monitor": "DNS lookups only; never contacts the flagged service",
+    "dns_hygiene": (
+        "DNS queries through resolvers; the opt-in axfr_probe makes one TCP/53 "
+        "transfer per public nameserver, gated by the scanner config (docs/operations.md)"
+    ),
+    "mail_posture": (
+        "DNS TXT/MX lookups plus one HTTPS GET of mta-sts.<domain> per seed domain "
+        "through safe_http (public addresses only, no redirects)"
+    ),
+    "related_domains": "crt.sh organisation search",
+    "credential_leaks": "breach-database provider API",
+    # Artifact-only: read what earlier stages wrote, open no connection.
+    "pulse_shadow": "diff of pulse and nmap artifacts",
+    "report": "report build from stage artifacts and local enrichment databases",
+    "controls": "controls matrix from stage artifacts",
 }
 
 

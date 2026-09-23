@@ -13,14 +13,15 @@ starts from is a real one: ``safe`` discovery at 2000 packets per second.
 
 from __future__ import annotations
 
+import ast
 import json
-import re
 from pathlib import Path
 
 import pytest
 
 from scanner.pipeline.config_schema import load_config
 from scanner.pipeline.scan_policy import (
+    NON_SECONDARY_ACTIVE_STAGES,
     SECONDARY_ACTIVE_STAGE_POLICIES,
     ScanPolicyError,
     apply_policy,
@@ -28,6 +29,46 @@ from scanner.pipeline.scan_policy import (
     require_secondary_active_stage_policy,
 )
 
+
+_MAIN = Path(__file__).resolve().parents[1] / "scanner" / "main.py"
+_PLAIN_WRAPPER = "_run_stage"
+_GUARDED_WRAPPER = "_run_policy_controlled_secondary_stage"
+
+
+def _pipeline_stage_calls() -> set[tuple[str, str]]:
+    """``(wrapper, stage)`` for every stage-runner call in ``scanner/main.py``.
+
+    Parsed rather than grepped so a call split across lines or spelled with a
+    keyword argument is still seen. A stage name that is not a string literal
+    fails here: a computed name is one no registry check can follow. The one
+    exception is the guarded wrapper forwarding its own, already checked,
+    ``stage`` parameter to ``_run_stage``.
+    """
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
+    forwarding = {
+        id(inner)
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == _GUARDED_WRAPPER
+        for inner in ast.walk(node)
+    }
+    calls: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if id(node) in forwarding:
+            continue
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id not in (_PLAIN_WRAPPER, _GUARDED_WRAPPER):
+            continue
+        stage = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg == "stage"), None
+        )
+        assert isinstance(stage, ast.Constant) and isinstance(stage.value, str), (
+            f"scanner/main.py:{node.lineno} calls {node.func.id} with a stage name "
+            "that is not a string literal; the scan-policy classification cannot check it"
+        )
+        calls.add((node.func.id, stage.value))
+    assert calls, f"no stage calls found in {_MAIN}; the classification check reads nothing"
+    return calls
 
 def _config(**runtime: object):
     """A valid config whose ``safe`` profile carries the shipped rates."""
@@ -204,16 +245,39 @@ def test_secondary_active_stage_contract_is_central_and_fail_closed():
     with pytest.raises(ScanPolicyError, match="no scan-policy contract"):
         require_secondary_active_stage_policy("future_active_stage")
 
-    source = Path("scanner/main.py").read_text(encoding="utf-8")
-    guarded = set(
-        re.findall(
-            r'_run_policy_controlled_secondary_stage\(\s*"([^"]+)"',
-            source,
-        )
-    )
+    calls = _pipeline_stage_calls()
+    guarded = {stage for wrapper, stage in calls if wrapper == _GUARDED_WRAPPER}
     assert guarded == set(SECONDARY_ACTIVE_STAGE_POLICIES)
     for stage in SECONDARY_ACTIVE_STAGE_POLICIES:
-        assert not re.search(rf'_run_stage\(\s*"{stage}"', source)
+        assert (_PLAIN_WRAPPER, stage) not in calls, (
+            f"{stage!r} is a secondary active stage and must run through "
+            f"{_GUARDED_WRAPPER}, not {_PLAIN_WRAPPER}"
+        )
+
+
+def test_every_pipeline_stage_has_a_policy_classification():
+    """A new stage cannot ship until someone decides whether policy governs it.
+
+    The runtime guard only checks the names passed to it, so a network stage
+    added as ``_run_stage("banner_grab", ...)`` walked straight past it. This
+    enumerates every stage call in ``scanner/main.py`` instead and requires
+    each name to be in exactly one of the two registries.
+    """
+    assert not set(SECONDARY_ACTIVE_STAGE_POLICIES) & set(NON_SECONDARY_ACTIVE_STAGES)
+
+    stages = {stage for _, stage in _pipeline_stage_calls()}
+    unclassified = sorted(
+        stages - set(SECONDARY_ACTIVE_STAGE_POLICIES) - set(NON_SECONDARY_ACTIVE_STAGES)
+    )
+    assert not unclassified, (
+        f"pipeline stage(s) {unclassified} have no scan-policy decision: add each to "
+        "SECONDARY_ACTIVE_STAGE_POLICIES (and run it through "
+        f"{_GUARDED_WRAPPER}) if it opens connections to scanned hosts, or to "
+        "NON_SECONDARY_ACTIVE_STAGES with the reason it does not"
+    )
+    # A registry entry for a stage that no longer exists is a claim nobody checks.
+    stale = sorted(set(NON_SECONDARY_ACTIVE_STAGES) - stages)
+    assert not stale, f"NON_SECONDARY_ACTIVE_STAGES lists stage(s) main.py never runs: {stale}"
 
 
 def test_avoided_ports_are_added_to_the_exclusions_the_config_already_has():
