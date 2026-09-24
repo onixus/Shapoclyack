@@ -22,6 +22,7 @@ from sqlalchemy import select, update
 from api.db import models
 from api.db.engine import get_session
 from api.services import legal_hold
+from api.services import tenant_lifecycle as lifecycle
 from api.services import scan_schedules
 from api.services import sessions as sessions_service
 from api.services import tenant_purge
@@ -60,6 +61,9 @@ def env(tmp_path, monkeypatch):
         tenant_deletion_grace_days=0,
         tenant_deletion_two_person=False,
         tenant_purge_batch_size=100,
+        # No ClickHouse or NATS here, and said so: a purge fails on a store
+        # that is merely not configured (review round 1, finding 7).
+        tenant_purge_unused_stores=("clickhouse", "jetstream"),
     )
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     admin = auth_headers(client, "admin")
@@ -724,3 +728,141 @@ def test_tenants_status_is_one_of_the_schema_words(env):
     from api.schemas import TenantStatus
 
     assert set(get_args(TenantStatus)) == set(tenants_service.STATUSES)
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1
+# --------------------------------------------------------------------------- #
+
+
+def test_suspending_again_with_revoke_revokes_what_the_first_kept(env):
+    """Kept for a short suspension, then leaked: the second suspension revokes."""
+    client, settings, admin = env
+    minted = client.post(
+        f"/api/tenants/{ACME}/service-tokens",
+        headers=admin,
+        json={"name": "siem", "role": "viewer", "scopes": ["assets:read"], "ttl_days": 30},
+    )
+    key = _key(client, admin)
+    _suspend(client, admin, revoke_credentials=False)
+    again = _suspend(client, admin, revoke_credentials=True)
+    assert again["cut"]["service_tokens_revoked"]["ids"] == [minted.json()["token_id"]]
+    assert again["cut"]["provisioning_keys_revoked"]["count"] == 1
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.ServiceToken, minted.json()["token_id"]).revoked_at is not None
+    rows = _audit(settings, "tenant.suspend")
+    assert len(rows) == 2 and rows[1].after["service_tokens_revoked"]["count"] == 1
+    _resume(client, admin)
+    token = bearer(minted.json()["token"])
+    assert client.get("/api/assets", headers=token).status_code == 401
+    assert client.post("/api/auth/agent/token", json={"provisioning_key": key}).status_code == 401
+    # Nothing left to revoke: a third request is the idempotent one again.
+    _suspend(client, admin)
+    _suspend(client, admin, revoke_credentials=True)
+    assert len(_audit(settings, "tenant.suspend")) == 3
+
+
+def test_a_suspended_tenants_agent_is_still_told_to_stop_its_running_scan(env):
+    """#360's stop travels on the heartbeat's answer, so that answer — and only
+    that — still reaches a closed tenant's agent, with a revoked key too."""
+    client, settings, admin = env
+    agent = _agent(client, _key(client, admin))
+    running = _queue(client, admin)
+    assert client.post("/api/agent/jobs/claim?agent_id=edge-1", headers=agent).status_code == 200
+    assert _heartbeat(client, agent, job_id=running).status_code == 200
+    with get_session(settings.postgres_url) as session:
+        seen = session.get(models.Agent, "edge-1").last_seen_at
+
+    _suspend(client, admin)
+    stop = _heartbeat(client, agent, job_id=running)
+    assert stop.status_code == 200, stop.text
+    assert stop.json()["cancel_requested"] is True
+    with get_session(settings.postgres_url) as session:
+        job = session.get(models.Job, running)
+        assert job.status == "cancelling" and job.claimed_until is None
+        # Answered, not accepted: the agent is not seen, the lease not renewed.
+        assert session.get(models.Agent, "edge-1").last_seen_at == seen
+    # Anything else it sends is refused like every other request.
+    idle = _heartbeat(client, agent)
+    assert idle.status_code == 401 and "suspended" in idle.json()["detail"]
+    other = _heartbeat(client, agent, job_id="job-it-does-not-hold")
+    assert other.status_code == 401
+    assert client.post("/api/agent/jobs/claim?agent_id=edge-1", headers=agent).status_code == 401
+    # Once the job is closed there is nothing left to say.
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, running).status = "cancelled"
+    assert _heartbeat(client, agent, job_id=running).status_code == 401
+
+
+def test_a_scan_admitted_as_the_tenant_is_suspended_is_refused_not_left_queued(
+    env, monkeypatch
+):
+    """Admission reads the status in a transaction of its own; the insert
+    re-reads it under FOR SHARE, which the suspension's FOR UPDATE serialises
+    against."""
+    client, settings, admin = env
+    from api.services import job_submission
+
+    real = job_submission.scan_admission.admit_scan
+
+    def admit_then_suspend(*args, **kwargs):
+        admitted = real(*args, **kwargs)
+        lifecycle.suspend(settings, ACME, reason="race", actor="root")
+        return admitted
+
+    monkeypatch.setattr(job_submission.scan_admission, "admit_scan", admit_then_suspend)
+    refused = client.post(
+        f"/api/jobs?tenant_id={ACME}",
+        headers=admin,
+        json={"mode": "safe", "skip_nse": True, "ranges": "127.0.0.1\n", "ports": "80\n"},
+    )
+    assert refused.status_code in (400, 403, 409, 422), refused.text
+    with get_session(settings.postgres_url) as session:
+        queued = session.execute(
+            select(models.Job.job_id).where(
+                models.Job.tenant_id == ACME, models.Job.status == "queued"
+            )
+        ).all()
+    assert queued == []
+
+
+def test_the_journal_listing_is_paged(env):
+    client, settings, admin = env
+    for tenant_id in (ACME, GLOBEX):
+        assert _request(client, admin, tenant_id).status_code == 202
+        assert client.delete(f"/api/tenants/{tenant_id}/deletion", headers=admin).status_code == 200
+    first = client.get("/api/tenants/deletions?limit=1", headers=admin)
+    assert first.status_code == 200, first.text
+    second = client.get("/api/tenants/deletions?limit=1&offset=1", headers=admin)
+    assert [len(first.json()), len(second.json())] == [1, 1]
+    assert first.json()[0]["tenant_id"] != second.json()[0]["tenant_id"]
+    # Steps come with every row, loaded in one query for the page.
+    assert len(first.json()[0]["steps"]) == len(lifecycle.STEPS)
+    assert client.get("/api/tenants/deletions?limit=0", headers=admin).status_code == 422
+
+
+def test_the_two_person_rule_fails_closed_on_what_it_does_not_recognise(monkeypatch):
+    from api.settings import load_settings
+
+    for raw, expected in (
+        ("on", True),
+        ("enabled", True),
+        ("true ", True),
+        ("tru", True),
+        (" FALSE ", False),
+        ("off", False),
+        ("0", False),
+        ("no", False),
+    ):
+        monkeypatch.setenv("OCTO_TENANT_DELETION_TWO_PERSON", raw)
+        assert load_settings().tenant_deletion_two_person is expected, raw
+
+
+def test_the_unused_stores_setting_refuses_a_name_it_does_not_know(monkeypatch):
+    from api.settings import load_settings
+
+    monkeypatch.setenv("OCTO_TENANT_PURGE_UNUSED_STORES", " JetStream , clickhouse,")
+    assert load_settings().tenant_purge_unused_stores == ("clickhouse", "jetstream")
+    monkeypatch.setenv("OCTO_TENANT_PURGE_UNUSED_STORES", "clickhouse,minio")
+    with pytest.raises(ValueError, match="minio"):
+        load_settings()

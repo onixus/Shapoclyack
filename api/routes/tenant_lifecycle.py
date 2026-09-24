@@ -245,13 +245,16 @@ def list_tenant_deletions(
         str | None,
         Query(pattern="^(pending|cancelled|purging|blocked|completed)$"),
     ] = None,
+    limit: Annotated[int, Query(ge=1, le=lifecycle.MAX_LIST_LIMIT)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TenantDeletionInfo]:
-    """The deletion journal, newest first, tombstones included.
+    """The deletion journal, newest first, tombstones included; paged.
 
     ``?state=completed`` is the list to re-apply after restoring a backup
-    taken before any of them (``docs/tenant-lifecycle.md``).
+    taken before any of them (``docs/tenant-lifecycle.md``) — page through it
+    with ``offset`` until a page comes back short.
     """
     return [
         TenantDeletionInfo.model_validate(row)
-        for row in lifecycle.list_deletions(settings, state=state)
+        for row in lifecycle.list_deletions(settings, state=state, limit=limit, offset=offset)
     ]

@@ -415,6 +415,25 @@ class AgentCredentialRevoked(RuntimeError):
     """
 
 
+class TenantClosed(AgentCredentialRevoked):
+    """The agent's tenant is suspended, pending deletion or being deleted (#325).
+
+    A 401 like any revoked credential, with one exception made by the
+    heartbeat route (``api.auth.require_agent_heartbeat``): a job the platform
+    asked the agent to stop is answered with the stop, and nothing else, so a
+    scan running when its tenant was suspended does not go on hitting the
+    customer's network until the agent's own timeout.
+    """
+
+    def __init__(self, tenant_id: str, status: str) -> None:
+        super().__init__(
+            f"Tenant {tenant_id} is {status}; its agents are refused "
+            "until a platform admin resumes it"
+        )
+        self.tenant_id = tenant_id
+        self.status = status
+
+
 def check_credential(
     *,
     agent_id: str | None,
@@ -434,6 +453,20 @@ def check_credential(
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
+        # The tenant itself, on every request (#325), and before the key: a
+        # suspension revokes the tenant's keys by default, and the heartbeat's
+        # stop-only answer (:class:`TenantClosed`) has to be reachable for a
+        # token whose key went with the suspension. A token minted before the
+        # suspension is good for up to its own ``exp``, so this is what refuses
+        # it. 401 like a revoked key rather than 403: the agent's answer to a
+        # 401 is to re-exchange its key, which the exchange refuses for a
+        # tenant that is not active, and the agent's backoff on *that* keeps a
+        # suspended fleet from polling at full rate (agent/worker.py).
+        tenant_status = session.execute(
+            select(models.Tenant.status).where(models.Tenant.tenant_id == tenant_id)
+        ).scalar_one_or_none()
+        if tenant_status is not None and tenant_status != tenants_service.STATUS_ACTIVE:
+            raise TenantClosed(tenant_id, tenant_status)
         if key_id:
             state = tenants_service.provisioning_key_state_in_session(
                 session, key_id
@@ -443,22 +476,6 @@ def check_credential(
                     f"The provisioning key behind this agent token is {state}; "
                     "re-provision the agent with a current key"
                 )
-        # The tenant itself, on every request (#325). A suspension revokes the
-        # tenant's keys by default, which the check above already catches, but
-        # it may be asked to keep them for the resume — and a token minted
-        # before the suspension is good for up to its own ``exp`` either way.
-        # 401 like a revoked key rather than 403: the agent's answer to a 401
-        # is to re-exchange its key, which the exchange refuses for a tenant
-        # that is not active, and the agent's backoff on *that* is what keeps a
-        # suspended fleet from polling at full rate (agent/worker.py).
-        tenant_status = session.execute(
-            select(models.Tenant.status).where(models.Tenant.tenant_id == tenant_id)
-        ).scalar_one_or_none()
-        if tenant_status is not None and tenant_status != tenants_service.STATUS_ACTIVE:
-            raise AgentCredentialRevoked(
-                f"Tenant {tenant_id} is {tenant_status}; its agents are refused "
-                "until a platform admin resumes it"
-            )
         if not agent_id:
             return None
         row = session.get(models.Agent, agent_id)

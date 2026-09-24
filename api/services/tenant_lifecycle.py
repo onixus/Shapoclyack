@@ -80,6 +80,10 @@ from api.services import scan_schedules
 from api.services import sessions as sessions_service
 from api.services import tenants as tenants_service
 from api.services.reports import store as report_store
+# #348's comparison, imported rather than copied: the two-person rule for a
+# purge and for a risk acceptance must not drift apart on what "the same
+# person" means (case- and whitespace-insensitive).
+from api.services.vulnerabilities import _same_person
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.tenant-lifecycle")
@@ -137,12 +141,6 @@ def _now() -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value else None
-
-
-def _same_person(one: str | None, other: str | None) -> bool:
-    """#348's comparison (``vulnerabilities._same_person``): case- and
-    whitespace-insensitive, so ``Alice`` cannot approve what ``alice`` asked for."""
-    return (one or "").strip().casefold() == (other or "").strip().casefold() != ""
 
 
 def _reason(value: str | None) -> str:
@@ -246,22 +244,7 @@ def _cut_access(
     tokens: list[str] = []
     keys: list[str] = []
     if revoke_credentials:
-        for token in session.execute(
-            select(models.ServiceToken).where(
-                models.ServiceToken.tenant_id == tenant_id,
-                models.ServiceToken.revoked_at.is_(None),
-            )
-        ).scalars():
-            token.revoked_at = now
-            tokens.append(token.token_id)
-        for key in session.execute(
-            select(models.ProvisioningKey).where(
-                models.ProvisioningKey.tenant_id == tenant_id,
-                models.ProvisioningKey.revoked_at.is_(None),
-            )
-        ).scalars():
-            key.revoked_at = now
-            keys.append(key.key_id)
+        tokens, keys = _revoke_credentials(session, tenant_id, now=now)
 
     cancelled, stopping, local_running = stop_jobs(session, tenant_id, actor=actor, why=why)
     return {
@@ -272,6 +255,32 @@ def _cut_access(
         "jobs_stopping": _sample(stopping),
         "local_jobs_running": _sample(local_running),
     }
+
+
+def _revoke_credentials(
+    session: Session, tenant_id: str, *, now: datetime
+) -> tuple[list[str], list[str]]:
+    """Revoke the tenant's live service tokens and provisioning keys; return their ids."""
+    tokens: list[str] = []
+    keys: list[str] = []
+    for token in session.execute(
+        select(models.ServiceToken).where(
+            models.ServiceToken.tenant_id == tenant_id,
+            models.ServiceToken.revoked_at.is_(None),
+        )
+    ).scalars():
+        token.revoked_at = now
+        tokens.append(token.token_id)
+    for key in session.execute(
+        select(models.ProvisioningKey).where(
+            models.ProvisioningKey.tenant_id == tenant_id,
+            models.ProvisioningKey.revoked_at.is_(None),
+        )
+    ).scalars():
+        key.revoked_at = now
+        keys.append(key.key_id)
+    session.flush()
+    return tokens, keys
 
 
 def stop_jobs(
@@ -344,16 +353,46 @@ def suspend(
     """Suspend an active tenant and cut its access paths. See the module docstring.
 
     Suspending a tenant that is already suspended changes nothing and records
-    nothing: a retried request is not a second decision. Raises LookupError,
-    ValueError (no reason) and :class:`LifecycleConflict` (the default tenant,
-    or one pending deletion).
+    nothing — a retried request is not a second decision — with one exception:
+    a suspension that kept the credentials, followed by one that asks for them
+    to go, revokes them. That is the ordinary way a short suspension becomes a
+    long one ("the keys leaked after all"), and answering it with a 200 that
+    revoked nothing would leave them working again after the resume. Raises
+    LookupError, ValueError (no reason) and :class:`LifecycleConflict` (the
+    default tenant, or one pending deletion).
     """
     cleaned = _reason(reason)
     _refuse_default(tenant_id)
     with get_session(settings.postgres_url) as session:
         tenant = _lock_tenant(session, tenant_id)
         if tenant.status == tenants_service.STATUS_SUSPENDED:
-            return _describe_in(settings, session, tenant_id)
+            described = _describe_in(settings, session, tenant_id)
+            if not revoke_credentials:
+                return described
+            tokens, keys = _revoke_credentials(session, tenant_id, now=_now())
+            if not tokens and not keys:
+                return described
+            revoked = {
+                "service_tokens_revoked": _sample(tokens),
+                "provisioning_keys_revoked": _sample(keys),
+            }
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_TENANT_SUSPEND,
+                resource_type="tenant",
+                resource_id=tenant_id,
+                before={"status": tenants_service.STATUS_SUSPENDED},
+                after={
+                    "status": tenants_service.STATUS_SUSPENDED,
+                    "reason": cleaned,
+                    "revoke_credentials": True,
+                    **revoked,
+                },
+            )
+            described["cut"] = revoked
+            LOG.warning("Credentials of suspended tenant %s revoked by %s", tenant_id, actor)
+            return described
         if tenant.status != tenants_service.STATUS_ACTIVE:
             raise LifecycleConflict(f"tenant {tenant_id} is {tenant.status}")
         before = {"status": tenant.status}
@@ -725,12 +764,20 @@ def _step_dict(row: models.TenantDeletionStep) -> dict[str, Any]:
     }
 
 
-def deletion_dict(session: Session, row: models.TenantDeletion) -> dict[str, Any]:
-    steps = session.execute(
-        select(models.TenantDeletionStep)
-        .where(models.TenantDeletionStep.deletion_id == row.deletion_id)
-        .order_by(models.TenantDeletionStep.position)
-    ).scalars()
+def deletion_dict(
+    session: Session,
+    row: models.TenantDeletion,
+    steps: list[models.TenantDeletionStep] | None = None,
+) -> dict[str, Any]:
+    """One journal row. ``steps`` when the caller loaded them already, in order."""
+    if steps is None:
+        steps = list(
+            session.execute(
+                select(models.TenantDeletionStep)
+                .where(models.TenantDeletionStep.deletion_id == row.deletion_id)
+                .order_by(models.TenantDeletionStep.position)
+            ).scalars()
+        )
     return {
         "deletion_id": row.deletion_id,
         "tenant_id": row.tenant_id,
@@ -795,14 +842,46 @@ def describe(settings: Settings, tenant_id: str) -> dict[str, Any]:
         return _describe_in(settings, session, tenant_id)
 
 
-def list_deletions(settings: Settings, *, state: str | None = None) -> list[dict[str, Any]]:
-    """Every deletion ever requested, newest first — the tombstones included.
+#: The most journal rows one listing returns. The journal only grows — a row
+#: per deletion ever requested — so the listing pages rather than reading it
+#: whole.
+MAX_LIST_LIMIT = 500
+
+
+def list_deletions(
+    settings: Settings,
+    *,
+    state: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Deletions, newest first — the tombstones included. Paged: ``limit``
+    (at most :data:`MAX_LIST_LIMIT`) from ``offset``.
 
     What an operator re-applies after restoring a backup: the ``completed``
     rows are the tenants that must not come back (docs/tenant-lifecycle.md).
+    Two queries whatever the page size: the rows, then all their steps.
     """
+    limit = max(1, min(int(limit), MAX_LIST_LIMIT))
     with get_session(settings.postgres_url) as session:
-        query = select(models.TenantDeletion).order_by(models.TenantDeletion.requested_at.desc())
+        query = (
+            select(models.TenantDeletion)
+            .order_by(
+                models.TenantDeletion.requested_at.desc(),
+                models.TenantDeletion.deletion_id.desc(),
+            )
+            .offset(max(0, int(offset)))
+            .limit(limit)
+        )
         if state:
             query = query.where(models.TenantDeletion.state == state)
-        return [deletion_dict(session, row) for row in session.execute(query).scalars().all()]
+        rows = session.execute(query).scalars().all()
+        steps: dict[str, list[models.TenantDeletionStep]] = {row.deletion_id: [] for row in rows}
+        if rows:
+            for step in session.execute(
+                select(models.TenantDeletionStep)
+                .where(models.TenantDeletionStep.deletion_id.in_(list(steps)))
+                .order_by(models.TenantDeletionStep.deletion_id, models.TenantDeletionStep.position)
+            ).scalars():
+                steps[step.deletion_id].append(step)
+        return [deletion_dict(session, row, steps[row.deletion_id]) for row in rows]

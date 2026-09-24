@@ -1175,7 +1175,18 @@ def require_platform_permission(permission: str):
     return _checker
 
 
-def _revalidate_agent_credential(principal: AgentPrincipal) -> Any | None:
+#: Where :func:`require_agent_heartbeat` leaves the ``agents.TenantClosed`` it
+#: let through (#325). Set on no other route: every other agent request of a
+#: closed tenant is a 401.
+AGENT_TENANT_CLOSED_ATTR = "agent_tenant_closed"
+
+
+def _revalidate_agent_credential(
+    principal: AgentPrincipal,
+    request: Request | None = None,
+    *,
+    allow_closed_tenant: bool = False,
+) -> Any | None:
     """Re-check a verified agent JWT and return its detached row snapshot."""
     from api.services import agents as agents_service
 
@@ -1185,6 +1196,13 @@ def _revalidate_agent_credential(principal: AgentPrincipal) -> Any | None:
             tenant_id=principal.tenant_id,
             key_id=principal.key_id,
         )
+    except agents_service.TenantClosed as exc:
+        if allow_closed_tenant and request is not None:
+            setattr(request.state, AGENT_TENANT_CLOSED_ATTR, exc)
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
     except agents_service.AgentCredentialRevoked as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
@@ -1209,6 +1227,36 @@ def require_agent(
     issuing their own ``get_agent``/``require_active`` queries (#384).
     Legacy shared tokens remain unbound and therefore uncached.
     """
+    return _authenticate_agent(request, credentials, settings, allow_closed_tenant=False)
+
+
+def require_agent_heartbeat(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """:func:`require_agent` for ``POST /agent/heartbeat`` alone (#325).
+
+    The same verification — a JWT signed by this installation and inside its
+    ``exp`` — but a token whose *tenant* is closed is not refused here: it is
+    marked on ``request.state`` (:data:`AGENT_TENANT_CLOSED_ATTR`) whatever
+    its provisioning key's state, since the suspension is usually what revoked
+    the key. The route then answers the one thing that must still reach such
+    an agent — "stop the job you are running" — and refuses everything else
+    with the 401 every other route gives.
+    """
+    return _authenticate_agent(request, credentials, settings, allow_closed_tenant=True)
+
+
+def _authenticate_agent(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    settings: Settings,
+    *,
+    allow_closed_tenant: bool,
+) -> AgentPrincipal:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1228,7 +1276,10 @@ def require_agent(
 
     if unverified.get("typ") == AGENT_TOKEN_TYP:
         principal = decode_agent_token(settings, token)
-        info = _revalidate_agent_credential(principal)
+        info = _revalidate_agent_credential(
+            principal, request, allow_closed_tenant=allow_closed_tenant
+        )
+        closed = getattr(request.state, AGENT_TENANT_CLOSED_ATTR, None) is not None
         setattr(
             request.state,
             AGENT_REQUEST_STATE_ATTR,
@@ -1236,7 +1287,9 @@ def require_agent(
                 # The id check_credential looked up, verbatim.
                 agent_id=principal.agent_id or None,
                 info=info,
-                loaded=bool(principal.agent_id),
+                # Nothing was loaded for a closed tenant's token: the check
+                # stopped at the tenant, before the agent row.
+                loaded=bool(principal.agent_id) and not closed,
             ),
         )
         return principal

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import PlainTextResponse
 
 from api.auth import (
+    AGENT_TENANT_CLOSED_ATTR,
     AgentPrincipal,
     Role,
     cached_agent_info,
@@ -19,6 +20,7 @@ from api.auth import (
     TenantPrincipal,
     get_settings,
     require_agent,
+    require_agent_heartbeat,
     require_permission,
     require_tenant,
 )
@@ -178,10 +180,43 @@ def register_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
+def _stop_only(
+    request: Request,
+    body: AgentHeartbeatRequest,
+    principal: AgentPrincipal,
+    settings: Settings,
+) -> AgentHeartbeatResponse | None:
+    """The whole answer to an agent whose tenant is closed (#325), or None.
+
+    Suspension moves the jobs an agent is running to ``cancelling`` (#360),
+    and that stop only reaches the agent on a heartbeat's answer — so the
+    heartbeat of a closed tenant's agent is answered, but with the stop for
+    the job it names and nothing else: no lease renewal, no promotion, no
+    ``last_seen_at``, no remote settings. Any other heartbeat of such an agent
+    gets the same 401 as every other request it makes.
+    """
+    closed = getattr(request.state, AGENT_TENANT_CLOSED_ATTR, None)
+    if closed is None:
+        return None
+    _bind_identity(principal, body.agent_id)
+    job_id = str(body.current_job_id or "")
+    info = agents_service.get_agent(body.agent_id) if job_id else None
+    if (
+        info is None
+        or info.tenant_id != principal.tenant_id
+        or not jobs_service.stop_requested(
+            settings, job_id, agent_id=body.agent_id, tenant_id=principal.tenant_id
+        )
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(closed))
+    return AgentHeartbeatResponse(**info.model_dump(), cancel_requested=True)
+
+
 @router.post("/agent/heartbeat", response_model=AgentHeartbeatResponse)
 def heartbeat(
+    request: Request,
     body: AgentHeartbeatRequest,
-    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    principal: Annotated[AgentPrincipal, Depends(require_agent_heartbeat)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentHeartbeatResponse:
     """Accepted even from a disabled or quarantined agent, on purpose (#308).
@@ -192,7 +227,12 @@ def heartbeat(
     operator is watching it, and leave the agent retrying a bare 403 with
     nothing to log. What a non-active agent *cannot* do is claim work or upload
     results, and those are refused below.
+
+    An agent whose *tenant* is closed gets less: see :func:`_stop_only`.
     """
+    stopped = _stop_only(request, body, principal, settings)
+    if stopped is not None:
+        return stopped
     _bind_identity(principal, body.agent_id)
     info = agents_service.heartbeat(
         body.agent_id,
