@@ -4,6 +4,7 @@ import { Archive } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { DataSubjectPanel } from "@/components/retention/data-subject-panel";
 import { LegalHoldPanel } from "@/components/retention/legal-hold-panel";
+import { LegalHoldRegister } from "@/components/retention/legal-hold-register";
 import { RetentionWindows } from "@/components/retention/retention-windows";
 import { useRetentionPolicy } from "@/hooks/use-retention";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
@@ -55,6 +56,7 @@ export default function RetentionPage() {
           <RetentionWindows tenantId={tenantId} policy={data} canManage={canManage} />
         </>
       )}
+      {isPlatformAdmin ? <LegalHoldRegister /> : null}
       {isPlatformAdmin ? <DataSubjectPanel currentUsername={user?.username ?? ""} /> : null}
     </div>
   );

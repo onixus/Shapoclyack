@@ -92,6 +92,71 @@ describe("RetentionPage", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null, activeTenant: null });
+    // The register is fetched for platform admins only; empty unless a test
+    // says otherwise.
+    vi.spyOn(apiModule, "fetchLegalHolds").mockResolvedValue([]);
+  });
+
+  it("flags a window the bounds no longer allow, and keeps the register from a tenant", async () => {
+    const register = vi.spyOn(apiModule, "fetchLegalHolds");
+    vi.spyOn(apiModule, "fetchRetentionPolicy").mockResolvedValue(
+      policy({
+        categories: [
+          category({
+            category: "audit_events",
+            description: "Administrative audit trail",
+            default_days: 365,
+            // Saved at 365; the floor was raised to three years since.
+            override_days: 365,
+            effective_days: 1095,
+            min_days: 1095,
+            max_days: 3650,
+            source: "tenant",
+            out_of_bounds: true,
+          }),
+          category({ category: "runs" }),
+        ],
+      }),
+    );
+    signIn({ tenant_role: "auditor", permissions: ["tenant.retention.read"] });
+    renderPage();
+
+    const row = (await screen.findByText("Audit trail")).closest("tr") as HTMLElement;
+    expect(within(row).getByText("1095 days")).toBeInTheDocument();
+    expect(within(row).getByText("outside the bounds")).toBeInTheDocument();
+    const runs = screen.getByText("Scan runs").closest("tr") as HTMLElement;
+    expect(within(runs).queryByText("outside the bounds")).not.toBeInTheDocument();
+    // The register carries every hold's reason: never asked for here.
+    expect(screen.queryByText("Holds in force")).not.toBeInTheDocument();
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("shows a platform admin the register of holds across tenants", async () => {
+    vi.spyOn(apiModule, "fetchRetentionPolicy").mockResolvedValue(policy());
+    vi.spyOn(apiModule, "fetchLegalHolds").mockResolvedValue([
+      HOLD,
+      {
+        tenant_id: "globex",
+        reason: "Regulator inquiry 44",
+        set_by: "dpo",
+        set_at: "2026-09-22T08:00:00Z",
+      },
+    ]);
+    signIn({ role: "admin", is_platform_admin: true, permissions: TENANT_ADMIN, username: "root" });
+    renderPage();
+
+    expect(await screen.findByText("Holds in force")).toBeInTheDocument();
+    const globex = (await screen.findByText("globex")).closest("tr") as HTMLElement;
+    expect(within(globex).getByText("Regulator inquiry 44")).toBeInTheDocument();
+    expect(within(globex).getByText("dpo")).toBeInTheDocument();
+  });
+
+  it("says so when no tenant is on hold", async () => {
+    vi.spyOn(apiModule, "fetchRetentionPolicy").mockResolvedValue(policy());
+    signIn({ role: "admin", is_platform_admin: true, permissions: TENANT_ADMIN, username: "root" });
+    renderPage();
+
+    expect(await screen.findByText("No tenant is on legal hold.")).toBeInTheDocument();
   });
 
   it("lets a tenant admin set a window and sends the whole document", async () => {
