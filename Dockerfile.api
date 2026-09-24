@@ -1,5 +1,7 @@
 # Shapoclyack thin API + Web UI v2 image (no scanner tools).
-FROM node:26-bookworm-slim AS web-build
+# Every stage is pinned by index digest, not only the final one (#313); see
+# the go-tools stage in Dockerfile.
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
 RUN npm ci

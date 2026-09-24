@@ -30,7 +30,7 @@ IMAGE="${IMAGE:-ghcr.io/onixus/shapoclyack-aio:kind-dev}"
 # not about whatever Calico released this week.
 CALICO_VERSION="${CALICO_VERSION:-v3.30.3}"
 CALICO_MANIFEST="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
-PROBE_IMAGE="${PROBE_IMAGE:-alpine:3}"
+PROBE_IMAGE="${PROBE_IMAGE:-alpine:3@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6}"
 KEEP="${KEEP:-0}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/netpol.XXXXXX")"
 

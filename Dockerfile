@@ -18,7 +18,10 @@
 # and Makefile), which is what we do below, so these binaries differ from the
 # released ones only in the toolchain and the x/crypto bump. In particular
 # naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
-FROM golang:1.26-bookworm AS go-tools
+# Every stage is pinned by index digest, not only the final one (#313): a
+# build stage's toolchain ends up in the binaries just as surely as the base
+# ends up in the image. Renovate proposes the refresh as a reviewed PR.
+FROM golang:1.26-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d AS go-tools
 
 # v3.11.1 is the first release that pins kin-openapi >= 0.144.0
 # (GHSA-r277-6w6q-xmqw); do not downgrade below it.
@@ -87,7 +90,7 @@ RUN set -eux; \
 # github_token for private GenDec release assets. scripts/install-pulse.sh
 # does the fetch and the checksums.txt check; see docs/pulse-backend.md.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
-FROM debian:bookworm-slim AS pulse-bin
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS pulse-bin
 ARG PULSE_VERSION=v1.1.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 # GenDec's release job treats checksums.txt as optional (docs/release.md);

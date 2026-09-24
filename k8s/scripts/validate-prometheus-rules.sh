@@ -9,7 +9,7 @@ if [[ ! -f "$RULES" ]]; then
   exit 1
 fi
 
-IMAGE="${PROMTOOL_IMAGE:-prom/prometheus:v2.54.1}"
+IMAGE="${PROMTOOL_IMAGE:-prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94}"
 echo "promtool check rules ($IMAGE)"
 docker run --rm -v "$ROOT":/src -w /src --entrypoint /bin/promtool "$IMAGE" \
   check rules k8s/shapoclyack/examples/prometheus-slo.rules.yaml
