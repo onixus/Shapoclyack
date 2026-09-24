@@ -396,7 +396,9 @@ def test_suspension_pauses_schedules_and_the_resume_does_not_fire_a_burst(env):
     assert due == {"sch-globex"}
     with get_session(settings.postgres_url) as session:
         moved = session.get(models.ScanSchedule, "sch-acme").next_run_at
-    assert _NOW < moved <= _NOW + timedelta(hours=1, minutes=1)
+    # The clock now, not the module's: in a full run it was read an hour ago.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    assert now < moved <= now + timedelta(hours=1, minutes=1)
     [row] = _audit(settings, "tenant.resume")
     assert row.after["scan_schedules_reanchored"] == 1
 
