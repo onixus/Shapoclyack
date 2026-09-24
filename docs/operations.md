@@ -3061,10 +3061,11 @@ publish forged `jobs.scan` offers. Since #225 all three require credentials.
 | Secret | Keys | Consumed by |
 |--------|------|-------------|
 | `shapoclyack-postgres` | `password` | Postgres, API, backup CronJob |
-| `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API, ClickHouse backup CronJob |
+| `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API |
+| `shapoclyack-clickhouse-backup` | `password` | ClickHouse StatefulSet (user `shapoclyack_backup`), ClickHouse backup CronJob ([#333](https://github.com/onixus/Shapoclyack/issues/333)) |
 | `shapoclyack-nats` | `api_password`, `agent_password` | NATS StatefulSet, API, sensors |
 
-`base/kustomization.yaml` generates dev placeholders for all three, the same
+`base/kustomization.yaml` generates dev placeholders for all of these, the same
 way it always has for Postgres — a fresh `kubectl apply -k` comes up without
 any manual step. The placeholders are published in this repository. Override
 them with `examples/api-secrets.example.yaml` (or

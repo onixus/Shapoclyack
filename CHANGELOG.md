@@ -8,29 +8,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 - **Disaster recovery beyond PostgreSQL** ([#333](https://github.com/onixus/Shapoclyack/issues/333)).
   A new `shapoclyack-clickhouse-backup` CronJob in `base/backup` runs
-  `BACKUP DATABASE … TO S3 … ASYNC` daily at 02:45 UTC with the Postgres job's
-  `shapoclyack-backup` Secret, waits on `system.backups`, and writes a
-  `manifest.jsonl` of per-table part and row counts read back from the
-  uploaded backup. `scripts/restore-clickhouse.sh` (`--dry-run`, `--namespace`
-  or `--local`) refuses a backup that no longer matches its manifest (counts
-  or `.backup` digest), a manifest table name that is not an identifier, and a
-  target table that already has rows; it restores with merges stopped and
-  compares every table's count to the manifest. The S3 secret travels only on
-  the client's stdin, and everything `clickhouse-client` prints — including
-  the statement it echoes after an error — is scrubbed. The pod runs as
-  uid 101, read-only root, no service-account token, and is admitted to
-  ClickHouse `:9000` by its own `clickhouse-backup` label only.
-  `examples/prometheusrule-backup.example.yaml` gains
-  `ShapoclyackClickHouseBackupStale` and `ShapoclyackClickHouseBackupJobFailed`;
-  `examples/pvc-snapshot.example.yaml` is a CSI snapshot of `scanner-data` and
-  its restore into the drill namespace. `overlays/kind-restore` now keeps
-  ClickHouse and drops both backup CronJobs. `docs/disaster-recovery.md` is the
-  runbook: which store is the truth, the restore order, how restore points of
-  Postgres, artifacts and ClickHouse are reconciled, JetStream re-creation and
-  the INGEST replay that closes the ClickHouse gap, the keys no backup
-  contains, and an RPO/RTO table. `scripts/dr-drill.py` runs seed → backup →
-  wipe → restore → verify on a local stack; recorded at 10k assets (off-cluster,
-  shared 4 vCPU): console-path RTO 5.6–9.6 s, all stores 7.9–11.9 s.
+  `BACKUP DATABASE … TO S3 … ASYNC` (full, `deduplicate_files = 0`) daily at
+  02:45 UTC, waits on `system.backups`, and writes a `manifest.jsonl` of
+  per-table part and row counts read back from the uploaded backup — refusing
+  to write one when `.backup` lists parts whose `count.txt` is not an object of
+  its own, and refusing to start while an earlier attempt's BACKUP is still
+  running. It signs in as a new ClickHouse user, `shapoclyack_backup` (BACKUP
+  on the database, S3, temporary tables, `system.backups`; password in a new
+  base-generated `shapoclyack-clickhouse-backup` Secret, never optional), and
+  uses a bucket key of its own, `shapoclyack-clickhouse-backup-s3`, so the key
+  can be scoped to `PREFIX/clickhouse/*`. **Rollout:** the ClickHouse
+  StatefulSet gains the `CLICKHOUSE_BACKUP_PASSWORD` variable and restarts;
+  create `shapoclyack-clickhouse-backup-s3` and replace the new placeholder
+  password. `scripts/restore-clickhouse.sh` (`--dry-run`, `--namespace` or
+  `--local`) refuses a backup that no longer matches its manifest (counts,
+  `.backup` digest, listed-but-unstored parts), a manifest table name that is
+  not an identifier, and a target with rows in any table; it rebuilds the empty
+  target from the backup's schema, reports `schema_drift` columns, restores
+  with merges stopped, compares every table's count to the manifest, and
+  restarts merges on exit and on INT/TERM/HUP. The S3 secret travels only on
+  the client's stdin, and everything `clickhouse-client` prints is scrubbed of
+  it, raw and SQL-escaped. The pod is pinned by digest, runs as uid 101 with a
+  read-only root and no service-account token, and is admitted to ClickHouse
+  `:9000` by its own label only. `examples/prometheusrule-backup.example.yaml`
+  gains `ShapoclyackClickHouseBackupStale` and
+  `ShapoclyackClickHouseBackupJobFailed`; `examples/pvc-snapshot.example.yaml`
+  is a CSI snapshot of `scanner-data` and its restore into the drill namespace.
+  `overlays/kind-restore` keeps a lab-sized ClickHouse and drops both backup
+  CronJobs. `docs/disaster-recovery.md` is the runbook: which store is the
+  truth, the restore order (artifact claim before the overlay, revocations
+  re-applied before the doors open), how restore points of Postgres, artifacts
+  and ClickHouse are reconciled, JetStream re-creation and the INGEST replay
+  that closes the ClickHouse gap, the keys no backup contains, and an RPO/RTO
+  table. `scripts/dr-drill.py` runs seed → backup → wipe → restore → verify on
+  a local stack, the scripts under busybox as in the pod; recorded at 10k
+  assets (off-cluster, shared 4 vCPU): console-path RTO 4.7–6.6 s, all stores
+  7.0–10.6 s.
 
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,

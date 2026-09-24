@@ -38,8 +38,10 @@ spec:
     persistentVolumeClaimName: scanner-data
 ---
 # ---------------------------------------------------------------------------
-# 2. Restore into shapoclyack-restore. A PVC can only be provisioned from a
-#    VolumeSnapshot in its own namespace, so the snapshot is re-bound there
+# 2. Restore into shapoclyack-restore — which has to exist first:
+#      kubectl create namespace shapoclyack-restore
+#    A PVC can only be provisioned from a VolumeSnapshot in its own namespace,
+#    so the snapshot is re-bound there
 #    through a pre-provisioned VolumeSnapshotContent that points at the same
 #    storage-side handle. Read the handle from the source snapshot:
 #
