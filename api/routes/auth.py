@@ -782,14 +782,18 @@ def _visible_tenants(user: TokenUser) -> list[dict]:
     the gate itself: somebody has to be able to look at, and lift, the state.
     """
     is_platform_admin = user.role == Role.admin
-    allowed = set(
-        memberships_service.tenants_for_user(
-            user.username, is_platform_admin=is_platform_admin
+    # The caller's own memberships, which span tenants by definition — the
+    # same lookup tenant resolution makes, and scoped the same way (#311).
+    with tenant_scope.system("the caller's own memberships"):
+        allowed = set(
+            memberships_service.tenants_for_user(
+                user.username, is_platform_admin=is_platform_admin
+            )
         )
-    )
+        tenants = tenants_service.list_tenants()
     return [
         tenant
-        for tenant in tenants_service.list_tenants()
+        for tenant in tenants
         if tenant["tenant_id"] in allowed
         and (is_platform_admin or tenant["status"] == "active")
     ]
@@ -812,12 +816,23 @@ def list_tenant_posture(
     user: Annotated[TokenUser, Depends(require_role(Role.operator))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[TenantPosture]:
-    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``."""
+    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``.
+
+    The platform admin's comparison is one grouped read over the fleet. Anyone
+    else's is one read per tenant they belong to, each held to that tenant by
+    the database (#311): the grouped read filters by the membership list, and a
+    missing filter there would otherwise be every customer's posture.
+    """
     allowed = [tenant["tenant_id"] for tenant in _visible_tenants(user)]
-    return [
-        TenantPosture.model_validate(row)
-        for row in tenant_posture.list_posture(settings, tenant_ids=allowed)
-    ]
+    if user.role == Role.admin:
+        rows = tenant_posture.list_posture(settings, tenant_ids=allowed)
+    else:
+        rows = []
+        for tenant_id in allowed:
+            with tenant_scope.tenant(tenant_id):
+                rows.extend(tenant_posture.list_posture(settings, tenant_ids=[tenant_id]))
+        rows.sort(key=tenant_posture.posture_order)
+    return [TenantPosture.model_validate(row) for row in rows]
 
 
 @router.get("/tenants/{tenant_id}/members", response_model=list[MembershipInfo])

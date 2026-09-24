@@ -105,11 +105,18 @@ def list_posture(
             bucket["declared_internet_assets"] += 1
 
     rows = list(by_tenant.values())
-    rows.sort(
-        key=lambda row: (
-            -nist_risk.LEVEL_RANK.get(row["estate_risk"] or "", -1),
-            -int(row["open_total"]),
-            str(row["name"] or row["tenant_id"]).lower(),
-        )
-    )
+    rows.sort(key=posture_order)
     return rows
+
+
+def posture_order(row: dict[str, Any]) -> tuple[int, int, str]:
+    """Worst ``estate_risk`` first, then most open findings, then by name.
+
+    Public so a caller that assembles the list from per-tenant reads (#311)
+    orders it exactly like the grouped read does.
+    """
+    return (
+        -nist_risk.LEVEL_RANK.get(row["estate_risk"] or "", -1),
+        -int(row["open_total"]),
+        str(row["name"] or row["tenant_id"]).lower(),
+    )

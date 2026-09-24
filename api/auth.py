@@ -862,23 +862,48 @@ def get_current_user_if_any(
         raise
 
 
+def is_platform_admin(request: Request, user: TokenUser) -> bool:
+    """The console account with global role ``admin`` — never a service token.
+
+    A service token carries a role but administers the tenant it was issued
+    for, not the installation; the same rule ``resolve_tenant_principal``
+    applies.
+    """
+    return user.role == Role.admin and getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is None
+
+
+def _declare_platform_scope(request: Request, user: TokenUser, reason: str) -> None:
+    """A global gate widens the database scope for the platform admin only (#311).
+
+    Everyone else who passes it — an operator reading ``GET /api/tenants``, a
+    viewer reading ``GET /api/system`` — stays undeclared, so a query behind
+    the gate that forgot its tenant predicate fails instead of reading every
+    tenant. A route that serves such callers across their own tenants says so
+    itself, with a reason (``tenant_scope.system`` / ``tenant_scope.tenant``).
+    A service token was pinned to its tenant at authentication.
+    """
+    if is_platform_admin(request, user):
+        tenant_scope.declare_system(reason)
+
+
 def require_role(minimum: Role):
     """A gate on the caller's *global* role, with no tenant in it.
 
-    Which is why it declares the request cross-tenant (#311): the routes behind
-    it — the tenant list, account administration, ``GET /api/system`` — answer
-    about the installation, and filter what a non-admin sees in their own code.
-    A route that also resolves a tenant stays pinned to it: a tenant, once
-    declared, is never widened (``api/db/tenant_scope.py``).
+    The routes behind it answer about the installation — the tenant list,
+    account administration, ``GET /api/system`` — and filter what a non-admin
+    sees in their own code. Only the platform admin's requests are widened to
+    the system scope here; see :func:`_declare_platform_scope`.
     """
 
-    def _checker(user: Annotated[TokenUser, Depends(get_current_user)]) -> TokenUser:
+    def _checker(
+        request: Request, user: Annotated[TokenUser, Depends(get_current_user)]
+    ) -> TokenUser:
         if ROLE_RANK[user.role] < ROLE_RANK[minimum]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Role '{minimum.value}' or higher required",
             )
-        tenant_scope.declare_system(f"global role gate: {minimum.value}")
+        _declare_platform_scope(request, user, f"platform admin: global role gate {minimum.value}")
         return user
 
     return _checker
@@ -1183,12 +1208,8 @@ def platform_permissions(request: Request, user: TokenUser) -> frozenset[str]:
     inferred from the role, because an admin-role token administers the tenant
     it was issued for and not the installation.
     """
-    is_platform_admin = (
-        user.role == Role.admin
-        and getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is None
-    )
     return permission_catalog.permissions_for(
-        user.role.value, is_platform_admin=is_platform_admin
+        user.role.value, is_platform_admin=is_platform_admin(request, user)
     )
 
 
@@ -1208,8 +1229,7 @@ def require_platform_permission(permission: str):
     ) -> TokenUser:
         if permission not in platform_permissions(request, user):
             raise _refuse(permission)
-        # Installation-wide by definition, like require_role (#311).
-        tenant_scope.declare_system(f"platform permission: {permission}")
+        _declare_platform_scope(request, user, f"platform admin: {permission}")
         return user
 
     return _checker

@@ -287,7 +287,15 @@ def create_app() -> FastAPI:
         metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
         return response
 
-    @app.get("/metrics", include_in_schema=False)
+    # Installation-wide gauges (#311). Nothing here reads a table today, but a
+    # collector that counts rows at scrape time counts every tenant's, and in
+    # the undeclared scope every such read would fail — silently, as series
+    # that stop appearing.
+    @app.get(
+        "/metrics",
+        include_in_schema=False,
+        dependencies=[Depends(tenant_scope.cross_tenant("installation-wide gauges"))],
+    )
     def metrics_endpoint(request: Request) -> Response:
         # Open unless a token is configured: that is the Prometheus shape most
         # installations scrape with, and making the token mandatory would break

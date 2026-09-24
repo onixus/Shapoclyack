@@ -125,7 +125,7 @@ def test_a_tenant_table_without_its_policy_is_reported_by_name() -> None:
             connection.execute(text(f'CREATE TABLE "{name}" (id text PRIMARY KEY, tenant_id text)'))
         with engine.connect() as connection:
             problems = tenant_scope.database_problems(connection, metadata)
-        assert any(name in problem and "no tenant-isolation policy" in problem for problem in problems)
+        assert any(name in problem and "tenant policies" in problem for problem in problems)
         # A table created after 0067 by the migrating role still gets the
         # tenant role's privileges, from the default privileges it set.
         assert not any(f"on {name}" in problem for problem in problems if "lacks" in problem)
@@ -581,3 +581,276 @@ def test_a_snapshot_id_held_by_another_tenant_is_still_a_conflict(tmp_path, monk
 
     assert response.status_code == 409, response.text
     assert "different tenant" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1
+# --------------------------------------------------------------------------- #
+
+
+def test_a_forgotten_where_behind_a_global_role_gate_is_caught(tmp_path, monkeypatch) -> None:
+    """``require_role`` let every caller who passed it into the system scope,
+    so the second line protected nothing behind it. Only the platform admin's
+    request is widened now; an operator's stays undeclared, and a query that
+    forgot its tenant predicate fails instead of reading every tenant."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    other = _seed_groups_in_two_tenants(client, admin)
+
+    @client.app.get("/api/rls-probe/role-gated")
+    def leaky(_: Any = Depends(auth.require_role(auth.Role.operator))) -> list[str]:
+        with get_session(POSTGRES_URL) as session:
+            return sorted(session.execute(select(models.AgentGroup.tenant_id)).scalars().all())
+
+    with pytest.raises(DBAPIError, match="tenant_scope_undeclared"):
+        client.get("/api/rls-probe/role-gated", headers=auth_headers(client, "operator"))
+    assert sorted(client.get("/api/rls-probe/role-gated", headers=admin).json()) == sorted(
+        ["default", other]
+    )
+
+
+def test_system_status_counts_no_other_tenants_devices_for_a_viewer(tmp_path, monkeypatch) -> None:
+    client = configured_client(tmp_path, monkeypatch, endpoint_inventory_enabled=True)
+    admin = auth_headers(client, "admin")
+    other = _other_tenant(client, admin)
+    with get_session(POSTGRES_URL) as session:
+        for index in range(3):
+            session.add(
+                models.EndpointDevice(
+                    device_id=f"rls-dev-{index}", tenant_id=other, agent_id=f"rls-{index}",
+                    hostname=f"h{index}", agent_version="1", first_seen=_now(),
+                    last_seen=_now(), last_inventory_at=_now(),
+                )
+            )
+
+    viewer = client.get("/api/system", headers=auth_headers(client, "viewer"))
+    assert viewer.status_code == 200, viewer.text
+    assert viewer.json()["endpoint_inventory"]["devices_total"] is None
+    # The platform admin still sees the fleet.
+    assert client.get("/api/system", headers=admin).json()["endpoint_inventory"]["devices_total"] == 3
+
+
+def test_system_status_device_counts_are_nulls_for_a_viewer_on_the_first_line_too(
+    tmp_path, monkeypatch
+) -> None:
+    """Under ``enforce`` the undeclared scope would already refuse the count, and
+    the panel's fail-soft would turn that into a null — so the first-line rule
+    (nulls without ``platform.fleet.read``) is pinned with the second line off."""
+    client = configured_client(
+        tmp_path, monkeypatch, endpoint_inventory_enabled=True, tenant_rls="off"
+    )
+    other = _other_tenant(client, auth_headers(client, "admin"))
+    with get_session(POSTGRES_URL) as session:
+        session.add(
+            models.EndpointDevice(
+                device_id="rls-dev-off", tenant_id=other, agent_id="rls-off", hostname="h",
+                agent_version="1", first_seen=_now(), last_seen=_now(),
+            )
+        )
+    viewer = client.get("/api/system", headers=auth_headers(client, "viewer")).json()
+    assert viewer["endpoint_inventory"]["devices_total"] is None
+
+
+def test_a_scrape_time_collector_can_count_every_tenants_rows(tmp_path, monkeypatch) -> None:
+    """``/metrics`` declares the cross-tenant scope, so a collector that counts
+    rows when scraped — what the observability work adds — counts the fleet
+    instead of failing on the undeclared scope and dropping its series."""
+    from prometheus_client.core import GaugeMetricFamily
+
+    from api.services import metrics as metrics_service
+
+    class _Groups:
+        def collect(self):  # noqa: ANN202
+            with get_session(POSTGRES_URL) as session:
+                count = session.execute(text("SELECT count(*) FROM agent_groups")).scalar_one()
+            yield GaugeMetricFamily("octo_rls_probe_agent_groups", "probe", value=count)
+
+    client = configured_client(tmp_path, monkeypatch)
+    _seed_groups_in_two_tenants(client, auth_headers(client, "admin"))
+    collector = _Groups()
+    metrics_service.REGISTRY.register(collector)
+    try:
+        scraped = client.get("/metrics")
+    finally:
+        metrics_service.REGISTRY.unregister(collector)
+    assert scraped.status_code == 200, scraped.text
+    assert "octo_rls_probe_agent_groups 2.0" in scraped.text
+
+
+def test_an_operators_tenant_list_and_posture_are_their_memberships(tmp_path, monkeypatch) -> None:
+    """The two non-admin routes that do span tenants — the caller's own —
+    declare how: the membership lookup in an explicit system block, the
+    posture one read per membership, each held to its tenant."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    other = _other_tenant(client, admin)
+    operator = auth_headers(client, "operator")
+
+    tenants = client.get("/api/tenants", headers=operator)
+    assert tenants.status_code == 200, tenants.text
+    assert [row["tenant_id"] for row in tenants.json()] == ["default"]
+    posture = client.get("/api/tenants/posture", headers=operator)
+    assert posture.status_code == 200, posture.text
+    assert [row["tenant_id"] for row in posture.json()] == ["default"]
+    assert other in {row["tenant_id"] for row in client.get("/api/tenants/posture", headers=admin).json()}
+
+
+def test_a_tenant_cannot_rewrite_or_take_over_a_built_in_role(enforce) -> None:
+    role_id = f"rls-builtin-{uuid.uuid4().hex[:6]}"
+    with get_session(POSTGRES_URL) as session:
+        session.add(
+            models.RoleDefinition(role_id=role_id, tenant_id="", builtin=True, created_at=_now())
+        )
+    try:
+        with tenant_scope.tenant(TENANT_A):
+            with get_session(POSTGRES_URL) as session:
+                table = models.RoleDefinition.__table__
+                seen = session.execute(select(table.c.role_id).where(table.c.role_id == role_id)).all()
+                assert len(seen) == 1  # readable: it is every tenant's
+                rewritten = session.execute(
+                    table.update().where(table.c.role_id == role_id).values(description="mine")
+                )
+                taken = session.execute(
+                    table.update().where(table.c.role_id == role_id).values(tenant_id=TENANT_A)
+                )
+                removed = session.execute(table.delete().where(table.c.role_id == role_id))
+                assert (rewritten.rowcount, taken.rowcount, removed.rowcount) == (0, 0, 0)
+        with get_session(POSTGRES_URL) as session:
+            row = session.get(models.RoleDefinition, (role_id, ""))
+            assert row is not None and row.description == ""
+    finally:
+        with get_session(POSTGRES_URL) as session:
+            session.execute(
+                delete(models.RoleDefinition).where(models.RoleDefinition.role_id == role_id)
+            )
+
+
+def test_a_tenant_scope_records_only_its_own_tenants_audit_rows(enforce) -> None:
+    """Pinned: a platform-level audit row (``tenant_id`` NULL) cannot be written
+    from a tenant-scoped transaction — the ORM's INSERT … RETURNING reads the
+    row back, and the row is not the tenant's to read. Nothing does this today;
+    a tenant request that records a platform act has to use the system scope."""
+    from api.services import audit as audit_service
+
+    with tenant_scope.tenant(TENANT_A):
+        with get_session(POSTGRES_URL) as session:
+            audit_service.record(
+                session, None, action="rls.probe", resource_type="probe", resource_id="own",
+                tenant_id=TENANT_A,
+            )
+        with pytest.raises(DBAPIError, match="row-level security"):
+            with get_session(POSTGRES_URL) as session:
+                audit_service.record(
+                    session, None, action="rls.probe", resource_type="probe",
+                    resource_id="platform", tenant_id=None,
+                )
+
+
+def test_asset_tags_are_held_to_their_assets_tenant(enforce) -> None:
+    """``asset_tags`` has no ``tenant_id``; its policy is its asset's visibility."""
+    with get_session(POSTGRES_URL) as session:
+        for tenant_id in (TENANT_A, TENANT_B):
+            session.add(
+                models.Asset(
+                    asset_id=f"rls-asset-{tenant_id}", tenant_id=tenant_id, first_seen=_now(),
+                    last_seen=_now(),
+                )
+            )
+        session.flush()
+        for tenant_id in (TENANT_A, TENANT_B):
+            session.add(models.AssetTag(asset_id=f"rls-asset-{tenant_id}", key="env", value=tenant_id))
+    try:
+        with tenant_scope.tenant(TENANT_A):
+            with get_session(POSTGRES_URL) as session:
+                tags = session.execute(
+                    select(models.AssetTag.value).where(models.AssetTag.key == "env")
+                ).scalars().all()
+                assert tags == [TENANT_A]
+                changed = session.execute(
+                    models.AssetTag.__table__.update()
+                    .where(models.AssetTag.asset_id == f"rls-asset-{TENANT_B}")
+                    .values(value="rewritten")
+                )
+                assert changed.rowcount == 0
+            with pytest.raises(DBAPIError, match="row-level security"):
+                with get_session(POSTGRES_URL) as session:
+                    session.add(
+                        models.AssetTag(asset_id=f"rls-asset-{TENANT_B}", key="planted", value="x")
+                    )
+                    session.flush()
+    finally:
+        with get_session(POSTGRES_URL) as session:
+            session.execute(
+                delete(models.AssetTag).where(
+                    models.AssetTag.asset_id.in_([f"rls-asset-{TENANT_A}", f"rls-asset-{TENANT_B}"])
+                )
+            )
+            session.execute(
+                delete(models.Asset).where(
+                    models.Asset.asset_id.in_([f"rls-asset-{TENANT_A}", f"rls-asset-{TENANT_B}"])
+                )
+            )
+
+
+def test_a_savepoint_keeps_the_scope_without_setting_it_again(enforce) -> None:
+    from sqlalchemy import event
+
+    statements: list[str] = []
+    engine = db_engine.get_engine(POSTGRES_URL)
+
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if "set_config('role'" in statement:
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        with tenant_scope.tenant(TENANT_A):
+            with get_session(POSTGRES_URL) as session:
+                assert _group_names(session) == {"alpha"}
+                savepoint = session.begin_nested()
+                assert _group_names(session) == {"alpha"}
+                savepoint.rollback()
+                assert _group_names(session) == {"alpha"}
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert len(statements) == 1
+
+
+def test_a_table_without_its_permissive_policy_or_sequence_grant_is_reported() -> None:
+    """Only the restrictive policy, and every non-owner role — an API role
+    split from the owner, its workers included — is denied the whole table.
+    And a serial column's INSERT needs the sequence as well as the table."""
+    name = f"rls_probe_{uuid.uuid4().hex[:8]}"
+    engine = create_engine(POSTGRES_URL, future=True)
+    metadata = MetaData()
+    for table in models.Base.metadata.sorted_tables:
+        table.to_metadata(metadata)
+    Table(name, metadata, Column("id", String, primary_key=True), Column("tenant_id", String))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(f'CREATE TABLE "{name}" (id serial PRIMARY KEY, tenant_id text)')
+            )
+            connection.execute(text(f'ALTER TABLE "{name}" ENABLE ROW LEVEL SECURITY'))
+            connection.execute(
+                text(
+                    f'CREATE POLICY shapoclyack_tenant_isolation ON "{name}" AS RESTRICTIVE '
+                    "FOR ALL TO shapoclyack_tenant USING (tenant_id = shapoclyack_current_tenant())"
+                )
+            )
+            connection.execute(text(f'REVOKE ALL ON SEQUENCE "{name}_id_seq" FROM shapoclyack_tenant'))
+        with engine.connect() as connection:
+            problems = tenant_scope.database_problems(connection, metadata)
+        assert any(name in problem and "tenant policies" in problem for problem in problems)
+        assert any(f"USAGE on sequence {name}_id_seq" in problem for problem in problems)
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
+        engine.dispose()
+
+
+def test_pre_16_hints_are_valid_sql_there() -> None:
+    assert "WITH INHERIT FALSE" in tenant_scope._grant_hint("api", 160004)
+    hint = tenant_scope._grant_hint("api", 150008)
+    assert "WITH INHERIT" not in hint
+    assert hint.startswith("ALTER ROLE api NOINHERIT; GRANT shapoclyack_tenant TO api")

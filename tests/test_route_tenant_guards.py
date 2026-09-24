@@ -62,8 +62,12 @@ _ACCOUNT = (
 )
 _PLATFORM_ADMIN = (
     "platform admin only (require_role(admin) / require_platform_permission), "
-    "installation-wide by definition; the gate declares system scope"
+    "installation-wide by definition; the gate declares system scope for the "
+    "platform admin and nobody else"
 )
+#: Enforced, not only stated: test_routes_said_to_read_no_table_read_no_tenant_table
+#: requests each such route in the undeclared scope, where any read of a tenant
+#: table fails the request.
 _NO_DATABASE = "reads no table at all"
 
 #: Endpoint (``module:qualname``) -> why it has no tenant guard. Keep sorted by
@@ -72,7 +76,9 @@ _NO_DATABASE = "reads no table at all"
 CROSS_TENANT_ROUTES: dict[str, str] = {
     # Probes, metrics, the console and the API schema.
     "api.app:create_app.<locals>.metrics_endpoint": (
-        "Prometheus exposition of this process's counters; " + _NO_DATABASE
+        "Prometheus exposition: installation-wide gauges; declares "
+        "cross_tenant('installation-wide gauges') so a collector that counts rows at "
+        "scrape time counts the fleet instead of failing"
     ),
     "api.app:create_app.<locals>.livez": "liveness, dependency-free by design (#331); " + _NO_DATABASE,
     "api.app:create_app.<locals>.readyz": (
@@ -81,7 +87,8 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     ),
     "api.app:create_app.<locals>.health": "same checks as /readyz, older response shape",
     "api.app:create_app.<locals>.spa_fallback": "serves the console's static files; " + _NO_DATABASE,
-    "Mount /_next": "the console's static assets; " + _NO_DATABASE,
+    "Mount /_next": "the console's static assets (Next export); " + _NO_DATABASE,
+    "Mount /assets": "the console's static assets (Vite build); " + _NO_DATABASE,
     "fastapi.applications:FastAPI.setup.<locals>.openapi": (
         "API schema, unmounted in prod (#319); " + _NO_DATABASE
     ),
@@ -112,12 +119,14 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     # Tenants as objects, and the fleet views over them.
     "api.routes.auth:list_auth_events": _PLATFORM_ADMIN + "; auth_events has no tenant",
     "api.routes.auth:list_tenants": (
-        "the tenants the caller may switch to, filtered in the route by membership "
-        "(_visible_tenants); behind require_role, which declares system scope"
+        "the tenants the caller may switch to: the membership lookup runs in an "
+        "explicit tenant_scope.system block, like tenant resolution; system scope "
+        "for the platform admin only"
     ),
     "api.routes.auth:list_tenant_posture": (
-        "posture of every tenant the caller belongs to, filtered by membership like "
-        "list_tenants; behind require_role"
+        "posture of the caller's tenants: the platform admin's is one grouped read "
+        "in system scope, anyone else's is one read per membership inside "
+        "tenant_scope.tenant(t)"
     ),
     "api.routes.auth:create_tenant": _PLATFORM_ADMIN,
     "api.routes.auth:set_tenant_quota": _PLATFORM_ADMIN,
@@ -125,11 +134,19 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.maintenance:get_tenant_calendar": _PLATFORM_ADMIN + " (the provider's view of one customer's calendar)",
     "api.routes.config:update_config": _PLATFORM_ADMIN + " (installation-wide scanner overrides)",
     "api.routes.system:get_system_status": (
-        "installation status for every role; cross-tenant counters are dropped in "
-        "the route for callers without the platform permission"
+        "installation status for every role; the fleet counts (tenants, agents, "
+        "endpoint devices) are nulls without platform.fleet.read, and only the "
+        "platform admin's request is system scope — anyone else's stays undeclared"
     ),
-    "api.routes.usage:get_usage_across_tenants": _PLATFORM_ADMIN,
-    "api.routes.rbac:list_permissions": "the static permission catalogue; " + _NO_DATABASE,
+    "api.routes.usage:get_usage_across_tenants": (
+        _PLATFORM_ADMIN + "; an admin-role service token also passes the role gate, "
+        "and is held to its own tenant by row security (first-line fix tracked "
+        "separately)"
+    ),
+    "api.routes.rbac:list_permissions": (
+        "the permission catalogue (permissions table, which has no tenant); "
+        "undeclared for everyone but the platform admin"
+    ),
     # Console accounts are installation-wide.
     "api.routes.users:list_users": _PLATFORM_ADMIN,
     "api.routes.users:create_user": _PLATFORM_ADMIN,
@@ -171,10 +188,15 @@ def _endpoint_key(route: Any) -> str:
     return f"{endpoint.__module__}:{endpoint.__qualname__}"
 
 
-def _mounted_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The application with every optional router and page mounted."""
-    web = tmp_path / "web-dist"
-    (web / "_next").mkdir(parents=True)
+def _mounted_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, bundle: str = "_next"):
+    """The application with every optional router and page mounted.
+
+    ``bundle`` is the console build's asset directory: ``_next`` for a Next
+    export, ``assets`` for a Vite build — ``create_app`` mounts one or the
+    other, never both.
+    """
+    web = tmp_path / f"web-dist{bundle}"
+    (web / bundle).mkdir(parents=True)
     (web / "index.html").write_text("<html></html>", encoding="utf-8")
     settings = make_settings(
         tmp_path,
@@ -189,11 +211,12 @@ def _mounted_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return configured_client(tmp_path, monkeypatch, settings=settings).app
 
 
-def _classify(app: Any) -> tuple[dict[str, list[str]], set[str]]:
-    """``({unguarded endpoint: [routes]}, {every endpoint seen})``."""
+def _classify(*apps: Any) -> tuple[dict[str, list[str]], set[str]]:
+    """``({unguarded endpoint: [routes]}, {every endpoint seen})`` over ``apps``."""
     unguarded: dict[str, list[str]] = {}
     seen: set[str] = set()
-    for context in iter_route_contexts(app.routes):
+    contexts = [context for app in apps for context in iter_route_contexts(app.routes)]
+    for context in contexts:
         route = context.original_route
         key = _endpoint_key(route)
         seen.add(key)
@@ -221,7 +244,10 @@ def test_every_route_has_a_tenant_guard_or_a_reviewed_reason(tmp_path, monkeypat
 
 def test_the_allowlist_names_only_routes_that_exist_and_need_it(tmp_path, monkeypatch) -> None:
     """A stale entry is an exemption waiting for a new route to reuse its name."""
-    unguarded, seen = _classify(_mounted_app(tmp_path, monkeypatch))
+    unguarded, seen = _classify(
+        _mounted_app(tmp_path, monkeypatch),
+        _mounted_app(tmp_path, monkeypatch, bundle="assets"),
+    )
 
     stale = sorted(key for key in CROSS_TENANT_ROUTES if key not in seen)
     guarded_anyway = sorted(key for key in CROSS_TENANT_ROUTES if key in seen and key not in unguarded)
@@ -252,3 +278,33 @@ def test_the_walk_sees_the_guards_it_is_looking_for(tmp_path, monkeypatch) -> No
     ):
         assert key in seen, key
         assert key not in unguarded, key
+
+
+def test_routes_said_to_read_no_table_read_no_tenant_table(tmp_path, monkeypatch) -> None:
+    """The "reads no table" entries are the ones that declare nothing, so they
+    run in the undeclared scope, where reading a tenant table fails the request.
+    Requesting each one proves the reason still holds — a collector or a lookup
+    added to such a route later would otherwise slip past the allowlist.
+    """
+    from fastapi.testclient import TestClient
+
+    app = _mounted_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    checked = []
+    for context in iter_route_contexts(app.routes):
+        key = _endpoint_key(context.original_route)
+        if _NO_DATABASE not in CROSS_TENANT_ROUTES.get(key, ""):
+            continue
+        if "GET" not in (getattr(context, "methods", None) or ()):
+            continue
+        path = str(context.path).replace("{full_path:path}", "console-page")
+        if "{" in path:
+            continue
+        # TestClient re-raises server errors: a tenant-table read would surface
+        # here as the DBAPIError naming tenant_scope_undeclared.
+        response = client.get(path)
+        assert response.status_code < 500, (key, path, response.status_code)
+        checked.append(key)
+    assert "api.app:create_app.<locals>.livez" in checked
+    assert "api.routes.auth:sso_status" in checked
+    assert "api.routes.agents:get_install_script" in checked
