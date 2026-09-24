@@ -182,19 +182,21 @@ installation from your own p95 after a month, and split by `execution`
 ### 5. Ingest freshness
 
 ```promql
-octo_nats_consumer_pending{consumer="octo-ch-ingest"}
+octo_nats_consumer_pending{consumer="octo-ch-ingest-results"}
 ```
 
 Only exported when NATS **and** the ClickHouse ingest worker are both enabled
 (`OCTO_NATS_URL`, `OCTO_CLICKHOUSE_URL`, `OCTO_CH_INGEST_ENABLED`) — on a
 default install the series is simply absent, and this SLO does not apply. The
 gauge is refreshed on each consumer poll, so a worker that has stopped polling
-leaves a *stale* value rather than a rising one; alert on staleness too:
+leaves a *stale* value rather than a rising one; alert on staleness too. The
+staleness half reads the refresh time the worker exports next to the count —
+`timestamp()` of the count itself is the scrape time and never ages (#334):
 
 ```promql
-octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
 or
-(time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+(time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) > 300
 ```
 
 This is queue depth, not end-to-end latency. There is no scan-finished →

@@ -77,17 +77,18 @@ spec:
   - name: shapoclyack.slo.ingest
     rules:
     - alert: ShapoclyackClickHouseIngestLag
-      expr: octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+      expr: octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
       for: 10m
       labels:
         severity: ticket
         slo: '5'
       annotations:
         summary: ClickHouse ingest consumer lag is above 1000 messages
-        description: "octo_nats_consumer_pending{consumer=\"octo-ch-ingest\"} > 1000 for 10m (SLO 5).\
-          \ Absent series means ingest is not enabled \u2014 this rule does not fire then."
+        description: "octo_nats_consumer_pending{consumer=\"octo-ch-ingest-results\"} > 1000 for 10m (SLO\
+          \ 5). Absent series means ingest is not enabled \u2014 this rule does not fire then."
     - alert: ShapoclyackClickHouseIngestStale
-      expr: '(time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+      expr: '(time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"})
+        > 300
 
         '
       for: 5m
@@ -95,7 +96,7 @@ spec:
         severity: ticket
         slo: '5'
       annotations:
-        summary: ClickHouse ingest lag gauge is stale
+        summary: ClickHouse ingest lag gauge on {{ $labels.instance }} is stale
         description: The ingest worker has not refreshed octo_nats_consumer_pending for more than 5 minutes.
           A stopped poller leaves a stale value rather than a rising one.
     - alert: ShapoclyackNatsOutboxBacklog

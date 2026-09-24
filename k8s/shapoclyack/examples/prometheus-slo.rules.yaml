@@ -106,8 +106,11 @@ groups:
 
   - name: shapoclyack.slo.ingest
     rules:
+      # The durable is octo-ch-ingest-results since the filter was narrowed to
+      # ingest.results.>; the retired name selects nothing, so both rules below
+      # matched no series and could not fire until #334.
       - alert: ShapoclyackClickHouseIngestLag
-        expr: octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+        expr: octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
         for: 10m
         labels:
           severity: ticket
@@ -115,19 +118,22 @@ groups:
         annotations:
           summary: ClickHouse ingest consumer lag is above 1000 messages
           description: >-
-            octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000 for 10m
-            (SLO 5). Absent series means ingest is not enabled — this rule
-            does not fire then.
+            octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+            for 10m (SLO 5). Absent series means ingest is not enabled — this
+            rule does not fire then.
 
+      # Not timestamp(octo_nats_consumer_pending): the client library exports
+      # no sample timestamps, so Prometheus stamps each sample with the scrape
+      # time and that difference never exceeds a scrape interval.
       - alert: ShapoclyackClickHouseIngestStale
         expr: |
-          (time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+          (time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) > 300
         for: 5m
         labels:
           severity: ticket
           slo: "5"
         annotations:
-          summary: ClickHouse ingest lag gauge is stale
+          summary: ClickHouse ingest lag gauge on {{ $labels.instance }} is stale
           description: >-
             The ingest worker has not refreshed octo_nats_consumer_pending for
             more than 5 minutes. A stopped poller leaves a stale value rather

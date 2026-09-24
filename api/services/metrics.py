@@ -257,6 +257,17 @@ NATS_CONSUMER_PENDING = Gauge(
     ["consumer"],
     registry=REGISTRY,
 )
+NATS_CONSUMER_PENDING_TIMESTAMP = Gauge(
+    "octo_nats_consumer_pending_timestamp_seconds",
+    "Unix time at which this replica last refreshed octo_nats_consumer_pending "
+    "for the consumer. The count is read on each poll, so a worker that has "
+    "stopped polling leaves its last value standing instead of a rising one; "
+    "this is the series that ages when that happens (#334). Prometheus stamps "
+    "every sample of the count with the scrape time, so the count's own "
+    "timestamp() cannot tell.",
+    ["consumer"],
+    registry=REGISTRY,
+)
 
 NATS_STREAM_CONFIG_DRIFT = Gauge(
     "octo_nats_stream_config_drift",

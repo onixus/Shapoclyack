@@ -10,7 +10,9 @@ database and the pool say.
 
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,8 +23,9 @@ from api.db import engine as db_engine
 from api.db import models
 from api.db.engine import get_session
 from api.services import agents as agents_service
-from api.services import metrics
+from api.services import ch_ingest_worker, metrics
 from api.services import tenants as tenants_service
+from api.services.integrations import webhook_worker
 from tests.conftest import (
     TEST_AGENT_TOKEN,
     configured_client,
@@ -208,6 +211,47 @@ def _histogram_count(histogram) -> float:
             if sample.name.endswith("_count"):
                 return sample.value
     raise AssertionError("histogram has no _count sample")
+
+
+# --- NATS consumer lag ------------------------------------------------------------
+
+
+class _Subscription:
+    def __init__(self, pending: int | None) -> None:
+        self._pending = pending
+
+    async def consumer_info(self):
+        if self._pending is None:
+            raise RuntimeError("broker went away")
+        return type("Info", (), {"num_pending": self._pending})()
+
+
+def _ch_ingest_lag_reporter():
+    worker = ch_ingest_worker.ClickHouseIngestWorker(
+        nats_url="nats://127.0.0.1:1", clickhouse_url="http://127.0.0.1:1"
+    )
+    return worker._report_consumer_lag, ch_ingest_worker.CONSUMER_CH_INGEST  # noqa: SLF001
+
+
+def _webhook_lag_reporter():
+    worker = webhook_worker.WebhookFanoutWorker(nats_url="nats://127.0.0.1:1")
+    return worker._report_lag, webhook_worker.CONSUMER_WEBHOOK_FANOUT  # noqa: SLF001
+
+
+@pytest.mark.parametrize("reporter", [_ch_ingest_lag_reporter, _webhook_lag_reporter])
+def test_consumer_lag_reports_when_it_was_read(reporter):
+    """The pending count alone cannot say a poller stopped: it keeps its last
+    value, and Prometheus stamps it with the scrape time. The refresh time next
+    to it is what ages — and a read that failed must not move it."""
+    report, consumer = reporter()
+    before = time.time()
+    asyncio.run(report(_Subscription(7)))
+    stamped = metrics.NATS_CONSUMER_PENDING_TIMESTAMP.labels(consumer=consumer)._value.get()  # noqa: SLF001
+    assert metrics.NATS_CONSUMER_PENDING.labels(consumer=consumer)._value.get() == 7  # noqa: SLF001
+    assert before <= stamped <= time.time()
+
+    asyncio.run(report(_Subscription(None)))
+    assert metrics.NATS_CONSUMER_PENDING_TIMESTAMP.labels(consumer=consumer)._value.get() == stamped  # noqa: SLF001
 
 
 # --- sensor / agent fleet -------------------------------------------------------

@@ -230,6 +230,35 @@ def test_every_label_an_alert_names_exists():
     assert not problems, problems
 
 
+def test_consumer_matchers_name_a_consumer_the_api_reports():
+    """``octo_nats_consumer_pending`` is labelled with the durable's name, and
+    that name has changed before (``octo-ch-ingest`` became
+    ``octo-ch-ingest-results`` with the narrowed filter). A matcher on the old
+    name selects nothing, so both SLO 5 alerts sat in the rules unable to fire
+    — the series check above cannot see that, because the series exists."""
+    from api.services import ch_ingest_worker
+    from api.services.integrations import webhook_worker
+
+    reported = {
+        ch_ingest_worker.CONSUMER_CH_INGEST,
+        webhook_worker.CONSUMER_WEBHOOK_FANOUT,
+        webhook_worker.CONSUMER_AUDIT_FANOUT,
+    }
+    sources = {
+        RULES.name: RULES.read_text(encoding="utf-8"),
+        "docs/slo.md": (ROOT / "docs/slo.md").read_text(encoding="utf-8"),
+        **{path.name: path.read_text(encoding="utf-8") for path in DASHBOARDS},
+    }
+    named = {
+        (source, consumer)
+        for source, text in sources.items()
+        for consumer in re.findall(r'consumer\\?="([^"\\]+)', text)
+    }
+    assert {consumer for _, consumer in named} <= reported, sorted(
+        pair for pair in named if pair[1] not in reported
+    )
+
+
 def test_cluster_wide_series_are_never_summed_in_the_rules():
     summed = {
         (name, series)

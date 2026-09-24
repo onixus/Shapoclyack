@@ -3,15 +3,59 @@
 #   promtool test rules k8s/shapoclyack/examples/prometheus-slo.rules.test.yaml
 #   (k8s/scripts/validate-prometheus-rules.sh runs it)
 #
-# They cover the pool and fleet groups: the ones whose expressions carry a
-# decision beyond a threshold — per replica or cluster-wide, which agent kind,
-# and when an empty fleet must not page.
+# They cover the pool and fleet groups — the ones whose expressions carry a
+# decision beyond a threshold: per replica or cluster-wide, which agent kind,
+# and when an empty fleet must not page — and SLO 5's consumer alerts, which
+# selected a retired consumer name and a timestamp that never ages until #334.
 rule_files:
   - prometheus-slo.rules.yaml
 
 evaluation_interval: 1m
 
 tests:
+  # SLO 5 on the durable the worker really uses. The lag gauge keeps being
+  # scraped after its poller stops at minute 5; only the refresh time shows it.
+  - interval: 1m
+    input_series:
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '1500x30'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '0+60x5 300x25'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ShapoclyackClickHouseIngestLag
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: "5"
+              job: shapoclyack-api
+              instance: a:8080
+              consumer: octo-ch-ingest-results
+            exp_annotations:
+              summary: ClickHouse ingest consumer lag is above 1000 messages
+              description: >-
+                octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+                for 10m (SLO 5). Absent series means ingest is not enabled — this
+                rule does not fire then.
+      - eval_time: 8m
+        alertname: ShapoclyackClickHouseIngestStale
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ShapoclyackClickHouseIngestStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: "5"
+              job: shapoclyack-api
+              instance: a:8080
+              consumer: octo-ch-ingest-results
+            exp_annotations:
+              summary: ClickHouse ingest lag gauge on a:8080 is stale
+              description: >-
+                The ingest worker has not refreshed octo_nats_consumer_pending for
+                more than 5 minutes. A stopped poller leaves a stale value rather
+                than a rising one.
+
   # One replica holding 14 of 15 connections, the other 12 of 15: only the
   # first crosses 90 %, and it is named by its own instance.
   - interval: 1m
