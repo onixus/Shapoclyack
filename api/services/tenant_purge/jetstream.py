@@ -25,8 +25,11 @@ What the broker holds for one tenant (``api/services/nats_bus.py``):
 
 Consumers first, so no agent is handed an offer while the rest goes; the legacy
 copies before the tenant's own ingest subject, because finding them needs it.
-Every call is preceded by a legal-hold check. ``OCTO_NATS_URL`` unset skips the
-step.
+Every call is preceded by a legal-hold check. ``OCTO_NATS_URL`` unset fails the
+step unless the installation declared it runs no NATS
+(``OCTO_TENANT_PURGE_UNUSED_STORES=jetstream``). The account needs
+``$JS.API.CONSUMER.LIST``/``.DELETE`` on ``JOBS`` and ``$JS.API.STREAM.INFO``,
+``.PURGE``, ``.MSG.GET`` and ``.MSG.DELETE`` on the three streams.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ from api.services.tenant_purge.context import PurgeContext, StepSkipped
 
 #: How many legacy messages after the tenant's own are examined for its copy.
 LEGACY_PROBE = 16
+
+UNUSED_STORE = "jetstream"
 
 
 def tenant_subjects(tenant_id: str) -> list[tuple[str, str, str]]:
@@ -112,7 +117,16 @@ def _drop_legacy_copies(ctx: PurgeContext, bus: nats_bus.NatsBus) -> tuple[int, 
 def run(ctx: PurgeContext) -> dict[str, Any]:
     url = (ctx.settings.nats_url or "").strip()
     if not url:
-        raise StepSkipped("NATS is not configured (OCTO_NATS_URL)")
+        # Skipped only on the installation's word, never on this replica's
+        # configuration alone: one whose OCTO_NATS_URL drifted must not decide
+        # that the broker holds nothing of the tenant.
+        if UNUSED_STORE in ctx.settings.tenant_purge_unused_stores:
+            raise StepSkipped("NATS declared unused (OCTO_TENANT_PURGE_UNUSED_STORES)")
+        raise RuntimeError(
+            "OCTO_NATS_URL is not set on this replica and NATS is not declared "
+            "unused (OCTO_TENANT_PURGE_UNUSED_STORES=jetstream); the tenant's "
+            "subjects may be in a broker this replica cannot reach"
+        )
     bus = nats_bus.get_bus(url)
     if bus is None:
         # Configured and unreachable is a failure to retry, not a store to skip.

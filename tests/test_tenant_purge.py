@@ -41,6 +41,7 @@ from api.services import tenant_lifecycle as lifecycle
 from api.services import tenant_purge
 from api.services import tenants as tenants_service
 from api.services.artifact_store import keys, workspace
+from api.services.tenant_purge import artifacts as purge_artifacts
 from api.services.tenant_purge import clickhouse as purge_clickhouse
 from api.services.tenant_purge import jetstream as purge_jetstream
 from api.services.tenant_purge import postgres as purge_postgres
@@ -88,6 +89,9 @@ def settings(tmp_path):
         # can be injected between two of them.
         tenant_purge_batch_size=1,
         tenant_purge_interval_seconds=5,
+        # No ClickHouse or NATS in most of these, and said so: a store that is
+        # merely not configured fails its step (review round 1, finding 7).
+        tenant_purge_unused_stores=("clickhouse", "jetstream"),
     )
     s.output_dir.mkdir(parents=True, exist_ok=True)
     s.state_dir.mkdir(parents=True, exist_ok=True)
@@ -813,12 +817,29 @@ def test_a_flat_run_whose_owner_cannot_be_read_fails_the_step_rather_than_be_gue
 
 
 class _RecordingClickHouse:
-    """Answers the four statements the step issues, over an in-memory table."""
+    """The statements the step issues, over in-memory tables — asynchronously.
 
-    def __init__(self, rows: dict[str, dict[str, int]], *, fail_on: str | None = None) -> None:
+    An ``ALTER … DELETE`` is recorded as a *pending* mutation, as ClickHouse
+    does, and is applied only once ``system.mutations`` has been polled
+    ``polls`` times for it: a step that submitted and counted at once would
+    find its rows still there. ``fail_reason`` makes the pending mutation
+    report ``latest_fail_reason`` instead of finishing.
+    """
+
+    def __init__(
+        self,
+        rows: dict[str, dict[str, int]],
+        *,
+        fail_on: str | None = None,
+        polls: int = 1,
+    ) -> None:
         self.rows = rows  # table -> {uuid literal: count}
         self.fail_on = fail_on
         self.crash_on: str | None = None
+        self.polls = polls
+        self.fail_reason = ""
+        # [table, uuid literal, polls seen]
+        self.pending: list[list[Any]] = []
         self.statements: list[tuple[str, dict | None]] = []
 
     def command(self, statement: str, settings: dict | None = None) -> Any:
@@ -833,10 +854,36 @@ class _RecordingClickHouse:
             if self.crash_on == table:
                 raise _Crash()
             key = statement.split("tenant_id = ")[1]
-            self.rows[table].pop(key, None)
+            self.pending.append([table, key, 0])
             return None
         key = statement.split("tenant_id = ")[1]
         return self.rows.get(table, {}).get(key, 0)
+
+    def query(self, statement: str):
+        self.statements.append((statement, None))
+        assert "system.mutations" in statement, statement
+        database = statement.split("database = '")[1].split("'")[0]
+        name = statement.split("table = '")[1].split("'")[0]
+        needle = statement.split("position(command, '")[1].split("'")[0]
+        rows = []
+        for entry in list(self.pending):
+            table, key, seen = entry
+            if table != f"{database}.{name}" or needle not in key:
+                continue
+            if self.fail_reason:
+                rows.append((f"mutation_{len(self.statements)}.txt", self.fail_reason))
+                continue
+            entry[2] = seen + 1
+            if entry[2] >= self.polls:
+                self.rows[table].pop(key, None)
+                self.pending.remove(entry)
+            else:
+                rows.append((f"mutation_{len(self.statements)}.txt", ""))
+
+        class _Result:
+            result_rows = rows
+
+        return _Result()
 
 
 def test_the_clickhouse_step_deletes_by_mutation_and_verifies(settings, monkeypatch):
@@ -851,6 +898,7 @@ def test_the_clickhouse_step_deletes_by_mutation_and_verifies(settings, monkeypa
     )
     settings.clickhouse_url = "http://clickhouse.invalid:8123"
     monkeypatch.setattr(purge_clickhouse.clickhouse_client, "get_client", lambda url: fake)
+    monkeypatch.setattr(purge_clickhouse, "POLL_SECONDS", 0)
     deletion_id = _approve(settings)
 
     assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
@@ -865,7 +913,8 @@ def test_the_clickhouse_step_deletes_by_mutation_and_verifies(settings, monkeypa
     assert fake.rows["shapoclyack.shapoclyack_vulnerabilities"] == {neighbour: 3}
     assert fake.rows["shapoclyack.shapoclyack_open_ports"] == {neighbour: 1}
     mutations = [s for s in fake.statements if s[0].startswith("ALTER TABLE")]
-    assert all(options == {"mutations_sync": 2} for _stmt, options in mutations)
+    # Submitted without waiting inside the statement; the step polls instead.
+    assert all(options == {"mutations_sync": 0} for _stmt, options in mutations)
     # A literal built from a parsed UUID: nothing but hex digits reaches it.
     assert all(victim in stmt for stmt, _ in mutations)
     assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"] == {
@@ -1014,3 +1063,208 @@ def test_live_object_storage_purge_against_an_s3_gateway(settings, tmp_path):
     assert _run_keys(store, VICTIM) == []
     assert len(_run_keys(store, NEIGHBOUR)) == 6
     assert counts["run_objects"] == 2 and counts["report_objects"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1
+# --------------------------------------------------------------------------- #
+
+
+def _clickhouse(settings, monkeypatch, fake) -> None:
+    settings.clickhouse_url = "http://clickhouse.invalid:8123"
+    monkeypatch.setattr(purge_clickhouse.clickhouse_client, "get_client", lambda url: fake)
+    monkeypatch.setattr(purge_clickhouse, "POLL_SECONDS", 0)
+
+
+def test_a_mutation_an_earlier_attempt_left_running_is_waited_for_not_submitted_again(
+    settings, monkeypatch
+):
+    """The client's read timeout ended the last attempt; ClickHouse did not stop.
+    The retry must wait for that mutation, not stack a second one beside it."""
+    victim = purge_clickhouse._uuid_literal(VICTIM)  # noqa: SLF001
+    table = "shapoclyack.shapoclyack_vulnerabilities"
+    fake = _RecordingClickHouse({table: {victim: 5}}, polls=3)
+    fake.pending.append([table, victim, 0])
+    renewals = {"n": 0}
+    real_renew = PurgeContext.renew
+
+    def counting(self, session):
+        if self.step == "clickhouse":
+            renewals["n"] += 1
+        return real_renew(self, session)
+
+    monkeypatch.setattr(PurgeContext, "renew", counting)
+    _clickhouse(settings, monkeypatch, fake)
+    deletion_id = _approve(settings)
+    assert _run_to_end(settings)[-1] == "completed"
+    assert not [stmt for stmt, _ in fake.statements if stmt.startswith("ALTER TABLE")]
+    assert fake.rows[table] == {}
+    # Polled until done, the lease renewed between polls.
+    polls = [stmt for stmt, _ in fake.statements if "system.mutations" in stmt]
+    assert len(polls) >= 3
+    assert renewals["n"] >= 3
+    assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"]["vulnerabilities"] == 5
+
+
+def test_a_failing_mutation_fails_the_step_with_clickhouses_own_reason(settings, monkeypatch):
+    victim = purge_clickhouse._uuid_literal(VICTIM)  # noqa: SLF001
+    table = "shapoclyack.shapoclyack_vulnerabilities"
+    fake = _RecordingClickHouse({table: {victim: 5}})
+    fake.fail_reason = "Code: 241. Memory limit (total) exceeded"
+    _clickhouse(settings, monkeypatch, fake)
+    deletion_id = _approve(settings)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    step = _step(settings, deletion_id, "clickhouse")
+    assert "Memory limit (total) exceeded" in step["last_error"]
+    assert "KILL MUTATION" in step["last_error"]
+    # Retried: waited for, never submitted a second time.
+    fake.fail_reason = ""
+    _make_due(settings, deletion_id)
+    assert _run_to_end(settings)[-1] == "completed"
+    assert len([stmt for stmt, _ in fake.statements if stmt.startswith("ALTER TABLE")]) == 1
+
+
+@pytest.mark.parametrize("step", ["clickhouse", "jetstream"])
+def test_a_store_this_replica_does_not_know_fails_its_step_rather_than_skip_it(
+    settings, step
+):
+    """Skipped only on the installation's word: a replica whose configuration
+    drifted must not record another replica's store as holding nothing."""
+    settings.tenant_purge_unused_stores = tuple(
+        store for store in ("clickhouse", "jetstream") if store != step
+    )
+    deletion_id = _approve(settings)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    failed = _step(settings, deletion_id, step)
+    assert failed["state"] == "failed"
+    assert "OCTO_TENANT_PURGE_UNUSED_STORES" in failed["last_error"]
+    settings.tenant_purge_unused_stores = ("clickhouse", "jetstream")
+    _make_due(settings, deletion_id)
+    assert _run_to_end(settings)[-1] == "completed"
+    skipped = _deletion(settings, deletion_id)["outcome"]["skipped"]
+    assert "declared unused" in skipped[step]
+
+
+def test_a_long_flat_run_scan_keeps_its_lease(settings, monkeypatch):
+    """Every flat run's marker is a store request; the scan renews the lease
+    as it goes, or another replica takes the step over and starts again."""
+    store = artifact_store.get_store(settings)
+    for index in range(250):
+        flat = keys.run_ref(f"legacy-other-{index:04d}")
+        _write(store, keys.run_artifact(flat, "tenant.json"), b'{"tenant_id": "someone-else"}')
+    renewals = {"n": 0, "scanning": False}
+    real_renew = PurgeContext.renew
+    real_scan = purge_artifacts._flat_runs  # noqa: SLF001
+
+    def counting(self, session):
+        if renewals["scanning"]:
+            renewals["n"] += 1
+        return real_renew(self, session)
+
+    def scanning(ctx, store):
+        renewals["scanning"] = True
+        try:
+            return real_scan(ctx, store)
+        finally:
+            renewals["scanning"] = False
+
+    monkeypatch.setattr(PurgeContext, "renew", counting)
+    monkeypatch.setattr(purge_artifacts, "_flat_runs", scanning)
+    _approve(settings)
+    assert _run_to_end(settings)[-1] == "completed"
+    # None of the 250 is the tenant's, so every renewal here is the scan's own:
+    # one per hundred markers read.
+    assert renewals["n"] >= 2, renewals
+
+
+def test_a_store_that_fails_to_answer_is_not_an_unreadable_marker(settings, monkeypatch):
+    store = artifact_store.get_store(settings)
+    flat = keys.run_ref("legacy-throttled")
+    _write(store, keys.run_artifact(flat, "tenant.json"), b'{"tenant_id": "someone-else"}')
+    real_get = store.get_bytes
+
+    def throttled(key):
+        if key.endswith("legacy-throttled/tenant.json"):
+            raise artifact_store.ArtifactStoreError("SlowDown: reduce your request rate")
+        return real_get(key)
+
+    monkeypatch.setattr(store, "get_bytes", throttled)
+    deletion_id = _approve(settings)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    error = _step(settings, deletion_id, "artifacts")["last_error"]
+    assert "SlowDown" in error
+    assert "cannot be read" not in error
+
+
+def test_rows_written_late_send_every_store_round_again(settings, monkeypatch):
+    """The writer of a late row may have left objects and subjects too."""
+    deletion_id = _approve(settings)
+    real_finalize = purge_postgres.finalize
+    state = {"late": False}
+
+    def finalize_after_a_late_write(ctx):
+        if not state["late"]:
+            state["late"] = True
+            with get_session(settings.postgres_url) as session:
+                session.add(
+                    models.RiskScoreSnapshot(snapshot_id="late-2", tenant_id=VICTIM, recorded_at=_NOW)
+                )
+        return real_finalize(ctx)
+
+    monkeypatch.setitem(tenant_purge.STEP_FUNCTIONS, "finalize", finalize_after_a_late_write)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    for name in ("quiesce", "outbox", "jetstream", "artifacts", "clickhouse", "postgres"):
+        assert _step(settings, deletion_id, name)["state"] == "pending", name
+
+
+def test_a_report_key_that_is_not_there_is_not_counted(settings, tmp_path):
+    """On a bucket, where a batch delete counts every key it was handed."""
+    settings.artifact_backend = "s3"
+    settings.artifact_s3_bucket = "artifacts"
+    settings.artifact_cache_dir = str(tmp_path / "cache")
+    store = artifact_store.get_store(settings)
+    store._client = FakeS3Client()  # noqa: SLF001 - the seam the lazy client exists for
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.GeneratedReport(
+                report_id="rpt_0000000000000009",
+                tenant_id=VICTIM,
+                kind="executive",
+                fmt="pdf",
+                status="ready",
+                title="",
+                size_bytes=1,
+                delivery=[],
+                generated_at=_NOW,
+                storage_path="reports/elsewhere/rpt_0000000000000009.pdf",
+            )
+        )
+    assert not store.exists("reports/elsewhere/rpt_0000000000000009.pdf")
+    deletion_id = _approve(settings)
+    assert _run_to_end(settings)[-1] == "completed"
+    assert _deletion(settings, deletion_id)["outcome"]["stores"]["artifacts"]["report_objects"] == 0
+
+
+def test_a_replica_that_loses_its_lease_mid_batch_does_not_count_what_it_removed(
+    settings, monkeypatch
+):
+    """Counts go through the lease check: the loser's bookkeeping fails, so the
+    new owner's count is the only one — nothing is counted twice."""
+    _seed_runs(settings)
+    deletion_id = _approve(settings)
+    store = artifact_store.get_store(settings)
+    real_delete = store.delete_prefix
+
+    def delete_then_lose_the_lease(prefix):
+        removed = real_delete(prefix)
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                update(models.TenantDeletion)
+                .where(models.TenantDeletion.deletion_id == deletion_id)
+                .values(lease_owner="replica-2")
+            )
+        return removed
+
+    monkeypatch.setattr(store, "delete_prefix", delete_then_lose_the_lease)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "lease_lost"
+    assert _step(settings, deletion_id, "artifacts")["counts"] == {}

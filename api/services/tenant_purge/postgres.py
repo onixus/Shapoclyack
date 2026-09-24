@@ -317,8 +317,11 @@ def finalize(ctx: PurgeContext) -> dict[str, Any]:
             legal_hold.assert_not_on_hold(session, ctx.tenant_id, action="tenant.delete")
             left = remaining(session, OUTBOX_TABLES + POSTGRES_TABLES, ctx.tenant_id)
             if left:
+                # Every store step, not only the Postgres ones: whatever wrote
+                # the row (a job that finished late, an ingest) may have left
+                # objects, analytics and subjects behind it too.
                 raise RerunSteps(
-                    ("outbox", "postgres"),
+                    ("quiesce", "outbox", "jetstream", "artifacts", "clickhouse", "postgres"),
                     f"rows written after their table was purged: {left}",
                 )
             disabled = _stranded_accounts(session, ctx.tenant_id)

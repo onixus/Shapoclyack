@@ -690,6 +690,7 @@ OCTO_TENANT_DELETION_TWO_PERSON
 OCTO_TENANT_PURGE_BATCH_SIZE
 OCTO_TENANT_PURGE_ENABLED
 OCTO_TENANT_PURGE_INTERVAL_SECONDS
+OCTO_TENANT_PURGE_UNUSED_STORES
 OCTO_TICKET_SYNC_BATCH_SIZE
 OCTO_TICKET_SYNC_ENABLED
 OCTO_TICKET_SYNC_INTERVAL_SECONDS
@@ -1249,10 +1250,11 @@ Tenant suspension and deletion (#325). See
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_TENANT_DELETION_GRACE_DAYS` | `7` | Days between a deletion request and the earliest moment its purge may be approved. The tenant is suspended for the whole period and the request can be cancelled with nothing lost. `0` allows approving at once |
-| `OCTO_TENANT_DELETION_TWO_PERSON` | `true` | The platform admin who approves a purge must not be the one who requested the deletion. Turn off only on an installation with a single platform admin |
+| `OCTO_TENANT_DELETION_TWO_PERSON` | `true` | The platform admin who approves a purge must not be the one who requested the deletion. Only `false`, `0`, `no` or `off` turn it off — anything else, a typo included, keeps it on. Turn off only on an installation with a single platform admin |
 | `OCTO_TENANT_PURGE_ENABLED` | `true` | Run the purge worker. Safe in every replica: a deletion is claimed with `FOR UPDATE SKIP LOCKED` and held on a lease renewed between batches |
 | `OCTO_TENANT_PURGE_INTERVAL_SECONDS` | `30` | How often the worker looks for an approved deletion (floored at 5) |
 | `OCTO_TENANT_PURGE_BATCH_SIZE` | `1000` | Rows per `DELETE` in the Postgres steps. Every batch re-checks the legal hold under the tenant row lock |
+| `OCTO_TENANT_PURGE_UNUSED_STORES` | empty | Comma-separated stores this installation does not run: `clickhouse`, `jetstream`. The purge skips a store only when it is named here; a store not configured on the replica running the step (`OCTO_CLICKHOUSE_URL`/`OCTO_NATS_URL` unset) and not named here **fails** the step, so a replica with drifted configuration cannot record another replica's data as absent. An unknown name refuses to start. Set it before deleting a tenant on an installation without ClickHouse or NATS |
 
 
 Never commit real URLs containing credentials. Supply them through the platform

@@ -29,16 +29,18 @@ The step ends by listing what it deleted and failing if anything is left.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
 from api.db import models
-from api.services import artifact_store, retention_policy
+from api.services import artifact_store
 from api.services.artifact_store import keys, workspace
 from api.services.tenant_purge.context import PurgeContext
 
@@ -47,6 +49,16 @@ LOG = logging.getLogger("shapoclyack.tenant-purge")
 # The shape reports.store._report_key accepts for the tenant component: an id
 # it would have refused never had a report written under it.
 _REPORT_TENANT_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+#: The flat-run scan reads one ``tenant.json`` per run of every tenant, which
+#: on a bucket is a request each. It renews the lease — through a checkpoint —
+#: at least this often, so a long scan is not taken for a dead one and started
+#: over by another replica, which would then never finish it either.
+_FLAT_SCAN_CHECKPOINT_RUNS = 100
+_FLAT_SCAN_CHECKPOINT_SECONDS = 30.0
+
+#: What a flat run with no marker belongs to (``runs.read_run_tenant``'s rule).
+_UNMARKED_OWNER = "default"
 
 
 def _report_prefix(tenant_id: str) -> str | None:
@@ -108,9 +120,32 @@ def _tenant_runs(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> None
         )
 
 
+def _flat_owner(store: artifact_store.ArtifactStore, ref: keys.RunRef) -> str | None:
+    """The tenant a flat run's ``tenant.json`` names; None when it cannot be parsed.
+
+    Stricter than a listing: an unparsable marker is None here, never "the
+    default tenant's". And narrower than ``retention_policy.run_owner``: a
+    store that fails to answer (throttling, a timeout) raises, so the step
+    fails and is retried instead of reporting a run that is fine as unreadable.
+    """
+    marker = keys.run_artifact(ref, "tenant.json")
+    try:
+        raw = store.get_bytes(marker)
+    except artifact_store.ArtifactNotFound:
+        return _UNMARKED_OWNER
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    owner = str(payload.get("tenant_id") or "").strip() if isinstance(payload, dict) else ""
+    return owner or _UNMARKED_OWNER
+
+
 def _flat_runs(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> list[str]:
     """Delete the flat runs marked as this tenant's; return the unreadable ones."""
     unreadable: list[str] = []
+    read = 0
+    last_checkpoint = time.monotonic()
     for name in list(store.list_children(keys.RUNS)):
         if name.startswith(".") or name == keys.TENANT_RUNS:
             continue
@@ -118,15 +153,21 @@ def _flat_runs(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> list[s
             ref = keys.run_ref(name)
         except ValueError:
             continue
-        # Strict, unlike a listing: an unreadable marker is None here, never
-        # "default" (retention_policy.run_owner).
-        owner = retention_policy.run_owner(store, ref, {})
+        read += 1
+        if (
+            read % _FLAT_SCAN_CHECKPOINT_RUNS == 0
+            or time.monotonic() - last_checkpoint >= _FLAT_SCAN_CHECKPOINT_SECONDS
+        ):
+            ctx.checkpoint()
+            last_checkpoint = time.monotonic()
+        owner = _flat_owner(store, ref)
         if owner is None:
             unreadable.append(name)
             continue
         if owner != ctx.tenant_id:
             continue
         ctx.checkpoint()
+        last_checkpoint = time.monotonic()
         removed = workspace.delete_run(ctx.settings, ref)
         workspace.forget_run_marker(ref)
         _record(ctx, {"legacy_runs": 1, "legacy_run_objects": removed})
@@ -159,7 +200,9 @@ def _reports(ctx: PurgeContext, store: artifact_store.ArtifactStore) -> None:
             key = keys.report_key_from_storage_path(path)
         except ValueError:
             continue
-        if prefix is None or not key.startswith(f"{prefix}/"):
+        # Only keys that are there: a store's batch delete counts what it was
+        # asked to remove, and the tombstone should say what was.
+        if (prefix is None or not key.startswith(f"{prefix}/")) and store.exists(key):
             stray.append(key)
     if stray:
         ctx.checkpoint()

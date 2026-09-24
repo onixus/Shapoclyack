@@ -590,6 +590,12 @@ class Settings:
     # a deletion is claimed with FOR UPDATE SKIP LOCKED and held on a lease.
     tenant_purge_enabled: bool = True
     tenant_purge_interval_seconds: int = 30
+    # Stores this installation does not run, among "clickhouse" and "jetstream".
+    # A purge step whose store is not configured on the replica running it
+    # fails — and is retried, visibly — unless its store is named here: a
+    # replica whose OCTO_CLICKHOUSE_URL drifted must not decide for the whole
+    # installation that a store holds none of the tenant's data.
+    tenant_purge_unused_stores: tuple[str, ...] = ()
     # Rows per DELETE in the Postgres steps. Small enough that no batch holds
     # its locks for long, large enough that a tenant of a million findings is
     # a thousand statements rather than a million.
@@ -1044,6 +1050,25 @@ def _oidc_role_map() -> dict[str, str]:
             continue
         mapping[str(key)] = role
     return mapping
+
+
+#: The stores a tenant purge may be told this installation does not run (#325).
+TENANT_PURGE_OPTIONAL_STORES = ("clickhouse", "jetstream")
+
+
+def _tenant_purge_unused_stores() -> tuple[str, ...]:
+    """``OCTO_TENANT_PURGE_UNUSED_STORES``, validated: an unknown name refuses to
+    start rather than being ignored, since ignoring it would fail every purge
+    later with the cause out of sight."""
+    raw = os.environ.get("OCTO_TENANT_PURGE_UNUSED_STORES", "")
+    names = tuple(sorted({part.strip().lower() for part in raw.split(",") if part.strip()}))
+    unknown = [name for name in names if name not in TENANT_PURGE_OPTIONAL_STORES]
+    if unknown:
+        raise ValueError(
+            f"OCTO_TENANT_PURGE_UNUSED_STORES: unknown store(s) {', '.join(unknown)}; "
+            f"expected any of {', '.join(TENANT_PURGE_OPTIONAL_STORES)}"
+        )
+    return names
 
 
 def _retention_bounds() -> dict[str, dict[str, int]]:
@@ -1862,10 +1887,13 @@ def load_settings() -> Settings:
         tenant_deletion_grace_days=max(
             0, int(os.environ.get("OCTO_TENANT_DELETION_GRACE_DAYS", "7"))
         ),
-        tenant_deletion_two_person=os.environ.get(
-            "OCTO_TENANT_DELETION_TWO_PERSON", "true"
-        ).lower()
-        in {"1", "true", "yes"},
+        # Fail closed: only an explicit "off" turns the rule off. A typo, an
+        # "on" or a trailing space must not quietly let one person purge a
+        # tenant.
+        tenant_deletion_two_person=os.environ.get("OCTO_TENANT_DELETION_TWO_PERSON", "true")
+        .strip()
+        .lower()
+        not in {"0", "false", "no", "off"},
         tenant_purge_enabled=os.environ.get("OCTO_TENANT_PURGE_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         tenant_purge_interval_seconds=max(
@@ -1874,6 +1902,7 @@ def load_settings() -> Settings:
         tenant_purge_batch_size=max(
             1, int(os.environ.get("OCTO_TENANT_PURGE_BATCH_SIZE", "1000"))
         ),
+        tenant_purge_unused_stores=_tenant_purge_unused_stores(),
         artifact_backend=os.environ.get("OCTO_ARTIFACT_BACKEND", "local").strip().lower()
         or "local",
         artifact_s3_bucket=os.environ.get("OCTO_ARTIFACT_S3_BUCKET", "").strip(),
