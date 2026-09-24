@@ -921,7 +921,10 @@ export type AgentDeploymentSnippetResponse = {
   systemd_oneliner: string;
   docker_run: string;
   docker_compose: string;
+  /** Never holds the key: the Deployment reads it from a Secret. */
   kubernetes_yaml: string;
+  /** Creates that Secret; the only Kubernetes snippet carrying the key. */
+  kubernetes_secret_command: string;
 };
 
 export type TenantInfo = {

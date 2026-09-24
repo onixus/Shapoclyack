@@ -764,6 +764,19 @@ rather than a live key (`GET /api/agent/deployment-command`): opening the
 dialog must not create a tenant credential. **Generate key** mints one
 (`POST /api/agent/deployment-command`) and fills the snippets in.
 
+The **Kubernetes** tab is `k8s/shapoclyack/examples/agent-deployment.example.yaml`
+with this installation's URL in it: a `network-scan-executor` namespace labelled
+`pod-security.kubernetes.io/enforce=privileged` (the sensor needs `NET_RAW` and
+`NET_ADMIN`, which `baseline` does not admit) and a Deployment with the hardened
+securityContext of `docs/k8s-hardening.md`. The manifest never holds the key, so
+it can be committed; the Deployment reads it from Secret `shapoclyack-agent`
+(key `provisioning_key`), and the tab shows the command that creates it —
+`printf '%s' <key> | kubectl … create secret generic … --from-file=provisioning_key=/dev/stdin`,
+run after the apply. Until then the pod waits in `CreateContainerConfigError`.
+All three container snippets run `ghcr.io/onixus/shapoclyack-aio` at this API's
+release tag, and the Docker ones add `NET_RAW`/`NET_ADMIN`, without which
+naabu and pulse fail to start.
+
 The minted key is plaintext in that one response and is hashed at rest, so the
 dialog says it cannot be shown again — copy the command before closing. Keys
 that were generated and never used are revoked from the tenant's provisioning
