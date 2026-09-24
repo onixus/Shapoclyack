@@ -50,6 +50,7 @@ ADVISORY_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "advisories"
 class _Mirror(ThreadingHTTPServer):
     files: dict[str, bytes]
     requests: list[str]
+    headers: list[dict[str, str]]
 
     @property
     def base(self) -> str:
@@ -64,6 +65,7 @@ def mirror():
         def do_GET(self) -> None:  # noqa: N802 - http.server hook
             server = self.server
             server.requests.append(self.path)  # type: ignore[attr-defined]
+            server.headers.append(dict(self.headers))  # type: ignore[attr-defined]
             body = server.files.get(urlsplit(self.path).path)  # type: ignore[attr-defined]
             if body is None:
                 self.send_error(404)
@@ -79,6 +81,7 @@ def mirror():
     server = _Mirror(("127.0.0.1", 0), Handler)
     server.files = {}
     server.requests = []
+    server.headers = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -739,3 +742,202 @@ def test_every_projectdiscovery_invocation_disables_the_update_check() -> None:
     for where, line, flags in invocations:
         assert "-disable-update-check" in flags or "-duc" in flags, f"{where}:{line} {flags[0]} phones home"
         assert not _UPDATE_FLAGS & set(flags), f"{where}:{line} asks {flags[0]} to update itself"
+
+
+# --------------------------------------------------------------------------
+# Review round 1
+# --------------------------------------------------------------------------
+
+
+def test_the_feed_opener_is_wired_to_the_no_downgrade_handler() -> None:
+    opener = feed_fetch.opener_for("https://mirror.corp/kev.json")
+    assert any(isinstance(h, feed_fetch._NoDowngradeRedirect) for h in opener.handlers)
+
+
+def test_the_api_side_feeds_refuse_a_downgrade_too(monkeypatch) -> None:
+    """Debian, Ubuntu, MSRC and the NVD CPE ranges are fetched in-process
+    through advisories.fetch.fetch_json, which used the stock redirect handler
+    — the one that follows https to http."""
+    from api.services import egress
+
+    seen = []
+    real = egress.build_opener
+
+    def spy(url, *handlers):
+        seen.append(real(url, *handlers))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(egress, "build_opener", spy)
+    with pytest.raises(RuntimeError, match="stop"):
+        advisory_fetch.fetch_json("https://mirror.corp/debian.json")
+    handlers = {type(h).__name__ for h in seen[0].handlers}
+    assert "HTTPRedirectHandler" not in handlers, handlers
+
+
+@pytest.mark.parametrize("side", sorted(_SIDES))
+def test_both_sides_refuse_the_same_downgrades(side: str) -> None:
+    handler = _SIDES[side]._NoDowngradeRedirect()
+    request = urllib.request.Request("https://mirror.corp/kev.json")
+    for target in ("http://mirror.corp/kev.json", "ftp://mirror.corp/kev.json"):
+        with pytest.raises(urllib.error.HTTPError, match="refusing redirect"):
+            handler.redirect_request(request, io.BytesIO(), 302, "Found", {}, target)
+    assert handler.redirect_request(request, io.BytesIO(), 302, "Found", {}, "https://cdn.corp/kev.json")
+
+
+@pytest.mark.parametrize("side", sorted(_SIDES))
+def test_more_credential_spellings_are_redacted(side: str) -> None:
+    url = "https://m.corp/x?cred=1&pass=2&pwd=3&session=4&SessionId=5&Credential=6&keep=7"
+    redacted = _SIDES[side].redact_url(url)
+    assert redacted == (
+        "https://m.corp/x?cred=REDACTED&pass=REDACTED&pwd=REDACTED&session=REDACTED"
+        "&SessionId=REDACTED&Credential=REDACTED&keep=7"
+    )
+
+
+def test_the_deadline_holds_against_a_trickle(tmp_path: Path, monkeypatch) -> None:
+    """A mirror answering one byte every 0.25 s kept a 1-second deadline busy
+    for ten: each read waited for a full buffer. Reads now return what has
+    arrived, and the socket never waits past what the deadline leaves."""
+    import socket
+    import time
+
+    monkeypatch.setenv("OCTO_NO_PROXY", "127.0.0.1")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    stop = threading.Event()
+
+    def serve() -> None:
+        conn, _ = listener.accept()
+        conn.recv(65536)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n")
+        for _ in range(40):
+            if stop.wait(0.25):
+                break
+            try:
+                conn.sendall(b"x")
+            except OSError:
+                break
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    started = time.monotonic()
+    try:
+        with pytest.raises((feed_fetch.FeedError, TimeoutError)):
+            feed_fetch.download(
+                f"http://127.0.0.1:{listener.getsockname()[1]}/feed", tmp_path / "out", timeout=5, deadline_seconds=1.0
+            )
+    finally:
+        stop.set()
+        listener.close()
+    assert time.monotonic() - started < 3.0
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_nvd_key_is_never_sent_over_plain_http(monkeypatch) -> None:
+    """NVD_API_KEY is a credential; a plain-http mirror would carry it in the
+    clear. It is withheld (anonymous, slower) rather than sent."""
+    monkeypatch.setenv("OCTO_NVD_CPE_FETCH_ENABLED", "true")
+    monkeypatch.setenv("NVD_API_URL", "http://nvd-mirror.corp/rest/json/cves/2.0")
+    sent: list[bool] = []
+
+    def open_(request, timeout=None):  # noqa: ARG001 - urlopen signature
+        sent.append(request.has_header("Apikey"))
+        return _Response(json.dumps({"totalResults": 0, "startIndex": 0, "vulnerabilities": []}).encode())
+
+    cpe_ranges_fetch.harvest(sleep_seconds=0, api_key="s3cret", opener=open_, retries=0)
+    assert sent == [False]
+
+    monkeypatch.setenv("NVD_API_URL", "https://nvd-mirror.corp/rest/json/cves/2.0")
+    sent.clear()
+    cpe_ranges_fetch.harvest(sleep_seconds=0, api_key="s3cret", opener=open_, retries=0)
+    assert sent == [True]
+
+
+def test_the_cvss4_script_withholds_the_key_from_a_plain_http_mirror(mirror, tmp_path: Path) -> None:
+    mirror.files["/nvd"] = _nvd_page()
+    proc = _run(
+        [sys.executable, "scripts/fetch-cvss4-db.py", "--last-mod-days", "1", "--sleep", "0",
+         "-o", str(tmp_path / "cvss4.json")],
+        NVD_API_URL=f"{mirror.base}/nvd",
+        NVD_API_KEY="s3cret",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert mirror.headers and all("apikey" not in {k.lower() for k in h} for h in mirror.headers)
+    assert "not sent" in proc.stderr
+
+
+def test_git_gets_the_same_proxy_settings_as_every_other_feed(
+    templates_mirror, no_nuclei_updates, tmp_path: Path
+) -> None:
+    """OCTO_HTTPS_PROXY reached git; OCTO_HTTP_PROXY and OCTO_NO_PROXY did not,
+    so an http:// mirror went direct and an exempted host went through the proxy."""
+    bare, _ = templates_mirror
+    bindir, _ = no_nuclei_updates
+    seen = tmp_path / "git-env"
+    real_git = shutil.which("git")
+    wrapper = bindir / "git"
+    wrapper.write_text(
+        f'#!/bin/sh\necho "https=$https_proxy http=$http_proxy no=$no_proxy NO=$NO_PROXY" >> {seen}\n'
+        f'exec {real_git} "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
+    proc = _templates(
+        tmp_path / "templates",
+        bindir,
+        NUCLEI_TEMPLATES_REPO=bare.as_uri(),
+        NUCLEI_TEMPLATES_REF="v10.0.0",
+        OCTO_HTTPS_PROXY="http://proxy.corp:3128",
+        OCTO_HTTP_PROXY="http://proxy.corp:3129",
+        OCTO_NO_PROXY="git.corp,10.0.0.0/8",
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    line = seen.read_text(encoding="utf-8").splitlines()[0]
+    assert line == (
+        "https=http://proxy.corp:3128 http=http://proxy.corp:3129 no=git.corp,10.0.0.0/8 NO=git.corp,10.0.0.0/8"
+    )
+
+
+def _unshare_works() -> bool:
+    if shutil.which("unshare") is None:
+        return False
+    probe = subprocess.run(["unshare", "-rm", "true"], capture_output=True, check=False)  # noqa: S603,S607
+    return probe.returncode == 0
+
+
+def test_templates_into_a_mount_point_are_swapped_in_place(
+    templates_mirror, no_nuclei_updates, tmp_path: Path
+) -> None:
+    """A volume mounted at the destination cannot be renamed (EBUSY). The
+    checkout is staged inside it and the contents are swapped instead."""
+    if not _unshare_works():
+        pytest.skip("needs unshare -rm (user + mount namespace) for a bind mount")
+    bare, commit = templates_mirror
+    bindir, marker = no_nuclei_updates
+    backing = tmp_path / "volume"
+    backing.mkdir()
+    (backing / "old.yaml").write_text("id: old\n", encoding="utf-8")
+    (backing / ".hidden-old").write_text("x", encoding="utf-8")
+    dest = tmp_path / "mnt"
+    dest.mkdir()
+
+    proc = _run(
+        ["unshare", "-rm", "sh", "-c",
+         f'mount --bind "{backing}" "{dest}" && exec bash scripts/fetch-nuclei-templates.sh "{dest}"'],
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_NOSYSTEM="1",
+        NUCLEI_TEMPLATES_REPO=bare.as_uri(),
+        NUCLEI_TEMPLATES_REF=commit,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (backing / "http" / "cves" / "CVE-2026-4444.yaml").is_file()
+    assert not (backing / "old.yaml").exists()
+    assert not (backing / ".hidden-old").exists()
+    assert json.loads((backing / ".shapoclyack-templates.json").read_text(encoding="utf-8"))["commit"] == commit
+    assert not [p.name for p in backing.iterdir() if p.name.startswith(".nuclei-templates")]
+    assert not marker.exists()

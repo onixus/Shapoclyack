@@ -35,6 +35,7 @@ filters client-side via _extract_cvss4().
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -95,6 +96,8 @@ WORKERS_KEYED = 4
 # live one that has been throttled to a trickle. See _read_bounded().
 SOCKET_TIMEOUT = 60
 REQUEST_DEADLINE = 120.0
+#: A 2000-CVE page is ~9 MB; the ceiling only stops a runaway.
+PAGE_MAX_BYTES = 256 * 1024 * 1024
 
 
 def _severity_from_score(score: float) -> str:
@@ -208,18 +211,15 @@ def _read_bounded(resp, max_seconds: float = REQUEST_DEADLINE) -> bytes:
     the whole body instead, so a starved read fails, is retried on a fresh
     connection, and the run keeps moving.
     """
-    deadline = time.monotonic() + max_seconds
-    chunks: list[bytes] = []
-    while True:
-        chunk = resp.read(65536)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"response body exceeded {max_seconds:.0f}s "
-                f"({sum(len(c) for c in chunks)} bytes read)"
-            )
+    # feed_fetch.read_bounded enforces the deadline during a read as well as
+    # between reads (#339) — the trickle this docstring describes is exactly
+    # the case a between-reads check misses.
+    sink = io.BytesIO()
+    try:
+        feed_fetch.read_bounded(resp, max_bytes=PAGE_MAX_BYTES, deadline_seconds=max_seconds, sink=sink)
+    except feed_fetch.FeedError as exc:
+        raise TimeoutError(str(exc)) from exc
+    return sink.getvalue()
 
 
 def _request_json(url: str, api_key: str | None, *, retries: int = 6) -> dict | None:
@@ -423,6 +423,14 @@ def main() -> int:
         return 2
 
     api_key = os.environ.get("NVD_API_KEY")
+    if api_key and urllib.parse.urlsplit(nvd_url()).scheme != "https":
+        # A credential over plain http is a disclosed credential; anonymous
+        # and slower is the better failure (#339).
+        print(
+            f"warning: NVD_API_KEY not sent to {feed_fetch.redact_url(nvd_url())}: not https",
+            file=sys.stderr,
+        )
+        api_key = None
     sleep_seconds = args.sleep if args.sleep is not None else (
         SLEEP_KEYED if api_key else SLEEP_ANONYMOUS
     )

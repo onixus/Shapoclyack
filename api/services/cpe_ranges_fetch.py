@@ -321,6 +321,13 @@ def harvest(
     # configuration error, and the retry loop below would back off from it
     # for minutes instead of saying so.
     base_url = nvd_url()
+    if api_key and urllib.parse.urlsplit(base_url).scheme != "https":
+        # The key is a credential; a plain-http mirror would carry it in the
+        # clear. Anonymous and slower beats disclosed (review of #339).
+        LOG.warning(
+            "nvd-cpe: NVD_API_KEY not sent to %s: not https", advisory_fetch.redact_url(base_url)
+        )
+        api_key = None
     if sleep_seconds is None:
         sleep_seconds = SLEEP_KEYED if api_key else SLEEP_ANONYMOUS
     base: dict[str, Any] = {"resultsPerPage": PAGE_SIZE}

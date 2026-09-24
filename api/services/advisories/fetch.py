@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,7 +81,7 @@ ALLOWED_SCHEMES = ("https", "http", "file")
 #: pattern as ``scripts/feed_fetch.py`` — tests/test_air_gap_feeds.py holds the
 #: two together, because a URL one of them prints and the other redacts is a
 #: licence key in a log.
-_SECRET_PARAM = re.compile(r"key|token|secret|passw|signature|sig$|auth", re.IGNORECASE)
+_SECRET_PARAM = re.compile(r"key|token|secret|pass|pwd|cred|session|signature|sig$|auth", re.IGNORECASE)
 
 
 class FetchDisabledError(RuntimeError):
@@ -89,6 +90,31 @@ class FetchDisabledError(RuntimeError):
 
 class FeedURLError(ValueError):
     """A mirror override names a URL no fetcher here may open."""
+
+
+class _NoDowngradeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but never from ``https`` to anything weaker.
+
+    The stock handler follows ``https`` → ``http``, which hands a feed's
+    content to anyone on the path; ``scripts/feed_fetch.py`` has refused that
+    since #339, and these in-process fetchers (Debian, Ubuntu, MSRC, NVD CPE)
+    now refuse it the same way — tests/test_air_gap_feeds.py holds the two to
+    one behaviour.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - urllib hook
+        old = urlsplit(req.full_url).scheme.lower()
+        new = urlsplit(newurl).scheme.lower()
+        allowed = ("https",) if old == "https" else ("http", "https")
+        if new not in allowed:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                code,
+                f"refusing redirect from {old} to {new} ({redact_url(newurl)})",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def redact_url(url: str) -> str:
@@ -167,7 +193,7 @@ def fetch_json(
     proxy they are the first thing to stop working (#359).
     """
     if opener is None:
-        opener = egress.build_opener(url).open
+        opener = egress.build_opener(url, _NoDowngradeRedirect()).open
     # `Accept` matters for at least one feed: Microsoft's Security Update Guide
     # serves CVRF as XML unless JSON is asked for, and the parse failure that
     # follows reads as "the feed is broken" rather than "we asked for the wrong
@@ -177,7 +203,9 @@ def fetch_json(
     request = urllib.request.Request(url, headers=request_headers)
     chunks: list[bytes] = []
     total = 0
-    with opener(request, timeout=timeout) as response:  # noqa: S310 - https URLs from SOURCES
+    # The URL is a SOURCES default or a mirror override feed_url() already
+    # limited to https/http/file; the opener refuses a downgrading redirect.
+    with opener(request, timeout=timeout) as response:  # noqa: S310
         while True:
             chunk = response.read(1024 * 256)
             if not chunk:

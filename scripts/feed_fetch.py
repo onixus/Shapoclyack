@@ -83,8 +83,10 @@ USER_AGENT = "shapoclyack-feed-fetch"
 
 #: Query parameters whose values are credentials. Matched as substrings of the
 #: parameter name, case-insensitively: ``license_key``, ``apiKey``, ``token``,
-#: ``X-Amz-Signature``...
-_SECRET_PARAM = re.compile(r"key|token|secret|passw|signature|sig$|auth", re.IGNORECASE)
+#: ``X-Amz-Signature``, ``X-Amz-Credential``, ``pwd``, ``session_id``... It
+#: over-redacts (``passive=1``) on purpose: a blanked harmless value costs
+#: nothing, a printed credential cannot be taken back.
+_SECRET_PARAM = re.compile(r"key|token|secret|pass|pwd|cred|session|signature|sig$|auth", re.IGNORECASE)
 REDACTED = "REDACTED"
 
 #: A City database is well under this unpacked; a gzip that expands past it
@@ -179,6 +181,12 @@ def urlopen(request: urllib.request.Request | str, *, timeout: float = DEFAULT_T
     return opener_for(request.full_url).open(request, timeout=timeout)  # noqa: S310 - scheme checked
 
 
+def _socket_of(response):
+    """The socket under an ``http.client`` response, or ``None`` (``file://``)."""
+    raw = getattr(getattr(response, "fp", None), "raw", None)
+    return getattr(raw, "_sock", None)
+
+
 def read_bounded(
     response,
     *,
@@ -186,18 +194,42 @@ def read_bounded(
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
     sink=None,
 ) -> int:
-    """Copy a response body to ``sink`` (or discard it), within both bounds."""
+    """Copy a response body to ``sink`` (or discard it), within both bounds.
+
+    The deadline holds *during* a read, not only between reads (review of
+    #339): ``read1`` returns whatever has arrived instead of waiting for a full
+    buffer — at one byte every quarter second a 256 KiB read took the rest of
+    the body — and the socket is never allowed to wait longer than the
+    deadline leaves.
+    """
     deadline = time.monotonic() + deadline_seconds
+    first = _socket_of(response)
+    per_read = first.gettimeout() if first is not None else None
+    read = getattr(response, "read1", None) or response.read
     total = 0
     while True:
-        chunk = response.read(256 * 1024)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise FeedError(f"response body exceeded {deadline_seconds:.0f}s ({total} bytes read)")
+        # Looked up each time: http.client closes the response (and with it
+        # the socket) once the declared length has been read.
+        sock = _socket_of(response)
+        if sock is not None:
+            try:
+                sock.settimeout(remaining if per_read is None else min(per_read, remaining))
+            except OSError:
+                pass
+        try:
+            chunk = read(256 * 1024)
+        except TimeoutError as exc:
+            if time.monotonic() >= deadline:
+                raise FeedError(f"response body exceeded {deadline_seconds:.0f}s ({total} bytes read)") from exc
+            raise
         if not chunk:
             return total
         total += len(chunk)
         if total > max_bytes:
             raise FeedError(f"response exceeded the {max_bytes} byte ceiling; aborted")
-        if time.monotonic() > deadline:
-            raise FeedError(f"response body exceeded {deadline_seconds:.0f}s ({total} bytes read)")
         if sink is not None:
             sink.write(chunk)
 
@@ -287,25 +319,28 @@ def unpack_mmdb(src: Path, dest: Path, *, edition: str | None = None) -> None:
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_bytes(data)
     try:
-        _open_mmdb(tmp)
+        open_mmdb(tmp)
     except Exception as exc:  # noqa: BLE001 - any reader failure is "not a database"
         tmp.unlink(missing_ok=True)
         raise FeedError(f"{src.name} does not hold a readable MaxMind DB: {exc}") from exc
     tmp.replace(dest)
 
 
-def _open_mmdb(path: Path) -> None:
-    """Have the real reader parse the metadata, where the images ship it.
+def open_mmdb(path: Path) -> None:
+    """Have the real reader parse the metadata and look one address up.
 
-    ``maxminddb`` comes with ``geoip2`` (requirements.txt); a host that runs
-    this script without it still gets the marker check above.
+    ``maxminddb`` comes with ``geoip2`` (requirements.txt), so every image has
+    it; a host that runs this without it still gets the marker check. Shared
+    with the bundle installer, which must not take fourteen bytes of marker for
+    a database either.
     """
     try:
         import maxminddb  # noqa: PLC0415 - optional, see docstring
     except ImportError:
         return
-    with maxminddb.open_database(str(path)) as reader:
+    with maxminddb.open_database(str(path), maxminddb.MODE_MEMORY) as reader:
         reader.metadata()
+        reader.get("1.1.1.1" if reader.metadata().ip_version == 4 else "::1.1.1.1")
 
 
 # --------------------------------------------------------------------------
