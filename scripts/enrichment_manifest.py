@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,6 +106,22 @@ def _count_entries(payload: object) -> int | None:
     return None
 
 
+def _origin_urls(payload: dict) -> list[str]:
+    """Where a dataset's bytes were fetched from, as the fetcher recorded it.
+
+    Every fetch script writes ``origin_url`` into the envelope (the exploit
+    overlay, being two feeds, writes ``origin_urls``), already redacted (#339).
+    This is what the offline bundle's manifest carries as each file's source,
+    so a site that never saw the internet can still say where its data came
+    from. Absent for the committed seeds, which predate the field.
+    """
+    urls = payload.get("origin_urls")
+    if isinstance(urls, list):
+        return [str(url) for url in urls if isinstance(url, str) and url]
+    url = payload.get("origin_url")
+    return [url] if isinstance(url, str) and url else []
+
+
 def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     """Provenance and usability of one JSON overlay.
 
@@ -117,6 +134,7 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
         "usable": False,
         "source": None,
         "updated": None,
+        "origin_urls": [],
         "entries": None,
         "min_entries": min_entries,
         "error": None,
@@ -138,6 +156,7 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     if isinstance(payload, dict):
         record["source"] = payload.get("source") or None
         record["updated"] = str(payload.get("updated") or "") or None
+        record["origin_urls"] = _origin_urls(payload)
     count = _count_entries(payload)
     record["entries"] = count
     if count is None:
@@ -149,13 +168,56 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     return record
 
 
+def _mmdb_build_date(path: Path) -> str | None:
+    """The date the database's publisher built it, from the .mmdb metadata.
+
+    A MaxMind DB has no JSON envelope to stamp an ``updated`` on, but it does
+    carry ``build_epoch``, which is the honest "data date" an offline site needs
+    to see (#339). Optional: ``maxminddb`` ships with ``geoip2`` in the images,
+    and anything that goes wrong here costs the date, never the manifest.
+    """
+    try:
+        import maxminddb  # noqa: PLC0415 - optional dependency, see docstring
+
+        with maxminddb.open_database(str(path)) as reader:
+            epoch = int(reader.metadata().build_epoch)
+    except Exception:  # noqa: BLE001 - see docstring
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).date().isoformat()
+
+
 def inspect_binary_dataset(path: Path, source: str | None) -> dict:
     """Presence of one .mmdb database. Never required — see _BINARY_DATASETS."""
     try:
         size = path.stat().st_size
     except OSError:
-        return {"present": False, "usable": False, "source": source, "size_bytes": None}
-    return {"present": True, "usable": size > 0, "source": source, "size_bytes": size}
+        return {
+            "present": False,
+            "usable": False,
+            "source": source,
+            "size_bytes": None,
+            "updated": None,
+            "origin_urls": [],
+        }
+    return {
+        "present": True,
+        "usable": size > 0,
+        "source": source,
+        "size_bytes": size,
+        "updated": _mmdb_build_date(path) if size > 0 else None,
+        "origin_urls": [],
+    }
+
+
+def _previous_datasets(data_dir: Path) -> dict[str, dict]:
+    try:
+        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    if not isinstance(datasets, dict):
+        return {}
+    return {name: record for name, record in datasets.items() if isinstance(record, dict)}
 
 
 def previous_origins(data_dir: Path) -> dict[str, str]:
@@ -166,17 +228,10 @@ def previous_origins(data_dir: Path) -> dict[str, str]:
     JSON is simply no previous run: this is provenance, and guessing at it is
     the thing the module exists to stop.
     """
-    try:
-        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    datasets = payload.get("datasets") if isinstance(payload, dict) else None
-    if not isinstance(datasets, dict):
-        return {}
     return {
         name: record["origin"]
-        for name, record in datasets.items()
-        if isinstance(record, dict) and isinstance(record.get("origin"), str)
+        for name, record in _previous_datasets(data_dir).items()
+        if isinstance(record.get("origin"), str)
     }
 
 
@@ -186,6 +241,8 @@ def build_manifest(
     refreshed: set[str],
     failed: set[str],
     sources: dict[str, str] | None = None,
+    bundled: set[str] | frozenset[str] = frozenset(),
+    origin_urls: dict[str, list[str]] | None = None,
 ) -> dict:
     """Inspect every dataset under ``data_dir`` and describe what is there.
 
@@ -202,8 +259,20 @@ def build_manifest(
     it ``seed`` would demote a fetched corpus on every restart and make
     ``GET /api/system`` contradict itself (``origin: seed`` over four hundred
     thousand entries), sending an operator to a build log with nothing in it.
+
+    ``bundled`` is the fourth: datasets an offline bundle just installed
+    (``scripts/enrichment_bundle.py``, #339). They were fetched, just not here
+    and not now, and ``origin: bundle`` says exactly that; the bundle's own
+    record (``enrichment-bundle.json``) says when and where.
+
+    ``origin_urls`` is for the .mmdb datasets, which have no envelope to record
+    their source URL in; the JSON datasets carry theirs in the file itself.
+    Both it and a binary dataset's ``source`` label are carried forward from
+    the previous manifest, like the origin, when this run does not say.
     """
     sources = sources or {}
+    origin_urls = origin_urls or {}
+    previous = _previous_datasets(data_dir)
     carried = previous_origins(data_dir)
     datasets: dict[str, dict] = {}
     for name, (relative, min_entries, required) in _JSON_DATASETS.items():
@@ -215,12 +284,25 @@ def build_manifest(
         record = inspect_binary_dataset(data_dir / relative, sources.get(name))
         record["required"] = False
         record["path"] = str(data_dir / relative)
+        written = name in refreshed or name in bundled
+        before = previous.get(name) or {}
+        if not written and record["present"]:
+            # Nothing on a .mmdb says which provider wrote it or from where; a
+            # run that did not replace it (did not try, or tried and failed)
+            # has no better answer than the run that did.
+            record["source"] = record["source"] or before.get("source") or None
+            if isinstance(before.get("origin_urls"), list):
+                record["origin_urls"] = [str(u) for u in before["origin_urls"] if u]
+        elif origin_urls.get(name):
+            record["origin_urls"] = list(origin_urls[name])
         datasets[name] = record
 
     for name, record in datasets.items():
         if sources.get(name):
             record["source"] = sources[name]
-        if name in refreshed:
+        if name in bundled:
+            record["origin"] = "bundle" if record["present"] else "missing"
+        elif name in refreshed:
             record["origin"] = "fetch"
         elif name in failed:
             # The fetch was attempted and failed, so whatever is on disk is the
@@ -229,7 +311,7 @@ def build_manifest(
             record["origin"] = "stale" if record["present"] else "missing"
         elif not record["present"]:
             record["origin"] = "missing"
-        elif carried.get(name) in ("fetch", "stale", "seed"):
+        elif carried.get(name) in ("fetch", "stale", "seed", "bundle"):
             # This run did not try; the last one did. ``missing`` is not carried
             # forward — the seed floor in fetch-enrichment.sh may have put the
             # file there since, and it would be a seed now.
@@ -276,8 +358,9 @@ def verdict(manifest: dict) -> int:
     # for a not-required dataset nothing else looked at ``usable``. That is a
     # truncated document published over a corpus, and a green job over it is the
     # exact silence #246 exists to break.
+    # A bundle is a fetch that happened elsewhere; the same holds for it.
     if any(
-        rec.get("origin") == "fetch" and rec.get("usable") is False
+        rec.get("origin") in ("fetch", "bundle") and rec.get("usable") is False
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED
@@ -302,6 +385,20 @@ def _summarize(manifest: dict) -> list[str]:
     return lines
 
 
+def redact_url(url: str) -> str:
+    """Userinfo dropped, credential query values blanked — see scripts/feed_fetch.py.
+
+    Imported lazily so this module stays importable on its own (the tests load
+    it as ``scripts.enrichment_manifest``, the fetch scripts as a sibling).
+    """
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from feed_fetch import redact_url as _redact  # noqa: PLC0415 - see docstring
+
+    return _redact(url)
+
+
 def _split(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
@@ -318,6 +415,14 @@ def main() -> int:
         metavar="NAME=LABEL",
         help="Override the recorded source label for a dataset (repeatable)",
     )
+    parser.add_argument(
+        "--origin-url",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="Where a dataset without an envelope (the .mmdb files) was fetched from; "
+        "recorded redacted (repeatable)",
+    )
     args = parser.parse_args()
 
     sources: dict[str, str] = {}
@@ -325,12 +430,18 @@ def main() -> int:
         name, _, label = item.partition("=")
         if name.strip() and label.strip():
             sources[name.strip()] = label.strip()
+    urls: dict[str, list[str]] = {}
+    for item in args.origin_url:
+        name, _, url = item.partition("=")
+        if name.strip() and url.strip():
+            urls.setdefault(name.strip(), []).append(redact_url(url.strip()))
 
     manifest = build_manifest(
         args.dir,
         refreshed=_split(args.refreshed),
         failed=_split(args.failed),
         sources=sources,
+        origin_urls=urls,
     )
     out = args.dir / MANIFEST_NAME
     out.parent.mkdir(parents=True, exist_ok=True)

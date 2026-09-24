@@ -22,6 +22,10 @@ Usage:
   python3 scripts/fetch-cvss4-db.py --last-mod-days 8
   python3 scripts/fetch-cvss4-db.py --cves CVE-2021-44228,CVE-2014-0160
 
+Mirror (#339): NVD_API_URL replaces the CVE API endpoint (the same variable
+scripts/fetch-nvd-cpe.py reads), and every request goes through
+scripts/feed_fetch.py, so OCTO_HTTPS_PROXY / OCTO_CA_BUNDLE apply.
+
 Note on filtering: NVD's own cvssV4Severity filter cannot be used to select
 v4-scored CVEs — it reports a handful of results against a corpus where ~34% of
 recent CVEs carry cvssMetricV40 — so --full pages through everything and
@@ -51,10 +55,21 @@ from pathlib import Path
 # read as one more casualty of the 403s (#246). Fix it here rather than asking
 # each caller for a PYTHONPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# ...and scripts/ itself, for feed_fetch: sys.path[0] carries it only when this
+# file is the entry point, and tests load it by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import feed_fetch  # noqa: E402 - needs the path above
 from scanner.pipeline.cvss4 import extract_nvd_cwes  # noqa: E402 - needs the path above
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+#: Mirror override, shared with fetch-nvd-cpe.py / api/services/cpe_ranges_fetch.py.
+NVD_URL_VAR = "NVD_API_URL"
+
+
+def nvd_url() -> str:
+    """The CVE API endpoint this run talks to: ``$NVD_API_URL`` or NVD itself."""
+    return feed_fetch.feed_url(NVD_URL_VAR, NVD_URL)
 
 # NVD's documented maximum for the CVE API.
 PAGE_SIZE = 2000
@@ -141,7 +156,7 @@ def _extract_cvss4(metrics: dict) -> dict | None:
 
 def fetch_cve(cve_id: str, api_key: str | None, *, retries: int = 5) -> dict | None:
     params = urllib.parse.urlencode({"cveId": cve_id})
-    req = urllib.request.Request(f"{NVD_URL}?{params}")
+    req = urllib.request.Request(f"{nvd_url()}?{params}")
     req.add_header("User-Agent", "shapoclyack-cvss4-fetch/1.0")
     if api_key:
         req.add_header("apiKey", api_key)
@@ -152,7 +167,7 @@ def fetch_cve(cve_id: str, api_key: str | None, *, retries: int = 5) -> dict | N
     backoff = 8.0
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with feed_fetch.urlopen(req, timeout=60) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
                 break
         except urllib.error.HTTPError as exc:
@@ -220,7 +235,7 @@ def _request_json(url: str, api_key: str | None, *, retries: int = 6) -> dict | 
     backoff = 8.0
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=SOCKET_TIMEOUT) as resp:
+            with feed_fetch.urlopen(req, timeout=SOCKET_TIMEOUT) as resp:
                 return json.loads(_read_bounded(resp).decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # 503/504 show up during NVD maintenance windows and are as
@@ -233,7 +248,7 @@ def _request_json(url: str, api_key: str | None, *, retries: int = 6) -> dict | 
                 time.sleep(delay)
                 backoff = min(backoff * 2, 120.0)
                 continue
-            print(f"warn: HTTP {exc.code} for {url}", file=sys.stderr)
+            print(f"warn: HTTP {exc.code} for {feed_fetch.redact_url(url)}", file=sys.stderr)
             return None
         except Exception as exc:  # noqa: BLE001
             if attempt < retries:
@@ -242,7 +257,7 @@ def _request_json(url: str, api_key: str | None, *, retries: int = 6) -> dict | 
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 120.0)
                 continue
-            print(f"warn: {exc} for {url}", file=sys.stderr)
+            print(f"warn: {exc} for {feed_fetch.redact_url(url)}", file=sys.stderr)
             return None
     return None
 
@@ -309,7 +324,7 @@ def harvest(
         params = dict(base_params)
         params.update({"resultsPerPage": PAGE_SIZE, "startIndex": start_index})
         pacer.wait()
-        return _request_json(f"{NVD_URL}?{urllib.parse.urlencode(params)}", api_key)
+        return _request_json(f"{nvd_url()}?{urllib.parse.urlencode(params)}", api_key)
 
     # The first page is fetched alone: totalResults is what tells us how many
     # pages exist, and there is nothing to parallelise until we know that.
@@ -397,6 +412,15 @@ def main() -> int:
         help="Baseline database to union in for CVEs the output is missing",
     )
     args = parser.parse_args()
+
+    # Checked once, up front: a mistyped mirror URL is a configuration error,
+    # not a transient one, and the retry loops below would otherwise spend
+    # minutes backing off from it.
+    try:
+        nvd_url()
+    except feed_fetch.FeedError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     api_key = os.environ.get("NVD_API_KEY")
     sleep_seconds = args.sleep if args.sleep is not None else (
@@ -514,6 +538,9 @@ def main() -> int:
         "version": "4.0",
         "source": "nvd-api-2.0",
         "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        # Where this run asked, for the enrichment manifest and the offline
+        # bundle (#339). Redacted: a mirror URL may carry credentials.
+        "origin_url": feed_fetch.redact_url(nvd_url()),
         "entries": dict(sorted(entries.items())),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

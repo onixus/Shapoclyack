@@ -17,6 +17,12 @@ Three properties, all of them deliberate:
 * **Atomic.** The dataset is written to a temporary file and renamed, the same
   way ``scripts/fetch-cvss4-db.py`` does, because the API polls the directory
   and must never parse a half-written file.
+
+Every upstream URL can be pointed at a mirror (#339): ``DEBIAN_TRACKER_URL``,
+``UBUNTU_USN_URL`` and ``MSRC_CVRF_BASE_URL`` here, ``NVD_API_URL`` in
+``api/services/cpe_ranges_fetch.py``. The names are the ones the feed scripts
+read (``scripts/feed_fetch.py``), because an operator sets them once for the
+refresh job and expects every fetcher to follow. docs/air-gap.md has the table.
 """
 
 from __future__ import annotations
@@ -24,10 +30,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from api.services import egress
 from api.services.advisories import debian, msrc, ubuntu
@@ -58,8 +66,76 @@ SOURCES: dict[str, tuple[str, Callable[[Any], Iterable[dict[str, Any]]], str, st
 }
 
 
+#: dataset name → the variable that points it at a mirror (#339).
+URL_VARIABLES: dict[str, str] = {
+    "debian": "DEBIAN_TRACKER_URL",
+    "ubuntu": "UBUNTU_USN_URL",
+}
+
+#: Schemes a feed URL may use; ``file`` is a mirror mounted into the pod. The
+#: same list as ``scripts/feed_fetch.py``.
+ALLOWED_SCHEMES = ("https", "http", "file")
+
+#: Query parameters whose values are credentials (see ``redact_url``). The same
+#: pattern as ``scripts/feed_fetch.py`` — tests/test_air_gap_feeds.py holds the
+#: two together, because a URL one of them prints and the other redacts is a
+#: licence key in a log.
+_SECRET_PARAM = re.compile(r"key|token|secret|passw|signature|sig$|auth", re.IGNORECASE)
+
+
 class FetchDisabledError(RuntimeError):
     """``refresh()`` was called without the opt-in flag set."""
+
+
+class FeedURLError(ValueError):
+    """A mirror override names a URL no fetcher here may open."""
+
+
+def redact_url(url: str) -> str:
+    """``url`` with userinfo dropped and credential query values blanked.
+
+    What goes into a log line and into a dataset's ``origin_url``: a mirror URL
+    can carry basic-auth credentials, and a MaxMind one carries a licence key.
+    """
+    parts = urlsplit((url or "").strip())
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = f"{host}:{port}" if port else host
+    query = urlencode(
+        [
+            (name, "REDACTED" if _SECRET_PARAM.search(name) else value)
+            for name, value in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+    )
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+
+
+def feed_url(variable: str, default: str) -> str:
+    """``$variable`` when set, else ``default``; refused if not http(s)/file.
+
+    Read at call time rather than import, so a process that was started before
+    the operator pointed it at a mirror still honours the mirror on its next
+    refresh.
+    """
+    raw = os.environ.get(variable, "").strip()
+    url = raw or default
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in ALLOWED_SCHEMES:
+        raise FeedURLError(
+            f"{variable}={redact_url(url)}: unsupported scheme {scheme or '(none)'!r}; "
+            f"a feed URL must be one of {', '.join(ALLOWED_SCHEMES)}"
+        )
+    return url
+
+
+def source_url(name: str) -> str:
+    """Where ``refresh(name)`` downloads from: the mirror if one is set."""
+    return feed_url(URL_VARIABLES[name], SOURCES[name][0])
 
 
 class FetchTooLargeError(RuntimeError):
@@ -109,7 +185,7 @@ def fetch_json(
             total += len(chunk)
             if total > max_bytes:
                 raise FetchTooLargeError(
-                    f"{url} exceeded the {max_bytes} byte ceiling; aborted"
+                    f"{redact_url(url)} exceeded the {max_bytes} byte ceiling; aborted"
                 )
             chunks.append(chunk)
     return json.loads(b"".join(chunks).decode("utf-8"))
@@ -156,15 +232,46 @@ def refresh(
         )
     if name not in SOURCES:
         raise ValueError(f"unknown advisory dataset: {name!r} (known: {sorted(SOURCES)})")
-    url, normalize, default_path, source = SOURCES[name]
+    _, normalize, default_path, source = SOURCES[name]
+    url = source_url(name)
     payload = fetch_json(url, timeout=timeout, max_bytes=max_bytes, opener=opener)
-    dataset = build_dataset(normalize(payload), source=source, origin_url=url)
+    dataset = build_dataset(normalize(payload), source=source, origin_url=redact_url(url))
     written = write_dataset(Path(path) if path else Path(default_path), dataset)
-    LOG.info("advisories: refreshed %s (%d entries) from %s", name, written, url)
+    LOG.info("advisories: refreshed %s (%d entries) from %s", name, written, redact_url(url))
     return written
 
 
-MSRC_INDEX_URL = "https://api.msrc.microsoft.com/cvrf/v3.0/updates"
+#: The Security Update Guide's CVRF API. The index lists one document per month
+#: and names each by an absolute URL under this base.
+MSRC_API_BASE = "https://api.msrc.microsoft.com/cvrf/v3.0"
+MSRC_INDEX_URL = f"{MSRC_API_BASE}/updates"
+#: Mirror override (#339): a base URL, not the index, because the documents the
+#: index lists live under it too — see ``msrc_document_url``.
+MSRC_BASE_URL_VARIABLE = "MSRC_CVRF_BASE_URL"
+
+
+def msrc_base_url() -> str:
+    """The CVRF API base this run reads: the mirror if one is set."""
+    return feed_url(MSRC_BASE_URL_VARIABLE, MSRC_API_BASE).rstrip("/")
+
+
+def msrc_document_url(listed: str, base: str) -> str | None:
+    """Where to fetch a month the index lists as ``listed``, or ``None``.
+
+    The index names every document by an absolute ``api.msrc.microsoft.com``
+    URL, so a mirror of the index alone would still send twelve requests a run
+    to Microsoft. With a mirror configured, a document under the upstream base
+    is read from the same path under the mirror, one already under the mirror
+    is read as is, and anything else is skipped rather than fetched: an
+    air-gapped refresh must not reach for a host the operator never named.
+    """
+    if base == MSRC_API_BASE:
+        return listed
+    if listed.startswith(f"{MSRC_API_BASE}/"):
+        return f"{base}{listed[len(MSRC_API_BASE):]}"
+    if listed.startswith(f"{base}/"):
+        return listed
+    return None
 
 #: How many monthly CVRF documents to merge by default.
 #:
@@ -211,8 +318,10 @@ def refresh_msrc(
             "advisory fetching is off by default; set OCTO_ADVISORY_FETCH_ENABLED=true to allow it"
         )
 
+    base = msrc_base_url()
+    index_url = f"{base}/updates"
     index = fetch_json(
-        MSRC_INDEX_URL,
+        index_url,
         timeout=timeout,
         max_bytes=DEFAULT_MAX_BYTES,
         opener=opener,
@@ -220,7 +329,7 @@ def refresh_msrc(
     )
     documents = index.get("value") if isinstance(index, dict) else index
     if not isinstance(documents, list) or not documents:
-        raise RuntimeError(f"{MSRC_INDEX_URL} listed no documents")
+        raise RuntimeError(f"{redact_url(index_url)} listed no documents")
 
     # Sorted by release date, not taken from the end of the list: the index is
     # not in chronological order -- September's document was listed after
@@ -233,7 +342,14 @@ def refresh_msrc(
     entries: dict[tuple[str, str, str], dict[str, Any]] = {}
     recovered = 0
     for doc in reversed(wanted):
-        url = str(doc["CvrfUrl"])
+        url = msrc_document_url(str(doc["CvrfUrl"]), base)
+        if url is None:
+            LOG.warning(
+                "msrc: skipping %s: not under the configured mirror %s",
+                redact_url(str(doc["CvrfUrl"])),
+                redact_url(base),
+            )
+            continue
         try:
             payload = fetch_json(
                 url,
@@ -243,7 +359,7 @@ def refresh_msrc(
                 headers=MSRC_HEADERS,
             )
         except Exception as exc:  # noqa: BLE001 - one bad month must not cost the rest
-            LOG.warning("msrc: skipping %s: %s", url, exc)
+            LOG.warning("msrc: skipping %s: %s", redact_url(url), exc)
             continue
         recovered += 1
         for entry in msrc.normalize_cvrf(payload):
@@ -260,7 +376,7 @@ def refresh_msrc(
     dataset = build_dataset(
         sorted(entries.values(), key=lambda e: (e["cve_id"], e["fixed_build"])),
         source=msrc.PROVIDER_NAME,
-        origin_url=MSRC_INDEX_URL,
+        origin_url=redact_url(index_url),
     )
     written = write_dataset(
         Path(path) if path else Path(msrc.DEFAULT_DATASET), dataset

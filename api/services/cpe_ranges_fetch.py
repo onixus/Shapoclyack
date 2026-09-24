@@ -53,6 +53,9 @@ from api.services.retro_match import parse_cpe
 LOG = logging.getLogger("shapoclyack.cpe-ranges.fetch")
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+#: Mirror override (#339). The same variable scripts/fetch-cvss4-db.py reads:
+#: both talk to the CVE API 2.0, and a mirror of it serves both.
+NVD_URL_VARIABLE = "NVD_API_URL"
 #: NVD's documented maximum page for the CVE API.
 PAGE_SIZE = 2000
 #: A 2000-CVE page with configurations is ~15-30 MB of JSON.
@@ -78,6 +81,11 @@ def fetch_enabled() -> bool:
         "yes",
         "on",
     )
+
+
+def nvd_url() -> str:
+    """The CVE API endpoint a harvest reads: ``$NVD_API_URL`` or NVD itself."""
+    return advisory_fetch.feed_url(NVD_URL_VARIABLE, NVD_URL)
 
 
 # --------------------------------------------------------------------------
@@ -171,6 +179,8 @@ class Harvest:
     pages: int = 0
     #: The last modification time this harvest vouches for (see :func:`harvest`).
     covered_until: datetime | None = None
+    #: Where the pages came from, redacted — NVD or the mirror in ``NVD_API_URL``.
+    origin_url: str = NVD_URL
 
     def add_page(self, payload: dict[str, Any], *, parts: Iterable[str]) -> None:
         for item in payload.get("vulnerabilities") or []:
@@ -217,7 +227,7 @@ def merge(existing: dict[str, Any] | None, harvest: Harvest, *, replace: bool) -
     return {
         "version": 1,
         "source": cpe_ranges.SOURCE,
-        "origin_url": NVD_URL,
+        "origin_url": harvest.origin_url,
         "updated": covered.date().isoformat(),
         "covered_until": covered.astimezone(UTC).isoformat(timespec="seconds"),
         "parts": sorted({key.split(":", 1)[0] for key in entries}) or list(DEFAULT_PARTS),
@@ -239,12 +249,14 @@ def merge(existing: dict[str, Any] | None, harvest: Harvest, *, replace: bool) -
 def _fetch_page(
     params: dict[str, Any],
     *,
+    base_url: str,
     api_key: str | None,
     timeout: float,
     opener: Callable[..., Any] | None,
     retries: int,
 ) -> dict[str, Any] | None:
-    url = f"{NVD_URL}?{urllib.parse.urlencode(params)}"
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    shown = advisory_fetch.redact_url(url)
     headers = {"apiKey": api_key} if api_key else None
     backoff = 8.0
     for attempt in range(retries + 1):
@@ -258,7 +270,7 @@ def _fetch_page(
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 120.0)
                 continue
-            LOG.warning("nvd-cpe: HTTP %s for %s", exc.code, url)
+            LOG.warning("nvd-cpe: HTTP %s for %s", exc.code, shown)
             return None
         except (OSError, ValueError, advisory_fetch.FetchTooLargeError) as exc:
             if attempt < retries:
@@ -266,7 +278,7 @@ def _fetch_page(
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 120.0)
                 continue
-            LOG.warning("nvd-cpe: giving up on %s: %s", url, exc)
+            LOG.warning("nvd-cpe: giving up on %s: %s", shown, exc)
             return None
         return payload if isinstance(payload, dict) else None
     return None
@@ -305,11 +317,15 @@ def harvest(
             "NVD CPE fetching is off by default; set OCTO_NVD_CPE_FETCH_ENABLED=true to allow it"
         )
     parts = tuple(parts)
+    # Resolved once, before the first request: a mistyped mirror is a
+    # configuration error, and the retry loop below would back off from it
+    # for minutes instead of saying so.
+    base_url = nvd_url()
     if sleep_seconds is None:
         sleep_seconds = SLEEP_KEYED if api_key else SLEEP_ANONYMOUS
     base: dict[str, Any] = {"resultsPerPage": PAGE_SIZE}
     started = now or datetime.now(UTC)
-    result = Harvest(covered_until=started)
+    result = Harvest(covered_until=started, origin_url=advisory_fetch.redact_url(base_url))
     if window is not None:
         start, end = window
         if end - start > timedelta(days=MAX_LAST_MOD_DAYS):
@@ -327,6 +343,7 @@ def harvest(
             time.sleep(max(0.0, sleep_seconds))
         payload = _fetch_page(
             {**base, "startIndex": start_index},
+            base_url=base_url,
             api_key=api_key,
             timeout=timeout,
             opener=opener,
