@@ -446,7 +446,7 @@ class _Crash(BaseException):
     """The process dying: not an Exception, so nothing in the worker catches it."""
 
 
-@pytest.mark.parametrize("step", ["outbox", "artifacts", "postgres"])
+@pytest.mark.parametrize("step", ["outbox", "artifacts", "clickhouse", "postgres", "finalize"])
 def test_a_step_that_dies_with_its_process_is_resumed_by_another_replica(
     settings, monkeypatch, step
 ):
@@ -468,8 +468,29 @@ def test_a_step_that_dies_with_its_process_is_resumed_by_another_replica(
 
         return wrapper
 
+    real_stranded = purge_postgres._stranded_accounts  # noqa: SLF001
+    clickhouse = _RecordingClickHouse(
+        {
+            "shapoclyack.shapoclyack_vulnerabilities": {
+                purge_clickhouse._uuid_literal(VICTIM): 4,  # noqa: SLF001
+            },
+            "shapoclyack.shapoclyack_open_ports": {
+                purge_clickhouse._uuid_literal(VICTIM): 2,  # noqa: SLF001
+            },
+        }
+    )
+    settings.clickhouse_url = "http://clickhouse.invalid:8123"
+    monkeypatch.setattr(purge_clickhouse.clickhouse_client, "get_client", lambda url: clickhouse)
     if step == "artifacts":
         monkeypatch.setattr(workspace, "delete_run", crash_later(real_delete_run, 1))
+    elif step == "clickhouse":
+        # Between the first table's mutation and the second's.
+        clickhouse.crash_on = "shapoclyack.shapoclyack_open_ports"
+    elif step == "finalize":
+        # Inside the last transaction: it rolls back whole, tenant row and all.
+        monkeypatch.setattr(
+            purge_postgres, "_stranded_accounts", crash_later(real_stranded, 1)
+        )
     else:
         # The outbox step makes four calls with a batch of one (a row and an
         # empty batch per table): crash in its third, after nats_outbox has
@@ -496,6 +517,8 @@ def test_a_step_that_dies_with_its_process_is_resumed_by_another_replica(
 
     monkeypatch.setattr(purge_postgres, "delete_batch", real_batch)
     monkeypatch.setattr(workspace, "delete_run", real_delete_run)
+    monkeypatch.setattr(purge_postgres, "_stranded_accounts", real_stranded)
+    clickhouse.crash_on = None
     result = tenant_purge.run_once(settings, owner="replica-2")
     assert result["outcome"] == "completed"
     assert _step(settings, deletion_id, step)["attempts"] == 2
@@ -504,6 +527,11 @@ def test_a_step_that_dies_with_its_process_is_resumed_by_another_replica(
     store = artifact_store.get_store(settings)
     assert _run_keys(store, VICTIM) == []
     assert _run_keys(store, NEIGHBOUR) != []
+    stores = _deletion(settings, deletion_id)["outcome"]["stores"]
+    # Counted once across the two attempts.
+    assert stores["clickhouse"] == {"vulnerabilities": 4, "open_ports": 2, "controls": 0}
+    assert stores["postgres"]["vulnerabilities"] == 1
+    assert stores["artifacts"]["legacy_runs"] == 1
 
 
 def test_a_replica_that_lost_its_lease_stops_without_writing(settings):
@@ -790,6 +818,7 @@ class _RecordingClickHouse:
     def __init__(self, rows: dict[str, dict[str, int]], *, fail_on: str | None = None) -> None:
         self.rows = rows  # table -> {uuid literal: count}
         self.fail_on = fail_on
+        self.crash_on: str | None = None
         self.statements: list[tuple[str, dict | None]] = []
 
     def command(self, statement: str, settings: dict | None = None) -> Any:
@@ -801,6 +830,8 @@ class _RecordingClickHouse:
             table = statement.split()[2]
             if self.fail_on == table:
                 raise RuntimeError("Code: 241. DB::Exception: Memory limit exceeded")
+            if self.crash_on == table:
+                raise _Crash()
             key = statement.split("tenant_id = ")[1]
             self.rows[table].pop(key, None)
             return None
