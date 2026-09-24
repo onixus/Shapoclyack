@@ -1628,6 +1628,10 @@ class EnrichmentDb(BaseModel):
     # because "present, fresh mtime, non-zero entries" describes both a real
     # feed and the committed advisory seed a fresh offline install ships.
     usable: bool | None = None
+    # With origin "bundle": what the connected side called the dataset when it
+    # built the bundle (fetch / seed / stale). A feed that was down there is
+    # stale here too; origin "bundle" alone would hide it (#339).
+    source_origin: str | None = None
 
 
 class ScanConfigSummary(BaseModel):

@@ -28,10 +28,16 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
+import fcntl
 import json
+import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 # Datasets the risk model and the software->CVE matcher read, with the path each
 # one lives at under the enrichment directory, the floor that separates a real
@@ -84,6 +90,16 @@ _BINARY_DATASETS: dict[str, str] = {
 }
 
 MANIFEST_NAME = "enrichment-manifest.json"
+
+#: One lock per enrichment directory, taken by every writer of the manifest:
+#: the refresh (online or ``OCTO_ENRICHMENT_OFFLINE``) and the offline bundle
+#: installer. Without it the API's initContainer, rewriting the manifest on a
+#: rollout, could interleave with a bundle commit and write the pre-install
+#: origins back over it (review of #339).
+LOCK_NAME = ".enrichment-bundle.lock"
+#: How long a manifest writer waits for an install in progress. An install is
+#: bounded by the loader Job's activeDeadlineSeconds (1800).
+DEFAULT_LOCK_TIMEOUT = 1800.0
 
 # Exit codes, consumed by fetch-enrichment.sh and in turn by the Dockerfiles.
 EXIT_OK = 0
@@ -147,9 +163,13 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     except OSError as exc:
         record["error"] = f"unreadable: {exc}"
         return record
-    except json.JSONDecodeError as exc:
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError is
+    # a document nested past the parser's limit. Both arrive from files nobody
+    # here wrote — an offline bundle (#339) — and are "not a dataset", not a
+    # traceback.
+    except (ValueError, RecursionError) as exc:
         record["present"] = True
-        record["error"] = f"invalid JSON: {exc}"
+        record["error"] = f"invalid JSON: {type(exc).__name__}: {str(exc)[:200]}"
         return record
 
     record["present"] = True
@@ -243,6 +263,7 @@ def build_manifest(
     sources: dict[str, str] | None = None,
     bundled: set[str] | frozenset[str] = frozenset(),
     origin_urls: dict[str, list[str]] | None = None,
+    source_origins: dict[str, str] | None = None,
 ) -> dict:
     """Inspect every dataset under ``data_dir`` and describe what is there.
 
@@ -263,7 +284,12 @@ def build_manifest(
     ``bundled`` is the fourth: datasets an offline bundle just installed
     (``scripts/enrichment_bundle.py``, #339). They were fetched, just not here
     and not now, and ``origin: bundle`` says exactly that; the bundle's own
-    record (``enrichment-bundle.json``) says when and where.
+    record (``enrichment-bundle.json``) says when and where. What the
+    connected side itself called each of them — ``fetch``, ``seed``, or
+    ``stale`` for a feed that was down when the bundle was built — comes in as
+    ``source_origins`` and is kept as ``source_origin``: across the gap a stale
+    dataset must stay recognisably stale (review of #339), and it is carried
+    forward with ``origin: bundle`` by every run that does not replace it.
 
     ``origin_urls`` is for the .mmdb datasets, which have no envelope to record
     their source URL in; the JSON datasets carry theirs in the file itself.
@@ -272,6 +298,7 @@ def build_manifest(
     """
     sources = sources or {}
     origin_urls = origin_urls or {}
+    source_origins = source_origins or {}
     previous = _previous_datasets(data_dir)
     carried = previous_origins(data_dir)
     datasets: dict[str, dict] = {}
@@ -300,8 +327,10 @@ def build_manifest(
     for name, record in datasets.items():
         if sources.get(name):
             record["source"] = sources[name]
+        record["source_origin"] = None
         if name in bundled:
             record["origin"] = "bundle" if record["present"] else "missing"
+            record["source_origin"] = source_origins.get(name)
         elif name in refreshed:
             record["origin"] = "fetch"
         elif name in failed:
@@ -316,6 +345,8 @@ def build_manifest(
             # forward — the seed floor in fetch-enrichment.sh may have put the
             # file there since, and it would be a seed now.
             record["origin"] = carried[name]
+            if carried[name] == "bundle":
+                record["source_origin"] = (previous.get(name) or {}).get("source_origin")
         else:
             record["origin"] = "seed"
 
@@ -352,6 +383,13 @@ def verdict(manifest: dict) -> int:
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED
+    # A bundle carries the connected side's verdict across the gap: a feed that
+    # was down when the bundle was built is exactly as degraded here.
+    if any(
+        rec.get("origin") == "bundle" and rec.get("source_origin") == "stale"
+        for rec in datasets.values()
+    ):
+        return EXIT_DEGRADED
     # A refresh that *succeeded* and still landed under the floor is the quietest
     # of the failures and the one this used to miss entirely: the feed answered,
     # so the origin is ``fetch``, which is neither ``stale`` nor ``missing``, and
@@ -365,6 +403,83 @@ def verdict(manifest: dict) -> int:
     ):
         return EXIT_DEGRADED
     return EXIT_OK
+
+
+@contextlib.contextmanager
+def locked(data_dir: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> Iterator[None]:
+    """Hold the enrichment directory's writer lock, waiting up to ``timeout``.
+
+    ``flock`` on a file inside the directory, so it holds across every pod that
+    mounts the same volume (on filesystems whose flock is cluster-wide: local,
+    NFSv4, CephFS). Raises ``TimeoutError`` rather than proceeding unlocked.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(data_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+    try:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"{data_dir / LOCK_NAME} is held by another writer") from exc
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(fd)
+
+
+def fsync_dir(path: Path) -> None:
+    """Make a rename in ``path`` durable. Best effort: not every filesystem
+    lets a directory be opened for fsync."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_json_durably(path: Path, payload: dict) -> None:
+    """Write-then-rename, with the contents and the rename both on disk
+    before this returns — the API polls the directory and must never read half
+    a file, and a power loss must not leave a renamed but empty one."""
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(path)
+    fsync_dir(path.parent)
+
+
+def write_manifest(
+    data_dir: Path,
+    *,
+    refreshed: set[str],
+    failed: set[str],
+    sources: dict[str, str] | None = None,
+    origin_urls: dict[str, list[str]] | None = None,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
+) -> dict:
+    """Describe ``data_dir`` and write the manifest, under the writer lock.
+
+    The previous manifest is read *inside* the lock, so a run that carries
+    origins forward carries the ones a bundle install just committed.
+    """
+    with locked(data_dir, timeout=lock_timeout):
+        manifest = build_manifest(
+            data_dir, refreshed=refreshed, failed=failed, sources=sources, origin_urls=origin_urls
+        )
+        write_json_durably(data_dir / MANIFEST_NAME, manifest)
+    return manifest
 
 
 def _summarize(manifest: dict) -> list[str]:
@@ -436,20 +551,20 @@ def main() -> int:
         if name.strip() and url.strip():
             urls.setdefault(name.strip(), []).append(redact_url(url.strip()))
 
-    manifest = build_manifest(
-        args.dir,
-        refreshed=_split(args.refreshed),
-        failed=_split(args.failed),
-        sources=sources,
-        origin_urls=urls,
-    )
     out = args.dir / MANIFEST_NAME
-    out.parent.mkdir(parents=True, exist_ok=True)
-    # Write-then-rename, like fetch-cvss4-db.py: the API polls this directory
-    # and must never read a half-written manifest.
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(out)
+    try:
+        manifest = write_manifest(
+            args.dir,
+            refreshed=_split(args.refreshed),
+            failed=_split(args.failed),
+            sources=sources,
+            origin_urls=urls,
+        )
+    except TimeoutError as exc:
+        # Not rewritten: whoever holds the lock (a bundle install) writes a
+        # manifest of its own, and a stale rewrite is the thing to avoid.
+        print(f"warning: {exc}; {out} left as it is", file=sys.stderr)
+        return EXIT_DEGRADED
 
     print(f"==> enrichment manifest → {out}")
     for line in _summarize(manifest):

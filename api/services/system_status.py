@@ -112,9 +112,13 @@ def _load_config(settings: Settings) -> dict[str, Any]:
 def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
     """Origin fields for one dataset, from its manifest record.
 
-    Always the same five keys so the payload shape does not depend on whether a
+    Always the same keys so the payload shape does not depend on whether a
     manifest was found — a missing one reports ``None`` everywhere, exactly like
     an image built before #246.
+
+    ``source_origin`` is set for ``origin: bundle`` only: what the connected
+    side called the dataset when it built the offline bundle (#339) — ``stale``
+    there is stale here, and ``origin: bundle`` alone would launder it.
 
     ``usable`` is the manifest's own verdict on whether the file holds a corpus
     or a placeholder, and it is here because ``entries`` alone does not carry
@@ -132,6 +136,7 @@ def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
         "updated": str(record.get("updated")) if record.get("updated") else None,
         "entries": entries if isinstance(entries, int) else None,
         "usable": usable if isinstance(usable, bool) else None,
+        "source_origin": record.get("source_origin") if isinstance(record.get("source_origin"), str) else None,
     }
 
 

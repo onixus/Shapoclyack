@@ -391,7 +391,7 @@ def test_a_second_installer_waits_its_turn(bundle: Path, site: Path) -> None:
     with open(site / enrichment_bundle.LOCK, "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(enrichment_bundle.InstallError, match="another bundle install"):
-            enrichment_bundle.install(bundle, site)
+            enrichment_bundle.install(bundle, site, lock_timeout=0.2)
 
 
 # --------------------------------------------------------------------------
@@ -608,7 +608,8 @@ def test_a_bundle_that_is_not_a_regular_file_is_refused(tmp_path: Path, site: Pa
 
 def test_a_tampered_journal_cannot_roll_foreign_files_in(tmp_path: Path, site: Path) -> None:
     """The rollback moves files *into* the data directory, so the journal that
-    drives it may name only one of our own backup directories."""
+    drives it may name only one of our own backup directories — and one that
+    names anything else is refused outright, not half-followed."""
     outside = tmp_path / "outside"
     (outside / "kev").mkdir(parents=True)
     (outside / "kev" / "kev-overlay.json").write_text("planted", encoding="utf-8")
@@ -618,11 +619,12 @@ def test_a_tampered_journal_cannot_roll_foreign_files_in(tmp_path: Path, site: P
     )
     before = (site / KEV).read_bytes()
 
-    enrichment_bundle.recover(site)
+    with pytest.raises(enrichment_bundle.InstallError, match="backup directory"):
+        enrichment_bundle.recover(site)
 
     assert (site / KEV).read_bytes() == before
     assert (outside / "kev" / "kev-overlay.json").read_text(encoding="utf-8") == "planted"
-    assert not (site / enrichment_bundle.JOURNAL).exists()
+    assert (site / enrichment_bundle.JOURNAL).exists()
 
 
 def test_a_symlinked_dataset_directory_on_the_volume_is_not_written_through(bundle: Path, site: Path, tmp_path: Path) -> None:
@@ -833,3 +835,338 @@ def test_the_airgap_component_stops_every_online_refresh() -> None:
     assert {"name": "OCTO_ENRICHMENT_OFFLINE", "value": "true"} in init["env"]
     overlay = _docs(K8S / "overlays" / "airgap" / "kustomization.yaml")[0]
     assert overlay["components"] == ["../../base/enrichment", "../../base/enrichment-bundle"]
+
+
+# --------------------------------------------------------------------------
+# Review round 1
+# --------------------------------------------------------------------------
+
+
+def test_a_negative_size_header_cannot_bypass_the_meter(tmp_path: Path, site: Path, monkeypatch) -> None:
+    """A base-256 size of -1 on the first header made ``_Meter.read(-1)`` call
+    ``stream.read(-1)``: the whole decompressed stream landed in memory before
+    the budget was consulted (a 102 KB bundle, 219 MiB of RSS)."""
+    header = bytearray(tarfile.TarInfo(enrichment_bundle.MANIFEST_MEMBER).tobuf(format=tarfile.USTAR_FORMAT))
+    header[124:136] = b"\xff" * 12  # base-256 size: -1
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    bomb = tmp_path / "negative.tar.gz"
+    with gzip.open(bomb, "wb", compresslevel=9) as out:
+        out.write(bytes(header))
+        for _ in range(16):
+            out.write(bytes(1024 * 1024))
+    real = enrichment_bundle._Meter.read
+
+    def guarded(self, size):
+        assert size >= 0, f"_Meter.read({size}) reads the rest of the stream unbounded"
+        return real(self, size)
+
+    monkeypatch.setattr(enrichment_bundle._Meter, "read", guarded)
+    _assert_refused(bomb, site, "size")
+
+
+def test_the_meter_refuses_a_negative_read_itself() -> None:
+    meter = enrichment_bundle._Meter(io.BytesIO(bytes(4096)), 1024)
+    for call in (lambda: meter.read(-1), lambda: meter.read_exact(-1, "x")):
+        with pytest.raises(BundleError, match="negative"):
+            call()
+    assert meter.consumed == 0
+
+
+def test_installed_datasets_keep_their_fetch_age(tmp_path: Path, site: Path) -> None:
+    """GET /api/system's age_days/stale and risk_scoring's overlay staleness
+    read the file's mtime. An install that stamps "now" on 90-day-old data
+    makes it look fresh on exactly the installation that cannot refresh it."""
+    import time
+
+    data = _data_dir(tmp_path)
+    old = time.time() - 90 * 86400
+    for path in data.rglob("*.json"):
+        os.utime(path, (old, old))
+    out = tmp_path / "old-data.tar.gz"
+    enrichment_bundle.build_bundle(data, out, built_at="2026-09-22T03:00:00+00:00")
+    enrichment_bundle.install(out, site)
+    age_days = (time.time() - (site / "kev" / "kev-overlay.json").stat().st_mtime) / 86400
+    assert age_days > 89
+
+
+def test_a_fetch_time_in_the_future_is_clamped_to_now(tmp_path: Path, site: Path) -> None:
+    """A forged or skewed fetched_at must not make data look fresher than now."""
+    import time
+
+    data = _data_dir(tmp_path, geoip=False)
+    future = time.time() + 400 * 86400
+    for path in data.rglob("*.json"):
+        os.utime(path, (future, future))
+    out = tmp_path / "skewed.tar.gz"
+    enrichment_bundle.build_bundle(data, out, built_at="2026-09-22T03:00:00+00:00")
+    enrichment_bundle.install(out, site)
+    assert (site / KEV).stat().st_mtime <= time.time() + 1
+
+
+def test_a_stale_dataset_stays_stale_across_the_gap(tmp_path: Path, site: Path) -> None:
+    """The connected side recorded KEV as `stale` (its refresh failed). Across
+    the gap that has to survive as more than `origin: bundle`, and survive the
+    offline manifest rewrite every API rollout performs."""
+    import enrichment_manifest
+
+    data = _data_dir(tmp_path)
+    manifest = enrichment_manifest.build_manifest(data, refreshed={"epss"}, failed={"kev"})
+    (data / enrichment_manifest.MANIFEST_NAME).write_text(json.dumps(manifest))
+    out = tmp_path / "stale.tar.gz"
+    enrichment_bundle.build_bundle(data, out)
+    enrichment_bundle.install(out, site)
+
+    installed = json.loads((site / enrichment_manifest.MANIFEST_NAME).read_text())
+    assert installed["datasets"]["kev"]["origin"] == "bundle"
+    assert installed["datasets"]["kev"]["source_origin"] == "stale"
+    assert installed["datasets"]["epss"]["source_origin"] == "fetch"
+    # And it degrades the verdict here as a stale refresh does there.
+    stale_here = {"datasets": {"kev": {**installed["datasets"]["kev"], "required": True, "usable": True}}}
+    assert enrichment_manifest.verdict(stale_here) == enrichment_manifest.EXIT_DEGRADED
+    fresh_here = {"datasets": {"epss": {**installed["datasets"]["epss"], "required": True, "usable": True}}}
+    assert enrichment_manifest.verdict(fresh_here) == enrichment_manifest.EXIT_OK
+
+    rewritten = enrichment_manifest.build_manifest(site, refreshed=set(), failed=set())
+    assert rewritten["datasets"]["kev"]["origin"] == "bundle"
+    assert rewritten["datasets"]["kev"]["source_origin"] == "stale"
+
+
+def test_a_mmdb_the_reader_cannot_open_is_refused(tmp_path: Path, site: Path) -> None:
+    """Fourteen bytes of marker are not a database; the real reader decides."""
+    data = tmp_path / "d"
+    (data / "geoip").mkdir(parents=True)
+    (data / "geoip" / "geoip.mmdb").write_bytes(b"\xab\xcd\xefMaxMind.com")
+    out = tmp_path / "marker-only.tar.gz"
+    enrichment_bundle.build_bundle(data, out, built_at="2026-09-22T03:00:00+00:00")
+    _assert_refused(out, site, "MaxMind")
+
+
+def test_a_bundle_built_in_the_future_is_refused(tmp_path: Path, site: Path) -> None:
+    """Installed, a bundle dated 2200 would make every real one "older than the
+    installed one" — and the scheduled loader cannot pass --allow-older."""
+    out = tmp_path / "future.tar.gz"
+    enrichment_bundle.build_bundle(_data_dir(tmp_path), out, built_at="2200-01-01T00:00:00+00:00")
+    _assert_refused(out, site, "future")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b'{"entries": ["\xff"]}', b'{"entries": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"],
+    ids=["not-utf8", "nested-past-the-recursion-limit"],
+)
+def test_a_json_dataset_that_is_not_utf8_is_refused_not_a_traceback(tmp_path: Path, site: Path, payload: bytes) -> None:
+    data = tmp_path / "d"
+    (data / "kev").mkdir(parents=True)
+    (data / "kev" / "kev-overlay.json").write_bytes(payload)
+    (data / "enrichment-manifest.json").write_text('{"generated_at": "2026-09-22T00:00:00+00:00", "datasets": {}}')
+    out = tmp_path / "bad-json.tar.gz"
+    enrichment_bundle.build_bundle(data, out, built_at="2026-09-22T03:00:00+00:00")
+    _assert_refused(out, site, "kev")
+    proc = _cli("install", str(out), "--dir", str(site))
+    assert proc.returncode == enrichment_bundle.EXIT_REJECTED, proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["event"] == "enrichment.bundle.rejected"
+
+
+def test_a_no_op_run_does_not_stage_the_bundle(bundle: Path, site: Path, monkeypatch) -> None:
+    """The loader runs every 15 minutes. "Already installed" is decided from
+    the manifest alone; it used to unpack and fsync the whole bundle first."""
+    enrichment_bundle.install(bundle, site)
+    staged = []
+    real = enrichment_bundle._stage
+    monkeypatch.setattr(enrichment_bundle, "_stage", lambda *a: staged.append(a[2]) or real(*a))
+    assert enrichment_bundle.install(bundle, site)["installed"] is False
+    assert staged == []
+
+
+def test_the_next_install_rolls_back_a_crashed_one_first(bundle: Path, site: Path, tmp_path: Path, monkeypatch) -> None:
+    """The loader's own entry path, not recover() called by hand: the next
+    install — even of garbage — puts the crashed one's files back first."""
+    before = _snapshot(site)
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    class Killed(BaseException):
+        pass
+
+    def dies(src, dst, *args, **kwargs):
+        if _is_commit(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise Killed()
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(enrichment_bundle.os, "replace", dies)
+    monkeypatch.setattr(enrichment_bundle, "recover", lambda target: False)
+    with pytest.raises(Killed):
+        enrichment_bundle.install(bundle, site)
+    monkeypatch.undo()
+    garbage = tmp_path / "garbage.tar.gz"
+    garbage.write_bytes(b"not a bundle")
+    with pytest.raises(BundleError):
+        enrichment_bundle.install(garbage, site)
+    assert not (site / enrichment_bundle.JOURNAL).exists()
+    assert {k: v for k, v in _snapshot(site).items() if not k.startswith(".enrichment-bundle-")} == before
+
+
+def test_an_unreadable_journal_fails_closed(bundle: Path, site: Path) -> None:
+    """A journal that cannot be read is not "no journal": the backups it
+    points at are the only copy of the previous data, so nothing is deleted
+    and nothing is installed until someone looks."""
+    backup = site / f"{enrichment_bundle.BACKUP_PREFIX}keepme"
+    (backup / "kev").mkdir(parents=True)
+    (backup / KEV).write_bytes(_kev(300))
+    (site / enrichment_bundle.JOURNAL).write_text('{"backup": "', encoding="utf-8")
+
+    with pytest.raises(enrichment_bundle.InstallError, match="journal"):
+        enrichment_bundle.install(bundle, site)
+    assert (site / enrichment_bundle.JOURNAL).exists()
+    assert (backup / KEV).read_bytes() == _kev(300)
+    proc = _cli("install", str(bundle), "--dir", str(site))
+    assert proc.returncode == enrichment_bundle.EXIT_ERROR
+
+
+def test_recovery_removes_a_half_written_journal(site: Path) -> None:
+    """Killed between writing the journal's temporary file and renaming it:
+    no commit had started, and the leftover must not linger."""
+    (site / (enrichment_bundle.JOURNAL + ".tmp")).write_text('{"backup":', encoding="utf-8")
+    enrichment_bundle.recover(site)
+    assert not (site / (enrichment_bundle.JOURNAL + ".tmp")).exists()
+
+
+def test_a_pinned_bundle_checksum_is_the_trust_root(bundle: Path, site: Path, tmp_path: Path) -> None:
+    """Without a pin, whoever can write the inbox chooses the data. With
+    OCTO_ENRICHMENT_BUNDLE_SHA256 (a ConfigMap in the airgap overlay) only the
+    bundle that checksum names is installed."""
+    good = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    _assert_refused(bundle, site, "sha256", expect_sha256="0" * 64)
+    assert enrichment_bundle.install(bundle, site, expect_sha256=good.upper())["installed"] is True
+
+    other = tmp_path / "other.tar.gz"
+    enrichment_bundle.build_bundle(_data_dir(tmp_path / "o", kev_entries=600), other, built_at="2026-09-23T03:00:00+00:00")
+    proc = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, str(REPO_ROOT / "scripts" / "enrichment_bundle.py"), "install", str(other), "--dir", str(site)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "OCTO_ENRICHMENT_BUNDLE_SHA256": good},
+    )
+    assert proc.returncode == enrichment_bundle.EXIT_REJECTED
+    assert "sha256" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "name", ["..", "a/../b", "kev/../kev/kev-overlay.json", "a/./b", "/kev", "a//b", "", "kev\\x", "k\x00ev"]
+)
+def test_the_member_name_check_on_its_own(name: str) -> None:
+    """The dataset whitelist would catch most of these too; this is the check
+    that does not depend on it."""
+    with pytest.raises(BundleError):
+        enrichment_bundle._check_name(name)
+
+
+def test_a_fifo_in_the_inbox_is_refused_without_blocking(tmp_path: Path, site: Path) -> None:
+    """Opened non-blocking and checked with fstat on the open descriptor, so a
+    FIFO swapped in after a stat() cannot hold the loader to its deadline."""
+    fifo = tmp_path / "enrichment-bundle.tar.gz"
+    os.mkfifo(fifo)
+    proc = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, str(REPO_ROOT / "scripts" / "enrichment_bundle.py"), "install", str(fifo), "--dir", str(site)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert proc.returncode == enrichment_bundle.EXIT_REJECTED
+    assert "not a regular file" in proc.stderr
+
+
+def test_a_manifest_rewrite_waits_for_an_install_in_progress(site: Path) -> None:
+    """The API's offline initContainer rewrites the manifest on every rollout.
+    Overlapping a loader commit it could write back the pre-install origins;
+    it takes the loader's lock first."""
+    import fcntl
+    import threading
+
+    import enrichment_manifest
+
+    held = open(site / enrichment_manifest.LOCK_NAME, "w")  # noqa: SIM115 - held across the thread
+    fcntl.flock(held, fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def rewrite() -> None:
+        enrichment_manifest.write_manifest(site, refreshed=set(), failed=set())
+        done.set()
+
+    worker = threading.Thread(target=rewrite)
+    worker.start()
+    try:
+        assert not done.wait(0.5)
+        assert not (site / enrichment_manifest.MANIFEST_NAME).exists()
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        held.close()
+    assert done.wait(10)
+    worker.join()
+    assert (site / enrichment_manifest.MANIFEST_NAME).exists()
+
+
+def test_the_bundle_component_does_not_rewrite_other_namespaces() -> None:
+    """A component's namespace transformer runs over everything the overlay
+    has accumulated. `namespace:` there rewrote #338's network-scan-executor
+    objects into network-scan (an ID conflict); unsetOnly only fills the gaps."""
+    component = _docs(K8S / "base" / "enrichment-bundle" / "kustomization.yaml")[0]
+    assert "namespace" not in component
+    assert component["transformers"] == ["namespace-transformer.yaml"]
+    transformer = _docs(K8S / "base" / "enrichment-bundle" / "namespace-transformer.yaml")[0]
+    assert transformer["kind"] == "NamespaceTransformer"
+    assert transformer["metadata"]["namespace"] == "network-scan"
+    assert transformer["unsetOnly"] is True
+
+
+def _render(overlay: str) -> list[dict]:
+    import shutil as _shutil
+
+    import yaml
+
+    kubectl = _shutil.which("kubectl")
+    if kubectl is None:
+        pytest.skip("kubectl not installed")
+    proc = subprocess.run(  # noqa: S603 - fixed argv
+        [kubectl, "kustomize", str(K8S / "overlays" / overlay)], capture_output=True, text=True, check=True
+    )
+    return [doc for doc in yaml.safe_load_all(proc.stdout) if doc]
+
+
+def _pod_spec(doc: dict) -> dict | None:
+    kind = doc.get("kind")
+    if kind == "CronJob":
+        return doc["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    if kind in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+        return doc["spec"]["template"]["spec"]
+    if kind == "Pod":
+        return doc["spec"]
+    return None
+
+
+def test_every_pod_in_the_airgap_overlay_can_pull_from_the_internal_registry() -> None:
+    """Declarative, not "and then patch the default ServiceAccount by hand":
+    every pod gets the pull secret from its ServiceAccount or its own spec,
+    and every image comes from the internal registry."""
+    docs = _render("airgap")
+    accounts = {
+        (doc["metadata"].get("namespace"), doc["metadata"]["name"]): doc
+        for doc in docs
+        if doc.get("kind") == "ServiceAccount"
+    }
+    pods = [(doc, spec) for doc in docs if (spec := _pod_spec(doc)) is not None]
+    assert len(pods) >= 7
+    for doc, spec in pods:
+        where = f"{doc['kind']}/{doc['metadata']['name']}"
+        own = [s["name"] for s in spec.get("imagePullSecrets") or []]
+        account = accounts.get((doc["metadata"].get("namespace"), spec.get("serviceAccountName", "default"))) or {}
+        via_account = [s["name"] for s in account.get("imagePullSecrets") or []]
+        assert "shapoclyack-registry" in own + via_account, f"{where} cannot pull"
+        for container in spec.get("containers", []) + spec.get("initContainers", []):
+            assert container["image"].startswith("registry.internal.example/"), f"{where}: {container['image']}"

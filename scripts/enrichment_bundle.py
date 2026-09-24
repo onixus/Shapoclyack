@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import errno
 import fcntl
 import getpass
 import gzip
@@ -76,9 +75,10 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import zlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Any, Iterator
 
@@ -86,6 +86,7 @@ from typing import IO, Any, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import enrichment_manifest  # noqa: E402 - needs the path above
+import feed_fetch  # noqa: E402 - needs the path above
 
 SCHEMA = "shapoclyack.enrichment-bundle"
 SCHEMA_VERSION = 1
@@ -93,7 +94,8 @@ MANIFEST_MEMBER = "bundle-manifest.json"
 INSTALLED_RECORD = "enrichment-bundle.json"
 HISTORY = "enrichment-bundle-history.jsonl"
 JOURNAL = ".enrichment-bundle-journal.json"
-LOCK = ".enrichment-bundle.lock"
+#: The enrichment directory's writer lock, shared with every manifest rewrite.
+LOCK = enrichment_manifest.LOCK_NAME
 STAGING_PREFIX = ".enrichment-bundle-staging-"
 BACKUP_PREFIX = ".enrichment-bundle-backup-"
 
@@ -108,6 +110,14 @@ DEFAULT_MAX_RATIO = 100
 #: compresses absurdly well) and is not enforced.
 RATIO_FLOOR_BYTES = 1024 * 1024
 MANIFEST_MAX_BYTES = 4 * 1024 * 1024
+#: How far ahead of this host's clock a bundle's built_at may be: clocks on
+#: either side of an air gap drift, a day of it is not an attack.
+MAX_CLOCK_SKEW = timedelta(days=1)
+#: The largest mtime a ustar header holds (eleven octal digits): the year 2242.
+USTAR_MAX_MTIME = 8**11 - 1
+#: How long an install waits for a manifest rewrite (or another install) in
+#: progress; well inside the loader Job's activeDeadlineSeconds.
+DEFAULT_INSTALL_LOCK_TIMEOUT = 600.0
 
 BLOCK = 512
 RECORD = 20 * BLOCK
@@ -125,7 +135,7 @@ class BundleError(Exception):
 
 
 class InstallError(Exception):
-    """The install could not run (lock held, target unusable)."""
+    """The install could not run (lock held, journal unusable, target unusable)."""
 
 
 def dataset_paths() -> dict[str, str]:
@@ -281,6 +291,8 @@ def build_bundle(data_dir: Path, out: Path, *, compress: bool = True, built_at: 
     manifest = describe(data_dir, built_at=built_at)
     manifest_bytes = _canonical(manifest)
     mtime = int(_parse_time(manifest["built_at"]).timestamp())  # type: ignore[union-attr]
+    if not 0 <= mtime <= USTAR_MAX_MTIME:
+        raise BundleError(f"built_at {manifest['built_at']} is outside what a tar header can record")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
@@ -336,7 +348,9 @@ class _Meter:
     Before the manifest is read the budget is one manifest's worth; after, it
     is exactly what the manifest declared plus tar framing. Every read is
     bounded by what is left, so nothing — not a lying header, not a bomb — can
-    make this allocate more than the budget.
+    make this allocate more than the budget. A negative size is refused here
+    as well as at the header: ``read(-1)`` means "everything" to the stream
+    underneath, which is the one request the budget must never pass on.
     """
 
     def __init__(self, stream: IO[bytes], budget: int) -> None:
@@ -345,6 +359,8 @@ class _Meter:
         self.consumed = 0
 
     def read(self, size: int) -> bytes:
+        if size < 0:
+            raise BundleError(f"a negative read size ({size}); refusing")
         # One byte past the budget is enough to know it was exceeded, and is
         # all that is ever asked of the decompressor beyond it.
         data = self._stream.read(min(size, self.budget - self.consumed + 1))
@@ -357,6 +373,8 @@ class _Meter:
         return data
 
     def read_exact(self, size: int, what: str) -> bytes:
+        if size < 0:
+            raise BundleError(f"a negative size in {what} ({size}); refusing")
         parts: list[bytes] = []
         remaining = size
         while remaining:
@@ -407,14 +425,17 @@ def _header(block: bytes) -> tarfile.TarInfo:
     if info.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or info.name.endswith("/"):
         kind = _TYPE_NAMES.get(info.type, f"tar type {info.type!r}")
         raise BundleError(f"member {info.name!r} is {kind}; a bundle holds regular files only")
+    # The size field is base-256 capable, so it can say -1 (review of #339).
+    if info.size < 0:
+        raise BundleError(f"member {info.name!r} has a negative size ({info.size}); refusing")
     return info
 
 
-def _parse_manifest(raw: bytes, *, limits: Limits, compressed_size: int) -> dict:
+def _parse_manifest(raw: bytes, *, limits: Limits, compressed_size: int, now: datetime) -> dict:
     try:
         manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise BundleError(f"{MANIFEST_MEMBER} is not JSON: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise BundleError(f"{MANIFEST_MEMBER} is not JSON: {type(exc).__name__}") from exc
     if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
         raise BundleError(f"{MANIFEST_MEMBER} is not a {SCHEMA} manifest")
     version = manifest.get("schema_version")
@@ -427,8 +448,17 @@ def _parse_manifest(raw: bytes, *, limits: Limits, compressed_size: int) -> dict
         )
     if version < 1:
         raise BundleError(f"schema_version {version} is not valid")
-    if _parse_time(manifest.get("built_at")) is None:
+    built = _parse_time(manifest.get("built_at"))
+    if built is None:
         raise BundleError("built_at is missing or not an ISO-8601 timestamp")
+    # Installed, a bundle "from the future" would make every genuine one older
+    # than the installed one — and the scheduled loader cannot pass
+    # --allow-older (review of #339).
+    if built > now + MAX_CLOCK_SKEW:
+        raise BundleError(
+            f"the bundle says it was built {manifest['built_at']}, in the future of this host's "
+            f"clock ({now.isoformat(timespec='seconds')}); refusing"
+        )
     files = manifest.get("files")
     whitelist = dataset_paths()
     if not isinstance(files, list) or not files:
@@ -451,6 +481,8 @@ def _parse_manifest(raw: bytes, *, limits: Limits, compressed_size: int) -> dict
             raise BundleError(f"{path!r} has no valid size")
         if not isinstance(entry.get("sha256"), str) or not _SHA256.fullmatch(entry["sha256"]):
             raise BundleError(f"{path!r} has no valid sha256")
+        if _parse_time(entry.get("fetched_at")) is None:
+            raise BundleError(f"{path!r} has no valid fetched_at")
         total += size
     if total > limits.max_bytes:
         raise BundleError(f"the bundle declares {total} bytes, over the {limits.max_bytes} byte limit")
@@ -467,85 +499,174 @@ class Verified:
     manifest: dict
     bundle_id: str
     staged: dict[str, Path]
+    #: sha256 of the bundle file itself, over exactly the bytes that were parsed.
+    sha256: str = ""
 
 
-def _open_stream(bundle: Path) -> tuple[IO[bytes], IO[bytes]]:
-    raw = bundle.open("rb")
-    magic = raw.read(2)
-    raw.seek(0)
-    if magic == b"\x1f\x8b":
-        return raw, gzip.GzipFile(fileobj=raw, mode="rb")
-    return raw, raw
+class _HashingFile:
+    """The bundle file as it is read, hashed: a checksum pin then covers
+    exactly the bytes that were parsed, not a second read of the path."""
+
+    def __init__(self, handle: IO[bytes]) -> None:
+        self._handle = handle
+        self.digest = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self.digest.update(data)
+        return data
+
+    def drain(self) -> None:
+        for chunk in iter(lambda: self._handle.read(CHUNK), b""):
+            self.digest.update(chunk)
 
 
-def read_bundle(bundle: Path, staging: Path, *, limits: Limits = Limits()) -> Verified:
-    """Verify ``bundle`` member by member, writing each file under ``staging``."""
-    info = bundle.stat()
-    if not stat.S_ISREG(info.st_mode):
-        # A FIFO would block the loader until its deadline; a device would
-        # stream forever. The inbox holds files.
-        raise BundleError(f"{bundle} is not a regular file")
-    compressed_size = info.st_size
-    raw, stream = _open_stream(bundle)
-    staged: dict[str, Path] = {}
+def _open_regular(bundle: Path) -> tuple[IO[bytes], int]:
+    """Open ``bundle`` if, and only if, what was opened is a regular file.
+
+    Decided with fstat on the open descriptor — a stat() of the path followed
+    by an open() leaves room to swap a FIFO in between — and opened
+    non-blocking, so that opening a FIFO cannot itself hang the loader until
+    its deadline.
+    """
     try:
-        meter = _Meter(stream, BLOCK + MANIFEST_MAX_BYTES + BLOCK)
-        first = meter.read_exact(BLOCK, "the first header")
-        info = _header(first)
-        if _check_name(info.name) != MANIFEST_MEMBER:
-            raise BundleError(f"the first member must be {MANIFEST_MEMBER}, not {info.name!r}")
-        if info.size > MANIFEST_MAX_BYTES:
-            raise BundleError(f"{MANIFEST_MEMBER} is {info.size} bytes; refusing")
-        manifest_bytes = meter.read_exact(info.size, MANIFEST_MEMBER)
-        meter.read_exact(_padding(info.size), MANIFEST_MEMBER)
-        manifest = _parse_manifest(manifest_bytes, limits=limits, compressed_size=compressed_size)
-        expected = {entry["path"]: entry for entry in manifest["files"]}
+        fd = os.open(bundle, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise InstallError(f"{bundle} cannot be opened: {exc.strerror}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise BundleError(f"{bundle} is not a regular file")
+        fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb"), info.st_size
 
+
+class _Reader:
+    """One pass over a bundle: the manifest first, and the members only if the
+    caller asks for them.
+
+    The split is what makes a scheduled no-op cheap (review of #339): "is
+    this bundle already installed" is answered from the manifest alone,
+    instead of unpacking and fsyncing the whole archive every fifteen minutes
+    to learn the same thing.
+    """
+
+    def __init__(self, bundle: Path, *, limits: Limits, now: datetime | None = None) -> None:
+        self._raw, compressed_size = _open_regular(bundle)
+        self._stream: IO[bytes] | None = None
+        try:
+            magic = self._raw.read(2)
+            self._raw.seek(0)
+            self._hashed = _HashingFile(self._raw)
+            self._stream = (
+                gzip.GzipFile(fileobj=self._hashed, mode="rb")  # type: ignore[arg-type]
+                if magic == b"\x1f\x8b"
+                else self._hashed  # type: ignore[assignment]
+            )
+            self._meter = _Meter(self._stream, BLOCK + MANIFEST_MAX_BYTES + BLOCK)
+            with _corrupt_as_refusal():
+                info = _header(self._meter.read_exact(BLOCK, "the first header"))
+                if _check_name(info.name) != MANIFEST_MEMBER:
+                    raise BundleError(f"the first member must be {MANIFEST_MEMBER}, not {info.name!r}")
+                if info.size > MANIFEST_MAX_BYTES:
+                    raise BundleError(f"{MANIFEST_MEMBER} is {info.size} bytes; refusing")
+                manifest_bytes = self._meter.read_exact(info.size, MANIFEST_MEMBER)
+                self._meter.read_exact(_padding(info.size), MANIFEST_MEMBER)
+            self.manifest = _parse_manifest(
+                manifest_bytes,
+                limits=limits,
+                compressed_size=compressed_size,
+                now=now or datetime.now(timezone.utc),
+            )
+            self.bundle_id = hashlib.sha256(manifest_bytes).hexdigest()
+            self.sha256 = ""
+        except BaseException:
+            self.close()
+            raise
+
+    def stage(self, staging: Path) -> dict[str, Path]:
+        """Verify every member, writing each file under ``staging``."""
+        expected = {entry["path"]: entry for entry in self.manifest["files"]}
+        staged: dict[str, Path] = {}
+        meter = self._meter
         # From here the budget is exact: every listed file with its header and
         # padding, the two end-of-archive blocks, and at most one record of
-        # trailing zeros. A byte more is not something this tool wrote.
-        # (The ratio was already checked against the declared sizes, so this
-        # budget is within it too.)
+        # trailing zeros. A byte more is not something this tool wrote. (The
+        # ratio was already checked against the declared sizes, so this budget
+        # is within it too.)
         framing = sum(BLOCK + e["size"] + _padding(e["size"]) for e in expected.values())
         meter.budget = meter.consumed + framing + 2 * BLOCK + RECORD
+        with _corrupt_as_refusal():
+            while True:
+                block = meter.read_exact(BLOCK, "a header")
+                if block == bytes(BLOCK):
+                    break
+                info = _header(block)
+                name = _check_name(info.name)
+                entry = expected.get(name)
+                if entry is None:
+                    if name in staged:
+                        raise BundleError(f"{name!r} appears twice in the archive")
+                    raise BundleError(f"{name!r} is in the archive but not in the manifest; refusing")
+                if info.size != entry["size"]:
+                    raise BundleError(f"{name!r} is {info.size} bytes in the archive, {entry['size']} in the manifest")
+                staged[name] = _stage(meter, staging, name, entry)
+                del expected[name]
+                meter.read_exact(_padding(info.size), name)
 
-        while True:
-            block = meter.read_exact(BLOCK, "a header")
-            if block == bytes(BLOCK):
-                break
-            info = _header(block)
-            name = _check_name(info.name)
-            entry = expected.get(name)
-            if entry is None:
-                if name in staged:
-                    raise BundleError(f"{name!r} appears twice in the archive")
-                raise BundleError(f"{name!r} is in the archive but not in the manifest; refusing")
-            if info.size != entry["size"]:
-                raise BundleError(f"{name!r} is {info.size} bytes in the archive, {entry['size']} in the manifest")
-            staged[name] = _stage(meter, staging, name, entry)
-            del expected[name]
-            meter.read_exact(_padding(info.size), name)
-
-        # The second end-of-archive block, then only zero padding to the end of
-        # the stream. Reading to EOF is also what makes gzip check its CRC.
-        tail = meter.read_exact(BLOCK, "the end-of-archive marker")
-        if tail != bytes(BLOCK):
-            raise BundleError("data after the end-of-archive marker; refusing")
-        while True:
-            chunk = meter.read(CHUNK)
-            if not chunk:
-                break
-            if chunk.count(0) != len(chunk):
+            # The second end-of-archive block, then only zero padding to the end
+            # of the stream. Reading to EOF is also what makes gzip check its CRC.
+            tail = meter.read_exact(BLOCK, "the end-of-archive marker")
+            if tail != bytes(BLOCK):
                 raise BundleError("data after the end-of-archive marker; refusing")
-        if expected:
-            raise BundleError(f"the archive is missing {', '.join(sorted(expected))} (truncated?)")
+            while True:
+                chunk = meter.read(CHUNK)
+                if not chunk:
+                    break
+                if chunk.count(0) != len(chunk):
+                    raise BundleError("data after the end-of-archive marker; refusing")
+            if expected:
+                raise BundleError(f"the archive is missing {', '.join(sorted(expected))} (truncated?)")
+        self._hashed.drain()
+        self.sha256 = self._hashed.digest.hexdigest()
+        return staged
+
+    def close(self) -> None:
+        if self._stream is not None and self._stream is not getattr(self, "_hashed", None):
+            with contextlib.suppress(Exception):
+                self._stream.close()
+        self._raw.close()
+
+    def __enter__(self) -> _Reader:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+@contextlib.contextmanager
+def _corrupt_as_refusal() -> Iterator[None]:
+    try:
+        yield
     except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
         raise BundleError(f"the archive is corrupt or truncated: {exc}") from exc
-    finally:
-        if stream is not raw:
-            stream.close()
-        raw.close()
-    return Verified(manifest=manifest, bundle_id=hashlib.sha256(manifest_bytes).hexdigest(), staged=staged)
+
+
+def read_bundle(bundle: Path, staging: Path, *, limits: Limits = Limits(), now: datetime | None = None) -> Verified:
+    """Verify ``bundle`` member by member, writing each file under ``staging``."""
+    with _Reader(bundle, limits=limits, now=now) as reader:
+        staged = reader.stage(staging)
+        return Verified(manifest=reader.manifest, bundle_id=reader.bundle_id, staged=staged, sha256=reader.sha256)
+
+
+def _fetched_at(entry: dict) -> float:
+    """When the connected side wrote this file, never later than now."""
+    fetched = _parse_time(entry.get("fetched_at"))
+    now = time.time()
+    return now if fetched is None else min(fetched.timestamp(), now)
 
 
 def _stage(meter: _Meter, staging: Path, name: str, entry: dict) -> Path:
@@ -567,6 +688,12 @@ def _stage(meter: _Meter, staging: Path, name: str, entry: dict) -> Path:
         os.fsync(out.fileno())
     if digest.hexdigest() != entry["sha256"]:
         raise BundleError(f"{name!r} does not match its sha256 in the manifest; refusing")
+    # The file's age is the data's age: GET /api/system's age_days and stale,
+    # and the risk model's overlay staleness, read the mtime. Stamped "now", a
+    # bundle of 90-day-old data reads as fresh on exactly the installation that
+    # cannot refresh it (review of #339).
+    stamp = _fetched_at(entry)
+    os.utime(dest, (stamp, stamp))
     return dest
 
 
@@ -585,6 +712,11 @@ def check_content(verified: Verified, target: Path | None) -> None:
         if rel not in floors:
             if not _looks_like_mmdb(staged):
                 raise BundleError(f"{rel!r} is not a MaxMind DB; refusing")
+            # The marker is fourteen bytes; the reader is what the API uses.
+            try:
+                feed_fetch.open_mmdb(staged)
+            except Exception as exc:  # noqa: BLE001 - any reader failure is "not a database"
+                raise BundleError(f"{rel!r} is not a readable MaxMind DB ({type(exc).__name__}); refusing") from exc
             continue
         record = enrichment_manifest.inspect_json_dataset(staged, floors[rel])
         if record["entries"] is None:
@@ -612,78 +744,98 @@ def _real_dir(path: Path) -> None:
         info = os.lstat(path)
     except FileNotFoundError:
         path.mkdir(mode=0o755)
+        enrichment_manifest.fsync_dir(path.parent)
         return
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise BundleError(f"{path} is not a plain directory; refusing to write through it")
 
 
-def _fsync_dir(path: Path) -> None:
-    with contextlib.suppress(OSError):
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-
-def _write_json(path: Path, payload: dict) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(_canonical(payload))
-    tmp.replace(path)
-
-
 def installed_record(target: Path) -> dict | None:
     try:
         payload = json.loads((target / INSTALLED_RECORD).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
 
 
 @contextlib.contextmanager
-def _locked(target: Path) -> Iterator[None]:
-    fd = os.open(target / LOCK, os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+def _locked(target: Path, timeout: float) -> Iterator[None]:
+    """The enrichment directory's writer lock — the same one every manifest
+    rewrite takes (enrichment_manifest.locked)."""
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EAGAIN, errno.EACCES):
-                raise InstallError(f"another bundle install is running on {target}") from exc
-            raise
-        yield
-    finally:
-        os.close(fd)
+        with enrichment_manifest.locked(target, timeout=timeout):
+            yield
+    except TimeoutError as exc:
+        raise InstallError(
+            f"another bundle install or manifest rewrite holds {target / LOCK}; try again later"
+        ) from exc
+
+
+def _transaction_paths() -> set[str]:
+    return set(dataset_paths()) | {INSTALLED_RECORD, enrichment_manifest.MANIFEST_NAME}
+
+
+def _read_journal(journal_path: Path) -> dict:
+    """The journal of an interrupted commit, or InstallError if it cannot be
+    trusted to drive a rollback.
+
+    Failing closed is the point: the backups the journal names are the only
+    copy of the previous data, and a rollback driven by a journal that does
+    not parse — or names a backup directory that is not ours, or a path that is
+    not a dataset — could as easily destroy them as restore them. Nothing is
+    touched and nothing is installed until someone has looked.
+    """
+
+    def unusable(reason: str) -> InstallError:
+        return InstallError(
+            f"{journal_path} is not a usable journal ({reason}). An install was interrupted and "
+            f"its rollback cannot be trusted; nothing was changed. The previous data is in the "
+            f"{BACKUP_PREFIX}* directory beside it: restore by hand, then remove the journal"
+        )
+
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise unusable(type(exc).__name__) from exc
+    if not isinstance(journal, dict):
+        raise unusable("not an object")
+    name = journal.get("backup")
+    if not isinstance(name, str) or not name.startswith(BACKUP_PREFIX) or "/" in name:
+        raise unusable("its backup directory is not one this tool creates")
+    files = journal.get("files")
+    if not isinstance(files, list):
+        raise unusable("no file list")
+    allowed = _transaction_paths()
+    for item in files:
+        if not isinstance(item, dict) or item.get("path") not in allowed or not isinstance(item.get("had_previous"), bool):
+            raise unusable("an entry is not a dataset path")
+        if item["had_previous"] and not (journal_path.parent / name / item["path"]).is_file():
+            raise unusable(f"the backup of {item['path']} is missing")
+    return journal
 
 
 def recover(target: Path) -> bool:
-    """Roll back an install that died mid-commit. True if there was one."""
+    """Roll back an install that died mid-commit. True if there was one.
+
+    Raises InstallError, leaving everything in place, when the journal cannot
+    be trusted — see ``_read_journal``.
+    """
     journal_path = target / JOURNAL
+    # Killed while writing the journal: no rename, so no commit had started.
+    (target / (JOURNAL + ".tmp")).unlink(missing_ok=True)
     rolled_back = False
-    try:
-        journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        journal = None
-    except (OSError, json.JSONDecodeError):
-        journal = {}
-    if journal is not None:
-        name = str(journal.get("backup") or "")
-        # The journal names its backup directory; it may only ever be one of
-        # ours, beside the data — never a path that would make the rollback
-        # copy something from elsewhere into the data directory.
-        valid = name.startswith(BACKUP_PREFIX) and "/" not in name and name not in (".", "..")
-        backup = target / name if valid else target / f"{BACKUP_PREFIX}missing"
-        for item in journal.get("files") or []:
-            rel = str(item.get("path") or "")
-            if rel not in _transaction_paths():
-                continue
-            live = target / rel
-            saved = backup / rel
-            if item.get("had_previous") and saved.is_file():
-                os.replace(saved, live)
-            elif not item.get("had_previous"):
+    if journal_path.exists():
+        journal = _read_journal(journal_path)
+        backup = target / journal["backup"]
+        for item in journal["files"]:
+            live = target / item["path"]
+            if item["had_previous"]:
+                os.replace(backup / item["path"], live)
+            else:
                 live.unlink(missing_ok=True)
-        journal_path.unlink(missing_ok=True)
-        _fsync_dir(target)
+            enrichment_manifest.fsync_dir(live.parent)
+        journal_path.unlink()
+        enrichment_manifest.fsync_dir(target)
         rolled_back = True
     # Whatever a crashed run left behind and no journal refers to any more.
     for leftover in target.glob(f"{STAGING_PREFIX}*"):
@@ -691,10 +843,6 @@ def recover(target: Path) -> bool:
     for leftover in target.glob(f"{BACKUP_PREFIX}*"):
         shutil.rmtree(leftover, ignore_errors=True)
     return rolled_back
-
-
-def _transaction_paths() -> set[str]:
-    return set(dataset_paths()) | {INSTALLED_RECORD, enrichment_manifest.MANIFEST_NAME}
 
 
 def _commit(target: Path, staging: Path, backup: Path, paths: list[str], bundle_id: str) -> None:
@@ -721,18 +869,38 @@ def _commit(target: Path, staging: Path, backup: Path, paths: list[str], bundle_
                 # Storage without hard links (some SMB/CSI drivers): a copy is
                 # slower and just as good for a rollback.
                 shutil.copy2(live, saved)
+                with saved.open("rb") as handle:
+                    os.fsync(handle.fileno())
+            enrichment_manifest.fsync_dir(saved.parent)
             had_previous = True
         journal["files"].append({"path": rel, "had_previous": had_previous})
-    _write_json(target / JOURNAL, journal)
-    _fsync_dir(target)
+    # Durable before the first rename: contents fsynced, rename fsynced. Every
+    # staged file was fsynced when it was written, and each directory a rename
+    # lands in is fsynced after the loop — so after a power loss the directory
+    # holds either the journal and a rollback, or the finished commit.
+    enrichment_manifest.write_json_durably(target / JOURNAL, journal)
     try:
         for rel in paths:
             os.replace(staging / rel, target / rel)
+        for parent in sorted({(target / rel).parent for rel in paths}):
+            enrichment_manifest.fsync_dir(parent)
     except BaseException:
         recover(target)
         raise
     (target / JOURNAL).unlink()
-    _fsync_dir(target)
+    enrichment_manifest.fsync_dir(target)
+
+
+def _file_sha256_matches(actual: str, pin: str | None) -> None:
+    if pin is not None and actual != pin:
+        raise BundleError(f"the bundle's sha256 is {actual}, not the pinned {pin}; refusing")
+
+
+def _normalise_pin(expect_sha256: str | None) -> str | None:
+    pin = (expect_sha256 or "").strip().lower() or None
+    if pin is not None and not _SHA256.fullmatch(pin):
+        raise InstallError("the expected sha256 is not 64 hexadecimal characters")
+    return pin
 
 
 def install(
@@ -741,36 +909,41 @@ def install(
     *,
     limits: Limits = Limits(),
     allow_older: bool = False,
+    expect_sha256: str | None = None,
+    lock_timeout: float = DEFAULT_INSTALL_LOCK_TIMEOUT,
     now: datetime | None = None,
 ) -> dict:
     """Verify ``bundle`` and install it into ``target``. Returns a summary.
 
     ``summary["installed"]`` is False when this exact bundle is already the
-    installed one — a no-op, so the loader can run on a schedule.
+    installed one — decided from its manifest, before anything is unpacked,
+    so the loader can run on a schedule for the price of reading one header.
+
+    ``expect_sha256`` pins the bundle file: only the bundle with that checksum
+    is installed. Without it, whoever can write the file the loader reads
+    chooses the data (docs/air-gap.md, "Trust").
     """
+    pin = _normalise_pin(expect_sha256)
     # The directory the operator named is taken as given (a mount point, or a
     # symlink they chose); it is everything *under* it that must not be a link.
     target = target.resolve()
     target.mkdir(parents=True, exist_ok=True, mode=0o755)
-    with _locked(target):
+    with _locked(target, lock_timeout):
         if recover(target):
             print(f"note: rolled back an install that did not finish under {target}", file=sys.stderr)
-        staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=target))
-        backup = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=target))
-        try:
-            verified = read_bundle(bundle, staging, limits=limits)
-            manifest = verified.manifest
-            summary = {
+        with _Reader(bundle, limits=limits, now=now) as reader:
+            manifest = reader.manifest
+            summary: dict[str, Any] = {
                 "event": "enrichment.bundle.install",
                 "bundle": bundle.name,
-                "bundle_id": verified.bundle_id,
+                "bundle_id": reader.bundle_id,
                 "built_at": manifest["built_at"],
                 "target": str(target),
-                "files": sorted(verified.staged),
+                "files": sorted(entry["path"] for entry in manifest["files"]),
                 "installed": False,
             }
             current = installed_record(target) or {}
-            if current.get("bundle_id") == verified.bundle_id:
+            if current.get("bundle_id") == reader.bundle_id:
                 summary["reason"] = "already installed"
                 return summary
             current_built = _parse_time(current.get("built_at"))
@@ -780,56 +953,82 @@ def install(
                     f"the bundle was built {manifest['built_at']}, before the installed one "
                     f"({current['built_at']}); refusing without --allow-older"
                 )
-            check_content(verified, target)
-
-            installed_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
-            files = [entry for entry in manifest["files"] if entry["path"] in verified.staged]
-            record = {
-                "bundle_id": verified.bundle_id,
-                "schema_version": manifest["schema_version"],
-                "built_at": manifest["built_at"],
-                "installed_at": installed_at,
-                "bundle": bundle.name,
-                "files": files,
-            }
-            _write_json(staging / INSTALLED_RECORD, record)
-            # The dataset manifest is computed over the directory as it will be
-            # after the commit — the staged files over whatever else is there —
-            # and committed with them, so the two never disagree.
-            _write_json(
-                staging / enrichment_manifest.MANIFEST_NAME,
-                _future_manifest(target, staging, verified, files),
-            )
-            paths = sorted(verified.staged) + [INSTALLED_RECORD, enrichment_manifest.MANIFEST_NAME]
-            _commit(target, staging, backup, paths, verified.bundle_id)
-            # After the commit, so best-effort: the install happened, and a full
-            # disk refusing one more log line must not report that it did not.
-            # The same line is on stdout, in the loader Job's log, either way.
+            staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=target))
+            backup = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=target))
             try:
-                with (target / HISTORY).open("a", encoding="utf-8") as history:
-                    history.write(
-                        json.dumps(
-                            {
-                                "bundle_id": verified.bundle_id,
-                                "built_at": manifest["built_at"],
-                                "installed_at": installed_at,
-                                "bundle": bundle.name,
-                                "host": socket.gethostname(),
-                                "user": _user(),
-                                "files": len(files),
-                            },
-                            sort_keys=True,
-                        )
-                        + "\n"
-                    )
-            except OSError as exc:
-                print(f"warning: could not append to {HISTORY}: {exc}", file=sys.stderr)
-            summary["installed"] = True
-            summary["installed_at"] = installed_at
-            return summary
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
+                staged = reader.stage(staging)
+                _file_sha256_matches(reader.sha256, pin)
+                verified = Verified(manifest=manifest, bundle_id=reader.bundle_id, staged=staged, sha256=reader.sha256)
+                check_content(verified, target)
+                return _commit_install(bundle, target, staging, backup, verified, now)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+                # A journal still on disk means a commit that was neither
+                # finished nor rolled back (the rollback itself failed): its
+                # backups are the previous data, and the next run needs them.
+                if not (target / JOURNAL).exists():
+                    shutil.rmtree(backup, ignore_errors=True)
+
+
+def _commit_install(
+    bundle: Path, target: Path, staging: Path, backup: Path, verified: Verified, now: datetime | None
+) -> dict:
+    manifest = verified.manifest
+    installed_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+    files = [entry for entry in manifest["files"] if entry["path"] in verified.staged]
+    record = {
+        "bundle_id": verified.bundle_id,
+        "sha256": verified.sha256,
+        "schema_version": manifest["schema_version"],
+        "built_at": manifest["built_at"],
+        "installed_at": installed_at,
+        "bundle": bundle.name,
+        "files": files,
+    }
+    enrichment_manifest.write_json_durably(staging / INSTALLED_RECORD, record)
+    # The dataset manifest is computed over the directory as it will be after
+    # the commit — the staged files over whatever else is there — and committed
+    # with them, so the two never disagree.
+    enrichment_manifest.write_json_durably(
+        staging / enrichment_manifest.MANIFEST_NAME,
+        _future_manifest(target, staging, verified, files),
+    )
+    paths = sorted(verified.staged) + [INSTALLED_RECORD, enrichment_manifest.MANIFEST_NAME]
+    _commit(target, staging, backup, paths, verified.bundle_id)
+    # After the commit, so best-effort: the install happened, and a full disk
+    # refusing one more log line must not report that it did not. The same line
+    # is on stdout, in the loader Job's log, either way.
+    try:
+        with (target / HISTORY).open("a", encoding="utf-8") as history:
+            history.write(
+                json.dumps(
+                    {
+                        "bundle_id": verified.bundle_id,
+                        "sha256": verified.sha256,
+                        "built_at": manifest["built_at"],
+                        "installed_at": installed_at,
+                        "bundle": bundle.name,
+                        "host": socket.gethostname(),
+                        "user": _user(),
+                        "files": len(files),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    except OSError as exc:
+        print(f"warning: could not append to {HISTORY}: {exc}", file=sys.stderr)
+    return {
+        "event": "enrichment.bundle.install",
+        "bundle": bundle.name,
+        "bundle_id": verified.bundle_id,
+        "sha256": verified.sha256,
+        "built_at": manifest["built_at"],
+        "target": str(target),
+        "files": sorted(verified.staged),
+        "installed": True,
+        "installed_at": installed_at,
+    }
 
 
 def _user() -> str:
@@ -876,6 +1075,13 @@ def _future_manifest(target: Path, staging: Path, verified: Verified, files: lis
                 for name, entry in by_dataset.items()
                 if entry.get("source_urls")
             },
+            # What the connected side called each dataset — `stale` above all —
+            # so it is not laundered into a plain `bundle` (review of #339).
+            source_origins={
+                name: str(entry["origin"])
+                for name, entry in by_dataset.items()
+                if isinstance(entry.get("origin"), str)
+            },
         )
     finally:
         shutil.rmtree(view, ignore_errors=True)
@@ -891,13 +1097,15 @@ def _future_manifest(target: Path, staging: Path, verified: Verified, files: lis
     return manifest
 
 
-def verify(bundle: Path, *, limits: Limits = Limits()) -> Verified:
+def verify(bundle: Path, *, limits: Limits = Limits(), expect_sha256: str | None = None) -> Verified:
     """Everything ``install`` checks about the archive itself, touching nothing."""
+    pin = _normalise_pin(expect_sha256)
     with tempfile.TemporaryDirectory(prefix="enrichment-bundle-verify-") as scratch:
         verified = read_bundle(bundle, Path(scratch), limits=limits)
+        _file_sha256_matches(verified.sha256, pin)
         check_content(verified, None)
         # The staged paths die with the scratch directory.
-        return Verified(manifest=verified.manifest, bundle_id=verified.bundle_id, staged={})
+        return Verified(manifest=verified.manifest, bundle_id=verified.bundle_id, staged={}, sha256=verified.sha256)
 
 
 # --------------------------------------------------------------------------
@@ -931,12 +1139,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     try:
-        verified = verify(args.bundle, limits=_limits(args))
-    except (BundleError, OSError) as exc:
+        verified = verify(args.bundle, limits=_limits(args), expect_sha256=args.expect_sha256)
+    except (BundleError, InstallError, OSError) as exc:
         print(f"REJECTED: {exc}", file=sys.stderr)
         return EXIT_REJECTED
     manifest = verified.manifest
-    print(f"OK {args.bundle}: bundle_id {verified.bundle_id}, built_at {manifest['built_at']}")
+    print(f"OK {args.bundle}: sha256 {verified.sha256}, bundle_id {verified.bundle_id}, built_at {manifest['built_at']}")
     for entry in manifest["files"]:
         print(f"    {entry['path']}: updated={entry.get('updated')}, sha256={entry['sha256']}")
     return EXIT_OK
@@ -950,7 +1158,14 @@ def _cmd_install(args: argparse.Namespace) -> int:
         print(f"error: {args.bundle} does not exist", file=sys.stderr)
         return EXIT_ERROR
     try:
-        summary = install(args.bundle, args.dir, limits=_limits(args), allow_older=args.allow_older)
+        summary = install(
+            args.bundle,
+            args.dir,
+            limits=_limits(args),
+            allow_older=args.allow_older,
+            expect_sha256=args.expect_sha256,
+            lock_timeout=args.lock_timeout,
+        )
     except BundleError as exc:
         print(json.dumps({"event": "enrichment.bundle.rejected", "bundle": args.bundle.name, "reason": str(exc)}))
         print(f"REJECTED: {exc} — nothing under {args.dir} was changed", file=sys.stderr)
@@ -990,11 +1205,22 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("bundle", type=Path)
         command.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="cap on the uncompressed total")
         command.add_argument("--max-ratio", type=int, default=DEFAULT_MAX_RATIO, help="cap on uncompressed/compressed")
+        command.add_argument(
+            "--expect-sha256",
+            default=os.environ.get("OCTO_ENRICHMENT_BUNDLE_SHA256") or None,
+            help="refuse any bundle file whose sha256 is not this (default: $OCTO_ENRICHMENT_BUNDLE_SHA256)",
+        )
         command.set_defaults(func=func)
         if name == "install":
             command.add_argument("--dir", type=Path, required=True, help="Enrichment data directory to install into")
             command.add_argument("--allow-older", action="store_true", help="install a bundle built before the installed one")
             command.add_argument("--missing-ok", action="store_true", help="exit 0 when the bundle file does not exist")
+            command.add_argument(
+                "--lock-timeout",
+                type=float,
+                default=DEFAULT_INSTALL_LOCK_TIMEOUT,
+                help="seconds to wait for a manifest rewrite or another install in progress",
+            )
 
     status = sub.add_parser("status", help="show the installed bundle")
     status.add_argument("--dir", type=Path, required=True)

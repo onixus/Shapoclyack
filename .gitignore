@@ -31,6 +31,8 @@ dist/
 # `make enrichment-bundle` (#339): the refreshed feeds it packs. Kept between
 # runs on purpose — the CVSS4 and NVD CPE refreshes continue what is there.
 /build/
+# The enrichment directory's writer lock, left by any refresh run in a checkout.
+scanner/data/.enrichment-bundle.lock
 
 
 # Development TLS material for the kind stand (scripts/dev-tls-cert.sh).

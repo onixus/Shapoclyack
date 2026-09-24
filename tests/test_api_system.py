@@ -194,6 +194,13 @@ def test_system_status_reports_the_installed_offline_bundle(tmp_path, monkeypatc
         ),
         encoding="utf-8",
     )
+    # Fetched 40 days before the transfer: the site must see 40 days, not the
+    # moment it unpacked the file (review round 1).
+    import os
+    import time
+
+    old = time.time() - 40 * 86400
+    os.utime(source / "kev" / "kev-overlay.json", (old, old))
     bundle = tmp_path / "bundle.tar.gz"
     enrichment_bundle.build_bundle(source, bundle, built_at="2026-09-21T03:00:00+00:00")
     site = tmp_path / "site"
@@ -215,6 +222,10 @@ def test_system_status_reports_the_installed_offline_bundle(tmp_path, monkeypatc
     assert kev["origin"] == "bundle"
     assert kev["updated"] == "2026-09-20"
     assert kev["usable"] is True
+    assert kev["age_days"] > 39
+    assert kev["stale"] is True
+    # What the connected side called it before the transfer.
+    assert kev["source_origin"] == "seed"
 
 
 def test_system_status_survives_an_unreadable_manifest(tmp_path, monkeypatch):
