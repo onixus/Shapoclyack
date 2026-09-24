@@ -81,7 +81,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # The hash-pinned lock, not requirements-dev.txt (#313); quoted
+        # because ":all: " would otherwise read as a YAML mapping.
+        run: "pip install --require-hashes --only-binary=:all: -r requirements-dev.lock"
       - name: Compile sources
         run: python -m compileall scanner api tests agent
       - name: Start JetStream broker

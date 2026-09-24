@@ -127,7 +127,7 @@ pipeline {
                           # колесе, компилятор не нужен, а ожидание сервисов
                           # сделано на stdlib. Раньше тут стоял apt-get, и
                           # матрица падала, когда deb.debian.org не ответил.
-                          pip install --quiet -r requirements-dev.txt
+                          pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
 
                           python -m compileall scanner api tests agent
 
@@ -250,7 +250,7 @@ pipeline {
                       echo "[ci] apt attempt $i failed; retrying"; sleep 10
                     done
                     ssh -V
-                    pip install --quiet -r requirements-dev.txt
+                    pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
                     for i in $(seq 1 60); do
                       python -c "import socket;socket.create_connection(('sshd',2222),1)" 2>/dev/null && break
                       sleep 1

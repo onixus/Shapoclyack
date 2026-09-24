@@ -21,8 +21,9 @@
 # anything if it means the CI lint is clean too.
 #
 # Usage: scripts/ci-lint.sh [--install]
-#   --install  pip-install the pinned Ruff first (CI containers start bare;
-#              a local checkout already has it in .venv).
+#   --install  pip-install the pinned Ruff first, hash-checked from
+#              requirements-dev.lock (CI containers start bare; a local
+#              checkout already has it in .venv).
 #
 #   OCTO_LINT_ALLOW_RUFF_DRIFT=1  downgrade a version mismatch to a warning,
 #                                 for deliberately trying a newer Ruff.
@@ -50,8 +51,20 @@ PIN="$(ruff_pin)"
 PINNED_VERSION="${PIN#ruff==}"
 
 if [[ "${1:-}" == "--install" ]]; then
-  echo "[lint] installing ${PIN}"
-  pip install --quiet "${PIN}"
+  # From the lock, hash-checked like every other CI install (#313): the ruff
+  # entry of requirements-dev.lock, i.e. its line and the --hash lines that
+  # continue it. Ruff has no dependencies, so --no-deps loses nothing.
+  echo "[lint] installing ${PIN} from requirements-dev.lock"
+  lockdir="$(mktemp -d)"
+  awk -v pin="${PIN}" '$1 == pin { keep = 1 } keep { print; if ($0 !~ /\\$/) exit }' \
+    requirements-dev.lock > "${lockdir}/ruff.lock"
+  if [[ ! -s "${lockdir}/ruff.lock" ]]; then
+    rm -rf "${lockdir}"
+    echo "[lint] ${PIN} is not in requirements-dev.lock; run scripts/lock-python-deps.sh" >&2
+    exit 1
+  fi
+  pip install --quiet --require-hashes --only-binary=:all: --no-deps -r "${lockdir}/ruff.lock"
+  rm -rf "${lockdir}"
 elif [[ $# -gt 0 ]]; then
   echo "Usage: $0 [--install]" >&2
   exit 2

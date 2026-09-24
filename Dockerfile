@@ -248,21 +248,16 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
-# five MEDIUM and one LOW advisory that the scan reports against our image.
-# Pinned rather than left as --upgrade so the build stays reproducible; raise
-# it deliberately, the same way the base digest above is refreshed.
-# 26.2.1 is the newest pip and still vendors msgpack 1.1.2
-# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) and setuptools 70.3.0 (as
-# pkg_resources; CVE-2025-47273), both read from pip/_vendor/vendor.txt.
-# Neither is ours to bump, and pip cannot be dropped from the image while the
-# Smoke stage installs pytest with it. Raise PIP_VERSION once a release
-# vendors fixed copies.
-ARG PIP_VERSION=26.2.1
+# Installed from the hash-pinned locks, not from requirements.txt (#313): every
+# transitive dependency is pinned and every file checked against its sha256,
+# and --only-binary keeps pip from building an sdist whose build dependencies
+# it would fetch unchecked. pip itself is upgraded first, from its own lock;
+# requirements-pip.txt says why that version. Regenerate the locks with
+# scripts/lock-python-deps.sh.
+COPY requirements-pip.lock requirements.lock /app/
 RUN set -eux; \
-    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
-    pip install --no-cache-dir -r /app/requirements.txt
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

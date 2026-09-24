@@ -29,6 +29,11 @@ python -m pip install \
   -r requirements-dev.txt
 ```
 
+The images and CI install the hash-pinned `requirements*.lock` compiled from
+these files instead. After editing a `requirements*.txt`, regenerate them with
+`scripts/lock-python-deps.sh`; `tests/test_python_locks.py` fails until you do
+([supply-chain.md](supply-chain.md#pinned-build-inputs)).
+
 Run the baseline checks:
 
 ```bash
