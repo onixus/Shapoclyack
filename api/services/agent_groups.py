@@ -497,6 +497,35 @@ def live_groups(settings: Settings, tenant_ids: set[str]) -> set[tuple[str, str]
         }
 
 
+def live_tenants(settings: Settings, tenant_ids: set[str]) -> set[str]:
+    """The tenants among ``tenant_ids`` with an agent able to take a scan now.
+
+    The ungrouped counterpart of :func:`live_groups` (#338 review): an agent
+    claims only its own tenant's jobs, so a job addressed to no group waits on
+    "any active scanner agent of this tenant", and a tenant without one — the
+    executor not enrolled yet, enrolled under another tenant's key, or its key
+    expired — has a queue nothing will ever move. Scanner kind only, unlike
+    the group query: an endpoint agent is refused scan jobs on claim, and
+    groups hold scanners only.
+    """
+    if not tenant_ids:
+        return set()
+    cutoff = _now() - timedelta(seconds=settings.agent_stale_seconds)
+    with get_session(settings.postgres_url) as session:
+        return set(
+            session.execute(
+                select(models.Agent.tenant_id)
+                .where(
+                    models.Agent.tenant_id.in_(sorted(tenant_ids)),
+                    models.Agent.agent_kind == "scanner",
+                    models.Agent.lifecycle_status == "active",
+                    models.Agent.last_seen_at >= cutoff,
+                )
+                .distinct()
+            ).scalars()
+        )
+
+
 def resolve_for_scan(
     settings: Settings,
     *,

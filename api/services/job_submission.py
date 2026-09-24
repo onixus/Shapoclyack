@@ -497,6 +497,13 @@ def start_scan(
                     if agent_group
                     else None
                 ),
+                # Answered by admission a moment ago, so the start response
+                # can say it while the operator is still looking (#338).
+                (
+                    {tenant_id}
+                    if admission.tenant_has_live_sensor
+                    else set()
+                ),
             )
     except ValueError:
         _release_run_dir(reserved)

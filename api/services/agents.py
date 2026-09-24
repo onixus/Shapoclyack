@@ -908,6 +908,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
 
     total = len(rows)
     online = 0
+    scan_ready = 0
     busy = 0
     stale = 0
     error = 0
@@ -921,6 +922,10 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
             stale += 1
         else:
             online += 1
+            if (r.agent_kind or KIND_SCANNER) == KIND_SCANNER and (
+                r.lifecycle_status or LIFECYCLE_ACTIVE
+            ) == LIFECYCLE_ACTIVE:
+                scan_ready += 1
             if r.status == "busy":
                 busy += 1
             elif r.status == "error":
@@ -932,6 +937,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
         min_version=_min_version(),
         total_agents=total,
         online_agents=online,
+        scan_ready_agents=scan_ready,
         busy_agents=busy,
         stale_agents=stale,
         error_agents=error,

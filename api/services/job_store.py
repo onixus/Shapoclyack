@@ -27,15 +27,21 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z") if dt else None
 
 
-def to_info(row: models.Job, live_groups: set[tuple[str, str]] | None = None) -> JobInfo:
+def to_info(
+    row: models.Job,
+    live_groups: set[tuple[str, str]] | None = None,
+    live_tenants: set[str] | None = None,
+) -> JobInfo:
     """One job row as the API reports it.
 
     ``live_groups`` is the ``(tenant, group)`` pairs that have an agent able to
     take a job right now — see ``agent_groups.live_groups``. Passed in by the
     read paths that render a queue so one query answers a whole page; ``None``
     from the write paths, which report the job they just changed and make no
-    claim about who is listening.
+    claim about who is listening. ``live_tenants`` is the same for a job
+    addressed to no group (``agent_groups.live_tenants``).
     """
+    tenant_id = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
     return JobInfo(
         job_id=row.job_id,
         status=row.status,  # type: ignore[arg-type]
@@ -67,8 +73,17 @@ def to_info(row: models.Job, live_groups: set[tuple[str, str]] | None = None) ->
             bool(row.agent_group)
             and row.status == job_states.QUEUED
             and live_groups is not None
-            and (row.tenant_id or tenants_service.DEFAULT_TENANT_ID, row.agent_group)
-            not in live_groups
+            and (tenant_id, row.agent_group) not in live_groups
+        ),
+        # Ungrouped only, so the two flags never both speak for one job: a
+        # grouped job with no agent at all already reads "no sensor online in
+        # this group", which is the more specific of the two.
+        sensor_unavailable=(
+            not row.agent_group
+            and row.execution == "agent"
+            and row.status == job_states.QUEUED
+            and live_tenants is not None
+            and tenant_id not in live_tenants
         ),
     )
 
