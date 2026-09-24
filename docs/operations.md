@@ -642,6 +642,14 @@ Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
 
+Every window below is the platform default. Since #332 a tenant may keep each
+category longer or shorter within bounds the platform configures, a platform
+admin may place a tenant on **legal hold** (no sweep deletes its data, and the
+tenant cannot be deleted), and console users' personal data can be exported
+and erased with the username kept as a pseudonym. What is kept, for how long,
+by which mechanism, and what the DPA annex should say about it:
+[data-retention.md](data-retention.md).
+
 ### ClickHouse analytical data retention (ROADMAP #187)
 
 ClickHouse tables `shapoclyack.shapoclyack_vulnerabilities` and `shapoclyack.shapoclyack_open_ports`
@@ -829,6 +837,12 @@ GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
 The migration initContainer runs as the API's role in the shipped manifests, so
 re-run the ownership statements after any future migration that recreates the
 table or the functions.
+
+Migration `0065` (#332) adds a second function, `audit_events_prune_tenant`,
+for tenants with an audit window of their own, and makes both skip a tenant on
+legal hold; the retention role then also needs `SELECT` on the policy and hold
+tables. The four extra statements are in
+[data-retention.md](data-retention.md#7-operating-it).
 
 A superuser can still do anything at all; what this layout buys is that the
 credential in the API's Secret is not enough.

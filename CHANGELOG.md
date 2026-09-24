@@ -6,6 +6,35 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Per-tenant retention, legal hold, and data-subject requests for console
+  accounts ([#332](https://github.com/onixus/Shapoclyack/issues/332)).** Every
+  reaper used to apply one global window to every tenant. A tenant admin can now
+  set each category's window — scan runs, screenshots, reports, endpoint
+  software lists and change history, risk history, webhook deliveries, workflow
+  markers, audit trail — within bounds the platform configures
+  (`OCTO_RETENTION_BOUNDS`; the audit trail's floor defaults to a year, so a
+  tenant cannot shorten the record of what it did), through
+  `GET/PUT/DELETE /api/tenants/{id}/retention` (`tenant.retention.read` /
+  `.manage`, step-up) and the new console page `/retention`. A platform admin
+  can place a tenant on **legal hold** (`PUT/DELETE /api/tenants/{id}/legal-hold`,
+  `platform.legal_hold.manage`, step-up): while it stands no sweep deletes any
+  of the tenant's data, the audit trail's prune functions skip it inside the
+  database, and the tenant cannot be deleted — the hold's foreign key is
+  `RESTRICT`. `api/services/legal_hold.py` is the contract tenant offboarding
+  (#325) builds on. `GET /api/users/{u}/export` returns one account's data as
+  JSON; `POST /api/users/{u}/erase` removes the address, identity-provider link,
+  second factors, sessions, memberships and report-schedule address and keeps
+  the username as a tombstone, so the append-only audit trail keeps pointing at
+  a pseudonym that can never be reissued. Both are audited (`user.export`,
+  `user.erase`); erasure refuses the requester's own account, the last admin,
+  and an account whose tenant is on hold. Migration `0065`
+  (`tenant_retention_policies`, `tenant_legal_holds`, `users.erased_at`, three
+  permissions, and a replaced `audit_events_prune` plus a new
+  `audit_events_prune_tenant`). The audit retention role needs two more grants,
+  and a window of `0` in the endpoint inventory settings now keeps that half
+  instead of deleting everything; the annex a DPA can cite is
+  [docs/data-retention.md](docs/data-retention.md).
+
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.
