@@ -14,6 +14,7 @@ import {
   SEVERITY_STATUS,
   RISK_LEVEL_STATUS,
   SLA_STATUS,
+  TENANT_DELETION_STEP_STATUS,
   TENANT_STATUS,
   VULN_LIFECYCLE_STATUS,
   VULN_SOURCE_STATUS,
@@ -54,7 +55,20 @@ describe("status maps", () => {
       "succeeded",
     ]);
     expect(Object.keys(AGENT_STATUS).sort()).toEqual(["busy", "error", "idle", "offline", "stale"]);
-    expect(Object.keys(TENANT_STATUS).sort()).toEqual(["active", "suspended"]);
+    expect(Object.keys(TENANT_STATUS).sort()).toEqual([
+      "active",
+      "deleting",
+      "pending_deletion",
+      "suspended",
+    ]);
+    expect(Object.keys(TENANT_DELETION_STEP_STATUS).sort()).toEqual([
+      "done",
+      "failed",
+      "pending",
+      "running",
+      "skipped",
+      "waiting",
+    ]);
     expect(Object.keys(ASSET_STATUS).sort()).toEqual(["active", "decommissioned", "stale"]);
     expect(Object.keys(SEVERITY_STATUS).sort()).toEqual([...SEVERITIES].sort());
     expect(Object.keys(VULN_LIFECYCLE_STATUS).sort()).toEqual([...VULN_STATES].sort());
@@ -92,6 +106,7 @@ describe("status maps", () => {
       JOB_STATUS,
       AGENT_STATUS,
       TENANT_STATUS,
+      TENANT_DELETION_STEP_STATUS,
       ASSET_STATUS,
       SEVERITY_STATUS,
       VULN_LIFECYCLE_STATUS,
