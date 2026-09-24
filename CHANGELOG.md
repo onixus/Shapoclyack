@@ -6,6 +6,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Postgres row-level security behind every tenant predicate
+  ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
+  isolation in the database was the `WHERE tenant_id` of each query and nothing
+  else. Migration `0067_tenant_rls` puts a restrictive policy on every table
+  with a `tenant_id` (49 today) that applies to one new NOLOGIN role,
+  `shapoclyack_tenant`; every transaction of a tenant-scoped request — a console
+  user's, a **service token's** (pinned at authentication, so a `require_role`
+  route it reaches is held to its tenant too) or a **sensor's** — switches to
+  that role with `SET LOCAL` and names its tenant, so a query that forgot its
+  predicate reads only that tenant's rows and cannot write another's. Applied
+  per transaction, not per session, and transaction-local, so nothing survives a
+  commit or reaches the next user of a pooled connection. A role rather than a
+  bypass flag because the shipped manifests connect as a superuser, which
+  bypasses row security — this works on them unchanged. Workers, CLI tools,
+  authentication and platform-admin requests keep the connecting role and see
+  what they saw; a request that touches a tenant table before any guard said
+  whose it is fails loudly. `OCTO_TENANT_RLS=enforce` is the default and refuses
+  to start on a database that cannot enforce it; `off` is the kill switch (a
+  restart, no migration rollback). The migration needs `CREATEROLE`, which the
+  stock `octo` and managed-service master users have; the grants for split
+  roles, the diagnostics and the reasoning are in
+  [docs/tenant-isolation.md](docs/tenant-isolation.md). A new
+  `tests/test_route_tenant_guards.py` fails for any route with neither a tenant
+  guard nor a reviewed, reasoned allowlist entry; a later migration that adds a
+  tenant table without its policy fails `tests/test_tenant_rls.py`.
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.

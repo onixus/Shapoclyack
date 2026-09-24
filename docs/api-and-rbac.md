@@ -1678,6 +1678,17 @@ curl http://localhost:8080/openapi.json
 - Do not accept a tenant identifier from a client without server-side
   authorization against the principal.
 
+Behind these rules the database holds a second line
+([#311](https://github.com/onixus/Shapoclyack/issues/311)): every transaction of
+a tenant-scoped request — console user, service token or sensor — runs as the
+`shapoclyack_tenant` role with its tenant named, and Postgres row-level security
+drops every other tenant's rows from what it reads and refuses them in what it
+writes, so a query that forgot its `WHERE tenant_id` fails safe. Platform-admin
+requests, authentication and background workers are not narrowed. Every route
+must have a tenant guard or a reviewed entry in
+`tests/test_route_tenant_guards.py`. Design, rollout (`OCTO_TENANT_RLS`) and
+diagnostics: [tenant-isolation.md](tenant-isolation.md).
+
 ## Console accounts
 
 Accounts live in the Postgres `users` table (migration `0013`). Passwords are
