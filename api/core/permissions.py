@@ -105,6 +105,15 @@ TENANT_QUOTA_READ = "tenant.quota.read"
 PLATFORM_QUOTA_MANAGE = "platform.quota.manage"
 #: Create tenants (``POST /api/tenants``).
 PLATFORM_TENANT_MANAGE = "platform.tenant.manage"
+#: Suspend and resume a tenant, and request, cancel, approve and retry its
+#: deletion (``/api/tenants/{tenant_id}/suspend`` and ``…/deletion``, #325).
+#: Its own permission rather than ``platform.tenant.manage``: creating a
+#: customer and destroying one are different acts, and an installation that
+#: hands out the first to an onboarding role should not have handed out the
+#: second with it. Platform-only — a tenant admin who could suspend their own
+#: tenant could lock its other admins out, and one who could delete it would
+#: be deciding what the platform keeps.
+PLATFORM_TENANT_LIFECYCLE = "platform.tenant.lifecycle"
 #: See installation-wide counters that span tenants — the tenant and agent
 #: totals in ``GET /api/system``, which told a single-tenant viewer how many
 #: other customers this installation has.
@@ -151,6 +160,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_QUOTA_READ: "Read the tenant's quota",
     PLATFORM_QUOTA_MANAGE: "Set any tenant's quota",
     PLATFORM_TENANT_MANAGE: "Create tenants",
+    PLATFORM_TENANT_LIFECYCLE: "Suspend, resume and delete tenants",
     PLATFORM_FLEET_READ: "Read installation-wide counters across tenants",
     VULNERABILITY_EXCEPTION_APPROVE: "Approve an accepted risk on a finding",
     TENANT_RETENTION_READ: "Read the tenant's data retention policy and legal hold",

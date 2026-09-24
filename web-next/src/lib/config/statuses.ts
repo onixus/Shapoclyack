@@ -96,6 +96,10 @@ export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   suspended: { label: "suspended", variant: "destructive", className: DANGER },
+  // The deletion's two halves (#325): refused like a suspension, and on its
+  // way out.
+  pending_deletion: { label: "pending deletion", variant: "destructive", className: DANGER },
+  deleting: { label: "deleting", variant: "destructive", className: DANGER },
 };
 
 /** An allow/deny entry of a tenant's approved scanning scope (#226). Deny is

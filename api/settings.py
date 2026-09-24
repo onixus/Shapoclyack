@@ -575,6 +575,25 @@ class Settings:
     # where the console can write it is not one. Malformed JSON refuses to
     # start rather than falling back: a typo must not quietly lower a floor.
     retention_bounds: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Tenant lifecycle (#325). A deletion request suspends the tenant at once,
+    # and its purge cannot be approved until this many days later: inside the
+    # grace period the request can be cancelled and nothing has been lost. 0
+    # lets the purge be approved at once, which is a decision an installation
+    # writes down here rather than a default.
+    tenant_deletion_grace_days: int = 7
+    # Two people for the purge, #348's rule: whoever approves it may not be
+    # whoever requested the deletion. On by default; an installation with one
+    # platform admin turns it off here, where the choice is visible in its
+    # configuration rather than made in the console.
+    tenant_deletion_two_person: bool = True
+    # The purge worker (api/services/tenant_purge). Started in every replica:
+    # a deletion is claimed with FOR UPDATE SKIP LOCKED and held on a lease.
+    tenant_purge_enabled: bool = True
+    tenant_purge_interval_seconds: int = 30
+    # Rows per DELETE in the Postgres steps. Small enough that no batch holds
+    # its locks for long, large enough that a tenant of a million findings is
+    # a thousand statements rather than a million.
+    tenant_purge_batch_size: int = 1000
 
     # Where scan artifacts live (#336). "local" is the filesystem this process
     # can see -- the behaviour every release before this one had, and still the
@@ -1840,6 +1859,21 @@ def load_settings() -> Settings:
             60, int(os.environ.get("OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS", "21600"))
         ),
         retention_bounds=_retention_bounds(),
+        tenant_deletion_grace_days=max(
+            0, int(os.environ.get("OCTO_TENANT_DELETION_GRACE_DAYS", "7"))
+        ),
+        tenant_deletion_two_person=os.environ.get(
+            "OCTO_TENANT_DELETION_TWO_PERSON", "true"
+        ).lower()
+        in {"1", "true", "yes"},
+        tenant_purge_enabled=os.environ.get("OCTO_TENANT_PURGE_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        tenant_purge_interval_seconds=max(
+            5, int(os.environ.get("OCTO_TENANT_PURGE_INTERVAL_SECONDS", "30"))
+        ),
+        tenant_purge_batch_size=max(
+            1, int(os.environ.get("OCTO_TENANT_PURGE_BATCH_SIZE", "1000"))
+        ),
         artifact_backend=os.environ.get("OCTO_ARTIFACT_BACKEND", "local").strip().lower()
         or "local",
         artifact_s3_bucket=os.environ.get("OCTO_ARTIFACT_S3_BUCKET", "").strip(),

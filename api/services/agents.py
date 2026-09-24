@@ -443,6 +443,22 @@ def check_credential(
                     f"The provisioning key behind this agent token is {state}; "
                     "re-provision the agent with a current key"
                 )
+        # The tenant itself, on every request (#325). A suspension revokes the
+        # tenant's keys by default, which the check above already catches, but
+        # it may be asked to keep them for the resume — and a token minted
+        # before the suspension is good for up to its own ``exp`` either way.
+        # 401 like a revoked key rather than 403: the agent's answer to a 401
+        # is to re-exchange its key, which the exchange refuses for a tenant
+        # that is not active, and the agent's backoff on *that* is what keeps a
+        # suspended fleet from polling at full rate (agent/worker.py).
+        tenant_status = session.execute(
+            select(models.Tenant.status).where(models.Tenant.tenant_id == tenant_id)
+        ).scalar_one_or_none()
+        if tenant_status is not None and tenant_status != tenants_service.STATUS_ACTIVE:
+            raise AgentCredentialRevoked(
+                f"Tenant {tenant_id} is {tenant_status}; its agents are refused "
+                "until a platform admin resumes it"
+            )
         if not agent_id:
             return None
         row = session.get(models.Agent, agent_id)

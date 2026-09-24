@@ -29,6 +29,16 @@ from api.settings import Settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 DEFAULT_TENANT_ID = "default"
 
+# The lifecycle a tenant moves through (#325; api/services/tenant_lifecycle.py).
+# Only ``active`` passes any gate: :func:`check_active` refuses the other three
+# alike, so a tenant waiting out its deletion grace period, or being purged, is
+# at least as closed as a suspended one.
+STATUS_ACTIVE = "active"
+STATUS_SUSPENDED = "suspended"
+STATUS_PENDING_DELETION = "pending_deletion"
+STATUS_DELETING = "deleting"
+STATUSES = (STATUS_ACTIVE, STATUS_SUSPENDED, STATUS_PENDING_DELETION, STATUS_DELETING)
+
 # See _validate_tenant_id: the id doubles as a NATS subject token.
 _TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _RESERVED_TENANT_PREFIX = "h_"
@@ -208,6 +218,11 @@ def reset_for_tests() -> None:
         # a hold one test left would make the next line fail for every test
         # after it.
         session.query(models.TenantLegalHold).delete()
+        # The deletion journal has no foreign key to ``tenants`` on purpose (it
+        # outlives them, #325), so nothing above empties it, and a tombstone
+        # one test left would refuse the next test's tenant of the same id.
+        session.query(models.TenantDeletionStep).delete()
+        session.query(models.TenantDeletion).delete()
         session.query(models.Tenant).delete()
 
 
@@ -225,6 +240,20 @@ def get_tenant(tenant_id: str) -> dict[str, Any] | None:
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Tenant, tenant_id)
         return _tenant_to_dict(row) if row else None
+
+
+def active_tenant_ids():
+    """``SELECT tenant_id FROM tenants WHERE status = 'active'``, to filter by (#325).
+
+    For the background workers that act *for* a tenant without a request
+    behind them — dispatching its schedules, paging its on-call, delivering its
+    webhooks, polling its tracker. Suspending a customer has to stop those as
+    well as its people and its agents, and a tenant being purged must not have
+    rows written for it while its tables are emptied. A subquery rather than a
+    list so the filter is one statement, evaluated at the moment the worker
+    reads its work.
+    """
+    return select(models.Tenant.tenant_id).where(models.Tenant.status == STATUS_ACTIVE)
 
 
 def check_active(tenant_id: str, status: str | None) -> None:
@@ -246,7 +275,7 @@ def check_active(tenant_id: str, status: str | None) -> None:
     otherwise stop serving. Whether a named tenant exists is the route's 404 to
     raise, not this function's 403.
     """
-    if status is not None and status != "active":
+    if status is not None and status != STATUS_ACTIVE:
         raise PermissionError(f"Tenant {tenant_id} is {status}")
 
 
@@ -293,7 +322,22 @@ def create_tenant(*, name: str, tenant_id: str | None = None) -> dict[str, Any]:
     with get_session(settings.postgres_url) as session:
         if session.get(models.Tenant, tid) is not None:
             raise ValueError(f"tenant_id already exists: {tid}")
-        row = models.Tenant(tenant_id=tid, name=name, status="active", created_at=_now())
+        # An id a deleted tenant held is never handed out again (#325). The
+        # deletion journal is the list an operator re-applies after restoring a
+        # backup, by id: a new customer under the old id would be deleted by
+        # that re-application, and would inherit whatever of the old one a
+        # store still held under the id (a JetStream subject, a bucket prefix).
+        reused = session.execute(
+            select(models.TenantDeletion.deletion_id)
+            .where(models.TenantDeletion.tenant_id == tid)
+            .limit(1)
+        ).scalar_one_or_none()
+        if reused is not None:
+            raise ValueError(
+                f"tenant_id {tid} belonged to a tenant that was deleted or is being "
+                "deleted, and is not reused"
+            )
+        row = models.Tenant(tenant_id=tid, name=name, status=STATUS_ACTIVE, created_at=_now())
         session.add(row)
         session.flush()
         return _tenant_to_dict(row)
@@ -308,7 +352,7 @@ def create_provisioning_key(
         tenant = session.get(models.Tenant, tenant_id)
         if tenant is None:
             raise LookupError("tenant not found")
-        if tenant.status != "active":
+        if tenant.status != STATUS_ACTIVE:
             raise ValueError("tenant is not active")
         key_id = f"pk_{uuid.uuid4().hex[:16]}"
         plaintext = f"octo-pk-{secrets.token_urlsafe(32)}"
@@ -432,7 +476,7 @@ def resolve_provisioning_key(plaintext: str) -> dict[str, Any] | None:
                 # guessed key learns nothing about which half was wrong.
                 return None
             tenant = session.get(models.Tenant, row.tenant_id)
-            if tenant is None or tenant.status != "active":
+            if tenant is None or tenant.status != STATUS_ACTIVE:
                 return None
             row.last_used_at = _now()
             session.flush()

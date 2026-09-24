@@ -178,6 +178,21 @@ ACTION_RUN_PUBLICATION_DISCARD = "run_publication.discard"
 ACTION_RETENTION_POLICY_UPDATE = "retention_policy.update"
 ACTION_LEGAL_HOLD_PLACE = "legal_hold.place"
 ACTION_LEGAL_HOLD_RELEASE = "legal_hold.release"
+# The tenant lifecycle (#325). Platform-level rows, like the legal hold's: the
+# reason a customer was suspended or deleted is the platform's record, not
+# something the tenant's own admin reads in their trail — and a deleted
+# tenant's admin has no trail left to read. One action per decision, and three
+# the platform writes itself: the purge finishing, a store failing for the first
+# time, and a legal hold stopping it half way.
+ACTION_TENANT_SUSPEND = "tenant.suspend"
+ACTION_TENANT_RESUME = "tenant.resume"
+ACTION_TENANT_DELETE_REQUEST = "tenant.delete.request"
+ACTION_TENANT_DELETE_CANCEL = "tenant.delete.cancel"
+ACTION_TENANT_DELETE_APPROVE = "tenant.delete.approve"
+ACTION_TENANT_DELETE_RETRY = "tenant.delete.retry"
+ACTION_TENANT_DELETE_FAIL = "tenant.delete.fail"
+ACTION_TENANT_DELETE_BLOCK = "tenant.delete.block"
+ACTION_TENANT_DELETE_COMPLETE = "tenant.delete.complete"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"
