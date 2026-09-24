@@ -39,7 +39,7 @@ ARG NAABU_VERSION=v2.6.1
 #                      resolution); nuclei
 #   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
 #                      verification bypass); nuclei
-#   grpc     v1.83.1   CVE-2026-84304; nuclei
+#   grpc     v1.83.2   CVE-2026-84304, CVE-2026-84445 (DoS); nuclei
 #   utls     v1.8.2    CVE-2026-27017; dnsx
 #
 # A pin must be >= what every tool already requires: `go get` refuses to
@@ -50,7 +50,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1 github.com/refraction-networking/utls@v1.8.2"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one
@@ -137,7 +137,7 @@ RUN npm run build
 
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-aio" \

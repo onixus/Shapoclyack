@@ -36,7 +36,7 @@ ARG NAABU_VERSION=v2.6.1
 #                      resolution); nuclei
 #   x/mod    v0.40.0   CVE-2026-56864, CVE-2026-56865 (GOSUMDB / tlog
 #                      verification bypass); nuclei
-#   grpc     v1.83.1   CVE-2026-84304; nuclei
+#   grpc     v1.83.2   CVE-2026-84304, CVE-2026-84445 (DoS); nuclei
 #   utls     v1.8.2    CVE-2026-27017; dnsx
 #
 # A pin must be >= what every tool already requires: `go get` refuses to
@@ -47,7 +47,7 @@ ARG NAABU_VERSION=v2.6.1
 # finding: a pin the binary does not link in costs nothing, and a tool that
 # grows the dependency later inherits the fixed version rather than a fresh
 # advisory.
-ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.1 github.com/refraction-networking/utls@v1.8.2"
+ARG GO_SECURITY_PINS="golang.org/x/crypto@v0.56.0 github.com/go-git/go-git/v5@v5.19.2 golang.org/x/mod@v0.40.0 google.golang.org/grpc@v1.83.2 github.com/refraction-networking/utls@v1.8.2"
 
 # One throwaway module per tool, not one shared module: a shared module would
 # resolve a single dependency graph across all three and silently upgrade one
@@ -136,12 +136,19 @@ RUN --mount=type=secret,id=github_token,required=false \
 # so every Debian security update since it was taken is a finding the scan
 # reports against us. Bumping it to the 3.12-slim of 2026-09-07 cleared every
 # fixable HIGH (30) and all but five fixable MEDIUM in the OS layer.
-# The three CRITICALs in perl-base (CVE-2026-13221, CVE-2026-42496,
-# CVE-2026-8376) are NOT among them: Debian ships no fixed perl and apt offers
-# no candidate above 5.40.1-6, and perl-base is Essential so it cannot be
-# removed. They survive a base bump and are excluded from the gate by
-# --ignore-unfixed, not by an exception. Revisit when Debian publishes a fix.
-FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+# The 3.12-slim of 2026-09-19 clears the next batch: gzip (CVE-2026-41992),
+# pcre2 (CVE-2026-86145/-89157/-89161), sqlite (CVE-2026-11822/-11824) and the
+# three perl-base CRITICALs (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376),
+# which Debian has since fixed in 5.40.1-6+deb13u1.
+# What that base still reports at HIGH has no Debian fix at all: util-linux
+# (CVE-2026-76642, -78408/-78409/-78410, across bsdutils, mount, login and the
+# lib* it builds), ncurses (CVE-2025-69720), acl (CVE-2026-54369), systemd
+# (CVE-2026-16742) and perl's fix_deferred CVE-2026-9538. util-linux, login
+# and perl-base are Essential, and python's _uuid links libuuid1, so none of
+# them can be removed either. They survive a base bump and stay out of the
+# gate by --ignore-unfixed, not by an exception. Revisit when Debian
+# publishes a fix.
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-scanner" \
@@ -246,6 +253,12 @@ COPY requirements.txt /app/requirements.txt
 # five MEDIUM and one LOW advisory that the scan reports against our image.
 # Pinned rather than left as --upgrade so the build stays reproducible; raise
 # it deliberately, the same way the base digest above is refreshed.
+# 26.2.1 is the newest pip and still vendors msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) and setuptools 70.3.0 (as
+# pkg_resources; CVE-2025-47273), both read from pip/_vendor/vendor.txt.
+# Neither is ours to bump, and pip cannot be dropped from the image while the
+# Smoke stage installs pytest with it. Raise PIP_VERSION once a release
+# vendors fixed copies.
 ARG PIP_VERSION=26.2.1
 RUN set -eux; \
     pip install --no-cache-dir "pip==${PIP_VERSION}"; \

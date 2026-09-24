@@ -50,7 +50,12 @@ import type {
   Vulnerability,
 } from "@/lib/api";
 import { TICKET_SYSTEMS } from "@/lib/remediation";
-import { SEVERITY_STATUS, VULN_LIFECYCLE_STATUS } from "@/lib/config/statuses";
+import {
+  RETRO_MATCH_CONFIDENCE,
+  SEVERITY_STATUS,
+  VULN_LIFECYCLE_STATUS,
+  VULN_SOURCE_STATUS,
+} from "@/lib/config/statuses";
 import { normalizeSeverity, runDetailHref } from "@/lib/run-data";
 import { useT } from "@/lib/i18n";
 import {
@@ -221,6 +226,12 @@ function VulnerabilityDetailInner() {
               {/* The suppression, not the verdict: a lapsed verdict leaves the
                   closure reason in place but stops holding the finding down, and
                   the difference is the whole point of the expiry. */}
+              {vuln.source === "retro_match" ? (
+                <StatusBadge value={vuln.source} map={VULN_SOURCE_STATUS} />
+              ) : null}
+              {vuln.source === "retro_match" && vuln.match_confidence ? (
+                <StatusBadge value={vuln.match_confidence} map={RETRO_MATCH_CONFIDENCE} />
+              ) : null}
               {vuln.fp_suppressed ? (
                 <Badge className="bg-amber-500/20 text-amber-600 dark:text-amber-300 border-amber-500/40 flex items-center gap-1 text-xs">
                   <EyeOff className="h-3 w-3" />
@@ -284,12 +295,16 @@ function VulnerabilityDetailInner() {
                 value={
                   vuln.source === "endpoint_software"
                     ? t("vuln.source.endpointSoftware")
-                    : t("vuln.source.scan")
+                    : vuln.source === "retro_match"
+                      ? t("vuln.source.retroMatch")
+                      : t("vuln.source.scan")
                 }
                 hint={
                   vuln.source === "endpoint_software"
                     ? t("vuln.software.noVerify")
-                    : undefined
+                    : vuln.source === "retro_match"
+                      ? t("vuln.retro.noVerify")
+                      : undefined
                 }
               />
               {/* A software finding has no port by construction — its locator
@@ -386,6 +401,8 @@ function VulnerabilityDetailInner() {
             </dl>
           </section>
 
+          {vuln.source === "retro_match" ? <RetroEvidenceCard vuln={vuln} /> : null}
+
           <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.evidence")}</h2>
             {observation?.risk_explanation ? (
@@ -453,6 +470,100 @@ function Field({
         {value}
       </dd>
     </div>
+  );
+}
+
+/** What the retro matcher saw, so the claim can be checked by hand: the
+ * fingerprint, the CPE it was filed under, the NVD window it fell into, and —
+ * when a distribution was visible — the vendor's own advisory. */
+function RetroEvidenceCard({ vuln }: { vuln: TrackedVulnerability }) {
+  const t = useT();
+  const evidence = vuln.match_evidence ?? {};
+  const advisory = evidence.advisory ?? null;
+  const product = [evidence.product, evidence.version].filter(Boolean).join(" ");
+  const confidence = vuln.match_confidence;
+  const via = evidence.via;
+  const distro = [evidence.distro, evidence.distro_release, evidence.distro_revision]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <section
+      className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur"
+      data-testid="retro-evidence"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold text-foreground">{t("vuln.retro.evidence")}</h2>
+        {confidence ? <StatusBadge value={confidence} map={RETRO_MATCH_CONFIDENCE} /> : null}
+      </div>
+      {confidence === "vendor_advisory" || confidence === "version_range" ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {t(
+            confidence === "vendor_advisory"
+              ? "vuln.retro.confidenceHint.vendor_advisory"
+              : "vuln.retro.confidenceHint.version_range",
+          )}
+        </p>
+      ) : null}
+      <dl className="mt-4 grid gap-4 sm:grid-cols-2 text-xs">
+        <Field
+          label={t("vuln.retro.productVersion")}
+          value={
+            <>
+              <span className="font-mono">{product || "—"}</span>
+              {evidence.upstream_version && evidence.upstream_version !== evidence.version ? (
+                <span className="block text-[11px] text-muted-foreground">
+                  {t("vuln.retro.upstream", { version: evidence.upstream_version })}
+                </span>
+              ) : null}
+            </>
+          }
+        />
+        <Field label={t("vuln.retro.cpe")} value={evidence.cpe || "—"} mono />
+        <Field label={t("vuln.retro.range")} value={evidence.range || "—"} mono />
+        <Field label={t("vuln.retro.feedDate")} value={evidence.feed_date || "—"} />
+        {via === "cpe" || via === "product_table" || via === "banner" ? (
+          <Field
+            label={t("vuln.retro.via")}
+            value={t(
+              via === "cpe"
+                ? "vuln.retro.via.cpe"
+                : via === "product_table"
+                  ? "vuln.retro.via.product_table"
+                  : "vuln.retro.via.banner",
+            )}
+          />
+        ) : null}
+        <Field label={t("vuln.retro.dataset")} value={evidence.dataset || "—"} mono />
+        {distro ? <Field label={t("vuln.retro.distro")} value={distro} mono /> : null}
+        {advisory?.advisory_id ? (
+          <Field
+            label={t("vuln.retro.advisory")}
+            value={
+              <>
+                <span className="font-mono">{advisory.advisory_id}</span>
+                {advisory.provider ? (
+                  <span className="block text-[11px] text-muted-foreground">
+                    {advisory.provider}
+                    {advisory.feed_date ? ` · ${advisory.feed_date}` : ""}
+                  </span>
+                ) : null}
+              </>
+            }
+          />
+        ) : null}
+        {advisory?.advisory_id ? (
+          <Field
+            label={t("vuln.retro.fixedIn")}
+            value={advisory.fixed_version || t("vuln.retro.noFix")}
+            mono={Boolean(advisory.fixed_version)}
+          />
+        ) : null}
+        {advisory?.installed_version ? (
+          <Field label={t("vuln.retro.installed")} value={advisory.installed_version} mono />
+        ) : null}
+      </dl>
+    </section>
   );
 }
 
@@ -538,6 +649,14 @@ function TransitionCard({ vuln }: { vuln: TrackedVulnerability }) {
           <p className="text-[11px] text-muted-foreground">
             {t("vuln.software.lastSnapshot")}: {formatWhen(vuln.last_seen_at)}
           </p>
+        </div>
+      ) : vuln.source === "retro_match" ? (
+        // The same trap from the other side: the API refuses to dispatch a
+        // verification for an inferred finding, because a re-scan whose CVE
+        // checks do not know this CVE would "verify" it by silence.
+        <div className="border-t border-border pt-3 space-y-1">
+          <h3 className="text-xs font-semibold text-foreground">{t("ui.automatedVerification")}</h3>
+          <p className="text-[11px] text-muted-foreground">{t("vuln.retro.noVerify")}</p>
         </div>
       ) : (vuln.state === "FIXING" || vuln.state === "VERIFYING") ? (
         <div className="border-t border-border pt-3 space-y-2">

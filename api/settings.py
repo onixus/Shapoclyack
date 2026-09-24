@@ -535,6 +535,20 @@ class Settings:
     # published fix" rule. Empty means no floor. Raise it on an installation
     # whose SLA dashboard is drowning in low-severity backports.
     software_finding_min_severity: str = ""
+    # Retro CVE matching (docs/retro-cve-matching.md): stored service
+    # fingerprints re-matched against the offline NVD range dataset whenever
+    # the dataset or a fingerprint changes. The interval is a ceiling on how
+    # long a new dataset waits to be applied, not a scan cadence.
+    retro_match_enabled: bool = True
+    retro_match_interval_seconds: int = 900
+    retro_match_batch_size: int = 200
+    retro_match_tick_budget_seconds: int = 60
+    # Individual new_cve events per tenant per tick; the rest of the tick's new
+    # findings are announced as one aggregate event. See retro_findings.py.
+    retro_match_max_events: int = 50
+    # A listener not observed for longer than this is not matched: a port that
+    # closed in spring must not page in autumn. 0 disables the cut-off.
+    retro_match_max_age_days: int = 90
     # P4.4: screenshot PNG retention. 0 disables the reaper (files stay until
     # the run directory is pruned). Default is short — these images can hold
     # personal data even after DOM redaction.
@@ -1747,6 +1761,19 @@ def load_settings() -> Settings:
         software_finding_min_severity=os.environ.get("OCTO_SOFTWARE_FINDING_MIN_SEVERITY", "")
         .strip()
         .lower(),
+        retro_match_enabled=os.environ.get("OCTO_RETRO_MATCH_ENABLED", "true").lower()
+        in {"1", "true", "yes"},
+        retro_match_interval_seconds=max(
+            10, int(os.environ.get("OCTO_RETRO_MATCH_INTERVAL_SECONDS", "900"))
+        ),
+        retro_match_batch_size=max(1, int(os.environ.get("OCTO_RETRO_MATCH_BATCH_SIZE", "200"))),
+        retro_match_tick_budget_seconds=max(
+            1, int(os.environ.get("OCTO_RETRO_MATCH_TICK_BUDGET_SECONDS", "60"))
+        ),
+        retro_match_max_events=max(0, int(os.environ.get("OCTO_RETRO_MATCH_MAX_EVENTS", "50"))),
+        retro_match_max_age_days=max(
+            0, int(os.environ.get("OCTO_RETRO_MATCH_MAX_AGE_DAYS", "90"))
+        ),
         screenshot_retention_enabled=os.environ.get("OCTO_SCREENSHOT_RETENTION_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         screenshot_retention_days=max(
@@ -1958,3 +1985,14 @@ def load_settings() -> Settings:
             )
 
     return settings
+
+
+if __name__ == "__main__":  # pragma: no cover - module entrypoint
+    from api.settings_cli import main as settings_cli_main
+
+    raise SystemExit(
+        settings_cli_main(
+            load_settings_fn=load_settings,
+            insecure_error_type=InsecureConfigurationError,
+        )
+    )

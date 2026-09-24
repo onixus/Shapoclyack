@@ -7,8 +7,10 @@ import {
   ASSET_DATA_CLASSIFICATION,
   ASSET_ENVIRONMENT,
   ASSET_EXPOSURE,
+  ASSET_SERVICE_MATCH_STATUS,
   ASSET_STATUS,
   JOB_STATUS,
+  RETRO_MATCH_CONFIDENCE,
   SEVERITY_STATUS,
   RISK_LEVEL_STATUS,
   SLA_STATUS,
@@ -64,7 +66,25 @@ describe("status maps", () => {
     );
     expect(Object.keys(ASSET_EXPOSURE).sort()).toEqual([...ASSET_EXPOSURE_LEVELS].sort());
     expect(Object.keys(ASSET_CONTEXT_SOURCE).sort()).toEqual(["ad", "cmdb", "operator", "other"]);
-    expect(Object.keys(VULN_SOURCE_STATUS).sort()).toEqual(["endpoint_software", "scan"]);
+    expect(Object.keys(VULN_SOURCE_STATUS).sort()).toEqual([
+      "endpoint_software",
+      "retro_match",
+      "scan",
+    ]);
+    // retro_match.CONFIDENCES and the statuses asset_services.to_dict reports
+    // (api/services/retro_match.py, retro_findings.py).
+    expect(Object.keys(RETRO_MATCH_CONFIDENCE).sort()).toEqual([
+      "backport_possible",
+      "vendor_advisory",
+      "version_range",
+    ]);
+    expect(Object.keys(ASSET_SERVICE_MATCH_STATUS).sort()).toEqual([
+      "matched",
+      "no_dataset",
+      "no_version",
+      "too_old",
+      "unknown_product",
+    ]);
   });
 
   it("give every entry a label and either a variant or a color class", () => {
@@ -82,6 +102,8 @@ describe("status maps", () => {
       ASSET_EXPOSURE,
       ASSET_CONTEXT_SOURCE,
       VULN_SOURCE_STATUS,
+      RETRO_MATCH_CONFIDENCE,
+      ASSET_SERVICE_MATCH_STATUS,
     ]) {
       for (const style of Object.values(map)) {
         expect(style.label).toBeTruthy();

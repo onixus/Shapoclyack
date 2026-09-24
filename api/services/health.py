@@ -33,14 +33,16 @@ accepts result uploads. Failing readiness on it therefore traded a degraded
 installation for an unavailable one, in every replica simultaneously, since
 they share one broker.
 
-What made that trade defensible is that a publish lost with the broker need not
-be lost for good: ``api/services/nats_outbox.py`` records a refused ingest
-message and republishes it when NATS returns, and the backlog it has not
-recovered is reported here as ``ingest_backlog``. That check is advisory on
-purpose and for the same reason as ClickHouse — a shared backlog that unreadied
-every replica would be the outage this change removed, wearing a different
-name. It degrades ``/api/health``, raises ``octo_nats_outbox_backlog`` and is
-the operator's signal that availability is ahead of analytics.
+What made that trade defensible is that a publication refused by the broker
+need not be lost for good: ``api/services/nats_outbox.py`` records both ingest
+messages and asset-event envelopes, then republishes them when NATS returns.
+The backlog it has not recovered is reported here as ``nats_outbox``. That
+check is advisory on purpose and for the same reason as ClickHouse — a shared
+backlog that unreadied every replica would be the outage this change removed,
+wearing a different name. It degrades ``/api/health`` and raises the
+kind-labelled ``octo_nats_outbox_backlog``: ``kind=ingest`` means the
+ClickHouse projection is behind, while ``kind=asset_event`` means webhook
+fan-out is behind.
 
 Object storage (#336) is checked on the same terms as ClickHouse, and for the
 same reason rather than a weaker one: every replica shares one bucket, so a
@@ -110,7 +112,7 @@ def check_readiness(settings: Settings) -> Readiness:
         # Reported next to the broker rather than instead of it: "NATS is down"
         # and "NATS was down and the analytics never caught up" are different
         # states, and the second one outlives the first.
-        checks["ingest_backlog"] = STATUS_ERROR if _backlogged(settings) else STATUS_OK
+        checks["nats_outbox"] = STATUS_ERROR if _backlogged(settings) else STATUS_OK
     if settings.clickhouse_url:
         checks["clickhouse"] = (
             STATUS_OK if clickhouse_client.ping(settings.clickhouse_url) else STATUS_ERROR

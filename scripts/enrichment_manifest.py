@@ -65,6 +65,12 @@ _JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
     # therefore below a single month: it catches a truncated document without
     # refusing an installation that deliberately fetched one month.
     "advisories_msrc": ("advisories/msrc-advisories.json", 5_000, False),
+    # NVD CPE ranges for retro CVE matching (docs/retro-cve-matching.md). The
+    # count is *products* (``entries`` is keyed by part:vendor:product), not
+    # statements: the full application corpus is tens of thousands of products
+    # and a few million statements. Not required, for the advisory datasets'
+    # reason: without it the retro matcher matches nothing, which is honest.
+    "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5_000, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no

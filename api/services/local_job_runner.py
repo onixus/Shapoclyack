@@ -160,6 +160,12 @@ def run_job(
                 run_id=str(run_id) if run_id else None,
                 job_id=job_id,
             )
+            run_completion.record_services_best_effort(
+                settings,
+                tenant_id=tenant_id,
+                run_id=str(run_id) if run_id else None,
+                job_id=job_id,
+            )
             run_completion.publish_asset_events_best_effort(
                 settings,
                 tenant_id=tenant_id,

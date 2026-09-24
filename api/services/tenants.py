@@ -170,7 +170,12 @@ def reset_for_tests() -> None:
         session.query(models.EndpointDevice).delete()
         session.query(models.AssetIdentifier).delete()
         session.query(models.AssetTag).delete()
+        # Would cascade with the asset (FK ON DELETE CASCADE, migration 0064);
+        # listed so a reader of this function sees every table it empties.
+        session.query(models.AssetService).delete()
+        session.query(models.AssetOs).delete()
         session.query(models.Asset).delete()
+        session.query(models.RetroMatchState).delete()
         # The IP<->FQDN correlation trail (P4.2) has no foreign key to either
         # assets or tenants, so it survived the truncation around it and, like
         # the config overrides, the whole pytest session. It is keyed
@@ -187,7 +192,7 @@ def reset_for_tests() -> None:
         session.query(models.WebhookDelivery).delete()
         # No FK to tenants, so nothing cascades into them: without these two
         # lines a test that uploads a result with OCTO_NATS_URL set leaves a
-        # row, and the next test to read /readyz gets an ``ingest_backlog`` or
+        # row, and the next test to read /readyz gets an ``nats_outbox`` or
         # ``run_publications`` error it never created — an order-dependent
         # flake, and one that also makes "is this run still owed a
         # publication?" answer about somebody else's run.
@@ -371,25 +376,29 @@ def revoke_provisioning_key(
         return revoked
 
 
-def provisioning_key_state(key_id: str) -> str:
-    """``active`` | ``revoked`` | ``expired`` | ``unknown`` for one key (#308).
+def provisioning_key_state_in_session(session: Any, key_id: str) -> str:
+    """Return one key's lifecycle using a caller-owned transaction.
 
-    Read on every authenticated agent request so a revoked or expired key stops
-    the JWTs already minted from it, rather than leaving them good for the
-    remainder of their two hours. One primary-key lookup, the same shape the
-    service-token path already pays.
+    Agent authentication needs the key and agent rows together. Taking
+    the session from the caller keeps those two primary-key reads under
+    one BEGIN/COMMIT pair instead of opening a nested transaction for
+    the key on every poll (#384).
     """
+    row = session.get(models.ProvisioningKey, key_id)
+    if row is None:
+        return "unknown"
+    if row.revoked_at is not None:
+        return "revoked"
+    if _is_expired(row):
+        return "expired"
+    return "active"
+
+
+def provisioning_key_state(key_id: str) -> str:
+    """``active`` | ``revoked`` | ``expired`` | ``unknown`` for one key (#308)."""
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.ProvisioningKey, key_id)
-        if row is None:
-            return "unknown"
-        if row.revoked_at is not None:
-            return "revoked"
-        if _is_expired(row):
-            return "expired"
-        return "active"
-
+        return provisioning_key_state_in_session(session, key_id)
 
 def resolve_provisioning_key(plaintext: str) -> dict[str, Any] | None:
     """Find the active key matching plaintext; update last_used_at.

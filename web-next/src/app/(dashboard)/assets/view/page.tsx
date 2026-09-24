@@ -33,6 +33,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EntityList } from "@/components/run/entity-list";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { AssetServicesPanel } from "@/components/asset/asset-services-panel";
 import { DevicePatchGapSection } from "@/components/endpoint/device-patch-gap-section";
 import { SoftwareCvePanel } from "@/components/endpoint/software-cve-panel";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
@@ -43,6 +44,7 @@ import {
   useEndpointDeviceChanges,
   useEndpointDevicesForAsset,
 } from "@/hooks/use-endpoint-inventory";
+import { useAssetServices } from "@/hooks/use-retro-match";
 import { useRunHosts, useRunPorts, useRuns, useRunVulns } from "@/hooks/use-runs";
 import { useAuthStore } from "@/lib/auth-store";
 import type {
@@ -142,6 +144,9 @@ function AssetDetailInner() {
   const device = devices[0] || null;
   const softwareQuery = useAssetSoftware(assetId || null, tenantId);
   const software = softwareQuery.data || [];
+  // The tab label's count; the panel reads the same cached query.
+  const servicesQuery = useAssetServices(assetId || null, tenantId);
+  const serviceCount = servicesQuery.data?.length ?? 0;
 
   if (!assetId) {
     return (
@@ -292,6 +297,9 @@ function AssetDetailInner() {
               <TabsTrigger value="findings" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 {t("asset.tab.findings", { count: trackedOpen })}
               </TabsTrigger>
+              <TabsTrigger value="services" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
+                {t("asset.tab.services", { count: serviceCount })}
+              </TabsTrigger>
               <TabsTrigger value="software" className="data-[state=active]:bg-muted data-[state=active]:text-sky-600 dark:text-sky-300">
                 {t("asset.tab.software", { count: software.length })}
               </TabsTrigger>
@@ -311,6 +319,12 @@ function AssetDetailInner() {
                 total={trackedOpen}
                 isLoading={trackedQuery.isLoading}
               />
+            </TabsContent>
+
+            {/* Stored listeners and the retro verdict on each: what the scans
+                fingerprinted here, re-checked against current CVE data. */}
+            <TabsContent value="services" className="space-y-3 pt-3">
+              <AssetServicesPanel assetId={assetId} tenantId={tenantId} />
             </TabsContent>
 
             <TabsContent value="software" className="space-y-3 pt-3">

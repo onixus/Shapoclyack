@@ -26,6 +26,11 @@ class ServiceRecord(BaseModel):
     source: str = "pulse"
     # Optional display name / hostname
     host: str = ""
+    # CPE names the prober attached to this service (nmap ``<cpe>``, 2.2 URI or
+    # 2.3 form). Optional so a services.json written before the field existed
+    # still validates; the retro CVE matcher (docs/retro-cve-matching.md)
+    # prefers these over its product-name table when present.
+    cpe: list[str] = Field(default_factory=list)
 
 
 class OsMatchRank(BaseModel):
@@ -123,6 +128,8 @@ def services_to_report_findings(services: list[ServiceRecord]) -> list[dict[str,
                 "version": s.version,
                 "hostname": s.host or "",
                 "source": s.source,
+                "banner": s.banner[:512] if s.banner else "",
+                "cpe": list(s.cpe),
             }
         )
     return out

@@ -280,3 +280,81 @@ describe("Accepted risk panel", () => {
     await waitFor(() => expect(clear).toHaveBeenCalledWith("vln_1"));
   });
 });
+
+// Inferred by the retro matcher from a stored OpenSSH banner on an Ubuntu host,
+// confirmed by the distribution's own advisory. Evidence in the shape
+// `match_fingerprint` writes (api/services/retro_match.py).
+const RETRO = vuln({
+  source: "retro_match",
+  cve: "CVE-2023-48795",
+  port: "22",
+  severity: "medium",
+  state: "FIXING",
+  match_confidence: "vendor_advisory",
+  match_evidence: {
+    product: "OpenSSH",
+    version: "8.9p1 Ubuntu-3ubuntu0.1",
+    upstream_version: "8.9p1",
+    cpe: "a:openbsd:openssh",
+    via: "cpe",
+    range: "< 9.6",
+    dataset: "2026-09-20:3f2a9c1b0d4e5f60",
+    feed_date: "2026-09-20",
+    distro: "ubuntu",
+    distro_release: "jammy",
+    distro_revision: "3ubuntu0.1",
+    advisory: {
+      provider: "ubuntu-usn",
+      advisory_id: "USN-6560-1",
+      release: "jammy",
+      state: "resolved",
+      fixed_version: "1:8.9p1-3ubuntu0.5",
+      installed_version: "1:8.9p1-3ubuntu0.1",
+      feed_date: "2026-09-19",
+    },
+  },
+});
+
+describe("Retro match finding", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });
+  });
+
+  it("shows the source, the confidence and the evidence behind the inference", async () => {
+    signIn({ role: "viewer" });
+    renderPage(RETRO);
+
+    const evidence = await screen.findByTestId("retro-evidence");
+    expect(screen.getByText("Retro CVE match")).toBeInTheDocument();
+    // Header and evidence card both carry the confidence.
+    expect(screen.getAllByText("vendor advisory").length).toBeGreaterThanOrEqual(2);
+    expect(evidence).toHaveTextContent("OpenSSH 8.9p1 Ubuntu-3ubuntu0.1");
+    expect(evidence).toHaveTextContent("compared as 8.9p1");
+    expect(evidence).toHaveTextContent("a:openbsd:openssh");
+    expect(evidence).toHaveTextContent("< 9.6");
+    expect(evidence).toHaveTextContent("2026-09-20");
+    expect(evidence).toHaveTextContent("ubuntu jammy 3ubuntu0.1");
+    expect(evidence).toHaveTextContent("USN-6560-1");
+    expect(evidence).toHaveTextContent("1:8.9p1-3ubuntu0.5");
+  });
+
+  it("does not offer a verification re-scan the API would refuse", async () => {
+    signIn({ role: "operator" });
+    renderPage(RETRO);
+
+    expect(
+      await screen.findByText(/a re-scan that stays silent about it would prove nothing/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Verify remediation/ })).toBeNull();
+  });
+
+  it("still offers it for a scan finding in the same state", async () => {
+    // The control for the test above: without it, a renamed button would pass.
+    signIn({ role: "operator" });
+    renderPage(vuln({ state: "FIXING" }));
+
+    expect(await screen.findByRole("button", { name: /Verify remediation/ })).toBeInTheDocument();
+    expect(screen.queryByTestId("retro-evidence")).toBeNull();
+  });
+});

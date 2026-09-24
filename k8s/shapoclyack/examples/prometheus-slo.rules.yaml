@@ -133,16 +133,12 @@ groups:
             more than 5 minutes. A stopped poller leaves a stale value rather
             than a rising one.
 
-      # The consumer lag above is only the half of freshness that reached the
-      # stream. Since NATS stopped deciding readiness, a run whose ingest
-      # publish the broker refused is held in nats_outbox instead, where the
-      # gauge above cannot see it — the message is not pending on a stream it
-      # never reached. /readyz and /api/health both answer 200 in that state by
-      # design, so without these rules "the analytics are a day behind" has no
-      # signal at all. max(), not sum(): every replica reports the same
-      # cluster-wide query. See docs/slo.md and docs/operations.md § NATS outbox.
+      # Consumer lag sees only messages that reached the stream. The outbox
+      # covers publishes NATS refused before that point and is split by kind:
+      # ingest delays ClickHouse, while asset_event delays webhook fan-out.
+      # max(), not sum(): every replica reports the same cluster-wide query.
       - alert: ShapoclyackNatsOutboxBacklog
-        expr: max(octo_nats_outbox_backlog{status="stale"}) > 0
+        expr: max(octo_nats_outbox_backlog{kind="ingest",status="stale"}) > 0
         for: 10m
         labels:
           severity: ticket
@@ -150,43 +146,50 @@ groups:
         annotations:
           summary: Ingest publications have been unrecovered past the alert window
           description: >-
-            Publications the broker refused have been waiting longer than
-            OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS. HTTP is healthy while the
-            analytical projection is behind, which is what the relaxed NATS
-            readiness check must not be allowed to hide. Drain per
+            kind=ingest publications the broker refused have been waiting longer
+            than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS. HTTP is healthy while
+            the ClickHouse projection is behind. Drain per docs/operations.md
+            § NATS outbox.
+
+      - alert: ShapoclyackNatsOutboxAssetEventsBacklog
+        expr: max(octo_nats_outbox_backlog{kind="asset_event",status="stale"}) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Asset-event publications have been unrecovered past the alert window
+          description: >-
+            kind=asset_event publications the broker refused have been waiting
+            longer than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS. Runs can keep
+            reaching ClickHouse, but webhook fan-out is delayed. Drain per
             docs/operations.md § NATS outbox.
 
       - alert: ShapoclyackNatsOutboxDead
-        expr: max(octo_nats_outbox_backlog{status="dead"}) > 0
+        expr: max by (kind) (octo_nats_outbox_backlog{status="dead"}) > 0
         for: 5m
         labels:
           severity: page
         annotations:
-          summary: Ingest publications have exhausted their retries
+          summary: NATS outbox {{ $labels.kind }} publications have exhausted their retries
           description: >-
-            An entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS (close to four hours
-            of retrying at the defaults) or was recorded with no replayable
-            body. Nothing retries it again: it needs an operator decision —
-            nats_outbox.requeue_dead, a re-scan, or discard_dead.
+            A {{ $labels.kind }} entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS or
+            was recorded with no replayable body. Nothing retries it again: it
+            needs an operator decision — nats_outbox.requeue_dead, a re-scan,
+            or discard_dead. kind=ingest blocks the ClickHouse projection;
+            kind=asset_event blocks the corresponding webhook fan-out.
 
       - alert: ShapoclyackNatsOutboxDropping
-        expr: sum(rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
+        expr: sum by (kind) (rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
         for: 5m
         labels:
           severity: ticket
         annotations:
-          summary: Refused ingest publications are being dropped, not recorded
+          summary: Refused {{ $labels.kind }} publications are being dropped, not recorded
           description: >-
-            OCTO_NATS_OUTBOX_ENABLED=false, so nothing durable is written when
-            the broker refuses a publish. This is not yet a lost run: the
-            publication itself then fails and retries
-            (OCTO_RUN_PUBLICATION_MAX_ATTEMPTS, a few minutes of backoff), and
-            a broker that blinked is covered by the second attempt. It becomes
-            a loss only for an outage that outlives those attempts, which
-            shows up as octo_run_publication_backlog{status="dead"}. Ticket,
-            not page:
-            the fix is turning the outbox back on, and it is not urgent by
-            itself.
+            OCTO_NATS_OUTBOX_ENABLED=false, so no durable row is written when
+            the broker refuses this publication. For ingest the owning run
+            publication still retries; asset events are covered separately by
+            ShapoclyackAssetEventsSkipped. Turn the outbox back on.
 
       # Asset events are the only source of the webhook fan-out, and unlike an
       # ingest message they used to have nowhere to wait. They go to the outbox

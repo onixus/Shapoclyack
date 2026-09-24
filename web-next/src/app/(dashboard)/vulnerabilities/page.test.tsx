@@ -81,6 +81,27 @@ const SOFTWARE = vuln({
   port: null,
 });
 
+// A finding the retro matcher inferred from a stored OpenSSH 7.4 banner, in
+// the shape `retro_findings` writes (tests/test_retro_findings.py).
+const RETRO = vuln({
+  vuln_id: "vln_retro",
+  source: "retro_match",
+  cve: "CVE-2023-48795",
+  port: "22",
+  severity: "medium",
+  match_confidence: "version_range",
+  match_evidence: {
+    product: "OpenSSH",
+    version: "7.4",
+    upstream_version: "7.4",
+    cpe: "a:openbsd:openssh",
+    via: "cpe",
+    range: "< 9.6",
+    dataset: "2026-09-20:3f2a9c1b0d4e5f60",
+    feed_date: "2026-09-20",
+  },
+});
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -108,6 +129,78 @@ describe("Vulnerability Center", () => {
       worst_breached_severity: null,
       generated_at: "2026-09-08T00:00:00Z",
     });
+    vi.spyOn(apiModule, "fetchRetroMatchStatus").mockResolvedValue({
+      enabled: true,
+      worker_running: true,
+      dataset: {
+        path: "scanner/data/nvd-cpe/nvd-cpe-ranges.json",
+        present: true,
+        source: "nvd-cve-api-2.0",
+        updated: "2026-09-20",
+        marker: "2026-09-20:3f2a9c1b0d4e5f60",
+        products: 1843,
+        statements: 52117,
+        error: null,
+      },
+      dataset_version: "2026-09-20:3f2a9c1b0d4e5f60+adv:9c1d2e3f",
+      services_total: 3,
+      services_pending: 0,
+      services_assessed: 2,
+      open_findings: { version_range: 1 },
+      possible_matches: 5,
+      last_run_at: "2026-09-23T08:00:00Z",
+      last_dataset_version: "2026-09-20:3f2a9c1b0d4e5f60+adv:9c1d2e3f",
+      findings_created: 1,
+      events_published: 1,
+      events_summarised: 0,
+      last_stats: {},
+      refresh_requested_at: null,
+      refresh_requested_by: null,
+    });
+  });
+
+  it("badges a retro finding with its source and how sure the match is", async () => {
+    vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [RETRO],
+      total: 1,
+      offset: 0,
+      limit: 25,
+      has_more: false,
+    });
+    renderPage();
+
+    expect(await screen.findByText("CVE-2023-48795")).toBeInTheDocument();
+    expect(screen.getByText("retro match")).toBeInTheDocument();
+    // Twice: once on the row, once on the retro card's open-finding tally.
+    expect((await screen.findAllByText("NVD version range")).length).toBe(2);
+    expect(screen.getByText("port 22")).toBeInTheDocument();
+  });
+
+  it("does not badge a confidence on a scan finding", async () => {
+    vi.spyOn(apiModule, "fetchTrackedVulnerabilities").mockResolvedValue({
+      items: [vuln()],
+      total: 1,
+      offset: 0,
+      limit: 25,
+      has_more: false,
+    });
+    renderPage();
+
+    expect(await screen.findByText("port 443")).toBeInTheDocument();
+    // Only the retro card's tally shows it; the scan row has none.
+    await screen.findByTestId("retro-match-card");
+    expect(screen.getAllByText("NVD version range")).toHaveLength(1);
+  });
+
+  it("carries a ?source=retro_match deep link into the query", async () => {
+    searchParams = new URLSearchParams({ source: "retro_match" });
+    const fetchSpy = vi
+      .spyOn(apiModule, "fetchTrackedVulnerabilities")
+      .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 25, has_more: false });
+    renderPage();
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(fetchSpy.mock.calls[0][0]).toMatchObject({ source: "retro_match" });
   });
 
   it("shows an installed package where a software finding has no port", async () => {

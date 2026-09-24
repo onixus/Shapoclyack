@@ -118,6 +118,17 @@ def _parse_nmap_xml(nmap_dir: Path) -> tuple[list[dict], list[dict], list[dict]]
                         "service": (service.attrib.get("name", "unknown") if service is not None else "unknown"),
                         "product": (service.attrib.get("product", "") if service is not None else ""),
                         "version": (service.attrib.get("version", "") if service is not None else ""),
+                        # Kept for the retro CVE matcher (docs/retro-cve-matching.md):
+                        # extrainfo is where nmap puts the distribution hint
+                        # ("Ubuntu Linux; protocol 2.0"), and <cpe> is the
+                        # vendor:product it resolved. Both used to be dropped
+                        # here, which left nothing to re-match a run against.
+                        "extrainfo": (service.attrib.get("extrainfo", "") if service is not None else ""),
+                        "cpe": (
+                            [c.text.strip() for c in service.findall("cpe") if c.text and c.text.strip()]
+                            if service is not None
+                            else []
+                        ),
                     }
                 )
                 for script in port.findall("script"):

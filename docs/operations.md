@@ -389,9 +389,14 @@ and not the next is not a ceiling:
 * **The service-probe stage off** means nmap NSE, pulse *and nuclei*. Nuclei is
   the stage that sends HTTP payloads rather than counting SYN/ACKs — ~8.9k
   templates at whatever web interface an engineering station exposes — so a
-  fragile run turns it off entirely. For a tenant that is throttled rather than
-  silenced, `nuclei.rate_limit` is held to `per_host_rate` and
-  `nuclei.concurrency` to `max_host_concurrency`.
+  fragile run turns it off entirely. It also turns fingerprint HTTP requests
+  and browser screenshots off, and disables only the **direct-handshake
+  fallback** of TLS posture. TLS posture itself stays enabled so it may parse
+  certificate evidence already present in NSE/Pulse artifacts without opening
+  a new connection. For a tenant that is throttled rather than silenced,
+  `nuclei.rate_limit` is held to `per_host_rate` and every active secondary
+  pool (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
+  `screenshots.concurrency`) is held to `max_host_concurrency`.
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
@@ -408,6 +413,10 @@ and not the next is not a ceiling:
   never raise. A config that already spells one host at a time as
   `pulse.host_parallel: 0` keeps the 0 — the scanner passes it to pulse as
   `--host-first`, which is stricter than any number a policy could put there.
+  The TLS fallback, fingerprint and screenshot pools are endpoint workers rather
+  than batch workers, but the same ceiling applies to them: a fragile run never
+  has more than one active connection from any of those stages, and in fact
+  disables their active work as described above.
 * **The avoid-list of fieldbus ports** is every stage that puts a port on the
   wire, not only the port scan. The port scan gets `-exclude-ports`. Discovery's
   TCP probe step — which chooses a port list of its own, and which an
@@ -424,6 +433,31 @@ and not the next is not a ceiling:
   `exit 1` and an estate that reads as dead. This is what `ports.exclude_ports` says in
   `scanner/config/default.yaml`: ports no scan started from this config may
   touch.
+
+Every secondary stage that opens fresh connections to scanned hosts is
+registered in `SECONDARY_ACTIVE_STAGE_POLICIES` (`scanner/pipeline/scan_policy.py`)
+with its concurrency field and the switch that suppresses its active work, and
+runs through the guarded wrapper `_run_policy_controlled_secondary_stage`.
+Every other stage is listed in `NON_SECONDARY_ACTIVE_STAGES` with the reason it
+is not one: a primary stage held by policy fields of its own, a third-party or
+DNS source, or artifact-only work.
+
+The guarantee is a test, not the wrapper. `tests/test_scanner_scan_policy.py`
+parses `scanner/main.py`, collects the stage name of every `_run_stage` and
+guarded-wrapper call, and fails when a name is in neither registry, when a
+registered active stage bypasses the wrapper, or when a stage name is not a
+string literal it can check. Adding a stage therefore requires a written policy
+decision before CI goes green. The wrapper is the runtime backstop on top: it
+stops the run if it is handed a name with no contract, but it only sees names
+passed to it. Work run outside both wrappers is invisible to either check, so
+new network work belongs in a stage.
+
+Being outside the secondary registry is not the same as sending nothing to the
+target's infrastructure. Two such stages are bounded by count, not by the
+tenant policy: `dns_hygiene` with `axfr_probe` on (see
+[Active checks and target authorization](#active-checks-and-target-authorization)),
+and `mail_posture`, which fetches `https://mta-sts.<domain>/.well-known/mta-sts.txt`
+once per seed domain through the public-address-only HTTP client.
 
 **Budget hours, not minutes** — a `/24` of live hosts at 100 pps is a long scan, and the
 alternative it is measured against is not scanning the plant at all. If a
@@ -2431,16 +2465,16 @@ installation with a healthy broker has an empty table.
 
 What an operator sees:
 
-* `/readyz` and `/api/health` carry an `ingest_backlog` check next to `nats`.
-  It is `error` when something has been owed for longer than
+* `/readyz` and `/api/health` carry a `nats_outbox` check next to `nats`.
+  It is `error` when any kind has been owed for longer than
   `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` (default 300), or when any entry has
   gone `dead`. Both endpoints stay 200 — this degrades the installation, it
-  does not unready the replica.
-* `octo_nats_outbox_backlog{status="pending"|"stale"|"dead"}` — a cluster-wide
-  count, so aggregate with `max()`, not `sum()`. **This is the series to alert
-  on:** `stale` or `dead` above zero means HTTP is healthy while the analytical
-  projection is behind, which is exactly what relaxing the readiness check
-  could otherwise hide.
+  does not unready the replica. `kind=ingest` means the ClickHouse projection
+  is behind; `kind=asset_event` means webhook fan-out is behind.
+* `octo_nats_outbox_backlog{kind,status}` — a cluster-wide count, so aggregate
+  with `max by (kind, status)`, not `sum()`. `status="stale"` or `"dead"` above
+  zero identifies both the delayed downstream and whether the reconciler can
+  still recover it without an operator.
 * `octo_nats_outbox_total{kind,outcome}` — `recorded`, `republished`, `dead`,
   `superseded` (a recorded message a later attempt of the same publication
   delivered anyway, so the row was dropped instead of republished),
@@ -2504,10 +2538,14 @@ print(nats_outbox.backlog(settings))
 with get_session(settings.postgres_url) as session:
     for row in session.execute(
         select(
+            models.NatsOutboxEntry.kind,
             models.NatsOutboxEntry.status,
             func.count(),
             func.min(models.NatsOutboxEntry.created_at),
-        ).group_by(models.NatsOutboxEntry.status)
+        ).group_by(
+            models.NatsOutboxEntry.kind,
+            models.NatsOutboxEntry.status,
+        )
     ):
         print(row)
 "
@@ -2545,16 +2583,24 @@ Bounds worth knowing before an incident:
 * `dead` is the only status that needs a human, and it has exactly two exits:
   `requeue_dead` for entries that failed because the outage outlasted the
   retries, and `discard_dead` for entries an operator has decided against.
-  Until one of them is used, `ingest_backlog` stays `error` and
-  `octo_nats_outbox_backlog{status="dead"}` stays non-zero — the degraded
+  Until one of them is used, `nats_outbox` stays `error` and
+  `octo_nats_outbox_backlog{kind,status="dead"}` stays non-zero — the degraded
   signal does not expire on its own, by design.
-* Only ingest messages are recorded. A job offer is not (the job row is in
-  Postgres and a sensor claims over HTTP), and asset/audit events are not —
-  those are skipped and counted, see the matrix.
-* The table grows with the outage. Each entry holds one run archive, so size
-  the database accordingly, or accept the dead end: an installation that would
-  rather re-scan than keep the bodies sets `OCTO_NATS_OUTBOX_ENABLED=false`,
-  which makes a refused publish a logged loss again.
+* Ingest messages and asset-event envelopes are recorded. Job offers are
+  not (the job row is in Postgres and a sensor claims over HTTP), and audit
+  events are not — their database row is already durable.
+* A reconcile batch has two lanes: due `kind=ingest` rows take up to
+  `floor(batch/2)` slots, due asset events the rest (`ceil(batch/2)`), each
+  lane oldest first, and a lane with nothing due gives its slots to the other.
+  Whichever kind is older, both drain in every mixed batch: an asset-event
+  burst cannot put the next run's ClickHouse publish behind the whole burst,
+  and an ingest backlog cannot hold webhook fan-out (`asset.vulnerability.new`
+  included) behind itself. `OCTO_NATS_OUTBOX_BATCH_SIZE=1` cannot be split and
+  is plain FIFO across kinds — no priority for ingest, and no starvation of
+  either; use at least `2` if ingest should not queue behind asset events.
+* The table grows with the outage. Ingest entries hold a run archive; asset
+  events hold smaller envelopes. Size Postgres accordingly, or accept the dead
+  end: `OCTO_NATS_OUTBOX_ENABLED=false` makes refused publishes a logged loss.
 
 ### Per-tenant job stream
 
@@ -2633,6 +2679,72 @@ six replicas, `minAvailable: 1` would have permitted five simultaneous
 evictions. A single-replica install still has a moment of downtime during a
 drain; two or more replicas is the fix, not a different budget. The scheduler is
 separately protected by its PostgreSQL advisory-lock leadership mechanism.
+
+## Retro CVE matching
+
+What it is: [retro-cve-matching.md](retro-cve-matching.md). What an operator does:
+
+**After the upgrade that introduces it** (migration `0064`), once:
+
+```bash
+# In an API pod (same image, same environment):
+python3 scripts/backfill-asset-services.py
+```
+
+It reads the succeeded runs still inside `OCTO_RUN_RETENTION_DAYS` from the
+artifact store, oldest first, and records their listeners; `missing` counts runs
+already pruned. Safe to re-run, safe beside a live API, exit `1` only if some run
+could not be read (the log names it). The worker picks the rows up on its next
+tick.
+
+**To make it useful** — the committed dataset is a 23-CVE seed — take the
+opt-in and run the full harvest once, then let the daily CronJob merge
+increments:
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe   # or add the component
+
+# The full harvest, once, from a pod that mounts the enrichment volume
+# read-write — the enrichment-refresh CronJob's pod template is one (the API
+# pods mount it read-only):
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full \
+  -o /app/scanner/data/nvd-cpe/nvd-cpe-ranges.json
+```
+
+Outside Kubernetes run the same command against whatever `OCTO_NVD_CPE_DATABASE`
+points at.
+
+With the `shapoclyack-nvd` Secret the full harvest takes minutes; without it,
+hours (NVD's anonymous limit). Take the vendor advisory opt-in as well
+(`base/enrichment-advisories`): without real Debian/Ubuntu feeds most hits on
+Debian/Ubuntu banners stay `possible` and never become findings.
+
+**Expect a wave.** The first tick after a real dataset lands re-matches every
+listener and can create many findings at once. Webhook consumers get at most
+`OCTO_RETRO_MATCH_MAX_EVENTS` individual `asset.vulnerability.new` deliveries
+per tenant for that dataset version, then one aggregate
+(`data.aggregate: true`) per tick for the rest; the findings themselves are all
+in `GET /api/vulnerabilities?source=retro_match`. A matcher killed mid-wave
+(rolling update) loses no announcement: unannounced findings are published by
+the next tick, whichever replica leads it.
+
+**Watching it.** `GET /api/retro-match/status`: `dataset_version` (which file
+is being matched), `services_pending` (should drain to 0 within a few ticks of a
+refresh), `last_stats.errors` (listeners held off after an exception — each is
+retried with a backoff up to 6 h), `possible_matches` (hits waiting on a vendor
+answer). `nvd_cpe` on `GET /api/system` shows the file's age and whether it
+clears the floor.
+
+**Forcing a re-check** — after replacing the dataset by hand, or to re-derive
+verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset or
+advisory feed does this by itself; the button is for the cases the marker
+cannot see.
+
+**Rollback.** `0064` is expand-only. Rolling the image back leaves the tables
+unused and `retro_match` findings in the tracker as ordinary findings with an
+unfamiliar `source`; a downgrade of the schema drops the fingerprints (they are
+re-derivable by the backfill from runs still on disk) and the two
+`vulnerabilities` columns, not the findings.
 
 ## Enrichment data in a release build
 

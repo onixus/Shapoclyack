@@ -13,6 +13,7 @@ from api.schemas import (
     AssetContextEventInfo,
     AssetDetail,
     AssetInventorySummary,
+    AssetServiceInfo,
     AssetSummary,
     BulkActionReport,
     BulkAssetRequest,
@@ -20,6 +21,7 @@ from api.schemas import (
     Page,
     UpdateAssetRequest,
 )
+from api.services import asset_services as asset_services_service
 from api.services import assets as assets_service
 from api.services import audit as audit_service
 from api.services import bulk_actions
@@ -195,6 +197,20 @@ def get_asset_software(
     if assets_service.get_asset(settings, principal.tenant_id, asset_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return endpoint_inventory_service.list_software_for_asset(principal.tenant_id, asset_id)
+
+
+@router.get("/{asset_id}/services", response_model=list[AssetServiceInfo])
+def get_asset_services(
+    asset_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict]:
+    """Listeners scans fingerprinted on this asset, with the retro verdict on each."""
+    if not assets_service.asset_exists(settings, principal.tenant_id, asset_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    return asset_services_service.list_for_asset(
+        settings, tenant_id=principal.tenant_id, asset_id=asset_id
+    )
 
 
 @router.patch("/{asset_id}", response_model=AssetDetail)

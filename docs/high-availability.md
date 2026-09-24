@@ -299,7 +299,7 @@ every caller of it — `jobs._publish_job_offer`, `results_ingest`,
 | A sensor picking up work | **Works, slower** | `POST /api/agent/jobs/claim` is HTTP and takes the job under a row lock; JetStream only tells a sensor to claim *sooner*. A sensor with `OCTO_NATS_URL` set falls back to that claim every `NATS_FALLBACK_CLAIM_SECONDS` (60s, `agent/worker.py`), so with the broker gone dispatch latency is bounded by one minute rather than by the poll interval |
 | Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
 | Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |
-| The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The refused publish is written to `nats_outbox` by the last step of the run's publication (`run_publisher._publish_to_bus`) and republished when the broker returns. The run itself, its artifacts and its Postgres projections are published without waiting for that. The backlog is the `ingest_backlog` check and `octo_nats_outbox_backlog` |
+| The analytical (ClickHouse) projection of a new run | **Degrades — recovered** | The refused publish is written to `nats_outbox` by the last step of the run's publication (`run_publisher._publish_to_bus`) and republished when the broker returns. The run itself, its artifacts and its Postgres projections are published without waiting for that. The backlog is the `nats_outbox` check and `octo_nats_outbox_backlog` |
 | Asset lifecycle events, and the webhooks/notifications fed by them | **Degrades — recovered, out of order** | The envelopes the broker refused go to the same `nats_outbox` (`kind="asset_event"`) — from a scan's diff and from the operator's `decommissioned_host` alike — and are published when it returns, so the webhooks are late rather than missing. Late means *reordered*: a replayed event arrives after events published live after the outage, so a consumer that cares about the order of two events on one asset must sort by the envelope's `occurred_at`, which is stamped when the event is built, not when it is published. With `OCTO_NATS_OUTBOX_ENABLED=false` they are counted `octo_asset_events_published_total{outcome="skipped"}` and not sent later — `ShapoclyackAssetEventsSkipped` |
 | Audit events to a SIEM over `events.audit.>` | **Degrades — recovered by the other source** | The rows are committed and readable via `GET /api/audit`; the publish is skipped. `OCTO_AUDIT_SYSLOG_SOURCE=db` forwards without the broker at all |
 | Endpoint inventory submissions | **Works, event skipped** | The snapshot is stored; the `endpoint_inventory_accepted` event is fail-soft |
@@ -317,7 +317,7 @@ with the broker is lost for good, and availability then hides a permanent hole
 in analytics. That is what `nats_outbox` (migration `0059`) is for, and the two
 are a single decision — **do not put NATS back into `BLOCKING_CHECKS` without
 also removing the outbox, and do not remove the outbox while NATS is
-advisory.** The unrecovered backlog is reported as the `ingest_backlog` check
+advisory.** The unrecovered backlog is reported as the `nats_outbox` check
 on `/readyz` and `/api/health`, and as `octo_nats_outbox_backlog`; draining it
 is [operations.md § NATS outbox](operations.md#nats-outbox).
 

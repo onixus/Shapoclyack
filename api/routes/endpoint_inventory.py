@@ -12,6 +12,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
     status,
@@ -20,6 +21,7 @@ from fastapi import (
 from api.auth import (
     AgentPrincipal,
     Role,
+    cached_agent_info,
     TenantPrincipal,
     get_settings,
     require_agent,
@@ -63,6 +65,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 @router.post("/inventory", response_model=EndpointInventoryResponse)
 def submit_inventory(
     body: EndpointInventorySnapshotRequest,
+    request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
     response: Response,
 ) -> EndpointInventoryResponse:
@@ -76,8 +79,11 @@ def submit_inventory(
     # either (#308). It is the same refusal the job routes give, on purpose:
     # an operator who quarantines a host expects it to stop writing, not to
     # stop only the half of its traffic that carries a job id.
+    hit, agent = cached_agent_info(request, principal, body.agent_id)
+    if not hit:
+        agent = agents_service.get_agent(body.agent_id)
     try:
-        agents_service.require_active(body.agent_id)
+        agents_service.require_active_info(agent)
     except PermissionError as exc:
         metrics_service.ENDPOINT_SUBMISSIONS_TOTAL.labels("invalid").inc()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -488,6 +494,7 @@ def delete_agent_release(
 def download_agent_release(
     version: str,
     platform: str,
+    request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
 ) -> Response:
     """Hand the build to an agent that has been told to move to it.
@@ -497,7 +504,10 @@ def download_agent_release(
     could substitute the download would have had to substitute the heartbeat
     that named its digest.
     """
-    agents_service.require_active(principal.agent_id or "")
+    hit, agent = cached_agent_info(request, principal, principal.agent_id)
+    if not hit and principal.agent_id:
+        agent = agents_service.get_agent(principal.agent_id)
+    agents_service.require_active_info(agent)
     found = endpoint_agent_mgmt.get_release_bytes(version=version, platform=platform)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown build")

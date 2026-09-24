@@ -6,6 +6,50 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
+  used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
+  NSE), so a CVE published after the scan was invisible until the next one.
+  Every succeeded run now records each open listener's product, version, banner
+  and nmap CPE in `asset_services` (migration `0064`, expand-only;
+  `scripts/backfill-asset-services.py` reads the runs already on disk), and a
+  leader-locked worker re-matches them against an offline NVD CPE-range dataset
+  (`scanner/data/nvd-cpe/`, `OCTO_NVD_CPE_DATABASE`) whenever the dataset, a
+  vendor advisory feed or a fingerprint changes. Debian/Ubuntu builds — named
+  by the listener's banner (`OpenSSH_9.2p1 Debian-2+deb12u3`), or by the host:
+  another listener's banner, the scan's OS guess (new `asset_os`) — are checked
+  against the vendor advisories for backports, with the vendor's severity and
+  the endpoint matcher's tracking rules; hits a likely distribution build may
+  have backported (a Linux host of unknown distribution, RHEL, …) are recorded
+  as `possible` on the service and are not findings. Versions nmap itself
+  doubts (`3.X - 4.X`, `or later`, major-only CPEs) and OpenSSH for Windows are
+  not matched. Findings land in the tracker
+  with `source = retro_match`, `match_confidence` (`vendor_advisory` |
+  `version_range`) and `match_evidence`, under the scan path's own
+  `finding_key`, so a scan and the matcher never make two rows; retro never
+  closes or reopens a finding, and a retro finding cannot be machine-verified.
+  New findings are published as `new_cve` asset events (so
+  `asset.vulnerability.new` webhooks fire) at least once — the announcement is
+  recorded on the finding, so a killed worker's findings are announced by the
+  next tick — with at most `OCTO_RETRO_MATCH_MAX_EVENTS` individual events per
+  tenant per dataset version and one aggregate event per tick for the rest.
+  A CVE the matcher announced is not announced again by the scan's diff.
+  The matcher runs only when the *content* of the NVD or vendor datasets, or a
+  fingerprint, changes. The scan path's finding insert is now `INSERT … ON
+  CONFLICT DO NOTHING`, so a retro finding committed between a scan's read and
+  write no longer fails the whole run's fold. Merging two assets keeps both
+  assets' fingerprints. New routes `GET /api/retro-match/status`,
+  `POST /api/retro-match/refresh` (operator), `GET /api/assets/{id}/services`.
+  Opt-in refresh `scripts/fetch-nvd-cpe.py` (`OCTO_NVD_CPE_FETCH_ENABLED`,
+  full, or incremental from the file's `covered_until` so an outage leaves no
+  hole; a partial harvest is never published; NVD API 2.0), wired into `fetch-enrichment.sh`, the
+  enrichment manifest (`nvd_cpe`), `GET /api/system`, and a k8s component
+  `base/enrichment-nvd-cpe`. New settings `OCTO_RETRO_MATCH_*`. The console
+  shows the source and confidence on findings, the services on the asset page,
+  and the matcher's status with a re-check button. `scanner/pipeline/report.py`
+  keeps nmap's `<cpe>` and `extrainfo`, which it used to drop. See
+  [docs/retro-cve-matching.md](docs/retro-cve-matching.md) — including what it
+  does not cover.
+
 - **Refresh tokens, rotation with reuse detection, and an idle timeout for
   console sessions** ([#314](https://github.com/onixus/Shapoclyack/issues/314)).
   A sign-in now yields a short access token (`OCTO_ACCESS_TOKEN_EXPIRE_MINUTES`,
@@ -79,6 +123,16 @@ All notable changes to Shapoclyack are documented in this file.
   running publication's hold, `renewed` / `late` / `superseded` / `failed`, and
   `run_publications.lease_lapses` on the row it happened to. Until now a lost
   renewal — the precondition of a second parallel attempt — was a log line.
+- **A pull-request gate on GitHub**
+  ([#345](https://github.com/onixus/Shapoclyack/issues/345)):
+  `.github/workflows/pr-gate.yml`, one Python 3.12 job with a read-only token
+  on `pull_request` to `main` and `merge_group` — `scripts/ci-lint.sh`,
+  `compileall` and `scripts/ci-pytest.sh` without PostgreSQL/NATS (integration
+  and coverage gates off). The local Jenkins remains the full CI. `ruff.toml`
+  now sets `target-version = "py311"`, the oldest Python in the Jenkins matrix,
+  so 3.12-only syntax fails lint instead of only the 3.11 test leg.
+  `tests/test_pr_gate.py` parses the workflow and compares triggers,
+  permissions and commands whole.
 
 ### Changed
 
@@ -124,6 +178,21 @@ All notable changes to Shapoclyack are documented in this file.
 - Local scans on the local backend no longer write a `diff.json` against the
   installation's previous run, which could belong to another tenant; the
   previous run has moved into its tenant's subtree by then.
+- **The NATS outbox backlog is reported per kind, and the outbox drains both
+  kinds in every batch (#424).** **Breaking for dashboards, alerts and probe
+  consumers:** the check in `/readyz` and `/api/health` is renamed
+  `checks.ingest_backlog` → `checks.nats_outbox` (it covers asset events, not
+  only ingest), and `octo_nats_outbox_backlog` is labelled `{kind,status}`
+  instead of `{status}` — a rule on `octo_nats_outbox_backlog{status="stale"}`
+  now matches one series per kind, so wrap it in `max()` or `max by (kind)`;
+  the bundled rules in `k8s/shapoclyack/examples/` are updated. A reconcile
+  batch gives ingest `floor(n/2)` slots and asset events the rest, each lane
+  oldest first, so an asset-event burst no longer delays the next run's
+  ClickHouse publish and an ingest backlog no longer holds webhooks back;
+  `OCTO_NATS_OUTBOX_BATCH_SIZE=1` is plain FIFO across kinds. Migration
+  `0063_nats_outbox_kind_due` (an index, expand-only). The gauge is updated in
+  place rather than cleared and rebuilt, so a scrape can no longer catch it
+  empty.
 
 ### Fixed
 

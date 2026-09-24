@@ -83,6 +83,9 @@ export const queryKeys = {
     ["endpoint-devices", "asset", assetId, tenantId] as const,
   assetSoftware: (assetId: string, tenantId = "default") =>
     ["asset", assetId, "software", tenantId] as const,
+  /** Stored listeners and their retro verdicts (docs/retro-cve-matching.md). */
+  assetServices: (assetId: string, tenantId = "default") =>
+    ["asset", assetId, "services", tenantId] as const,
   endpointDeviceChanges: (deviceId: string, tenantId = "default") =>
     ["endpoint-device", deviceId, "changes", tenantId] as const,
   recentSoftwareChanges: (tenantId = "default", limit = 50) =>
@@ -97,6 +100,9 @@ export const queryKeys = {
   vulnerabilitiesPage: (filters: Record<string, unknown>, page?: PageParams) =>
     ["vulnerabilities", filters, pageKey(page)] as const,
   vulnerabilitySummary: ["vulnerabilities", "summary"] as const,
+  /** Under `vulnerabilities` so a change that invalidates the list refreshes
+   * the open-retro-finding counts with it. */
+  retroMatchStatus: ["vulnerabilities", "retro-match", "status"] as const,
   vulnerability: (vulnId: string) => ["vulnerability", vulnId] as const,
   vulnerabilityEvents: (vulnId: string, page?: PageParams) =>
     ["vulnerability", vulnId, "events", pageKey(page)] as const,

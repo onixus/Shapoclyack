@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SystemPage from "@/app/(dashboard)/system/page";
 import * as apiModule from "@/lib/api";
-import type { EnrichmentDb, Me, SystemStatus } from "@/lib/api";
+import type { EnrichmentDb, Me, RetroMatchStatus, SystemStatus } from "@/lib/api";
 import { useAppearanceStore } from "@/lib/appearance";
 import { useAuthStore } from "@/lib/auth-store";
 
@@ -138,6 +138,75 @@ describe("SystemPage enrichment freshness", () => {
   });
 });
 
+
+describe("SystemPage NVD CPE-range dataset", () => {
+  const RETRO_STATUS: RetroMatchStatus = {
+    enabled: true,
+    worker_running: true,
+    dataset: {
+      path: "scanner/data/nvd-cpe/nvd-cpe-ranges.json",
+      present: true,
+      source: "nvd-cve-api-2.0",
+      updated: "2026-09-20",
+      marker: "2026-09-20:3f2a9c1b0d4e5f60",
+      products: 1843,
+      statements: 52117,
+      error: null,
+    },
+    dataset_version: "2026-09-20:3f2a9c1b0d4e5f60+adv:9c1d2e3f",
+    services_total: 0,
+    services_pending: 0,
+    services_assessed: 0,
+    open_findings: {},
+    possible_matches: 0,
+    last_run_at: null,
+    last_dataset_version: null,
+    findings_created: 0,
+    events_published: 0,
+    events_summarised: 0,
+    last_stats: {},
+    refresh_requested_at: null,
+    refresh_requested_by: null,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(
+      status([db({ name: "nvd_cpe" }), db({ name: "kev" })]),
+    );
+  });
+
+  it("says what the retro matcher loaded from the file, next to its age", async () => {
+    vi.spyOn(apiModule, "fetchRetroMatchStatus").mockResolvedValue(RETRO_STATUS);
+    renderPage();
+
+    expect(await screen.findByText("nvd_cpe")).toBeInTheDocument();
+    const detail = await screen.findByTestId("nvd-cpe-detail");
+    // Grouping follows the runtime's locale, like every other count here.
+    expect(detail).toHaveTextContent(/1\D?843 products · 52\D?117 range statements/);
+    expect(detail).toHaveTextContent("data as of 2026-09-20");
+    expect(badgeOf("nvd_cpe")).toHaveTextContent("fresh");
+    // Only on its own row.
+    expect(screen.getAllByTestId("nvd-cpe-detail")).toHaveLength(1);
+  });
+
+  it("shows why the dataset could not be loaded", async () => {
+    vi.spyOn(apiModule, "fetchRetroMatchStatus").mockResolvedValue({
+      ...RETRO_STATUS,
+      dataset: {
+        ...RETRO_STATUS.dataset,
+        present: true,
+        products: 0,
+        statements: 0,
+        error: "entries is not a map",
+      },
+    });
+    renderPage();
+
+    expect(await screen.findByTestId("nvd-cpe-detail")).toHaveTextContent("entries is not a map");
+  });
+});
 
 function principal(overrides: Partial<Me>): Me {
   return {

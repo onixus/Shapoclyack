@@ -1,0 +1,50 @@
+name: PR Gate
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # Keep the lint scope and Ruff pin shared with Jenkins/full CI. A second
+      # hand-written invocation is how the pipelines drifted in the first place.
+      # Only 3.12 runs here; ruff.toml's target-version = "py311" is what keeps
+      # 3.12-only syntax from passing this gate and failing Jenkins' 3.11 leg.
+      - name: Ruff check
+        run: ./scripts/ci-lint.sh
+
+      - name: Compile Python sources
+        run: python -m compileall scanner api tests agent
+
+      # This is deliberately the infrastructure-free PR gate: the same
+      # scripts/ci-pytest.sh as Jenkins, with the integration gate off because
+      # PostgreSQL/NATS suites skip here. Coverage measured without them is not
+      # the number the 74% gate is about, so the threshold is off as well;
+      # Jenkins and the manual full CI run the script with both at defaults.
+      - name: Unit tests without infrastructure
+        env:
+          OCTO_REQUIRE_INTEGRATION: "0"
+          COV_FAIL_UNDER: "0"
+        run: ./scripts/ci-pytest.sh --maxfail=1

@@ -108,38 +108,47 @@ spec:
         description: The ingest worker has not refreshed octo_nats_consumer_pending for more than 5 minutes.
           A stopped poller leaves a stale value rather than a rising one.
     - alert: ShapoclyackNatsOutboxBacklog
-      expr: max(octo_nats_outbox_backlog{status="stale"}) > 0
+      expr: max(octo_nats_outbox_backlog{kind="ingest",status="stale"}) > 0
       for: 10m
       labels:
         severity: ticket
         slo: '5'
       annotations:
         summary: Ingest publications have been unrecovered past the alert window
-        description: "Publications the broker refused have been waiting longer than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS.\
-          \ HTTP is healthy while the analytical projection is behind, which is what the relaxed NATS\
-          \ readiness check must not be allowed to hide. Drain per docs/operations.md \xA7 NATS outbox."
+        description: "kind=ingest publications the broker refused have been waiting longer than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS.\
+          \ HTTP is healthy while the ClickHouse projection is behind. Drain per docs/operations.md \xA7\
+          \ NATS outbox."
+    - alert: ShapoclyackNatsOutboxAssetEventsBacklog
+      expr: max(octo_nats_outbox_backlog{kind="asset_event",status="stale"}) > 0
+      for: 10m
+      labels:
+        severity: ticket
+      annotations:
+        summary: Asset-event publications have been unrecovered past the alert window
+        description: "kind=asset_event publications the broker refused have been waiting longer than OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS.\
+          \ Runs can keep reaching ClickHouse, but webhook fan-out is delayed. Drain per docs/operations.md\
+          \ \xA7 NATS outbox."
     - alert: ShapoclyackNatsOutboxDead
-      expr: max(octo_nats_outbox_backlog{status="dead"}) > 0
+      expr: max by (kind) (octo_nats_outbox_backlog{status="dead"}) > 0
       for: 5m
       labels:
         severity: page
       annotations:
-        summary: Ingest publications have exhausted their retries
-        description: "An entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS (close to four hours of retrying\
-          \ at the defaults) or was recorded with no replayable body. Nothing retries it again: it needs\
-          \ an operator decision \u2014 nats_outbox.requeue_dead, a re-scan, or discard_dead."
+        summary: NATS outbox {{ $labels.kind }} publications have exhausted their retries
+        description: "A {{ $labels.kind }} entry reached OCTO_NATS_OUTBOX_MAX_ATTEMPTS or was recorded\
+          \ with no replayable body. Nothing retries it again: it needs an operator decision \u2014 nats_outbox.requeue_dead,\
+          \ a re-scan, or discard_dead. kind=ingest blocks the ClickHouse projection; kind=asset_event\
+          \ blocks the corresponding webhook fan-out."
     - alert: ShapoclyackNatsOutboxDropping
-      expr: sum(rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
+      expr: sum by (kind) (rate(octo_nats_outbox_total{outcome="dropped"}[15m])) > 0
       for: 5m
       labels:
         severity: ticket
       annotations:
-        summary: Refused ingest publications are being dropped, not recorded
-        description: 'OCTO_NATS_OUTBOX_ENABLED=false, so nothing durable is written when the broker refuses
-          a publish. This is not yet a lost run: the publication itself then fails and retries (OCTO_RUN_PUBLICATION_MAX_ATTEMPTS,
-          a few minutes of backoff), and a broker that blinked is covered by the second attempt. It becomes
-          a loss only for an outage that outlives those attempts, which shows up as octo_run_publication_backlog{status="dead"}.
-          Ticket, not page: the fix is turning the outbox back on, and it is not urgent by itself.'
+        summary: Refused {{ $labels.kind }} publications are being dropped, not recorded
+        description: OCTO_NATS_OUTBOX_ENABLED=false, so no durable row is written when the broker refuses
+          this publication. For ingest the owning run publication still retries; asset events are covered
+          separately by ShapoclyackAssetEventsSkipped. Turn the outbox back on.
     - alert: ShapoclyackAssetEventsSkipped
       expr: sum(rate(octo_asset_events_published_total{outcome="skipped"}[15m])) > 0
       for: 5m
@@ -148,10 +157,10 @@ spec:
       annotations:
         summary: Asset events are being dropped, not deferred
         description: "An asset event was neither published nor recorded in nats_outbox, so the webhook\
-          \ it feeds — including a new critical CVE — will not be sent at all. A run's events\
-          \ are still in its diff.json, and an operator's decommission in the asset row — but\
-          \ nothing resends them. outcome=\"deferred\" is the healthy version of the same outage and\
-          \ is covered by the outbox alerts above."
+          \ it feeds \u2014 including a new critical CVE \u2014 will not be sent at all. A run's events\
+          \ are still in its diff.json, and an operator's decommission in the asset row \u2014 but nothing\
+          \ resends them. outcome=\"deferred\" is the healthy version of the same outage and is covered\
+          \ by the outbox alerts above."
     - alert: ShapoclyackClickHouseIngestErrors
       expr: "(\n  1 - (\n    sum(rate(octo_ch_ingest_messages_total{result=\"ok\"}[6h]))\n    /\n    sum(rate(octo_ch_ingest_messages_total[6h]))\n\
         \  )\n) > 0.001\nand\nsum(rate(octo_ch_ingest_messages_total[6h])) > 0\n"

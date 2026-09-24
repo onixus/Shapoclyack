@@ -285,6 +285,33 @@ looks more defensive than a paging loop ought to.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
 
+### NVD CPE ranges (retro CVE matching)
+
+The dataset [retro CVE matching](retro-cve-matching.md) re-asks about stored
+service fingerprints: NVD's per-CVE product/version windows, compacted, in the
+same directory, envelope and manifest as the overlays above (manifest key
+`nvd_cpe`, floor `5000` products, not required). Opt-in like the advisory
+feeds below, with a flag of its own.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_NVD_CPE_DATABASE` | `scanner/data/nvd-cpe/nvd-cpe-ranges.json` | Where the dataset is read from. Reloaded on mtime/size change, no restart |
+| `OCTO_NVD_CPE_FETCH_ENABLED` | `false` | Gate on every NVD request for this dataset. Unset, `api/services/cpe_ranges_fetch.py` refuses, `scripts/fetch-nvd-cpe.py` exits `3` and `scripts/fetch-enrichment.sh` prints a skip rather than a failure |
+| `NVD_API_KEY` | *(unset)* | Shared with the CVSS4 refresh. Raises NVD's limit from 5 to 50 requests per 30 s — the difference between hours and minutes for `--full` |
+
+```bash
+# Once, the whole corpus (replaces the file):
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py --full
+# Daily increment from where the file's coverage ends, merged (what
+# fetch-enrichment.sh runs with the flag set). More than 120 days behind: --full.
+OCTO_NVD_CPE_FETCH_ENABLED=true python3 scripts/fetch-nvd-cpe.py
+```
+
+In Kubernetes: `kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe`
+(ConfigMap `shapoclyack-enrichment-nvd-cpe` + the CronJob at `2Gi`; composes
+with `base/enrichment-advisories`). The first `--full` harvest is not part of
+the CronJob — see [retro-cve-matching.md](retro-cve-matching.md#the-dataset--apiservicescpe_rangespy).
+
 ### Vendor advisory datasets
 
 The two advisory feeds behind [software→CVE matching](software-cve-matching.md)
@@ -455,12 +482,249 @@ suite must not need a database to start.
 
 ## Environment variables
 
+
+Validate the API settings in the current environment without starting
+the service:
+
+```bash
+python -m api.settings --check
+```
+
+A successful check prints the effective configuration with credentials
+and URL userinfo redacted. A setting counts as a credential when any word
+of its name contains `secret`, `passw`, `passphrase` or `credential`, or
+its last word is `key`/`token` (so `OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY` is
+hidden while `OCTO_SERVICE_TOKEN_MAX_TTL_DAYS` is shown);
+`OCTO_ARTIFACT_S3_ACCESS_KEY_ID` is hidden as well. URL userinfo is cut at
+the last `@`, because SQLAlchemy accepts `/`, `:`, `#` and `?` unencoded in
+a password. A failed check names the variable that did not parse, such as
+`ValueError in OCTO_DB_POOL_SIZE: invalid literal for int() with base 10:
+<redacted>`, and never prints the rejected value itself. Use
+`--no-effective-config` when only the exit status is needed. The command runs the same fail-closed production
+validation as API startup; it does not connect to Postgres, NATS or
+ClickHouse.
+
+<details>
+<summary>Machine-readable variables owned by <code>api/settings.py</code></summary>
+
+This index is checked against the loader and against the human-facing
+documentation below. It is not a second source of defaults.
+
+<!-- BEGIN API SETTINGS ENV INDEX -->
+```text
+OCTO_ACCESS_TOKEN_EXPIRE_MINUTES
+OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE
+OCTO_AGENT_DEPLOY_SSH_PORTS
+OCTO_AGENT_JWT_EXPIRE_MINUTES
+OCTO_AGENT_JWT_SECRET
+OCTO_AGENT_JWT_SECRET_PREVIOUS
+OCTO_AGENT_MIN_VERSION
+OCTO_AGENT_RESULTS_INGEST_MAX_WAITING
+OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS
+OCTO_AGENT_RESULTS_MAX_BODY_BYTES
+OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS
+OCTO_AGENT_STALE_SECONDS
+OCTO_AGENT_TOKEN
+OCTO_ALLOW_SCAN_START
+OCTO_API_CORS
+OCTO_API_DOCS
+OCTO_API_USERS
+OCTO_ARTIFACT_BACKEND
+OCTO_ARTIFACT_CACHE_DIR
+OCTO_ARTIFACT_CACHE_MAX_MB
+OCTO_ARTIFACT_CACHE_TTL_SECONDS
+OCTO_ARTIFACT_PRESIGN_ENABLED
+OCTO_ARTIFACT_PRESIGN_EXPIRES_SECONDS
+OCTO_ARTIFACT_S3_ACCESS_KEY_ID
+OCTO_ARTIFACT_S3_ADDRESSING_STYLE
+OCTO_ARTIFACT_S3_BUCKET
+OCTO_ARTIFACT_S3_ENDPOINT_URL
+OCTO_ARTIFACT_S3_PREFIX
+OCTO_ARTIFACT_S3_REGION
+OCTO_ARTIFACT_S3_SECRET_ACCESS_KEY
+OCTO_ARTIFACT_S3_SESSION_TOKEN
+OCTO_ARTIFACT_S3_VERIFY_TLS
+OCTO_ASSET_EVENTS_ENABLED
+OCTO_ASSET_EVENTS_MAX_PER_RUN
+OCTO_ASSET_STALE_DAYS
+OCTO_AUDIT_EVENT_RETENTION_DAYS
+OCTO_AUTH_EVENT_RETENTION_DAYS
+OCTO_BREAK_GLASS_USERS
+OCTO_BULK_ACTION_BUDGET_SECONDS
+OCTO_CH_INGEST_ENABLED
+OCTO_CLICKHOUSE_URL
+OCTO_CONFIG
+OCTO_DB_MAX_OVERFLOW
+OCTO_DB_POOL_SIZE
+OCTO_DB_POOL_TIMEOUT
+OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS
+OCTO_ENDPOINT_INVENTORY_ENABLED
+OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES
+OCTO_ENDPOINT_INVENTORY_MAX_FUTURE_SKEW_SECONDS
+OCTO_ENDPOINT_INVENTORY_MAX_IDENTIFIERS
+OCTO_ENDPOINT_INVENTORY_MAX_LABELS
+OCTO_ENDPOINT_INVENTORY_MAX_SNAPSHOT_AGE_SECONDS
+OCTO_ENDPOINT_INVENTORY_MAX_SOFTWARE_ITEMS
+OCTO_ENDPOINT_INVENTORY_MAX_STRING_LENGTH
+OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR
+OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS
+OCTO_ENDPOINT_NATS_EVENTS_ENABLED
+OCTO_ENDPOINT_RETENTION_BATCH_SIZE
+OCTO_ENDPOINT_RETENTION_ENABLED
+OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS
+OCTO_ENDPOINT_STALE_HOURS
+OCTO_ENV
+OCTO_HSTS_ENABLED
+OCTO_INSTANCE_ID
+OCTO_JOB_CANCEL_GRACE_SECONDS
+OCTO_JOB_EXECUTION_MODE
+OCTO_JOB_INGEST_LEASE_SECONDS
+OCTO_JOB_LEASE_SECONDS
+OCTO_JOB_MAX_ATTEMPTS
+OCTO_JOB_REAPER_ENABLED
+OCTO_JOB_REAPER_INTERVAL_SECONDS
+OCTO_JWT_ALGORITHM
+OCTO_JWT_EXPIRE_MINUTES
+OCTO_JWT_SECRET
+OCTO_JWT_SECRET_PREVIOUS
+OCTO_LOCAL_LOGIN
+OCTO_LOGIN_RATE_LIMIT_ENABLED
+OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES
+OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES
+OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS
+OCTO_METRICS_TOKEN
+OCTO_MFA_PHISHING_RESISTANT_ROLES
+OCTO_MFA_REQUIRED_ROLES
+OCTO_MFA_STEPUP_MINUTES
+OCTO_MFA_STEPUP_PHISHING_RESISTANT
+OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS
+OCTO_NATS_OUTBOX_BATCH_SIZE
+OCTO_NATS_OUTBOX_ENABLED
+OCTO_NATS_OUTBOX_INTERVAL_SECONDS
+OCTO_NATS_OUTBOX_MAX_ATTEMPTS
+OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS
+OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS
+OCTO_NATS_URL
+OCTO_NOTIFICATION_CHANNELS_ENABLED
+OCTO_NOTIFICATION_CHANNEL_MAX_PER_TENANT
+OCTO_NOTIFICATION_CHANNEL_TIMEOUT_SECONDS
+OCTO_OIDC_CACHE_TTL_SECONDS
+OCTO_OIDC_CLIENT_ID
+OCTO_OIDC_CLIENT_SECRET
+OCTO_OIDC_DEFAULT_ROLE
+OCTO_OIDC_DEFAULT_TENANT
+OCTO_OIDC_HTTP_TIMEOUT_SECONDS
+OCTO_OIDC_ISSUER
+OCTO_OIDC_JIT_PROVISIONING
+OCTO_OIDC_POST_LOGIN_REDIRECT
+OCTO_OIDC_REDIRECT_URI
+OCTO_OIDC_ROLE_CLAIM
+OCTO_OIDC_ROLE_MAP
+OCTO_OIDC_SCOPES
+OCTO_OIDC_STATE_TTL_SECONDS
+OCTO_OIDC_TENANT_CLAIM
+OCTO_OIDC_USERNAME_CLAIM
+OCTO_OTEL_EXPORTER_OTLP_ENDPOINT
+OCTO_OTEL_SERVICE_NAME
+OCTO_OTEL_TRACES_SAMPLER_RATIO
+OCTO_OUTPUT_DIR
+OCTO_POSTGRES_URL
+OCTO_PROVISIONING_KEY_TTL_DAYS
+OCTO_PUBLIC_BASE_URL
+OCTO_QUOTA_DEFAULT_MAX_ASSETS
+OCTO_QUOTA_DEFAULT_MAX_SCANS_PER_MONTH
+OCTO_QUOTA_ENFORCEMENT_ENABLED
+OCTO_REFRESH_COOKIE_SECURE
+OCTO_REPORTS_ENABLED
+OCTO_REPORT_DISPATCH_ENABLED
+OCTO_REPORT_DISPATCH_INTERVAL_SECONDS
+OCTO_REPORT_RETENTION_DAYS
+OCTO_REPORT_SMTP_FROM
+OCTO_REPORT_SMTP_HOST
+OCTO_REPORT_SMTP_PASSWORD
+OCTO_REPORT_SMTP_PORT
+OCTO_REPORT_SMTP_STARTTLS
+OCTO_REPORT_SMTP_TIMEOUT_SECONDS
+OCTO_REPORT_SMTP_USERNAME
+OCTO_REPORT_SMTP_VERIFY_TLS
+OCTO_RETRO_MATCH_BATCH_SIZE
+OCTO_RETRO_MATCH_ENABLED
+OCTO_RETRO_MATCH_INTERVAL_SECONDS
+OCTO_RETRO_MATCH_MAX_AGE_DAYS
+OCTO_RETRO_MATCH_MAX_EVENTS
+OCTO_RETRO_MATCH_TICK_BUDGET_SECONDS
+OCTO_RISK_SNAPSHOT_RETENTION_DAYS
+OCTO_RISK_SNAPSHOT_RETENTION_ENABLED
+OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS
+OCTO_RUN_PUBLICATION_INTERVAL_SECONDS
+OCTO_RUN_PUBLICATION_MAX_ATTEMPTS
+OCTO_RUN_PUBLICATION_ORPHAN_DEADLINE_SECONDS
+OCTO_RUN_PUBLICATION_RETRY_BASE_SECONDS
+OCTO_RUN_PUBLICATION_RETRY_MAX_SECONDS
+OCTO_RUN_PUBLICATION_WORKER_ENABLED
+OCTO_RUN_RETENTION_DAYS
+OCTO_RUN_RETENTION_ENABLED
+OCTO_RUN_RETENTION_INTERVAL_SECONDS
+OCTO_SCAN_SCOPE_RESOLVE_CHECK
+OCTO_SCHEDULER_DISPATCH_ENABLED
+OCTO_SCREENSHOT_RETENTION_DAYS
+OCTO_SCREENSHOT_RETENTION_ENABLED
+OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS
+OCTO_SERVICE_TOKENS_ENABLED
+OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS
+OCTO_SERVICE_TOKEN_LAST_USED_INTERVAL_SECONDS
+OCTO_SERVICE_TOKEN_MAX_TTL_DAYS
+OCTO_SESSION_IDLE_MINUTES
+OCTO_SLA_ESCALATION_ENABLED
+OCTO_SLA_ESCALATION_INTERVAL_SECONDS
+OCTO_SLA_ESCALATION_MAX_FINDINGS
+OCTO_SOFTWARE_FINDING_MIN_SEVERITY
+OCTO_SOFTWARE_MATCH_BATCH_SIZE
+OCTO_SOFTWARE_MATCH_ENABLED
+OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS
+OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS
+OCTO_STATE_DIR
+OCTO_TICKET_SYNC_BATCH_SIZE
+OCTO_TICKET_SYNC_ENABLED
+OCTO_TICKET_SYNC_INTERVAL_SECONDS
+OCTO_TICKET_SYNC_POLL_INTERVAL_SECONDS
+OCTO_TICKET_SYNC_REOPEN_WINDOW_DAYS
+OCTO_TICKET_SYNC_RETRY_BASE_SECONDS
+OCTO_TICKET_SYNC_RETRY_MAX_SECONDS
+OCTO_TRUSTED_PROXIES
+OCTO_WEBAUTHN_ORIGINS
+OCTO_WEBAUTHN_RP_ID
+OCTO_WEBAUTHN_RP_NAME
+OCTO_WEBHOOKS_ENABLED
+OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS
+OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS
+OCTO_WEBHOOK_DISPATCH_BATCH_SIZE
+OCTO_WEBHOOK_DISPATCH_ENABLED
+OCTO_WEBHOOK_DISPATCH_INTERVAL_SECONDS
+OCTO_WEBHOOK_FANOUT_ENABLED
+OCTO_WEBHOOK_MAX_ATTEMPTS
+OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT
+OCTO_WEBHOOK_RETRY_BASE_SECONDS
+OCTO_WEBHOOK_RETRY_MAX_SECONDS
+OCTO_WEBHOOK_TIMEOUT_SECONDS
+OCTO_WEB_DIST
+OCTO_WORDLIST_MAX_BODY_BYTES
+OCTO_WORDLIST_MAX_WORDS
+OCTO_WORKFLOW_EVENTS_ENABLED
+OCTO_WORKFLOW_MARKER_RETENTION_DAYS
+```
+<!-- END API SETTINGS ENV INDEX -->
+
+</details>
+
+
 Core deployment variables:
 
 | Variable | Purpose |
 |---|---|
 | `OCTO_ENV` | `prod` (default) or `dev`. `prod` refuses to start on built-in defaults — see [above](#startup-safety-octo_env) |
 | `OCTO_CONFIG` | Scanner YAML path |
+| `OCTO_WEB_DIST` | Static Web UI directory served by the API (`web/dist` by default; images set `/app/web/dist`) |
 | `OCTO_OUTPUT_DIR` | Per-run output root. With `OCTO_ARTIFACT_BACKEND=local` (the default) this is where runs and reports live; with `s3` the scanner still writes here and the run is published from it |
 | `OCTO_STATE_DIR` | Checkpoint and scheduler state, materialised wordlists, and — on the local backend — job inputs |
 | `OCTO_JWT_SECRET` | User JWT signing secret. **Required in `prod`**; must be identical across API replicas |
@@ -530,14 +794,14 @@ republished when the broker returns.
 |---|---|---|
 | `OCTO_NATS_OUTBOX_ENABLED` | `true` | Record a publication the broker refused in the `nats_outbox` table and republish it when NATS returns. **This is what lets NATS be a non-blocking readiness check.** With it off there is nowhere to write a refused message down, so the publication that owns the bus hop fails instead of closing: the run's `run_publications` row retries, ends `dead` and takes the run's own projections with it. That is the one configuration in which a broker outage still costs a scan — loudly rather than silently, but it costs it. See [operations.md § NATS outbox](operations.md#nats-outbox) |
 | `OCTO_NATS_OUTBOX_INTERVAL_SECONDS` | `30` | How often this replica drains the due end of the outbox. Floored at 1 |
-| `OCTO_NATS_OUTBOX_BATCH_SIZE` | `10` | Entries republished per tick. Small on purpose, unlike the webhook dispatcher's 50: one ingest entry carries a run archive, so a batch is megabytes held in the process at once |
+| `OCTO_NATS_OUTBOX_BATCH_SIZE` | `10` | Entries republished per tick. Small on purpose, unlike the webhook dispatcher's 50: one ingest entry carries a run archive, so a batch is megabytes held in the process at once. Split between `kind=ingest` (`floor(n/2)`) and asset events (the rest), unused slots going to the other kind; `1` is plain FIFO across kinds — see `docs/operations.md` |
 | `OCTO_NATS_OUTBOX_MAX_ATTEMPTS` | `20` | Republish attempts before an entry goes `dead` and waits for an operator (`nats_outbox.requeue_dead`). At the default backoff that is close to four hours of retrying |
 | `OCTO_NATS_OUTBOX_RETRY_BASE_SECONDS` | `15` | First backoff after a failed republish; doubles per attempt |
 | `OCTO_NATS_OUTBOX_RETRY_MAX_SECONDS` | `900` | Cap on that backoff |
 | `OCTO_NATS_INGEST_DEDUPE_SECONDS` | `86400` | JetStream duplicate window on the `INGEST` stream, clamped to `OCTO_NATS_INGEST_MAX_AGE_SECONDS` unless that is `0` (unbounded retention), which does **not** switch dedupe off. Wide enough to cover the whole retry schedule above: a publish whose ack timed out after the server stored it is a genuine duplicate on replay, and JetStream's own 2-minute default is shorter than a single backoff |
-| `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `ingest_backlog: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
+| `OCTO_NATS_OUTBOX_BACKLOG_ALERT_SECONDS` | `300` | How long a publication may stay unrecovered before `/readyz` and `/api/health` report `nats_outbox: error` and call the installation degraded. Longer than a broker restart, shorter than an outage nobody should have to find by hand |
 
-The unrecovered backlog is the `ingest_backlog` check on `/readyz` and
+The unrecovered backlog is the `nats_outbox` check on `/readyz` and
 `/api/health` and the `octo_nats_outbox_backlog` gauge; draining it is
 [operations.md § NATS outbox](operations.md#nats-outbox).
 
@@ -894,6 +1158,18 @@ Software→CVE findings in the vulnerability lifecycle (Track E, M3 — see
 | `OCTO_SOFTWARE_MATCH_BATCH_SIZE` | `100` | Devices per batch — per `SELECT`, per matcher run and per fold transaction. A tick takes as many batches as its budget allows, so this is a memory and statement-size knob, not the amount of work a tick does |
 | `OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS` | `60` | How long one tick may spend draining, shared across tenants. Whatever is left is still due and is taken by the next tick. Raise it on a large estate; a tick that repeatedly logs `out of tick budget` is the signal |
 | `OCTO_SOFTWARE_FINDING_MIN_SEVERITY` | *(unset)* | Severity floor for creating a tracked finding: `critical`, `high`, `medium` or `low`. Unset means no floor. Applies **on top of** the built-in rule that only a match with a published fix becomes a finding at all — raise it when the SLA dashboard is drowning in low-severity backports. Raising it does **not** close the findings that fall below the new floor: they stay open and stop being re-tracked, because a change to this variable is not a remediation anybody performed |
+
+Retro CVE matching — stored service fingerprints re-matched against the NVD
+CPE-range dataset (see [retro-cve-matching.md](retro-cve-matching.md)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RETRO_MATCH_ENABLED` | `true` | Run the in-process worker. Leader-locked, safe in every replica. Off means nothing is matched — the fingerprints are still recorded, and a later start picks them all up |
+| `OCTO_RETRO_MATCH_INTERVAL_SECONDS` | `900` | Worker tick (minimum 10). A ceiling on how long a new dataset or a new fingerprint waits; a recorded run and `POST /api/retro-match/refresh` wake the worker early |
+| `OCTO_RETRO_MATCH_BATCH_SIZE` | `200` | Listeners per batch — a statement-size knob, not the work per tick |
+| `OCTO_RETRO_MATCH_TICK_BUDGET_SECONDS` | `60` | How long one tick may drain, shared across tenants. The first tick after a full NVD dataset lands re-matches the whole estate; raise this if the log keeps saying `out of tick budget` |
+| `OCTO_RETRO_MATCH_MAX_EVENTS` | `50` | Individual `new_cve` events per tenant **per dataset version**; once spent, each tick's new retro findings are announced as one aggregate event (`data.aggregate: true`). `0` sends only aggregates. Findings are created regardless |
+| `OCTO_RETRO_MATCH_MAX_AGE_DAYS` | `90` | Listeners not observed for longer than this are not matched (a closed port must not page months later). `0` disables the cut-off |
 
 Artifact storage ([#336](https://github.com/onixus/Shapoclyack/issues/336)):
 

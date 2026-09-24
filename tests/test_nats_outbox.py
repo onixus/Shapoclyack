@@ -7,12 +7,13 @@ Two defects at once, and the tests are split the same way:
   gone. Everything below the first divider is about that message surviving.
 * NATS decided ``/readyz``, so the same outage emptied the Service of every API
   replica. That half is in ``tests/test_api_probes.py``, because it is a
-  statement about the probes; the ``ingest_backlog`` check that replaced it
+  statement about the probes; the ``nats_outbox`` check that replaced it
   reads the counts this module tests.
 """
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
@@ -40,8 +41,16 @@ NATS_URL = "nats://nats.invalid:4222"
 
 
 def _archive(data: bytes = b'{"ok":true}\n') -> bytes:
+    """The same bytes on every call, so the content-derived msg_id matches.
+
+    ``tarfile.open(mode="w:gz")`` stamps the current time into the gzip
+    header, and two calls a second apart hash to different msg_ids.
+    """
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with (
+        gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w") as tf,
+    ):
         info = tarfile.TarInfo(name="findings.json")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
@@ -452,7 +461,7 @@ def test_readyz_reports_a_backlog_that_is_actually_in_the_table(tmp_path, monkey
 
     clean = client.get("/readyz")
     assert clean.status_code == 200
-    assert clean.json()["checks"]["ingest_backlog"] == "ok"
+    assert clean.json()["checks"]["nats_outbox"] == "ok"
 
     # Older than nats_outbox_backlog_alert_seconds: a broker restart is not a
     # backlog, an hour of unrecovered publications is.
@@ -462,7 +471,7 @@ def test_readyz_reports_a_backlog_that_is_actually_in_the_table(tmp_path, monkey
     assert response.status_code == 200, "a backlog must not empty the Service"
     body = response.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["ingest_backlog"] == "error"
+    assert body["checks"]["nats_outbox"] == "error"
     assert body["checks"]["postgres"] == "ok"
 
 
@@ -752,6 +761,217 @@ def test_the_claim_window_covers_the_whole_batch_not_one_row(tmp_path, monkeypat
     assert len(claimed) == 3
     per_row = max(30, settings.nats_outbox_retry_base_seconds)
     assert deadlines == [now + timedelta(seconds=per_row * 3)] * 3
+
+
+def test_mixed_backlog_reserves_half_the_batch_for_ingest(tmp_path, monkeypatch):
+    """A thousand old webhook events must not hide the next run publication."""
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    envelopes = [
+        {
+            "kind": "new_cve",
+            "tenant_id": "default",
+            "event_id": f"event-priority-{index}",
+        }
+        for index in range(6)
+    ]
+    assert nats_outbox.record_undelivered_asset_events(settings, envelopes) == 6
+    for index in range(3):
+        _record_one(settings, job_id=f"job-priority-{index}")
+
+    now = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=1)
+    with get_session(settings.postgres_url) as session:
+        claimed = nats_outbox._claim_due(  # noqa: SLF001 - claim policy is the subject
+            session, now=now, limit=4, settings=settings
+        )
+        kinds = [row.kind for row in claimed]
+
+    assert kinds == [
+        nats_outbox.KIND_INGEST,
+        nats_outbox.KIND_INGEST,
+        nats_outbox.KIND_ASSET_EVENT,
+        nats_outbox.KIND_ASSET_EVENT,
+    ]
+
+
+def _mixed_backlog(settings, *, ingest: int, asset: int, ingest_first: bool) -> datetime:
+    """Queue ``ingest`` + ``asset`` due rows, one kind wholly older than the other.
+
+    Returns a ``now`` every row is due at. Ages are written explicitly rather
+    than left to the order of the inserts: the claim orders by
+    ``next_attempt_at``, and rows recorded within one clock tick tie on it.
+    """
+    for index in range(ingest):
+        _record_one(settings, job_id=f"job-mixed-{index}")
+    nats_outbox.record_undelivered_asset_events(
+        settings,
+        [
+            {"kind": "new_cve", "tenant_id": "default", "event_id": f"event-mixed-{index}"}
+            for index in range(asset)
+        ],
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    older, newer = now - timedelta(hours=2), now - timedelta(hours=1)
+    with get_session(settings.postgres_url) as session:
+        for row in session.query(models.NatsOutboxEntry).all():
+            is_ingest = row.kind == nats_outbox.KIND_INGEST
+            base = older if is_ingest == ingest_first else newer
+            row.created_at = base
+            row.next_attempt_at = base
+    return now
+
+
+def test_a_claim_never_takes_the_same_row_twice(tmp_path, monkeypatch):
+    """Review of #438: the second claim window must exclude the first one's rows.
+
+    ``SKIP LOCKED`` skips rows a *peer* holds. A row this transaction locked a
+    moment earlier is not locked to itself, so a second window that reaches it
+    gets it back — the same row twice in one batch, published twice and
+    charged two attempts. It only shows when the second window's FIFO reaches
+    the ingest rows, i.e. ingest older than the rest and fewer of it than the
+    batch; with the asset events older, the FIFO never gets there.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    now = _mixed_backlog(settings, ingest=3, asset=2, ingest_first=True)
+
+    with get_session(settings.postgres_url) as session:
+        claimed = nats_outbox._claim_due(  # noqa: SLF001 - claim policy is the subject
+            session, now=now, limit=10, settings=settings
+        )
+        claimed_ids = [str(row.outbox_id) for row in claimed]
+
+    assert len(claimed_ids) == len(set(claimed_ids)) == 5
+    with get_session(settings.postgres_url) as session:
+        attempts = {
+            str(row.outbox_id): row.attempts
+            for row in session.query(models.NatsOutboxEntry).all()
+        }
+    assert attempts == dict.fromkeys(claimed_ids, 1)
+
+
+@pytest.mark.parametrize("limit", [10, 3, 2])
+def test_asset_events_keep_their_share_when_ingest_is_older(tmp_path, monkeypatch, limit):
+    """The ingest reservation must not become the whole batch.
+
+    With ingest older than the asset events, a second window that is plain
+    FIFO hands its slots to ingest as well, and webhook fan-out — including
+    ``asset.vulnerability.new`` — waits for the entire ingest queue.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    now = _mixed_backlog(settings, ingest=limit, asset=limit, ingest_first=True)
+
+    with get_session(settings.postgres_url) as session:
+        claimed = nats_outbox._claim_due(  # noqa: SLF001 - claim policy is the subject
+            session, now=now, limit=limit, settings=settings
+        )
+        kinds = [row.kind for row in claimed]
+
+    assert len(kinds) == limit
+    assert kinds.count(nats_outbox.KIND_INGEST) == limit // 2
+    assert kinds.count(nats_outbox.KIND_ASSET_EVENT) == limit - limit // 2
+
+
+def test_a_batch_of_one_does_not_starve_asset_events(tmp_path, monkeypatch):
+    """``OCTO_NATS_OUTBOX_BATCH_SIZE=1`` is a valid setting; it must still drain both.
+
+    ``max(1, limit // 2)`` reserved the only slot for ingest, so an asset event
+    waited behind every ingest row, however much newer they were.
+    """
+    settings = make_settings(tmp_path, nats_url=NATS_URL, nats_outbox_batch_size=1)
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    now = _mixed_backlog(settings, ingest=5, asset=1, ingest_first=False)
+
+    published: list[str] = []
+
+    class _Bus:
+        def publish_ingest(self, payload, *, msg_id):
+            published.append(nats_outbox.KIND_INGEST)
+            return True
+
+        def publish_asset_event(self, envelope, **kwargs):
+            published.append(nats_outbox.KIND_ASSET_EVENT)
+            return True
+
+    monkeypatch.setattr(nats_bus, "get_bus", lambda url: _Bus())
+    for _tick in range(6):
+        nats_outbox.reconcile_once(settings, now=now)
+
+    assert len(published) == 6
+    assert published.index(nats_outbox.KIND_ASSET_EVENT) < published.index(
+        nats_outbox.KIND_INGEST
+    ), f"the older asset event waited behind ingest: {published}"
+
+
+def test_the_gauge_drops_a_vanished_kind_without_clearing(tmp_path, monkeypatch):
+    """A scrape between ``clear()`` and ``set()`` saw no backlog series at all.
+
+    Every refresh used to empty the gauge and rebuild it, so a scrape landing
+    in between read the outbox alerts' series as absent — and ``absent`` is
+    not ``0``, it is a gap in every panel and an alert that re-evaluates from
+    nothing. The series that still exist are overwritten in place; only a
+    combination that no longer exists is removed.
+    """
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(tmp_path, nats_url=NATS_URL)
+    gauge = nats_outbox.metrics_service.NATS_OUTBOX_BACKLOG
+    gauge.labels(kind="retired_kind", status="pending").set(7)
+
+    def _no_clear():
+        raise AssertionError("the backlog gauge must not be cleared wholesale")
+
+    monkeypatch.setattr(gauge, "clear", _no_clear)
+    _record_one(settings, job_id="job-gauge-update")
+
+    nats_outbox._refresh_backlog_gauge(settings)  # noqa: SLF001
+
+    registry = nats_outbox.metrics_service.REGISTRY
+    assert registry.get_sample_value(
+        "octo_nats_outbox_backlog", {"kind": "retired_kind", "status": "pending"}
+    ) is None
+    assert registry.get_sample_value(
+        "octo_nats_outbox_backlog", {"kind": nats_outbox.KIND_INGEST, "status": "pending"}
+    ) == 1.0
+    assert registry.get_sample_value(
+        "octo_nats_outbox_backlog",
+        {"kind": nats_outbox.KIND_ASSET_EVENT, "status": "pending"},
+    ) == 0.0
+
+
+def test_backlog_and_gauge_are_split_by_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(results_ingest.nats_bus, "get_bus", lambda url: None)
+    settings = make_settings(
+        tmp_path, nats_url=NATS_URL, nats_outbox_backlog_alert_seconds=300
+    )
+    _record_one(settings, job_id="job-kind-metric")
+    nats_outbox.record_undelivered_asset_events(
+        settings,
+        [
+            {
+                "kind": "new_cve",
+                "tenant_id": "default",
+                "event_id": "event-kind-metric",
+            }
+        ],
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        for row in session.query(models.NatsOutboxEntry).all():
+            row.created_at = now - timedelta(hours=1)
+
+    assert nats_outbox.backlog_by_kind(settings, now=now) == {
+        nats_outbox.KIND_INGEST: {"pending": 1, "dead": 0, "stale": 1},
+        nats_outbox.KIND_ASSET_EVENT: {"pending": 1, "dead": 0, "stale": 1},
+    }
+
+    nats_outbox._refresh_backlog_gauge(settings)  # noqa: SLF001
+
+    for kind in (nats_outbox.KIND_INGEST, nats_outbox.KIND_ASSET_EVENT):
+        assert nats_outbox.metrics_service.REGISTRY.get_sample_value(
+            "octo_nats_outbox_backlog",
+            {"kind": kind, "status": "stale"},
+        ) == 1.0
 
 
 def test_a_refused_legacy_subject_does_not_hold_the_run_back():

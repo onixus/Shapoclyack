@@ -1179,6 +1179,95 @@ export type SoftwareCveMatchRunSummary = {
   by_status: Record<string, number>;
 };
 
+/** Why the retro matcher could, or could not, assess a stored listener.
+ * Anything but `matched` means "not assessable", never "clean"; null means the
+ * listener has not been matched against any dataset yet. */
+export type AssetServiceMatchStatus =
+  | "matched"
+  | "unknown_product"
+  | "no_version"
+  | "too_old"
+  | "no_dataset";
+
+/** A CVE deliberately not tracked as a finding, so it carries no deadline:
+ * `possible` is an NVD hit a visible distribution may have backported,
+ * `unfixed` is the vendor saying "affected, no fix published yet". */
+export type AssetServicePossibleCve = {
+  cve: string;
+  severity: string;
+  cvss: number | null;
+  /** Absent on summaries written before the vendor-verdict split. */
+  verdict?: "possible" | "unfixed";
+  reason: string | null;
+};
+
+/** One listener a scan fingerprinted on an asset (`GET /assets/{id}/services`). */
+export type AssetServiceInfo = {
+  id: number;
+  asset_id: string;
+  host: string;
+  port: number;
+  protocol: string;
+  service: string;
+  product: string;
+  version: string;
+  banner: string;
+  cpe: string[];
+  source: string;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  last_run_id: string | null;
+  fingerprint_changed_at: string | null;
+  matched_dataset_version: string | null;
+  matched_at: string | null;
+  match_status: AssetServiceMatchStatus | null;
+  /** `vulnerable`, `fixed`, `not_affected`, `possible`, `unfixed`; empty until matched. */
+  match_counts: Partial<
+    Record<"vulnerable" | "fixed" | "not_affected" | "possible" | "unfixed", number>
+  >;
+  possible_cves: AssetServicePossibleCve[];
+};
+
+/** Provenance of the NVD CPE-range dataset the retro matcher reads. */
+export type CpeRangeDatasetStatus = {
+  path: string;
+  present: boolean;
+  source: string | null;
+  updated: string | null;
+  marker: string | null;
+  products: number;
+  statements: number;
+  error: string | null;
+};
+
+/** `GET /retro-match/status`: the dataset, the caller's tenant queue, and what
+ * the last sweep did. */
+export type RetroMatchStatus = {
+  enabled: boolean;
+  worker_running: boolean;
+  dataset: CpeRangeDatasetStatus;
+  dataset_version: string | null;
+  services_total: number;
+  services_pending: number;
+  services_assessed: number;
+  /** Open retro findings by confidence (`vendor_advisory`, `version_range`). */
+  open_findings: Record<string, number>;
+  possible_matches: number;
+  last_run_at: string | null;
+  last_dataset_version: string | null;
+  findings_created: number;
+  events_published: number;
+  events_summarised: number;
+  last_stats: Record<string, unknown>;
+  refresh_requested_at: string | null;
+  refresh_requested_by: string | null;
+};
+
+export type RetroMatchRefreshResult = {
+  queued: number;
+  worker_running: boolean;
+};
+
 export type ProvisioningKeyInfo = {
   key_id: string;
   tenant_id: string;
@@ -2340,6 +2429,40 @@ export async function fetchAssetSoftware(assetId: string, tenantId = "default") 
   }
 }
 
+/** Listeners scans fingerprinted on one asset, with the retro verdict on each. */
+export async function fetchAssetServices(assetId: string, tenantId = "default") {
+  try {
+    const params = new URLSearchParams(tenantParam(tenantId));
+    const { data } = await api.get<AssetServiceInfo[]>(
+      `/assets/${encodeURIComponent(assetId)}/services?${params}`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** The retro matcher's dataset and the active tenant's queue. Viewer. */
+export async function fetchRetroMatchStatus() {
+  try {
+    const { data } = await api.get<RetroMatchStatus>("/retro-match/status");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Put every stored listener of the tenant back on the retro queue. Requires
+ * operator; it only queues — the worker drains the queue in the background. */
+export async function refreshRetroMatch() {
+  try {
+    const { data } = await api.post<RetroMatchRefreshResult>("/retro-match/refresh");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchEndpointDeviceChanges(deviceId: string, tenantId = "default") {
   try {
     const params = new URLSearchParams(tenantParam(tenantId));
@@ -2541,8 +2664,44 @@ export type VulnExceptionState =
 
 /** Which observer found it. A software finding comes from the endpoint
  * inventory: it has an installed package where a scan finding has a port, and
- * a network re-scan cannot verify it. */
-export type VulnerabilitySource = "scan" | "endpoint_software";
+ * a network re-scan cannot verify it. A `retro_match` finding was inferred
+ * from a stored service fingerprint and the NVD CPE-range dataset, not
+ * observed, and cannot be machine-verified either
+ * (docs/retro-cve-matching.md). */
+export type VulnerabilitySource = "scan" | "endpoint_software" | "retro_match";
+
+/** How sure the retro matcher is. Only the first two ever reach a tracked
+ * finding; `backport_possible` stays on the service row as a possible CVE. */
+export type RetroMatchConfidence = "vendor_advisory" | "version_range" | "backport_possible";
+
+/** What the retro matcher saw when it concluded a listener is affected.
+ * Shape from `match_fingerprint` in api/services/retro_match.py. */
+export type RetroMatchEvidence = {
+  product?: string | null;
+  version?: string | null;
+  upstream_version?: string | null;
+  /** The CPE product key (`part:vendor:product`, e.g. `a:openbsd:openssh`)
+   * the range statement is filed under. */
+  cpe?: string | null;
+  via?: "cpe" | "product_table" | "banner" | null;
+  /** The affected window as NVD states it, e.g. `>= 8.5 < 9.8`. */
+  range?: string | null;
+  dataset?: string | null;
+  feed_date?: string | null;
+  distro?: string | null;
+  distro_release?: string | null;
+  distro_revision?: string | null;
+  advisory?: {
+    provider?: string | null;
+    advisory_id?: string | null;
+    release?: string | null;
+    state?: string | null;
+    fixed_version?: string | null;
+    installed_version?: string | null;
+    feed_date?: string | null;
+    reason?: string | null;
+  } | null;
+};
 
 export type TrackedVulnerability = {
   vuln_id: string;
@@ -2638,6 +2797,10 @@ export type TrackedVulnerability = {
   fp_suppress_until?: string | null;
   fp_observations?: number;
   fp_suppressed?: boolean;
+  /** Retro matching only: the matcher's confidence and what it saw. Null for
+   * every observed finding. */
+  match_confidence?: RetroMatchConfidence | null;
+  match_evidence?: RetroMatchEvidence | null;
 };
 
 export type TicketSystem = "jira" | "servicenow" | "smax" | "defectdojo" | "other";

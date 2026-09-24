@@ -1,0 +1,27 @@
+# overlays/enrichment plus the opt-in NVD CPE-range refresh (retro CVE
+# matching, docs/retro-cve-matching.md).
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/enrichment-nvd-cpe
+#
+# Everything in overlays/enrichment's prerequisites applies here too; the
+# optional shapoclyack-nvd Secret matters more here than anywhere, since it is
+# what makes the one-time full harvest minutes instead of hours. The one thing
+# this adds is egress from the CronJob's pod to services.nvd.nist.gov, and the
+# memory to merge what comes back -- see base/enrichment-nvd-cpe/.
+#
+# Composes with the vendor advisory opt-in (their ConfigMaps have different
+# names and their memory patches agree), which is what backport checking needs:
+#
+#   components:
+#     - ../../base/enrichment
+#     - ../../base/enrichment-advisories
+#     - ../../base/enrichment-nvd-cpe
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../base/enrichment
+  - ../../base/enrichment-nvd-cpe

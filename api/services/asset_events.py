@@ -348,6 +348,28 @@ def publish_run_events(
             max_events,
             dropped,
         )
+    if settings is not None and any(e["kind"] == "new_cve" for e in envelopes):
+        # A CVE the retro matcher already announced on this port is not new to
+        # anybody subscribed: the scan's diff calls it new only because this is
+        # the first scan to observe it (docs/retro-cve-matching.md). Read from
+        # the tracker, which the run's fold has just updated.
+        from api.services import retro_findings
+
+        try:
+            announced = retro_findings.already_announced(
+                settings, tenant_id=tenant_id, envelopes=envelopes
+            )
+        except Exception:  # noqa: BLE001 - a lookup failure must not cost the run its events
+            # Fail open: a duplicate webhook is the lesser loss next to none.
+            LOG.warning("Could not check retro announcements for run %s", run_id, exc_info=True)
+            announced = set()
+        if announced:
+            envelopes = [e for e in envelopes if e["event_id"] not in announced]
+            LOG.info(
+                "Run %s: %s new_cve event(s) already announced by retro matching",
+                run_id,
+                len(announced),
+            )
     published = publish_events(nats_url, envelopes, settings=settings)
     if published:
         LOG.info(
