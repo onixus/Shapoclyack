@@ -45,9 +45,14 @@ def test_system_status_shape():
         "asn",
         "advisories_debian",
         "advisories_ubuntu",
+        # Microsoft's Update Guide (#358), reported since an offline bundle
+        # carries it (#339).
+        "advisories_msrc",
         # The NVD CPE ranges behind retro CVE matching, for the same reason.
         "nvd_cpe",
     }
+    # No bundle was ever installed on the test tree: the field is there and null.
+    assert body["enrichment_bundle"] is None
     for db in body["enrichment"]:
         assert "stale" in db
         # Provenance is always present as keys, even with no manifest to read
@@ -161,6 +166,55 @@ def test_system_status_reports_where_each_dataset_came_from(tmp_path, monkeypatc
     # as None — the payload shape must not depend on the manifest's coverage.
     assert databases["cvss4"]["origin"] is None
     assert databases["cvss4"]["source"] is None
+
+
+def test_system_status_reports_the_installed_offline_bundle(tmp_path, monkeypatch):
+    """An air-gapped site's only question about its data is "how old is what we
+    loaded, and when did we load it" (#339). The installer answers it in two
+    places GET /api/system reads: the bundle record beside the manifest, and
+    ``origin: bundle`` with each dataset's own data date in the manifest."""
+    import sys
+    from pathlib import Path
+
+    from tests.conftest import auth_headers, configured_client
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import enrichment_bundle
+
+    source = tmp_path / "connected"
+    (source / "kev").mkdir(parents=True)
+    (source / "kev" / "kev-overlay.json").write_text(
+        json.dumps(
+            {
+                "source": "cisa-kev",
+                "updated": "2026-09-20",
+                "origin_url": "https://www.cisa.gov/kev.json",
+                "entries": [f"CVE-2026-{i:05d}" for i in range(500)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "bundle.tar.gz"
+    enrichment_bundle.build_bundle(source, bundle, built_at="2026-09-21T03:00:00+00:00")
+    site = tmp_path / "site"
+    summary = enrichment_bundle.install(bundle, site)
+    monkeypatch.setenv("OCTO_ENRICHMENT_MANIFEST", str(site / "enrichment-manifest.json"))
+    monkeypatch.setenv("OCTO_KEV_DATABASE", str(site / "kev" / "kev-overlay.json"))
+
+    client = configured_client(tmp_path, monkeypatch)
+    body = client.get("/api/system", headers=auth_headers(client, "admin")).json()
+
+    assert body["enrichment_bundle"] == {
+        "bundle_id": summary["bundle_id"],
+        "schema_version": 1,
+        "built_at": "2026-09-21T03:00:00+00:00",
+        "installed_at": summary["installed_at"],
+        "datasets": ["kev"],
+    }
+    kev = {db["name"]: db for db in body["enrichment"]}["kev"]
+    assert kev["origin"] == "bundle"
+    assert kev["updated"] == "2026-09-20"
+    assert kev["usable"] is True
 
 
 def test_system_status_survives_an_unreadable_manifest(tmp_path, monkeypatch):

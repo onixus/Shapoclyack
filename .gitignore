@@ -28,6 +28,9 @@ lan-stability-*.json
 node_modules/
 dist/
 .next/
+# `make enrichment-bundle` (#339): the refreshed feeds it packs. Kept between
+# runs on purpose — the CVSS4 and NVD CPE refreshes continue what is there.
+/build/
 
 
 # Development TLS material for the kind stand (scripts/dev-tls-cert.sh).
