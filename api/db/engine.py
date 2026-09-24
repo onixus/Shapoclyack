@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from contextlib import contextmanager
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Any, Iterator
 
 from sqlalchemy import Column, Engine, MetaData, create_engine, inspect
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry, QueuePool
 
+from api.services import metrics as metrics_service
 from api.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -67,13 +72,102 @@ def _pool_kwargs(url: str) -> dict[str, int]:
     return dict(_pool_options)
 
 
+class InstrumentedQueuePool(QueuePool):
+    """The pool every Postgres engine gets: SQLAlchemy's own, with its waits timed (#334).
+
+    A checkout has no event before it starts, so neither the wait for a free
+    connection nor a checkout that gives up after OCTO_DB_POOL_TIMEOUT is
+    visible from outside the pool — the caller just gets a ``TimeoutError``,
+    which the API turns into a 500 with nothing on /metrics to say why.
+    ``_do_get`` is the hook SQLAlchemy's pool classes implement for exactly
+    this (it is what ``QueuePool`` overrides from ``Pool``), and it covers the
+    queue wait and, when the pool grows, the new connection's handshake; the
+    pre-ping and the session work after it are not the pool's time. The class
+    survives ``Engine.dispose()``: ``recreate()`` builds ``self.__class__``.
+    """
+
+    def _do_get(self) -> ConnectionPoolEntry:
+        started = time.perf_counter()
+        try:
+            return super()._do_get()
+        except sa_exc.TimeoutError:
+            metrics_service.DB_POOL_CHECKOUT_TIMEOUTS_TOTAL.inc()
+            raise
+        finally:
+            metrics_service.DB_POOL_CHECKOUT_DURATION_SECONDS.observe(time.perf_counter() - started)
+
+
+def _pool_class_kwargs(url: str) -> dict[str, Any]:
+    """The instrumented pool, where the default would be a ``QueuePool`` anyway.
+
+    Not for SQLite: an in-memory database gets a ``SingletonThreadPool``, and a
+    queue in its place would hand every thread its own empty database.
+    """
+    if url.startswith("sqlite"):
+        return {}
+    return {"poolclass": InstrumentedQueuePool}
+
+
+@dataclass(frozen=True)
+class PoolStatus:
+    """What ``Pool.status()`` prints, as numbers (#334)."""
+
+    size: int
+    max_overflow: int
+    timeout: float
+    checked_out: int
+    checked_in: int
+    overflow: int
+
+    @property
+    def saturated(self) -> bool:
+        """Whether the next checkout would have to wait for somebody's return."""
+        # A negative max_overflow is SQLAlchemy's "no limit"; Settings floors
+        # it at 0, so only a tool's unconfigured engine can have one.
+        if self.max_overflow < 0:
+            return False
+        return self.checked_out >= self.size + self.max_overflow
+
+
+def pool_status() -> PoolStatus | None:
+    """The live pool's numbers, or ``None`` with no engine or no queue to report.
+
+    Never builds an engine: a replica that has not opened its database yet has
+    no pool, which is a different answer from an empty one.
+    """
+    with _lock:
+        engine = _engine
+    if engine is None or not isinstance(engine.pool, QueuePool):
+        return None
+    pool = engine.pool
+    return PoolStatus(
+        size=pool.size(),
+        # Private, but read by the pool's own status() and pinned by
+        # tests/test_db_engine.py since #335; there is no public accessor.
+        max_overflow=pool._max_overflow,  # noqa: SLF001
+        timeout=pool._timeout,  # noqa: SLF001
+        checked_out=pool.checkedout(),
+        checked_in=pool.checkedin(),
+        # overflow() starts at -pool_size and counts up as connections open,
+        # so it is negative until the pool is full; only the positive part is
+        # connections beyond the pool.
+        overflow=max(0, pool.overflow()),
+    )
+
+
 def get_engine(url: str) -> Engine:
     global _engine, _engine_url, _SessionLocal
     with _lock:
         if _engine is None or _engine_url != url:
             if _engine is not None:
                 _engine.dispose()
-            _engine = create_engine(url, pool_pre_ping=True, future=True, **_pool_kwargs(url))
+            _engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                future=True,
+                **_pool_class_kwargs(url),
+                **_pool_kwargs(url),
+            )
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
             _create_schema_if_unmanaged(_engine)
