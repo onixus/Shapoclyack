@@ -382,7 +382,7 @@ dataset's floor (`usable`), and — the field that matters — `origin`:
 | `seed` | The committed baseline, never replaced by a fetch |
 | `stale` | A fetch was attempted and failed; the previous data is still in place |
 | `missing` | No data at this path at all |
-| `bundle` | Installed from an offline bundle ([air-gap.md](air-gap.md)); `GET /api/system`'s `enrichment_bundle` says which and when |
+| `bundle` | Installed from an offline bundle ([air-gap.md](air-gap.md)); `GET /api/system`'s `enrichment_bundle` says which and when, and `source_origin` what the connected side called the dataset (`stale` there is degraded here too) |
 
 A run that did not *attempt* a dataset — the advisory opt-in being off, or
 `OCTO_ENRICHMENT_OFFLINE=true` on an air-gapped installation, which skips every

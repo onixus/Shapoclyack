@@ -73,24 +73,28 @@ kubectl -n network-scan create secret docker-registry shapoclyack-registry \
   --docker-username=<robot-account> --docker-password=<token>
 ```
 
-To use an existing secret under another name, uncomment the ServiceAccount
-patch at the end of `overlays/airgap/kustomization.yaml` (every ServiceAccount
-in the render has exactly one entry, so `/imagePullSecrets/0/name` is the one to
-replace).
+The datastores, the backup CronJob and the online enrichment CronJob run as
+the namespace's `default` ServiceAccount, which belongs to the namespace, not to
+these manifests — declaring it would make `kubectl delete -k` delete it and, on
+platforms that inject their own pull secrets into it, replace theirs.
+`overlays/airgap` therefore puts the secret on those pods' own specs, with two
+patches that cover every workload kind, so the overlay needs no manual step and
+a test renders it and checks that every pod can pull. To use an existing secret
+under another name, change the name in those two patches and uncomment the
+ServiceAccount patch below them.
 
-The datastores, the backup CronJob, the sensors (`base/agents`) and the online
-enrichment CronJob run as the namespace's `default` ServiceAccount. That
-account belongs to the namespace, not to these manifests — declaring it would
-make `kubectl delete -k` delete it and, on platforms that inject their own pull
-secrets into it, replace theirs — so it is patched once instead:
+An overlay without those patches (the sensors in `base/agents`, for example)
+gets the same result from one command:
 
 ```bash
 kubectl -n network-scan patch serviceaccount default \
   -p '{"imagePullSecrets":[{"name":"shapoclyack-registry"}]}'
 ```
 
-A cluster whose nodes already authenticate to the registry (a kubelet
-credential provider, or containerd's own registry config) needs neither.
+A workload in another namespace needs the secret created in that namespace
+too — a pull secret is namespaced. A cluster whose nodes already authenticate
+to the registry (a kubelet credential provider, or containerd's own registry
+config) needs none of this.
 
 ## 2. Feeds: a mirror, or a bundle
 
@@ -138,18 +142,27 @@ Notes that matter:
   read from the same path under the mirror, and a month listed on any other
   host is skipped rather than fetched — a mirror of the index alone must not
   quietly send twelve requests to Microsoft.
-- **Proxy and trust store.** Every download goes through
-  `scripts/feed_fetch.py`, which uses the API's egress module: `OCTO_HTTPS_PROXY`
-  / `OCTO_HTTP_PROXY` / `OCTO_NO_PROXY`, and `OCTO_CA_BUNDLE` **added to** the
-  system trust store ([network requirements](network-requirements.md#proxy-and-ca-variables)).
-  TLS verification is never turned off. A redirect from `https` to anything
-  weaker is refused.
+- **Proxy and trust store.** The scripts download through
+  `scripts/feed_fetch.py` and the in-process fetchers (Debian, Ubuntu, MSRC,
+  NVD CPE) through `api/services/advisories/fetch.py`; both use the API's
+  egress module: `OCTO_HTTPS_PROXY` / `OCTO_HTTP_PROXY` / `OCTO_NO_PROXY`, and
+  `OCTO_CA_BUNDLE` **added to** the system trust store
+  ([network requirements](network-requirements.md#proxy-and-ca-variables)).
+  The nuclei-templates git fetch gets the same three proxy variables and the
+  same trust store. TLS verification is never turned off, and both paths
+  refuse a redirect from `https` to anything weaker.
+- **A deadline is a deadline.** Each download has a wall-clock limit that also
+  holds while a read is waiting: a mirror that trickles one byte at a time is
+  cut off when the time is up, not when it finishes.
+- **`NVD_API_KEY` goes to `https` only.** Pointed at a plain-`http` mirror, the
+  NVD fetchers withhold the key (with a warning) and run anonymously.
 - **Plain `http` works and is noted.** An internal mirror on `http://` prints a
   warning on every fetch: nothing vouches for those bytes in transit. Prefer
   `https` with the mirror's CA in `OCTO_CA_BUNDLE`.
 - **No credentials in logs or data.** Where a URL is printed, and where it is
   recorded as a dataset's `origin_url`, userinfo is dropped and credential-like
-  query parameters (`license_key`, `apiKey`, `token`, …) read `REDACTED`.
+  query parameters (`license_key`, `apiKey`, `token`, `cred…`, `pass…`, `pwd`,
+  `session…`, `…signature`) read `REDACTED`.
 - **Opt-ins are unchanged.** The vendor advisories and NVD CPE ranges are still
   fetched only with `OCTO_ADVISORY_FETCH_ENABLED` / `OCTO_NVD_CPE_FETCH_ENABLED`
   ([configuration](configuration.md#vendor-advisory-datasets)); the variables
@@ -255,8 +268,10 @@ last one adds:
 - **`enrichment-bundle-inbox`**, an RWO volume the bundle is copied into;
 - **`enrichment-bundle-load`**, a CronJob (every 15 minutes) running
   `scripts/enrichment_bundle.py install /inbox/enrichment-bundle.tar.gz --dir
-  /app/scanner/data --missing-ok`. A run with no bundle, or with the bundle
-  already installed, changes nothing. Hardened like every workload: non-root,
+  /app/scanner/data --missing-ok`. A run with no bundle changes nothing, and a
+  run whose bundle is already installed reads only the bundle's first member —
+  its manifest — and stops: nothing is unpacked or written. Hardened like
+  every workload: non-root,
   `RuntimeDefault` seccomp, read-only root filesystem, all capabilities dropped,
   no ServiceAccount token, the inbox mounted read-only;
 - **`enrichment-refresh` suspended** and the API's `fetch-enrichment`
@@ -290,6 +305,38 @@ network; the same command works on a host with no Kubernetes at all; and who
 put which file into the inbox is in the cluster's own audit log, next to who
 created the Job that loaded it.
 
+### Trust: who decides what is installed
+
+Without a pin, **write access to the inbox volume is the trust boundary**:
+whoever can put a file there chooses the data, within everything the installer
+checks below — which is about the file being well formed and no worse than
+what it replaces, not about who made it. That is the right boundary only if
+the inbox is as tightly held as the enrichment volume itself.
+
+A pin moves the decision to a second, audited channel. Record the bundle's
+sha256 on the connected side when it is built (`make enrichment-bundle` prints
+it), carry it over *separately* from the file — a change ticket, the build log —
+and hand it to the loader as a ConfigMap, which the loader CronJob reads as
+`OCTO_ENRICHMENT_BUNDLE_SHA256`:
+
+```bash
+kubectl -n network-scan create configmap shapoclyack-enrichment-bundle \
+  --from-literal=sha256=<the sha256 recorded on the connected side> \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+With it set, only the bundle file with exactly that checksum is installed; any
+other file in the inbox is refused (`the bundle's sha256 is …, not the pinned
+…`). The checksum is computed over the very bytes the installer parses, not a
+second read of the path. Computing the pin from the file after it has crossed
+the gap would defeat the point. On a single host the same pin is
+`--expect-sha256` (or the same variable).
+
+A pin is one bundle at a time — the ConfigMap changes with each one — and it
+proves the file is the one that was built, not that the build machine was
+sound. Signing bundles would need key management on both sides of the gap;
+this release does not do it.
+
 ### Load: a single host
 
 The same command, pointed at the enrichment directory the API and scanner read
@@ -303,24 +350,30 @@ OCTO_ENRICHMENT_OFFLINE=true scripts/fetch-enrichment.sh   # if something runs t
 
 ### What the installer refuses
 
-The bundle is the one file an attacker who can reach the inbox gets to choose
-every byte of, so the extractor is not `tarfile.extractall`:
+Whatever the trust setting, the archive itself is parsed as untrusted input,
+so the extractor is not `tarfile.extractall`:
 
-- anything but a plain regular file — symlinks, hard links, devices, FIFOs,
-  directories, sparse files, pax and GNU long-name headers;
+- a bundle path that is not a regular file (a FIFO, a device) — decided on the
+  opened descriptor, not by a separate check first;
+- anything but a plain regular-file member — symlinks, hard links, devices,
+  FIFOs, directories, sparse files, pax and GNU long-name headers — and a
+  member whose size field is negative;
 - a path that is absolute, contains `..` or an empty component, or is not one of
   the enrichment dataset paths — whatever the manifest says;
 - a manifest that is not the first member, lists a path twice, is of a newer
-  `schema_version` than this release reads, or declares more than 4 GiB
+  `schema_version` than this release reads, says it was built more than a day
+  in the future of this host's clock (installed, it would make every genuine
+  bundle "older than the installed one"), or declares more than 4 GiB
   (`--max-bytes`) or a compression ratio over 100 (`--max-ratio`);
 - a member the manifest does not list, a member listed but missing, a size or
   sha256 that disagrees with the manifest, a truncated archive, a bad gzip CRC,
   data after the end-of-archive marker, and any stream that decompresses past
   what the manifest declared;
-- a JSON dataset that does not parse or has no `entries`, a `.mmdb` that is not
-  a MaxMind DB, and a dataset below its usability floor that would replace one
-  above it — a truncated feed on the connected side must not be carried across
-  and published over a corpus;
+- a JSON dataset that does not parse (including one that is not UTF-8 or is
+  nested past the parser's limit) or has no `entries`, a `.mmdb` the MaxMind
+  reader cannot open, and a dataset below its usability floor that would
+  replace one above it — a truncated feed on the connected side must not be
+  carried across and published over a corpus;
 - a bundle built before the one installed (a replayed old bundle is how last
   month's KEV would come back) — unless `--allow-older`, for a deliberate
   rollback.
@@ -332,16 +385,38 @@ renamed into place (a reader sees the old file or the new one, never neither),
 and any failure puts the old set back. A loader killed mid-swap leaves the
 journal, and the next run rolls back before it does anything else.
 
+What that guarantee rests on, precisely: every staged file, the journal and the
+two records are fsynced before they are renamed, and each directory a rename
+lands in is fsynced after it, so after a power loss the directory holds either
+the journal (and the next run rolls back) or the finished commit. It assumes a
+filesystem that honours fsync and rename(2) atomicity; for a network filesystem
+that is the storage's promise, not this tool's. A journal that cannot be read,
+or that names anything but this tool's own backup directory and dataset paths,
+is not guessed at: the install stops with exit `2`, and the journal and the
+backups it names stay exactly where they are for someone to look at.
+
+Installed files keep **their age**: each is stamped with the time it was
+fetched on the connected side (never later than now), so `age_days` and
+`stale` in `GET /api/system`, and the risk model's own staleness warning, see
+the data's age rather than the moment it was unpacked. And what the connected
+side called each dataset crosses the gap too, as `source_origin` beside
+`origin: bundle` — a feed that was down when the bundle was built reads
+`source_origin: stale` here, and makes the offline refresh report "degraded".
+
+The installer and every manifest rewrite (the API's offline initContainer
+among them) take the same lock on the enrichment directory, so a rollout
+during an install cannot write the pre-install origins back.
+
 Exit codes: `0` installed, already installed, or (`--missing-ok`) no bundle;
 `1` refused — the reason is on stderr and as a JSON line on stdout; `2` the
-install could not run (another install holds the lock, the directory is
-unusable).
+install could not run (the lock is held past `--lock-timeout`, an unusable
+journal, the directory is unusable).
 
 ### Verify
 
 ```bash
 curl -sH "Authorization: Bearer $TOKEN" https://shapoclyack.internal/api/system \
-  | jq '{bundle: .enrichment_bundle, data: [.enrichment[] | {name, origin, updated, usable, age_days}]}'
+  | jq '{bundle: .enrichment_bundle, data: [.enrichment[] | {name, origin, source_origin, updated, usable, age_days, stale}]}'
 ```
 
 `enrichment_bundle` is the installed bundle — `bundle_id` (the sha256 of its
@@ -355,8 +430,11 @@ install (bundle, built/installed times, host, user).
 ## 5. nuclei templates and vulscan
 
 Both are tool data baked into the image at build time, not enrichment
-datasets, so they are not in the bundle. The image's copies are current as of
-the release; refreshing them without a new image:
+datasets, so they are not in the bundle. **In Kubernetes the scanner uses the
+copies in the image it runs** — nothing in the manifests mounts templates from
+elsewhere — so there they are refreshed by mirroring a newer release image, or
+by building one inside the perimeter with the script below pointed at a mirror.
+The script is for that image build and for single-host installs.
 
 **nuclei templates** come from a git mirror of
 `projectdiscovery/nuclei-templates`:
@@ -365,17 +443,21 @@ the release; refreshing them without a new image:
 NUCLEI_TEMPLATES_REPO=https://git.internal.example/mirrors/nuclei-templates.git \
 NUCLEI_TEMPLATES_REF=v10.2.8 \
 NUCLEI_TEMPLATES_COMMIT=<the 40-character commit that tag names> \
-  scripts/fetch-nuclei-templates.sh /data/nuclei-templates
+  scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates
 ```
 
 `NUCLEI_TEMPLATES_REF` is required with a mirror — a tag or a full commit id,
 never "the default branch today". `NUCLEI_TEMPLATES_COMMIT` pins it: a tag on a
 mirror can be moved, a commit cannot, and a mismatch is refused. The checkout
-is staged and swapped in whole, the resolved commit is written to
-`.shapoclyack-templates.json`, and nuclei is never asked to update anything.
-Point `nuclei.templates_dir` (scan config) and `OCTO_NUCLEI_TEMPLATES_DIR` (API)
-at the directory. `OCTO_HTTPS_PROXY` and `OCTO_CA_BUNDLE` apply to the git
-fetch as to everything else.
+is staged beside the destination and swapped in by rename; when the
+destination is itself a mount point (which cannot be renamed) the checkout is
+staged inside it and the contents are swapped, with the old ones put back on
+any failure — not atomic, so a scan starting mid-swap can see a partial pack.
+The resolved commit is written to `.shapoclyack-templates.json`, and nuclei is
+never asked to update anything. On a single host, point `nuclei.templates_dir`
+(scan config) and `OCTO_NUCLEI_TEMPLATES_DIR` (API) at the directory if it is
+not the default. `OCTO_HTTPS_PROXY`, `OCTO_HTTP_PROXY`, `OCTO_NO_PROXY` and
+`OCTO_CA_BUNDLE` apply to the git fetch as to everything else.
 
 **At scan time nothing phones home.** The scanner runs nuclei, naabu and dnsx
 with `-disable-update-check` on every invocation (a test holds every call site
@@ -429,9 +511,21 @@ Nothing here fails a scan; each is either off by default or degrades to
 
 The public-internet surface of your *own* assets (the EASM view) is by
 definition not visible from inside an air gap: scan targets are whatever the
-installation can reach. Everything the matchers and the risk model need —
-CVSS, EPSS, KEV, exploit maturity, vendor advisories, the CPE ranges — comes
-from the bundle.
+installation can reach.
+
+What the bundle reaches, precisely. **The API** — risk scoring (CVSS v4,
+EPSS, KEV, exploit maturity), software→CVE matching (the vendor advisories),
+retro matching (the CPE ranges), GeoIP on the API side and the System page —
+reads the enrichment volume the bundle is installed into. **A scan** reads
+GeoIP, ASN and the CVSS v4 overlay at scan time from wherever *its* pod finds
+them: the scheduled scan CronJob and scans the API runs itself mount the same
+volume and use the bundle's copies; the one-off scan Job (`job.yaml`) and remote
+sensors use the copies baked into their image. Where scans run in a separate
+executor namespace (the Kubernetes hardening of
+[#338](https://github.com/onixus/Shapoclyack/issues/338)), no scan pod can mount
+the volume — a PVC is namespaced — and every scan uses the image's copies; the
+API side is unchanged. Refresh scan-time GeoIP/CVSS4 there by mirroring a newer
+image.
 
 ## See also
 

@@ -14,24 +14,33 @@ All notable changes to Shapoclyack are documented in this file.
   index's month URLs are rebased onto it, and a month on any other host is
   skipped), `EXPLOITDB_CSV_URL`, `METASPLOIT_MODULES_URL`, `VULSCAN_BASE_URLS` —
   read by the scripts and the in-process fetchers alike, and every download
-  goes through `scripts/feed_fetch.py` and so through `OCTO_HTTPS_PROXY` /
-  `OCTO_CA_BUNDLE` (#359), refusing an `https`→`http` redirect and recording
-  its source without credentials. Where there is no mirror at all, `make
+  goes through the egress settings of #359 (`OCTO_HTTPS_PROXY` /
+  `OCTO_CA_BUNDLE`), refusing an `https`→`http` redirect, holding its
+  deadline during a trickling read, never sending `NVD_API_KEY` over plain
+  `http`, and recording its source without credentials. Where there is no mirror at all, `make
   enrichment-bundle` refreshes every feed on a connected host into one
   deterministic tarball with a manifest (per-file sha256, size, source URL,
   data date, schema version), and `scripts/enrichment_bundle.py install` loads
   it: regular files at whitelisted dataset paths only, every size and hash
   checked against the manifest, a metered stream that stops a compression bomb
   at what it declared, content checked (a usable dataset is never replaced by
-  a stub, an older bundle is refused without `--allow-older`), and an atomic,
-  journaled swap that a crash rolls back. The `overlays/airgap` overlay rewrites
-  images to an internal registry and adds `base/enrichment-bundle`: a hardened
-  loader CronJob reading an inbox volume, the online refresh suspended, and the
-  API's cold-start refresh run with the new `OCTO_ENRICHMENT_OFFLINE`. Installed
-  datasets report `origin: bundle`, and `GET /api/system` gains
-  `enrichment_bundle` (id, built/installed times) and the MSRC dataset. The
-  `scanner` and `api` ServiceAccounts carry `imagePullSecrets`
-  (`shapoclyack-registry`, a placeholder). `fetch-nuclei-templates.sh` takes
+  a stub, a `.mmdb` must open in the MaxMind reader, a bundle older than the
+  installed one needs `--allow-older` and one dated in the future is refused),
+  and an atomic, fsynced, journaled swap that a crash rolls back — or, with a
+  journal it cannot trust, stops without touching anything. An optional pin
+  (`OCTO_ENRICHMENT_BUNDLE_SHA256`, a ConfigMap in the overlay) installs only
+  the bundle with that checksum; without it, write access to the inbox is the
+  trust boundary. Installed files keep the age they had on the connected side,
+  and a dataset that was stale there stays `source_origin: stale` here. The
+  `overlays/airgap` overlay rewrites images to an internal registry, puts the
+  pull secret on every pod, and adds `base/enrichment-bundle`: a hardened
+  loader CronJob reading an inbox volume (a no-op run reads only the bundle's
+  manifest), the online refresh suspended, and the API's cold-start refresh
+  run with the new `OCTO_ENRICHMENT_OFFLINE`, which waits for an install in
+  progress. Installed datasets report `origin: bundle`, and `GET /api/system`
+  gains `enrichment_bundle` (id, built/installed times), `source_origin` and
+  the MSRC dataset. The `scanner` and `api` ServiceAccounts carry
+  `imagePullSecrets` (`shapoclyack-registry`, a placeholder). `fetch-nuclei-templates.sh` takes
   templates from a git mirror pinned by commit (`NUCLEI_TEMPLATES_REPO` /
   `_REF` / `_COMMIT`) without asking nuclei to update, and the scanner now runs
   naabu and dnsx, as it already ran nuclei, with `-disable-update-check`: each
