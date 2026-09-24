@@ -257,3 +257,22 @@ def test_a_tool_the_kernel_will_not_exec_is_named_as_that(monkeypatch):
 
     monkeypatch.setattr(system_status.subprocess, "run", hang)
     assert "timed out" in system_status._probe_tool(["nuclei", "-version"])["error"]
+
+
+def test_a_tool_that_is_not_executable_is_not_blamed_on_capabilities(monkeypatch):
+    """PermissionError is EACCES as well as EPERM, and EACCES is the file
+    mode or a noexec mount — a missing capability never produces it. Naming
+    NET_RAW there would send an operator to the wrong fix (#338 review)."""
+    import errno
+
+    from api.services import system_status
+
+    def refuse(command, **_kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied", command[0])
+
+    monkeypatch.setattr(system_status.shutil, "which", lambda binary: f"/usr/local/bin/{binary}")
+    monkeypatch.setattr(system_status.subprocess, "run", refuse)
+    probed = system_status._probe_tool(["naabu", "-version"])
+    assert probed["version"] is None
+    assert "NET_RAW" not in probed["error"]
+    assert "Permission denied" in probed["error"]

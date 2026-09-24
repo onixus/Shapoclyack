@@ -6,6 +6,7 @@ ever included in the payload."""
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -69,7 +70,12 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
             timeout=5,
             check=False,
         )
-    except PermissionError:
+    except PermissionError as exc:
+        if exc.errno != errno.EPERM:
+            # EACCES: the file mode or a noexec mount. A capability the
+            # bounding set lacks is always EPERM, so naming one here would send
+            # an operator to the wrong fix.
+            return {"version": None, "error": str(exc)}
         # EPERM from execve itself: the binary carries file capabilities
         # (`setcap cap_net_raw,cap_net_admin+eip` in the Dockerfiles) that this
         # container's bounding set lacks, which is the API pod's restricted
