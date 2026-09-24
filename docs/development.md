@@ -31,8 +31,9 @@ python -m pip install \
 
 The images and CI install the hash-pinned `requirements*.lock` compiled from
 these files instead. After editing a `requirements*.txt`, regenerate them with
-`scripts/lock-python-deps.sh`; `tests/test_python_locks.py` fails until you do
-([supply-chain.md](supply-chain.md#pinned-build-inputs)).
+`scripts/lock-python-deps.sh` (it wants the pinned uv, `uv==0.12.18`;
+`OCTO_LOCK_ALLOW_UV_DRIFT=1` accepts another); `tests/test_python_locks.py`
+fails until you do ([supply-chain.md](supply-chain.md#pinned-build-inputs)).
 
 Run the baseline checks:
 

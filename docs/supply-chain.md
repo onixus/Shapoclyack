@@ -23,7 +23,10 @@ is:
 - **attested** with a signed [SLSA v1](https://slsa.dev/spec/v1.0/provenance)
   provenance statement per platform, recorded by BuildKit during the build
   (`--provenance mode=max,version=v1`) and attached with
-  `cosign attest --type slsaprovenance1`.
+  `cosign attest --type slsaprovenance1` twice: on the index — what the
+  manifests and admission policies name — and on that platform's own
+  manifest, so a reference to a platform digest verifies the same way. Every
+  platform must have provenance or nothing is signed.
 
 BuildKit also writes an SPDX SBOM and the same provenance into the image index
 itself. They are not signed separately: the index digest is a hash over them,
@@ -49,11 +52,20 @@ Trust either identity or both — the example policies accept either and are
 easy to narrow to one.
 
 Both publishers run the same script, `scripts/sign-release-image.sh`: push by
-digest → sign → attest provenance → verify both with the customer's identity →
-tag. Any failure fails the release and leaves only an untagged, unsigned
-digest in the registry. There is no switch that skips it; a Jenkins
-`DRY_RUN` build pushes nothing, signs nothing, and turns yellow if the signing
-key is not set up.
+digest → sign → attest provenance → verify all of it with the customer's
+identity → check what each tag would point at (`imagetools create --dry-run`
+must hash to the signed digest) → tag → read the tag back. Any failure fails
+the release and leaves only an untagged digest in the registry. There is no
+switch that skips it; a Jenkins `DRY_RUN` build pushes nothing, signs nothing,
+and turns yellow if the signing key is not set up.
+
+`Jenkinsfile.publish` builds the tag it is given, but runs the signing scripts
+and trusts the `cosign.pub` of **its own revision** (the branch the job loads
+the pipeline from, i.e. `main`), checked out next to the tag in
+`.release-tooling/`. A tag therefore cannot bring older signing code, and a tag
+cut before signing existed can still be re-published and signed. The job must
+be a "Pipeline script from SCM" job for that; an inline copy of the pipeline
+stops with a message saying so.
 
 ## Verify an image
 
@@ -72,7 +84,9 @@ cosign verify --key cosign.pub -a "release=${TAG}" \
 
 Fetch `cosign.pub` from the release tag, not from `main`, and compare it with
 the fingerprint published in the release notes (a second channel):
-`openssl pkey -pubin -in cosign.pub -outform DER | sha256sum`.
+`openssl pkey -pubin -in cosign.pub -outform DER | sha256sum`. A tag cut before
+signing existed has no `cosign.pub`; if such a release was re-published and
+signed later, its release notes name the key (the one on `main` at the time).
 
 **GitHub Actions keyless** (images from `docker-publish.yml`):
 
@@ -95,10 +109,16 @@ cosign verify-attestation --key cosign.pub --type slsaprovenance1 \
   | jq -r .payload | base64 -d | jq '.predicate.buildDefinition.externalParameters'
 ```
 
-(or the keyless identity flags instead of `--key`). One statement per
-platform; `internalParameters.builderPlatform` says which. The predicate is
-BuildKit's: the Dockerfile, build arguments (`INSTALL_NMAP`, `PULSE_VERSION`,
-`ENRICHMENT_STRICT`), resolved base images and the git source.
+(or the keyless identity flags instead of `--key`). On the index digest there
+is one statement per platform; on a platform manifest's digest, just that
+platform's. Which platform a statement describes shows in
+`.predicate.buildDefinition.resolvedDependencies`: the base images are listed
+as `pkg:docker/…?platform=linux%2Farm64`. Do not go by
+`internalParameters.builderPlatform` — that is the machine that ran BuildKit,
+and on the release Jenkins (Apple silicon, amd64 under QEMU) it reads
+`linux/arm64` for both. The predicate is BuildKit's: the Dockerfile, build
+arguments (`INSTALL_NMAP`, `PULSE_VERSION`, `ENRICHMENT_STRICT`), resolved base
+images and the git source.
 
 ### SBOM
 
@@ -126,10 +146,11 @@ Two examples, equivalent in effect, live next to the other optional manifests:
 
 Both require, for every `ghcr.io/onixus/shapoclyack-*` image: a digest in the
 reference, a signature from one of the two identities above, and a SLSA v1
-provenance attestation from the same identity. The release key is read from a
-Secret created from `cosign.pub`; the header of each file has the command.
-policy-controller only enforces in namespaces labelled
-`policy.sigstore.dev/include=true`.
+provenance attestation from the same identity. That holds for the index digest
+the manifests use and for a single platform's manifest digest alike. The
+release key is read from a Secret created from `cosign.pub`; the header of
+each file has the command. policy-controller only enforces in namespaces
+labelled `policy.sigstore.dev/include=true`.
 
 `tests/test_admission_policies.py` parses both files and fails if the keyless
 subject stops matching the publish workflow at exactly the release tags
@@ -138,27 +159,80 @@ image globs, or if either policy stops requiring provenance. The examples were
 also validated against the upstream Kyverno and policy-controller CRD schemas
 when they were written.
 
-A mirror (air-gapped registry) needs the signatures copied along with the
-images — `cosign copy` does both — and the policies' image globs pointed at
-the mirror.
+### Air-gapped clusters
+
+Mirroring the images is not enough on its own. As shipped, both policies
+reach the public Sigstore infrastructure at admission time, and in a cluster
+without that egress **they reject every Shapoclyack pod** (Kyverno reports
+`failed to get roots from fulcio: initializing tuf: …`):
+
+- the release-key entries check that each signature is in the Rekor
+  transparency log. The inclusion proof travels with the signature, but the
+  Rekor public key that checks it comes from Sigstore's TUF repository
+  (`tuf-repo-cdn.sigstore.dev`);
+- the keyless entries also need the Fulcio root and intermediate certificates
+  and the certificate-transparency log key, from the same TUF repository.
+
+What an air-gapped installation needs:
+
+1. **The images and their signatures, together.** `cosign copy
+   ghcr.io/onixus/shapoclyack-aio:<tag>@sha256:<digest> <mirror>/shapoclyack-aio:<tag>`
+   copies the signature and attestation tags with the image (plain
+   `crane`/`skopeo` copies do not). Point the policies' image globs at the
+   mirror.
+2. **The trust roots, offline**, in one of these forms:
+   - *Kyverno, a TUF mirror:* serve a copy of the Sigstore TUF repository
+     inside the network and start the admission controller with
+     `--tufMirror=<url>` and `--tufRoot=<path or url of its root.json>` (or
+     `--tufRootRaw=<the file's contents>`).
+   - *Kyverno, keys in the policy:* per entry, `rekor.pubkey` (the Rekor
+     public key, PEM) and, for keyless, `roots` (Fulcio root and
+     intermediate, PEM) and `ctlog.pubkey`. Take them from the TUF
+     repository's `trusted_root.json` on a connected machine and review them
+     like any other trust anchor.
+   - *policy-controller:* a `TrustRoot` resource (`policy.sigstore.dev/v1alpha1`)
+     holding the same material — `spec.sigstoreKeys` (certificate authorities,
+     transparency logs, CT logs), `spec.repository` (a serialized TUF mirror)
+     or `spec.remote` (a TUF mirror URL and its root) — referenced from the
+     authorities by `ctlog.trustRootRef` and `keyless.trustRootRef`.
+3. **Or, knowingly, no transparency log.** Keep only the release-key entry
+   and set `rekor.ignoreTlog: true` and `ctlog.ignoreSCT: true` (Kyverno), or
+   drop the authority's `ctlog` block (policy-controller). The signature is
+   still checked against `cosign.pub`; what is lost is the log: a signature
+   made with a stolen key, at any time, is accepted, and there is no public
+   record to notice it by. Keyless cannot be verified this way at all — its
+   ten-minute certificate is only meaningful with the log's (or a timestamp
+   authority's) proof of when it was used — so drop the keyless entry too.
+
+Option 2 keeps every guarantee of the connected setup and is the one to aim
+for; option 3 is a documented step down, not a default. The rest of an
+offline installation — enrichment data, pull secrets for a mirror — is
+[#339](https://github.com/onixus/Shapoclyack/issues/339).
 
 ## Release key: one-time setup and rotation (maintainers)
 
-`Jenkinsfile.publish` refuses to publish until this is done.
+`Jenkinsfile.publish` refuses to publish until this is done; the `Signing key`
+stage says so and points here. `cosign.key` is in `.gitignore`.
 
 1. Generate the pair on a trusted machine:
    `cosign generate-key-pair` (asks for a password; writes `cosign.key` and
-   `cosign.pub`). A KMS-held key works the same way
-   (`cosign generate-key-pair --kms awskms:///alias/shapoclyack-release`, or
-   `gcpkms://`, `azurekms://`, `hashivault://`); `scripts/sign-release-image.sh`
-   takes the URI as `--key` unchanged, and `Jenkinsfile.publish` then binds
-   the KMS credentials instead of the key file.
+   `cosign.pub`).
 2. In Jenkins → Credentials: `COSIGN_PRIVATE_KEY` (Secret file: `cosign.key`)
    and `COSIGN_PASSWORD` (Secret text).
-3. Commit `cosign.pub` at the repository root through a reviewed PR and
-   publish its fingerprint in the next release notes.
+3. Commit `cosign.pub` at the repository root through a reviewed PR — on the
+   branch the publish job loads the pipeline from, since that is where the
+   pipeline reads it — and publish its fingerprint in the next release notes.
+   Release tags cut from then on carry it too, which is where customers fetch
+   it. `tests/test_image_signing.py` checks that it parses as a public key.
 4. Keep an offline backup of `cosign.key`; no copy stays on the machine that
    generated it.
+
+A KMS-held key (`cosign generate-key-pair --kms awskms:///alias/shapoclyack-release`,
+or `gcpkms://`, `azurekms://`, `hashivault://`) keeps the private half out of
+Jenkins entirely. `scripts/sign-release-image.sh` takes the URI as `--key`
+unchanged, but `Jenkinsfile.publish` binds a **file** credential today: using
+KMS means changing its `withCredentials` blocks (the pre-flight and the
+signing step) to pass the URI and the KMS provider's own credentials.
 
 The `Signing key` stage checks, before anything is built, that the Jenkins
 credential is the private half of the committed `cosign.pub` — a pipeline
@@ -168,7 +242,8 @@ downstream.
 **Rotation:** generate a new pair, replace `cosign.pub` and the Jenkins
 credentials in one change, and announce it. Releases signed before stay
 verifiable with the `cosign.pub` at their own tag, which is why verification
-always fetches the key from the release tag. **Compromise:** publish an
+always fetches the key from the release tag — and why a tag should be
+published before the key changes under it. **Compromise:** publish an
 advisory naming the affected window; Rekor timestamps every signature, so the
 set signed with the leaked key is enumerable.
 
@@ -178,14 +253,17 @@ set signed with the leaked key is enumerable.
 `golang`, `debian` and `node` build stages — every `image:` in `k8s/`, and every
 image the pipelines run (Jenkins stage images, Trivy, Syft, Semgrep, the
 BuildKit daemon, the SBOM generator, QEMU, the e2e/load targets, the server
-installer's Postgres) is `name:tag@sha256:<index digest>`.
-`tests/test_image_pins.py` fails on a new reference without a digest; the only
-exceptions are images the same job builds (`network-scan-cli:*`, the kind
-`kind-dev` image), listed in the test with the reason.
+installer's Postgres, the SSH test server) is `name:tag@sha256:<index digest>`.
+`tests/test_image_pins.py` fails on a new reference without a digest — or
+without a tag, since a bare `name@sha256:…` gives Renovate nothing to compare
+a newer release with — and on a pin in a Jenkinsfile, script or the installer
+that none of Renovate's regex managers reads. The only exceptions are images
+the same job builds (`network-scan-cli:*`, the kind `kind-dev` image), listed
+in the test with the reason.
 
 **Python dependencies.** `requirements*.txt` are the human-edited inputs;
 `scripts/lock-python-deps.sh` compiles them with `uv pip compile --universal
---generate-hashes` into `requirements*.lock`:
+--no-strip-extras --generate-hashes` into `requirements*.lock`:
 
 | Lock | Input | Installed by |
 |---|---|---|
@@ -206,11 +284,23 @@ python -m pip install uv==0.12.18      # the version the script checks for
 scripts/lock-python-deps.sh            # --upgrade-package NAME to move one transitive pin
 ```
 
+The script refuses a uv other than the one it pins, because another release
+can order or annotate the output differently and turn every relock into a
+noisy diff; `OCTO_LOCK_ALLOW_UV_DRIFT=1` runs it anyway (a script switch like
+`OCTO_LINT_ALLOW_RUFF_DRIFT`, not an application setting).
+
 `tests/test_python_locks.py` (in the PR gate) fails when a lock no longer
-satisfies its input, still carries a direct dependency its input dropped, has
+satisfies its input — a version or an extra (`psycopg[binary]` gaining `pool`
+without a relock) —, still carries a direct dependency its input dropped, has
 an unhashed entry, disagrees with another lock on a shared package's version,
-or when any image or pipeline installs something other than a lock. A local
-development environment may keep installing the `.txt` files.
+or when any image or pipeline installs something other than a lock; the CI
+pip cache is keyed on the lock, too. A local development environment may keep
+installing the `.txt` files.
+
+One install is deliberately not locked: the Jenkins `Smoke` stage puts pytest
+into the throwaway container it tests the just-built image in (`pip install
+--user pytest`). Nothing it installs ships, and the image's own dependencies
+came from the lock; `tests/test_python_locks.py` lists it as the one exception.
 
 The web console's `npm ci` already verifies every package against the sha512
 integrity in `web-next/package-lock.json`, and Go modules built in the images
