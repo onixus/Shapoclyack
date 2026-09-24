@@ -8,8 +8,12 @@
 #   check rules  every dashboard query, as a recording rule
 #                (k8s/scripts/grafana-queries-as-rules.py) — the panels parse
 #
-# promtool comes from $PROMTOOL, else from PATH, else from the pinned Prometheus
-# image through docker — which is what both pipelines have always used.
+# promtool comes from the pinned Prometheus image through docker — what both
+# pipelines have always used — unless a local one is the same version: $PROMTOOL
+# must be (or the script stops, since it was asked for explicitly), a promtool on
+# PATH is used only if it is. A local pass is then worth what the CI pass is.
+# PROMTOOL_ALLOW_VERSION_DRIFT=1 accepts an explicit $PROMTOOL of another
+# version, for deliberately trying a newer parser.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -27,7 +31,32 @@ for file in "$RULES" "$RULE_TESTS"; do
 done
 
 IMAGE="${PROMTOOL_IMAGE:-prom/prometheus:v2.54.1}"
-PROMTOOL="${PROMTOOL:-$(command -v promtool || true)}"
+if [[ "$IMAGE" =~ :v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+  PINNED="${BASH_REMATCH[1]}"
+else
+  echo "cannot read a version from PROMTOOL_IMAGE=$IMAGE" >&2
+  exit 1
+fi
+
+promtool_version() {
+  "$1" --version 2>/dev/null | sed -n 's/^promtool, version \([0-9][0-9.]*\).*/\1/p' | head -n 1
+}
+
+if [[ -n "${PROMTOOL:-}" ]]; then
+  found="$(promtool_version "$PROMTOOL")"
+  if [[ "$found" != "$PINNED" && "${PROMTOOL_ALLOW_VERSION_DRIFT:-}" != "1" ]]; then
+    echo "PROMTOOL=$PROMTOOL is version ${found:-unknown}, the pin is $PINNED ($IMAGE)." >&2
+    echo "A pass with it would not mean the CI check passes; set PROMTOOL_ALLOW_VERSION_DRIFT=1" >&2
+    echo "to use it anyway." >&2
+    exit 1
+  fi
+else
+  PROMTOOL="$(command -v promtool || true)"
+  if [[ -n "$PROMTOOL" && "$(promtool_version "$PROMTOOL")" != "$PINNED" ]]; then
+    echo "promtool on PATH is not $PINNED; using $IMAGE"
+    PROMTOOL=""
+  fi
+fi
 
 run_promtool() {
   if [[ -n "$PROMTOOL" ]]; then

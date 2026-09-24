@@ -1662,7 +1662,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Consumer lag per durable. The ClickHouse ingest consumer is SLO 5 (alert above 1000 for 10m).",
+      "description": "Consumer lag per durable, from the replicas that read it in the last 5 minutes: a replica whose poller stopped keeps its last count (see Consumer lag last read). The ClickHouse ingest consumer is SLO 5 (alert above 1000 for 10m).",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -1699,7 +1699,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (consumer) (octo_nats_consumer_pending{job=~\"$job\"})",
+          "expr": "max by (consumer) (octo_nats_consumer_pending{job=~\"$job\"} and on (instance, consumer) ((time() - octo_nats_consumer_pending_timestamp_seconds{job=~\"$job\"}) < 300))",
           "legendFormat": "{{consumer}}",
           "refId": "A"
         }

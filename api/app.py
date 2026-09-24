@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 from api import __version__
 from api.auth import get_settings
@@ -72,6 +73,7 @@ from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
+from api.services import metrics_sources
 from api.services import nats_bus
 from api.services import nats_outbox
 from api.services import oidc as oidc_service
@@ -194,9 +196,27 @@ def _http_metric_labels(request: Request) -> tuple[str, str]:
     The method is the client's to choose in the same way.
     """
     route = request.scope.get("route")
-    path = getattr(route, "path", None) or UNMATCHED_PATH_LABEL
+    path = getattr(route, "path", None) or _mount_template(request) or UNMATCHED_PATH_LABEL
     method = request.method if request.method in _METRIC_METHODS else "OTHER"
     return method, path
+
+
+def _mount_template(request: Request) -> str | None:
+    """``/_next/*`` for a request a ``Mount`` handled (the console's static files).
+
+    A mount never sets ``scope["route"]``, so every file the console build
+    served used to be ``<unmatched>``, next to the probes. It does leave the
+    mounted app as ``scope["endpoint"]``; the label is the mount's own path from
+    the app's route table, never the request's.
+    """
+    endpoint = request.scope.get("endpoint")
+    app = request.scope.get("app")
+    if endpoint is None or app is None:
+        return None
+    for candidate in app.router.routes:
+        if isinstance(candidate, Mount) and candidate.app is endpoint:
+            return f"{candidate.path}/*"
+    return None
 
 
 def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
@@ -227,6 +247,9 @@ def create_app() -> FastAPI:
     crypto_startup.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
+    # What /metrics reads at scrape time: the fleet, the queue, the endpoint
+    # devices and the opt-in per-tenant series (#334).
+    metrics_sources.configure(settings)
     agent_deployer.configure(settings)
     scan_schedules.configure(settings)
     memberships_service.configure(settings)

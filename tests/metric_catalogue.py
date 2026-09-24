@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from prometheus_client.metrics import MetricWrapperBase
 
 from api.services import agents as agents_service
-from api.services import metrics
+from api.services import metrics, metrics_sources
 
 #: Labels Prometheus attaches to every scraped series itself; a query may name
 #: them whatever the metric declares.
@@ -56,8 +56,8 @@ class Family:
         return "Cluster-wide" in self.documentation or "max(), not sum()" in self.documentation
 
 
-def _populated_fleet() -> agents_service.FleetHeartbeats:
-    return agents_service.FleetHeartbeats(
+def _populated_cluster() -> metrics_sources.ClusterSnapshot:
+    fleet = agents_service.FleetHeartbeats(
         counts={(k, s): 1 for k in agents_service.FLEET_KINDS for s in agents_service.FLEET_STATES},
         age_buckets={k: [1] * len(agents_service.HEARTBEAT_AGE_BUCKETS) for k in agents_service.FLEET_KINDS},
         age_totals=dict.fromkeys(agents_service.FLEET_KINDS, 1),
@@ -65,6 +65,16 @@ def _populated_fleet() -> agents_service.FleetHeartbeats:
         age_max=dict.fromkeys(agents_service.FLEET_KINDS, 1.0),
         stale_seconds=120,
     )
+    return metrics_sources.ClusterSnapshot(
+        fleet=fleet, jobs_queued=1, jobs_running=1, endpoint_devices={"active": 1, "stale": 1}
+    )
+
+
+#: What each scrape-snapshot collector is rendered from here, so its families
+#: carry the labels they would carry on a live /metrics.
+_EXAMPLE_SNAPSHOTS = {
+    id(metrics.CLUSTER_COLLECTOR): _populated_cluster,
+}
 
 
 def families() -> dict[str, Family]:
@@ -73,17 +83,14 @@ def families() -> dict[str, Family]:
     Collectors are read through ``describe()`` where they have one, so nothing
     here touches a database. Label sets come from the metric objects for the
     pushed series (a labelled metric with no child yet has no samples to read
-    them from) and from a populated collection for the fleet, whose families
-    carry no samples without a snapshot.
+    them from) and from an example snapshot for the scrape-time collectors,
+    whose families carry no samples without one.
     """
     out: dict[str, Family] = {}
     # Private, but the registry has no public list of its collectors.
     for collector in list(metrics.REGISTRY._collector_to_names):  # noqa: SLF001
-        if collector is metrics.AGENT_FLEET_COLLECTOR:
-            collector = metrics.AgentFleetCollector(
-                snapshot=_populated_fleet, pool_saturated=lambda: False
-            )
-            described = list(collector.collect())
+        if id(collector) in _EXAMPLE_SNAPSHOTS:
+            described = collector.render(_EXAMPLE_SNAPSHOTS[id(collector)]())
         elif isinstance(collector, MetricWrapperBase):
             described = list(collector.describe())
         elif hasattr(collector, "describe"):

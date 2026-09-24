@@ -89,7 +89,9 @@ spec:
   - name: shapoclyack.slo.ingest
     rules:
     - alert: ShapoclyackClickHouseIngestLag
-      expr: octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+      expr: "max by (consumer) (\n  octo_nats_consumer_pending{consumer=\"octo-ch-ingest-results\"}\n\
+        \  and on (instance, consumer)\n  ((time() - octo_nats_consumer_pending_timestamp_seconds{consumer=\"\
+        octo-ch-ingest-results\"}) < 300)\n) > 1000\n"
       for: 10m
       labels:
         severity: ticket
@@ -97,7 +99,8 @@ spec:
       annotations:
         summary: ClickHouse ingest consumer lag is above 1000 messages
         description: "octo_nats_consumer_pending{consumer=\"octo-ch-ingest-results\"} > 1000 for 10m (SLO\
-          \ 5). Absent series means ingest is not enabled \u2014 this rule does not fire then."
+          \ 5), counting only replicas that read it in the last 5 minutes. Absent series means ingest\
+          \ is not enabled \u2014 this rule does not fire then."
     - alert: ShapoclyackClickHouseIngestStale
       expr: '(time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"})
         > 300
@@ -285,7 +288,7 @@ spec:
           scans addressed to their group wait. A sensor that is gone on purpose should be disabled or
           deleted in the Sensor Fleet page rather than left to hold this alert open.
     - alert: ShapoclyackNoSensorOnline
-      expr: 'max(octo_jobs_queued) > 0
+      expr: 'min(octo_jobs_queued) > 0
 
         and
 

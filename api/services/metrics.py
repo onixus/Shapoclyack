@@ -8,7 +8,8 @@ restrict at the network/gateway layer, not app auth).
 
 Most series here are pushed by the code path they describe. The ones at the
 bottom are read when Prometheus asks (#334): the process view, the SQLAlchemy
-pool, and the sensor/agent fleet out of the ``agents`` table. The catalogue,
+pool, and — through ``api.services.metrics_sources`` — the sensor/agent fleet,
+the job queue and the endpoint devices. The catalogue,
 with the bound on every label, is docs/observability.md;
 tests/test_observability_assets.py fails when a series here has no entry there,
 or when a dashboard or alert names one that is not here.
@@ -20,7 +21,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -37,7 +38,7 @@ from prometheus_client.core import GaugeHistogramMetricFamily, GaugeMetricFamily
 from prometheus_client.utils import floatToGoString
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from api.services.agents import FleetHeartbeats
+    from api.services.metrics_sources import ClusterSnapshot as MetricsClusterSnapshot
 
 LOG = logging.getLogger("shapoclyack.metrics")
 
@@ -75,16 +76,8 @@ JOB_DURATION_SECONDS = Histogram(
     buckets=(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800),
     registry=REGISTRY,
 )
-JOBS_QUEUED = Gauge(
-    "octo_jobs_queued",
-    "Scan jobs currently queued.",
-    registry=REGISTRY,
-)
-JOBS_RUNNING = Gauge(
-    "octo_jobs_running",
-    "Scan jobs currently running.",
-    registry=REGISTRY,
-)
+# octo_jobs_queued / octo_jobs_running are read from the jobs table at scrape
+# time: see CLUSTER_COLLECTOR at the bottom (#334).
 
 AGENT_INGEST_IN_FLIGHT = Gauge(
     "octo_agent_ingest_in_flight",
@@ -350,12 +343,7 @@ ENDPOINT_SOFTWARE_CHANGES_TOTAL = Counter(
     ["event_type"],
     registry=REGISTRY,
 )
-ENDPOINT_DEVICES = Gauge(
-    "octo_endpoint_devices",
-    "Endpoint devices known to the installation, by derived staleness state.",
-    ["state"],
-    registry=REGISTRY,
-)
+# octo_endpoint_devices is read at scrape time too: CLUSTER_COLLECTOR (#334).
 ENDPOINT_RETENTION_DELETED_TOTAL = Counter(
     "octo_endpoint_retention_deleted_total",
     "Rows deleted by the endpoint-inventory retention job, by table.",
@@ -561,71 +549,100 @@ DB_POOL_COLLECTOR = DbPoolCollector()
 REGISTRY.register(DB_POOL_COLLECTOR)
 
 
-# --- Sensor / agent fleet (#334) ------------------------------------------
+# --- Cluster-wide series, read from the database (#334) ------------------
 #
-# Computed from the ``agents`` table, so every replica reports the same
-# cluster-wide numbers: aggregate with max(), not sum(). Labelled by kind and
-# derived state only (docs/observability.md § Label bounds). A tenant label was
-# considered and left out: tenants are created at runtime, so the series count
-# would grow with the customer list, and the per-tenant view already exists as
-# GET /api/agents/summary.
+# Read from shared tables at scrape time by :class:`SnapshotCollector`, through
+# ``api.services.metrics_sources`` (the one place a scrape opens a session).
+# Every replica therefore reports the same numbers: aggregate with max(), not
+# sum(). The job queue and the endpoint devices used to be *set* here by
+# whichever replica handled the last job event or retention sweep, so replicas
+# disagreed indefinitely and max() picked the most stale of them.
+#
+# Labels come from fixed vocabularies (docs/observability.md § Label bounds).
 
-#: How long one fleet query answers scrapes for. /metrics answers anyone who
-#: can reach it unless OCTO_METRICS_TOKEN is set, so without a cache every
+#: How long one cluster snapshot answers scrapes for. /metrics answers anyone
+#: who can reach it unless OCTO_METRICS_TOKEN is set, so without a cache every
 #: request to it would be a query against the database; with it the cost is
-#: one grouped query per replica per TTL, however often it is asked. Well under
-#: the 60 s sensor heartbeat, so the ages it reports are late by at most this.
-AGENT_FLEET_TTL_SECONDS = 15.0
+#: one short transaction per replica per TTL, however often it is asked. Well
+#: under the 60 s sensor heartbeat, so the ages it reports are late by at most
+#: this.
+CLUSTER_TTL_SECONDS = 15.0
 #: How long a snapshot may still be served while a fresh one cannot be taken
-#: (the pool has nothing free). Past this the series are withdrawn: absent is
+#: (the pool has no room). Past this the series are withdrawn: absent is
 #: honest, an old number drawn as a current one is not.
-AGENT_FLEET_MAX_STALE_SECONDS = 60.0
+CLUSTER_MAX_STALE_SECONDS = 60.0
+#: Connections that must be free before a scrape takes one. One is not enough:
+#: checking for one free connection and then taking it races the next request,
+#: which then waits OCTO_DB_POOL_TIMEOUT — longer than Prometheus waits for the
+#: scrape. A check, not a reservation: a burst in between can still make the
+#: scrape wait, which the statement timeout does not bound.
+POOL_HEADROOM = 2
 
 
-class AgentFleetCollector:
-    """Sensor and agent heartbeat series, from one cached query per TTL.
+class SnapshotCollector:
+    """Series rendered from one cached database snapshot per TTL.
 
-    Three things keep a scrape from costing more than that query:
+    What keeps a scrape from costing more than one snapshot per TTL:
 
-    * the TTL above, so repeated scrapes reuse one answer;
+    * the TTL, measured from the last *attempt*, failed ones included — so a
+      query that keeps failing is tried once per TTL, not once per request to
+      an unauthenticated endpoint, and logged as often;
     * a non-blocking lock, so while one scrape runs the query the others are
       answered from the previous snapshot instead of each parking a worker
       thread behind it;
-    * no refresh while the pool has nothing free. A saturated pool is when the
-      dashboards are being read, and a scrape that waited OCTO_DB_POOL_TIMEOUT
-      for a connection would lose the whole /metrics answer — the pool gauges
-      with it — to Prometheus's scrape timeout, and take a connection from a
-      request to do it.
+    * no attempt while the pool has fewer than :data:`POOL_HEADROOM`
+      connections free. A busy pool is when the dashboards are being read, and
+      a scrape that waited OCTO_DB_POOL_TIMEOUT for a connection would lose the
+      whole /metrics answer — the pool gauges with it — to Prometheus's scrape
+      timeout, and take a connection from a request to do it.
 
-    A failed query withdraws the series rather than freezing them.
+    A failed attempt withdraws the series rather than freezing them.
     """
 
     def __init__(
         self,
         *,
-        snapshot: Callable[[], FleetHeartbeats | None] | None = None,
+        render: Callable[[Any], list[Metric]],
+        snapshot: Callable[[], Any],
+        ttl: float,
+        max_stale: float,
         clock: Callable[[], float] = time.monotonic,
-        pool_saturated: Callable[[], bool] | None = None,
+        pool_too_busy: Callable[[], bool] | None = None,
     ) -> None:
-        self._snapshot_fn = snapshot or _fleet_snapshot
-        self._pool_saturated = pool_saturated or _pool_saturated
+        self._render = render
+        self._snapshot_fn = snapshot
+        self._ttl = ttl
+        self._max_stale = max_stale
         self._clock = clock
+        self._pool_too_busy = pool_too_busy or _pool_too_busy
         self._lock = threading.Lock()
-        self._snapshot: FleetHeartbeats | None = None
+        self._snapshot: Any = None
         self._taken_at: float | None = None
+        self._attempted_at: float | None = None
+
+    def render(self, snapshot: Any) -> list[Metric]:
+        """The families for ``snapshot``; without one, described but empty."""
+        return self._render(snapshot)
+
+    def expire(self) -> None:
+        """Make the next scrape try afresh, keeping the current snapshot until then."""
+        self._attempted_at = None
 
     def reset_for_tests(self) -> None:
         with self._lock:
             self._snapshot = None
             self._taken_at = None
+            self._attempted_at = None
 
     def describe(self) -> Iterator[Metric]:
-        return iter(_fleet_families(None))
+        # Described even when empty, so the registry reserves the names and the
+        # catalogue checks see them without a database.
+        return iter(self._render(None))
 
     def collect(self) -> Iterator[Metric]:
-        return iter(_fleet_families(self._current()))
+        return iter(self._render(self._current()))
 
-    def _current(self) -> FleetHeartbeats | None:
+    def _current(self) -> Any:
         now = self._clock()
         if self._lock.acquire(blocking=False):
             try:
@@ -636,44 +653,45 @@ class AgentFleetCollector:
         # running: whatever is there is served only while it is recent enough
         # to be true.
         snapshot, taken_at = self._snapshot, self._taken_at
-        if taken_at is None or now - taken_at > AGENT_FLEET_MAX_STALE_SECONDS:
+        if taken_at is None or now - taken_at > self._max_stale:
             return None
         return snapshot
 
     def _refresh(self, now: float) -> None:
-        if self._taken_at is not None and now - self._taken_at < AGENT_FLEET_TTL_SECONDS:
+        if self._attempted_at is not None and now - self._attempted_at < self._ttl:
             return
+        if self._pool_too_busy():
+            return  # not an attempt: the next scrape looks again
+        self._attempted_at = now
         try:
-            if self._pool_saturated():
-                return
             snapshot = self._snapshot_fn()
         except Exception:  # noqa: BLE001 - one collector must not fail the scrape
-            LOG.warning("Could not read the agent fleet for /metrics; its series are withdrawn")
-            LOG.debug("agent fleet query failed", exc_info=True)
+            LOG.warning(
+                "Could not read %s for /metrics; the series are withdrawn until the next "
+                "attempt in %.0f s",
+                getattr(self._snapshot_fn, "__name__", "a snapshot"),
+                self._ttl,
+            )
+            LOG.debug("scrape snapshot failed", exc_info=True)
             self._snapshot, self._taken_at = None, None
             return
         self._snapshot, self._taken_at = snapshot, now
 
 
-def _fleet_snapshot() -> FleetHeartbeats | None:
-    from api.services import agents as agents_service
-
-    return agents_service.fleet_heartbeats()
-
-
-def _pool_saturated() -> bool:
+def _pool_too_busy() -> bool:
     from api.db import engine as db_engine
 
     status = db_engine.pool_status()
-    return status is not None and status.saturated
+    return status is not None and status.free < POOL_HEADROOM
 
 
-def _fleet_families(fleet: FleetHeartbeats | None) -> list[Metric]:
-    """The fleet families, with samples when there is a snapshot to report.
+def _cluster_snapshot() -> MetricsClusterSnapshot | None:
+    from api.services import metrics_sources
 
-    Described even when empty, so the registry reserves the names and the
-    catalogue checks see them without a database.
-    """
+    return metrics_sources.cluster_snapshot()
+
+
+def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
     agents = GaugeMetricFamily(
         "octo_agents",
         "Registered sensors (agent_kind=scanner) and endpoint agents "
@@ -699,33 +717,76 @@ def _fleet_families(fleet: FleetHeartbeats | None) -> list[Metric]:
     )
     threshold = GaugeMetricFamily(
         "octo_agent_stale_threshold_seconds",
-        "OCTO_AGENT_STALE_SECONDS: the heartbeat age past which an agent is reported stale.",
+        "OCTO_AGENT_STALE_SECONDS: the heartbeat age past which an agent is "
+        "reported stale. Cluster-wide.",
     )
-    if fleet is not None:
-        # Not at module level, and not before there is a snapshot: describe()
-        # runs while this module is still being imported, and the agents
-        # service imports the engine, which imports this module.
-        from api.services import agents as agents_service
+    queued = GaugeMetricFamily(
+        "octo_jobs_queued",
+        "Scan jobs waiting for a sensor or a local slot, read from the jobs table "
+        "at scrape time. Cluster-wide: aggregate with max(), not sum().",
+    )
+    running = GaugeMetricFamily(
+        "octo_jobs_running",
+        "Scan jobs claimed, running or being cancelled, read from the jobs table "
+        "at scrape time. Cluster-wide: aggregate with max(), not sum().",
+    )
+    devices = GaugeMetricFamily(
+        "octo_endpoint_devices",
+        "Endpoint devices by staleness (OCTO_ENDPOINT_STALE_HOURS), read at scrape "
+        "time; absent with the endpoint inventory off. Cluster-wide: aggregate "
+        "with max(), not sum().",
+        labels=["state"],
+    )
+    families = [agents, ages, oldest, threshold, queued, running, devices]
+    if snapshot is None:
+        return families
+    # Not at module level, and not before there is a snapshot: describe()
+    # runs while this module is still being imported, and the agents service
+    # imports the engine, which imports this module.
+    from api.services import agents as agents_service
 
-        for (kind, state), count in sorted(fleet.counts.items()):
-            agents.add_metric([kind, state], count)
-        for kind in agents_service.FLEET_KINDS:
-            buckets = [
-                (floatToGoString(bound), count)
-                for bound, count in zip(
-                    agents_service.HEARTBEAT_AGE_BUCKETS, fleet.age_buckets[kind], strict=True
-                )
-            ]
-            buckets.append(("+Inf", fleet.age_totals[kind]))
-            ages.add_metric([kind], buckets, fleet.age_sums[kind])
-            if kind in fleet.age_max:
-                oldest.add_metric([kind], fleet.age_max[kind])
-        threshold.add_metric([], fleet.stale_seconds)
-    return [agents, ages, oldest, threshold]
+    fleet = snapshot.fleet
+    for (kind, state), count in sorted(fleet.counts.items()):
+        agents.add_metric([kind, state], count)
+    for kind in agents_service.FLEET_KINDS:
+        buckets = [
+            (floatToGoString(bound), count)
+            for bound, count in zip(
+                agents_service.HEARTBEAT_AGE_BUCKETS, fleet.age_buckets[kind], strict=True
+            )
+        ]
+        buckets.append(("+Inf", fleet.age_totals[kind]))
+        ages.add_metric([kind], buckets, fleet.age_sums[kind])
+        if kind in fleet.age_max:
+            oldest.add_metric([kind], fleet.age_max[kind])
+    threshold.add_metric([], fleet.stale_seconds)
+    queued.add_metric([], snapshot.jobs_queued)
+    running.add_metric([], snapshot.jobs_running)
+    if snapshot.endpoint_devices is not None:
+        for state in ("active", "stale"):
+            devices.add_metric([state], snapshot.endpoint_devices[state])
+    return families
 
 
-AGENT_FLEET_COLLECTOR = AgentFleetCollector()
-REGISTRY.register(AGENT_FLEET_COLLECTOR)
+def cluster_collector(
+    *,
+    snapshot: Callable[[], Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    pool_too_busy: Callable[[], bool] | None = None,
+) -> SnapshotCollector:
+    """The fleet, the job queue and the endpoint devices (tests build their own)."""
+    return SnapshotCollector(
+        render=_cluster_families,
+        snapshot=snapshot or _cluster_snapshot,
+        ttl=CLUSTER_TTL_SECONDS,
+        max_stale=CLUSTER_MAX_STALE_SECONDS,
+        clock=clock,
+        pool_too_busy=pool_too_busy,
+    )
+
+
+CLUSTER_COLLECTOR = cluster_collector()
+REGISTRY.register(CLUSTER_COLLECTOR)
 
 
 def render() -> tuple[bytes, str]:

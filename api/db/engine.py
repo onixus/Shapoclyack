@@ -6,6 +6,7 @@ Mirrors api/services/clickhouse_client.py's lazy-singleton-by-url pattern.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -72,6 +73,10 @@ def _pool_kwargs(url: str) -> dict[str, int]:
     return dict(_pool_options)
 
 
+#: Whether this thread is inside an observed checkout (see InstrumentedQueuePool).
+_checkout = threading.local()
+
+
 class InstrumentedQueuePool(QueuePool):
     """The pool every Postgres engine gets: SQLAlchemy's own, with its waits timed (#334).
 
@@ -85,9 +90,20 @@ class InstrumentedQueuePool(QueuePool):
     and not the pre-ping or the session work after it, which are not the
     pool's time. The class survives ``Engine.dispose()``: ``recreate()`` builds
     ``self.__class__``.
+
+    ``QueuePool._do_get`` calls ``self._do_get()`` again when another thread
+    takes the last overflow slot between its two checks, which re-enters this
+    override: one checkout that then timed out was counted, and timed, twice.
+    Only the outermost call on a thread observes. Overriding the public
+    ``Pool.connect()`` instead would avoid the recursion, but it also runs the
+    pre-ping — a database round trip on every checkout — and the wait would
+    report the server's latency as pool pressure.
     """
 
     def _do_get(self) -> ConnectionPoolEntry:
+        if getattr(_checkout, "active", False):
+            return super()._do_get()
+        _checkout.active = True
         started = time.perf_counter()
         try:
             return super()._do_get()
@@ -95,7 +111,9 @@ class InstrumentedQueuePool(QueuePool):
             metrics_service.DB_POOL_CHECKOUT_TIMEOUTS_TOTAL.inc()
             raise
         finally:
+            _checkout.active = False
             metrics_service.DB_POOL_CHECKOUT_DURATION_SECONDS.observe(time.perf_counter() - started)
+
 
 
 def _pool_class_kwargs(url: str) -> dict[str, Any]:
@@ -121,13 +139,13 @@ class PoolStatus:
     overflow: int
 
     @property
-    def saturated(self) -> bool:
-        """Whether the next checkout would have to wait for somebody's return."""
+    def free(self) -> float:
+        """Checkouts that would not wait for somebody's return; 0 is a full pool."""
         # A negative max_overflow is SQLAlchemy's "no limit"; Settings floors
         # it at 0, so only a tool's unconfigured engine can have one.
         if self.max_overflow < 0:
-            return False
-        return self.checked_out >= self.size + self.max_overflow
+            return math.inf
+        return max(0, self.size + self.max_overflow - self.checked_out)
 
 
 def pool_status() -> PoolStatus | None:

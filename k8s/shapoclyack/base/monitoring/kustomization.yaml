@@ -32,13 +32,16 @@
 # k8s/scripts/render-prometheusrule-slo.py; tests/test_prometheus_slo_rules.py
 # fails if they drift.
 #
-# Sets its own namespace, like base/enrichment: an overlay that includes this
-# without a namespace transformer would otherwise render both objects into
-# `default`, where the ServiceMonitor finds no Service to scrape.
+# No `namespace:` here, unlike base/enrichment, and on purpose: a component's
+# namespace transformer applies to everything the including kustomization
+# renders, not only to what the component adds, so one that said network-scan
+# moved a whole installation that lives elsewhere into network-scan — a second
+# installation on apply (review of #334). THE OVERLAY THAT INCLUDES THIS SETS
+# THE NAMESPACE (overlays/prod-ha-monitoring does); without one the two objects
+# land in kubectl's current namespace, where the ServiceMonitor finds no
+# Service to scrape.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
-
-namespace: network-scan
 
 resources:
   - servicemonitor.yaml

@@ -25,10 +25,11 @@
 # their Prometheus data source through a variable. docs/observability.md
 # describes the panels; tests/test_observability_assets.py fails when a query
 # names a series the API does not export.
+#
+# No `namespace:` here, for the reason in base/monitoring/kustomization.yaml:
+# the overlay that includes this sets it.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
-
-namespace: network-scan
 
 configMapGenerator:
   # One ConfigMap per dashboard, and names without a content hash: the sidecar

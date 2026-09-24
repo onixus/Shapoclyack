@@ -19,6 +19,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The components carry no namespace of their own — a component's transformer
+# would move everything rendered here, not only what it adds — so the overlay
+# that includes them names it. An installation in another namespace sets its
+# own here.
+namespace: network-scan
+
 # Repeated for the same reason as in prod-ha: base's label transformer applies
 # to base's own resources, not to the objects the components add here.
 labels:

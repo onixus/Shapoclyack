@@ -168,14 +168,9 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
         totals["changes_deleted"]
     )
     metrics_service.ENDPOINT_RETENTION_RUN_DURATION_SECONDS.observe(time.perf_counter() - started)
-    try:
-        from api.services import endpoint_inventory
-
-        tallied = endpoint_inventory.device_counts()
-        metrics_service.ENDPOINT_DEVICES.labels("active").set(tallied["active"])
-        metrics_service.ENDPOINT_DEVICES.labels("stale").set(tallied["stale"])
-    except Exception:  # noqa: BLE001 - gauge refresh must not fail the sweep
-        LOG.warning("Endpoint retention: could not refresh device gauge", exc_info=True)
+    # No device gauge here any more: ``octo_endpoint_devices`` is read at
+    # scrape time (#334), where a sweep hours apart left every replica with a
+    # different, stale count.
     if totals["software_items_deleted"] or totals["changes_deleted"] or totals["errors"]:
         LOG.info("Endpoint retention sweep: %s", totals)
     return totals

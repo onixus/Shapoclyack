@@ -1,32 +1,38 @@
-"""Scrape-time collectors on ``/metrics`` (#334): process, DB pool, sensor fleet.
+"""Scrape-time collectors on ``/metrics`` (#334): process, DB pool, cluster.
 
-The HTTP, job and ingest series are pushed by the code paths they describe.
-These three are not: the process view comes from ``/proc``, the pool gauges from
-the live SQLAlchemy pool and the fleet from the ``agents`` table, all read when
-Prometheus asks. What is pinned here is what an operator's dashboard depends on
-— that the series exist, carry only bounded labels, and say the same thing the
-database and the pool say.
+The HTTP and ingest series are pushed by the code paths they describe. These
+are not: the process view comes from ``/proc``, the pool gauges from the live
+SQLAlchemy pool, and the fleet, the job queue and the endpoint devices from
+shared tables, all read when Prometheus asks.
+What is pinned here is what an operator's dashboard depends on — that the
+series exist, carry only bounded labels, say what the database and the pool
+say, and that reading them cannot hurt the replica being scraped.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
+import psycopg
 import pytest
 from sqlalchemy import exc as sa_exc
+from sqlalchemy import update
 
 from api.db import engine as db_engine
 from api.db import models
 from api.db.engine import get_session
 from api.services import agents as agents_service
-from api.services import ch_ingest_worker, metrics
+from api.services import ch_ingest_worker, job_store, metrics, metrics_sources
 from api.services import tenants as tenants_service
 from api.services.integrations import webhook_worker
 from tests.conftest import (
+    POSTGRES_URL,
     TEST_AGENT_TOKEN,
     configured_client,
     make_settings,
@@ -49,6 +55,15 @@ def _samples(collector) -> dict[tuple[str, tuple[tuple[str, str], ...]], float]:
 
 def _value(samples, name: str, **labels: str) -> float:
     return samples[(name, tuple(sorted(labels.items())))]
+
+
+def _expire_scrape_caches() -> None:
+    """Drop every scrape-time snapshot, so the next scrape reads the database."""
+    # Private, but the registry has no public list of its collectors.
+    for collector in list(metrics.REGISTRY._collector_to_names):  # noqa: SLF001
+        reset = getattr(collector, "reset_for_tests", None)
+        if reset is not None:
+            reset()
 
 
 # --- process view -----------------------------------------------------------
@@ -167,14 +182,13 @@ def test_pool_reports_checkouts_overflow_and_timeouts(tmp_path):
         waits_before = _histogram_count(metrics.DB_POOL_CHECKOUT_DURATION_SECONDS)
 
         held.append(engine.connect())
-        assert not db_engine.pool_status().saturated, "the overflow connection is still free"
+        assert db_engine.pool_status().free == 1, "the overflow connection is still free"
         held.append(engine.connect())
         samples = _samples(metrics.DB_POOL_COLLECTOR)
         assert _value(samples, "octo_db_pool_checked_out") == 2
         assert _value(samples, "octo_db_pool_checked_in") == 0
         assert _value(samples, "octo_db_pool_overflow") == 1
-        # What keeps the fleet query from queueing behind requests.
-        assert db_engine.pool_status().saturated
+        assert db_engine.pool_status().free == 0
 
         with pytest.raises(sa_exc.TimeoutError):
             engine.connect()
@@ -197,17 +211,52 @@ def test_pool_reports_checkouts_overflow_and_timeouts(tmp_path):
         db_engine.reset_for_tests()
 
 
-def test_an_unlimited_overflow_is_never_saturated():
+def test_one_timed_out_checkout_is_counted_once_even_after_the_overflow_race():
+    """``QueuePool._do_get`` calls ``self._do_get()`` again when another thread
+    takes the last overflow slot between its two checks, so the override is
+    re-entered: one checkout that then times out was counted, and timed, twice
+    (review of #334). Only the outermost call observes."""
+    pool = db_engine.InstrumentedQueuePool(
+        lambda: sqlite3.connect(":memory:", check_same_thread=False),
+        pool_size=1,
+        max_overflow=1,
+        timeout=0.2,
+    )
+    held = pool.connect()  # the steady connection; overflow is now 0 < 1
+    real_inc, raced = pool._inc_overflow, []  # noqa: SLF001
+
+    def racing_inc_overflow():
+        if not raced:
+            # Another thread opened the overflow connection first.
+            raced.append(True)
+            pool._overflow = pool._max_overflow  # noqa: SLF001
+            return False
+        return real_inc()
+
+    pool._inc_overflow = racing_inc_overflow  # noqa: SLF001
+    timeouts = metrics.DB_POOL_CHECKOUT_TIMEOUTS_TOTAL._value.get()  # noqa: SLF001
+    waits = _histogram_count(metrics.DB_POOL_CHECKOUT_DURATION_SECONDS)
+    try:
+        with pytest.raises(sa_exc.TimeoutError):
+            pool.connect()
+        assert raced, "the race path was not taken"
+        assert metrics.DB_POOL_CHECKOUT_TIMEOUTS_TOTAL._value.get() - timeouts == 1  # noqa: SLF001
+        assert _histogram_count(metrics.DB_POOL_CHECKOUT_DURATION_SECONDS) - waits == 1
+    finally:
+        held.close()
+
+
+def test_the_pool_reports_how_many_connections_are_free():
     """SQLAlchemy spells "no overflow limit" as -1. Settings floors it at 0, but
     an unconfigured tool's engine can have it, and ``size + -1`` would read a
     pool with room as a full one."""
-    status = db_engine.PoolStatus(
+    unlimited = db_engine.PoolStatus(
         size=5, max_overflow=-1, timeout=30, checked_out=9, checked_in=0, overflow=4
     )
-    assert not status.saturated
+    assert unlimited.free == float("inf")
     assert db_engine.PoolStatus(
-        size=5, max_overflow=0, timeout=30, checked_out=5, checked_in=0, overflow=0
-    ).saturated
+        size=5, max_overflow=10, timeout=30, checked_out=13, checked_in=0, overflow=8
+    ).free == 2
 
 
 def test_a_timed_out_checkout_lands_in_a_finite_bucket():
@@ -270,7 +319,7 @@ def test_consumer_lag_reports_when_it_was_read(reporter):
     assert metrics.NATS_CONSUMER_PENDING_TIMESTAMP.labels(consumer=consumer)._value.get() == stamped  # noqa: SLF001
 
 
-# --- sensor / agent fleet -------------------------------------------------------
+# --- the cached scrape-time snapshot -------------------------------------------------
 
 
 class _Clock:
@@ -298,7 +347,22 @@ def _fleet(**overrides) -> agents_service.FleetHeartbeats:
     return agents_service.FleetHeartbeats(**base)
 
 
-def test_fleet_collector_reuses_one_query_across_scrapes():
+def _cluster(**overrides) -> metrics_sources.ClusterSnapshot:
+    base = {
+        "fleet": _fleet(),
+        "jobs_queued": 2,
+        "jobs_running": 1,
+        "endpoint_devices": {"active": 3, "stale": 1},
+    }
+    base.update(overrides)
+    return metrics_sources.ClusterSnapshot(**base)
+
+
+def _collector(snapshot, clock, *, busy=lambda: False):
+    return metrics.cluster_collector(snapshot=snapshot, clock=clock, pool_too_busy=busy)
+
+
+def test_the_cluster_snapshot_is_reused_across_scrapes():
     """``/metrics`` answers anyone who can reach it unless OCTO_METRICS_TOKEN is
     set, so a query per scrape would be a query per request an outsider cares to
     send. One per TTL per replica is the whole cost, however often it is asked."""
@@ -307,62 +371,108 @@ def test_fleet_collector_reuses_one_query_across_scrapes():
 
     def snapshot():
         calls.append(clock.now)
-        return _fleet()
+        return _cluster()
 
-    collector = metrics.AgentFleetCollector(snapshot=snapshot, clock=clock, pool_saturated=lambda: False)
-    assert _value(_samples(collector), "octo_agents", agent_kind="scanner", state="idle") == 1
+    collector = _collector(snapshot, clock)
+    samples = _samples(collector)
+    assert _value(samples, "octo_agents", agent_kind="scanner", state="idle") == 1
+    assert _value(samples, "octo_jobs_queued") == 2
+    assert _value(samples, "octo_jobs_running") == 1
+    assert _value(samples, "octo_endpoint_devices", state="active") == 3
     _samples(collector)
     assert len(calls) == 1
-    clock.now += metrics.AGENT_FLEET_TTL_SECONDS + 1
+    clock.now += metrics.CLUSTER_TTL_SECONDS + 1
     _samples(collector)
     assert len(calls) == 2
 
 
-def test_fleet_series_are_absent_when_the_query_fails():
+def test_series_are_absent_when_the_query_fails():
     """Absent, not frozen: the previous values served forever would draw a
     healthy fleet through a database outage."""
     clock = _Clock()
-    answers = [_fleet()]
+    answers = [_cluster()]
 
     def snapshot():
         if not answers:
             raise RuntimeError("database is down")
         return answers.pop()
 
-    collector = metrics.AgentFleetCollector(snapshot=snapshot, clock=clock, pool_saturated=lambda: False)
+    collector = _collector(snapshot, clock)
     assert _samples(collector)
-    clock.now += metrics.AGENT_FLEET_TTL_SECONDS + 1
+    clock.now += metrics.CLUSTER_TTL_SECONDS + 1
     assert _samples(collector) == {}
 
 
-def test_fleet_collector_does_not_queue_behind_requests_for_a_connection():
-    """A saturated pool is exactly when the dashboards are being read, and a
-    scrape that waited OCTO_DB_POOL_TIMEOUT for a connection would lose the
-    whole ``/metrics`` answer — the pool gauges with it — to Prometheus's
-    scrape timeout, while taking a connection from a request. The fleet is
-    served from the last snapshot instead, until that is too old to be true."""
-    clock = _Clock()
+def test_a_failing_query_is_tried_once_per_ttl_not_once_per_scrape():
+    """A failure used to clear the snapshot's timestamp, which is what the TTL
+    is measured from — so every request to an unauthenticated endpoint became a
+    database attempt and a WARNING line while the query kept failing (review
+    of #334). A failed attempt now waits out the TTL like a successful one."""
     calls = []
-    saturated = [False]
+    clock = _Clock()
 
     def snapshot():
         calls.append(clock.now)
-        return _fleet()
+        raise RuntimeError("statement timeout")
 
-    collector = metrics.AgentFleetCollector(
-        snapshot=snapshot, clock=clock, pool_saturated=lambda: saturated[0]
-    )
+    collector = _collector(snapshot, clock)
+    for _ in range(10):
+        assert _samples(collector) == {}
+    assert len(calls) == 1
+    clock.now += metrics.CLUSTER_TTL_SECONDS + 1
+    _samples(collector)
+    assert len(calls) == 2
+
+
+def test_the_scrape_does_not_queue_behind_requests_for_a_connection():
+    """A busy pool is exactly when the dashboards are being read, and a scrape
+    that waited OCTO_DB_POOL_TIMEOUT for a connection would lose the whole
+    ``/metrics`` answer — the pool gauges with it — to Prometheus's scrape
+    timeout, while taking a connection from a request. The series are served
+    from the last snapshot instead, until that is too old to be true."""
+    clock = _Clock()
+    calls = []
+    busy = [False]
+
+    def snapshot():
+        calls.append(clock.now)
+        return _cluster()
+
+    collector = _collector(snapshot, clock, busy=lambda: busy[0])
     assert _samples(collector)
-    saturated[0] = True
-    clock.now += metrics.AGENT_FLEET_TTL_SECONDS + 1
+    busy[0] = True
+    clock.now += metrics.CLUSTER_TTL_SECONDS + 1
     assert _samples(collector), "a recent snapshot is still served"
-    assert len(calls) == 1, "no query while the pool has nothing free"
-    clock.now += metrics.AGENT_FLEET_MAX_STALE_SECONDS
+    assert len(calls) == 1, "no query while the pool has no room"
+    clock.now += metrics.CLUSTER_MAX_STALE_SECONDS
     assert _samples(collector) == {}, "a snapshot past its shelf life is withdrawn"
     assert len(calls) == 1
 
 
-def test_a_slow_fleet_query_does_not_pile_up_scrapes():
+@requires_postgres
+def test_the_scrape_leaves_a_connection_for_requests(tmp_path):
+    """Checking for *one* free connection and then taking it is a race with the
+    next request, which then waits OCTO_DB_POOL_TIMEOUT (30 s) — longer than
+    Prometheus waits for the scrape (review of #334). The default check wants
+    two free, so the scrape's own checkout still leaves one."""
+    settings = make_settings(tmp_path, db_pool_size=1, db_max_overflow=1, db_pool_timeout=1)
+    db_engine.reset_for_tests()
+    calls = []
+    try:
+        db_engine.configure(settings)
+        engine = db_engine.get_engine(settings.postgres_url)
+        collector = metrics.cluster_collector(snapshot=lambda: calls.append(1) or _cluster())
+        with engine.connect():
+            assert db_engine.pool_status().free == 1
+            assert _samples(collector) == {}
+            assert calls == []
+        assert _samples(collector)
+        assert calls == [1]
+    finally:
+        db_engine.reset_for_tests()
+
+
+def test_a_slow_query_does_not_pile_up_scrapes():
     """Two Prometheus replicas, a retry and a curl can all be in ``/metrics`` at
     once, and each holds one of the API's worker threads while it is there.
     Only one of them runs the query; the others answer from the snapshot."""
@@ -376,11 +486,11 @@ def test_a_slow_fleet_query_does_not_pile_up_scrapes():
         if len(calls) == 2:
             entered.set()
             assert release.wait(10)
-        return _fleet()
+        return _cluster()
 
-    collector = metrics.AgentFleetCollector(snapshot=snapshot, clock=clock, pool_saturated=lambda: False)
+    collector = _collector(snapshot, clock)
     _samples(collector)
-    clock.now += metrics.AGENT_FLEET_TTL_SECONDS + 1
+    clock.now += metrics.CLUSTER_TTL_SECONDS + 1
     slow = threading.Thread(target=_samples, args=(collector,), name="slow-scrape")
     slow.start()
     try:
@@ -392,13 +502,31 @@ def test_a_slow_fleet_query_does_not_pile_up_scrapes():
         slow.join(10)
 
 
-def test_fleet_series_carry_no_unbounded_label():
-    """Kind and state only — no tenant, agent id or hostname. Those are the
-    values an attacker-controlled registration would choose, and the number of
-    series would be the size of the fleet."""
-    collector = metrics.AgentFleetCollector(
-        snapshot=_fleet, clock=_Clock(), pool_saturated=lambda: False
-    )
+def test_a_job_event_makes_this_replicas_next_scrape_reread():
+    """The queue is read from the table at scrape time, so every replica agrees
+    within one TTL. The replica that just changed it does not have to wait even
+    that long: the job paths that used to set the gauges expire the snapshot."""
+    clock = _Clock()
+    calls = []
+    collector = _collector(lambda: calls.append(1) or _cluster(), clock)
+    _samples(collector)
+    collector.expire()
+    _samples(collector)
+    assert len(calls) == 2
+
+
+def test_job_paths_expire_the_shared_snapshot(tmp_path, monkeypatch):
+    expired = []
+    monkeypatch.setattr(metrics.CLUSTER_COLLECTOR, "expire", lambda: expired.append(1))
+    job_store.refresh_job_gauges(make_settings(tmp_path))
+    assert expired == [1]
+
+
+def test_cluster_series_carry_no_unbounded_label():
+    """Kind, state and bucket only — no tenant, agent id or hostname. Those are
+    the values an attacker-controlled registration would choose, and the number
+    of series would be the size of the fleet."""
+    collector = _collector(_cluster, _Clock())
     label_names = {
         name
         for family in collector.collect()
@@ -406,6 +534,11 @@ def test_fleet_series_carry_no_unbounded_label():
         for name in sample.labels
     }
     assert label_names == {"agent_kind", "state", "le"}
+
+
+def test_endpoint_devices_are_absent_where_inventory_is_off():
+    collector = _collector(lambda: _cluster(endpoint_devices=None), _Clock())
+    assert not any(name == "octo_endpoint_devices" for name, _ in _samples(collector))
 
 
 @requires_postgres
@@ -418,7 +551,7 @@ def test_fleet_heartbeats_count_and_age_the_agents_table(tmp_path):
     tenants_service.configure(settings)
     tenants_service.reset_for_tests()
     tenants_service.load_tenants(settings)
-    agents_service.configure(settings)
+    metrics_sources.configure(settings)
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     rows = [
         # (id, kind, lifecycle, reported status, age in seconds)
@@ -445,8 +578,9 @@ def test_fleet_heartbeats_count_and_age_the_agents_table(tmp_path):
                 )
             )
 
-    fleet = agents_service.fleet_heartbeats(now=now)
-    assert fleet is not None
+    snapshot = metrics_sources.cluster_snapshot(now=now)
+    assert snapshot is not None
+    fleet = snapshot.fleet
     assert set(fleet.counts) == {
         (kind, state) for kind in agents_service.FLEET_KINDS for state in agents_service.FLEET_STATES
     }
@@ -472,18 +606,18 @@ def test_fleet_heartbeats_count_and_age_the_agents_table(tmp_path):
     assert fleet.stale_seconds == 120
 
 
-def test_fleet_heartbeats_is_quiet_where_the_service_is_not_configured(monkeypatch):
-    """Tools and unit tests import the registry without an agents table behind
-    it; that is nothing to report, not an error to log on every scrape."""
-    monkeypatch.setattr(agents_service, "_settings", None)
-    assert agents_service.fleet_heartbeats() is None
+def test_the_snapshots_are_quiet_where_nothing_is_configured(monkeypatch):
+    """Tools and unit tests import the registry without a database behind it;
+    that is nothing to report, not an error to log on every scrape."""
+    monkeypatch.setattr(metrics_sources, "_settings", None)
+    assert metrics_sources.cluster_snapshot() is None
 
 
 @requires_postgres
 def test_metrics_endpoint_reports_a_registered_sensor(tmp_path, monkeypatch):
     """Through the real route, registration to exposition."""
     client = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
-    metrics.AGENT_FLEET_COLLECTOR.reset_for_tests()
+    _expire_scrape_caches()
     registered = client.post(
         "/api/agent/register",
         headers={"Authorization": f"Bearer {TEST_AGENT_TOKEN}"},
@@ -496,3 +630,115 @@ def test_metrics_endpoint_reports_a_registered_sensor(tmp_path, monkeypatch):
     assert 'octo_agent_heartbeat_age_seconds_bucket{agent_kind="scanner",le="30.0"} 1.0' in body
     assert "octo_agent_stale_threshold_seconds 120.0" in body
     assert "edge-1" not in body
+
+
+@requires_postgres
+def test_every_replica_reports_the_queue_the_table_holds(tmp_path, monkeypatch):
+    """``octo_jobs_queued`` was set by whichever replica handled the job's last
+    event. With two replicas, the scan submitted through one and claimed
+    through the other left the first reporting a queued job forever, and
+    ``ShapoclyackNoSensorOnline`` paged over an empty queue the next time a
+    sensor rebooted (review of #334). The claim below is the other replica: a
+    write this process never hears about."""
+    settings = make_settings(tmp_path, job_execution_mode="agent")
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    job_id = f"job-{uuid4().hex[:12]}"
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Job(
+                job_id=job_id,
+                tenant_id="default",
+                status="queued",
+                execution="agent",
+                queued_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+    job_store.refresh_job_gauges(settings)  # this replica's own submit path
+    _expire_scrape_caches()
+    assert "octo_jobs_queued 1.0" in client.get("/metrics").text
+
+    with get_session(settings.postgres_url) as session:
+        session.execute(update(models.Job).where(models.Job.job_id == job_id).values(status="claimed"))
+    _expire_scrape_caches()
+    body = client.get("/metrics").text
+    assert "octo_jobs_queued 0.0" in body
+    assert "octo_jobs_running 1.0" in body
+
+
+@requires_postgres
+def test_endpoint_devices_are_read_from_the_table_at_scrape_time(tmp_path, monkeypatch):
+    """Same pattern as the queue: the device gauge moved only on a retention
+    sweep (hours apart) or on a System page view in the replica that served
+    it, so replicas disagreed and ``max()`` picked whichever was most stale."""
+    settings = make_settings(tmp_path, endpoint_stale_hours=48)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        for device_id, last_inventory in (
+            ("dev-fresh", now - timedelta(hours=1)),
+            ("dev-old", now - timedelta(hours=72)),
+            ("dev-never", None),
+        ):
+            session.add(
+                models.EndpointDevice(
+                    device_id=device_id,
+                    tenant_id="default",
+                    agent_id=f"agent-{device_id}",
+                    hostname=device_id,
+                    agent_version="0.2.0",
+                    first_seen=now,
+                    last_seen=now,
+                    last_inventory_at=last_inventory,
+                )
+            )
+    _expire_scrape_caches()
+    body = client.get("/metrics").text
+    assert 'octo_endpoint_devices{state="active"} 1.0' in body
+    assert 'octo_endpoint_devices{state="stale"} 2.0' in body
+
+
+@requires_postgres
+def test_the_scrape_statement_timeout_does_not_outlive_the_scrape(tmp_path):
+    """``set_config(…, true)`` scopes the 2 s cap to the scrape's transaction.
+    Session scope would leave it on the pooled connection, and the next
+    request to draw that connection — a report, a bulk action — would be
+    cancelled at 2 s. Pool of one, so it *is* the same connection."""
+    settings = make_settings(tmp_path, db_pool_size=1, db_max_overflow=0, db_pool_timeout=5)
+    db_engine.reset_for_tests()
+    try:
+        db_engine.configure(settings)
+        tenants_service.configure(settings)
+        tenants_service.load_tenants(settings)
+        metrics_sources.configure(settings)
+        assert metrics_sources.cluster_snapshot() is not None
+        engine = db_engine.get_engine(settings.postgres_url)
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("show statement_timeout").scalar() == "0"
+        assert db_engine.pool_status().checked_in == 1
+    finally:
+        db_engine.reset_for_tests()
+
+
+@requires_postgres
+def test_the_scrape_gives_up_behind_a_table_lock(tmp_path):
+    """A migration's ``ALTER TABLE agents`` holds an exclusive lock; without the
+    cap the scrape would wait for it past Prometheus's timeout, holding a
+    worker thread and a connection."""
+    settings = make_settings(tmp_path)
+    db_engine.reset_for_tests()
+    try:
+        db_engine.configure(settings)
+        tenants_service.configure(settings)
+        tenants_service.load_tenants(settings)
+        metrics_sources.configure(settings)
+        raw = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        with psycopg.connect(raw) as locker:
+            locker.execute("LOCK TABLE agents IN ACCESS EXCLUSIVE MODE")
+            started = time.monotonic()
+            with pytest.raises(sa_exc.OperationalError):
+                metrics_sources.cluster_snapshot()
+            elapsed = time.monotonic() - started
+            locker.rollback()
+        assert 1.5 < elapsed < 5, elapsed
+    finally:
+        db_engine.reset_for_tests()

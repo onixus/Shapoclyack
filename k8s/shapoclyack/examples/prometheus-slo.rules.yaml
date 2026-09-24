@@ -109,8 +109,18 @@ groups:
       # The durable is octo-ch-ingest-results since the filter was narrowed to
       # ingest.results.>; the retired name selects nothing, so both rules below
       # matched no series and could not fire until #334.
+      #
+      # One alert per consumer, from the replicas whose reading is fresh: every
+      # replica polls the same durable, and a replica whose poller stopped keeps
+      # its last count — which held this alert open after the queue drained.
+      # ShapoclyackClickHouseIngestStale names that replica instead.
       - alert: ShapoclyackClickHouseIngestLag
-        expr: octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+        expr: |
+          max by (consumer) (
+            octo_nats_consumer_pending{consumer="octo-ch-ingest-results"}
+            and on (instance, consumer)
+            ((time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) < 300)
+          ) > 1000
         for: 10m
         labels:
           severity: ticket
@@ -119,8 +129,9 @@ groups:
           summary: ClickHouse ingest consumer lag is above 1000 messages
           description: >-
             octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
-            for 10m (SLO 5). Absent series means ingest is not enabled — this
-            rule does not fire then.
+            for 10m (SLO 5), counting only replicas that read it in the last
+            5 minutes. Absent series means ingest is not enabled — this rule
+            does not fire then.
 
       # Not timestamp(octo_nats_consumer_pending): the client library exports
       # no sample timestamps, so Prometheus stamps each sample with the scrape
@@ -375,9 +386,13 @@ groups:
             is gone on purpose should be disabled or deleted in the Sensor
             Fleet page rather than left to hold this alert open.
 
+      # min(), not max(), for the queue: every replica reads the jobs table at
+      # scrape time, so they agree — and a page must not depend on that. The
+      # queue used to be set by whichever replica handled the job's last event,
+      # and one replica's stale 1 paged over an empty queue (review of #334).
       - alert: ShapoclyackNoSensorOnline
         expr: |
-          max(octo_jobs_queued) > 0
+          min(octo_jobs_queued) > 0
           and
           sum(max by (state) (octo_agents{agent_kind="scanner",state=~"idle|busy|error"})) == 0
           and

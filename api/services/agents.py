@@ -953,12 +953,6 @@ FLEET_STATES = ("idle", "busy", "error", "stale", "disabled", "quarantined")
 #: beat late — then coarse out to a week, which is where a sleeping laptop's
 #: endpoint agent, or a sensor somebody forgot to delete, ends up.
 HEARTBEAT_AGE_BUCKETS = (30, 60, 90, 120, 300, 900, 3600, 21600, 86400, 604800)
-#: Cap on the fleet query on Postgres. It is one grouped scan of ``agents``;
-#: what this guards against is waiting behind a lock — a migration's ALTER
-#: TABLE — for longer than Prometheus waits for the scrape.
-_FLEET_QUERY_TIMEOUT_MS = 2000
-
-
 @dataclass(frozen=True)
 class FleetHeartbeats:
     """One reading of the fleet, shaped for the /metrics collector (#334)."""
@@ -975,11 +969,12 @@ class FleetHeartbeats:
     stale_seconds: int
 
 
-def fleet_heartbeats(now: datetime | None = None) -> FleetHeartbeats | None:
+def fleet_heartbeats(session: Any, *, now: datetime, stale_seconds: int) -> FleetHeartbeats:
     """Count and age the whole fleet in one grouped query (#334).
 
-    ``None`` when the service was never configured: tools and unit tests that
-    import the metrics registry with no ``agents`` table behind it.
+    Runs on the caller's session: the scrape reads through
+    ``api.services.metrics_sources.scrape_session``, which bounds every
+    statement it makes.
 
     Grouped by the stored columns, with staleness and the age buckets summed
     inside each group, so the rows coming back number at most kinds ×
@@ -994,12 +989,8 @@ def fleet_heartbeats(now: datetime | None = None) -> FleetHeartbeats | None:
     of the ages: they are silent by an operator's decision, and their age would
     otherwise be the oldest one on every panel.
     """
-    settings = _settings
-    if settings is None:
-        return None
-    now = now or _now()
     last_seen = models.Agent.last_seen_at
-    stale_before = now - timedelta(seconds=settings.agent_stale_seconds)
+    stale_before = now - timedelta(seconds=stale_seconds)
     query = select(
         models.Agent.agent_kind,
         models.Agent.lifecycle_status,
@@ -1013,12 +1004,7 @@ def fleet_heartbeats(now: datetime | None = None) -> FleetHeartbeats | None:
             for bound in HEARTBEAT_AGE_BUCKETS
         ),
     ).group_by(models.Agent.agent_kind, models.Agent.lifecycle_status, models.Agent.status)
-    with get_session(settings.postgres_url) as session:
-        if session.get_bind().dialect.name == "postgresql":
-            session.execute(
-                select(func.set_config("statement_timeout", str(_FLEET_QUERY_TIMEOUT_MS), True))
-            )
-        rows = session.execute(query).all()
+    rows = session.execute(query).all()
 
     counts = {(kind, state): 0 for kind in FLEET_KINDS for state in FLEET_STATES}
     age_buckets = {kind: [0] * len(HEARTBEAT_AGE_BUCKETS) for kind in FLEET_KINDS}
@@ -1054,7 +1040,7 @@ def fleet_heartbeats(now: datetime | None = None) -> FleetHeartbeats | None:
             kind: max(0.0, age_totals[kind] * now_epoch - epoch_sums[kind]) for kind in FLEET_KINDS
         },
         age_max={kind: max(0.0, (now - seen).total_seconds()) for kind, seen in oldest.items()},
-        stale_seconds=settings.agent_stale_seconds,
+        stale_seconds=stale_seconds,
     )
 
 
