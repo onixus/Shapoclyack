@@ -5,13 +5,16 @@
 #
 # (overlays/prod-ha-monitoring is prod-ha with this and base/monitoring.)
 #
-# The dashboards sidecar of the grafana and kube-prometheus-stack Helm charts
+# The dashboards sidecar of the Grafana Helm chart
 # (`sidecar.dashboards.enabled: true`) loads every ConfigMap carrying the label
-# below — `grafana_dashboard: "1"` is its default label and value. It has to
-# watch this namespace: `sidecar.dashboards.searchNamespace: ALL`, or a list
-# that names it. `grafana_folder` is read only where the chart sets
-# `sidecar.dashboards.folderAnnotation: grafana_folder`; elsewhere the
-# dashboards land in the sidecar's default folder.
+# below from the namespaces it watches. kube-prometheus-stack's defaults match
+# as they are (label `grafana_dashboard`, labelValue "1", searchNamespace ALL);
+# the standalone grafana chart watches only its own namespace unless
+# `sidecar.dashboards.searchNamespace` names this one or is ALL.
+# `grafana_folder` is read only where the chart sets
+# `sidecar.dashboards.folderAnnotation: grafana_folder` together with
+# `provider.foldersFromFilesStructure: true`; elsewhere the dashboards land in
+# the sidecar's default folder.
 #
 # Needs no CRD, so unlike base/monitoring it cannot make an apply fail. It is
 # opt-in all the same: an installation without Grafana has no use for ~120 kB

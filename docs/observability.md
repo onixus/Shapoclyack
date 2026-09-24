@@ -90,13 +90,15 @@ patches:
         value: kube-prometheus-stack
 ```
 
-For the dashboards, the sidecar of the grafana / kube-prometheus-stack charts
-must be enabled (`sidecar.dashboards.enabled: true`), select the default label
-`grafana_dashboard: "1"`, and watch this namespace
-(`sidecar.dashboards.searchNamespace: ALL`, or a list naming it — by default it
-watches only Grafana's own). The ConfigMaps also carry
-`grafana_folder: Shapoclyack`, which the sidecar honours where the chart sets
-`sidecar.dashboards.folderAnnotation: grafana_folder`.
+For the dashboards, the Grafana chart's dashboards sidecar must be enabled
+(`sidecar.dashboards.enabled: true`), select the label `grafana_dashboard`
+(the ConfigMaps carry the value `"1"`), and watch this namespace.
+kube-prometheus-stack does all three by default (`labelValue: "1"`,
+`searchNamespace: ALL`); the standalone grafana chart watches only Grafana's
+own namespace unless `sidecar.dashboards.searchNamespace` names this one or is
+`ALL`. The ConfigMaps also carry `grafana_folder: Shapoclyack`, honoured where
+the chart sets `sidecar.dashboards.folderAnnotation: grafana_folder` together
+with `sidecar.dashboards.provider.foldersFromFilesStructure: true`.
 
 Outside Kubernetes, import the two JSON files as they are (Dashboards → New →
 Import): both choose their Prometheus data source through a variable, and
