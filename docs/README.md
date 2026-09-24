@@ -81,12 +81,14 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, endpoint groups |
 | [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, redistribution notes |
 | [Security policy](../.github/SECURITY.md) | Supported versions, disclosure, release controls, operator baseline |
+| [Release contract](release-contract.md) | What a release ships, the Pulse support and update policy, and how a customer verifies the images |
 
 ## Engineering and planning documentation
 
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
+| [Architecture decision records](adr/README.md) | Cross-component decisions and their status — currently the proposed Pulse distribution model |
 | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
@@ -117,6 +119,7 @@ Avoid repeating the same operational truth in several documents. When documents 
 | Planned work | `ROADMAP.md` and linked GitHub issues |
 | Release-specific behavior | `CHANGELOG.md` and GitHub Releases |
 | Security support/disclosure | `.github/SECURITY.md` |
+| Release artifacts, Pulse policy, customer verification | `docs/release-contract.md` |
 
 If prose disagrees with executable code, generated OpenAPI, or rendered manifests, treat that as a documentation defect and fix the prose rather than inventing a second truth.
 

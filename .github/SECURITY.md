@@ -62,7 +62,10 @@ issues. Actual timelines depend on severity, exploitability, and release risk.
   boundaries;
 - unsafe defaults that expose the scanner host, operator credentials, tenant
   data, scan artifacts, or control-plane services;
-- packaging or release weaknesses in official GHCR images.
+- packaging or release weaknesses in official GHCR images;
+- the Pulse binary those images ship: its source repository is private and has
+  no public reporting channel, so report it here — see the
+  [release contract](../docs/release-contract.md#security-fixes-in-pulse).
 
 ### Out of scope
 
