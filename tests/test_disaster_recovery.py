@@ -19,12 +19,17 @@ Three layers, none of which needs a cluster or a ClickHouse server:
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -40,6 +45,7 @@ RESTORE_SCRIPT = ROOT / "scripts/restore-clickhouse.sh"
 NETPOL = K8S / "base/networkpolicy-datastores.yaml"
 BACKUP_RULES = K8S / "examples/prometheusrule-backup.example.yaml"
 SNAPSHOT_EXAMPLE = K8S / "examples/pvc-snapshot.example.yaml"
+DR_DOC = ROOT / "docs/disaster-recovery.md"
 CH_STATEFULSET = K8S / "base/clickhouse/statefulset.yaml"
 
 SECRET = "Sup3r'Secret\\Value/+x"
@@ -106,19 +112,82 @@ def test_credentials_come_from_secrets_and_never_from_the_command_line():
         assert "secretKeyRef" in env[name]["valueFrom"], name
 
 
-def test_the_clickhouse_job_reads_the_same_bucket_secret_as_the_postgres_job():
-    def refs(path: Path) -> dict[str, tuple[str, str]]:
-        found = {}
-        for container in _pod(_load(path)).get("initContainers", []) + _pod(_load(path))["containers"]:
-            for item in container.get("env", []):
-                ref = item.get("valueFrom", {}).get("secretKeyRef")
-                if ref and ref["name"] == "shapoclyack-backup":
-                    found[item["name"]] = (ref["name"], ref["key"])
-        return found
+def _secret_refs(path: Path, secret: str) -> dict[str, str]:
+    """``{env name: key}`` for every variable a job's pod reads from ``secret``."""
+    pod = _pod(_load(path))
+    found = {}
+    for container in pod.get("initContainers", []) + pod["containers"]:
+        for item in container.get("env", []):
+            ref = item.get("valueFrom", {}).get("secretKeyRef")
+            if ref and ref["name"] == secret:
+                found[item["name"]] = ref["key"]
+    return found
 
-    clickhouse, postgres = refs(CH_CRONJOB), refs(PG_CRONJOB)
-    assert clickhouse == postgres
+
+def test_the_clickhouse_job_has_a_bucket_key_of_its_own():
+    """The same Secret *shape* as the Postgres job, not the same Secret. A key
+    scoped to PREFIX/clickhouse/* cannot overwrite or delete the Postgres
+    dumps — and BACKUP needs s3:DeleteObject for its own `.lock` object, which
+    on the shared key would mean delete rights over every dump too."""
+    clickhouse = _secret_refs(CH_CRONJOB, "shapoclyack-clickhouse-backup-s3")
+    assert clickhouse == _secret_refs(PG_CRONJOB, "shapoclyack-backup")
     assert set(clickhouse) >= {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "S3_BUCKET", "S3_PREFIX"}
+    assert _secret_refs(CH_CRONJOB, "shapoclyack-backup") == {}
+
+
+def test_the_backup_job_signs_in_as_its_own_clickhouse_user():
+    """Not `default`: that is the API's account, with DDL, DROP and url()."""
+    env = {item["name"]: item for item in _pod(_load(CH_CRONJOB))["containers"][0]["env"]}
+    assert env["CLICKHOUSE_USER"]["value"] == "shapoclyack_backup"
+    assert env["CLICKHOUSE_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "shapoclyack-clickhouse-backup",
+        "key": "password",
+    }
+    assert _secret_refs(CH_CRONJOB, "shapoclyack-clickhouse") == {}
+
+
+def _users_xml() -> ET.Element:
+    configmap = _load(K8S / "base/clickhouse/configmap.yaml")
+    return ET.fromstring(configmap["data"]["users.xml"])
+
+
+def test_the_backup_user_holds_only_what_a_backup_needs():
+    """Measured on 24.8.14: BACKUP ON the database for the BACKUP, S3 plus
+    CREATE TEMPORARY TABLE for the s3() reads and the manifest INSERT, SELECT on
+    system.backups for the poll — and it is refused SELECT on the tables, DROP,
+    INSERT, url(), RESTORE, SYSTEM and user management."""
+    users = _users_xml().find("users")
+    backup = users.find("shapoclyack_backup")
+    assert backup is not None
+    assert backup.find("password").get("from_env") == "CLICKHOUSE_BACKUP_PASSWORD"
+    assert backup.find("access_management").text == "0"
+    grants = sorted(query.text.strip() for query in backup.find("grants").findall("query"))
+    assert grants == sorted(
+        [
+            "GRANT BACKUP ON shapoclyack.*",
+            "GRANT S3 ON *.*",
+            "GRANT CREATE TEMPORARY TABLE ON *.*",
+            "GRANT SELECT ON system.backups",
+        ]
+    )
+    default_networks = [ip.text for ip in users.find("default").find("networks")]
+    assert [ip.text for ip in backup.find("networks")] == default_networks
+
+
+def test_the_backup_users_password_can_never_be_empty():
+    """An unset `from_env` variable is an empty password on 24.8 — one warning
+    in the server log and a user anyone can sign in as. So the variable comes
+    from a Secret base always generates, and the reference is never optional:
+    a missing Secret is a pod that does not start, not an open account."""
+    container = _load(CH_STATEFULSET)["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item for item in container["env"]}
+    ref = env["CLICKHOUSE_BACKUP_PASSWORD"]["valueFrom"]["secretKeyRef"]
+    assert (ref["name"], ref["key"]) == ("shapoclyack-clickhouse-backup", "password")
+    assert not ref.get("optional", False)
+    generated = {item["name"]: item for item in _load(K8S / "base/kustomization.yaml")["secretGenerator"]}
+    assert any(
+        literal.startswith("password=") for literal in generated["shapoclyack-clickhouse-backup"]["literals"]
+    )
 
 
 def test_the_job_runs_the_script_file_the_kustomization_packages():
@@ -138,12 +207,21 @@ def test_the_job_runs_the_script_file_the_kustomization_packages():
     assert container["command"] == ["/bin/sh", "/opt/shapoclyack/clickhouse-backup.sh"]
 
 
-def test_the_client_image_is_the_server_image():
-    """BACKUP runs on the server, but the client that issues it and reads the
-    manifest back should not be a different ClickHouse release; and an overlay
-    that mirrors the server image with ``images:`` must move both."""
+_PINNED = re.compile(r"^(?P<name>[a-z0-9./-]+:[A-Za-z0-9._-]+)@sha256:[0-9a-f]{64}$")
+
+
+def test_the_client_image_is_pinned_to_the_server_release():
+    """Pinned by digest (#313), and the server's release: BACKUP runs on the
+    server, but the client that issues it and reads the manifest back should
+    not be a different ClickHouse, and an overlay that mirrors the server image
+    with ``images:`` moves both."""
+    client = _pod(_load(CH_CRONJOB))["containers"][0]["image"]
     server = _load(CH_STATEFULSET)["spec"]["template"]["spec"]["containers"][0]["image"]
-    assert _pod(_load(CH_CRONJOB))["containers"][0]["image"] == server
+    match = _PINNED.match(client)
+    assert match, f"{client!r} is not pinned by digest"
+    assert match.group("name") == server.split("@")[0]
+    if "@" in server:
+        assert client == server
 
 
 def test_the_networkpolicy_admits_each_backup_job_to_its_own_datastore_only():
@@ -262,6 +340,29 @@ def test_the_ha_overlay_keeps_the_clickhouse_backup():
     assert "shapoclyack-postgres-backup" not in cronjobs
 
 
+def _quantity(value: str) -> float:
+    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40}
+    for suffix, factor in units.items():
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * factor
+    return float(value)
+
+
+def test_the_restore_overlay_runs_a_lab_sized_clickhouse():
+    """The drill namespace sits next to the source lab on one kind node; the
+    production 2 Gi request and 50 Gi claim are what an installation sizes,
+    not what a rehearsal needs."""
+    docs = _render("overlays/kind-restore")
+    clickhouse = next(
+        doc for doc in docs if doc["kind"] == "StatefulSet" and doc["metadata"]["name"] == "shapoclyack-clickhouse"
+    )
+    resources = clickhouse["spec"]["template"]["spec"]["containers"][0]["resources"]
+    assert _quantity(resources["requests"]["memory"]) <= 2**30
+    assert _quantity(resources["limits"]["memory"]) <= 2 * 2**30
+    storage = clickhouse["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"]
+    assert _quantity(storage) <= 10 * 2**30
+
+
 # --------------------------------------------------------------------------- #
 # The scripts, against a stub clickhouse-client
 # --------------------------------------------------------------------------- #
@@ -332,7 +433,10 @@ class Stub:
         path = self.dir / "calls.jsonl"
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        # Only complete lines: a test polling while the script runs may catch
+        # the stub mid-write.
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
+                if line.endswith("\n")]
 
     @property
     def statements(self) -> list[str]:
@@ -378,13 +482,24 @@ def _assert_secret_contained(result: subprocess.CompletedProcess[str], stub: Stu
 # The SQL-escaped form of SECRET, as it must appear inside a string literal.
 _SECRET_IN_SQL = "Sup3r\\'Secret\\\\Value/+x"
 
+# Answers to the two pre-flight questions the scripts ask: nothing of ours is
+# still being written, and every part the backup lists is readable.
+_NOTHING_IN_FLIGHT = (r"status = 'CREATING_BACKUP'", [{"stdout": ""}])
+_ALL_PARTS_READABLE = (r"extractAll\(raw_blob", [{"stdout": ""}])
+
 _BACKUP_OK = [
+    _NOTHING_IN_FLIGHT,
     (r"^BACKUP DATABASE", [{"stdout": "shapoclyack-x\tCREATING_BACKUP\n"}]),
-    (r"SELECT status FROM system\.backups", [{"stdout": "CREATING_BACKUP\n"}, {"stdout": "BACKUP_CREATED\n"}]),
+    (r"^SELECT status FROM system\.backups", [{"stdout": "CREATING_BACKUP\n"}, {"stdout": "BACKUP_CREATED\n"}]),
+    _ALL_PARTS_READABLE,
     (r"^INSERT INTO FUNCTION s3", [{"stdout": ""}]),
     (r"SELECT count\(\), sum\(rows\)", [{"stdout": "3\t30000\n"}]),
     (r"SELECT num_files", [{"stdout": "42\t1048576\t1000000\n"}]),
 ]
+
+
+def _backup_statement(stub: Stub) -> str:
+    return next(sql for sql in stub.statements if sql.startswith("BACKUP DATABASE"))
 
 _BACKUP_ENV = {
     "S3_BUCKET": "drill-backups",
@@ -399,12 +514,12 @@ def test_the_backup_issues_an_async_backup_polls_it_and_writes_the_manifest(tmp_
     assert result.returncode == 0, result.stderr
 
     statements = stub.statements
-    backup = statements[0]
+    backup = _backup_statement(stub)
     assert backup.startswith("BACKUP DATABASE `shapoclyack` TO S3('http://minio.storage:9000/drill-backups/shapoclyack/prod/clickhouse/")
     assert backup.rstrip().endswith("ASYNC")
     assert f"'{ACCESS_KEY}', '{_SECRET_IN_SQL}'" in backup
     # Polled until created, then the manifest, read back, then the sizes.
-    assert sum("FROM system.backups" in sql and "status" in sql for sql in statements) == 2
+    assert sum(sql.startswith("SELECT status FROM system.backups") for sql in statements) == 2
     manifest = next(sql for sql in statements if sql.startswith("INSERT INTO FUNCTION s3"))
     assert "/manifest.jsonl'" in manifest
     assert "/data/shapoclyack/*/*/count.txt'" in manifest
@@ -427,9 +542,55 @@ def test_without_an_endpoint_the_backup_goes_to_aws_s3_in_the_configured_region(
         AWS_DEFAULT_REGION="eu-central-1",
     )
     assert result.returncode == 0, result.stderr
-    assert stub.statements[0].startswith(
+    assert _backup_statement(stub).startswith(
         "BACKUP DATABASE `shapoclyack` TO S3('https://drill-backups.s3.eu-central-1.amazonaws.com/clickhouse/"
     )
+
+
+def test_the_backup_stores_every_parts_count_file(tmp_path):
+    """BACKUP stores a file whose checksum it has already stored only once
+    (`deduplicate_files`, on by default): a second part whose count.txt has the
+    same bytes points at the first one's object. The manifest counts count.txt
+    objects, so on 24.8.14 three parts of 1000 rows read as one part of 1000,
+    and the restore — merges stopped, 3000 rows — exited 8 on a valid backup."""
+    stub = Stub(tmp_path, _BACKUP_OK)
+    result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
+    assert result.returncode == 0, result.stderr
+    assert "deduplicate_files = 0" in _backup_statement(stub)
+
+
+def test_a_backup_whose_listed_parts_are_not_all_readable_is_not_a_restore_point(tmp_path):
+    """The belt to that brace: `.backup` lists every part's count.txt whether
+    or not its object was deduplicated, so fewer readable objects than listed
+    parts means the counts are wrong — or objects are missing — and the job
+    must not write a manifest that fails the restore after the fact."""
+    rules = [
+        _NOTHING_IN_FLIGHT,
+        *[rule for rule in _BACKUP_OK if rule[0].startswith(("^BACKUP", "^SELECT status"))],
+        (r"extractAll\(raw_blob", [{"stdout": "shapoclyack_open_ports\t3\t1\n"}]),
+        (r"^INSERT INTO FUNCTION s3", [{"stdout": ""}]),
+    ]
+    stub = Stub(tmp_path, rules)
+    result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
+    assert result.returncode == 1
+    assert "reason=parts_unreadable" in result.stderr
+    assert "table=shapoclyack_open_ports listed=3 readable=1" in result.stderr
+    assert not any(sql.startswith("INSERT INTO FUNCTION") for sql in stub.statements)
+
+
+def test_a_backup_an_earlier_attempt_is_still_writing_is_not_started_twice(tmp_path):
+    """The script gives up waiting at its timeout, but the server's BACKUP goes
+    on; the Job's retry must not start a second one beside it."""
+    rules = [
+        (r"status = 'CREATING_BACKUP'", [{"stdout": "shapoclyack-20260924T024500Z\n"}]),
+        *_BACKUP_OK[1:],
+    ]
+    stub = Stub(tmp_path, rules)
+    result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
+    assert result.returncode == 1
+    assert "reason=backup_in_flight" in result.stderr
+    assert "running=shapoclyack-20260924T024500Z" in result.stderr
+    assert not any(sql.startswith("BACKUP DATABASE") for sql in stub.statements)
 
 
 @pytest.mark.parametrize("missing", ["CLICKHOUSE_PASSWORD", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "S3_BUCKET"])
@@ -454,24 +615,44 @@ def test_the_backup_refuses_values_it_would_have_to_quote(tmp_path, name, value)
 
 
 def test_a_refused_statement_does_not_print_the_secret_the_client_echoes(tmp_path):
-    """clickhouse-client appends the whole statement to an error — here with the
-    secret in it, verbatim, exactly as 24.8 does (docs/disaster-recovery.md)."""
+    """clickhouse-client appends the whole statement to an error. What 24.8
+    prints there is the statement as sent — the SQL-escaped literal, not the
+    raw secret — so the test echoes that form."""
     echoed = (
         "Received exception from server (version 24.8.14):\n"
         "Code: 36. DB::Exception: Received from host:9000. DB::Exception: Host is empty in S3 URI.. (BAD_ARGUMENTS)\n"
-        f"(query: BACKUP DATABASE `shapoclyack` TO S3('x', '{ACCESS_KEY}', '{SECRET}') ASYNC\n)\n"
+        f"(query: BACKUP DATABASE `shapoclyack` TO S3('x', '{ACCESS_KEY}', '{_SECRET_IN_SQL}') ASYNC\n)\n"
     )
-    stub = Stub(tmp_path, [(r"^BACKUP DATABASE", [{"stderr": echoed, "exit": 36}])])
+    stub = Stub(tmp_path, [_NOTHING_IN_FLIGHT, (r"^BACKUP DATABASE", [{"stderr": echoed, "exit": 36}])])
     result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
     assert result.returncode == 1
     assert "Host is empty in S3 URI" in result.stderr
     assert "backup_failed reason=statement_refused" in result.stderr
     assert "(query:" not in result.stderr
+    assert "Sup3r" not in result.stderr
+    _assert_secret_contained(result, stub)
+
+
+def test_a_syntax_error_that_quotes_the_statement_without_a_query_block_is_masked(tmp_path):
+    """A parse error prints the tail of the statement inside its own message,
+    with no `(query: …)` block to drop — so the escaped literal is masked too."""
+    echoed = (
+        "Code: 62. DB::Exception: Syntax error: failed at position 88 "
+        f"('{ACCESS_KEY}', '{_SECRET_IN_SQL}') ASYNC'): expected end of query. (SYNTAX_ERROR)\n"
+    )
+    stub = Stub(tmp_path, [_NOTHING_IN_FLIGHT, (r"^BACKUP DATABASE", [{"stderr": echoed, "exit": 62}])])
+    result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
+    assert result.returncode == 1
+    assert "Syntax error" in result.stderr
+    assert "Sup3r" not in result.stderr
     _assert_secret_contained(result, stub)
 
 
 def test_the_secret_is_masked_even_where_the_client_prints_it_outside_the_query_block(tmp_path):
-    stub = Stub(tmp_path, [(r"^BACKUP DATABASE", [{"stderr": f"odd: {SECRET} and {CH_PASSWORD}\n", "exit": 1}])])
+    stub = Stub(
+        tmp_path,
+        [_NOTHING_IN_FLIGHT, (r"^BACKUP DATABASE", [{"stderr": f"odd: {SECRET} and {CH_PASSWORD}\n", "exit": 1}])],
+    )
     result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
     assert result.returncode == 1
     assert "odd: [HIDDEN] and [HIDDEN]" in result.stderr
@@ -480,8 +661,9 @@ def test_the_secret_is_masked_even_where_the_client_prints_it_outside_the_query_
 
 def test_a_failed_backup_reports_the_first_line_of_the_server_error(tmp_path):
     rules = [
+        _NOTHING_IN_FLIGHT,
         (r"^BACKUP DATABASE", [{"stdout": "x\tCREATING_BACKUP\n"}]),
-        (r"SELECT status FROM system\.backups", [{"stdout": "BACKUP_FAILED\n"}]),
+        (r"^SELECT status FROM system\.backups", [{"stdout": "BACKUP_FAILED\n"}]),
         (
             r"SELECT error FROM system\.backups",
             [{"stdout": "Code: 499. DB::Exception: The specified bucket does not exist. (S3_ERROR)\n0. DB::Exception::Exception\n"}],
@@ -498,8 +680,9 @@ def test_a_failed_backup_reports_the_first_line_of_the_server_error(tmp_path):
 
 def test_a_backup_that_vanishes_from_system_backups_fails(tmp_path):
     rules = [
+        _NOTHING_IN_FLIGHT,
         (r"^BACKUP DATABASE", [{"stdout": "x\tCREATING_BACKUP\n"}]),
-        (r"SELECT status FROM system\.backups", [{"stdout": ""}]),
+        (r"^SELECT status FROM system\.backups", [{"stdout": ""}]),
     ]
     stub = Stub(tmp_path, rules)
     result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
@@ -508,7 +691,7 @@ def test_a_backup_that_vanishes_from_system_backups_fails(tmp_path):
 
 
 def test_a_backup_with_no_tables_is_a_failure_not_a_restore_point(tmp_path):
-    rules = [*_BACKUP_OK[:3], (r"SELECT count\(\), sum\(rows\)", [{"stdout": "0\t0\n"}])]
+    rules = [*_BACKUP_OK[:5], (r"SELECT count\(\), sum\(rows\)", [{"stdout": "0\t0\n"}])]
     stub = Stub(tmp_path, rules)
     result = _run(BACKUP_SCRIPT, stub, **_BACKUP_ENV)
     assert result.returncode == 1
@@ -527,18 +710,31 @@ _MANIFEST = (
 )
 
 
+_COLUMNS = (
+    "shapoclyack_controls\trun_id\tString\n"
+    "shapoclyack_open_ports\tport\tUInt16\n"
+    "shapoclyack_vulnerabilities\tcve_id\tString\n"
+)
+
+
 def _restore_rules(
     *,
     manifest: str = _MANIFEST,
     observed: str = _MANIFEST,
+    unreadable: str = "",
     target: str = "shapoclyack_controls\t0\nshapoclyack_open_ports\t0\nshapoclyack_vulnerabilities\t0\n",
+    columns_before: str = _COLUMNS,
+    columns_after: str = _COLUMNS,
     restored: str = "shapoclyack_controls\t0\t0\nshapoclyack_open_ports\t0\t40000\nshapoclyack_vulnerabilities\t0\t29992\n",
     restore_status: str = "RESTORED\n",
 ) -> list[tuple[str, list[dict]]]:
     return [
         (r"manifest\.jsonl", [{"stdout": manifest}]),
         (r"^SELECT\s+t\.table", [{"stdout": observed}]),
+        (r"extractAll\(raw_blob", [{"stdout": unreadable}]),
         (r"FROM system\.tables", [{"stdout": target}]),
+        (r"FROM system\.columns", [{"stdout": columns_before}, {"stdout": columns_after}]),
+        (r"^DROP DATABASE", [{"stdout": ""}]),
         (r"structure_only = 1", [{"stdout": "x\tRESTORED\n"}]),
         (r"^SYSTEM (STOP|START) MERGES", [{"stdout": ""}]),
         (r"^RESTORE DATABASE .* ASYNC", [{"stdout": "x\tRESTORING\n"}]),
@@ -560,7 +756,7 @@ def test_a_dry_run_verifies_the_backup_and_restores_nothing(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "restore_dry_run_ok database=shapoclyack tables=3 rows=69992" in result.stdout
     assert result.stdout.count(" ok\n") == 3
-    assert not any(sql.startswith(("RESTORE", "SYSTEM")) for sql in stub.statements)
+    assert not any(sql.startswith(("RESTORE", "SYSTEM", "DROP")) for sql in stub.statements)
 
 
 def test_a_row_count_that_differs_from_the_manifest_stops_the_restore(tmp_path):
@@ -603,7 +799,54 @@ def test_a_target_that_already_holds_rows_is_refused(tmp_path):
     result, stub = _restore(tmp_path, "--local", target=target)
     assert result.returncode == 7
     assert "shapoclyack_open_ports(17)" in result.stderr
-    assert not any(sql.startswith(("RESTORE", "SYSTEM")) for sql in stub.statements)
+    assert not any(sql.startswith(("RESTORE", "SYSTEM", "DROP")) for sql in stub.statements)
+
+
+def test_rows_in_a_table_the_backup_does_not_have_block_the_restore_too(tmp_path):
+    """The restore drops the (empty) target database to rebuild it from the
+    backup's schema, so every table in it counts — not only the backup's."""
+    target = "local_notes\t5\nshapoclyack_controls\t0\nshapoclyack_open_ports\t0\nshapoclyack_vulnerabilities\t0\n"
+    result, stub = _restore(tmp_path, "--local", target=target)
+    assert result.returncode == 7
+    assert "local_notes(5)" in result.stderr
+    assert not any(sql.startswith(("RESTORE", "SYSTEM", "DROP")) for sql in stub.statements)
+
+
+def test_a_backup_listing_parts_it_does_not_store_is_refused_before_anything_is_restored(tmp_path):
+    """A backup taken with `deduplicate_files` on — by hand, or by the job
+    before #333's review — stores one count.txt for several parts; its row
+    counts cannot be verified, and restoring it would end in exit 8."""
+    result, stub = _restore(tmp_path, "--local", unreadable="shapoclyack_open_ports\t4\t1\n")
+    assert result.returncode == 6
+    assert "table=shapoclyack_open_ports listed=4 readable=1" in result.stdout
+    assert not any(sql.startswith(("RESTORE", "SYSTEM", "DROP")) for sql in stub.statements)
+
+
+def test_an_empty_target_is_rebuilt_from_the_backups_schema(tmp_path):
+    """A new PVC's first boot ran *this* release's init.sql; a backup from an
+    older one has other columns, and RESTORE into the existing tables fails
+    with CANNOT_RESTORE_TABLE. Empty, the database is dropped first."""
+    result, stub = _restore(tmp_path, "--local")
+    assert result.returncode == 0, result.stderr
+    statements = stub.statements
+    drop = statements.index("DROP DATABASE IF EXISTS `shapoclyack` SYNC\n")
+    structure = next(i for i, sql in enumerate(statements) if "structure_only = 1" in sql)
+    target = next(i for i, sql in enumerate(statements) if "FROM system.tables" in sql)
+    assert target < drop < structure
+
+
+def test_columns_this_release_has_and_the_backup_lacks_are_reported(tmp_path):
+    """ClickHouse has no migrations here: init.sql runs on a first boot only.
+    After an older backup is restored, the schema is the backup's, and the
+    columns the release added have to be added by that release's upgrade step
+    — which the script names rather than failing a restore that worked."""
+    before = _COLUMNS + "shapoclyack_open_ports\tservice\tLowCardinality(String)\n"
+    result, _ = _restore(tmp_path, "--local", columns_before=before)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "schema_drift table=shapoclyack_open_ports column=service type=LowCardinality(String) only_in=target"
+        in result.stdout
+    )
 
 
 def test_a_restore_stops_merges_first_verifies_counts_and_starts_them_again(tmp_path):
@@ -613,6 +856,7 @@ def test_a_restore_stops_merges_first_verifies_counts_and_starts_them_again(tmp_
 
     statements = stub.statements
     order = [
+        next(i for i, sql in enumerate(statements) if sql.startswith("DROP DATABASE")),
         next(i for i, sql in enumerate(statements) if "structure_only = 1" in sql),
         max(i for i, sql in enumerate(statements) if sql.startswith("SYSTEM STOP MERGES")),
         next(i for i, sql in enumerate(statements) if sql.startswith("RESTORE DATABASE") and "ASYNC" in sql),
@@ -635,6 +879,63 @@ def test_restored_counts_that_differ_fail_the_restore_and_merges_still_restart(t
     assert result.returncode == 8
     assert "table=shapoclyack_open_ports manifest_rows=40000 restored_rows=39000 MISMATCH" in result.stdout
     assert sum(sql.startswith("SYSTEM START MERGES") for sql in stub.statements) == 3
+    # The data is in, so a rerun stops at the target check; say what to do.
+    assert "exit 7" in result.stderr
+    assert "DROP DATABASE `shapoclyack` SYNC" in result.stderr
+
+
+@pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM", "SIGHUP"])
+def test_merges_restart_when_the_restore_is_interrupted(tmp_path, signame):
+    """Ctrl-C or a dropped SSH session during the RESTORE poll. An EXIT trap
+    alone does not run on a fatal signal in dash or busybox ash, and merges
+    left stopped fail every later OPTIMIZE with Code 236."""
+    rules = [
+        (match, [{"stdout": "RESTORING\n"}]) if match.startswith("SELECT status") else (match, replies)
+        for match, replies in _restore_rules()
+    ]
+    stub = Stub(tmp_path, rules)
+    proc = subprocess.Popen(
+        ["sh", str(RESTORE_SCRIPT), "--backup-url", _URL, "--local"],
+        env=stub.env(CLICKHOUSE_RESTORE_POLL_SECONDS="1"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 30
+    while not any("SELECT status FROM system.backups" in sql for sql in stub.statements):
+        assert time.monotonic() < deadline, "restore never reached its poll"
+        time.sleep(0.05)
+    proc.send_signal(getattr(signal, signame))
+    proc.communicate(timeout=30)
+    assert proc.returncode != 0
+    assert sum(sql.startswith("SYSTEM START MERGES") for sql in stub.statements) == 3
+
+
+@pytest.mark.parametrize(
+    "echoed",
+    [
+        # The block clickhouse-client appends to an error: the statement as
+        # sent, so the secret is the SQL-escaped literal.
+        "Received exception from server (version 24.8.14):\n"
+        "Code: 499. DB::Exception: Received from host:9000. DB::Exception: Failed to get object info. (S3_ERROR)\n"
+        f"(query: SELECT table FROM s3('{_URL}/manifest.jsonl', '{ACCESS_KEY}', '{_SECRET_IN_SQL}', "
+        "'JSONEachRow')\n)\n",
+        # A parse error quotes the statement's tail in its own message.
+        f"Code: 62. DB::Exception: Syntax error: failed at position 70 ('{_SECRET_IN_SQL}', 'JSONEachRow'): "
+        "Failed to get object info. (SYNTAX_ERROR)\n",
+    ],
+    ids=["query-block", "syntax-error"],
+)
+def test_the_restore_hides_the_statement_the_client_echoes(tmp_path, echoed):
+    stub = Stub(tmp_path, [(r"manifest\.jsonl", [{"stderr": echoed, "exit": 211}])])
+    result = _run(RESTORE_SCRIPT, stub, "--backup-url", _URL, "--local", "--dry-run")
+    assert result.returncode == 4
+    assert "Failed to get object info" in result.stderr
+    assert "Sup3r" not in result.stderr
+    # The whole block goes, not only the secret in it: it also carries the
+    # bucket URL and the access key id, which a log has no use for.
+    assert "(query:" not in result.stderr
+    _assert_secret_contained(result, stub)
 
 
 def test_a_failed_restore_reports_the_server_error_and_restarts_merges(tmp_path):
@@ -693,6 +994,7 @@ def test_the_backup_and_the_restore_count_a_backup_the_same_way():
         "(SELECT lower(hex(SHA256(raw_blob))) FROM s3('${url_q}/.backup', ${creds}, 'RawBLOB'))",
         "decodeURLComponent(left(name, length(name) - 4)) AS table",
         "decodeURLComponent(splitByChar('/', _path)[-3]) AS table",
+        "extractAll(raw_blob, '<name>data/${db}/([^/<]*)/[^/<]*/count[.]txt</name>')",
     ):
         assert fragment in backup, fragment
         assert fragment.replace("${db}", "${database}") in restore, fragment
@@ -744,3 +1046,58 @@ def test_the_drill_takes_its_credentials_from_the_environment_only(capsys, monke
     assert "CLICKHOUSE_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY" in capsys.readouterr().err
     options = {action.dest for action in drill.build_parser()._actions}
     assert not {dest for dest in options if "password" in dest or "secret" in dest}
+
+
+def test_the_drill_backs_up_equal_sized_parts_in_every_table():
+    """The first 10k drill passed with the manifest bug in it: it merged
+    everything before the backup and wrote no controls rows, so no two parts
+    were alike. Its daily runs now land one part per table each, all the same
+    size — the shape `deduplicate_files` collapsed."""
+    from api.services import ch_transform
+
+    drill = _drill()
+    shapes = []
+    for number in (1, 2):
+        run_id = f"dr-drill-day-{number}"
+        payload = {
+            "tenant_id": "scale-test",
+            "run_id": run_id,
+            "job_id": "job-" + run_id,
+            "archive_b64": base64.b64encode(drill.run_archive(run_id, 50, 100 + number)).decode(),
+        }
+        vulns, ports, controls = ch_transform.transform_ingest_payload(payload)
+        shapes.append((len(vulns), len(ports), len(controls)))
+    assert shapes[0] == shapes[1] == (50, 100, len(drill.CONTROLS))
+    assert drill.build_parser().parse_args(["--postgres-url", "x", "--s3-bucket", "b"]).daily_runs >= 2
+
+
+# --------------------------------------------------------------------------- #
+# The runbook
+# --------------------------------------------------------------------------- #
+
+
+def _section(heading: str) -> str:
+    text = DR_DOC.read_text(encoding="utf-8")
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_the_runbook_creates_the_artifact_claim_before_the_overlay_creates_an_empty_one():
+    """`dataSource` is immutable, and the restore overlay renders `scanner-data`:
+    applied first, it leaves an empty claim that no snapshot can be put into,
+    and Postgres is then restored beside empty artifacts. The snapshot objects
+    also need the namespace to exist."""
+    steps = _section("## Full restore, in order")
+    namespace = steps.index("kubectl create namespace")
+    claim = steps.index("pvc-snapshot.example.yaml")
+    overlay = steps.index("kubectl apply -k")
+    assert namespace < claim < overlay
+
+
+def test_the_runbook_lists_runs_without_downloading_them():
+    """`runs.list_runs` reads each run's summary — on the S3 backend that
+    syncs every run into the API pod's cache. The orphan check needs keys."""
+    text = DR_DOC.read_text(encoding="utf-8")
+    assert "runs.list_runs" not in text
+    assert "workspace.run_refs(" in text
