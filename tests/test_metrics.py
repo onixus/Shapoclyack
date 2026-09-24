@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from api.services import jobs as jobs_service
 from api.services import metrics
 from api.services import tenants as tenants_service
-from tests.conftest import make_settings, requires_postgres
+from tests.conftest import configured_client, make_settings, requires_postgres
 
 
 def test_render_exposes_registered_metric_families():
@@ -84,3 +85,54 @@ def test_job_terminal_transition_records_duration_and_gauges(tmp_path: Path):
     after = metrics.JOB_DURATION_SECONDS.labels(status="succeeded", execution="agent")._sum.get()  # noqa: SLF001
     assert after - before == 30.0
     assert metrics.JOBS_RUNNING._value.get() == 0  # noqa: SLF001
+
+
+def test_http_metric_labels_come_from_a_fixed_set():
+    """The same guard without a database, so the infrastructure-free gate
+    runs it too."""
+    from starlette.requests import Request
+    from starlette.routing import Route
+
+    from api.app import UNMATCHED_PATH_LABEL, _http_metric_labels
+
+    def request(method: str, path: str, route: Route | None = None) -> Request:
+        scope = {"type": "http", "method": method, "path": path, "headers": []}
+        if route is not None:
+            scope["route"] = route
+        return Request(scope)
+
+    route = Route("/api/agents/{agent_id}", endpoint=lambda: None)
+    assert _http_metric_labels(request("GET", "/api/agents/a-1", route)) == (
+        "GET",
+        "/api/agents/{agent_id}",
+    )
+    assert _http_metric_labels(request("GET", "/wp-login.php")) == ("GET", UNMATCHED_PATH_LABEL)
+    assert _http_metric_labels(request("PROPFIND", "/x", route)) == ("OTHER", "/api/agents/{agent_id}")
+
+
+@requires_postgres
+def test_unrouted_requests_do_not_mint_a_series_each(tmp_path, monkeypatch):
+    """``path`` is the route template, which is what bounds it — but a request
+    no route matched has no template, and the raw URL used to stand in. That is
+    every 404 on an API without the console build and every CORS preflight
+    (answered by the middleware before routing), so each path a scanner probed
+    became a series of its own, on every replica, until the process restarted
+    (#334). ``method`` was copied through the same way."""
+    client = configured_client(tmp_path, monkeypatch)
+    probe = f"/probe-{uuid.uuid4().hex}"
+    preflight = f"/preflight-{uuid.uuid4().hex}"
+    assert client.get(probe).status_code == 404
+    client.options(
+        preflight,
+        headers={"Origin": "https://console.example", "Access-Control-Request-Method": "GET"},
+    )
+    assert client.request("PROPFIND", "/api/health").status_code == 405
+
+    body = client.get("/metrics").text
+    assert probe not in body
+    assert preflight not in body
+    assert 'path="<unmatched>"' in body
+    assert "PROPFIND" not in body
+    assert 'method="OTHER",path="/api/health",status="405"' in body
+    # A routed request keeps its template, which is the point of the label.
+    assert 'method="GET",path="/metrics"' in client.get("/metrics").text

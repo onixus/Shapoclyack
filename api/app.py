@@ -176,6 +176,29 @@ def _bearer_matches(request: Request, expected: str) -> bool:
     return hmac.compare_digest(presented.strip(), expected)
 
 
+#: The methods the HTTP series name as themselves; anything else is ``OTHER``.
+_METRIC_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+#: ``path`` of a request no route matched. Not a path, so it cannot collide
+#: with a route template, which always starts with ``/``.
+UNMATCHED_PATH_LABEL = "<unmatched>"
+
+
+def _http_metric_labels(request: Request) -> tuple[str, str]:
+    """``(method, path)`` labels for the HTTP series, both from a fixed set (#334).
+
+    ``path`` is the matched route's template, which is what makes it a bounded
+    label. A request that matched nothing — a 404 on an API serving no console
+    build, a CORS preflight the middleware answers before routing — has no
+    template, and its raw URL used to stand in: every path a scanner probed
+    became one more series on every replica, kept until the process restarted.
+    The method is the client's to choose in the same way.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or UNMATCHED_PATH_LABEL
+    method = request.method if request.method in _METRIC_METHODS else "OTHER"
+    return method, path
+
+
 def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
     """One readiness check as ``HealthResponse``'s tri-state field.
 
@@ -274,10 +297,9 @@ def create_app() -> FastAPI:
         start = time.perf_counter()
         response = await call_next(request)
         duration = time.perf_counter() - start
-        route = request.scope.get("route")
-        path = route.path if route is not None else request.url.path
-        metrics_service.HTTP_REQUESTS_TOTAL.labels(request.method, path, str(response.status_code)).inc()
-        metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
+        method, path = _http_metric_labels(request)
+        metrics_service.HTTP_REQUESTS_TOTAL.labels(method, path, str(response.status_code)).inc()
+        metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(method, path).observe(duration)
         return response
 
     @app.get("/metrics", include_in_schema=False)
