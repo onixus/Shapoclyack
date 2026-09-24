@@ -13,8 +13,10 @@ All notable changes to Shapoclyack are documented in this file.
   step-up, audited with a reason) now cut every path in at once: members with no
   other active tenant are signed out, the tenant's service tokens and
   provisioning keys are revoked (unless asked to keep them), agents' JWTs are
-  refused on every request, queued scans are cancelled and running agent scans
-  stopped through #360's channel, and schedules, SLA escalation, ticket sync,
+  refused on every request (a heartbeat naming a job being stopped is answered
+  with the stop and nothing else, so #360's channel still reaches the sensor),
+  queued scans are cancelled and running agent scans stopped, and schedules,
+  SLA escalation, ticket sync,
   webhooks and notifications skip the tenant. Resuming restores what was paused
   but not what was revoked, and moves overdue schedules to their next
   occurrence instead of firing a burst. Deletion is two steps and, by default,
@@ -28,7 +30,10 @@ All notable changes to Shapoclyack are documented in this file.
   row lock before each batch; a hold stops it and leaves it `blocked`. Each
   step is resumable after a crash, retried with backoff and visible per store in
   the console; the journal keeps a tombstone of counts per store, the audit
-  trail is kept, and a deleted tenant's id is never reused. See
+  trail is kept, and a deleted tenant's id is never reused. A store that is
+  not configured on the replica running its step fails the step unless it is
+  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`), and the console lists
+  the deletion journal with each tombstone. See
   [docs/tenant-lifecycle.md](docs/tenant-lifecycle.md), including how to
   re-apply deletions after restoring a backup.
 - **Per-tenant retention, legal hold, and data-subject requests for console

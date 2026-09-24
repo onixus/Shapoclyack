@@ -651,7 +651,8 @@ by which mechanism, and what the DPA annex should say about it:
 [data-retention.md](data-retention.md).
 
 Offboarding a customer is not a retention window: a platform admin suspends a
-tenant (every session, token, key and agent of it cut at once), or deletes it
+tenant (its members' sessions, its tokens, keys and agents cut at once, its
+running agent scans told to stop), or deletes it
 in two steps with a grace period, after which a worker purges it from
 Postgres, ClickHouse, the artifact store and JetStream and keeps a tombstone.
 A restore from a backup taken before the purge brings the tenant back; the

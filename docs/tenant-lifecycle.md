@@ -20,8 +20,13 @@ suspended`). The `default` tenant can be neither suspended nor deleted: accounts
 without a membership and legacy shared-token agents act in it.
 
 All routes need `platform.tenant.lifecycle` (platform admins only; a service
-token never has it) and every change needs a recent second factor (step-up,
-[api-and-rbac.md](api-and-rbac.md)).
+token never has it), and every change is behind the step-up
+([api-and-rbac.md](api-and-rbac.md)): an account **with a second factor** must
+have proved it recently. The step-up does nothing for an account without one —
+the platform's rule since #315 — so on an installation whose platform admins
+have not enrolled, the two-step, two-person purge rests on two password
+sessions. Enrol every platform admin in MFA, or sign them in through SSO,
+before relying on it.
 
 ## 2. Suspension
 
@@ -34,27 +39,39 @@ would otherwise outlive a status check:
 | Console sessions | Members that can act in **no other active tenant** are signed out: `token_version` bumped, session families revoked (`revoked_reason = tenant_closed`). Members of other tenants keep their session | The per-request gate refuses this tenant (403) |
 | Service tokens | Revoked (`revoked_at`) unless `revoke_credentials=false` | Authentication refuses a token of a non-active tenant (401) |
 | Provisioning keys | Revoked unless `revoke_credentials=false` | Key exchange refuses a non-active tenant (401) |
-| Agent JWTs (sensors, Lariska) | — | Every agent request re-reads the tenant's status with the key (`agents.check_credential`): claim, heartbeat, results upload and inventory submission answer 401 |
+| Agent JWTs (sensors, Lariska) | — | Every agent request re-reads the tenant's status before the key (`agents.check_credential`): claim, results upload, inventory submission and heartbeats answer 401 — except the one heartbeat answer below |
 | Queued scans | Cancelled | Admission refuses new scans for a non-active tenant |
-| Running agent scans | Moved to `cancelling` (#360), so the lease reaper cannot hand them to another agent; the grace reaper closes them (`OCTO_JOB_CANCEL_GRACE_SECONDS`) | — |
+| Running agent scans | Moved to `cancelling` (#360), so the lease reaper cannot hand them to another agent; the sensor is told to stop on its next heartbeat (below), and the grace reaper closes the job (`OCTO_JOB_CANCEL_GRACE_SECONDS`) | The partial result's upload (401) |
 | Running local scans | Cannot be stopped (`job_control.cancel_job`), run to their end | — |
 | Scan and report schedules | Paused by the status; `enabled` is not touched | Dispatchers select active tenants only |
 | SLA escalation, offline-agent alerts, ticket sync, webhook deliveries, notification channels, retro/software matchers | Skip the tenant (`tenants.active_tenant_ids`) | — |
 
-**Why the sensor is not told to stop.** The #360 stop travels on the
-heartbeat's answer, and the heartbeat is refused with everything else the
-tenant's agents send: accepting any request from a suspended tenant's machine
-would mean authenticating a credential of a tenant the platform has decided to
-cut off. A scan already running on a sensor therefore finishes locally (or hits
-the agent's scan timeout) and its upload is refused. To stop scan traffic at
-once, cancel the running jobs *before* suspending (`POST /api/jobs/{id}/cancel`),
-or stop the sensor host.
+**How a running sensor scan is stopped.** The #360 stop travels on the
+heartbeat's answer, so that one answer still reaches a closed tenant's agent:
+a heartbeat whose JWT this installation signed and has not expired — with its
+provisioning key revoked by the suspension or not — that names a job the agent
+holds in `cancelling` is answered `200` with `cancel_requested: true` and
+nothing else (no lease renewal, no `last_seen_at`, no remote settings). The
+agent signals its scanner's process group within one heartbeat interval (30 s),
+and its upload of the partial result is refused. Every other heartbeat of the
+agent, and every other request, is a 401. A sensor whose JWT has expired, or
+that does not heartbeat before the grace reaper closes the job, is not told —
+stop the sensor host if it matters.
+
+Running *local* scans (the API's own subprocess) cannot be stopped this way or
+any other; the deletion's first step waits for them.
 
 `revoke_credentials=false` keeps keys and tokens for a short suspension — they
 are refused by the status on every request either way, and work again after the
 resume without re-running installers.
 
-Suspending a suspended tenant changes nothing and records nothing.
+Suspending a suspended tenant changes nothing and records nothing — unless the
+request asks to revoke credentials an earlier suspension kept: those are
+revoked, and recorded as a second `tenant.suspend` row.
+
+A scan admitted in the instant the suspension commits is refused, not left
+queued: the job insert re-reads the tenant's status under `FOR SHARE`, which
+the suspension's `FOR UPDATE` serialises against.
 
 ## 3. Resume
 
@@ -102,9 +119,9 @@ tenant is left in its store, and records what it removed:
 |---|---|---|
 | `quiesce` | Postgres | Waits (state `waiting`) until no job of the tenant is queued, claimed, running or cancelling; a queued one left by a race is cancelled |
 | `outbox` | Postgres | `nats_outbox`, `run_publications` — before JetStream, so the relay cannot republish into purged subjects |
-| `jetstream` | NATS | Durable consumers `octo-agents-{tenant}[-{group}]` (matched by **filter subject**, never by name — `acme`'s group `eu` and tenant `acme-eu` share a name); subjects `jobs.scan.{t}[.>]`, `ingest.results.{t}`, `ingest.endpoint_inventory.{t}`, `events.asset.{t}.>`, `events.workflow.{t}.>`; the tenant's copies on the deprecated shared `ingest.raw_results` subject, located by message id next to the tenant's own message and deleted by sequence. A copy not located there ages out with the stream (`OCTO_NATS_INGEST_MAX_AGE_SECONDS`) and is counted as `legacy_ingest_unlocated`. `events.audit.{t}` is kept (see §6). Skipped when `OCTO_NATS_URL` is unset |
+| `jetstream` | NATS | Durable consumers `octo-agents-{tenant}[-{group}]` (matched by **filter subject**, never by name — `acme`'s group `eu` and tenant `acme-eu` share a name); subjects `jobs.scan.{t}[.>]`, `ingest.results.{t}`, `ingest.endpoint_inventory.{t}`, `events.asset.{t}.>`, `events.workflow.{t}.>`; the tenant's copies on the deprecated shared `ingest.raw_results` subject, located by message id next to the tenant's own message and deleted by sequence. A copy not located there ages out with the stream (`OCTO_NATS_INGEST_MAX_AGE_SECONDS`) and is counted as `legacy_ingest_unlocated`. `events.audit.{t}` is kept (see §6). Skipped only when the installation declares it runs no NATS (`OCTO_TENANT_PURGE_UNUSED_STORES=jetstream`); `OCTO_NATS_URL` unset on the replica running the step otherwise **fails** it |
 | `artifacts` | volume or bucket | `runs/_tenants/{segment}/` (#427) with screenshots and staging trees; flat runs of earlier releases whose `tenant.json` names the tenant; `job_inputs/{job_id}/` for every job row; `reports/{tenant}/` and any report `storage_path` outside it; this replica's working copies. A flat run whose `tenant.json` cannot be read **fails** the step — repair or remove it and retry |
-| `clickhouse` | ClickHouse | `ALTER TABLE … DELETE WHERE tenant_id = <uuid5>` on the three analytics tables with `mutations_sync = 2` (a mutation, not a lightweight delete: the bytes go, not just a mask), then a count that must be 0. Skipped when `OCTO_CLICKHOUSE_URL` is unset |
+| `clickhouse` | ClickHouse | `ALTER TABLE … DELETE WHERE tenant_id = <uuid5>` on the three analytics tables (a mutation, not a lightweight delete: the bytes go, not just a mask), submitted without waiting and then watched in `system.mutations` with the lease renewed between polls — a retry waits for this tenant's unfinished mutation rather than submitting another, and one that keeps failing fails the step with ClickHouse's `latest_fail_reason` (`KILL MUTATION` to give up on it); then a count that must be 0. Skipped only when declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES=clickhouse`); `OCTO_CLICKHOUSE_URL` unset otherwise **fails** the step |
 | `postgres` | Postgres | Every table that names the tenant, children before parents, in batches of `OCTO_TENANT_PURGE_BATCH_SIZE`; the list is `api/services/tenant_purge/postgres.py` and a test checks it against the live schema |
 | `finalize` | Postgres | Counts every planned table (a row a late writer slipped in sends the Postgres steps round again), disables accounts whose **only** membership was this tenant (an account with no membership would otherwise act in `default` with its global role), deletes the memberships and the tenant row, and writes the tombstone — one transaction |
 
@@ -131,6 +148,16 @@ step `running` and its lease to lapse; the next replica resumes from that step.
 Counts are recorded by each batch in its own transaction (Postgres) or right
 after it (other stores), so a resumed step does not count twice; a crash
 between an external delete and its bookkeeping can undercount by one batch.
+
+**What the purge needs from each store.** The purge deletes, where the rest
+of the API only reads and writes; an installation that granted least
+privilege has to grant these, or the step fails on every attempt:
+
+| Store | Rights |
+|---|---|
+| ClickHouse | `ALTER DELETE` on `shapoclyack.shapoclyack_vulnerabilities`, `…_open_ports`, `…_controls`; `SELECT` on `system.mutations` |
+| NATS (the API's account) | `$JS.API.CONSUMER.LIST.JOBS`, `$JS.API.CONSUMER.DELETE.JOBS.>`; `$JS.API.STREAM.INFO.*`, `$JS.API.STREAM.PURGE.*`, `$JS.API.STREAM.MSG.GET.*`, `$JS.API.STREAM.MSG.DELETE.*` on `JOBS`, `INGEST`, `EVENTS` |
+| Object storage | `s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject` on the artifact bucket (the retention sweeps need the same) |
 
 ## 6. What is kept
 
@@ -183,3 +210,12 @@ only `active`/`suspended`, so its `GET /api/tenants` answers a platform admin
 500 while a tenant is `pending_deletion` or `deleting`: finish the rollout
 before requesting a deletion. It also does not re-read the tenant status on an
 agent's JWT, which the default revocation of provisioning keys covers.
+
+**Set `OCTO_TENANT_PURGE_UNUSED_STORES` first** on an installation without
+ClickHouse or NATS: a purge step whose store is not configured fails until the
+store is either configured or declared unused.
+
+**Merge order with #311 (row-level security).** #311 must merge after this
+change: its migration discovers the tables that carry a `tenant_id` when it
+runs, and has to see `tenant_deletions` (and #332's tables); its route-guard
+test has to list these routes as platform-admin routes.
