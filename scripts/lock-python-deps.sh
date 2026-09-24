@@ -24,6 +24,9 @@
 # Mac would otherwise quietly lack whatever only Linux needs. Platform-specific
 # lines keep their environment markers, and --generate-hashes lists every file
 # of each pinned version, so an arm64 build finds its wheel's hash as well.
+# --no-strip-extras keeps `psycopg[binary]` as written: stripped to `psycopg`,
+# an input that grew an extra without a relock would still look in sync, and
+# the image would miss the extra's packages.
 #
 # The header uv writes into each lock records the command. Renovate re-runs
 # exactly that command when it bumps a dependency (its pip-compile manager
@@ -78,6 +81,6 @@ for entry in "${LOCKS[@]}"; do
   input="${entry#*:}"
   echo "[lock] ${input} -> ${lock}"
   uv pip compile --quiet \
-    --universal --generate-hashes --python-version=3.11 \
+    --universal --no-strip-extras --generate-hashes --python-version=3.11 \
     --output-file="${lock}" "${input}" "$@"
 done

@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          # Keyed on what is installed (#313): a relock that moves only a
+          # transitive pin leaves requirements*.txt, the default key, as is.
+          cache-dependency-path: requirements-dev.lock
 
       - name: Install Python dependencies
         # The hash-pinned lock, not requirements-dev.txt (#313); quoted
