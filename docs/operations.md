@@ -650,6 +650,14 @@ and erased with the username kept as a pseudonym. What is kept, for how long,
 by which mechanism, and what the DPA annex should say about it:
 [data-retention.md](data-retention.md).
 
+Offboarding a customer is not a retention window: a platform admin suspends a
+tenant (every session, token, key and agent of it cut at once), or deletes it
+in two steps with a grace period, after which a worker purges it from
+Postgres, ClickHouse, the artifact store and JetStream and keeps a tombstone.
+A restore from a backup taken before the purge brings the tenant back; the
+deletion journal is what to re-apply:
+[tenant-lifecycle.md](tenant-lifecycle.md).
+
 ### ClickHouse analytical data retention (ROADMAP #187)
 
 ClickHouse tables `shapoclyack.shapoclyack_vulnerabilities` and `shapoclyack.shapoclyack_open_ports`
