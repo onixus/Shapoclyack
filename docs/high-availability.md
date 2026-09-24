@@ -504,6 +504,9 @@ kubectl -n network-scan get pods -l app.kubernetes.io/component=api \
 kubectl -n network-scan exec sts/shapoclyack-nats -- \
   wget -qO- 'http://127.0.0.1:8222/jsz?streams=1'
 #    Expect "cluster" with three peers, and every stream's "replicas": 3.
+#    A stream missing here was refused its reservation: INGEST + EVENTS
+#    max_bytes must fit max_file on every peer, which the shipped 4G does
+#    not (docs/sizing.md, "What the measurements exposed", 1).
 #    For the CLI's own output, run it from a box image instead:
 kubectl -n network-scan run natsbox --rm -it --restart=Never \
   --image=natsio/nats-box:latest -- \

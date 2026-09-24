@@ -480,8 +480,17 @@ def test_only_the_harness_and_fixture_tenants_count_as_its_own():
 def test_measuring_refuses_stores_that_hold_other_tenants_data(monkeypatch, capsys, tmp_path):
     """The writing commands VACUUM, purge and seed demo accounts: fail closed."""
     monkeypatch.setattr(scale_measure, "foreign_tenants", lambda *_a, **_k: ["acme", "clickhouse:1234"])
+    monkeypatch.setattr(scale_measure, "current_database", lambda url: "db")
     code = scale_measure.main(
-        ["postgres", "--work-dir", str(tmp_path / "w"), "--postgres-url", "postgresql+psycopg://x@nowhere/db"]
+        [
+            "postgres",
+            "--work-dir",
+            str(tmp_path / "w"),
+            "--postgres-url",
+            "postgresql+psycopg://x@nowhere/db",
+            "--i-own-database",
+            "db",
+        ]
     )
     assert code == 2
     err = capsys.readouterr().err
@@ -493,3 +502,187 @@ def test_measuring_without_a_database_url_is_refused(monkeypatch, capsys):
     monkeypatch.delenv("OCTO_POSTGRES_URL", raising=False)
     assert scale_measure.main(["postgres", "--work-dir", "w", "--postgres-url", ""]) == 2
     assert "no Postgres URL" in capsys.readouterr().err
+
+
+# --- review of #337, round 1 ---------------------------------------------------
+
+
+def test_an_unmigrated_database_is_reported_not_crashed(monkeypatch):
+    """A freshly created stand database has no tables yet: say so, don't traceback."""
+    from sqlalchemy import create_engine
+
+    from api.db import engine as db_engine
+
+    empty = create_engine("sqlite://")
+    monkeypatch.setattr(db_engine, "get_engine", lambda url: empty)
+    with pytest.raises(scale_measure.StoreNotReady, match="alembic"):
+        scale_measure.foreign_tenants("postgresql+psycopg://x@nowhere/db")
+
+
+class _FakeNats:
+    """Stands in for ``nats.connect``: records what the harness does with a broker."""
+
+    def __init__(self, max_payload: int) -> None:
+        self.max_payload = max_payload
+        self.published: list[tuple[str, int, dict]] = []
+        self.jetstream_used = False
+
+    async def connect(self, *args, **kwargs):
+        return self
+
+    async def publish(self, subject, payload=b"", headers=None):
+        from nats.errors import MaxPayloadError
+
+        if len(payload) > self.max_payload:
+            raise MaxPayloadError
+        self.published.append((subject, len(payload), headers or {}))
+
+    async def flush(self, timeout=None):
+        return None
+
+    def jetstream(self, *args, **kwargs):
+        self.jetstream_used = True
+        raise AssertionError("the harness must not manage the stand's streams")
+
+    async def close(self):
+        return None
+
+
+def test_the_broker_probe_publishes_no_jetstream_message(monkeypatch):
+    """A probe through nats_bus would create-or-update INGEST/EVENTS/JOBS with the
+    harness's own OCTO_NATS_* defaults and leave the tier's messages for the
+    stand's ingest worker; a core publish to a subject no stream captures does not."""
+    import nats
+
+    fake = _FakeNats(max_payload=1024)
+    monkeypatch.setattr(nats, "connect", fake.connect)
+    small = scale_measure.probe_broker("nats://x", b"x" * 100, headers={"Nats-Msg-Id": "m"})
+    big = scale_measure.probe_broker("nats://x", b"x" * 2000, headers={"Nats-Msg-Id": "m"})
+    assert small == {"max_payload": 1024, "accepted": True}
+    assert big["accepted"] is False and "maximum payload" in big["refused"]
+    assert [subject.split(".")[:2] for subject, _, _ in fake.published] == [["sizing", "probe"]]
+    assert not fake.jetstream_used
+
+
+def test_the_ingest_step_never_touches_the_bus_that_manages_streams(monkeypatch, tmp_path):
+    import argparse
+
+    import nats
+
+    from api.services import clickhouse_client as ch
+    from api.services import nats_bus, results_ingest
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("nats_bus reconfigures a stand's streams on connect")
+
+    monkeypatch.setattr(nats_bus, "get_bus", forbidden)
+    monkeypatch.setattr(results_ingest, "publish_raw_results", forbidden)
+    monkeypatch.setattr(nats, "connect", _FakeNats(max_payload=1024 * 1024).connect)
+    inserted: dict[str, int] = {}
+
+    class Client:
+        def insert(self, table, rows, column_names):
+            inserted[table] = len(rows)
+
+    monkeypatch.setattr(ch, "get_client", lambda url: Client())
+    settings = scale_measure.harness_settings("", tmp_path)
+    run_dir = scale_measure.run_path(settings, "sizing-5", "sizing-5-r0")
+    write_run_dir(run_dir, spec(assets=5, tenant_id="sizing-5"))
+    args = argparse.Namespace(
+        postgres_url="",
+        clickhouse_url="http://ch",
+        nats_url="nats://x",
+        work_dir=str(tmp_path),
+        tenant="sizing-5",
+        run_id="sizing-5-r0",
+    )
+    result = scale_measure.child_ingest_run(args)
+    assert result["nats_accepted"] is True and result["nats_max_payload"] == 1024 * 1024
+    assert result["envelope_bytes"] > 0
+    assert inserted[ch.VULN_TABLE] > 0
+
+
+def test_zero_query_memory_is_below_resolution_not_a_measurement():
+    """ClickHouse reports memory_usage=0 under its tracker's granularity."""
+    tier = {
+        "assets": 1000,
+        "growth": {},
+        "ingest": {"transform_cpu_seconds": 1.0, "rss_before_bytes": 0, "peak_rss_bytes": 1},
+        "queries": [{"read_rows": 3000, "memory_bytes": 0}, {"read_rows": 4000, "memory_bytes": 0}],
+        "server_memory": {"resident_bytes": 600},
+    }
+    assert "ch_query_memory_bytes_per_row" not in derive_coefficients({"clickhouse": [tier]})
+
+
+def test_derive_keeps_the_archive_intercept_and_the_message_envelope():
+    """A 1 MiB ceiling is hit by intercept + slope x hosts + envelope, not slope alone."""
+    runs = [
+        {
+            "hosts": n,
+            "report_stage_cpu_seconds": 0.001 * n,
+            "run_dir_bytes": 50_000 + 11_000 * n,
+            "archive_bytes": 65_536 + 360 * n,
+            "rss_before_bytes": 0,
+            "peak_rss_bytes": 1,
+        }
+        for n in (1000, 3000, 10000)
+    ]
+    ch_tiers = [
+        {
+            "assets": r["hosts"],
+            "run": r,
+            "growth": {},
+            "queries": [],
+            "server_memory": {"resident_bytes": 1},
+            "ingest": {
+                "transform_cpu_seconds": 0.1,
+                "rss_before_bytes": 0,
+                "peak_rss_bytes": 1,
+                "envelope_bytes": 612,
+            },
+        }
+        for r in runs
+    ]
+    c = derive_coefficients({"clickhouse": ch_tiers})
+    assert c["archive_bytes_per_host"] == pytest.approx(360)
+    assert c["archive_bytes_per_run"] == pytest.approx(65_536)
+    assert c["run_dir_bytes_per_run"] == pytest.approx(50_000)
+    assert c["ingest_envelope_bytes"] == 612
+
+
+def test_harness_runs_are_marked_and_runs_dir_does_not_take_them_for_real_ones(tmp_path):
+    write_run_dir(tmp_path / "runs" / "sizing-5-r0", spec(assets=5))
+    _fake_run(tmp_path / "runs", "20260101T000000Z", hosts=10, per_host=1000)
+    result = measure_runs_dir(tmp_path / "runs")
+    assert [r["run"] for r in result["runs"]] == ["20260101T000000Z"]
+    assert result["skipped"] == {"synthetic": 1, "resumed": 0}
+
+
+def test_resumed_runs_do_not_count_toward_the_sensor_fit(tmp_path):
+    """A --resume run skipped the stages its checkpoint had: its CPU is partial."""
+    _fake_run(tmp_path, "a", hosts=10, per_host=1000)
+    _fake_run(tmp_path, "b", hosts=30, per_host=1000)
+    _fake_run(tmp_path, "c", hosts=20, per_host=1000)
+    timings = json.loads((tmp_path / "c" / "stage_timings.json").read_text())
+    timings["stages"].insert(
+        0, {"name": "discover", "duration_sec": 0.0, "status": "skipped", "detail": "checkpoint"}
+    )
+    timings["resources"]["children_cpu_sec"] = 0.1
+    (tmp_path / "c" / "stage_timings.json").write_text(json.dumps(timings))
+    result = measure_runs_dir(tmp_path)
+    assert result["skipped"]["resumed"] == 1
+    assert result["fit"]["sensor_cpu_seconds_per_host"] == pytest.approx(0.5)
+
+
+def test_sensor_fit_keeps_the_per_run_cost_and_the_cores_a_scan_keeps_busy(tmp_path):
+    _fake_run(tmp_path, "a", hosts=10, per_host=1000)
+    _fake_run(tmp_path, "b", hosts=30, per_host=1000)
+    fit = measure_runs_dir(tmp_path)["fit"]
+    # cpu = 2 + 0.1 h + 0.4 h over a 12.5 s pipeline: 7 s -> 0.56 cores, 17 s -> 1.36.
+    assert fit["sensor_cpu_seconds_per_run"] == pytest.approx(2.0)
+    assert fit["sensor_busy_cores"] == pytest.approx((7 / 12.5 + 17 / 12.5) / 2)
+    assert fit["sensor_peak_cores"] == pytest.approx(17 / 12.5)
+    assert fit["sensor_peak_rss_run_hosts"] == 30
+    c = derive_coefficients({"runs_dir": {"fit": fit}})
+    assert c["sensor_cpu_seconds_per_run"] == pytest.approx(2.0)
+    assert c["sensor_peak_cores"] == pytest.approx(17 / 12.5)

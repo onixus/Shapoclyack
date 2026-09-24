@@ -112,6 +112,10 @@ _FINDING_PORT_PREFERENCE = (443, 80, 8443, 8080, 22)
 _SEVERITY_BY_CVSS = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
 
+#: Written into the ``stage_timings.json`` of every run this module builds.
+SYNTHETIC_MARKER = "tests.fixtures.scale_measure"
+
+
 def tenant_for(assets: int) -> str:
     return f"{TENANT_PREFIX}-{assets}"
 
@@ -377,8 +381,15 @@ def write_run_dir(run_dir: Path, spec: SeedSpec) -> dict[str, Any]:
     cpu = time.process_time() - started
     # The projection reads stage_timings.json only when vulnerabilities.json is
     # empty; written anyway so a zero-finding tier is still an assessed run.
+    # ``synthetic`` is what keeps ``runs-dir`` from taking this directory for a
+    # real scan's and replacing the report-stage floor with it.
     (run_dir / "stage_timings.json").write_text(
-        json.dumps({"stages": [{"name": "pulse", "status": "ok"}, {"name": "report", "status": "ok"}]}),
+        json.dumps(
+            {
+                "synthetic": SYNTHETIC_MARKER,
+                "stages": [{"name": "pulse", "status": "ok"}, {"name": "report", "status": "ok"}],
+            }
+        ),
         encoding="utf-8",
     )
     return {
@@ -750,28 +761,52 @@ def measure_postgres_tier(
 # --------------------------------------------------------------------------
 
 
-def gateway_payload_bytes(payload: dict[str, Any]) -> int:
-    """Bytes on the wire for one ingest message — ``NatsBus.publish_json``'s encoding."""
-    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+#: Core-NATS subject the broker probe publishes to. No stream captures it (the
+#: streams take ``jobs.>``, ``ingest.>`` and ``events.>``) and nothing
+#: subscribes, so the broker drops the message once it has checked its size.
+PROBE_SUBJECT_PREFIX = "sizing.probe"
 
 
-def _nats_max_payload(nats_url: str) -> int | None:
-    """The broker's ``max_payload`` as it announces it to clients."""
+def nats_header_bytes(headers: dict[str, str]) -> int:
+    """Size of the header block nats-py sends ahead of a message with ``headers``."""
+    lines = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+    return len(f"NATS/1.0\r\n{lines}\r\n".encode("utf-8"))
+
+
+def probe_broker(nats_url: str, body: bytes, *, headers: dict[str, str]) -> dict[str, Any]:
+    """Would the stand's broker take this ingest message? Asked without touching its streams.
+
+    The first version published through ``nats_bus``, whose connect creates or
+    *updates* JOBS/INGEST/EVENTS with whatever ``OCTO_NATS_*`` the harness's
+    environment held — resetting a stand's retention and replica count — and
+    left each tier's run in INGEST for the stand's ClickHouse worker to ingest
+    during the measurement (review of #337). A bare connection and one core
+    publish to :data:`PROBE_SUBJECT_PREFIX` exercise the same ``max_payload``
+    check and leave nothing behind.
+    """
     import asyncio
 
     import nats
 
-    async def probe() -> int:
+    subject = f"{PROBE_SUBJECT_PREFIX}.{os.getpid()}"
+
+    async def probe() -> dict[str, Any]:
         nc = await nats.connect(nats_url, connect_timeout=5, max_reconnect_attempts=0)
         try:
-            return int(nc.max_payload)
+            found: dict[str, Any] = {"max_payload": int(nc.max_payload)}
+            try:
+                await nc.publish(subject, body, headers=headers)
+                await nc.flush(timeout=5)
+            except Exception as exc:  # noqa: BLE001 - the refusal is the finding
+                return {**found, "accepted": False, "refused": str(exc) or type(exc).__name__}
+            return {**found, "accepted": True}
         finally:
             await nc.close()
 
     try:
         return asyncio.run(probe())
-    except Exception:  # noqa: BLE001 - an unreachable broker is a recorded fact, not a crash
-        return None
+    except Exception as exc:  # noqa: BLE001 - an unreachable broker is a recorded fact, not a crash
+        return {"max_payload": None, "accepted": None, "refused": f"broker unreachable: {type(exc).__name__}"}
 
 
 def child_ingest_run(args: argparse.Namespace) -> dict[str, Any]:
@@ -785,17 +820,27 @@ def child_ingest_run(args: argparse.Namespace) -> dict[str, Any]:
       makes, so a sensor could not deliver such a run;
     * what the gateway would publish by default — ``build_gateway_payload``
       inlines the archive only up to its 4 MB default, and without the archive
-      ``ch_transform`` has nothing to read;
-    * whether the broker accepts that message (``--nats-url``): JetStream
-      refuses a message over the server's ``max_payload``;
-    * what ClickHouse receives when the archive *is* inlined — forced here so
-      bytes per row can be measured at every tier.
+      ``ch_transform`` has nothing to read — and how much of that message is
+      envelope (JSON fields and NATS headers) rather than archive;
+    * whether the broker accepts that message (``--nats-url``), asked by
+      :func:`probe_broker`, which publishes nothing to JetStream;
+    * what the transform costs and what ClickHouse receives when the archive
+      *is* inlined — forced here so bytes per row can be measured at every tier.
+      With ``--postgres-url`` the transform makes the per-host criticality and
+      exposure lookups the API's ingest worker makes (``api/app.py`` hands it
+      settings with the database), and their statements and backend CPU are
+      counted like the projection's.
     """
+    from contextlib import nullcontext
+
+    from api.db.engine import get_engine
     from api.services import ch_transform
     from api.services import clickhouse_client as ch
-    from api.services import results_ingest
+    from api.services import nats_bus, results_ingest
 
-    settings = harness_settings(args.postgres_url, Path(args.work_dir))
+    backend_name = f"sizing-harness-{os.getpid()}"
+    url = with_application_name(args.postgres_url, backend_name) if args.postgres_url else ""
+    settings = harness_settings(url, Path(args.work_dir))
     run_dir = run_path(settings, args.tenant, args.run_id)
     archive = upload_archive(run_dir)
     common = {
@@ -812,12 +857,23 @@ def child_ingest_run(args: argparse.Namespace) -> dict[str, Any]:
     except results_ingest.IngestError as exc:
         result["gateway_refused"] = str(exc)
     else:
-        result["gateway_payload_bytes"] = gateway_payload_bytes(default)
+        body = json.dumps(default, separators=(",", ":")).encode("utf-8")
+        # The headers NatsBus.publish_ingest sends with it (publish_json).
+        headers = {
+            "Nats-Msg-Id": nats_bus.ingest_msg_id(
+                job_id=common["job_id"], run_id=args.run_id, archive_sha256=str(default["archive_sha256"])
+            ),
+            "tenant_id": args.tenant,
+        }
+        result["gateway_payload_bytes"] = len(body)
         result["archive_inlined_by_default"] = "archive_b64" in default
+        result["envelope_bytes"] = len(body) - len(default.get("archive_b64") or "") + nats_header_bytes(headers)
         if args.nats_url:
-            result["nats_max_payload"] = _nats_max_payload(args.nats_url)
-            published = results_ingest.publish_raw_results(nats_url=args.nats_url, **common)
-            result["nats_published"] = bool(published.get("published"))
+            probe = probe_broker(args.nats_url, body, headers=headers)
+            result["nats_max_payload"] = probe["max_payload"]
+            result["nats_accepted"] = probe["accepted"]
+            if "refused" in probe:
+                result["nats_refused"] = probe["refused"]
 
     # Only the fields ch_transform reads, built by hand: the gateway refuses to
     # build a payload for an archive past its expansion ceiling, and the rows
@@ -827,10 +883,16 @@ def child_ingest_run(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": args.run_id,
         "archive_b64": base64.b64encode(archive).decode("ascii"),
     }
+    backend_before = pg_backend_cpu(url, application_name=backend_name) if url else None
     rss_before = current_rss_bytes()
     cpu_before = self_usage()["cpu_seconds"]
-    vuln_rows, port_rows, control_rows = ch_transform.transform_ingest_payload(forced, settings=settings)
+    with StatementCounter(get_engine(url)) if url else nullcontext() as statements:
+        vuln_rows, port_rows, control_rows = ch_transform.transform_ingest_payload(forced, settings=settings)
     cpu_transform = self_usage()["cpu_seconds"] - cpu_before
+    if url:
+        backend_cpu = backend_cpu_delta(backend_before, pg_backend_cpu(url, application_name=backend_name))
+        result["transform_statements"] = statements.count
+        result["transform_postgres_cpu_seconds"] = None if backend_cpu is None else round(backend_cpu, 3)
     client = ch.get_client(args.clickhouse_url)
     inserted = {
         "vulnerabilities": ch.insert_rows(client, ch.VULN_TABLE, ch.VULN_COLUMNS, vuln_rows),
@@ -841,6 +903,7 @@ def child_ingest_run(args: argparse.Namespace) -> dict[str, Any]:
     result.update(
         {
             "rows": inserted,
+            "transform_with_postgres": bool(url),
             "transform_cpu_seconds": round(cpu_transform, 3),
             "insert_client_cpu_seconds": round(usage["cpu_seconds"] - cpu_before - cpu_transform, 3),
             "rss_before_bytes": rss_before,
@@ -963,6 +1026,13 @@ def measure_clickhouse_tier(
         seed=seed,
         run_id=run_id,
     )
+    if postgres_url:
+        # The transform looks every host up in the registry; a run the
+        # projection registered finds its assets there, so this tier's must be
+        # too (idempotent: scale_seed inserts ON CONFLICT DO NOTHING).
+        from tests.fixtures.scale_seed import seed_postgres
+
+        seed_postgres(postgres_url, SeedSpec(tenant_id=tenant, assets=assets, seed=seed))
     client = ch.get_client(clickhouse_url)
 
     def optimize() -> None:
@@ -1335,27 +1405,53 @@ def _json_len(path: Path) -> int | None:
     return len(data) if isinstance(data, list) else None
 
 
+def _resumed(timings: dict[str, Any]) -> bool:
+    """A ``--resume`` run skipped what its checkpoint had done (StageTimer.skip)."""
+    return any(
+        isinstance(stage, dict) and stage.get("status") == "skipped" and stage.get("detail") == "checkpoint"
+        for stage in timings.get("stages", [])
+    )
+
+
 def measure_runs_dir(root: Path, *, archive: bool = False) -> dict[str, Any]:
     """Bytes per run and per host from run directories a stand actually wrote.
 
     ``root`` is ``$OCTO_OUTPUT_DIR/runs`` (both layouts: ``runs/<run_id>`` and
     ``runs/_tenants/<tenant>/<run_id>``). A directory counts as a run when it
-    has ``alive_hosts.json``; its host count is that list's length. Nothing is
-    written. ``archive`` also gzips each run the way the sensor does, which
-    reads every byte — leave it off on a large volume.
+    has ``alive_hosts.json``; its host count is that list's length, and its
+    target count ``summary.json``'s ``total_targets`` when the report wrote one.
+    Nothing is written. ``archive`` also gzips each run the way the sensor
+    does, which reads every byte — leave it off on a large volume.
+
+    Two kinds of directory are left out and counted instead: the ones this
+    module synthesised (their files are a floor, not a scan's), and runs that
+    resumed from a checkpoint (their CPU covers only the stages they re-ran).
     """
     candidates = [path.parent for path in root.rglob("alive_hosts.json")]
     runs: list[dict[str, Any]] = []
+    skipped = {"synthetic": 0, "resumed": 0}
     for run_dir in sorted(set(candidates)):
-        files = directory_bytes(run_dir)
-        timings: dict[str, Any] = {}
         try:
             timings = json.loads((run_dir / "stage_timings.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             timings = {}
+        if not isinstance(timings, dict):
+            timings = {}
+        if timings.get("synthetic"):
+            skipped["synthetic"] += 1
+            continue
+        if _resumed(timings):
+            skipped["resumed"] += 1
+            continue
+        try:
+            summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            summary = {}
+        files = directory_bytes(run_dir)
         entry: dict[str, Any] = {
             "run": str(run_dir.relative_to(root)),
             "hosts": _json_len(run_dir / "alive_hosts.json"),
+            "targets": summary.get("total_targets") if isinstance(summary, dict) else None,
             "findings": _json_len(run_dir / "vulnerabilities.json"),
             "bytes": sum(files.values()),
             "largest_files": sorted(files.items(), key=lambda item: -item[1])[:5],
@@ -1372,7 +1468,7 @@ def measure_runs_dir(root: Path, *, archive: bool = False) -> dict[str, Any]:
         if archive:
             entry["archive_bytes"] = len(upload_archive(run_dir))
         runs.append(entry)
-    return {"root": str(root), "runs": runs, "fit": fit_runs(runs)}
+    return {"root": str(root), "runs": runs, "skipped": skipped, "fit": fit_runs(runs)}
 
 
 # --------------------------------------------------------------------------
@@ -1395,7 +1491,13 @@ def linear_fit(points: list[tuple[float, float]]) -> tuple[float, float] | None:
 
 
 def fit_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Bytes per host (and per run) across real runs, when there are enough."""
+    """Bytes, CPU and memory per host (and per run) across real runs, when there are enough.
+
+    Sensor CPU is fitted against alive hosts, the model's unit. Discovery also
+    scales with the address space swept (``targets``), so a stand whose runs
+    sweep large, sparse ranges should read the per-run intercept with that in
+    mind; the targets are recorded per run for exactly that reading.
+    """
     points = [(float(r["hosts"]), float(r["bytes"])) for r in runs if r.get("hosts")]
     fit = linear_fit(points)
     archive_points = [
@@ -1403,12 +1505,14 @@ def fit_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     archive_fit = linear_fit(archive_points)
     measured = [r for r in runs if r.get("hosts") and isinstance(r.get("resources"), dict)]
-    cpu_fit = linear_fit(
-        [
-            (float(r["hosts"]), float(r["resources"]["cpu_sec"]) + float(r["resources"]["children_cpu_sec"]))
-            for r in measured
-        ]
-    )
+
+    def cpu(run: dict[str, Any]) -> float:
+        return float(run["resources"]["cpu_sec"]) + float(run["resources"]["children_cpu_sec"])
+
+    cpu_fit = linear_fit([(float(r["hosts"]), cpu(r)) for r in measured])
+    # Cores the scan kept busy on average over its wall time: what a sensor
+    # needs while it scans (the request), and the busiest run (the limit).
+    cores = [cpu(r) / float(r["pipeline_wall_sec"]) for r in measured if r.get("pipeline_wall_sec")]
     # The scan process at its peak plus its largest tool: a floor for the pod,
     # since tools that ran side by side (nse_concurrency) add up.
     peaks = [
@@ -1422,9 +1526,13 @@ def fit_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "archive_bytes_per_run": round(archive_fit[0]) if archive_fit else None,
         "archive_bytes_per_host": round(archive_fit[1]) if archive_fit else None,
         "runs_with_resources": len(measured),
-        "sensor_cpu_seconds_per_run": round(cpu_fit[0], 3) if cpu_fit else None,
+        "sensor_cpu_seconds_per_run": round(max(cpu_fit[0], 0.0), 3) if cpu_fit else None,
         "sensor_cpu_seconds_per_host": round(cpu_fit[1], 4) if cpu_fit else None,
+        "sensor_busy_cores": round(sum(cores) / len(cores), 3) if cores else None,
+        "sensor_peak_cores": round(max(cores), 3) if cores else None,
         "sensor_peak_rss_bytes": round(max(peaks)) if peaks else None,
+        # The peak holds for runs up to this size; memory grows with a run.
+        "sensor_peak_rss_run_hosts": max(r["hosts"] for r in measured) if measured else None,
     }
 
 
@@ -1475,7 +1583,7 @@ def _table_rows(growth: dict[str, dict[str, int]], table: str) -> int:
     return int(growth.get(table, {}).get("rows", 0))
 
 
-def _round(value: float | None, significant: int = 4) -> float | None:
+def _round(value: float | None, significant: int = 6) -> float | None:
     """Significant digits, not decimals: CPU-seconds per item are ~1e-5."""
     return None if value is None else float(f"{value:.{significant}g}")
 
@@ -1554,6 +1662,12 @@ def derive_coefficients(results: dict[str, Any]) -> dict[str, Any]:
         )
         out["run_dir_bytes_per_host"] = _slope([(r["hosts"], r["run_dir_bytes"]) for r in runs])
         out["archive_bytes_per_host"] = _slope([(r["hosts"], r["archive_bytes"]) for r in runs])
+        # The intercepts matter at the ceilings: a run's archive is ~64 KiB
+        # before its first host, and against a 1 MiB max_payload that is the
+        # difference between the ceiling the review measured and ~150 hosts
+        # more (review of #337).
+        out["run_dir_bytes_per_run"] = _intercept([(r["hosts"], r["run_dir_bytes"]) for r in runs])
+        out["archive_bytes_per_run"] = _intercept([(r["hosts"], r["archive_bytes"]) for r in runs])
         out["run_dir_bytes_is_floor"] = True
 
     if ch:
@@ -1572,8 +1686,28 @@ def derive_coefficients(results: dict[str, Any]) -> dict[str, Any]:
         out["ch_transform_rss_bytes_per_host"] = _slope(
             [(tier["assets"], tier["ingest"]["peak_rss_bytes"] - tier["ingest"]["rss_before_bytes"]) for tier in ch]
         )
+        # Measured with the database the ingest worker has (api/app.py): the
+        # per-host lookups are part of the cost, and a figure taken without
+        # them is not the production one (review of #337).
+        with_pg = [tier for tier in ch if tier["ingest"].get("transform_with_postgres")]
+        if with_pg:
+            out["ch_transform_statements_per_host"] = _slope(
+                [(tier["assets"], tier["ingest"]["transform_statements"]) for tier in with_pg]
+            )
+            pg_cpu = [
+                (tier["assets"], tier["ingest"]["transform_postgres_cpu_seconds"])
+                for tier in with_pg
+                if tier["ingest"].get("transform_postgres_cpu_seconds") is not None
+            ]
+            if pg_cpu:
+                out["ch_transform_pg_cpu_seconds_per_host"] = _slope(pg_cpu)
+        envelopes = [tier["ingest"]["envelope_bytes"] for tier in ch if tier["ingest"].get("envelope_bytes")]
+        if envelopes:
+            out["ingest_envelope_bytes"] = max(envelopes)
         largest = max(ch, key=lambda tier: tier["assets"])
-        probes = [q for q in largest.get("queries", []) if q.get("read_rows")]
+        # memory_usage is 0 below the tracker's resolution: that is "too small
+        # to see", not a coefficient of zero.
+        probes = [q for q in largest.get("queries", []) if q.get("read_rows") and q.get("memory_bytes")]
         if probes:
             out["ch_query_memory_bytes_per_row"] = max(q["memory_bytes"] / q["read_rows"] for q in probes)
         out["ch_idle_rss_bytes"] = largest["server_memory"]["resident_bytes"]
@@ -1643,10 +1777,20 @@ def derive_coefficients(results: dict[str, Any]) -> dict[str, Any]:
         out["run_dir_bytes_is_floor"] = False
     if fit.get("archive_bytes_per_host") is not None:
         out["archive_bytes_per_host"] = fit["archive_bytes_per_host"]
-    if fit.get("sensor_cpu_seconds_per_host") is not None:
-        out["sensor_cpu_seconds_per_host"] = fit["sensor_cpu_seconds_per_host"]
-    if fit.get("sensor_peak_rss_bytes") is not None:
-        out["sensor_peak_rss_bytes"] = fit["sensor_peak_rss_bytes"]
+    for name in (
+        "sensor_cpu_seconds_per_host",
+        "sensor_cpu_seconds_per_run",
+        "sensor_busy_cores",
+        "sensor_peak_cores",
+        "sensor_peak_rss_bytes",
+        "sensor_peak_rss_run_hosts",
+    ):
+        if fit.get(name) is not None:
+            out[name] = fit[name]
+    if fit.get("archive_bytes_per_run") is not None:
+        out["archive_bytes_per_run"] = fit["archive_bytes_per_run"]
+    if fit.get("bytes_per_run") is not None:
+        out["run_dir_bytes_per_run"] = max(fit["bytes_per_run"], 0)
 
     env = next((value for key, value in sorted(results.items()) if key.startswith("environment")), {})
     out["source"] = (
@@ -1673,17 +1817,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def common(p: argparse.ArgumentParser, *, work_dir: bool = True) -> None:
+    def common(p: argparse.ArgumentParser, *, work_dir: bool = True, writes: bool | None = None) -> None:
         p.add_argument("--postgres-url", default=os.environ.get("OCTO_POSTGRES_URL", ""))
         p.add_argument("--clickhouse-url", default=os.environ.get("OCTO_CLICKHOUSE_URL", ""))
         p.add_argument("--nats-url", default=os.environ.get("OCTO_NATS_URL", ""))
         p.add_argument("--seed", type=int, default=1337)
         if work_dir:
             p.add_argument("--work-dir", type=Path, required=True, help="scratch space for run directories")
+        if work_dir if writes is None else writes:
             p.add_argument(
                 "--allow-shared-stores",
                 action="store_true",
                 help="measure even though other tenants have data in these stores (never production)",
+            )
+            p.add_argument(
+                "--i-own-database",
+                default="",
+                metavar="NAME",
+                help="the name of the dedicated database the URL points at; required to write to it",
             )
         p.add_argument("--out", type=Path, default=None, help="also write the JSON here")
 
@@ -1712,7 +1863,14 @@ def build_parser() -> argparse.ArgumentParser:
     # above page granularity; a second run needs its own tenant.
     ep.add_argument("--tenant", default=f"{TENANT_PREFIX}-endpoints")
 
-    logs = sub.add_parser("ch-system-logs", help="growth of ClickHouse's own system.*_log tables")
+    purge = sub.add_parser("purge", help="remove every row the harness wrote (sizing-* tenants)")
+    common(purge, work_dir=False, writes=True)
+    purge.add_argument("--demo-accounts", action="store_true", help="also drop the seed:dev users `api` created")
+
+    logs = sub.add_parser(
+        "ch-system-logs",
+        help="growth of ClickHouse's own system.*_log tables (runs SYSTEM FLUSH LOGS; writes nothing else)",
+    )
     common(logs, work_dir=False)
     logs.add_argument("--since", type=Path, default=None, help="an earlier ch-system-logs result from the same server")
 
@@ -1747,33 +1905,108 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-#: Tenants whose rows a measurement may share a store with: its own, and the
-#: ``scale_seed`` fixture tenant (``scale_profile`` runs on the same stores).
+# --------------------------------------------------------------------------
+# Whose stores these are
+# --------------------------------------------------------------------------
+
+
+class StoreNotReady(RuntimeError):
+    """The store cannot be checked yet: not migrated, or not reachable."""
+
+
 def _harness_tenant(tenant_id: str) -> bool:
+    """Tenants a measurement may share a store with: its own ``sizing-*``, and
+    ``scale_seed``'s fixture tenant (``scale_profile`` runs on the same stores)."""
     from tests.fixtures.scale_seed import DEFAULT_TENANT
 
     return tenant_id.startswith(f"{TENANT_PREFIX}-") or tenant_id == DEFAULT_TENANT
 
 
-def foreign_tenants(postgres_url: str = "", clickhouse_url: str = "") -> list[str]:
-    """Tenants with data in the stores that are not the harness's own.
+#: Where an installation's own use shows before it has scanned anything:
+#: sensors registered, schedules set, tokens and integrations configured,
+#: memberships granted, as well as assets, findings and endpoints. A row here
+#: under any tenant but the harness's is somebody's. The first version looked
+#: at assets, findings and endpoints only, and passed a production database
+#: that had tenants and accounts but no scan yet (review of #337).
+_OWNED_BY_TENANT: tuple[str, ...] = (
+    "assets",
+    "vulnerabilities",
+    "endpoint_devices",
+    "jobs",
+    "agents",
+    "scan_schedules",
+    "service_tokens",
+    "webhook_subscriptions",
+    "notification_channels",
+    "user_tenants",
+)
 
-    The measuring commands write rows, VACUUM tables, purge ClickHouse
-    partitions of their tenants and — for ``api`` — start an API in dev mode,
-    which seeds the demo accounts into ``users``. None of that belongs in a
-    database holding somebody's scans, so a store with any other tenant's
-    assets or findings is refused unless the operator says otherwise.
+#: ``created_by`` of the demo accounts ``python -m api`` seeds in dev mode —
+#: which the ``api`` step does to a dedicated database itself.
+DEV_SEED = "seed:dev"
+
+
+def current_database(postgres_url: str) -> str:
+    from sqlalchemy import text
+
+    from api.db.engine import get_engine
+
+    with get_engine(postgres_url).connect() as conn:
+        return str(conn.execute(text("SELECT current_database()")).scalar_one())
+
+
+def foreign_tenants(postgres_url: str = "", clickhouse_url: str = "") -> list[str]:
+    """Everything in the stores that is not the harness's own.
+
+    The measuring commands write rows, VACUUM tables, purge ClickHouse rows of
+    their tenants and — for ``api`` — start an API in dev mode, which seeds the
+    demo accounts and runs the in-process workers against whatever the
+    database holds. None of that belongs in a database somebody uses, so any
+    of these counts:
+
+    * a tenant other than the harness's — or ``default`` once it holds
+      anything, since ``python -m api`` creates it, empty, on first start;
+    * a row under such a tenant in :data:`_OWNED_BY_TENANT`;
+    * a console account the dev-mode seed did not create;
+    * ClickHouse rows no harness run wrote.
+
+    Raises :class:`StoreNotReady` for a database that is not migrated, rather
+    than failing on the first missing table.
     """
+    from api.services.tenants import DEFAULT_TENANT_ID
+
     found: list[str] = []
     if postgres_url:
-        from sqlalchemy import text
+        from sqlalchemy import inspect, text
 
         from api.db.engine import get_engine
 
-        with get_engine(postgres_url).connect() as conn:
-            for table in ("assets", "vulnerabilities", "endpoint_devices"):
-                rows = conn.execute(text(f'SELECT DISTINCT tenant_id FROM "{table}"'))
-                found.extend(str(tenant) for (tenant,) in rows if not _harness_tenant(str(tenant)))
+        engine = get_engine(postgres_url)
+        try:
+            present = set(inspect(engine).get_table_names())
+        except Exception as exc:  # noqa: BLE001 - unreachable, refused, wrong credentials
+            raise StoreNotReady(f"cannot read the database's tables: {type(exc).__name__}: {exc}") from exc
+        missing = sorted({"tenants", "users", *_OWNED_BY_TENANT} - present)
+        if missing:
+            raise StoreNotReady(
+                f"the database is not migrated (no {', '.join(missing[:3])}"
+                f"{', …' if len(missing) > 3 else ''}); run `alembic -c api/db/alembic.ini upgrade head` "
+                "against it first"
+            )
+        with engine.connect() as conn:
+            for (tenant,) in conn.execute(text("SELECT tenant_id FROM tenants")):
+                if not _harness_tenant(str(tenant)) and tenant != DEFAULT_TENANT_ID:
+                    found.append(str(tenant))
+            for table in _OWNED_BY_TENANT:
+                # Identifiers come from the constant tuple above, never from input.
+                for (tenant,) in conn.execute(text(f'SELECT DISTINCT tenant_id FROM "{table}"')):
+                    if tenant is not None and not _harness_tenant(str(tenant)):
+                        found.append(str(tenant) if tenant != DEFAULT_TENANT_ID else f"{tenant} ({table})")
+            accounts = conn.execute(
+                text("SELECT username FROM users WHERE created_by IS DISTINCT FROM :seed ORDER BY username"),
+                {"seed": DEV_SEED},
+            )
+            found.extend(f"users:{username}" for (username,) in accounts)
     if clickhouse_url:
         from api.services import clickhouse_client as ch
 
@@ -1796,6 +2029,97 @@ def foreign_tenants(postgres_url: str = "", clickhouse_url: str = "") -> list[st
     return sorted(set(found))
 
 
+#: Tables whose rows never go, by design: the audit trail refuses DELETE
+#: (migration 0037, #327). Its rows age out through the audit retention prune.
+_IMMUTABLE_TABLES = frozenset({"audit_events"})
+
+
+def purge_harness_rows(
+    postgres_url: str, *, demo_accounts: bool = False, clickhouse_url: str = ""
+) -> dict[str, Any]:
+    """Remove every row the harness wrote: the ``sizing-*`` tenants and all they own.
+
+    ``scale_seed --purge`` removes a tenant's assets and identifiers; a sizing
+    run also leaves findings, events, services, OS guesses, endpoint
+    inventory, risk snapshots, the tenant rows and ClickHouse rows (review of
+    #337). Every table with a ``tenant_id`` is cleared of ``sizing-*`` rows —
+    in passes, so foreign keys without ON DELETE CASCADE are satisfied in
+    whatever order they need — then the tenants. ``demo_accounts`` also drops
+    the ``seed:dev`` users an ``api`` step created, whose passwords are
+    published in this repository. The audit trail is immutable and is only
+    counted.
+    """
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import DBAPIError
+
+    from api.db.engine import get_engine
+
+    engine = get_engine(postgres_url)
+    pattern = f"{TENANT_PREFIX}-%"
+    inspector = inspect(engine)
+    names = set(inspector.get_table_names())
+    tables = sorted(
+        table
+        for table in names
+        if table not in _IMMUTABLE_TABLES
+        and table != "tenants"
+        and "tenant_id" in {column["name"] for column in inspector.get_columns(table)}
+    )
+    with engine.connect() as conn:
+        tenants = [
+            str(tenant)
+            for (tenant,) in conn.execute(
+                text("SELECT tenant_id FROM tenants WHERE tenant_id LIKE :p"), {"p": pattern}
+            )
+        ]
+    deleted: dict[str, int] = {}
+    pending = list(tables)
+    while pending:
+        blocked: list[str] = []
+        for table in pending:
+            try:
+                with engine.begin() as conn:
+                    # Identifiers come from the database's own catalogue.
+                    count = conn.execute(
+                        text(f'DELETE FROM "{table}" WHERE tenant_id LIKE :p'), {"p": pattern}
+                    ).rowcount
+            except DBAPIError:
+                blocked.append(table)
+                continue
+            if count:
+                deleted[table] = deleted.get(table, 0) + count
+        if len(blocked) == len(pending):
+            break
+        pending = blocked
+    with engine.begin() as conn:
+        if not pending:
+            deleted["tenants"] = conn.execute(
+                text("DELETE FROM tenants WHERE tenant_id LIKE :p"), {"p": pattern}
+            ).rowcount
+        demo = (
+            conn.execute(text("DELETE FROM users WHERE created_by = :seed"), {"seed": DEV_SEED}).rowcount
+            if demo_accounts
+            else 0
+        )
+        kept = {
+            table: conn.execute(
+                text(f'SELECT count(*) FROM "{table}" WHERE tenant_id LIKE :p'), {"p": pattern}
+            ).scalar_one()
+            for table in sorted(_IMMUTABLE_TABLES & names)
+        }
+    if clickhouse_url:
+        for tenant in tenants:
+            purge_clickhouse(clickhouse_url, tenant, wait=True)
+    return {
+        "tenants": len(tenants),
+        "deleted": deleted,
+        "not_deleted": pending,
+        "demo_accounts": demo,
+        "kept_immutable": {table: count for table, count in kept.items() if count},
+        "clickhouse_purged": bool(clickhouse_url),
+    }
+
+
 def _emit(payload: dict[str, Any], out: Path | None) -> None:
     text = json.dumps(payload, indent=2, sort_keys=True)
     if out is not None:
@@ -1816,6 +2140,34 @@ def _require(value: str, name: str) -> bool:
         return True
     print(f"error: no {name} URL (--{name.lower()}-url or $OCTO_{name.upper()}_URL)", file=sys.stderr)
     return False
+
+
+def _owns_database(args: argparse.Namespace) -> bool:
+    """The writing commands name the database they may write to, and it must be this one.
+
+    A URL pasted from the wrong environment points at a database whose name
+    the operator did not type; comparing with ``current_database()`` catches
+    that before anything is written (review of #337).
+    """
+    if not args.i_own_database:
+        print(
+            "error: pass --i-own-database with the name of the database the harness may write to "
+            "(a dedicated one: it adds tenants, VACUUMs tables and, for `api`, seeds demo accounts)",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        actual = current_database(args.postgres_url)
+    except Exception as exc:  # noqa: BLE001 - unreachable or refused: say which, not a traceback
+        print(f"error: cannot reach the database: {type(exc).__name__}", file=sys.stderr)
+        return False
+    if actual != args.i_own_database:
+        print(
+            f"error: --i-own-database names {args.i_own_database!r}, but the URL points at {actual!r}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1867,11 +2219,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "clickhouse" and not _require(args.clickhouse_url, "ClickHouse"):
         return 2
-    if not args.allow_shared_stores:
-        foreign = foreign_tenants(
-            args.postgres_url,
-            args.clickhouse_url if args.command == "clickhouse" else "",
+    if args.postgres_url and not _owns_database(args):
+        return 2
+    if args.command == "purge":
+        report = purge_harness_rows(
+            args.postgres_url, demo_accounts=args.demo_accounts, clickhouse_url=args.clickhouse_url
         )
+        _emit({"purge": report}, args.out)
+        return 0 if not report["not_deleted"] else 1
+    if not args.allow_shared_stores:
+        try:
+            foreign = foreign_tenants(
+                args.postgres_url,
+                args.clickhouse_url if args.command == "clickhouse" else "",
+            )
+        except StoreNotReady as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         if foreign:
             print(
                 "error: these stores hold data of other tenants ("

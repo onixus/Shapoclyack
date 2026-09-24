@@ -151,6 +151,7 @@ def test_api_memory_limit_grows_with_concurrent_ingests_of_the_run_size():
         projection_rss_bytes_per_host=1000,
         ch_transform_rss_bytes_per_host=500,
         archive_bytes_per_host=300,
+        archive_bytes_per_run=0,
     )
     w = workload()  # 500 hosts per run
     per_ingest = 500 * 1000 + 500 * 500 + 500 * 300 * (1 + 4 / 3)
@@ -161,7 +162,7 @@ def test_api_memory_limit_grows_with_concurrent_ingests_of_the_run_size():
 
 
 def test_a_run_past_the_upload_expansion_cap_is_called_out():
-    c = coeffs(run_dir_bytes_per_host=12_000)
+    c = coeffs(run_dir_bytes_per_host=12_000, run_dir_bytes_per_run=0)
     # 10 000 hosts x 12 kB = 114 MiB: fine. 50 000 hosts = 572 MiB: refused.
     assert not any("refused" in n for n in size_api(workload(scans_per_day=1), c).notes)
     big = size_api(workload(assets=50_000, scans_per_day=1), c)
@@ -203,23 +204,29 @@ def test_clickhouse_disabled_sizes_nothing():
 # --- NATS and the ingest message ----------------------------------------------------
 
 
-def test_ingest_message_is_the_base64_archive_until_the_inline_cap():
-    c = coeffs(archive_bytes_per_host=1000)
-    assert ingest_message_bytes(workload(), c) == pytest.approx(500 * 1000 * 4 / 3)
-    # 5000 hosts * 1000 B = 5 MB > the 4 MB cap: the archive is left out.
-    assert ingest_message_bytes(workload(scans_per_day=2), c) == 0.0
+def test_ingest_message_is_the_base64_archive_plus_its_envelope_until_the_inline_cap():
+    c = coeffs(archive_bytes_per_host=1000, archive_bytes_per_run=10_000, ingest_envelope_bytes=600)
+    assert ingest_message_bytes(workload(), c) == pytest.approx((10_000 + 500 * 1000) * 4 / 3 + 600)
+    # 5000 hosts: 5.01 MB > the 4 MB cap, so the archive is left out; the envelope stays.
+    assert ingest_message_bytes(workload(scans_per_day=2), c) == 600
+    # An unmeasured intercept is not zero.
+    assert ingest_message_bytes(workload(), coeffs(archive_bytes_per_host=1000)) is None
 
 
-def test_largest_run_reaching_clickhouse_is_the_lower_of_two_ceilings():
-    c = coeffs(archive_bytes_per_host=100)
-    # max_payload 1 MiB / (4/3) / 100 B = 7864 hosts; the 4 MB cap would allow 40000.
-    assert max_hosts_per_run_for_clickhouse(c) == pytest.approx(1024 * 1024 * 3 / 4 / 100)
-    assert max_hosts_per_run_for_clickhouse(c, max_payload=64 * 1024 * 1024) == pytest.approx(40_000)
-    assert max_hosts_per_run_for_clickhouse(coeffs()) is None
+def test_largest_run_reaching_clickhouse_counts_the_intercept_and_the_envelope():
+    """Review of #337: slope alone put the ceiling at ~2 100 hosts; 1 950 was refused."""
+    c = coeffs(archive_bytes_per_host=100, archive_bytes_per_run=65_536, ingest_envelope_bytes=500)
+    by_payload = ((1024 * 1024 - 500) * 3 / 4 - 65_536) / 100
+    assert max_hosts_per_run_for_clickhouse(c) == pytest.approx(by_payload)
+    # With a large max_payload the 4 MB inline cap is the lower ceiling.
+    assert max_hosts_per_run_for_clickhouse(c, max_payload=64 * 1024 * 1024) == pytest.approx(
+        (4_000_000 - 65_536) / 100
+    )
+    assert max_hosts_per_run_for_clickhouse(coeffs(archive_bytes_per_host=100)) is None
 
 
 def test_nats_volume_is_the_reserved_stream_caps_and_oversize_runs_are_flagged():
-    c = coeffs(archive_bytes_per_host=2000)
+    c = coeffs(archive_bytes_per_host=2000, archive_bytes_per_run=0, ingest_envelope_bytes=0)
     nats = size_nats(workload(), c)  # 500 hosts: 1 MB archive, 1.33 MB message
     assert nats.storage_bytes == pytest.approx(11 * GiB)
     assert any("max_payload" in note for note in nats.notes)
@@ -302,7 +309,7 @@ def test_tier_table_has_a_column_per_tier_and_the_components(capsys):
     out = capsys.readouterr().out
     header = out.splitlines()[0]
     assert header.count("assets /") == len(TIERS)
-    for label in ("API (per replica)", "PostgreSQL", "ClickHouse", "NATS JetStream", "Run artifacts", "Sensor"):
+    for label in ("API (per replica, agent mode)", "PostgreSQL", "ClickHouse", "NATS JetStream", "Run artifacts", "Sensor"):
         assert label in out
 
 
@@ -324,3 +331,82 @@ def test_cli_reads_coefficients_from_a_file(tmp_path, capsys):
 
 def test_cli_without_a_workload_is_an_error():
     assert scale_sizing.main([]) == 2
+
+
+# --- review of #337, round 1 ---------------------------------------------------
+
+
+def _stand_file(tmp_path, **coefficients) -> str:
+    import json
+
+    path = tmp_path / "stand.json"
+    path.write_text(json.dumps({"coefficients": {"source": "stand-x", **coefficients}}), encoding="utf-8")
+    return str(path)
+
+
+def _row(out: str, label: str) -> str:
+    return next(line for line in out.splitlines() if line.startswith(f"| {label}"))
+
+
+def test_a_stands_table_prints_n_m_for_what_the_stand_did_not_measure(tmp_path, capsys):
+    """Its Postgres was remote, so its backend CPU is unknown — not the sandbox's."""
+    stand = _stand_file(tmp_path, pg_bytes_per_asset=700.0, projection_cpu_seconds_per_host=0.02)
+    assert scale_sizing.main(["--tiers", "--markdown", "--coefficients", stand]) == 0
+    out = capsys.readouterr().out
+    assert _row(out, "PostgreSQL: CPU request / limit").count("n/m") == 6
+    assert "†" not in out
+
+
+def test_filling_from_the_sandbox_is_opt_in_and_marks_every_cell_it_touched(tmp_path, capsys):
+    stand = _stand_file(tmp_path, projection_cpu_seconds_per_host=0.02)
+    assert scale_sizing.main(["--tiers", "--markdown", "--coefficients", stand, "--fill-from-sandbox"]) == 0
+    out = capsys.readouterr().out
+    postgres_cpu = _row(out, "PostgreSQL: CPU request / limit")
+    assert "n/m" not in postgres_cpu and postgres_cpu.count("†") == 6
+    # The footnote names the sandbox coefficients the table leaned on.
+    footnote = next(line for line in out.splitlines() if line.startswith("†"))
+    assert "projection_pg_cpu_seconds_per_host" in footnote
+    assert "projection_cpu_seconds_per_host" not in footnote.replace("projection_pg_cpu", "")
+
+
+def test_postgres_cpu_limit_covers_request_traffic_as_well_as_projections():
+    """Backends serving list pages are not held back by the API's GIL; per unit of
+    API CPU, requests cost Postgres more than projections do."""
+    c = coeffs(
+        projection_cpu_seconds_per_host=0.02,
+        projection_pg_cpu_seconds_per_host=0.004,
+        api_cpu_seconds_per_request=0.02,
+        api_pg_cpu_seconds_per_request=0.03,
+    )
+    assert size_postgres(workload(api_replicas=2), c).cpu_limit_millicores == pytest.approx(2 * 1.5 * 1000)
+
+
+def test_the_api_rows_say_they_are_for_agent_mode():
+    """main's overlays run local scans inside the API pod; these rows do not include that."""
+    api = size_api(workload(), coeffs())
+    assert "agent mode" in api.name
+
+
+def test_sensor_cpu_follows_the_cores_a_scan_keeps_busy_and_notes_the_run_size():
+    c = coeffs(
+        sensor_cpu_seconds_per_host=0.5,
+        sensor_cpu_seconds_per_run=100.0,
+        sensor_busy_cores=1.5,
+        sensor_peak_cores=3.0,
+        sensor_peak_rss_bytes=1e9,
+        sensor_peak_rss_run_hosts=200,
+    )
+    sensor = scale_sizing.size_sensor(workload(), c)  # 20 runs of 500 hosts a day, 2 sensors
+    assert sensor.cpu_request_millicores == pytest.approx(1500)
+    assert sensor.cpu_limit_millicores == pytest.approx(3000)
+    assert sensor.memory_request_bytes == pytest.approx(1e9)
+    # 20 x 100 + 10 000 x 0.5 = 7 000 CPU-s a day over 2 sensors of 1.5 busy cores.
+    assert any("2.7 %" in note for note in sensor.notes)
+    assert any("200 hosts" in note and "500" in note for note in sensor.notes)
+
+
+def test_the_figures_quoted_in_the_doc_follow_the_committed_coefficients():
+    """Prose numbers drift silently where the table test cannot see them."""
+    doc = (ROOT / "docs/sizing.md").read_text(encoding="utf-8")
+    for name, figure in scale_sizing.key_figures(MEASURED).items():
+        assert figure in doc, f"docs/sizing.md does not quote {name} = {figure!r}"

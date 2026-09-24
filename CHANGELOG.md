@@ -25,9 +25,11 @@ All notable changes to Shapoclyack are documented in this file.
   API's streams reserve, so the bus fails to start wherever NATS is enabled
   with it; an ingest message over NATS's default 1 MiB `max_payload` is
   refused, which with the measured archive sizes keeps runs of more than about
-  2 000 hosts out of ClickHouse; `vulnerability_events` and `jobs` grow with
+  1 900 hosts out of ClickHouse; `vulnerability_events` and `jobs` grow with
   every scan and have no retention; ClickHouse's `system.*_log` tables have no
-  TTL.
+  TTL. A stand's table prints `n/m` for what it did not measure unless
+  `--fill-from-sandbox` fills it, marked; `scale_measure purge` removes the
+  harness's rows; the writing steps need `--i-own-database NAME`.
 
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
