@@ -41,6 +41,7 @@ from scanner.pipeline.discover import import_cloudflare_dns_targets
 from scanner.pipeline.dns_hygiene import check_dns_hygiene
 from scanner.pipeline.domain_monitor import monitor_domains
 from scanner.pipeline.mail_posture import check_mail_posture
+from scanner.pipeline.l2_discovery import merge_l2_names, run_l2_discovery
 from scanner.pipeline.fingerprint import fingerprint_hosts_sync
 from scanner.pipeline.screenshots import capture_screenshots_sync
 from scanner.pipeline.nuclei_scan import run_nuclei_scan
@@ -72,7 +73,7 @@ from scanner.pipeline.resolve import resolve_fqdns
 from scanner.pipeline import scan_scope
 from scanner.pipeline.run_context import resolve_run_paths, write_run_meta
 from scanner.pipeline.stage_timing import StageTimer
-from scanner.pipeline.utils import load_json, load_yaml, read_lines, setup_logging, write_lines
+from scanner.pipeline.utils import load_json, load_yaml, read_lines, save_json, setup_logging, write_lines
 
 # Active run timer (set for the duration of _run_pipeline). ContextVar so the
 # pulse+nse ThreadPoolExecutor workers still see the same collector.
@@ -649,12 +650,34 @@ def _run_pipeline_body(
             return expand_batches(
                 items,
                 ipv4_prefix=batching.ipv4_prefix,
+                ipv6_prefix=batching.ipv6_prefix,
+                max_ipv6_batches=batching.max_ipv6_batches,
                 max_targets_per_batch=batching.max_targets_per_batch,
             )
         return single_batch(items)
 
+    # Link-local discovery is a separate, opt-in pass. Its networks are always
+    # constrained to the final target set, so ARP can add evidence about an
+    # in-scope host but cannot discover its neighbour into scope (#364).
+    if args.resume and checkpoint.is_done("discover-l2"):
+        timer.skip("discover-l2")
+        l2_result = load_json(paths.output_dir / "l2_discovery.json", fallback={})
+    else:
+        l2_result = _run_stage(
+            "discover-l2",
+            lambda: run_l2_discovery(
+                all_targets,
+                config.discovery.l2,
+                paths.output_dir,
+                retries=retries,
+                exclude_ports=config.ports.exclude_ports,
+            ),
+        )
+        checkpoint.mark_done("discover-l2")
+
     alive_file = paths.output_dir / "alive_ips.txt"
-    seed_alive = load_seed_alive(config.discovery.seed_alive_file)
+    seed_alive = set(load_seed_alive(config.discovery.seed_alive_file))
+    seed_alive.update(str(host) for host in (l2_result.get("alive_hosts") or []))
     previous_alive = load_previous_alive(previous_alive_file)
     previous_source = str(previous_alive_file) if previous_alive_file else ""
     if args.resume and checkpoint.is_done("discover"):
@@ -696,6 +719,11 @@ def _run_pipeline_body(
             ),
         )
         checkpoint.mark_done("discover-hostnames")
+
+    l2_names = l2_result.get("names_by_host") or {}
+    if l2_names:
+        hostnames_map = merge_l2_names(hostnames_map, l2_names)
+        save_json(hostnames_file, hostnames_map)
 
     open_file = paths.output_dir / "open_ports.txt"
     if args.resume and checkpoint.is_done("ports"):

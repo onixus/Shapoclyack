@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 from pathlib import Path
 
 from .config_schema import DiscoveryConfig
 from .discovery_targets import filter_hosts_in_scope
 from .icmp_discover import icmp_ping_filter
+from .protocol import parse_endpoint
 from .utils import run_command, save_json, write_lines
 
 PROBE_METHODS = ("icmp", "tcp", "naabu")
@@ -77,13 +79,23 @@ def build_naabu_sn_command(
 
 
 def parse_naabu_host_lines(stdout: str) -> list[str]:
-    """Extract unique hosts from naabu stdout (host-only or host:port lines)."""
+    """Extract hosts from naabu output without truncating IPv6 at its first colon."""
     hosts: set[str] = set()
     for line in stdout.splitlines():
         text = line.strip()
         if not text:
             continue
-        hosts.add(text.split(":", 1)[0])
+        try:
+            hosts.add(str(ipaddress.ip_address(text)))
+            continue
+        except ValueError:
+            pass
+        endpoint = parse_endpoint(text)
+        if endpoint is not None:
+            hosts.add(endpoint.host)
+            continue
+        # Legacy naabu IPv4 output can be host:port without /tcp. The parser
+        # above handles it, so anything left is malformed rather than a host.
     return sorted(hosts)
 
 

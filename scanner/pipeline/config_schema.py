@@ -122,6 +122,11 @@ class ProfileConfig(BaseModel):
 class BatchingConfig(BaseModel):
     enabled: bool = True
     ipv4_prefix: int = Field(default=20, ge=8, le=30)
+    # IPv6 has no broadcast address and even a /64 is far too large to expand.
+    # Networks broader than this are split into bounded subnets; if that would
+    # create more than max_ipv6_batches the run fails before allocating them.
+    ipv6_prefix: int = Field(default=120, ge=64, le=124)
+    max_ipv6_batches: int = Field(default=4096, ge=1, le=1_000_000)
     max_targets_per_batch: int = Field(default=4096, ge=1, le=1_000_000)
 
 
@@ -150,6 +155,42 @@ class IcmpDiscoveryConfig(BaseModel):
     # 10ms; 1 is the floor because fping refuses anything smaller ("you need
     # -i >= 1", exit 1) and the step reads that empty output as nobody alive.
     period_ms: int | None = Field(default=None, ge=1, le=10_000)
+
+
+class L2DiscoveryConfig(BaseModel):
+    """Opt-in discovery on directly attached IPv4 segments (#364).
+
+    ARP is meaningful only on the sensor's own L2 domain. ``networks`` may
+    narrow the in-scope private/link-local IPv4 targets; it can never widen
+    scan scope. An empty list derives eligible networks from the run targets.
+    The host cap prevents a typo such as ``10.0.0.0/8`` from becoming a raw
+    Ethernet broadcast storm wearing a configuration file as a hat.
+    """
+
+    enabled: bool = False
+    networks: list[str] = Field(default_factory=list)
+    interface: str = ""
+    mdns: bool = True
+    netbios: bool = True
+    max_hosts: int = Field(default=4096, ge=1, le=65_536)
+    max_rate: int = Field(default=1000, ge=1, le=100_000)
+    timeout_seconds: int = Field(default=120, ge=5, le=3600)
+
+    @field_validator("networks")
+    @classmethod
+    def validate_networks(cls, networks: list[str]) -> list[str]:
+        import ipaddress
+
+        normalized: list[str] = []
+        for raw in networks:
+            try:
+                network = ipaddress.ip_network(raw, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid L2 discovery network: {raw}") from exc
+            if network.version != 4:
+                raise ValueError("L2 ARP discovery accepts IPv4 networks only")
+            normalized.append(str(network))
+        return sorted(set(normalized))
 
 
 class TcpProbeDiscoveryConfig(BaseModel):
@@ -338,6 +379,7 @@ class DiscoveryConfig(BaseModel):
     exclude_last_octets: list[int] = Field(default_factory=list)
     verify: VerifyDiscoveryConfig = Field(default_factory=VerifyDiscoveryConfig)
     icmp: IcmpDiscoveryConfig = Field(default_factory=IcmpDiscoveryConfig)
+    l2: L2DiscoveryConfig = Field(default_factory=L2DiscoveryConfig)
     tcp_probe: TcpProbeDiscoveryConfig = Field(default_factory=TcpProbeDiscoveryConfig)
     probe_order: list[ProbeMethod] = Field(default_factory=lambda: list(_DEFAULT_PROBE_ORDER))
     hostnames: HostnameResolveConfig = Field(default_factory=HostnameResolveConfig)

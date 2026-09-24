@@ -70,6 +70,10 @@ SECONDARY_ACTIVE_STAGE_POLICIES: dict[str, tuple[str, str]] = {
 NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     # Primary stages: each is held by policy fields of its own in apply_policy.
     "discover": "primary: discover_rate, wave2/verify/tcp_probe rates, icmp period, discover_concurrency",
+    "discover-l2": (
+        "primary, opt-in: nmap ARP --max-rate held to max_discover_rate; "
+        "mDNS/NetBIOS name probes off with skip_service_probe"
+    ),
     "ports": "primary: port_rate, per_host_rate, ports_concurrency, avoid_ports",
     "verify_alive": "primary: discovery.verify.rate held to max_discover_rate",
     "pulse": "primary: pulse rate/concurrency/host_parallel; off with skip_service_probe",
@@ -337,7 +341,12 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         runtime_updates["skip_nse"] = True
 
     discovery_updates: dict[str, Any] = {}
+    l2_updates: dict[str, Any] = {}
     if max_discover is not None:
+        # nmap's ARP sweep is a discovery stage too. --max-rate is the only
+        # portable ceiling it exposes, so the tenant ceiling lowers that
+        # explicit command-line value just like it lowers naabu/fping.
+        l2_updates["max_rate"] = _ceiling(config.discovery.l2.max_rate, max_discover)
         # Discovery is three passes, not one. Wave 2 re-probes the hosts that
         # stayed silent in wave 1 — on an OT estate exactly the PLCs and relays
         # the ceiling exists for — and the verify pass re-probes the alive
@@ -364,6 +373,14 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
         discovery_updates["icmp"] = config.discovery.icmp.model_copy(
             update={"period_ms": _icmp_period_ms(config.discovery.icmp.period_ms, max_discover)}
         )
+    if policy.get("skip_service_probe"):
+        # ARP remains host discovery. mDNS and NetBIOS are protocol-specific
+        # UDP requests and therefore follow the same "ports only" decision as
+        # pulse/NSE/nuclei; a fragile policy can turn them off, never on.
+        l2_updates["mdns"] = False
+        l2_updates["netbios"] = False
+    if l2_updates:
+        discovery_updates["l2"] = config.discovery.l2.model_copy(update=l2_updates)
 
     nuclei_updates = _nuclei_ceilings(
         config.nuclei.rate_limit, config.nuclei.concurrency, per_host_rate, max_concurrency

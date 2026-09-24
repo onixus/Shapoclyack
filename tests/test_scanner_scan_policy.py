@@ -1093,3 +1093,28 @@ def test_an_ipv6_range_reaches_naabu_the_way_the_document_says_it_does(tmp_path,
     for command in calls:
         assert len(read_lines(Path(_flag(command, "-list")))) == 255, "one batch, whole range"
         assert _flag(command, "-rate") == "100", "the batch rate, not the per-host rate"
+
+
+def test_l2_discovery_obeys_rate_and_service_probe_policy():
+    config = _config()
+    l2 = config.discovery.l2.model_copy(
+        update={"enabled": True, "max_rate": 5000, "mdns": True, "netbios": True}
+    )
+    config = config.model_copy(
+        update={"discovery": config.discovery.model_copy(update={"l2": l2})}
+    )
+
+    tightened = apply_policy(
+        config,
+        _policy(max_discover_rate=100, skip_service_probe=True),
+    )
+
+    assert tightened.discovery.l2.enabled is True
+    assert tightened.discovery.l2.max_rate == 100
+    assert tightened.discovery.l2.mdns is False
+    assert tightened.discovery.l2.netbios is False
+
+
+def test_policy_cannot_enable_l2_discovery():
+    config = _config()
+    assert apply_policy(config, _policy(max_discover_rate=100)).discovery.l2.enabled is False

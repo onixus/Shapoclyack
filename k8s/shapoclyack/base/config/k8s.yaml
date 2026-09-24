@@ -88,6 +88,8 @@ batching:
   enabled: true
   # Finer /24 batches (from realistic bench) for better resume on large CIDRs.
   ipv4_prefix: 24
+  ipv6_prefix: 120
+  max_ipv6_batches: 4096
   max_targets_per_batch: 1024
 
 discovery:
@@ -112,6 +114,18 @@ discovery:
     tool: fping
     timeout_ms: 500
     retries: 1
+  # Directly attached IPv4 segments only. ARP discovers silent hosts; the
+  # optional UDP pass records mDNS/NetBIOS names. Empty networks derives only
+  # in-scope private/link-local ranges and still honours max_hosts.
+  l2:
+    enabled: false
+    networks: []
+    interface: ""
+    mdns: true
+    netbios: true
+    max_hosts: 4096
+    max_rate: 1000
+    timeout_seconds: 120
   tcp_probe:
     enabled: false
     ports: [80, 443, 22]
