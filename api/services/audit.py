@@ -58,6 +58,14 @@ ACTION_USER_DISABLE = "user.disable"
 ACTION_USER_PASSWORD_RESET = "user.password_reset"
 ACTION_USER_PASSWORD_CHANGE = "user.password_change"
 ACTION_USER_DELETE = "user.delete"
+# Data-subject requests (#332). The export is recorded although it changes
+# nothing: it is a disclosure of one person's data in bulk, and "who pulled
+# this account's history, and when" is asked of exactly this trail. The
+# erasure's row never carries the erased values — writing an address into an
+# append-only table at the moment of erasing it would be the one copy nobody
+# can remove.
+ACTION_USER_EXPORT = "user.export"
+ACTION_USER_ERASE = "user.erase"
 # Multi-factor authentication (#315). Three actions rather than one, because
 # they are three different facts: the owner turned a second factor on, the
 # owner turned it off, and an admin removed somebody else's. The last is the
@@ -163,6 +171,13 @@ ACTION_SCAN_CANCEL = "scan.cancel"
 # error the operator was looking at when they decided.
 ACTION_RUN_PUBLICATION_REQUEUE = "run_publication.requeue"
 ACTION_RUN_PUBLICATION_DISCARD = "run_publication.discard"
+# Per-tenant retention and legal hold (#332). One action for writing and for
+# clearing a policy, told apart by ``after`` being NULL, as the scan policy's
+# is. The hold is two: placing and releasing are decisions different people
+# are asked about afterwards, and a release is what lets the reapers resume.
+ACTION_RETENTION_POLICY_UPDATE = "retention_policy.update"
+ACTION_LEGAL_HOLD_PLACE = "legal_hold.place"
+ACTION_LEGAL_HOLD_RELEASE = "legal_hold.release"
 
 #: The value stored in place of a secret. Not the empty string and not a
 #: dropped key: "this field was set, and its value is not in the audit trail"

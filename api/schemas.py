@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, StrictInt
 
 # Single source of truth for the intent vocabulary: the resolver in
 # api.services.scan_intents owns which intents exist and what each one does.
@@ -1190,6 +1190,22 @@ class UserInfo(BaseModel):
     # the default tenant (see api/services/memberships.py).
     tenants: list[str] = Field(default_factory=list)
     is_platform_admin: bool = False
+    # Set on the tombstone a data-subject erasure leaves (#332): the username
+    # is kept as a pseudonym, and the account refuses every change.
+    erased_at: str | None = None
+
+
+class UserErasureResult(BaseModel):
+    """What ``POST /api/users/{username}/erase`` removed (#332).
+
+    ``removed`` is counts and flags only — never the erased values, which is
+    also all the audit row records.
+    """
+
+    username: str
+    erased_at: str | None = None
+    already_erased: bool = False
+    removed: dict[str, Any] | None = None
 
 
 class SetUserEmailRequest(BaseModel):
@@ -3064,6 +3080,69 @@ class TenantQuotaRequest(BaseModel):
     max_assets: int | None = Field(default=None, ge=0, le=10_000_000)
     max_scans_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
     note: str = Field(default="", max_length=500)
+
+
+class RetentionCategoryInfo(BaseModel):
+    """One retention category for one tenant (#332).
+
+    ``default_days`` is the platform's window and ``override_days`` the
+    tenant's own, ``null`` when it inherits; ``effective_days`` is what the
+    reapers apply unless the tenant is on legal hold, when they apply nothing.
+    ``0`` in either means "kept until deleted by hand". ``min_days`` and
+    ``max_days`` bound what an override may be, and are platform configuration.
+    """
+
+    category: str
+    description: str
+    default_days: int
+    override_days: int | None = None
+    effective_days: int
+    min_days: int
+    max_days: int
+    source: Literal["tenant", "default"]
+
+
+class LegalHoldInfo(BaseModel):
+    """A hold in force. ``reason`` and ``set_by`` are ``null`` for anyone but a
+    platform admin: the matter behind a hold can be one the tenant must not
+    learn of from its own console."""
+
+    tenant_id: str
+    reason: str | None = None
+    set_by: str | None = None
+    set_at: str | None = None
+
+
+class RetentionPolicyInfo(BaseModel):
+    """A tenant's retention windows, every category listed, and its hold."""
+
+    tenant_id: str
+    categories: list[RetentionCategoryInfo]
+    note: str = ""
+    updated_at: str | None = None
+    updated_by: str = ""
+    legal_hold: LegalHoldInfo | None = None
+
+
+class RetentionPolicyRequest(BaseModel):
+    """The tenant's overrides, replacing whatever it had (#332).
+
+    Whole-document: a category left out, or sent as ``null``, inherits the
+    platform default. A value outside the platform bounds is refused with 422
+    naming them, never clamped.
+    """
+
+    # Strict: ``true`` or ``"30"`` is a client bug, not a number of days, and a
+    # coerced 1 would be a one-day window nobody asked for.
+    overrides: dict[str, StrictInt | None] = Field(default_factory=dict)
+    note: str = Field(default="", max_length=500)
+
+
+class LegalHoldRequest(BaseModel):
+    """Why the tenant is on hold. Required: a hold nobody can explain is one
+    nobody dares release."""
+
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class EndpointAgentPolicyRequest(BaseModel):

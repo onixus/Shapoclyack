@@ -647,6 +647,7 @@ OCTO_REPORT_SMTP_STARTTLS
 OCTO_REPORT_SMTP_TIMEOUT_SECONDS
 OCTO_REPORT_SMTP_USERNAME
 OCTO_REPORT_SMTP_VERIFY_TLS
+OCTO_RETENTION_BOUNDS
 OCTO_RETRO_MATCH_BATCH_SIZE
 OCTO_RETRO_MATCH_ENABLED
 OCTO_RETRO_MATCH_INTERVAL_SECONDS
@@ -1227,6 +1228,15 @@ Risk snapshot retention (#229):
 | `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` | `true` | Run the in-process `risk_score_snapshots` sweep. Safe in every replica; the delete is a range delete |
 | `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which risk snapshots are deleted. `0` disables the sweep. Keep at or above the window the trend chart requests |
 | `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval (floored at 60) |
+
+Per-tenant retention (#332). Every `OCTO_*_RETENTION_DAYS` above is the
+platform *default*; a tenant admin may override each category within bounds,
+and a platform admin may place a tenant on legal hold. See
+[data-retention.md](data-retention.md):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RETENTION_BOUNDS` | empty (compiled bounds) | JSON object `{"category": {"min": days, "max": days}}` merged over the per-category bounds in [data-retention.md](data-retention.md#11-data-deleted-on-a-retention-window) — e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. Bounds constrain tenant overrides only, never the inherited default. A malformed value, an unknown category, a `min` below 1 or a `max` above 3650 refuses to start |
 
 
 Never commit real URLs containing credentials. Supply them through the platform

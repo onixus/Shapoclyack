@@ -559,9 +559,34 @@ def _maybe_prune(settings: Settings) -> None:
     cutoff = now - keep_for
     try:
         with get_session(settings.postgres_url) as session:
-            session.execute(delete(models.AuthEvent).where(models.AuthEvent.occurred_at < cutoff))
+            session.execute(
+                delete(models.AuthEvent).where(
+                    models.AuthEvent.occurred_at < cutoff, _not_held_member()
+                )
+            )
     except Exception:  # pragma: no cover - defensive
         logger.exception("Failed to prune auth_events")
+
+
+def _not_held_member():
+    """Rows whose username is no member of a tenant on legal hold (#332).
+
+    The login trail has no tenant of its own — an attempt is recorded before
+    anyone knows which tenant it is for — so the hold reaches it through the
+    membership: the sign-ins of a held tenant's people are part of what the
+    hold preserves, and a claim about who accessed that tenant starts here. A
+    subquery, not a list read first, so the check and the delete see the same
+    snapshot and a hold placed in between cannot be missed.
+    """
+    held_members = (
+        select(models.UserTenant.username)
+        .join(
+            models.TenantLegalHold,
+            models.TenantLegalHold.tenant_id == models.UserTenant.tenant_id,
+        )
+        .scalar_subquery()
+    )
+    return models.AuthEvent.username.not_in(held_members)
 
 
 def reset_for_tests() -> None:

@@ -23,14 +23,14 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import artifact_store, workflow_events
+from api.services import artifact_store, retention_policy, workflow_events
 from api.services.compliance import frameworks as catalog
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
@@ -708,22 +708,30 @@ def record_delivery(settings: Settings, report_id: str, entries: list[dict[str, 
 
 
 def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
-    """Delete generated reports past ``report_retention_days``, files included.
+    """Delete generated reports past their tenant's window, files included.
+
+    ``report_retention_days`` is the platform default; a tenant may keep its
+    reports longer or shorter, and a tenant on legal hold keeps all of them
+    (#332).
 
     Rows and files are removed together, in that order per report, so a crash
     between the two leaves an orphaned file rather than a row pointing at
     nothing — an operator finding an extra PDF on disk is a smaller problem
     than a console listing a report that 404s on download."""
 
-    if settings.report_retention_days <= 0:
-        return {"deleted": 0, "errors": 0}
-    cutoff = (now or _now()) - timedelta(days=settings.report_retention_days)
     deleted = 0
     errors = 0
     with get_session(settings.postgres_url) as session:
-        rows = session.execute(
-            select(models.GeneratedReport).where(models.GeneratedReport.generated_at < cutoff)
-        ).scalars().all()
+        plan = retention_policy.load_plan(settings, retention_policy.REPORTS, session=session)
+        clause = retention_policy.expired_clause(
+            plan,
+            tenant_column=models.GeneratedReport.tenant_id,
+            time_column=models.GeneratedReport.generated_at,
+            now=now or _now(),
+        )
+        if clause is None:
+            return {"deleted": 0, "errors": 0}
+        rows = session.execute(select(models.GeneratedReport).where(clause)).scalars().all()
         for row in rows:
             try:
                 key = _report_key(settings, row.tenant_id, row.report_id, row.fmt)
@@ -734,5 +742,5 @@ def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[st
             deleted += 1
         session.commit()
     if deleted:
-        LOG.info("Pruned %d generated reports older than %s", deleted, cutoff.isoformat())
+        LOG.info("Pruned %d generated reports past their retention window", deleted)
     return {"deleted": deleted, "errors": errors}
