@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from api import __version__
 from api.auth import get_settings
 from api.db import engine as db_engine
+from api.db import tenant_scope
 from api.middleware import (
     BodySizeLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -193,7 +194,13 @@ def create_app() -> FastAPI:
     # singleton keyed by URL, so pool sizing that arrives after something has
     # already built it would apply to nobody (#335).
     db_engine.configure(settings)
+    tenant_scope.configure(settings)
     tenants_service.load_tenants(settings)
+    # Right after the first thing that proves the database is there: a replica
+    # told to enforce tenant row security on a database that cannot — no role,
+    # a table without its policy — refuses here, before it serves a request
+    # that would either 500 or, worse, be answered as if it were enforced (#311).
+    tenant_scope.verify_database(settings)
     # After the tenant store (it shares the session factory), and before any
     # router is mounted: a prod install with no console account refuses here
     # rather than serving a login form nobody can get through (#156).

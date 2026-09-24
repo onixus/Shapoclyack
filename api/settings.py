@@ -321,6 +321,17 @@ class Settings:
     db_pool_size: int = 5
     db_max_overflow: int = 10
     db_pool_timeout: int = 30
+    # Row-level security as the second line behind every tenant predicate
+    # (OCTO_TENANT_RLS, #311): "enforce" makes a tenant-scoped request's
+    # transactions assume the ``shapoclyack_tenant`` role and name the tenant,
+    # so Postgres drops every other tenant's rows even from a query that forgot
+    # its ``WHERE tenant_id``; "off" leaves every transaction on the connecting
+    # role, which is exactly the behaviour before migration 0067. On by default
+    # in every environment — a second line nobody turns on protects nobody, and
+    # workers are untouched either way (see api/db/tenant_scope.py) — with
+    # "off" as the kill switch that needs no migration rollback. Enforce also
+    # refuses to start when the database cannot deliver it (docs/tenant-isolation.md).
+    tenant_rls: str = "enforce"
     # Asset lifecycle: active assets not re-observed within this many days flip
     # to "stale" at the end of every ingest (api/services/assets.py).
     asset_stale_days: int = 14
@@ -1451,6 +1462,18 @@ def load_settings() -> Settings:
 
     db_pool_size, db_max_overflow = _db_pool_bounds()
 
+    # Refused rather than defaulted when misspelled, in every environment:
+    # "enfroce" read as "off" would be the one typo that silently switches a
+    # security control off, and read as "enforce" would hide that the operator
+    # meant something else (#311).
+    tenant_rls = os.environ.get("OCTO_TENANT_RLS", "enforce").strip().lower() or "enforce"
+    if tenant_rls not in ("off", "enforce"):
+        raise InsecureConfigurationError(
+            f"OCTO_TENANT_RLS must be 'enforce' or 'off', not {tenant_rls!r}.\n"
+            "    'off' is the kill switch for the row-level-security second line;\n"
+            "    see docs/tenant-isolation.md before using it."
+        )
+
     # Read here rather than inline below because the cancellation grace is
     # floored against both of them (#360).
     agent_stale_seconds = int(os.environ.get("OCTO_AGENT_STALE_SECONDS", "120"))
@@ -1581,6 +1604,7 @@ def load_settings() -> Settings:
         db_pool_size=db_pool_size,
         db_max_overflow=db_max_overflow,
         db_pool_timeout=max(1, int(os.environ.get("OCTO_DB_POOL_TIMEOUT", "30"))),
+        tenant_rls=tenant_rls,
         asset_stale_days=int(os.environ.get("OCTO_ASSET_STALE_DAYS", "14")),
         asset_events_enabled=os.environ.get("OCTO_ASSET_EVENTS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
@@ -1971,6 +1995,17 @@ def load_settings() -> Settings:
                 "reach the API, and it names every route, tenant-level queue depth "
                 "and login outcome. Keep /metrics off the public Ingress, or set the "
                 "token and give the scraper a bearerTokenSecret."
+            )
+        if settings.tenant_rls == "off":
+            # A warning, not a refusal: "off" is the kill switch, and the day
+            # it is needed is the day the product must start without it. Said
+            # on every start so that a switch thrown during an incident does
+            # not quietly become the configuration (#311).
+            logger.warning(
+                "OCTO_TENANT_RLS=off: tenant isolation rests on the WHERE clause of "
+                "every query alone; the row-level-security second line is not "
+                "applied. Set it back to 'enforce' once the incident that needed "
+                "this is closed (docs/tenant-isolation.md)."
             )
         if settings.agent_token:
             # Still only a warning *before* the sunset date — after it,

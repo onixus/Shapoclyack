@@ -50,6 +50,7 @@ _DECIDING_VARS = (
     "OCTO_DB_POOL_SIZE",
     "OCTO_DB_MAX_OVERFLOW",
     "OCTO_DB_POOL_TIMEOUT",
+    "OCTO_TENANT_RLS",
     "OCTO_JWT_SECRET_PREVIOUS",
     "OCTO_AGENT_JWT_SECRET",
     "OCTO_AGENT_JWT_SECRET_PREVIOUS",
@@ -573,6 +574,25 @@ def test_a_verifying_postgres_url_is_not_warned_about(
         load_settings()
 
     assert not any("sslmode" in record.getMessage() for record in caplog.records)
+
+
+def test_prod_says_so_every_time_tenant_row_security_is_off(
+    clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#311 — the kill switch starts, and does not start quietly.
+
+    Refusing ``off`` in prod would take away the one lever an incident needs;
+    starting silently would let the lever become the configuration.
+    """
+    _configure_prod(clean_env)
+    with caplog.at_level(logging.WARNING, logger="api.settings"):
+        assert load_settings().tenant_rls == "enforce"
+    assert not any("OCTO_TENANT_RLS" in record.getMessage() for record in caplog.records)
+
+    clean_env.setenv("OCTO_TENANT_RLS", "off")
+    with caplog.at_level(logging.WARNING, logger="api.settings"):
+        assert load_settings().tenant_rls == "off"
+    assert any("OCTO_TENANT_RLS=off" in record.getMessage() for record in caplog.records)
 
 
 def test_prod_warns_when_smtp_certificate_verification_is_off(
