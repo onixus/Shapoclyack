@@ -67,7 +67,12 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 # whose tenant has a policy to an agent that does not declare this — a ceiling
 # an older worker silently ignores would read as enforced and would not be.
 # Kept equal to api/services/scan_policy.AGENT_CAPABILITY.
-CAPABILITIES: tuple[str, ...] = ("scan_policy",)
+#
+# ``config_overlay`` (#338): a claim's ``config_overlay.json`` — the scan
+# intent's settings and the console's config overrides — is passed to the
+# scanner as ``--config-overlay``. Refused on claim without it, for the same
+# reason. Kept equal to api/services/config_override.AGENT_CAPABILITY.
+CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay")
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
@@ -766,6 +771,13 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         policy_path = workdir / "scan_policy.json"
         policy_path.write_text(inputs["scan_policy.json"], encoding="utf-8")
         args.extend(["--scan-policy", str(policy_path)])
+    if "config_overlay.json" in inputs:
+        # The job's config overlay (#338). Handed through unread as well: the
+        # scanner merges it onto --config and refuses any setting outside its
+        # own allow-list (scanner/pipeline/config_overlay.py).
+        overlay_path = workdir / "config_overlay.json"
+        overlay_path.write_text(inputs["config_overlay.json"], encoding="utf-8")
+        args.extend(["--config-overlay", str(overlay_path)])
     if "promoted_domains.txt" in inputs:
         # Related domains the tenant promoted (org_profile M4). Also handed
         # through unread: the pipeline merges them into its name scope and

@@ -290,6 +290,34 @@ def start_scan(
     agent_group = admission.agent_group
     group_has_live_agent = admission.group_has_live_agent
 
+    resolved = scan_intents.resolve_scan_options(
+        intent=request.intent,
+        mode=request.mode,
+        delta=request.delta,
+        skip_nse=request.skip_nse,
+    )
+    intent_extra = resolved.config_extra
+    if execution == "agent" and request.wordlist_id:
+        # A custom wordlist lives in the API's Postgres and is materialized
+        # onto the API pod's filesystem; a remote agent never sees it. Refused
+        # rather than ignored, and before any input file is written. Not
+        # forwarded like the config overlay below because a wordlist is a file
+        # of up to a few megabytes per job, not a handful of settings (#338).
+        raise ValueError(
+            "wordlist_id is only supported in local execution "
+            "mode, not with remote agents"
+        )
+    # A local scan runs on a config file written for it below, with the
+    # installation's overrides and the intent's settings merged in. A remote
+    # executor runs on its own host's config, so the same two travel with the
+    # job as its config overlay and the scanner merges them there (#338
+    # review; scanner/pipeline/config_overlay.py). Before, they stopped here.
+    overlay = (
+        config_override_service.agent_overlay(settings, intent_extra)
+        if execution == "agent"
+        else None
+    )
+
     # Admission already refused everything that can be refused, so what is
     # left here is file writing. Anything that escapes it is a half-written
     # scratch directory no job will ever own.
@@ -305,25 +333,17 @@ def start_scan(
                 policy=policy_snapshot,
             )
         )
+        if overlay:
+            target_args = [
+                *target_args,
+                *job_inputs.write_config_overlay_input(settings, job_id, overlay),
+            ]
         job_inputs.publish(settings, job_id)
     except Exception:
         job_inputs.discard(settings, job_id)
         raise
 
-    # Local scans run in this container, so apply the installation config
-    # overrides by merging them into a job-specific config file. Agents run
-    # their own mounted config, so overrides don't reach them — they keep the
-    # base config (documented limitation). Intent nuclei/top_ports overlays
-    # are local-only for the same reason.
-    resolved = scan_intents.resolve_scan_options(
-        intent=request.intent,
-        mode=request.mode,
-        delta=request.delta,
-        skip_nse=request.skip_nse,
-    )
-
     wordlist_options: dict[str, Any] = {}
-    intent_extra = resolved.config_extra
     if execution == "local":
         selected = job_inputs.wordlist_overrides(
             settings,
@@ -343,27 +363,6 @@ def start_scan(
             )
         )
     else:
-        if request.wordlist_id:
-            # A custom wordlist lives in the API's Postgres and is
-            # materialized onto the API pod's filesystem; a remote agent runs
-            # its own mounted config and never sees it. Rather than silently
-            # ignore the request, refuse it — the same class of limitation as
-            # installation overrides not reaching agents.
-            raise ValueError(
-                "wordlist_id is only supported in local execution "
-                "mode, not with remote agents"
-            )
-        if intent_extra:
-            # Agent workers do not receive the merged effective-config file;
-            # surface that so operators do not think nuclei floors applied.
-            _log.warning(
-                "intent=%s config overlays (nuclei/top_ports) are "
-                "skipped in agent mode; CLI flags delta=%s "
-                "skip_nse=%s still apply",
-                resolved.intent,
-                resolved.delta,
-                resolved.skip_nse,
-            )
         config_path = str(settings.config_path)
 
     # Derived from the targets as the operator entered them, not from the
@@ -424,6 +423,10 @@ def start_scan(
                 if policy_snapshot
                 else {}
             ),
+            # What the executor was sent, for the job record and for the claim:
+            # a job carrying one is only handed to an agent that applies it.
+            # Never holds a secret — ``agent_overlay`` leaves SECRET_PATHS out.
+            **({"config_overlay": overlay} if overlay else {}),
             "surface": surface,
             "surface_source": (
                 "operator"

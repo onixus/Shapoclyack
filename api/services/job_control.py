@@ -13,6 +13,7 @@ from api.db.engine import get_session
 from api.schemas import AgentClaimResponse, AgentInfo, JobInfo
 from api.services import agents as agents_service
 from api.services import audit as audit_service
+from api.services import config_override
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import job_repository
@@ -224,6 +225,25 @@ def claim_job(
                 f"agent {agent_id} does not support tenant scan policies "
                 f"(capability {scan_policy.AGENT_CAPABILITY}); upgrade the agent — "
                 "its jobs carry rate limits it cannot currently apply"
+            )
+        # The same rule for the job's config overlay (#338 review): an agent
+        # that predates it would run the scan on its own config alone — nuclei
+        # on for an ``inventory`` job, the ConfigMap's rate instead of the
+        # console's — while the job record says otherwise.
+        if (row.scan_options or {}).get("config_overlay") and (
+            config_override.AGENT_CAPABILITY not in (agent.capabilities or [])
+        ):
+            _log.warning(
+                "Agent %s asked for job %s with a config overlay but lacks %s",
+                agent_id,
+                row.job_id,
+                config_override.AGENT_CAPABILITY,
+            )
+            raise config_override.AgentOverlayUnsupported(
+                f"agent {agent_id} cannot apply the job's config overlay "
+                f"(capability {config_override.AGENT_CAPABILITY}); upgrade the "
+                "agent — its jobs carry the scan intent and the console's config "
+                "overrides, which it would currently ignore"
             )
 
         # ``claimed``, not ``running`` (P1.3): the agent owns the job but has
