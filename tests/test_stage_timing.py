@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from scanner.pipeline.stage_timing import StageTimer
+from scanner.pipeline.stage_timing import StageTimer, process_resources
 
 
 def test_run_records_duration(tmp_path: Path) -> None:
@@ -51,3 +53,17 @@ def test_skip_and_write_json(tmp_path: Path) -> None:
     assert names == ["nuclei", "ports"]
     assert data["stages"][0]["status"] == "skipped"
     assert "top_stages" in data
+
+
+def test_timings_carry_the_run_cpu_and_memory_of_the_tools_it_ran(tmp_path: Path) -> None:
+    """A sensor's per-run cost for sizing (#337): the scan's own process plus
+    the nmap/nuclei/... children it waited for."""
+    before = process_resources()
+    assert before is not None
+    subprocess.run([sys.executable, "-c", "sum(i * i for i in range(3_000_000))"], check=True)
+    data = json.loads(StageTimer().write(tmp_path).read_text(encoding="utf-8"))
+    resources = data["resources"]
+    assert resources["children_cpu_sec"] > before["children_cpu_sec"]
+    assert resources["cpu_sec"] >= before["cpu_sec"]
+    assert resources["max_rss_mb"] > 0
+    assert resources["children_max_rss_mb"] > 0
