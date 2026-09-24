@@ -1,0 +1,55 @@
+# An air-gapped installation (#339): every image from an internal registry,
+# enrichment data from an offline bundle. docs/air-gap.md is the procedure;
+# this is the shape of the overlay it ends with.
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/airgap
+#
+# Copy it and change the three placeholders:
+#
+#   1. `registry.internal.example` below → your registry. The images are
+#      mirrored by digest (docs/air-gap.md, "Mirror the images"); the aio
+#      image keeps its digest through the rename, and the upstream datastore
+#      images, which the base pins by tag only, should get a `digest:` line of
+#      their own here from your mirror.
+#   2. The pull secret `shapoclyack-registry` (base/serviceaccount.yaml) — create
+#      it, or rename it with the ServiceAccount patch at the end of this file.
+#   3. The namespace's `default` ServiceAccount, which the datastores and the
+#      enrichment and backup CronJobs run as: it is not declared by these
+#      manifests, so give it the same pull secret by hand —
+#        kubectl -n network-scan patch serviceaccount default \
+#          -p '{"imagePullSecrets":[{"name":"shapoclyack-registry"}]}'
+#
+# Prerequisites are the enrichment overlay's (an RWX StorageClass for
+# enrichment-data) plus an RWO class for the bundle inbox.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../base/enrichment
+  - ../../base/enrichment-bundle
+
+images:
+  - name: ghcr.io/onixus/shapoclyack-aio
+    newName: registry.internal.example/shapoclyack/shapoclyack-aio
+  - name: postgres
+    newName: registry.internal.example/library/postgres
+  - name: nats
+    newName: registry.internal.example/library/nats
+  - name: clickhouse/clickhouse-server
+    newName: registry.internal.example/clickhouse/clickhouse-server
+  - name: amazon/aws-cli
+    newName: registry.internal.example/amazon/aws-cli
+
+# To use a pull secret under another name, uncomment and edit (every
+# ServiceAccount in the render carries exactly one entry):
+#
+# patches:
+#   - target:
+#       kind: ServiceAccount
+#     patch: |-
+#       - op: replace
+#         path: /imagePullSecrets/0/name
+#         value: my-registry-credentials

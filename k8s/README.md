@@ -98,6 +98,8 @@ k8s/shapoclyack/
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +sensor pods) only
 ├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
+├── base/enrichment-bundle/ # air-gap component: offline-bundle loader CronJob + inbox PVC, online refresh off (docs/air-gap.md)
+├── overlays/airgap/      # internal-registry images + enrichment from an offline bundle
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres

@@ -753,3 +753,83 @@ def test_padding_past_the_archive_cannot_expand_without_bound(tmp_path: Path, si
             archive.addfile(info, io.BytesIO(payload))
     padded = raw.getvalue() + bytes(32 * 1024 * 1024)
     _assert_refused(_write(tmp_path, gzip.compress(padded, mtime=0)), site, "expands past")
+
+
+# --------------------------------------------------------------------------
+# The Kubernetes loader
+# --------------------------------------------------------------------------
+
+
+K8S = REPO_ROOT / "k8s" / "shapoclyack"
+
+
+def _docs(path: Path) -> list[dict]:
+    import yaml
+
+    return [doc for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")) if doc]
+
+
+def test_the_base_service_accounts_carry_the_registry_pull_secret() -> None:
+    """On the ServiceAccounts, so no workload manifest has to name it (#339)."""
+    accounts = {doc["metadata"]["name"]: doc for doc in _docs(K8S / "base" / "serviceaccount.yaml")}
+    assert set(accounts) == {"scanner", "api"}
+    for account in accounts.values():
+        assert account["imagePullSecrets"] == [{"name": "shapoclyack-registry"}]
+    loader = _docs(K8S / "base" / "enrichment-bundle" / "serviceaccount.yaml")[0]
+    assert loader["imagePullSecrets"] == [{"name": "shapoclyack-registry"}]
+    assert loader["automountServiceAccountToken"] is False
+
+
+def _loader_pod() -> dict:
+    cronjob = _docs(K8S / "base" / "enrichment-bundle" / "cronjob.yaml")[0]
+    return cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+
+
+@pytest.mark.parametrize(
+    "pod",
+    [_loader_pod(), _docs(K8S / "examples" / "enrichment-bundle-inbox.example.yaml")[0]["spec"]],
+    ids=["loader-cronjob", "inbox-helper-pod"],
+)
+def test_the_new_workloads_meet_the_hardened_baseline(pod: dict) -> None:
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["serviceAccountName"] == "enrichment-bundle"
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    for container in pod["containers"]:
+        context = container["securityContext"]
+        assert context["allowPrivilegeEscalation"] is False
+        assert context["readOnlyRootFilesystem"] is True
+        assert context["capabilities"] == {"drop": ["ALL"]}
+        assert "@sha256:" in container["image"]
+        mounts = {m["mountPath"]: m for m in container["volumeMounts"]}
+        assert "/tmp" in mounts  # the writable path a read-only root needs
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert "emptyDir" in volumes["tmp"]
+
+
+def test_the_loader_reads_the_inbox_read_only_and_idles_without_a_bundle() -> None:
+    pod = _loader_pod()
+    (container,) = pod["containers"]
+    mounts = {m["name"]: m for m in container["volumeMounts"]}
+    assert mounts["inbox"]["readOnly"] is True
+    assert mounts["enrichment-data"]["mountPath"] == "/app/scanner/data"
+    assert container["command"][:3] == ["python3", "scripts/enrichment_bundle.py", "install"]
+    assert "--missing-ok" in container["command"]
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["inbox"]["persistentVolumeClaim"] == {"claimName": "enrichment-bundle-inbox", "readOnly": True}
+
+
+def test_the_airgap_component_stops_every_online_refresh() -> None:
+    """Both online refresh paths would fail offline and then demote the
+    bundle's provenance to `stale`: the CronJob is suspended and the API's
+    initContainer runs offline."""
+    component = K8S / "base" / "enrichment-bundle"
+    suspend = _docs(component / "cronjob-refresh-suspend-patch.yaml")[0]
+    assert suspend["metadata"]["name"] == "enrichment-refresh"
+    assert suspend["spec"]["suspend"] is True
+    api = _docs(component / "api-offline-patch.yaml")[0]
+    (init,) = api["spec"]["template"]["spec"]["initContainers"]
+    assert init["name"] == "fetch-enrichment"
+    assert {"name": "OCTO_ENRICHMENT_OFFLINE", "value": "true"} in init["env"]
+    overlay = _docs(K8S / "overlays" / "airgap" / "kustomization.yaml")[0]
+    assert overlay["components"] == ["../../base/enrichment", "../../base/enrichment-bundle"]
