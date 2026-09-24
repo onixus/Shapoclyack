@@ -18,6 +18,34 @@
 // Так же было в docker-publish.yml до переезда.
 def PULSE_VERSION = 'v1.1.0'
 
+// Демон BuildKit собирает образ и пишет его provenance, генератор SBOM
+// читает образ целиком — оба закреплены по digest, как базовые образы
+// (#313). Раньше builder брал moby/buildkit:buildx-stable-1, то есть то, что
+// было свежим в день его создания.
+def BUILDKIT_IMAGE = 'moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8'
+def SBOM_GENERATOR = 'docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9'
+
+// Подпись образов (#313). Ключ релиза — пара cosign: приватная половина в
+// Jenkins (COSIGN_PRIVATE_KEY — файл, COSIGN_PASSWORD — его пароль), публичная
+// лежит в репозитории как cosign.pub, и ею клиенты проверяют образы
+// (docs/supply-chain.md). Keyless здесь не выйдет: Fulcio выдаёт сертификат
+// только на OIDC-токен известного ему провайдера, а у локального Jenkins
+// такого нет. Проверка ключа — до сборки: полтора часа сборки, чтобы
+// узнать, что в Jenkins не тот credential, никому не нужны.
+def checkSigningKey() {
+  withCredentials([
+    file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
+    string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
+  ]) {
+    sh '''
+      set -eu
+      scripts/install-cosign.sh "$WORKSPACE/.tools"
+      PATH="$WORKSPACE/.tools:$PATH" scripts/sign-release-image.sh \
+        --check-key --key "$COSIGN_KEY" --pubkey cosign.pub
+    '''
+  }
+}
+
 def MATRIX = [
   [name: 'scanner',      dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '0', suffix: ''],
   [name: 'scanner-nmap', dockerfile: 'Dockerfile',            image: 'ghcr.io/onixus/shapoclyack-scanner', nmap: '1', suffix: '-nmap'],
@@ -130,6 +158,24 @@ pipeline {
       }
     }
 
+    stage('Signing key') {
+      steps {
+        script {
+          // В DRY_RUN публикации нет, поэтому ненастроенная подпись его не
+          // роняет, а делает жёлтым: видно, что настоящий прогон упал бы
+          // здесь. Настоящий прогон без подписи не начинается вовсе.
+          if (params.DRY_RUN) {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE', catchInterruptions: false,
+                       message: 'DRY_RUN: подпись не настроена, настоящий прогон упал бы здесь (docs/supply-chain.md)') {
+              checkSigningKey()
+            }
+          } else {
+            checkSigningKey()
+          }
+        }
+      }
+    }
+
     stage('Build & push') {
       steps {
         script {
@@ -140,47 +186,76 @@ pipeline {
             error("ONLY='${params.ONLY}' не совпал ни с одним образом матрицы")
           }
           def platforms = params.MULTIARCH ? 'linux/amd64,linux/arm64' : 'linux/arm64'
-          def output = params.DRY_RUN ? '' : '--push'
 
           // Мультиарх требует драйвера docker-container: штатный docker
-          // собирать под несколько платформ не умеет.
-          sh '''
-            docker buildx inspect shapo-publisher >/dev/null 2>&1 \
-              || docker buildx create --name shapo-publisher --driver docker-container --bootstrap
-          '''
+          // собирать под несколько платформ не умеет. Builder переживает
+          // билды, поэтому в его имени — digest образа BuildKit: новый пин
+          // даёт новый builder, а не тихую сборку прежним демоном.
+          def builder = "shapo-publisher-${BUILDKIT_IMAGE.tokenize('@')[1].substring(7, 19)}"
+          sh """
+            docker buildx inspect ${builder} >/dev/null 2>&1 \
+              || docker buildx create --name ${builder} --driver docker-container \
+                   --driver-opt image=${BUILDKIT_IMAGE} --bootstrap
+          """
 
-          // GENDEC_READ_TOKEN нужен стадии Pulse: релизы GenDec приватные.
-          // Тот же credential, что использует основной пайплайн.
-          withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
-            for (m in selected) {
-              def tagArgs = "-t ${m.image}:${version}${m.suffix}"
-              if (env.IS_PRERELEASE != 'true') {
-                tagArgs += " -t ${m.image}:latest${m.suffix}"
-              }
-              echo "=== ${m.name}: ${tagArgs}"
+          for (m in selected) {
+            def tags = ["${m.image}:${version}${m.suffix}"]
+            if (env.IS_PRERELEASE != 'true') {
+              tags << "${m.image}:latest${m.suffix}"
+            }
+            echo "=== ${m.name}: ${tags.join(', ')}"
+            // Пушится только digest, без тегов (#313). Теги появятся, когда
+            // sign-release-image.sh подпишет этот digest и проверит подпись
+            // ключом из cosign.pub; упади что-то раньше — в реестре останется
+            // безымянный неподписанный digest, а не тег на неподписанном образе.
+            def output = params.DRY_RUN ? '' :
+              "--output type=image,name=${m.image},push-by-digest=true,name-canonical=true,push=true --metadata-file .publish/${m.name}.json"
+
+            // GENDEC_READ_TOKEN нужен стадии Pulse: релизы GenDec приватные.
+            // Тот же credential, что использует основной пайплайн.
+            withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
               sh """
                 set -eu
-                docker buildx build --builder shapo-publisher \
+                mkdir -p .publish
+                rm -f .publish/${m.name}.json
+                docker buildx build --builder ${builder} \
                   --platform ${platforms} \
                   -f ${m.dockerfile} \
                   --build-arg INSTALL_NMAP=${m.nmap} \
                   --build-arg PULSE_VERSION=${PULSE_VERSION} \
                   --build-arg ENRICHMENT_STRICT=1 \
                   --secret id=github_token,env=GH_TOKEN \
-                  --provenance mode=max --sbom true \
-                  ${tagArgs} \
+                  --provenance mode=max,version=v1 \
+                  --attest type=sbom,generator=${SBOM_GENERATOR} \
                   ${output} .
               """
+            }
+
+            if (!params.DRY_RUN) {
+              def tagArgs = tags.collect { "--tag ${it}" }.join(' ')
+              withCredentials([
+                file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
+                string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
+              ]) {
+                sh """
+                  set -eu
+                  digest="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' .publish/${m.name}.json)"
+                  PATH="\$WORKSPACE/.tools:\$PATH" scripts/sign-release-image.sh \
+                    --key "\$COSIGN_KEY" --pubkey cosign.pub --release '${params.TAG}' \
+                    ${tagArgs} \
+                    "${m.image}@\$digest"
+                """
+              }
             }
           }
 
           if (params.DRY_RUN) {
-            echo "DRY_RUN: собрано ${selected.size()} образ(ов), публикации не было."
+            echo "DRY_RUN: собрано ${selected.size()} образ(ов), публикации и подписи не было."
           } else {
             if (env.IS_PRERELEASE == 'true') {
-              echo "Опубликовано ${selected.size()} образ(ов) с тегом ${version}. :latest не тронут — это пререлиз."
+              echo "Опубликовано и подписано ${selected.size()} образ(ов) с тегом ${version}. :latest не тронут — это пререлиз."
             } else {
-              echo "Опубликовано ${selected.size()} образ(ов) с тегами ${version} и latest."
+              echo "Опубликовано и подписано ${selected.size()} образ(ов) с тегами ${version} и latest."
             }
           }
         }
