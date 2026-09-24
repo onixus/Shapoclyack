@@ -13,22 +13,30 @@ All notable changes to Shapoclyack are documented in this file.
   ships and the Pulse support and update policy: one pinned Pulse per release,
   new pins only from signed GenDec releases, a bump announced as a
   scan-semantics change, Pulse vulnerabilities reported through SECURITY.md on
-  its timelines, and no silent fallback when Pulse is absent.
-  [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (new `docs/adr/`)
-  compares public signed releases, a source build path and a default without
-  Pulse, and recommends the first; its status is *Proposed* until the owner
-  decides. Images now carry an install record,
+  its timelines, how a backport keeps `latest` on the current line, and no
+  silent fallback when Pulse is absent. It also says what `Jenkinsfile.publish`
+  does not enforce yet: signatures (#313), immutable tags, and `latest` on a
+  backport. [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (new
+  `docs/adr/`) compares public signed releases, a source build path and a
+  default without Pulse, and recommends the first; its status is *Proposed*
+  until the owner decides. Images now carry an install record,
   `/usr/local/share/shapoclyack/pulse-install.txt` (written by
   `scripts/install-pulse.sh` when `PULSE_RECORD` is set, which the Dockerfiles
   do), naming the tarball, the check it passed and the binary's SHA-256; the
-  Dockerfiles' `pulse-bin` stage now copies `/out/` to `/usr/local/`. New
-  `scripts/verify-pulse-image.py` checks an image — `docker create` + `cp`,
-  never started — or an unpacked filesystem against the pins of a checkout of
-  its release tag, and with `--tarball` independently against the pinned
-  tarball, hashing its `pulse` member in memory; it refuses symlinks and
-  ambiguous archives. The Jenkins smoke stage runs it inside the built image.
-  Images of `shapoclyack-0.46-0922` and earlier have no record and can be
-  checked only with `--tarball`, which today needs GenDec access.
+  record is unsigned, so against deliberate tampering it is only as good as the
+  image digest that was checked. The Dockerfiles' `pulse-bin` stage now fills
+  `/out/bin` and `/out/share`, copied by one `COPY` each. New
+  `scripts/verify-pulse-image.py` (Python 3.9+) checks an image — `docker
+  create` + `cp`, never started, removed with its anonymous volumes, and named
+  by the image ID and repository digest the engine resolved — or an unpacked
+  filesystem against the pin file of its release tag. With `--tarball` it
+  checks independently: the tarball is read once, must be pinned before it is
+  parsed, and its `pulse` member is hashed in memory. It refuses symlinks and
+  ambiguous archives, and an unreadable input is exit 2, not a verdict. The
+  Jenkins smoke stage runs it inside the built image, and the Pulse version
+  drift test now also covers `.github/workflows/docker-publish.yml`. Images of
+  `shapoclyack-0.46-0922` and earlier have no record and can be checked only
+  with `--tarball`, which today needs GenDec access.
 
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,

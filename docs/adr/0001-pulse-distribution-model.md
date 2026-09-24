@@ -45,7 +45,8 @@
 - New with this record: the image build writes an **install record**
   (`/usr/local/share/shapoclyack/pulse-install.txt`) and
   [`scripts/verify-pulse-image.py`](../../scripts/verify-pulse-image.py) lets a
-  customer tie the binary in an image back to the pin — see the
+  customer tie the binary in an image back to the pin — as far as the image
+  digest they checked can be trusted, since the record is unsigned — see the
   [release contract](../release-contract.md#what-a-customer-can-verify-and-how).
 
 ### What the published images contain

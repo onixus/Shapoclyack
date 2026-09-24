@@ -134,9 +134,10 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 ```dockerfile
 # stage pulse-bin downloads:
 #   pulse-v1.1.0-linux-amd64.tar.gz from onixus/GenDec releases
-# /out mirrors /usr/local (bin/pulse + share/shapoclyack/pulse-install.txt);
-# copied as a directory, so INSTALL_PULSE=0 (empty /out) copies nothing:
-COPY --from=pulse-bin /out/ /usr/local/
+# /out/bin/pulse + /out/share/shapoclyack/pulse-install.txt, one COPY per
+# directory; with INSTALL_PULSE=0 both are empty and nothing is copied:
+COPY --from=pulse-bin /out/bin/ /usr/local/bin/
+COPY --from=pulse-bin /out/share/ /usr/local/share/
 # + setcap cap_net_raw,cap_net_admin+eip when the binary is there
 ```
 
@@ -214,9 +215,11 @@ public or its sources get built here is the proposed
 the tarball the pin is for, so the build also writes an install record —
 tarball, the check it passed, and the binary's digest — to
 `/usr/local/share/shapoclyack/pulse-install.txt`, and
-`scripts/verify-pulse-image.py` checks an image against the pins of a checkout
-of its release tag, or independently against the pinned tarball. What each
-check proves, the commands, and the Pulse support and update policy are in the
+`scripts/verify-pulse-image.py` checks an image against the pin file of its
+release tag, or independently against the pinned tarball. The record is
+unsigned and lives in the image it describes, so against deliberate tampering
+it is only as good as the image digest that was checked. What each check
+proves, the commands, and the Pulse support and update policy are in the
 [release contract](release-contract.md).
 
 Neither the script nor the image stage uses `set -x`: the token would land in
