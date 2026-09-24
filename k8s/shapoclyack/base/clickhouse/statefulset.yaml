@@ -18,13 +18,17 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: clickhouse
     spec:
+      automountServiceAccountToken: false
       # Official image runs as uid 101 (clickhouse). Setting runAsUser here
       # (not just fsGroup) skips the image's root-bootstrap chown step, which
       # would otherwise fail under capabilities.drop: ALL below (no CAP_CHOWN).
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
+        runAsGroup: 101
         fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: clickhouse
           image: clickhouse/clickhouse-server:24.8-alpine
@@ -77,15 +81,28 @@ spec:
             limits:
               cpu: "4"
               memory: 8Gi
+          # No SYS_NICE any more (#338): it is outside Pod Security `baseline`,
+          # which this namespace enforces, and all it bought was
+          # `os_thread_priority`, a per-query setting nothing here sets. The
+          # server logs that the capability is missing and carries on.
+          #
+          # Read-only image: the data, tmp and preprocessed-config paths are all
+          # under /var/lib/clickhouse (the PVC; configmap.yaml). The image's
+          # entrypoint writes two more places, both emptyDirs below — /tmp (it
+          # copies users.xml there to diff it) and users.d (it generates
+          # default-user.xml from CLICKHOUSE_PASSWORD). File logging is off in
+          # configmap.yaml, so /var/log/clickhouse-server is not one of them.
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
-              add:
-                # clickhouse-server may need SYS_NICE for scheduling hints
-                - SYS_NICE
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: users-d
+              mountPath: /etc/clickhouse-server/users.d
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
             - name: config
@@ -104,6 +121,15 @@ spec:
         - name: config
           configMap:
             name: shapoclyack-clickhouse-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Empty in the image (Dockerfile.alpine creates the directory and
+        # nothing in it), so this hides nothing; shapoclyack-users.xml is
+        # mounted into it above.
+        - name: users-d
+          emptyDir:
+            sizeLimit: 1Mi
   volumeClaimTemplates:
     - metadata:
         name: clickhouse-data
