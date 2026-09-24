@@ -99,7 +99,7 @@ k8s/shapoclyack/
 ├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
 ├── base/monitoring/      # optional component: ServiceMonitor + PrometheusRule (needs Prometheus Operator CRDs)
-├── base/grafana-dashboards/ # optional component: Platform + Product dashboards as Grafana sidecar ConfigMaps
+├── base/grafana-dashboards/ # optional component: Platform, Product and Tenants dashboards as Grafana sidecar ConfigMaps
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
@@ -272,7 +272,7 @@ cluster without the operator must not fail. The pod annotations are inert when
 nothing scrapes them.
 
 For kustomize-managed installs the same ServiceMonitor, the alert rules as a
-PrometheusRule, and two Grafana dashboards (as sidecar ConfigMaps) ship as the
+PrometheusRule, and three Grafana dashboards (as sidecar ConfigMaps) ship as the
 opt-in components `base/monitoring` and `base/grafana-dashboards`;
 `overlays/prod-ha-monitoring` is `prod-ha` with both. Why they are not in
 `prod-ha` itself, and how to label them for your Prometheus and Grafana:

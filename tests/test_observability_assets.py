@@ -42,6 +42,9 @@ CLUSTER_WIDE = frozenset({"octo_nats_consumer_pending"}) | {
 FORBIDDEN_LABELS = frozenset(
     {"tenant", "tenant_id", "agent_id", "hostname", "host", "user", "username", "asset_id", "ip", "url"}
 )
+#: The one exception: the opt-in tenant series, whose ``tenant`` label is
+#: capped at OCTO_METRICS_TENANT_TOP_N ids plus ``_other``.
+TENANT_FAMILIES = frozenset(metric_catalogue.tenant_family_names())
 
 _MATCHER = re.compile(r"(\w+)\s*(?:=~|!~|!=|=)\s*\"")
 _SELECTOR = re.compile(r"\b((?:octo|process|python)_[a-z0-9_]*[a-z0-9])\s*\{([^}]*)\}")
@@ -126,10 +129,11 @@ def _label_problems(expr: str, legend: str = "") -> list[str]:
 # --- dashboards --------------------------------------------------------------
 
 
-def test_both_dashboards_exist():
+def test_the_three_dashboards_exist():
     assert {path.name for path in DASHBOARDS} == {
         "shapoclyack-platform.json",
         "shapoclyack-product.json",
+        "shapoclyack-tenants.json",
     }
 
 
@@ -179,6 +183,9 @@ def test_the_sum_check_sees_the_samples_of_a_cluster_wide_family():
         'histogram_quantile(0.95, sum by (le) (octo_agent_heartbeat_age_seconds_bucket{job="a"}))'
     ) == {"octo_agent_heartbeat_age_seconds"}
     assert _summed_cluster_wide("sum(octo_jobs_queued)") == {"octo_jobs_queued"}
+    assert _summed_cluster_wide("sum by (tenant) (octo_tenant_open_findings)") == {
+        "octo_tenant_open_findings"
+    }
     assert not _summed_cluster_wide('sum(max by (state) (octo_agents{agent_kind="scanner"}))')
     assert not _summed_cluster_wide("sum(rate(octo_http_requests_total[5m]))")
     assert not _summed_cluster_wide("sum(octo_db_pool_checked_out)"), "per replica: sum is right"
@@ -321,6 +328,22 @@ def test_product_dashboard_is_installation_wide():
     assert "tenant" not in json.dumps([target for panel in board["panels"] for target in panel.get("targets", [])])
 
 
+def test_the_tenants_dashboard_reads_only_the_capped_series():
+    """Per-tenant panels exist only where a tenant label does: the opt-in
+    series. Anything else on this board would be an installation-wide number
+    under a tenant's name."""
+    board = _load(DASHBOARD_DIR / "shapoclyack-tenants.json")
+    variables = {variable["name"]: variable for variable in board["templating"]["list"]}
+    assert "octo_tenant_open_findings" in variables["tenant"]["query"]
+    index = metric_catalogue.sample_index()
+    named = {
+        index[name].name
+        for _, expr, _ in _queries(board)
+        for name in metric_catalogue.SERIES_NAME.findall(expr)
+    }
+    assert named and named <= TENANT_FAMILIES
+
+
 # --- rules -------------------------------------------------------------------
 
 
@@ -424,16 +447,36 @@ def test_an_explicit_promtool_at_another_version_is_refused(tmp_path):
 # --- the registry itself -------------------------------------------------------
 
 
+def _unbounded_labels(families) -> dict[str, list[str]]:
+    """``{family: forbidden labels it carries}``; ``tenant`` only on the capped series."""
+    offending = {}
+    for family in families:
+        forbidden = FORBIDDEN_LABELS - ({"tenant"} if family.name in TENANT_FAMILIES else set())
+        if family.labels & forbidden:
+            offending[family.name] = sorted(family.labels & forbidden)
+    return offending
+
+
 def test_no_series_carries_an_unbounded_label():
     """The rule the fleet series were designed around, applied to all of them:
     a label per tenant, agent, host or user is a series per tenant, agent, host
     or user — and for several of those, whoever sends the request picks it."""
-    offending = {
-        family.name: sorted(family.labels & FORBIDDEN_LABELS)
-        for family in metric_catalogue.families().values()
-        if family.labels & FORBIDDEN_LABELS
-    }
+    offending = _unbounded_labels(metric_catalogue.families().values())
     assert not offending, offending
+    assert TENANT_FAMILIES, "the tenant collector describes no families"
+
+
+def test_the_label_check_allows_a_tenant_only_on_the_capped_series():
+    family = metric_catalogue.Family
+    assert _unbounded_labels([family("octo_jobs_queued", "gauge", frozenset({"tenant"}), "")]) == {
+        "octo_jobs_queued": ["tenant"]
+    }
+    assert _unbounded_labels([family("octo_agents", "gauge", frozenset({"hostname", "state"}), "")]) == {
+        "octo_agents": ["hostname"]
+    }
+    assert not _unbounded_labels(
+        [family("octo_tenant_open_findings", "gauge", frozenset({"tenant", "severity"}), "")]
+    )
 
 
 # --- docs/observability.md ---------------------------------------------------------

@@ -210,6 +210,13 @@ class Settings:
     # warns rather than refuses, since a ServiceMonitor usually does scrape from
     # inside and breaking that on upgrade would be the worse outcome (#319).
     metrics_token: str = ""
+    # Per-tenant product series on /metrics (OCTO_METRICS_TENANT_TOP_N, #334):
+    # the N tenants with the most open findings and recent scans keep their id
+    # as a label, every other tenant is summed into ``_other``. 0 — the
+    # default — publishes no tenant label at all; the value is capped at
+    # MAX_METRICS_TENANT_TOP_N so the series count stays bounded whatever is
+    # asked for. Needs OCTO_METRICS_TOKEN under prod: the series name tenants.
+    metrics_tenant_top_n: int = 0
     users: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_USERS))
     allow_scan_start: bool = True
     # Resolve requested scan domains at admission and refuse the ones whose
@@ -1142,6 +1149,32 @@ def _db_pool_bounds() -> tuple[int, int]:
     return pool_size, max_overflow
 
 
+# The most tenants that may keep their own id on the per-tenant series (#334).
+# Each one is nine series per replica (five severities, one breach count, three
+# scan outcomes), so the ceiling is what bounds the label however the variable
+# is set: (50 + 1 for ``_other``) × 9 = 459 series.
+MAX_METRICS_TENANT_TOP_N = 50
+
+
+def _metrics_tenant_top_n() -> int:
+    """OCTO_METRICS_TENANT_TOP_N, clamped to ``[0, MAX_METRICS_TENANT_TOP_N]``.
+
+    Clamped rather than refused above the ceiling: the operator asked for more
+    tenants on a dashboard, not for a broken start, and the log says what they
+    got instead.
+    """
+    requested = int(os.environ.get("OCTO_METRICS_TENANT_TOP_N", "0"))
+    if requested > MAX_METRICS_TENANT_TOP_N:
+        logger.warning(
+            "OCTO_METRICS_TENANT_TOP_N=%d is above the ceiling of %d; using %d. Every "
+            "tenant beyond it is summed into tenant=\"_other\".",
+            requested,
+            MAX_METRICS_TENANT_TOP_N,
+            MAX_METRICS_TENANT_TOP_N,
+        )
+    return max(0, min(requested, MAX_METRICS_TENANT_TOP_N))
+
+
 def _cancel_grace_seconds(*, agent_stale_seconds: int, reaper_interval_seconds: int) -> int:
     """``OCTO_JOB_CANCEL_GRACE_SECONDS``, floored by the channel it waits on (#360).
 
@@ -1415,6 +1448,19 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
             "    agents with it, then unset this variable."
         )
 
+    # An open /metrics is the documented Prometheus shape and only warned
+    # about above; per-tenant series on it are a different thing: the customer
+    # list and each customer's open criticals, for anyone who can reach the
+    # port (#334).
+    if settings.metrics_tenant_top_n and not settings.metrics_token:
+        problems.append(
+            "OCTO_METRICS_TENANT_TOP_N is set but OCTO_METRICS_TOKEN is not.\n"
+            "    The per-tenant series name tenants and count their open and\n"
+            "    breached findings, and /metrics without a token answers anyone\n"
+            "    who can reach the API. Set OCTO_METRICS_TOKEN (and the scraper's\n"
+            "    bearerTokenSecret), or unset OCTO_METRICS_TENANT_TOP_N."
+        )
+
     if not problems:
         return
 
@@ -1516,6 +1562,7 @@ def load_settings() -> Settings:
         in {"1", "true", "yes"},
         api_docs_enabled=_api_docs_enabled(env),
         metrics_token=os.environ.get("OCTO_METRICS_TOKEN", "").strip(),
+        metrics_tenant_top_n=_metrics_tenant_top_n(),
         users=users,
         allow_scan_start=os.environ.get("OCTO_ALLOW_SCAN_START", "true").lower()
         in {"1", "true", "yes"},

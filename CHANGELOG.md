@@ -6,30 +6,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
-- **Sensor fleet, connection pool and process series on `/metrics`, with
-  Grafana dashboards and opt-in monitoring components**
+- **Sensor fleet, connection pool, process and opt-in per-tenant series on
+  `/metrics`, with Grafana dashboards and opt-in monitoring components**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). Sensor and
   endpoint-agent heartbeats come from one grouped query over the `agents` table
   — `octo_agents{agent_kind,state}`, the gauge histogram
   `octo_agent_heartbeat_age_seconds{agent_kind}`, the longest silence per kind
   and the stale threshold — labelled from a fixed vocabulary only (no tenant,
-  id or hostname), cached for 15 s per replica because `/metrics` is
-  unauthenticated by default, skipped while the pool has nothing free, and
-  withdrawn rather than frozen when the query fails. Every Postgres engine gets
-  an instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout
-  wait as a histogram and checkout timeouts as a counter. The private registry
-  now carries the `process_*` / `python_gc_*` / `python_info` collectors it
-  never had. New alerts `ShapoclyackDbPoolSaturated`,
-  `ShapoclyackDbPoolCheckoutTimeouts`, `ShapoclyackSensorsStale` and
-  `ShapoclyackNoSensorOnline`, with `promtool test rules` unit tests. Two
-  dashboards (Platform, Product) as JSON, shipped for the Grafana sidecar by the
-  component `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule
-  ship as `base/monitoring`, and `overlays/prod-ha-monitoring` is `prod-ha` with
-  both — not `prod-ha` itself, which would then fail to apply wherever the
-  Prometheus Operator's CRDs are missing. Every series and label the dashboards
-  and rules name is checked against the registry, and every dashboard query is
-  parsed by promtool in `validate-prometheus-rules.sh`, which now uses a local
-  `promtool` when there is one. Catalogue with label bounds:
+  id or hostname). They are read at scrape time together with the job queue
+  and the endpoint devices, through one function
+  (`metrics_sources.scrape_session`): one short transaction per replica every
+  15 s however often `/metrics` is asked — it is unauthenticated by default —
+  tried once per TTL when it fails, under a transaction-scoped 2 s statement
+  timeout, skipped while fewer than two pooled connections are free, and
+  withdrawn rather than frozen on failure. Every Postgres engine gets an
+  instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout wait
+  as a histogram and checkout timeouts as a counter. The private registry now
+  carries the `process_*` / `python_gc_*` / `python_info` collectors it never
+  had, and `python -m api` pins uvicorn to one worker so `instance` is one
+  process. `OCTO_METRICS_TENANT_TOP_N` (off by default, capped at 50) adds
+  `octo_tenant_open_findings`, `octo_tenant_sla_breached_findings` and
+  `octo_tenant_scans_finished_24h` for the top N tenants by volume, every
+  other tenant summed into `_other`, ids only from the tenants table; under
+  `prod` it refuses to start without `OCTO_METRICS_TOKEN`. New alerts
+  `ShapoclyackDbPoolSaturated`, `ShapoclyackDbPoolCheckoutTimeouts`,
+  `ShapoclyackSensorsStale` and `ShapoclyackNoSensorOnline`, with `promtool
+  test rules` unit tests. Three dashboards (Platform, Product, Tenants) as
+  JSON, shipped for the Grafana sidecar by the component
+  `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule ship as
+  `base/monitoring`. Neither component sets a namespace — the including overlay
+  does — and `overlays/prod-ha-monitoring` is `prod-ha` with both, not
+  `prod-ha` itself, which would then fail to apply wherever the Prometheus
+  Operator's CRDs are missing. Every series and label the dashboards and rules
+  name is checked against the registry, and every dashboard query is parsed by
+  promtool in `validate-prometheus-rules.sh`, which now uses a local
+  `promtool` only at the pinned version. Catalogue with label bounds:
   `docs/observability.md`.
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
@@ -230,7 +241,19 @@ All notable changes to Shapoclyack are documented in this file.
   `ShapoclyackClickHouseIngestStale` matched the consumer's retired name
   `octo-ch-ingest`, so neither could fire, and the second compared the scrape
   time with itself; both now select `octo-ch-ingest-results`, and staleness
-  reads the new `octo_nats_consumer_pending_timestamp_seconds`.
+  reads the new `octo_nats_consumer_pending_timestamp_seconds`; the lag alert
+  now fires once per consumer and counts only replicas whose reading is fresh,
+  instead of once per replica and on after the queue drained. Console assets
+  served by a mount are `path="/_next/*"` (or `/assets/*`) rather than
+  `<unmatched>`.
+- **`octo_jobs_queued`, `octo_jobs_running` and `octo_endpoint_devices` agree
+  across replicas** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  They were set by whichever replica handled the last job event, retention
+  sweep or System page view, so a scan submitted through one replica and
+  claimed through another stayed queued on the first for good — and
+  `ShapoclyackNoSensorOnline` paged over an empty queue when a sensor
+  rebooted. They are read from the database at scrape time now, and the alert
+  takes `min()` of the queue.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

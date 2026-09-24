@@ -1,9 +1,9 @@
-"""Scrape-time collectors on ``/metrics`` (#334): process, DB pool, cluster.
+"""Scrape-time collectors on ``/metrics`` (#334): process, DB pool, cluster, tenants.
 
 The HTTP and ingest series are pushed by the code paths they describe. These
 are not: the process view comes from ``/proc``, the pool gauges from the live
-SQLAlchemy pool, and the fleet, the job queue and the endpoint devices from
-shared tables, all read when Prometheus asks.
+SQLAlchemy pool, and the fleet, the job queue, the endpoint devices and the
+opt-in per-tenant series from shared tables, all read when Prometheus asks.
 What is pinned here is what an operator's dashboard depends on — that the
 series exist, carry only bounded labels, say what the database and the pool
 say, and that reading them cannot hurt the replica being scraped.
@@ -611,6 +611,7 @@ def test_the_snapshots_are_quiet_where_nothing_is_configured(monkeypatch):
     that is nothing to report, not an error to log on every scrape."""
     monkeypatch.setattr(metrics_sources, "_settings", None)
     assert metrics_sources.cluster_snapshot() is None
+    assert metrics_sources.tenant_snapshot() is None
 
 
 @requires_postgres
@@ -742,3 +743,141 @@ def test_the_scrape_gives_up_behind_a_table_lock(tmp_path):
         assert 1.5 < elapsed < 5, elapsed
     finally:
         db_engine.reset_for_tests()
+
+
+# --- opt-in per-tenant series -----------------------------------------------------------
+
+
+def _seed_finding(session, tenant_id: str, *, severity: str, state: str = "OPEN", due_at=None, exception_until=None):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    asset_id = f"asset-{tenant_id}"
+    if session.get(models.Asset, asset_id) is None:
+        session.add(
+            models.Asset(asset_id=asset_id, tenant_id=tenant_id, status="active", first_seen=now, last_seen=now)
+        )
+        session.flush()
+    vuln_id = f"vln-{uuid4().hex[:12]}"
+    session.add(
+        models.Vulnerability(
+            vuln_id=vuln_id,
+            tenant_id=tenant_id,
+            asset_id=asset_id,
+            finding_key=f"key-{vuln_id}",
+            title="seeded",
+            severity=severity,
+            state=state,
+            state_changed_at=now,
+            first_seen_at=now,
+            last_seen_at=now,
+            sla_started_at=now,
+            due_at=due_at,
+            exception_until=exception_until,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+def _seed_scan(session, tenant_id: str, *, status: str, finished_ago: timedelta):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    session.add(
+        models.Job(
+            job_id=f"job-{uuid4().hex[:12]}",
+            tenant_id=tenant_id,
+            status=status,
+            queued_at=now - finished_ago - timedelta(minutes=5),
+            finished_at=now - finished_ago,
+        )
+    )
+
+
+def _tenant(session, tenant_id: str) -> None:
+    session.add(
+        models.Tenant(
+            tenant_id=tenant_id,
+            name=tenant_id,
+            status="active",
+            created_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+    )
+    session.flush()
+
+
+def test_tenant_series_are_off_by_default():
+    """Off unless OCTO_METRICS_TENANT_TOP_N is set: the families are described,
+    so the names are reserved, and nothing carries a tenant."""
+    assert make_settings(Path("/nonexistent")).metrics_tenant_top_n == 0
+    collector = metrics.tenant_collector(snapshot=lambda: None, clock=_Clock(), pool_too_busy=lambda: False)
+    assert _samples(collector) == {}
+    assert {family.name for family in collector.describe()} == {
+        "octo_tenant_open_findings",
+        "octo_tenant_sla_breached_findings",
+        "octo_tenant_scans_finished_24h",
+    }
+
+
+@requires_postgres
+def test_tenant_series_name_only_the_top_tenants_and_fold_the_rest(tmp_path):
+    """The tenant label is bounded twice over: at most OCTO_METRICS_TENANT_TOP_N
+    tenants by volume keep their own id, everyone else is summed into
+    ``_other``, and an id only ever comes from the tenants table and only if it
+    passes the rule tenant creation enforces — a legacy row that predates that
+    rule is folded, however busy it is."""
+    settings = make_settings(tmp_path, metrics_tenant_top_n=2)
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    metrics_sources.configure(settings)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    past, future = now - timedelta(days=1), now + timedelta(days=10)
+    with get_session(settings.postgres_url) as session:
+        for tenant_id in ("acme", "globex", "initech", "legacy.id"):
+            _tenant(session, tenant_id)
+        for _ in range(3):
+            _seed_finding(session, "acme", severity="critical", due_at=past)
+        _seed_finding(session, "acme", severity="high", due_at=past, exception_until=future)
+        _seed_finding(session, "acme", severity="low", state="CLOSED", due_at=past)
+        for _ in range(2):
+            _seed_finding(session, "globex", severity="medium", due_at=future)
+        _seed_finding(session, "initech", severity="high", due_at=past)
+        for _ in range(9):
+            _seed_finding(session, "legacy.id", severity="critical", due_at=past)
+        _seed_scan(session, "acme", status="succeeded", finished_ago=timedelta(hours=2))
+        _seed_scan(session, "acme", status="failed", finished_ago=timedelta(hours=3))
+        _seed_scan(session, "globex", status="succeeded", finished_ago=timedelta(hours=30))
+        _seed_scan(session, "initech", status="succeeded", finished_ago=timedelta(hours=1))
+
+    snapshot = metrics_sources.tenant_snapshot(now=now)
+    assert snapshot is not None
+    labels = {tenant for tenant, _ in snapshot.open_findings}
+    assert labels == {"acme", "globex", metrics_sources.TENANT_OTHER}
+
+    assert snapshot.open_findings[("acme", "critical")] == 3
+    assert snapshot.open_findings[("acme", "high")] == 1
+    assert snapshot.open_findings[("acme", "low")] == 0, "a closed finding is not open"
+    assert snapshot.open_findings[("globex", "medium")] == 2
+    # initech (1 high) and the legacy id (9 critical) are both _other.
+    assert snapshot.open_findings[("_other", "critical")] == 9
+    assert snapshot.open_findings[("_other", "high")] == 1
+
+    # Breached: past due and not under an accepted exception.
+    assert snapshot.sla_breached == {"acme": 3, "globex": 0, "_other": 10}
+    # The last 24 hours only.
+    assert snapshot.scans_finished[("acme", "succeeded")] == 1
+    assert snapshot.scans_finished[("acme", "failed")] == 1
+    assert snapshot.scans_finished[("globex", "succeeded")] == 0
+    assert snapshot.scans_finished[("_other", "succeeded")] == 1
+
+
+def test_tenant_series_carry_a_bounded_vocabulary():
+    snapshot = metrics_sources.TenantSnapshot(
+        open_findings={("acme", "critical"): 1, ("_other", "critical"): 0},
+        sla_breached={"acme": 1, "_other": 0},
+        scans_finished={("acme", "succeeded"): 1, ("_other", "succeeded"): 0},
+    )
+    collector = metrics.tenant_collector(snapshot=lambda: snapshot, clock=_Clock(), pool_too_busy=lambda: False)
+    samples = _samples(collector)
+    assert _value(samples, "octo_tenant_open_findings", tenant="acme", severity="critical") == 1
+    assert _value(samples, "octo_tenant_sla_breached_findings", tenant="_other") == 0
+    assert _value(samples, "octo_tenant_scans_finished_24h", tenant="acme", status="succeeded") == 1
+    assert {name for _, labels in samples for name, _ in labels} == {"tenant", "severity", "status"}

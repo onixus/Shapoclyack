@@ -17,11 +17,11 @@
 # the sidecar's default folder.
 #
 # Needs no CRD, so unlike base/monitoring it cannot make an apply fail. It is
-# opt-in all the same: an installation without Grafana has no use for ~120 kB
+# opt-in all the same: an installation without Grafana has no use for ~130 kB
 # of ConfigMaps.
 #
 # The JSON files are the source of truth, and are importable as they are
-# (Dashboards → New → Import) on a Grafana outside the cluster: both choose
+# (Dashboards → New → Import) on a Grafana outside the cluster: all three choose
 # their Prometheus data source through a variable. docs/observability.md
 # describes the panels; tests/test_observability_assets.py fails when a query
 # names a series the API does not export.
@@ -50,6 +50,18 @@ configMapGenerator:
   - name: shapoclyack-dashboard-product
     files:
       - shapoclyack-product.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: dashboards
+      annotations:
+        grafana_folder: Shapoclyack
+  # Empty until the API runs with OCTO_METRICS_TENANT_TOP_N > 0 (#334).
+  - name: shapoclyack-dashboard-tenants
+    files:
+      - shapoclyack-tenants.json
     options:
       disableNameSuffixHash: true
       labels:

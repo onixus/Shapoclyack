@@ -70,11 +70,26 @@ def _populated_cluster() -> metrics_sources.ClusterSnapshot:
     )
 
 
+def _populated_tenants() -> metrics_sources.TenantSnapshot:
+    labels = ("acme", metrics_sources.TENANT_OTHER)
+    return metrics_sources.TenantSnapshot(
+        open_findings={(t, s): 1 for t in labels for s in metrics_sources.TENANT_SEVERITIES},
+        sla_breached=dict.fromkeys(labels, 1),
+        scans_finished={(t, s): 1 for t in labels for s in metrics_sources.TENANT_SCAN_STATUSES},
+    )
+
+
 #: What each scrape-snapshot collector is rendered from here, so its families
 #: carry the labels they would carry on a live /metrics.
 _EXAMPLE_SNAPSHOTS = {
     id(metrics.CLUSTER_COLLECTOR): _populated_cluster,
+    id(metrics.TENANT_COLLECTOR): _populated_tenants,
 }
+
+
+def tenant_family_names() -> set[str]:
+    """The families of the opt-in per-tenant collector — the only ones with ``tenant``."""
+    return {family.name for family in metrics.TENANT_COLLECTOR.describe()}
 
 
 def families() -> dict[str, Family]:

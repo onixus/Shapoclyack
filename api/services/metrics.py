@@ -9,7 +9,7 @@ restrict at the network/gateway layer, not app auth).
 Most series here are pushed by the code path they describe. The ones at the
 bottom are read when Prometheus asks (#334): the process view, the SQLAlchemy
 pool, and — through ``api.services.metrics_sources`` — the sensor/agent fleet,
-the job queue and the endpoint devices. The catalogue,
+the job queue, the endpoint devices and the opt-in per-tenant series. The catalogue,
 with the bound on every label, is docs/observability.md;
 tests/test_observability_assets.py fails when a series here has no entry there,
 or when a dashboard or alert names one that is not here.
@@ -39,6 +39,7 @@ from prometheus_client.utils import floatToGoString
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from api.services.metrics_sources import ClusterSnapshot as MetricsClusterSnapshot
+    from api.services.metrics_sources import TenantSnapshot as MetricsTenantSnapshot
 
 LOG = logging.getLogger("shapoclyack.metrics")
 
@@ -549,7 +550,7 @@ DB_POOL_COLLECTOR = DbPoolCollector()
 REGISTRY.register(DB_POOL_COLLECTOR)
 
 
-# --- Cluster-wide series, read from the database (#334) ------------------
+# --- Cluster-wide and per-tenant series, read from the database (#334) -----
 #
 # Read from shared tables at scrape time by :class:`SnapshotCollector`, through
 # ``api.services.metrics_sources`` (the one place a scrape opens a session).
@@ -559,6 +560,8 @@ REGISTRY.register(DB_POOL_COLLECTOR)
 # disagreed indefinitely and max() picked the most stale of them.
 #
 # Labels come from fixed vocabularies (docs/observability.md § Label bounds).
+# The one tenant label is on the opt-in tenant series, capped at
+# OCTO_METRICS_TENANT_TOP_N ids plus ``_other``.
 
 #: How long one cluster snapshot answers scrapes for. /metrics answers anyone
 #: who can reach it unless OCTO_METRICS_TOKEN is set, so without a cache every
@@ -571,6 +574,10 @@ CLUSTER_TTL_SECONDS = 15.0
 #: (the pool has no room). Past this the series are withdrawn: absent is
 #: honest, an old number drawn as a current one is not.
 CLUSTER_MAX_STALE_SECONDS = 60.0
+#: The per-tenant series scan the findings table; a minute is fresh enough for
+#: a product dashboard and a quarter of the work.
+TENANT_TTL_SECONDS = 60.0
+TENANT_MAX_STALE_SECONDS = 180.0
 #: Connections that must be free before a scrape takes one. One is not enough:
 #: checking for one free connection and then taking it races the next request,
 #: which then waits OCTO_DB_POOL_TIMEOUT — longer than Prometheus waits for the
@@ -691,6 +698,12 @@ def _cluster_snapshot() -> MetricsClusterSnapshot | None:
     return metrics_sources.cluster_snapshot()
 
 
+def _tenant_snapshot() -> MetricsTenantSnapshot | None:
+    from api.services import metrics_sources
+
+    return metrics_sources.tenant_snapshot()
+
+
 def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
     agents = GaugeMetricFamily(
         "octo_agents",
@@ -768,6 +781,37 @@ def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
     return families
 
 
+def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
+    open_findings = GaugeMetricFamily(
+        "octo_tenant_open_findings",
+        "Open findings (any state but CLOSED) per tenant and severity. Opt-in "
+        "(OCTO_METRICS_TENANT_TOP_N): the top N tenants by volume keep their id, "
+        "the rest are summed into tenant=\"_other\". Cluster-wide.",
+        labels=["tenant", "severity"],
+    )
+    breached = GaugeMetricFamily(
+        "octo_tenant_sla_breached_findings",
+        "Open findings past their SLA due date and not under an accepted "
+        "exception, per tenant (top N, the rest as _other). Cluster-wide.",
+        labels=["tenant"],
+    )
+    scans = GaugeMetricFamily(
+        "octo_tenant_scans_finished_24h",
+        "Scans that finished in the last 24 hours, per tenant (top N, the rest as "
+        "_other) and outcome. A window count, not a counter: use it as it is. "
+        "Cluster-wide.",
+        labels=["tenant", "status"],
+    )
+    if snapshot is not None:
+        for (tenant, severity), count in sorted(snapshot.open_findings.items()):
+            open_findings.add_metric([tenant, severity], count)
+        for tenant, count in sorted(snapshot.sla_breached.items()):
+            breached.add_metric([tenant], count)
+        for (tenant, status), count in sorted(snapshot.scans_finished.items()):
+            scans.add_metric([tenant, status], count)
+    return [open_findings, breached, scans]
+
+
 def cluster_collector(
     *,
     snapshot: Callable[[], Any] | None = None,
@@ -785,8 +829,27 @@ def cluster_collector(
     )
 
 
+def tenant_collector(
+    *,
+    snapshot: Callable[[], Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    pool_too_busy: Callable[[], bool] | None = None,
+) -> SnapshotCollector:
+    """The opt-in per-tenant series; no samples while they are off."""
+    return SnapshotCollector(
+        render=_tenant_families,
+        snapshot=snapshot or _tenant_snapshot,
+        ttl=TENANT_TTL_SECONDS,
+        max_stale=TENANT_MAX_STALE_SECONDS,
+        clock=clock,
+        pool_too_busy=pool_too_busy,
+    )
+
+
 CLUSTER_COLLECTOR = cluster_collector()
 REGISTRY.register(CLUSTER_COLLECTOR)
+TENANT_COLLECTOR = tenant_collector()
+REGISTRY.register(TENANT_COLLECTOR)
 
 
 def render() -> tuple[bytes, str]:
