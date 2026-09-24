@@ -276,15 +276,9 @@ class RetentionPlan:
 
 
 def load_plan(
-    settings: Settings,
-    category: str,
-    *,
-    session: Session | None = None,
-    default: int | None = None,
+    settings: Settings, category: str, *, session: Session | None = None
 ) -> RetentionPlan:
     """The plan for ``category``, read from the policy and hold tables.
-
-    ``default`` replaces the platform window — the audit CLI's ``--days``.
 
     No database configured (a tool, a file-only test) means there is nowhere a
     policy or a hold could have been written, so the plan is the platform
@@ -293,12 +287,12 @@ def load_plan(
     "could not tell whether this tenant is on hold".
     """
     spec = _category(category)
-    base = default_days(settings, category) if default is None else max(0, int(default))
+    base = default_days(settings, category)
     if not settings.postgres_url:
         return RetentionPlan(category=category, default_days=base)
     if session is None:
         with get_session(settings.postgres_url) as own:
-            return load_plan(settings, category, session=own, default=default)
+            return load_plan(settings, category, session=own)
     held = legal_hold.held_tenants(session)
     column = getattr(models.TenantRetentionPolicy, spec.column)
     overrides = {
