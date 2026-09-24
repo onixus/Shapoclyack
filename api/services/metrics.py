@@ -465,9 +465,11 @@ DB_POOL_CHECKOUT_DURATION_SECONDS = Histogram(
     "connection. Checkouts that timed out are observed too, so a pool at its "
     "limit shows here as a tail at OCTO_DB_POOL_TIMEOUT before it shows as "
     "errors.",
-    # From a pooled hand-over (well under a millisecond) to the 30 s default of
-    # OCTO_DB_POOL_TIMEOUT, where the checkouts that give up land.
-    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+    # From a pooled hand-over (well under a millisecond) to past the 30 s default
+    # of OCTO_DB_POOL_TIMEOUT: a checkout that gives up waited a little *more*
+    # than the timeout, and a top bucket equal to it put every one of them in
+    # +Inf, where no quantile can be read.
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 60),
     registry=REGISTRY,
 )
 DB_POOL_CHECKOUT_TIMEOUTS_TOTAL = Counter(

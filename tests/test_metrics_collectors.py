@@ -191,6 +191,17 @@ def test_pool_reports_checkouts_overflow_and_timeouts(tmp_path):
         db_engine.reset_for_tests()
 
 
+def test_a_timed_out_checkout_lands_in_a_finite_bucket():
+    """A checkout that gives up has waited a little *longer* than the timeout.
+    With the top bucket equal to the default timeout every one of them was in
+    +Inf, and no quantile of the wait could be read exactly when the pool was
+    in trouble (seen on a 3+2 pool against a local API, #334)."""
+    from api.settings import Settings
+
+    finite = [bound for bound in metrics.DB_POOL_CHECKOUT_DURATION_SECONDS._upper_bounds if bound != float("inf")]  # noqa: SLF001
+    assert max(finite) > Settings().db_pool_timeout
+
+
 def _histogram_count(histogram) -> float:
     for family in histogram.collect():
         for sample in family.samples:

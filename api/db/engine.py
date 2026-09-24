@@ -79,11 +79,12 @@ class InstrumentedQueuePool(QueuePool):
     connection nor a checkout that gives up after OCTO_DB_POOL_TIMEOUT is
     visible from outside the pool — the caller just gets a ``TimeoutError``,
     which the API turns into a 500 with nothing on /metrics to say why.
-    ``_do_get`` is the hook SQLAlchemy's pool classes implement for exactly
-    this (it is what ``QueuePool`` overrides from ``Pool``), and it covers the
-    queue wait and, when the pool grows, the new connection's handshake; the
-    pre-ping and the session work after it are not the pool's time. The class
-    survives ``Engine.dispose()``: ``recreate()`` builds ``self.__class__``.
+    ``_do_get`` is where each SQLAlchemy pool class implements handing out a
+    connection (``QueuePool`` overrides it from ``Pool``), so timing it covers
+    the queue wait and, when the pool grows, the new connection's handshake —
+    and not the pre-ping or the session work after it, which are not the
+    pool's time. The class survives ``Engine.dispose()``: ``recreate()`` builds
+    ``self.__class__``.
     """
 
     def _do_get(self) -> ConnectionPoolEntry:
