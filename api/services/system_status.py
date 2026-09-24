@@ -69,6 +69,13 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
             timeout=5,
             check=False,
         )
+    except PermissionError:
+        # EPERM from execve itself: the binary carries file capabilities
+        # (`setcap cap_net_raw,cap_net_admin+eip` in the Dockerfiles) that this
+        # container's bounding set lacks, which is the API pod's restricted
+        # securityContext since #338. "Operation not permitted" alone reads
+        # like a file-mode problem.
+        return {"version": None, "error": "not executable here: needs NET_RAW/NET_ADMIN"}
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {"version": None, "error": str(exc)}
     combined = f"{proc.stdout}\n{proc.stderr}"
@@ -79,11 +86,16 @@ def _probe_tool(command: list[str]) -> dict[str, str | None]:
     return {"version": first_line or None, "error": None if first_line else "no version output"}
 
 
-def tool_versions(*, force: bool = False) -> list[dict[str, Any]]:
+def tool_versions(*, force: bool = False, scans_here: bool = True) -> list[dict[str, Any]]:
     """Versions of pulse/naabu/nuclei/dnsx/nmap, cached for ``_TOOL_TTL_SECONDS``.
 
     Each entry includes ``optional: true`` for tools not needed on the default
-    Pulse path (currently ``nmap``).
+    Pulse path (currently ``nmap``) — and for every tool when ``scans_here`` is
+    False, i.e. jobs go to sensors: this container then runs none of them for a
+    scan, and since #338 its securityContext does not let it run the ones with
+    file capabilities at all. They are still probed, because the answer says
+    what the image carries, but a missing capability must not read as a broken
+    installation.
     """
     global _tool_cache, _tool_cache_at
     now = time.monotonic()
@@ -93,7 +105,7 @@ def tool_versions(*, force: bool = False) -> list[dict[str, Any]]:
     return [
         {
             "name": name,
-            "optional": name in _OPTIONAL_TOOLS,
+            "optional": name in _OPTIONAL_TOOLS or not scans_here,
             **info,
         }
         for name, info in _tool_cache.items()
@@ -365,7 +377,7 @@ def build_status(settings: Settings, *, include_fleet_counts: bool = True) -> di
     config = _load_config(settings)
     return {
         "app_version": __version__,
-        "tools": tool_versions(),
+        "tools": tool_versions(scans_here=settings.job_execution_mode == "local"),
         "enrichment": enrichment_status(config),
         "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),

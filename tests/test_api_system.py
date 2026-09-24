@@ -206,3 +206,54 @@ def test_system_status_reflects_config_overrides():
         assert stages["nuclei"] is True
     finally:
         client.put("/api/config", json={"overrides": {}}, headers=headers)
+
+
+def test_system_status_does_not_require_a_toolchain_of_a_pod_that_does_not_scan(
+    tmp_path, monkeypatch
+):
+    """Since #338 the API pod runs jobs on sensors and holds no raw-socket
+    capability, so naabu and pulse — which carry file capabilities — cannot even
+    be exec'd there. Reporting them as required and broken would put two red
+    badges on every default installation's System page for a container that is
+    not supposed to run them. In agent mode none of them is required *here*."""
+    from api.services import system_status
+    from tests.conftest import auth_headers, configured_client
+
+    monkeypatch.setattr(system_status, "_tool_cache", None)
+    agent = configured_client(tmp_path, monkeypatch, job_execution_mode="agent")
+    tools = agent.get("/api/system", headers=auth_headers(agent, "admin")).json()["tools"]
+    assert {tool["name"] for tool in tools} == {"pulse", "naabu", "nuclei", "dnsx", "nmap"}
+    assert all(tool["optional"] is True for tool in tools)
+
+    # Local execution is unchanged: this container scans, so the default stack
+    # is required of it.
+    local = configured_client(tmp_path, monkeypatch, job_execution_mode="local")
+    tools = local.get("/api/system", headers=auth_headers(local, "admin")).json()["tools"]
+    assert {tool["name"] for tool in tools if not tool["optional"]} == {
+        "pulse", "naabu", "nuclei", "dnsx",
+    }
+
+
+def test_a_tool_the_kernel_will_not_exec_is_named_as_that(monkeypatch):
+    """execve of a binary whose file capabilities exceed the bounding set fails
+    with EPERM — the restricted API pod and naabu (#338). The raw errno string
+    reads like a filesystem permission problem; the probe says which it is."""
+    import subprocess
+
+    from api.services import system_status
+
+    def refuse(command, **_kwargs):
+        raise PermissionError(1, "Operation not permitted", command[0])
+
+    monkeypatch.setattr(system_status.shutil, "which", lambda binary: f"/usr/local/bin/{binary}")
+    monkeypatch.setattr(system_status.subprocess, "run", refuse)
+    probed = system_status._probe_tool(["naabu", "-version"])
+    assert probed["version"] is None
+    assert "NET_RAW" in probed["error"] and "NET_ADMIN" in probed["error"]
+
+    # Every other failure keeps its own text, as before.
+    def hang(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 5)
+
+    monkeypatch.setattr(system_status.subprocess, "run", hang)
+    assert "timed out" in system_status._probe_tool(["nuclei", "-version"])["error"]
