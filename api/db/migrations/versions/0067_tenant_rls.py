@@ -125,9 +125,6 @@ BEGIN
     IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
         RETURN;
     END IF;
-    IF pg_has_role(current_user, 'shapoclyack_tenant', 'MEMBER') THEN
-        RETURN;
-    END IF;
     IF current_setting('server_version_num')::integer < 160000 THEN
         -- Before 16 a membership always inherits, which would put the
         -- restrictive policy on this role's own statements (see the module
@@ -135,6 +132,12 @@ BEGIN
         -- without it and says what to run.
         RAISE NOTICE USING MESSAGE = 'shapoclyack_tenant: not granting membership to '
             || quote_ident(current_user) || ' on PostgreSQL < 16; see docs/tenant-isolation.md';
+        RETURN;
+    END IF;
+    -- SET, not MEMBER: a CREATEROLE role that has just created the role above
+    -- is already a member — with ADMIN and without SET, which is exactly the
+    -- membership that cannot switch to it.
+    IF pg_has_role(current_user, 'shapoclyack_tenant', 'SET') THEN
         RETURN;
     END IF;
     BEGIN
