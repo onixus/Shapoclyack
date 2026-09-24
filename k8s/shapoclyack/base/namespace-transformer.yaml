@@ -1,0 +1,21 @@
+# `namespace: network-scan`, but only for objects that do not already name one
+# (#338).
+#
+# The plain `namespace:` field of a kustomization moves EVERY namespaced object
+# it sees, including ones that set metadata.namespace themselves. That used to
+# be harmless because everything here lived in one namespace. It is not any
+# more: the scanner-executor (scanner-executor/) runs in network-scan-executor,
+# a namespace with its own Pod Security level, and a transformer that moved it
+# back into network-scan would put a pod holding NET_RAW/NET_ADMIN into a
+# namespace that enforces `baseline` -- where the API server rejects it.
+#
+# Every overlay or component that sets a namespace has to follow the same rule
+# for the same reason; base/enrichment and overlays/prod-ha carry a copy of
+# this file. tests/test_k8s_pod_security.py fails if the executor ever renders
+# anywhere else.
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true

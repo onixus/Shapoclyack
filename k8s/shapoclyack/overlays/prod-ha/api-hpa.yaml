@@ -4,9 +4,10 @@
 # and it does not scale down, so an install missing metrics-server keeps
 # whatever replica count it has rather than losing capacity.
 #
-# CPU as the signal, not request rate: the expensive thing this process does is
-# in-process scan work and report rendering (OCTO_ALLOW_SCAN_START=true), which
-# shows up as CPU and not as a request count.
+# CPU as the signal, not request rate: the expensive things this process does
+# are ingesting sensor results and rendering reports (and, under
+# base/local-scan, the scans themselves), which show up as CPU and not as a
+# request count.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

@@ -1,7 +1,8 @@
 # The hard prerequisite of this whole overlay (#335, blocked on #336).
 #
-# Scan artifacts are files on `scanner-data`, mounted by the API Deployment,
-# the scan Job and the CronJob alike. Base requests ReadWriteOnce, which a
+# Scan artifacts are files on `scanner-data`, mounted by every API replica
+# (and by the scan Job and CronJob, where base/local-scan brings them back,
+# #338). Base requests ReadWriteOnce, which a
 # CSI driver may attach to exactly ONE node at a time: a second API replica
 # scheduled elsewhere sits in ContainerCreating with a
 # "Multi-Attach error for volume" event until the first pod moves.

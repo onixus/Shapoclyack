@@ -2,8 +2,9 @@
 #
 # Same image and Postgres/API as kind-dev, in namespace shapoclyack-restore,
 # without NodePort (so it does not steal :8080 from the source lab) and
-# without NATS/ClickHouse/scan Jobs (ingress and external integrations stay
-# off, as docs/operations.md requires). Postgres + API is the path
+# without NATS/ClickHouse/the scanner-executor (ingress and external
+# integrations stay off, as docs/operations.md requires; a restored database
+# must not start scanning). Postgres + API is the path
 # scripts/restore-postgres.sh validates.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -73,17 +74,41 @@ patches:
       metadata:
         name: shapoclyack-clickhouse-config
       $patch: delete
+  # The scanner-executor and its namespace (#338; the scan Job/CronJob it
+  # replaced were deleted here before). One object per patch, as above.
   - patch: |-
-      apiVersion: batch/v1
-      kind: Job
+      apiVersion: apps/v1
+      kind: Deployment
       metadata:
-        name: network-scan
+        name: shapoclyack-scanner-executor
+        namespace: network-scan-executor
       $patch: delete
   - patch: |-
-      apiVersion: batch/v1
-      kind: CronJob
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
       metadata:
-        name: network-scan-scheduled
+        name: shapoclyack-scanner-executor-ingress
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: scanner-config
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: scanner-executor
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: network-scan-executor
       $patch: delete
   - patch: |-
       apiVersion: batch/v1

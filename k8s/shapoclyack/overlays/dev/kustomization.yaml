@@ -1,3 +1,8 @@
+# Development profile: smaller API, OCTO_ENV=dev. Scans run in base's
+# scanner-executor, which needs a provisioning key before it starts — kind-dev
+# (scripts/dev-up.sh) enrolls it; anywhere else, docs/k8s-hardening.md
+# § Enrolling the scanner-executor. The scan Job/CronJob this overlay used to
+# shrink left base in #338 (base/local-scan).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -5,7 +10,5 @@ resources:
   - ../../base
 
 patches:
-  - path: job-resources-patch.yaml
-  - path: cronjob-resources-patch.yaml
   - path: api-resources-patch.yaml
   - path: api-env-dev-patch.yaml

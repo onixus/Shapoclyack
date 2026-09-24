@@ -1,13 +1,10 @@
-# Resume an interrupted scan. Not included in kustomization base — apply manually:
-#   kubectl apply -f k8s/shapoclyack/base/job-resume.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: network-scan-resume
-  namespace: network-scan
+  name: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
-    app.kubernetes.io/component: scan-job-resume
+    app.kubernetes.io/component: scan-job
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 86400
@@ -16,14 +13,18 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: shapoclyack
-        app.kubernetes.io/component: scan-job-resume
+        app.kubernetes.io/component: scan-job
     spec:
       restartPolicy: Never
       serviceAccountName: scanner
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: scanner
           image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
@@ -34,9 +35,6 @@ spec:
             - /app/scanner/config/k8s.yaml
             - --mode
             - balanced
-            - --resume
-            # - --run-id
-            # - "20260716T120000Z"
           resources:
             requests:
               cpu: "4"
@@ -44,12 +42,18 @@ spec:
             limits:
               cpu: "8"
               memory: 8Gi
+          # Same deviations from `restricted` as the scanner-executor, for the
+          # same reasons (base/scanner-executor/deployment.yaml,
+          # docs/k8s-hardening.md); everything else is the baseline (#338).
           securityContext:
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
             capabilities:
+              drop:
+                - ALL
               add:
                 - NET_RAW
                 - NET_ADMIN
-            allowPrivilegeEscalation: true
           volumeMounts:
             - name: data
               mountPath: /app/scanner/output
@@ -63,6 +67,10 @@ spec:
             - name: config
               mountPath: /app/scanner/config
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/octo
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -73,3 +81,9 @@ spec:
         - name: config
           configMap:
             name: scanner-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

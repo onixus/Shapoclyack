@@ -14,7 +14,9 @@
 #   unlabeled pod  → postgres:5432, clickhouse:8123/9000, nats:4222   REFUSED
 #   unlabeled pod  → nats:8222 (monitoring rule, any source)          ALLOWED
 #   component=backup → postgres:5432                                  ALLOWED
-#   component=agent  → nats:4222 ALLOWED, postgres:5432 REFUSED
+#   component=agent  → nats:4222, postgres:5432 REFUSED (no in-cluster agent
+#                      is admitted to NATS any more, #338)
+#   scanner-executor pod (network-scan-executor) → all three          REFUSED
 #   api pod          → all three                                      ALLOWED (implied by Ready)
 #
 # Usage: k8s/scripts/verify-networkpolicy.sh
@@ -101,13 +103,13 @@ report() { # expected actual label
   fi
 }
 
-# probe NAME LABELS "host:port ..." → prints "host:port=ALLOWED|REFUSED" per target
+# probe NAME LABELS "host:port ..." [NAMESPACE] → prints "host:port=ALLOWED|REFUSED" per target
 probe() {
-  local name="$1" labels="$2" targets="$3"
+  local name="$1" labels="$2" targets="$3" ns="${4:-${NS}}"
   local script='for t in '"${targets}"'; do h=${t%%:*}; p=${t##*:}; if nc -z -w 3 "$h" "$p" 2>/dev/null; then echo "$t=ALLOWED"; else echo "$t=REFUSED"; fi; done'
   local args=(--restart=Never --image="${PROBE_IMAGE}" --rm -i -q)
   [[ -n "${labels}" ]] && args+=(--labels="${labels}")
-  ${K} -n "${NS}" run "${name}" "${args[@]}" -- sh -c "${script}"
+  ${K} -n "${ns}" run "${name}" "${args[@]}" -- sh -c "${script}"
 }
 
 PG=shapoclyack-postgres:5432
@@ -129,11 +131,25 @@ report ALLOWED "$(grep -o "^${PG}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${
 report REFUSED "$(grep -o "^${CH_HTTP}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${CH_HTTP}"
 report REFUSED "$(grep -o "^${NATS}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${NATS}"
 
+# The label the old in-cluster agent Deployment carried. NATS admitted it until
+# #338 moved the in-cluster sensor out of this namespace; a pod that claims the
+# label now gets nothing it did not already get unlabeled.
 echo "[netpol] pod labeled as an in-cluster agent"
 OUT="$(probe netpol-agent "app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=agent" "${NATS} ${PG} ${CH_NATIVE}")"
-report ALLOWED "$(grep -o "^${NATS}=.*" <<<"${OUT}" | cut -d= -f2)" "agent → ${NATS}"
+report REFUSED "$(grep -o "^${NATS}=.*" <<<"${OUT}" | cut -d= -f2)" "agent → ${NATS}"
 report REFUSED "$(grep -o "^${PG}=.*" <<<"${OUT}" | cut -d= -f2)" "agent → ${PG}"
 report REFUSED "$(grep -o "^${CH_NATIVE}=.*" <<<"${OUT}" | cut -d= -f2)" "agent → ${CH_NATIVE}"
+
+# The pod that holds NET_RAW (#338), from its own namespace: the datastore
+# rules select pods in network-scan only, so none of them admits it.
+EXEC_NS=network-scan-executor
+echo "[netpol] pod labeled as the scanner-executor, in ${EXEC_NS}"
+OUT="$(probe netpol-executor "app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=scanner-executor" \
+  "${PG/:/.${NS}:} ${CH_NATIVE/:/.${NS}:} ${NATS/:/.${NS}:}" "${EXEC_NS}")"
+for t in "${PG}" "${CH_NATIVE}" "${NATS}"; do
+  fq="${t/:/.${NS}:}"
+  report REFUSED "$(grep -o "^${fq}=.*" <<<"${OUT}" | cut -d= -f2)" "executor → ${t}"
+done
 
 echo "[netpol] the API pod itself, explicitly rather than only via Ready"
 API_POD="$(${K} -n "${NS}" get pod -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}')"

@@ -1,0 +1,53 @@
+# Scanning inside network-scan, the way every install ran before #338.
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/local-scan
+#
+# Opt-in, and a documented exception to the Pod Security baseline, not a
+# supported default. It brings back three things that need NET_RAW/NET_ADMIN
+# in the same namespace as the API:
+#
+#   * OCTO_JOB_EXECUTION_MODE=local — the API runs scanner.main as a subprocess
+#     of its own container, so that container holds the raw-socket
+#     capabilities and allowPrivilegeEscalation: true again;
+#   * the scan Job and the weekly CronJob (job.yaml, cronjob.yaml; job-resume
+#     is applied by hand, as before), which write runs straight onto the
+#     scanner-data PVC the API reads — and a PVC can only be mounted from its
+#     own namespace, so these cannot move to network-scan-executor;
+#   * network-scan relabelled `enforce: privileged`, because none of the above
+#     would be admitted under `baseline`.
+#
+# and it removes the scanner-executor, which has nothing to claim when the API
+# runs its own jobs.
+#
+# Reasons an installation might still choose it: the features that only exist
+# in local execution — installation config overrides and custom wordlists reach
+# the scan only when the API runs it (api/services/job_submission.py refuses a
+# wordlist in agent mode), a CronJob scan driven from a Secret of targets — or a
+# single-node lab where one pod is the point. What it costs is the whole reason
+# #338 exists: an RCE in the API is an RCE with raw sockets, next to every
+# credential of the control plane. docs/k8s-hardening.md § Local execution.
+#
+# A Component so it composes with the other opt-ins: overlays/api-readonly uses
+# it for the Job/CronJob and patches the API back down, and an overlay that
+# also wants enrichment lists both.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - job.yaml
+  - cronjob.yaml
+
+transformers:
+  - namespace-transformer.yaml
+
+patches:
+  - path: api-local-mode-patch.yaml
+  - path: namespace-privileged-patch.yaml
+  # One object per file: kustomize v5.4.2 (kubectl 1.31, what CI runs)
+  # segfaults on a multi-document `$patch: delete` — see
+  # overlays/prod-ha/postgres-delete-statefulset.yaml.
+  - path: delete-executor-deployment.yaml
+  - path: delete-executor-networkpolicy.yaml
+  - path: delete-executor-configmap.yaml
+  - path: delete-executor-serviceaccount.yaml
+  - path: delete-executor-namespace.yaml

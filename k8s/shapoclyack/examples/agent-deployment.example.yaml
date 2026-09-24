@@ -1,11 +1,20 @@
-# Example remote agent Deployment (scanner image). Prefer overlays/agents for
-# production (topology spread + VPA). Pair with agent-mode-api-patch.yaml and
-# Secret shapoclyack-agent.
+# Example sensor Deployment for a cluster OTHER than the one running the API —
+# a branch office, a customer segment. The in-cluster sensor is base's
+# scanner-executor (base/scanner-executor/, #338); this is the same pod, with
+# the API reached over its public URL instead of a Service name. Pair with
+# Secret shapoclyack-agent holding a provisioning key for the tenant it scans.
+#
+# The namespace must not enforce Pod Security `baseline` or `restricted`:
+# NET_RAW/NET_ADMIN are outside both (docs/k8s-hardening.md, which also has the
+# Kyverno/Gatekeeper exceptions to scope to it). Create it labelled
+#   pod-security.kubernetes.io/enforce=privileged
+#   pod-security.kubernetes.io/warn=restricted
+# and keep nothing else in it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: shapoclyack-agent
-  namespace: network-scan
+  namespace: network-scan-executor
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
@@ -21,6 +30,15 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: agent
     spec:
+      # The sensor never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -41,24 +59,17 @@ spec:
           image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
-          args:
-            - "--config"
-            - "scanner/config/k8s.yaml"
-            - "--api-url"
-            - "http://shapoclyack-api:8080"
           env:
+            # The console's public URL — whatever your Ingress serves.
+            - name: OCTO_API_URL
+              value: https://shapoclyack.example.com
             - name: OCTO_AGENT_PROVISIONING_KEY
               valueFrom:
                 secretKeyRef:
                   name: shapoclyack-agent
                   key: OCTO_AGENT_PROVISIONING_KEY
-                  optional: true
-            - name: OCTO_AGENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: shapoclyack-agent
-                  key: OCTO_AGENT_TOKEN
-                  optional: true
+            - name: OCTO_CONFIG
+              value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR
               value: scanner/output
             - name: OCTO_AGENT_HOSTNAME
@@ -75,14 +86,14 @@ spec:
             #       key: agent_password
             # - name: OCTO_NATS_URL
             #   value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+          # The scanner-executor's securityContext, for its reasons
+          # (base/scanner-executor/deployment.yaml): NET_RAW/NET_ADMIN because
+          # the image grants them to naabu/pulse/nmap as file capabilities, and
+          # allowPrivilegeEscalation: true because no_new_privs would make the
+          # kernel ignore those. Everything else is the restricted baseline.
           securityContext:
-            # This worker runs the full scanner pipeline (nmap -O / naabu need
-            # NET_RAW+NET_ADMIN file capabilities, set at build time via
-            # Dockerfile setcap, to take effect for the non-root user);
-            # allowPrivilegeEscalation:false sets no_new_privs, which blocks
-            # that file-capability grant on exec regardless of what's listed
-            # below (matches job.yaml/cronjob.yaml's working config).
             allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -104,11 +115,25 @@ spec:
               mountPath: /app/scanner/output
             - name: work-state
               mountPath: /app/scanner/state
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/octo
       volumes:
+        # A ConfigMap of that name in this namespace: the scanner config
+        # (k8s/shapoclyack/base/config/k8s.yaml or your own).
         - name: config
           configMap:
             name: scanner-config
         - name: work
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 20Gi
         - name: work-state
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

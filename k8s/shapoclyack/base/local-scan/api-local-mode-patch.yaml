@@ -1,0 +1,24 @@
+# The API as it was before #338: it runs scanner.main itself, so its container
+# needs what the scanner-executor has — NET_RAW/NET_ADMIN in the bounding set
+# and allowPrivilegeEscalation: true, without which no_new_privs makes the
+# kernel ignore the file capabilities on naabu/pulse/nmap (the reasoning is in
+# base/scanner-executor/deployment.yaml). Seccomp, the read-only image and the
+# rest of base's securityContext stay.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: OCTO_JOB_EXECUTION_MODE
+              value: local
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - NET_RAW
+                - NET_ADMIN

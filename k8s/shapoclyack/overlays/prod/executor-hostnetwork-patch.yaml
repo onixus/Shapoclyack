@@ -1,0 +1,34 @@
+# Scan from the node's own network, on nodes kept for scanning (#338; this
+# used to be two patches, for the scan Job and CronJob, which base no longer
+# ships).
+#
+# hostNetwork, for what the pod network loses: L2/ARP discovery sees the
+# node's segment instead of a veth, and SYN probes leave from the node address
+# without passing through the CNI's SNAT and conntrack. It is also the largest
+# privilege in this repository: NET_ADMIN in the host's network namespace can
+# rewrite the node's routes and firewall, so a compromised executor could
+# redirect the traffic of anything else scheduled beside it. That is why the
+# nodes are tainted and why nothing else here tolerates the taint — the API
+# used to (it shared an RWO volume with the scan Jobs) and no longer does.
+# docs/k8s-hardening.md lists this as the one deviation beyond `baseline` that
+# is not a capability.
+#
+# Prerequisite, unchanged: nodes labelled `workload=scanner` and tainted
+# `scanner=true:NoSchedule`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-scanner-executor
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      # The executor still resolves the API by its Service name.
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        workload: scanner
+      tolerations:
+        - key: scanner
+          operator: Equal
+          value: "true"
+          effect: NoSchedule

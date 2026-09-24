@@ -1,0 +1,27 @@
+# The scanner-executor (#338): the one workload in this repository that needs
+# raw sockets, in a namespace of its own so that the one holding the API, the
+# databases and every credential can enforce Pod Security `baseline`.
+#
+# It is the sensor (`python -m agent`, agent/worker.py) run in-cluster: it
+# exchanges a tenant provisioning key for an agent JWT, claims the jobs the API
+# queues (OCTO_JOB_EXECUTION_MODE=agent), runs scanner.main locally and uploads
+# the run archive over HTTP. That makes the split cost nothing in the data
+# path: the executor shares no volume with the API, reads no Secret of the
+# control plane, and needs exactly one credential -- the provisioning key in
+# Secret shapoclyack-scanner-executor, which is minted by the API after it is up
+# (docs/k8s-hardening.md § Enrolling the scanner-executor).
+#
+# Its own `namespace:` here rather than metadata.namespace in each file: the
+# overlays' patches then name the Deployment the way they name every other
+# object, without a namespace. base/kustomization.yaml leaves an object that
+# already has a namespace alone (unsetOnly), so this one survives it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: network-scan-executor
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - deployment.yaml
+  - networkpolicy.yaml

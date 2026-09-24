@@ -11,6 +11,7 @@ resources:
 patches:
   - path: api-service-nodeport-patch.yaml
   - path: api-tls-patch.yaml
+  - path: executor-tls-patch.yaml
 
 images:
   - name: ghcr.io/onixus/shapoclyack-aio

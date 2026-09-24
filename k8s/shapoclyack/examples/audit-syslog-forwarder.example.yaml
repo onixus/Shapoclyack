@@ -68,10 +68,15 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: audit-syslog-forwarder
     spec:
+      # No token, RuntimeDefault seccomp (#338): the rest of the baseline was
+      # already here.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: forwarder
           # Same image as the API — the worker lives in the same package. Pin

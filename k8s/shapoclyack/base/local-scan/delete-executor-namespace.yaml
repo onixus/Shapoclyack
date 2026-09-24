@@ -1,0 +1,9 @@
+# Companion to delete-executor-deployment.yaml: with nothing left in it, an
+# unenforced namespace is only a place something could be put later.
+# `kubectl apply` does not prune, so an installation switching an existing
+# cluster to local-scan deletes it by hand (docs/k8s-hardening.md).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-scan-executor
+$patch: delete
