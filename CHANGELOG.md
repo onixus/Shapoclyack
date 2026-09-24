@@ -142,25 +142,48 @@ All notable changes to Shapoclyack are documented in this file.
   `NET_RAW`/`NET_ADMIN` and `allowPrivilegeEscalation: true` because it ran
   scans in its own container; an RCE there was an RCE with raw sockets next to
   every credential of the control plane. The manifests now run the API in
-  `OCTO_JOB_EXECUTION_MODE=agent` and add `base/scanner-executor/`: the sensor
-  (`python -m agent`) in `network-scan-executor`, claiming jobs over HTTP with
-  a provisioning key from Secret `shapoclyack-scanner-executor` — the only
-  credential it holds, minted after the API is up (`scripts/dev-up.sh` does it
-  on the kind stand). `network-scan` is labelled `enforce: baseline`,
+  `OCTO_JOB_EXECUTION_MODE=agent`, from the API image without the scanner
+  toolchain, and add `base/scanner-executor/`: the sensor (`python -m agent`)
+  in `network-scan-executor`, a StatefulSet whose pod name is its agent id (a
+  quarantine or group outlives a restart), claiming jobs over HTTP with a
+  provisioning key mounted from Secret `shapoclyack-scanner-executor` — the
+  only credential it holds, minted after the API is up (`scripts/dev-up.sh`
+  does it on the kind stand), read from the file on every exchange
+  (`OCTO_AGENT_PROVISIONING_KEY_FILE`) and never passed to the scan's
+  environment. **Jobs now carry their config:** the scan intent and the
+  configurator's overrides reach a sensor as the claim input
+  `config_overlay.json` (`scanner.main --config-overlay`, allow-listed, applied
+  before the tenant scan policy), and a sensor without the `config_overlay`
+  capability is refused such jobs with `426` — before this, an `inventory` job
+  ran nuclei in agent mode and a console rate override never left the API. The
+  NVD key does not travel; custom wordlists are still refused in agent mode.
+  **A queued job nothing can claim says so:** `sensor_unavailable` on a job
+  whose tenant has no active scanner sensor online, `scan_ready_agents` on
+  `GET /api/agents/summary`, a banner above the launcher and "no sensor
+  online" on the System page, and the provisioning-key list shows each key's
+  expiry — the executor stops the day its key expires, and serves only its
+  key's tenant. `network-scan` is labelled `enforce: baseline`,
   `audit`/`warn: restricted`; `NET_RAW` is outside `baseline`, so the executor's
   namespace is the one `privileged` exception, holding nothing else. Every
   workload gets seccomp `RuntimeDefault`, a read-only root filesystem with each
   writable path an `emptyDir`/PVC, `drop: [ALL]` and no service-account token;
   ClickHouse loses `SYS_NICE` (outside `baseline`) and file logging. **Upgrade
-  action required:** enroll the executor, delete the scan Job/CronJob and
-  `overlays/agents`' old `shapoclyack-agent` (apply does not prune), and on
-  `overlays/prod` scale the API to 0 first — it no longer shares the scanner
-  pool. The scan Job/CronJob and API-local scanning, which config overrides and
-  custom wordlists still need, remain as the opt-in `overlays/local-scan`.
-  `tests/test_k8s_pod_security.py` renders every overlay and holds each pod to
-  its namespace's level and the baseline, with a documented exception list.
-  Kyverno/Gatekeeper exceptions, the per-workload table and the migration are
-  in `docs/k8s-hardening.md`.
+  action required:** apply, then enroll the executor (its namespace comes with
+  the apply); give every other tenant that scans an executor of its own; upgrade
+  external sensors with the API; delete the scan Job/CronJob and
+  `overlays/agents`' old `shapoclyack-agent` (apply does not prune).
+  `overlays/prod` rolls its API with `Recreate` (it no longer shares the
+  scanner pool, so a surge would stall on the ReadWriteOnce volume), and
+  `kubectl rollout undo` cannot go back past this release — re-apply the old
+  manifests (docs/k8s-hardening.md § Rolling back). Executor↔API traffic is
+  plain HTTP unless `base/api-tls` is enabled (the kind stand does). The scan
+  Job/CronJob and API-local scanning, which custom wordlists still need, remain
+  as the opt-in `overlays/local-scan`. `tests/test_k8s_pod_security.py` and
+  `tests/test_k8s_topology.py` render every overlay and hold each pod to its
+  namespace's level, the baseline and its wiring; CI no longer skips them
+  (Jenkins renders on the node, `OCTO_K8S_RENDER_DIR`). The executor image has
+  no setuid binaries. Kyverno/Gatekeeper exceptions, the per-workload table,
+  the migration and the rollback are in `docs/k8s-hardening.md`.
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
   response used to answer `401`, which the console treats as "session over"

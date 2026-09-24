@@ -20,11 +20,13 @@ other pod — the API, the databases, the backup and enrichment jobs — runs in
 - [Workloads](#workloads)
 - [Deviations from restricted](#deviations-from-restricted)
 - [The scanner-executor](#the-scanner-executor)
+- [Traffic between the executor and the API](#traffic-between-the-executor-and-the-api)
 - [Enrolling the scanner-executor](#enrolling-the-scanner-executor)
 - [Kyverno and Gatekeeper](#kyverno-and-gatekeeper)
 - [Local execution](#local-execution)
 - [What changes](#what-changes)
 - [Upgrading](#upgrading)
+- [Rolling back](#rolling-back)
 - [Verifying on a cluster](#verifying-on-a-cluster)
 - [How this is checked](#how-this-is-checked)
 
@@ -106,14 +108,24 @@ root filesystem is read-only everywhere except where noted.
 | `StatefulSet/shapoclyack-clickhouse` | `network-scan` | 101:101 | `/var/lib/clickhouse` (PVC: data, tmp, preprocessed configs); `/tmp` (the entrypoint copies users.xml there to diff it); `/etc/clickhouse-server/users.d` (it generates `default-user.xml`). File logging is removed from the config (console only), so `/var/log/clickhouse-server` is not written. | yes |
 | `CronJob/shapoclyack-postgres-backup` | `network-scan` | 1000:1000 | `/backup` (emptyDir handed from `pg_dump` to the uploader); `/tmp` (the AWS CLI's `HOME`) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
-| `Deployment/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload; the screenshot stage's browser profile); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
+| `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload; the screenshot stage's browser profile); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
 | `Job/network-scan`, `CronJob/network-scan-scheduled`, `Job/network-scan-resume` (base/local-scan only) | `network-scan` | 1000:1000 | as the executor, with `scanner/output`/`state` on the `scanner-data` PVC | **no** — see below |
-| `Deployment/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
+| `StatefulSet/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
 | `CronJob/shapoclyack-audit-retention`, `Deployment/shapoclyack-audit-syslog-forwarder` (examples) | `network-scan` | 1000:1000 | `/tmp` (retention only) | yes |
 | `Deployment/shapoclyack-maddy` (examples, lab only) | `network-scan` | root | not read-only | **no** — see below |
 
 `PYTHONDONTWRITEBYTECODE=1` is set in every Shapoclyack image, so Python does
 not try to write bytecode next to the read-only sources.
+
+The API container and its `migrate` init container run the **API image**
+(`ghcr.io/onixus/shapoclyack-api`, `Dockerfile.api`): the API, the web console
+and the `scanner` package it reads configs and reports with, `openssh-client`
+for the SSH deployer — and none of the scanner toolchain. The API does not scan
+any more, so naabu, pulse and nmap with their file capabilities were attack
+surface in the one pod that holds every credential. `fetch-enrichment` (with
+base/enrichment) stays on the all-in-one image because its fetchers need
+`curl`; so do the executor, the local-scan topology and the kind stands, which
+load one locally built image for everything.
 
 How the third-party paths were established rather than guessed: the Postgres
 and ClickHouse image entrypoints were read at the versions the manifests pin
@@ -150,6 +162,14 @@ profile blocks only `AF_ALG` and `AF_VSOCK`), non-root, `drop: [ALL]` before
 the two adds, read-only image, no service-account token. A NetworkPolicy denies
 it all ingress: it listens on nothing.
 
+`allowPrivilegeEscalation: true` also lets a setuid-root binary run as uid 0,
+so the image has none: `Dockerfile.allinone` clears every setuid and setgid
+bit after its last package install (the Debian base brought `su`, `passwd`,
+`mount`, `chfn` and the like, `openssh-client` `ssh-keysign`), and fails the
+build if `fping` — whose package falls back to setuid root when `setcap` fails
+— is left without its file capability. What escalation remains is the three
+scanners' `cap_net_raw,cap_net_admin` and nothing more.
+
 ### `shapoclyack-scanner-executor` in `overlays/prod` — `hostNetwork: true`
 
 `overlays/prod` scans from the node's own network, on nodes labelled
@@ -160,6 +180,14 @@ privilege in the repository: `NET_ADMIN` in the host's network namespace can
 rewrite that node's routes and firewall. That is why the pool is tainted, and
 why nothing else tolerates the taint any more — the API used to, to share a
 ReadWriteOnce volume with the scan Jobs, and #338 ended that.
+
+What the taint does not keep off those nodes: DaemonSets that tolerate every
+taint — the CNI agent, log shippers, node-exporter. Those on the host network
+share the executor's network namespace, so whatever they listen on at
+`127.0.0.1` is the executor's localhost too. And a NetworkPolicy does not apply
+to a host-network pod on most CNIs, so the egress policy suggested
+[below](#egress) does not constrain the prod executor: the node's own firewall
+has to.
 
 ### `overlays/local-scan` — `shapoclyack-api`, `network-scan`, `network-scan-scheduled`, `network-scan-resume`
 
@@ -174,7 +202,8 @@ level) but patches its API back to `restricted`.
 
 `examples/agent-deployment.example.yaml` is the executor for a cluster other
 than the API's (a branch office, a customer segment), reaching the API over its
-public URL. Same pod, same deviations, same need for a namespace that does not
+public URL. Same pod — a StatefulSet with the same identity, key file and
+storage request — same deviations, same need for a namespace that does not
 enforce `baseline`.
 
 ### `shapoclyack-maddy` (examples) — root, writable image
@@ -198,27 +227,108 @@ installation runs:
 3. the API ingests the archive exactly as it does a remote sensor's.
 
 It shares no volume with the API, reads no Secret of the control plane and holds
-one credential: a tenant provisioning key, exchanged at start and on expiry for
-a short-lived agent JWT. Its configuration is `scanner-config`, generated from
-the same `base/config/k8s.yaml` as network-scan's copy, so the two cannot drift.
-It does **not** use NATS: HTTP claiming is a supported mode and not a degraded
-one, and leaving NATS out keeps the broker's `agent` password out of its
-namespace and port 4222 closed to it (`base/networkpolicy-datastores.yaml` now
-admits only the API).
+one credential: a tenant provisioning key, mounted as a file
+(`OCTO_AGENT_PROVISIONING_KEY_FILE`, mode `0440`, readable through the pod's
+`fsGroup`) and exchanged at start and on expiry for a short-lived agent JWT.
+The worker reads the file again on every exchange, so a rotated Secret reaches
+it without a restart, and starts the scanner without its own `OCTO_AGENT_*` and
+`OCTO_NATS_*` variables, so neither the key nor a token is inherited by nmap,
+nuclei or a nuclei template. Its configuration is `scanner-config`, generated
+from the same `base/config/k8s.yaml` as network-scan's copy, so the two cannot
+drift. It does **not** use NATS: HTTP claiming is a supported mode and not a
+degraded one, and leaving NATS out keeps the broker's `agent` password out of
+its namespace and port 4222 closed to it (`base/networkpolicy-datastores.yaml`
+now admits only the API).
 
-It talks to `http://shapoclyack-api.network-scan.svc:8080` — plain HTTP inside
-the cluster, as every other client of that Service does. `overlays/kind-dev`
-switches it to HTTPS with verification against the stand's development CA.
+**What a job carries to it.** The executor scans with its own config file, so
+the parts of a job that change the config travel with the job, as its **config
+overlay** (`config_overlay.json` in the claim, passed to `scanner.main` as
+`--config-overlay`): the scan intent's settings (`inventory` turns nuclei off
+and cuts to the top 100 ports) and the console configurator's overrides. The
+scanner merges the overlay onto its config at the point a local scan's merged
+file would be read, and applies the tenant's scan policy after it, so an
+override or an intent can shape a scan but never lift it above the tenant's
+ceilings (#362). It accepts only the settings the configurator and the intents
+can set (`scanner/pipeline/config_overlay.py`) and refuses the whole run on
+anything else. An agent that does not declare the `config_overlay` capability
+is refused such a job on claim with `426`, like one that cannot apply a scan
+policy, and the job stays queued for one that can. Two things deliberately do
+not travel: the NVD API key, a secret the executor's scans do not use (its
+config leaves online CVE lookups off) — give an executor that needs it its own
+`NVD_API_KEY`; and a custom wordlist, a file of up to megabytes held by the API,
+which `POST /api/jobs` refuses in agent mode rather than ignoring.
+
+**Identity.** It is a StatefulSet for its pod names, not for storage: each pod
+sends its own name — `shapoclyack-scanner-executor-0`, `-1`, … — as its agent
+id (`OCTO_AGENT_ID` from `metadata.name`), so it is the same agent in the fleet
+view after a rollout, an eviction or a drain. The API refuses a token for an id
+that is quarantined or disabled, so an operator's quarantine outlives the pod,
+and a group set on the agent (#361) stays set. A PodDisruptionBudget lets
+drains take one executor at a time. A drained or evicted executor still loses
+the scan it was running: the run is on its `emptyDir`, and the job returns to
+the queue when its lease (`OCTO_JOB_LEASE_SECONDS`) expires, to start again
+from nothing. Anyone holding a provisioning key of the same tenant can register
+an agent under such a predictable name first; the executor's exchange is then
+refused (`403`, "registered with a different key") until that agent is deleted
+— a denial of service within the tenant, not a way in, and the fleet view shows
+it.
 
 Scale it with `replicas`; each replica claims its own jobs
 (`FOR UPDATE SKIP LOCKED`). `overlays/agents` runs three under a VPA
-(`base/agents/agent-vpa.yaml`).
+(`base/agents/agent-vpa.yaml`) in `Initial` mode, which sizes pods when they
+are created anyway: `Auto` would resize by evicting, and an evicted executor
+drops the scan it is running. The container requests 8Gi of ephemeral storage
+(limit 32Gi): its `emptyDir`s may hold 31Gi between them, and without a request
+the scheduler would place it on a node with a few gigabytes free and let the
+kubelet evict it later.
 
-**One key serves one tenant.** A provisioning key belongs to a tenant, and a
-sensor claims only its tenant's jobs. A single-tenant installation needs one
-key; an MSSP installation that used to rely on the API scanning for every tenant
-runs one executor Deployment per tenant (copy `base/scanner-executor/` with a
-different name and Secret) or gives each tenant its own sensor.
+**One key serves one tenant.** A provisioning key belongs to a tenant, and an
+agent claims only its own tenant's jobs. A single-tenant installation needs one
+executor; an installation that used to rely on the API scanning for every
+tenant runs one executor per tenant that scans (copy `base/scanner-executor/`
+with another name and Secret, enrolled with that tenant's key) or gives each
+tenant its own sensor. A tenant with no executor online is not refused scans:
+its jobs are accepted and wait, flagged `sensor_unavailable` in the job list,
+with a banner above the launcher and the System page's scan-execution tile
+reading "no sensor online".
+
+**Scan state lives with the pod.** The delta baseline (`--delta` / the `delta`
+intent) and the previous run the report diff compares against are under
+`scanner/state` and `scanner/output`, both `emptyDir`: after a restart the next
+delta run of a target is a full one and its report has no diff; with several
+replicas, each keeps its own, so which baseline a run compares against depends
+on which executor claimed it.
+
+### Egress
+
+Scanning needs egress to every target, so base ships no egress policy for the
+executor. One thing it never needs is the cloud's instance metadata service,
+which on most providers hands out the node's credentials to anything that can
+reach `169.254.169.254`. Where the CNI enforces NetworkPolicy, deny it:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-scanner-executor-egress
+  namespace: network-scan-executor
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/component: scanner-executor}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]   # instance metadata
+        - ipBlock:
+            cidr: ::/0
+            except: ["fd00:ec2::254/128"]  # the same on AWS over IPv6
+```
+
+Narrow the `cidr`s to the ranges the tenant's scope allows, plus the API's
+Service, where that is known in advance. On `overlays/prod` this does nothing:
+a host-network pod is outside NetworkPolicy on most CNIs.
 
 ### NATS for the executor
 
@@ -233,7 +343,7 @@ kubectl -n network-scan get secret shapoclyack-nats -o jsonpath='{.data.agent_pa
 ```
 
 ```yaml
-# overlay patch on Deployment/shapoclyack-scanner-executor, container executor
+# overlay patch on StatefulSet/shapoclyack-scanner-executor, container executor
 env:
   - name: NATS_PASSWORD
     valueFrom:
@@ -252,13 +362,47 @@ env:
 The copied password has to be rotated with the original
 ([operations.md § Data-plane credentials](operations.md#data-plane-credentials)).
 
+## Traffic between the executor and the API
+
+By default the executor talks to `http://shapoclyack-api.network-scan.svc:8080`
+— **plain HTTP across the cluster network**, like every other client of that
+Service. This is a deviation, and what crosses the wire is not small: the
+provisioning key on every exchange, the agent JWT on every call, and every
+run's results on upload. Someone who can read traffic between the two pods — a
+compromised node on the path, or a host-network pod on either node (on
+`overlays/prod` the executor itself is one) — can replay the key and enroll an
+agent of that tenant until the key is revoked or expires, and read the scan
+results. A CNI that encrypts pod traffic (WireGuard in Calico or Cilium, IPsec)
+closes this; the manifests cannot know whether yours does.
+
+Base does not switch to TLS by default because it needs a certificate these
+manifests cannot ship. The component that does is **`base/api-tls`**: the API
+serves TLS itself (`OCTO_API_TLS_CERT`/`_KEY` from Secret `shapoclyack-api-tls`)
+and the executor dials `https://` with verification against ConfigMap
+`shapoclyack-api-ca` in its own namespace. `overlays/kind-dev` uses it with the
+stand's development CA; for any other overlay:
+
+```yaml
+components:
+  - ../../base/api-tls
+```
+
+with a certificate naming `shapoclyack-api.network-scan.svc` (cert-manager's
+`Certificate` writes the Secret's shape) and its CA copied into the ConfigMap.
+Whatever else talks to the Service then has to speak HTTPS to it too — an
+ingress needs its backend protocol set (for ingress-nginx,
+`nginx.ingress.kubernetes.io/backend-protocol: HTTPS`).
+`tests/test_k8s_topology.py` fails any render in which the executor's scheme
+does not match the API's.
+
 ## Enrolling the scanner-executor
 
 The executor starts only once Secret `shapoclyack-scanner-executor` (key
 `provisioning_key`) exists in `network-scan-executor`. Until then it waits in
-`CreateContainerConfigError` naming the Secret — deliberately: a key is minted
-by the API after it is up, so it cannot ship with the manifests, and a
-crash-looping pod says less than a missing Secret does.
+`ContainerCreating` with a `FailedMount` event naming the Secret — deliberately:
+a key is minted by the API after it is up, so it cannot ship with the
+manifests, and a crash-looping pod says less than a missing Secret does. The
+namespace is created by the apply, so the Secret comes after it.
 
 1. Mint a key for the tenant the executor scans for, as an account with
    `tenant.credential.manage` (the tenant's admin, or the `token-admin` role).
@@ -271,9 +415,9 @@ crash-looping pod says less than a missing Secret does.
      -d '{"label": "in-cluster scanner-executor"}'
    ```
 
-   The response carries `key` once; it is stored only as a hash. Keys expire
-   after `OCTO_PROVISIONING_KEY_TTL_DAYS` (default 90) — rotate by minting a new
-   one, replacing the Secret and revoking the old key.
+   The response carries `key` once; it is stored only as a hash. Mint it in
+   the tenant the executor is to scan for — an agent only ever claims its own
+   tenant's jobs.
 
 2. Store it where the executor reads it:
 
@@ -288,10 +432,43 @@ crash-looping pod says less than a missing Secret does.
    `ExternalSecret` for it.
 
 3. The pod starts on its own (the kubelet retries), registers, and appears in
-   **Sensor Fleet** under the node's name.
+   **Sensor Fleet** as `shapoclyack-scanner-executor-0`, on the node's hostname.
 
 On the kind stand `scripts/dev-up.sh` does steps 1–2 with the demo admin
 account, once; an existing Secret is left alone.
+
+### Key expiry and rotation
+
+**The key expires, and the executor stops with it.** Keys expire after
+`OCTO_PROVISIONING_KEY_TTL_DAYS` (default 90) from minting, and the executor
+exchanges its key again every time it refreshes its token — so on that day it
+stops taking scans, its jobs queue flagged `sensor_unavailable`, and it shows
+stale in **Sensor Fleet**. **Users → Provisioning keys** shows every key's
+expiry and marks the ones within 14 days of it (`GET
+/api/tenants/{tenant}/provisioning-keys` reports `expires_at` and
+`expires_soon`). An installation that would rather manage the key's lifetime
+itself sets `OCTO_PROVISIONING_KEY_TTL_DAYS=0`, which mints keys that never
+expire; that is an installation-wide policy, deliberately not a per-key
+choice a tenant admin could make.
+
+To rotate, before the old key expires:
+
+1. Mint a new key in the same tenant (step 1 above).
+2. Replace the Secret's value — `kubectl -n network-scan-executor create secret
+   generic shapoclyack-scanner-executor --from-file=provisioning_key=/dev/stdin
+   --dry-run=client -o yaml | kubectl apply -f -`, or update the source an
+   `ExternalSecret` reads. The kubelet updates the mounted file within a minute
+   or two.
+3. Revoke the old key. The executor's token, minted from it, is refused on its
+   next call; the executor exchanges again, reading the file, and gets a token
+   from the new key under the same agent id — the id is released to the new key
+   because the old one is revoked (#308).
+4. If the pod does not recover within a few minutes (the file was not updated,
+   or the Secret was replaced under another key name):
+   `kubectl -n network-scan-executor rollout restart statefulset/shapoclyack-scanner-executor`.
+
+Revoking before the Secret is updated makes the executor retry with the revoked
+key until the file changes; nothing is lost, the jobs wait.
 
 ## Kyverno and Gatekeeper
 
@@ -305,8 +482,8 @@ upstream [pod-security policies](https://github.com/kyverno/policies/tree/main/p
 (`baseline` and `restricted` sets). Scoped by policy and rule, by namespace
 *and* by name, so it covers the executor's pods and nothing later put beside
 them. The `autogen-` rule names are the ones Kyverno generates for the
-Deployment and ReplicaSet — an exception naming only the Pod rule admits the pod
-and blocks the Deployment that creates it:
+StatefulSet — an exception naming only the Pod rule admits the pod and blocks
+the StatefulSet that creates it:
 
 ```yaml
 apiVersion: kyverno.io/v2          # v2beta1 on Kyverno 1.11/1.12
@@ -325,13 +502,15 @@ spec:
   match:
     any:
       - resources:
-          kinds: [Pod, Deployment, ReplicaSet]
+          kinds: [Pod, StatefulSet]
           namespaces: [network-scan-executor]
           names: ["shapoclyack-scanner-executor*"]
 ```
 
-The file has a second exception, `disallow-host-namespaces`, for
-`overlays/prod`'s `hostNetwork` only — apply it only there. PolicyExceptions
+`overlays/prod`'s `hostNetwork` needs a second exception,
+`disallow-host-namespaces`, in a file of its own —
+`kyverno-policyexception-prod-hostnetwork.example.yaml` — so that it is applied
+only where that overlay is. PolicyExceptions
 must be enabled in the Kyverno install (`--enablePolicyException`; with
 `--exceptionNamespace` set, create them in that namespace instead).
 
@@ -360,9 +539,13 @@ is a constraint that does not match — so:
   run the same image.
 - **read-only root filesystem**: no exemption; every Shapoclyack container
   passes.
-- **host network**: off in `network-scan`; for `overlays/prod`, a
-  `K8sPSPHostNetworkingPorts` with `hostNetwork: true` scoped to
-  `network-scan-executor`.
+- **host network**: off in both namespaces — `network-scan-executor` is
+  `privileged` to Pod Security, so without this Gatekeeper would be the only
+  thing standing between it and a host-network pod, and it would not be
+  standing. For `overlays/prod`, `gatekeeper-prod-hostnetwork.example.yaml`
+  replaces the executor namespace's constraint (same name) with one that allows
+  it; apply it after the main file, every time. Forgetting it refuses the next
+  executor pod — loudly, rather than widening the namespace.
 
 Already running cluster-wide constraints of these kinds? Add
 `network-scan-executor` to their `spec.match.excludedNamespaces` and apply only
@@ -379,11 +562,10 @@ relabelled `enforce: privileged`. The executor is removed.
 
 It exists because some things only work that way:
 
-- **Installation config overrides** (the console's configurator) and **custom
-  wordlists** reach a scan only when the API runs it: a sensor scans with its
-  own mounted config, and `POST /api/jobs` refuses a `wordlist_id` in agent mode
-  rather than ignoring it. Scan-intent overlays (nuclei floors, `top_ports`)
-  are skipped in agent mode likewise.
+- **Custom wordlists** reach a scan only when the API runs it: `POST
+  /api/jobs` refuses a `wordlist_id` in agent mode rather than ignoring it.
+  (Config overrides and scan intents reach the executor as the job's config
+  overlay — [above](#the-scanner-executor).)
 - **A CronJob scan driven by the `scan-targets` Secret.** In the default
   topology a recurring scan is an API schedule (`POST /api/schedules`), which
   also gives it a job row, a tenant and that tenant's notification channels —
@@ -397,6 +579,9 @@ in a namespace that no longer enforces anything. Use it deliberately:
 
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/local-scan
+# apply prunes nothing: the executor from the default topology keeps running,
+# and keeps its raw sockets, until it is deleted.
+kubectl delete namespace network-scan-executor --ignore-not-found
 ```
 
 To combine it with another overlay, list the component there:
@@ -418,14 +603,38 @@ same volume and `OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE` as
 For an installation moving from a pre-#338 release:
 
 - **Scans run in the executor**, which needs a provisioning key before it starts
-  ([Enrolling](#enrolling-the-scanner-executor)). Until it has one, jobs stay
-  `queued`.
+  ([Enrolling](#enrolling-the-scanner-executor)). Until it has one, jobs are
+  accepted and stay `queued`, flagged `sensor_unavailable` (a banner above the
+  scan launcher and "no sensor online" on the System page say the same).
+- **One executor serves one tenant**, the one its key belongs to, and **it
+  stops when that key expires** (90 days by default). Other tenants' scans
+  queue flagged the same way until they have an executor of their own; the key
+  list shows each key's expiry ([Key expiry and rotation](#key-expiry-and-rotation)).
+- **Jobs carry their config.** The scan intent and the configurator's
+  overrides reach the executor as the job's config overlay; an agent that
+  predates it is refused such jobs with `426` until upgraded. External sensors
+  must be upgraded with the API. The NVD key and custom wordlists do not
+  travel ([above](#the-scanner-executor)).
+- **Delta and report-diff baselines live in the executor's `emptyDir`**: a
+  restart makes the next delta run a full one, and each replica keeps its own.
+- **Queued jobs are claimed oldest first, per tenant**, whatever built up while
+  no executor was enrolled; a schedule that fired meanwhile is one job each
+  time, not a backlog of one per interval (an overlapping run is skipped). The
+  maintenance calendar is checked when a scan is started, not again when the
+  executor claims it (docs/api-and-rbac.md), so a job queued before a window
+  opened can still run inside it — cancel what should not.
+- **The API runs the API image**, without the scanner toolchain
+  ([Workloads](#workloads)).
 - **The scan Job and CronJob are gone from base.** `kubectl apply` does not
   delete them (no pruning): remove `Job/network-scan` and
   `CronJob/network-scan-scheduled` by hand, and move the schedule to
   `POST /api/schedules` — or apply `overlays/local-scan`.
 - **`overlays/prod` no longer pins the API to the scanner pool.** Only the
-  executor goes there now, on the host network.
+  executor goes there now, on the host network. Its API is rolled with
+  `strategy: Recreate`: unpinned, a surging rollout would schedule the new pod
+  on another node, where the ReadWriteOnce `scanner-data` cannot attach while
+  the old pod holds it, and stall. Every rollout of it is a short outage of the
+  console and API; executors keep scanning and retry their uploads.
 - **`overlays/agents` scales the executor** instead of deploying its own
   `shapoclyack-agent` Deployment, which — having no namespace — landed in
   whatever namespace the kubeconfig pointed at. Delete the old Deployment and
@@ -457,26 +666,63 @@ Not done here, and why:
 ## Upgrading
 
 ```bash
-# 1. The executor's key, before or after the apply (it waits for it).
-#    See "Enrolling the scanner-executor".
+# 0. Anything in network-scan the new label would refuse (read the warnings):
+kubectl label --dry-run=server --overwrite ns network-scan \
+  pod-security.kubernetes.io/enforce=baseline
 
-# 2. overlays/prod only: the API moves off the scanner pool. Its RWO volume
-#    can attach to one node at a time and the rollout surges before it drains
-#    (maxUnavailable: 0), so let the old pod go first:
-kubectl -n network-scan scale deploy/shapoclyack-api --replicas=0
-
-# 3. Apply. The namespace is relabelled enforce=baseline in the same apply;
-#    Pod Security never evicts running pods, it only refuses new ones.
+# 1. Apply. network-scan is relabelled enforce=baseline in the same apply (Pod
+#    Security never evicts running pods, it only refuses new ones), and
+#    network-scan-executor is created. overlays/prod rolls its API with
+#    Recreate, so the RWO volume detaches before the new pod needs it.
 kubectl apply -k k8s/shapoclyack/overlays/<yours>
 
-# 4. What apply does not prune.
+# 2. The executor's key, now that its namespace exists. The pod waits in
+#    ContainerCreating until then; scans started meanwhile queue.
+#    See "Enrolling the scanner-executor".
+
+# 3. What apply does not prune.
 kubectl -n network-scan delete cronjob/network-scan-scheduled job/network-scan --ignore-not-found
 kubectl delete deploy,vpa shapoclyack-agent --ignore-not-found   # overlays/agents, wherever it landed
+
+# 4. Sensors outside the cluster: upgrade them with the API. One that predates
+#    the config overlay is refused jobs carrying an intent or overrides (426 in
+#    its log, the job stays queued) until it is.
 ```
 
-Anything else in `network-scan` that the new label would refuse shows up in step
-3's warnings and in `kubectl label --dry-run=server --overwrite ns network-scan
-pod-security.kubernetes.io/enforce=baseline` beforehand.
+A tenant that scans and is not the one whose key the executor holds needs an
+executor of its own (above) before its scans run again.
+
+## Rolling back
+
+To the release before #338: **re-apply that release's manifests**, the same
+way they were applied, and delete what they do not know about.
+
+```bash
+git checkout <previous-release> -- k8s/
+kubectl apply -k k8s/shapoclyack/overlays/<yours>
+kubectl delete namespace network-scan-executor --ignore-not-found
+```
+
+`kubectl rollout undo deployment/shapoclyack-api` is **not** a way back: it
+restores only the pod template — the API with `NET_RAW`/`NET_ADMIN` it had
+before — into a namespace that still enforces `baseline`, which refuses the new
+pods (`FailedCreate` on the ReplicaSet, "violates PodSecurity") while the
+current pod keeps running. Re-applying the old release removes the
+`pod-security.kubernetes.io/*` labels it never had (a client-side `apply`
+removes fields its last-applied configuration held and the new one does not),
+and the namespace is applied before the Deployment. If the labels were set some
+other way, drop them first:
+
+```bash
+kubectl label ns network-scan pod-security.kubernetes.io/enforce- \
+  pod-security.kubernetes.io/audit- pod-security.kubernetes.io/warn-
+```
+
+Jobs queued for agent execution in the meantime stay queued under a local-mode
+API, which never claims them: cancel them and start them again. On
+`overlays/prod` the rollback schedules the API back onto the scanner pool,
+where its RWO volume has to follow it — scale the API to zero first, as the
+pre-#338 upgrade notes said.
 
 ## Verifying on a cluster
 
@@ -491,9 +737,14 @@ kubectl label --dry-run=server --overwrite ns network-scan \
 # The executor's bounding set is NET_ADMIN (12) + NET_RAW (13) and nothing else,
 # i.e. CapBnd 0000000000003000; the API's is 0000000000000000. getcap shows what
 # the image hands naabu on exec.
-kubectl -n network-scan-executor exec deploy/shapoclyack-scanner-executor -- \
+kubectl -n network-scan-executor exec shapoclyack-scanner-executor-0 -- \
   sh -c 'grep CapBnd /proc/1/status; getcap /usr/local/bin/naabu'
 kubectl -n network-scan exec deploy/shapoclyack-api -- grep CapBnd /proc/1/status
+
+# No setuid binary in the executor's image; the key is a file, not in the
+# environment, and its agent id is its pod name.
+kubectl -n network-scan-executor exec shapoclyack-scanner-executor-0 -- \
+  sh -c 'find / -xdev -perm /6000 -type f; env | grep -c PROVISIONING_KEY=; echo "$OCTO_AGENT_ID"'
 
 # No service-account token anywhere.
 kubectl -n network-scan exec deploy/shapoclyack-api -- ls /var/run/secrets/kubernetes.io 2>&1
@@ -509,7 +760,11 @@ seccomp, the upload through the API's `/tmp`, and ingest.
 ## How this is checked
 
 - `tests/test_k8s_pod_security.py` renders base and every overlay with
-  `kubectl kustomize` (skipped, and saying so, without it) and asserts, per pod:
+  `kubectl kustomize`, or reads what `k8s/scripts/validate-kustomize.sh`
+  rendered into `OCTO_K8S_RENDER_DIR` (the Jenkinsfile's Tests stage renders on
+  the node and hands the directory to its kubectl-less Python containers).
+  Without either it skips and says so — and under `OCTO_REQUIRE_INTEGRATION=1`,
+  which CI sets, it fails instead. It asserts, per pod:
   admission by its namespace's `enforce` level, using a transcription of
   k8s.io/pod-security-admission's baseline and restricted checks; the
   repository baseline above, with `EXCEPTIONS` as the only way out; the API pod
@@ -518,6 +773,17 @@ seccomp, the upload through the API's `/tmp`, and ingest.
   scanner's tools run) for every Shapoclyack container. The examples and
   `job-resume.yaml`, which nothing renders, are checked as files, and
   `examples/*-patch.yaml` may not loosen anything they patch.
+- `tests/test_k8s_topology.py` holds the renders to their wiring: an API in
+  agent mode has an executor to hand work to; the executor dials the API's
+  Service in the API's namespace, over `https` exactly when the API serves TLS
+  and against a CA it mounts; its key is a required Secret file, not an
+  environment variable; it is a StatefulSet with `OCTO_AGENT_ID` from its pod
+  name, a PDB and no evicting VPA; it requests the disk its `emptyDir`s may
+  fill; a host-network pod keeps cluster DNS; the API runs the API image;
+  `overlays/prod` rolls it with `Recreate`; each datastore can write every path
+  its image writes; ClickHouse logs to the console only; the executor's image
+  strips setuid bits. Each of these was a mutation of the manifests that the
+  Pod Security checks let through.
 - Independently, for #338: the upstream `k8s.io/pod-security-admission` library
   (v0.31.4) over every render; `kyverno apply` 1.13.4 with the upstream
   pod-security policy set, with and without the PolicyException example; and

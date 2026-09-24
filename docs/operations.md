@@ -1623,6 +1623,10 @@ with `--key` yourself — use `--key-stdin`, or accept that the key is in your
 shell history and in the host's process list while the installer runs. Rotate
 the key if the host is shared.
 
+A sensor can read its key from a file instead —
+`OCTO_AGENT_PROVISIONING_KEY_FILE`, read again on every exchange, which is what
+the Kubernetes scanner-executor does ([k8s-hardening.md](k8s-hardening.md#key-expiry-and-rotation)).
+
 The variables in `agent.env` are `OCTO_API_URL`, `OCTO_AGENT_PROVISIONING_KEY`,
 `OCTO_AGENT_ID`, `OCTO_TENANT_ID` and `OCTO_NATS_URL`. All but one are what
 `agent/worker.py` reads; `OCTO_TENANT_ID` is written for the operator's
@@ -1695,6 +1699,17 @@ A few edges worth knowing before you rely on it:
   it disappears by itself the moment a sensor of that group heartbeats — it
   never claims a job cannot run because nothing was listening an hour ago. The
   fix is to register a sensor into the group (or re-address the scan).
+- **A job addressed to no group** answers the same question as
+  `sensor_unavailable` ([#338](https://github.com/onixus/Shapoclyack/issues/338)):
+  `true` while it is queued for agent execution and its tenant has no active
+  scanner sensor with a recent heartbeat — no executor enrolled yet, one
+  enrolled with another tenant's key (a sensor claims only its own tenant's
+  jobs), or one whose provisioning key has expired. Recomputed on every read
+  like the group flag; the scan start logs a warning instead of refusing, and
+  the start response already carries it. `GET /api/agents/summary` reports
+  `scan_ready_agents` (online, active, scanner kind) for the same purpose: the
+  console shows a banner above the scan launcher and "no sensor online" on the
+  System page when it is `0` in agent mode.
 - **With NATS, each group has its own subject.** A job addressed to a group is
   offered on `jobs.scan.{tenant}.{group}` (durable consumer
   `octo-agents-{tenant}-{group}`), and a sensor binds only the subjects it is

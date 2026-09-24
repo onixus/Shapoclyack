@@ -513,7 +513,7 @@ kubectl apply -k k8s/shapoclyack/overlays/agents
 
 | Manifest | Behavior |
 |----------|----------|
-| `base/scanner-executor/deployment.yaml` | The in-cluster sensor; zone + hostname `topologySpreadConstraints` (overlay → 3 replicas) |
+| `base/scanner-executor/statefulset.yaml` | The in-cluster sensor, a StatefulSet so each pod keeps its agent id across restarts; zone + hostname `topologySpreadConstraints` (overlay → 3 replicas) |
 | `base/agents/agent-vpa.yaml` | VPA `updateMode: Auto` for CPU/RAM under burst scan load |
 | Overlay patches | Executor replicas 3; API NATS URL |
 
@@ -572,7 +572,7 @@ operator-set `NVD_API_KEY` also wins over the stored config value by design.
 
 ```bash
 kubectl -n network-scan get deploy,sts,cronjobs,pods,pvc,svc
-kubectl -n network-scan-executor logs -f deploy/shapoclyack-scanner-executor
+kubectl -n network-scan-executor logs -f statefulset/shapoclyack-scanner-executor
 # overlays/local-scan only:
 kubectl -n network-scan logs -f job/network-scan
 kubectl apply -f k8s/shapoclyack/base/local-scan/job-resume.yaml

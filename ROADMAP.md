@@ -180,7 +180,7 @@ FS diffs remain default (CH diff helpers available via `ch_diff.py`).
 
 | ID | Task | Dir / surface | Action | Status |
 |----|------|---------------|--------|--------|
-| 4.1 | Sensor distribution | `k8s/shapoclyack/base/scanner-executor/deployment.yaml` (was `base/agents/agent-deployment.yaml` until #338) | `topologySpreadConstraints` on zone + hostname | **Done** |
+| 4.1 | Sensor distribution | `k8s/shapoclyack/base/scanner-executor/statefulset.yaml` (was `base/agents/agent-deployment.yaml` until #338) | `topologySpreadConstraints` on zone + hostname | **Done** |
 | 4.2 | Vertical Pod Autoscaling | `k8s/shapoclyack/base/agents/agent-vpa.yaml` | VPA Auto (CPU/RAM min-max) for sensor pods | **Done** |
 | 4.3 | Opt-in overlay | `k8s/shapoclyack/overlays/agents` | replicas=3 + API agent-mode; not in default base | **Done** |
 
