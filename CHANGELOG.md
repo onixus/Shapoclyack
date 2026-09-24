@@ -6,6 +6,32 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Disaster recovery beyond PostgreSQL** ([#333](https://github.com/onixus/Shapoclyack/issues/333)).
+  A new `shapoclyack-clickhouse-backup` CronJob in `base/backup` runs
+  `BACKUP DATABASE … TO S3 … ASYNC` daily at 02:45 UTC with the Postgres job's
+  `shapoclyack-backup` Secret, waits on `system.backups`, and writes a
+  `manifest.jsonl` of per-table part and row counts read back from the
+  uploaded backup. `scripts/restore-clickhouse.sh` (`--dry-run`, `--namespace`
+  or `--local`) refuses a backup that no longer matches its manifest (counts
+  or `.backup` digest), a manifest table name that is not an identifier, and a
+  target table that already has rows; it restores with merges stopped and
+  compares every table's count to the manifest. The S3 secret travels only on
+  the client's stdin, and everything `clickhouse-client` prints — including
+  the statement it echoes after an error — is scrubbed. The pod runs as
+  uid 101, read-only root, no service-account token, and is admitted to
+  ClickHouse `:9000` by its own `clickhouse-backup` label only.
+  `examples/prometheusrule-backup.example.yaml` gains
+  `ShapoclyackClickHouseBackupStale` and `ShapoclyackClickHouseBackupJobFailed`;
+  `examples/pvc-snapshot.example.yaml` is a CSI snapshot of `scanner-data` and
+  its restore into the drill namespace. `overlays/kind-restore` now keeps
+  ClickHouse and drops both backup CronJobs. `docs/disaster-recovery.md` is the
+  runbook: which store is the truth, the restore order, how restore points of
+  Postgres, artifacts and ClickHouse are reconciled, JetStream re-creation and
+  the INGEST replay that closes the ClickHouse gap, the keys no backup
+  contains, and an RPO/RTO table. `scripts/dr-drill.py` runs seed → backup →
+  wipe → restore → verify on a local stack; recorded at 10k assets (off-cluster,
+  shared 4 vCPU): console-path RTO 5.6–9.6 s, all stores 7.9–11.9 s.
+
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.
