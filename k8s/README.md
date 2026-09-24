@@ -61,12 +61,19 @@ needs `allowPrivilegeEscalation: true` alongside
 `capabilities.add: [NET_RAW, NET_ADMIN]` — setting `allowPrivilegeEscalation:
 false` (a common hardening default) sets `no_new_privs`, which silently
 blocks those file capabilities from taking effect on exec, regardless of what
-`capabilities.add` lists. This is a Linux capabilities interaction, not a
-Docker-vs-Kubernetes difference — it affected both runtimes equally before
-being fixed (see `job.yaml`, `cronjob.yaml`, `api-deployment.yaml`,
-`agents/agent-deployment.yaml`, all of which correctly set it `true`). Don't
-"fix" it back to `false` on any manifest that runs naabu/pulse/nmap
-directly.
+`capabilities.add` lists; and leaving `NET_ADMIN` out makes the exec itself
+fail with EPERM, since the files carry it. This is a Linux capabilities
+interaction, not a Docker-vs-Kubernetes difference. Don't "fix" it back to
+`false` on any manifest that runs naabu/pulse/nmap directly.
+
+Since [#338](https://github.com/onixus/Shapoclyack/issues/338) exactly one pod
+does: the **scanner-executor** (`base/scanner-executor/`), in its own namespace
+`network-scan-executor`. `NET_RAW` is outside the Pod Security *baseline*, so
+`network-scan` — API, databases, every Secret — enforces `baseline` and holds
+no pod that scans; the API runs in agent mode and passes `restricted`. The
+per-workload table, every exception with its reason, Kyverno/Gatekeeper
+snippets and the upgrade steps are in
+[docs/k8s-hardening.md](../docs/k8s-hardening.md).
 
 **Published images are Nmap-free by default** — `ghcr.io/onixus/shapoclyack-{scanner,aio}:latest`
 (and versioned tags) are built with `INSTALL_NMAP=0`; no Nmap binary, NSE data,
@@ -91,21 +98,24 @@ Nmap-free image.
 
 ```
 k8s/shapoclyack/
-├── base/                 # namespace, SA, PVC, NATS, ClickHouse, Job, CronJob, aio API
+├── base/                 # namespace (PSA enforce=baseline), SA, PVC, NATS, ClickHouse, aio API (agent mode, restricted)
+├── base/scanner-executor/ # the in-cluster sensor, in network-scan-executor (PSA privileged): where scans run
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
-├── base/config/k8s.yaml  # scanner ConfigMap source
-├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +sensor pods) only
-├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
-├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
-├── overlays/dev/         # smaller resources, --mode safe
-├── overlays/prod/        # hostNetwork + scanner node pool
+├── base/config/k8s.yaml  # scanner ConfigMap source (one copy per namespace)
+├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup) only
+├── base/agents/          # optional VPA for the scanner-executor (not in default base)
+├── base/local-scan/      # opt-in component: API-local scanning + scan Job/CronJob, network-scan privileged
+├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patch
+├── overlays/dev/         # smaller API, OCTO_ENV=dev
+├── overlays/prod/        # scanner-executor on hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
-├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false
-├── overlays/agents/      # sensors (topology spread + VPA) + API agent-mode
+├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false, scan Job/CronJob
+├── overlays/agents/      # 3 scanner-executors (topology spread + VPA) + API NATS dispatch
+├── overlays/local-scan/  # base + base/local-scan: the pre-#338 topology, a documented exception
 ├── overlays/enrichment/  # real GeoIP/EPSS/KEV/CVSS4 data, hot-reloaded, no restart needed
 ├── overlays/kind-enrichment/ # kind-dev + enrichment, with the PVC dropped to RWO for local-path
-└── examples/             # Secrets / Ingress / sensor / NATS patches + ServiceMonitor
+└── examples/             # Secrets / Ingress / remote sensor / NATS patches + ServiceMonitor + Kyverno/Gatekeeper exceptions
 ```
 
 ### NATS JetStream
@@ -411,16 +421,22 @@ Egress policy remains an overlay concern.
 
 ### 3. Apply overlay
 
-**Dev** (aio API with UI job start, smaller CPU/RAM, Job `--mode safe`):
+Every overlay below except `api-readonly` and `local-scan` scans through the
+**scanner-executor**, which starts once it has a provisioning key — mint one
+after the API is up and store it as Secret `shapoclyack-scanner-executor` in
+`network-scan-executor`
+([docs/k8s-hardening.md § Enrolling the scanner-executor](../docs/k8s-hardening.md#enrolling-the-scanner-executor)).
+Until then it waits in `CreateContainerConfigError` and jobs stay queued.
+
+**Dev** (aio API with UI job start, smaller CPU/RAM):
 
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/dev
-# re-run a finished one-shot Job:
-kubectl -n network-scan delete job network-scan --ignore-not-found
-kubectl apply -k k8s/shapoclyack/overlays/dev
 ```
 
-**Prod** (nodes labeled `workload=scanner`, taint `scanner=true:NoSchedule`):
+**Prod** (scanner-executor on the host network, on nodes labeled
+`workload=scanner` and tainted `scanner=true:NoSchedule`; upgrading from a
+release before #338, read [Upgrading](../docs/k8s-hardening.md#upgrading) first):
 
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/prod
@@ -438,10 +454,20 @@ placeholders you must fill in first. Read
 kubectl apply -k k8s/shapoclyack/overlays/prod-ha
 ```
 
-**Results-only API** (thin image, no local scan start):
+**Results-only API** (thin image, no scan start; runs come from the scan
+Job/CronJob, which need `network-scan` at Pod Security `privileged`):
 
 ```bash
 kubectl apply -k k8s/shapoclyack/overlays/api-readonly
+```
+
+**Local scanning** (the pre-#338 topology: the API and the scan Job/CronJob scan
+from `network-scan`, which then enforces nothing — a documented exception, for
+config overrides and custom wordlists, which only reach local scans; see
+[docs/k8s-hardening.md § Local execution](../docs/k8s-hardening.md#local-execution)):
+
+```bash
+kubectl apply -k k8s/shapoclyack/overlays/local-scan
 ```
 
 ### 4. Dashboard
@@ -471,26 +497,28 @@ Default RBAC:
 | `admin` | Operator access plus tenant provisioning and configuration administration |
 
 Default aio Deployment sets **`OCTO_ALLOW_SCAN_START=true`** so operators start scans from
-the Jobs page. Scheduled scans can still use `Job` / `CronJob`. Sensors remain optional
-(see **overlays/agents** below, or `examples/agent-*.yaml`).
+the Jobs page; since #338 the API queues them (`OCTO_JOB_EXECUTION_MODE=agent`) for the
+in-cluster scanner-executor. Recurring scans are API schedules (`POST /api/schedules`);
+the `Job` / `CronJob` path lives on in `overlays/local-scan`.
 
-### Optional: sensors (topology spread + VPA)
+### Optional: more sensors (topology spread + VPA)
 
-Sensors are **not** in the default `base` kustomization (they need a provisioning key
-or the legacy `OCTO_AGENT_TOKEN`, and usually `OCTO_JOB_EXECUTION_MODE=agent`). Enable with:
+Base runs one scanner-executor. For more, spread across zones and nodes under a VPA,
+with the API publishing job offers on NATS for sensors outside the cluster:
 
 ```bash
-# Requires: Secret shapoclyack-agent, VPA CRDs, and preferably NATS
+# Requires: the executor's Secret (above) and VPA CRDs
 kubectl apply -k k8s/shapoclyack/overlays/agents
 ```
 
 | Manifest | Behavior |
 |----------|----------|
-| `base/agents/agent-deployment.yaml` | Replicas 2 (overlay → 3); zone + hostname `topologySpreadConstraints`; NATS URL wired |
+| `base/scanner-executor/deployment.yaml` | The in-cluster sensor; zone + hostname `topologySpreadConstraints` (overlay → 3 replicas) |
 | `base/agents/agent-vpa.yaml` | VPA `updateMode: Auto` for CPU/RAM under burst scan load |
-| Overlay patches | API `OCTO_JOB_EXECUTION_MODE=agent` + NATS URL |
+| Overlay patches | Executor replicas 3; API NATS URL |
 
-Standalone example: `shapoclyack/examples/agent-deployment.example.yaml`.
+A sensor in another cluster (branch office, customer segment):
+`shapoclyack/examples/agent-deployment.example.yaml`.
 
 ### Optional: real GeoIP / EPSS / KEV / CVSS4 data
 
@@ -512,10 +540,13 @@ kubectl apply -k k8s/shapoclyack/overlays/kind-enrichment
 |----------|----------|
 | `base/enrichment/pvc.yaml` | `enrichment-data` RWX PVC (2Gi) shared by every replica |
 | `base/enrichment/cronjob.yaml` | Daily 03:00 UTC `scripts/fetch-enrichment.sh` refresh into the PVC |
-| `base/enrichment/*-patch.yaml` | API gets a cold-start `fetch-enrichment` initContainer + read-only volume mount + `OCTO_EPSS_DATABASE`/`OCTO_KEV_DATABASE`/`OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE`/`OCTO_ENRICHMENT_RELOAD_SECONDS`; the weekly scan CronJob gets the volume + GeoIP/CVSS4 env |
+| `base/enrichment/api-enrichment-patch.yaml` | API gets a cold-start `fetch-enrichment` initContainer + read-only volume mount + `OCTO_EPSS_DATABASE`/`OCTO_KEV_DATABASE`/`OCTO_GEOIP_DATABASE`/`OCTO_CVSS4_DATABASE`/`OCTO_ENRICHMENT_RELOAD_SECONDS` |
 
 `base/enrichment/` is a kustomize **Component**, pulled in under `components:` rather
-than `resources:` — that is what lets both overlays reuse the same two patches.
+than `resources:` — that is what lets both overlays reuse the same patch. The
+scanner-executor cannot mount this volume (it is in another namespace), so scanner-side
+GeoIP/CVSS4 come from the data baked into the image
+([docs/k8s-hardening.md § What changes](../docs/k8s-hardening.md#what-changes)).
 
 The API re-checks the EPSS/KEV files' mtimes at most once per
 `OCTO_ENRICHMENT_RELOAD_SECONDS` (default 60s) and reloads in place when the daily
@@ -540,9 +571,11 @@ operator-set `NVD_API_KEY` also wins over the stored config value by design.
 ### 5. Observe / resume
 
 ```bash
-kubectl -n network-scan get jobs,cronjobs,deploy,pods,pvc,svc
+kubectl -n network-scan get deploy,sts,cronjobs,pods,pvc,svc
+kubectl -n network-scan-executor logs -f deploy/shapoclyack-scanner-executor
+# overlays/local-scan only:
 kubectl -n network-scan logs -f job/network-scan
-kubectl apply -f k8s/shapoclyack/base/job-resume.yaml
+kubectl apply -f k8s/shapoclyack/base/local-scan/job-resume.yaml
 ```
 
 Artifacts: PVC `scanner-data` → `output/` and `state/` subPaths — the default

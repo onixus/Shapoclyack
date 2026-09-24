@@ -136,6 +136,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **The API pod passes Pod Security `restricted`; scans moved to a
+  `scanner-executor` in a namespace of its own
+  ([#338](https://github.com/onixus/Shapoclyack/issues/338)).** The API held
+  `NET_RAW`/`NET_ADMIN` and `allowPrivilegeEscalation: true` because it ran
+  scans in its own container; an RCE there was an RCE with raw sockets next to
+  every credential of the control plane. The manifests now run the API in
+  `OCTO_JOB_EXECUTION_MODE=agent` and add `base/scanner-executor/`: the sensor
+  (`python -m agent`) in `network-scan-executor`, claiming jobs over HTTP with
+  a provisioning key from Secret `shapoclyack-scanner-executor` — the only
+  credential it holds, minted after the API is up (`scripts/dev-up.sh` does it
+  on the kind stand). `network-scan` is labelled `enforce: baseline`,
+  `audit`/`warn: restricted`; `NET_RAW` is outside `baseline`, so the executor's
+  namespace is the one `privileged` exception, holding nothing else. Every
+  workload gets seccomp `RuntimeDefault`, a read-only root filesystem with each
+  writable path an `emptyDir`/PVC, `drop: [ALL]` and no service-account token;
+  ClickHouse loses `SYS_NICE` (outside `baseline`) and file logging. **Upgrade
+  action required:** enroll the executor, delete the scan Job/CronJob and
+  `overlays/agents`' old `shapoclyack-agent` (apply does not prune), and on
+  `overlays/prod` scale the API to 0 first — it no longer shares the scanner
+  pool. The scan Job/CronJob and API-local scanning, which config overrides and
+  custom wordlists still need, remain as the opt-in `overlays/local-scan`.
+  `tests/test_k8s_pod_security.py` renders every overlay and holds each pod to
+  its namespace's level and the baseline, with a documented exception list.
+  Kyverno/Gatekeeper exceptions, the per-workload table and the migration are
+  in `docs/k8s-hardening.md`.
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
   response used to answer `401`, which the console treats as "session over"

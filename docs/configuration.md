@@ -754,7 +754,7 @@ Core deployment variables:
 | `OCTO_NATS_OUTBOX_*` | The durable record of publications the broker refused, and the reconciler that replays them once it is back. This is what lets NATS be a non-blocking readiness check — see the table under [NATS outbox](#nats-outbox) below and [operations.md](operations.md#nats-outbox) |
 | `OCTO_CLICKHOUSE_URL` | ClickHouse HTTP connection; empty disables the client and the ingest worker. TLS follows the **scheme**, not the port — `https://…` connects with certificate verification on any port, anything else is plaintext |
 | `OCTO_CH_INGEST_ENABLED` | Enable analytical ingest worker |
-| `OCTO_JOB_EXECUTION_MODE` | `local` (the API runs the scanner as a subprocess) or `agent` (jobs are queued for sensors to claim) |
+| `OCTO_JOB_EXECUTION_MODE` | `local` (the API runs the scanner as a subprocess) or `agent` (jobs are queued for sensors to claim). The Kubernetes manifests set `agent`: the API pod holds no raw-socket capability, and the in-cluster scanner-executor claims the jobs ([k8s-hardening.md](k8s-hardening.md), #338) |
 | `OCTO_AGENT_TOKEN` | **Deprecated, refused in `prod` from 2027-03-01.** Legacy shared bearer token for sensors; every sensor holding it is `tenant_id=default`. Use per-tenant provisioning keys instead |
 | `OCTO_AGENT_JWT_EXPIRE_MINUTES` | Lifetime of the agent JWT a provisioning key is exchanged for (default `120`). A sensor re-exchanges its key when the token expires, so this bounds how long a token lifted off a sensor host outlives the key being revoked |
 | `OCTO_PROVISIONING_KEY_TTL_DAYS` | Days a newly minted provisioning key stays exchangeable (default `90`; `0` mints perpetual keys, [#308](https://github.com/onixus/Shapoclyack/issues/308)). Applied at mint time only — changing it does not move the expiry of a key already handed to an installer, and **keys minted before this variable existed have no expiry and never gain one**. An exchange past `expires_at` answers `401`, the same message as an unknown or revoked key; `GET /api/tenants/{tenant_id}/provisioning-keys` reports `expires_at` and an `expires_soon` flag (14 days) so the ones to rotate can be found |
@@ -900,7 +900,7 @@ To move a multi-tenant installation across, per tenant:
 > **Channels only cover runs the API knows about.** The fan-out hangs off job
 > completion (`jobs.complete_job` for a sensor upload, `jobs._run_job` for a
 > local scan), so it fires for a scan started through `POST /api/jobs`, a
-> schedule, or a sensor. A `k8s/shapoclyack/base/cronjob.yaml` scan and a
+> schedule, or a sensor. A `k8s/shapoclyack/base/local-scan/cronjob.yaml` scan and a
 > bare `python -m scanner.main` run create no job row, reach neither function,
 > and are therefore **never** announced through a notification channel. For
 > those the installation-wide stages are still the only alerting there is:

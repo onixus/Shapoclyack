@@ -3051,7 +3051,7 @@ manifests themselves:
 |---------|------|--------------------|
 | Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
 | ClickHouse | 8123 / 9000 | API |
-| NATS | 4222 | API, sensors |
+| NATS | 4222 | API; sensors outside the cluster (the in-cluster scanner-executor claims over HTTP, [#338](https://github.com/onixus/Shapoclyack/issues/338)) |
 
 That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
 is a base resource: one `Ingress`-only policy per datastore, default-deny by
@@ -3079,7 +3079,9 @@ must admit. Run on 2026-09-02 against Calico v3.30.3: 16 of 16 rows matched —
 an unlabeled pod is refused by Postgres, ClickHouse (both ports) and NATS
 4222 and admitted by NATS 8222; a `backup`-labelled pod reaches Postgres and
 nothing else; an `agent`-labelled pod (a sensor) reaches NATS and nothing else; the API
-pod reaches all three. The datastores' kubelet probes kept passing, as the
+pod reaches all three. (Since #338 no in-cluster pod but the API is admitted to NATS;
+the script now expects the `agent` label to be refused and probes from the
+scanner-executor's namespace too — see [Kubernetes hardening](k8s-hardening.md).) The datastores' kubelet probes kept passing, as the
 manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
