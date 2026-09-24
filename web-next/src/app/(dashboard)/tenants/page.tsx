@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { Building, Copy, Plus, ShieldCheck } from "lucide-react";
+import { Building, Copy, Plus, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import {
@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataTable } from "@/components/data-table";
 import { ScanScopePanel } from "@/components/scan-scope-panel";
+import { TenantLifecyclePanel } from "@/components/tenants/tenant-lifecycle-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useCreateTenantWithKey, useTenantPosture, useTenants } from "@/hooks/use-tenants";
 import { type TenantInfo, type TenantPosture } from "@/lib/api";
@@ -44,6 +45,9 @@ export default function TenantsPage() {
   // closed". Held here rather than per row so closing it drops the editor
   // state with it (#226).
   const [scopeTenant, setScopeTenant] = useState<TenantInfo | null>(null);
+  // The tenant whose suspension and deletion are being managed (#325), or
+  // null. Platform admins only, like the API behind it.
+  const [lifecycleTenant, setLifecycleTenant] = useState<TenantInfo | null>(null);
 
   const { data = [], isLoading, error, isFetching } = useTenants(canList);
   const postureQuery = useTenantPosture(canList);
@@ -175,6 +179,22 @@ export default function TenantsPage() {
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
                   {t("scanScope.action")}
+                </Button>
+              ),
+            } satisfies ColumnDef<TenantInfo>,
+            {
+              id: "lifecycle",
+              header: "",
+              enableSorting: false,
+              cell: ({ row }) => (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 border-border text-xs"
+                  onClick={() => setLifecycleTenant(row.original)}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  {t("lifecycle.action")}
                 </Button>
               ),
             } satisfies ColumnDef<TenantInfo>,
@@ -339,6 +359,27 @@ export default function TenantsPage() {
           {scopeTenant ? (
             <div className="max-h-[70vh] overflow-y-auto pr-1">
               <ScanScopePanel tenantId={scopeTenant.tenant_id} />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={lifecycleTenant !== null}
+        onOpenChange={(next) => (next ? null : setLifecycleTenant(null))}
+      >
+        <DialogContent className="max-w-3xl border-border bg-card text-foreground">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              {t("lifecycle.dialogTitle", { tenant: lifecycleTenant?.name ?? "" })}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              {t("lifecycle.dialogDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          {lifecycleTenant ? (
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
+              <TenantLifecyclePanel tenantId={lifecycleTenant.tenant_id} />
             </div>
           ) : null}
         </DialogContent>
