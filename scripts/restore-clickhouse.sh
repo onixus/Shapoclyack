@@ -27,12 +27,17 @@ host — has to reach the bucket.
 
 Each check stops the run with its own exit code:
   4  the manifest is unreadable or names no table
-  6  the backup's part/row counts or its .backup digest differ from the manifest
-  7  a table the backup holds already has rows in the target database
+  6  the backup's part/row counts or its .backup digest differ from the manifest,
+     or .backup lists parts whose count.txt is not an object of its own
+  7  a table in the target database already has rows
   8  RESTORE failed, or a restored table's row count differs from the manifest
-The restore runs with merges stopped on the restored tables, so the counts
-compared in step 8 are the ones the backup stored, not ReplacingMergeTree's
-deduplicated ones; merges are started again however the script exits.
+The target database — empty, by check 7 — is dropped and rebuilt from the
+backup's own schema: a first boot of a newer release creates tables RESTORE
+would refuse. Columns that release has and the backup lacks are reported as
+schema_drift lines. The restore runs with merges stopped on the restored
+tables, so the counts compared in step 8 are the ones the backup stored, not
+ReplacingMergeTree's deduplicated ones; merges are started again however the
+script exits, Ctrl-C and a dropped session included.
 EOF
 }
 
@@ -110,13 +115,17 @@ CLICKHOUSE_RESTORE_POLL_SECONDS="${CLICKHOUSE_RESTORE_POLL_SECONDS:-5}"
 work="$(mktemp -d)"
 tables=""
 merges_stopped=0
+dropped=0
+secret_q=""
 
-# Same scrub as the backup job: the S3 secret travels inside the statements,
-# and clickhouse-client appends the statement to any error it prints.
+# Same scrub as the backup job: the S3 secret travels inside the statements —
+# SQL-escaped, which is the form clickhouse-client repeats after an error — and
+# a parse error quotes the statement's tail without a "(query: …)" block.
 scrub() {
-  awk '
+  SCRUB_SECRET_SQL="$secret_q" awk '
     BEGIN {
       n = 0
+      if (ENVIRON["SCRUB_SECRET_SQL"] != "") secret[++n] = ENVIRON["SCRUB_SECRET_SQL"]
       if (ENVIRON["AWS_SECRET_ACCESS_KEY"] != "") secret[++n] = ENVIRON["AWS_SECRET_ACCESS_KEY"]
       if (ENVIRON["CLICKHOUSE_PASSWORD"] != "") secret[++n] = ENVIRON["CLICKHOUSE_PASSWORD"]
     }
@@ -175,6 +184,22 @@ SQL
   rm -rf "$work"
 }
 trap cleanup EXIT
+# An EXIT trap alone does not run on a fatal signal in dash or busybox ash, and
+# merges left stopped fail every later OPTIMIZE with Code 236.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Once the target has been dropped, whatever went wrong left it holding what
+# RESTORE wrote, so a rerun stops at check 7. Say so, and how to start over.
+restore_failed() {
+  echo "$1" >&2
+  if [ "$dropped" = 1 ]; then
+    echo "the target now holds what RESTORE wrote and merges run again; a rerun stops at exit 7." >&2
+    echo "compare the counts above, then either keep it, or DROP DATABASE \`${database}\` SYNC and run again." >&2
+  fi
+  exit 8
+}
 
 pod=""
 if [ -n "$namespace" ]; then
@@ -280,18 +305,48 @@ compare "$work/manifest" "$work/observed" backup || {
   exit 6
 }
 
+# `.backup` lists every part's count.txt; a backup taken with deduplicate_files
+# on stores one object for several identical ones, and missing objects are
+# missing. Either way the counts above are not the backup's — and restoring it
+# would end at step 5 with the data already in.
+ch >"$work/unreadable" <<SQL || { echo "backup not readable at ${backup_url}" >&2; exit 6; }
+SELECT l.table, l.listed, p.parts
+FROM
+(
+    SELECT decodeURLComponent(arrayJoin(extractAll(raw_blob, '<name>data/${database}/([^/<]*)/[^/<]*/count[.]txt</name>'))) AS table, count() AS listed
+    FROM s3('${url_q}/.backup', ${creds}, 'RawBLOB')
+    GROUP BY table
+) AS l
+LEFT JOIN
+(
+    SELECT decodeURLComponent(splitByChar('/', _path)[-3]) AS table, count() AS parts
+    FROM s3('${url_q}/data/${database}/*/*/count.txt', ${creds}, 'LineAsString')
+    GROUP BY table
+) AS p USING (table)
+WHERE l.listed != p.parts
+FORMAT TSVRaw
+SQL
+if [ -s "$work/unreadable" ]; then
+  awk -F '\t' '{ printf "verify backup table=%s listed=%s readable=%s MISMATCH\n", $1, $2, $3 }' "$work/unreadable"
+  echo "backup at ${backup_url} lists parts it does not store as objects (deduplicate_files, or objects lost); its counts cannot be verified" >&2
+  exit 6
+fi
+
 # 3. Never merge a backup into live rows: RESTORE into a non-empty table would
 # append, and ReplacingMergeTree would then keep whichever copy merged last.
-ch >"$work/target" <<SQL || { echo "cannot read system.tables on the target" >&2; exit 7; }
+# Every table counts, not only the backup's: the database is dropped below.
+refuse_if_occupied() {
+  ch >"$work/target" <<SQL || { echo "cannot read system.tables on the target" >&2; exit 7; }
 SELECT name, ifNull(total_rows, 0) FROM system.tables WHERE database = '${database}' FORMAT TSVRaw
 SQL
-occupied="$(awk -F '\t' 'FNR == NR { want[$1] = 1; next } ($1 in want) && $2 > 0 { printf "%s(%s) ", $1, $2 }' \
-  "$work/manifest" "$work/target")"
-if [ -n "$occupied" ]; then
-  echo "target database ${database} already has rows in: ${occupied}" >&2
-  echo "restore into an empty ClickHouse, or drop the database first (see docs/disaster-recovery.md)" >&2
-  exit 7
-fi
+  occupied="$(awk -F '\t' '$2 > 0 { printf "%s(%s) ", $1, $2 }' "$work/target")"
+  if [ -n "$occupied" ]; then
+    echo "target database ${database} already has rows in: ${occupied}" >&2
+    echo "restore into an empty ClickHouse, or drop the database first (see docs/disaster-recovery.md)" >&2
+    exit 7
+  fi
+}
+refuse_if_occupied
 
 backup_rows="$(awk -F '\t' '{s += $3} END {print s + 0}' "$work/manifest")"
 table_count="$(awk 'END {print NR}' "$work/manifest")"
@@ -304,18 +359,32 @@ fi
 restore_started="$(date +%s)"
 restore_id="restore-${database}-$(date -u +%Y%m%dT%H%M%SZ)"
 
-# 4. Tables first, so merges can be stopped before the first part lands.
-ch >/dev/null <<SQL || { echo "RESTORE (structure) refused" >&2; exit 8; }
+# 4. The target's schema is whatever release first booted it: a PVC created
+# by a newer release has tables RESTORE refuses to fill (CANNOT_RESTORE_TABLE)
+# when their columns differ from the backup's. Empty, by check 3, the database
+# is dropped and rebuilt from the backup's own definitions; its columns are
+# kept to report what the release has that the backup lacks.
+columns_query="SELECT table, name, type FROM system.columns WHERE database = '${database}' ORDER BY table, position FORMAT TSVRaw"
+printf '%s\n' "$columns_query" | ch >"$work/columns_before" || restore_failed "cannot read the target's columns"
+# Once more, right before the DROP: an ingest worker left on writes in between.
+refuse_if_occupied
+ch >/dev/null <<SQL || restore_failed "DROP DATABASE refused"
+DROP DATABASE IF EXISTS \`${database}\` SYNC
+SQL
+dropped=1
+
+# Tables first, so merges can be stopped before the first part lands.
+ch >/dev/null <<SQL || restore_failed "RESTORE (structure) refused"
 RESTORE DATABASE \`${database}\` FROM ${source} SETTINGS structure_only = 1
 SQL
 merges_stopped=1
 for table in $tables; do
-  ch >/dev/null <<SQL || { echo "cannot stop merges on ${database}.${table}" >&2; exit 8; }
+  ch >/dev/null <<SQL || restore_failed "cannot stop merges on ${database}.${table}"
 SYSTEM STOP MERGES \`${database}\`.\`${table}\`
 SQL
 done
 
-ch >/dev/null <<SQL || { echo "RESTORE refused" >&2; exit 8; }
+ch >/dev/null <<SQL || restore_failed "RESTORE refused"
 RESTORE DATABASE \`${database}\` FROM ${source} SETTINGS id = '${restore_id}' ASYNC
 SQL
 deadline=$((restore_started + CLICKHOUSE_RESTORE_TIMEOUT_SECONDS))
@@ -323,7 +392,7 @@ while :; do
   status="$(ch <<SQL
 SELECT status FROM system.backups WHERE id = '${restore_id}' FORMAT TSVRaw
 SQL
-)" || { echo "cannot read the RESTORE status" >&2; exit 8; }
+)" || restore_failed "cannot read the RESTORE status"
   case "$status" in
     RESTORED)
       break
@@ -334,13 +403,11 @@ SQL
       { ch <<SQL || true; } | head -n 1 >&2
 SELECT error FROM system.backups WHERE id = '${restore_id}' FORMAT TSVRaw
 SQL
-      echo "RESTORE ended with status '${status}'" >&2
-      exit 8
+      restore_failed "RESTORE ended with status '${status}'"
       ;;
   esac
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "RESTORE still running after ${CLICKHOUSE_RESTORE_TIMEOUT_SECONDS}s (id ${restore_id})" >&2
-    exit 8
+    restore_failed "RESTORE still running after ${CLICKHOUSE_RESTORE_TIMEOUT_SECONDS}s (id ${restore_id})"
   fi
   sleep "$CLICKHOUSE_RESTORE_POLL_SECONDS"
 done
@@ -351,14 +418,27 @@ for table in $tables; do
   [ -z "$query" ] || query="${query} UNION ALL "
   query="${query}SELECT '${table}', 0, count() FROM \`${database}\`.\`${table}\`"
 done
-ch >"$work/restored" <<SQL || { echo "cannot count the restored tables" >&2; exit 8; }
+ch >"$work/restored" <<SQL || restore_failed "cannot count the restored tables"
 ${query}
 FORMAT TSVRaw
 SQL
-compare "$work/manifest" "$work/restored" restored || {
-  echo "restored row counts differ from the manifest" >&2
-  exit 8
-}
+compare "$work/manifest" "$work/restored" restored || restore_failed "restored row counts differ from the manifest"
+
+# 6. What the release that booted this server has and the backup does not (or
+# the other way round). Not a failure: ClickHouse has no migrations here —
+# init.sql runs on a first boot only — so an older backup restored into a newer
+# release needs that release's upgrade step, as an in-place upgrade would.
+# An empty server (no database before) has nothing to compare against.
+if [ -s "$work/columns_before" ] && printf '%s\n' "$columns_query" | ch >"$work/columns_after"; then
+  awk -F '\t' '
+    FNR == NR { before[$0] = 1; next }
+    { after[$0] = 1 }
+    END {
+      for (row in before) if (!(row in after)) { split(row, c, "\t"); printf "schema_drift table=%s column=%s type=%s only_in=target\n", c[1], c[2], c[3] }
+      for (row in after) if (!(row in before)) { split(row, c, "\t"); printf "schema_drift table=%s column=%s type=%s only_in=backup\n", c[1], c[2], c[3] }
+    }
+  ' "$work/columns_before" "$work/columns_after" | sort
+fi
 
 printf 'restore_success database=%s tables=%s rows=%s restore_seconds=%s backup=%s\n' \
   "$database" "$table_count" "$backup_rows" "$(($(date +%s) - restore_started))" "$backup_url"
