@@ -1701,13 +1701,18 @@ A few edges worth knowing before you rely on it:
   fix is to register a sensor into the group (or re-address the scan).
 - **A job addressed to no group** answers the same question as
   `sensor_unavailable` ([#338](https://github.com/onixus/Shapoclyack/issues/338)):
-  `true` while it is queued for agent execution and its tenant has no active
-  scanner sensor with a recent heartbeat — no executor enrolled yet, one
-  enrolled with another tenant's key (a sensor claims only its own tenant's
-  jobs), or one whose provisioning key has expired. Recomputed on every read
+  `true` while it is queued for agent execution and no active scanner sensor
+  of its tenant with a recent heartbeat would be handed it — no executor
+  enrolled yet, one enrolled with another tenant's key (a sensor claims only
+  its own tenant's jobs), one whose provisioning key has expired, or only
+  sensors below the version floor or without the capability the job's policy
+  or config overlay needs. Recomputed on every read
   like the group flag; the scan start logs a warning instead of refusing, and
   the start response already carries it. `GET /api/agents/summary` reports
-  `scan_ready_agents` (online, active, scanner kind) for the same purpose: the
+  `scan_ready_agents` (online, active, scanner kind, not below the version
+  floor, declaring every capability a job may need; always for the caller's own
+  tenant, even when a platform admin's other counts are fleet-wide) for the
+  same purpose: the
   console shows a banner above the scan launcher and "no sensor online" on the
   System page when it is `0` in agent mode.
 - **With NATS, each group has its own subject.** A job addressed to a group is

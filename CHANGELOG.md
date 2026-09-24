@@ -144,8 +144,10 @@ All notable changes to Shapoclyack are documented in this file.
   every credential of the control plane. The manifests now run the API in
   `OCTO_JOB_EXECUTION_MODE=agent`, from the API image without the scanner
   toolchain, and add `base/scanner-executor/`: the sensor (`python -m agent`)
-  in `network-scan-executor`, a StatefulSet whose pod name is its agent id (a
-  quarantine or group outlives a restart), claiming jobs over HTTP with a
+  in `network-scan-executor`, a StatefulSet whose agent id is its pod name
+  behind a random prefix from its Secret (a quarantine or group outlives a
+  restart and a key rotation, and no other tenant can take the name first),
+  claiming jobs over HTTP with a
   provisioning key mounted from Secret `shapoclyack-scanner-executor` — the
   only credential it holds, minted after the API is up (`scripts/dev-up.sh`
   does it on the kind stand), read from the file on every exchange
@@ -153,12 +155,17 @@ All notable changes to Shapoclyack are documented in this file.
   environment. **Jobs now carry their config:** the scan intent and the
   configurator's overrides reach a sensor as the claim input
   `config_overlay.json` (`scanner.main --config-overlay`, allow-listed, applied
-  before the tenant scan policy), and a sensor without the `config_overlay`
-  capability is refused such jobs with `426` — before this, an `inventory` job
+  before the tenant scan policy; a sensor's own rates, timing, nuclei
+  exclusions and screenshot setting stay its limit), and a sensor without the
+  `config_overlay.v1` capability is not handed such jobs — it gets the ones it
+  can run, and `426` when only others wait — before this, an `inventory` job
   ran nuclei in agent mode and a console rate override never left the API. The
-  NVD key does not travel; custom wordlists are still refused in agent mode.
+  NVD key and the templates directory do not travel; custom wordlists are still
+  refused in agent mode. **Review the configurator's overrides before
+  upgrading:** they now reach every tenant's remote sensors.
   **A queued job nothing can claim says so:** `sensor_unavailable` on a job
-  whose tenant has no active scanner sensor online, `scan_ready_agents` on
+  no live sensor of its tenant would be handed (none online, or too old for
+  it), `scan_ready_agents` on
   `GET /api/agents/summary`, a banner above the launcher and "no sensor
   online" on the System page, and the provisioning-key list shows each key's
   expiry — the executor stops the day its key expires, and serves only its
@@ -168,8 +175,9 @@ All notable changes to Shapoclyack are documented in this file.
   workload gets seccomp `RuntimeDefault`, a read-only root filesystem with each
   writable path an `emptyDir`/PVC, `drop: [ALL]` and no service-account token;
   ClickHouse loses `SYS_NICE` (outside `baseline`) and file logging. **Upgrade
-  action required:** apply, then enroll the executor (its namespace comes with
-  the apply); give every other tenant that scans an executor of its own; upgrade
+  action required:** apply, then enroll the executor with a key and a random
+  `agent_id_prefix` (its namespace comes with the apply); give every other
+  tenant that scans an executor of its own; upgrade
   external sensors with the API; delete the scan Job/CronJob and
   `overlays/agents`' old `shapoclyack-agent` (apply does not prune).
   `overlays/prod` rolls its API with `Recreate` (it no longer shares the
@@ -181,9 +189,12 @@ All notable changes to Shapoclyack are documented in this file.
   as the opt-in `overlays/local-scan`. `tests/test_k8s_pod_security.py` and
   `tests/test_k8s_topology.py` render every overlay and hold each pod to its
   namespace's level, the baseline and its wiring; CI no longer skips them
-  (Jenkins renders on the node, `OCTO_K8S_RENDER_DIR`). The executor image has
-  no setuid binaries. Kyverno/Gatekeeper exceptions, the per-workload table,
-  the migration and the rollback are in `docs/k8s-hardening.md`.
+  (Jenkins renders on the node, `OCTO_K8S_RENDER_DIR`). The executor image is
+  built without setuid binaries from the next release on. Kyverno/Gatekeeper exceptions, the per-workload table,
+  the migration and the rollback are in `docs/k8s-hardening.md`. The pinned
+  `shapoclyack-0.46-0922` images predate this: the executor also gets its key
+  as an environment variable until the pin moves, the setuid strip ships with
+  the next release, and the API and sensor images must be bumped together.
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
   response used to answer `401`, which the console treats as "session over"

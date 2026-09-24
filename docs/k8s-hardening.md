@@ -163,12 +163,16 @@ the two adds, read-only image, no service-account token. A NetworkPolicy denies
 it all ingress: it listens on nothing.
 
 `allowPrivilegeEscalation: true` also lets a setuid-root binary run as uid 0,
-so the image has none: `Dockerfile.allinone` clears every setuid and setgid
-bit after its last package install (the Debian base brought `su`, `passwd`,
-`mount`, `chfn` and the like, `openssh-client` `ssh-keysign`), and fails the
-build if `fping` — whose package falls back to setuid root when `setcap` fails
-— is left without its file capability. What escalation remains is the three
-scanners' `cap_net_raw,cap_net_admin` and nothing more.
+so from the first release built after `shapoclyack-0.46-0922` the image has
+none: `Dockerfile.allinone` clears every setuid and setgid bit after its last
+package install (the Debian base brought `su`, `passwd`, `mount`, `chfn` and
+the like, `openssh-client` `ssh-keysign`), sets `fping`'s capability itself
+(its package falls back to setuid root when its own `setcap` fails), and fails
+the build if `fping` is left without it. What escalation remains is the
+scanners' `cap_net_raw,cap_net_admin` and nothing more. **The image these
+manifests pin, `shapoclyack-0.46-0922`, predates this and still carries them**;
+and CI builds `Dockerfile`, not `Dockerfile.allinone`, so these lines first run
+in the release pipeline.
 
 ### `shapoclyack-scanner-executor` in `overlays/prod` — `hostNetwork: true`
 
@@ -232,8 +236,18 @@ one credential: a tenant provisioning key, mounted as a file
 `fsGroup`) and exchanged at start and on expiry for a short-lived agent JWT.
 The worker reads the file again on every exchange, so a rotated Secret reaches
 it without a restart, and starts the scanner without its own `OCTO_AGENT_*` and
-`OCTO_NATS_*` variables, so neither the key nor a token is inherited by nmap,
-nuclei or a nuclei template. Its configuration is `scanner-config`, generated
+`OCTO_NATS_*` variables, so neither the key nor a token lands in a tool's
+environment, debug output or crash report. That is protection against leaking
+it by accident, not against a compromised tool: the scan runs as the same user
+(1000, `fsGroup` 1000), which can read the key file and `/proc/1/environ`.
+Separating them needs the scan under another uid, which it is not today.
+
+**The pinned image predates both.** The worker in `shapoclyack-0.46-0922` does
+not know `OCTO_AGENT_PROVISIONING_KEY_FILE` and exits without a key, so the
+StatefulSet also passes the same Secret key as `OCTO_AGENT_PROVISIONING_KEY`
+until the pin moves past that release — a current worker prefers the file. It
+does not declare the config overlay either; the API of that release does not
+send one, so the two pins agree. Bump the two images together. Its configuration is `scanner-config`, generated
 from the same `base/config/k8s.yaml` as network-scan's copy, so the two cannot
 drift. It does **not** use NATS: HTTP claiming is a supported mode and not a
 degraded one, and leaving NATS out keeps the broker's `agent` password out of
@@ -250,28 +264,52 @@ file would be read, and applies the tenant's scan policy after it, so an
 override or an intent can shape a scan but never lift it above the tenant's
 ceilings (#362). It accepts only the settings the configurator and the intents
 can set (`scanner/pipeline/config_overlay.py`) and refuses the whole run on
-anything else. An agent that does not declare the `config_overlay` capability
-is refused such a job on claim with `426`, like one that cannot apply a scan
-policy, and the job stays queued for one that can. Two things deliberately do
-not travel: the NVD API key, a secret the executor's scans do not use (its
-config leaves online CVE lookups off) — give an executor that needs it its own
-`NVD_API_KEY`; and a custom wordlist, a file of up to megabytes held by the API,
-which `POST /api/jobs` refuses in agent mode rather than ignoring.
+anything else.
+
+One installation-wide override now reaches every tenant's sensors, so for the
+settings that decide how hard a sensor hits its network **the sensor's own
+file stays the limit**: discovery and port rates, nuclei's rate limit and
+concurrency, and nmap timing take the lower of the file's value and the
+overlay's; nuclei's excluded tags are the union of the two, so an override
+cannot re-enable `intrusive`, `fuzz` or `dos` templates a sensor excludes; and
+screenshots run only where the sensor's file enables them. An overlay can make
+a sensor gentler, never rougher — to make a sensor faster, raise its own file.
+Stage switches (nuclei on or off, the organisation-profile stages) follow the
+overlay, since that is what an intent is.
+
+The capability is versioned with the set of settings the overlay may carry:
+`config_overlay.v1`. A sensor that does not declare the version the API sends
+is never handed such a job — the claim hands it the jobs it can run first, and
+answers `426` only when nothing else is waiting — and the job stays queued for
+one that can, flagged `sensor_unavailable` while no live sensor of the tenant
+declares it. Three things deliberately do not travel: the NVD API key, a secret
+the executor's scans do not use (its config leaves online CVE lookups off) —
+give an executor that needs it its own `NVD_API_KEY`; the nuclei templates
+directory, a path on the API's host; and a custom wordlist, a file of up to
+megabytes held by the API, which `POST /api/jobs` refuses in agent mode rather
+than ignoring.
 
 **Identity.** It is a StatefulSet for its pod names, not for storage: each pod
-sends its own name — `shapoclyack-scanner-executor-0`, `-1`, … — as its agent
-id (`OCTO_AGENT_ID` from `metadata.name`), so it is the same agent in the fleet
-view after a rollout, an eviction or a drain. The API refuses a token for an id
+sends its own name — `shapoclyack-scanner-executor-0`, `-1`, … — behind a
+random prefix as its agent id (`OCTO_AGENT_ID` =
+`$(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)`), so it is the same agent in the fleet
+view after a rollout, an eviction or a drain. The prefix is 64 random bits
+generated at enrollment and kept in the executor's Secret (`agent_id_prefix`)
+beside the key. Agent ids are unique across the installation and the pod names
+are in these manifests, so without it any tenant admin could mint a key in
+their own tenant and register `shapoclyack-scanner-executor-0` first — during
+the window between the apply and the enrollment — and the executor would be
+refused (`403`, "registered in another tenant") until a platform admin found
+and deleted a row its own tenant cannot see. The prefix is not a secret, but it
+does not exist before enrollment, and it is not rotated with the key: a new
+prefix is a new agent, and so a way out of a quarantine for whoever can write
+the Secret. The API refuses a token for an id
 that is quarantined or disabled, so an operator's quarantine outlives the pod,
 and a group set on the agent (#361) stays set. A PodDisruptionBudget lets
 drains take one executor at a time. A drained or evicted executor still loses
 the scan it was running: the run is on its `emptyDir`, and the job returns to
 the queue when its lease (`OCTO_JOB_LEASE_SECONDS`) expires, to start again
-from nothing. Anyone holding a provisioning key of the same tenant can register
-an agent under such a predictable name first; the executor's exchange is then
-refused (`403`, "registered with a different key") until that agent is deleted
-— a denial of service within the tenant, not a way in, and the fleet view shows
-it.
+from nothing.
 
 Scale it with `replicas`; each replica claims its own jobs
 (`FOR UPDATE SKIP LOCKED`). `overlays/agents` runs three under a VPA
@@ -424,15 +462,18 @@ namespace is created by the apply, so the Secret comes after it.
    ```bash
    read -rs KEY   # paste the key; keeps it out of shell history and argv
    printf '%s' "$KEY" | kubectl -n network-scan-executor create secret generic \
-     shapoclyack-scanner-executor --from-file=provisioning_key=/dev/stdin
+     shapoclyack-scanner-executor --from-file=provisioning_key=/dev/stdin \
+     --from-literal=agent_id_prefix="$(openssl rand -hex 8)"
    unset KEY
    ```
 
-   With External Secrets, `examples/externalsecret.example.yaml` has the
-   `ExternalSecret` for it.
+   `agent_id_prefix` is generated once, here, and kept for the life of the
+   installation ([Identity](#the-scanner-executor)). With External Secrets,
+   `examples/externalsecret.example.yaml` has the `ExternalSecret` for both.
 
 3. The pod starts on its own (the kubelet retries), registers, and appears in
-   **Sensor Fleet** as `shapoclyack-scanner-executor-0`, on the node's hostname.
+   **Sensor Fleet** as `<prefix>-shapoclyack-scanner-executor-0`, on the node's
+   hostname.
 
 On the kind stand `scripts/dev-up.sh` does steps 1–2 with the demo admin
 account, once; an existing Secret is left alone.
@@ -454,17 +495,28 @@ choice a tenant admin could make.
 To rotate, before the old key expires:
 
 1. Mint a new key in the same tenant (step 1 above).
-2. Replace the Secret's value — `kubectl -n network-scan-executor create secret
-   generic shapoclyack-scanner-executor --from-file=provisioning_key=/dev/stdin
-   --dry-run=client -o yaml | kubectl apply -f -`, or update the source an
-   `ExternalSecret` reads. The kubelet updates the mounted file within a minute
-   or two.
+2. Replace the key and **keep the prefix** — a new prefix is a new agent id:
+
+   ```bash
+   read -rs KEY
+   PREFIX="$(kubectl -n network-scan-executor get secret shapoclyack-scanner-executor \
+     -o jsonpath='{.data.agent_id_prefix}' | base64 -d)"
+   printf '%s' "$KEY" | kubectl -n network-scan-executor create secret generic \
+     shapoclyack-scanner-executor --from-file=provisioning_key=/dev/stdin \
+     --from-literal=agent_id_prefix="$PREFIX" --dry-run=client -o yaml | kubectl apply -f -
+   unset KEY
+   ```
+
+   or update the source an `ExternalSecret` reads. The kubelet updates the
+   mounted file within a minute or two.
 3. Revoke the old key. The executor's token, minted from it, is refused on its
    next call; the executor exchanges again, reading the file, and gets a token
    from the new key under the same agent id — the id is released to the new key
    because the old one is revoked (#308).
 4. If the pod does not recover within a few minutes (the file was not updated,
-   or the Secret was replaced under another key name):
+   the Secret was replaced under another key name, or it runs the pinned
+   `shapoclyack-0.46-0922` image, whose worker reads the key from the
+   environment, once):
    `kubectl -n network-scan-executor rollout restart statefulset/shapoclyack-scanner-executor`.
 
 Revoking before the Secret is updated makes the executor retry with the revoked
@@ -612,9 +664,13 @@ For an installation moving from a pre-#338 release:
   list shows each key's expiry ([Key expiry and rotation](#key-expiry-and-rotation)).
 - **Jobs carry their config.** The scan intent and the configurator's
   overrides reach the executor as the job's config overlay; an agent that
-  predates it is refused such jobs with `426` until upgraded. External sensors
-  must be upgraded with the API. The NVD key and custom wordlists do not
-  travel ([above](#the-scanner-executor)).
+  predates it is not handed such jobs (`426` when nothing else is waiting)
+  until upgraded. External sensors must be upgraded with the API. The NVD key,
+  the templates directory and custom wordlists do not travel
+  ([above](#the-scanner-executor)). **Review the configurator's overrides
+  before upgrading**: they used to stop at the API in agent mode, and now reach
+  every tenant's remote sensors — bounded by each sensor's own rates, timing,
+  nuclei exclusions and screenshot setting, but otherwise as written.
 - **Delta and report-diff baselines live in the executor's `emptyDir`**: a
   restart makes the next delta run a full one, and each replica keeps its own.
 - **Queued jobs are claimed oldest first, per tenant**, whatever built up while
@@ -676,9 +732,11 @@ kubectl label --dry-run=server --overwrite ns network-scan \
 #    Recreate, so the RWO volume detaches before the new pod needs it.
 kubectl apply -k k8s/shapoclyack/overlays/<yours>
 
-# 2. The executor's key, now that its namespace exists. The pod waits in
-#    ContainerCreating until then; scans started meanwhile queue.
-#    See "Enrolling the scanner-executor".
+# 2. The executor's key and its agent-id prefix, now that its namespace
+#    exists. The pod waits until then; scans started meanwhile queue.
+#    See "Enrolling the scanner-executor". A Secret made from an earlier
+#    draft of these docs lacks agent_id_prefix: add it, or the pod waits in
+#    CreateContainerConfigError naming the key.
 
 # 3. What apply does not prune.
 kubectl -n network-scan delete cronjob/network-scan-scheduled job/network-scan --ignore-not-found
