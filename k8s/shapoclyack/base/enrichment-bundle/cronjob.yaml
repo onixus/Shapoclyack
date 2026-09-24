@@ -7,8 +7,9 @@ metadata:
     app.kubernetes.io/component: enrichment-bundle
 spec:
   # Every 15 minutes: a bundle copied into the inbox is live within one period
-  # without anyone creating a Job. A run with nothing new reads the bundle's
-  # manifest, finds it installed and exits. To load at once:
+  # without anyone creating a Job. A run with nothing new reads only the
+  # bundle's first member (its manifest), finds that bundle installed and exits
+  # — nothing is unpacked or written. To load at once:
   #   kubectl -n network-scan create job --from=cronjob/enrichment-bundle-load load-now
   schedule: "*/15 * * * *"
   concurrencyPolicy: Forbid
@@ -53,6 +54,17 @@ spec:
                 # Read-only root filesystem: no __pycache__ to write.
                 - name: PYTHONDONTWRITEBYTECODE
                   value: "1"
+                # The trust root, when there is one: the sha256 of the one
+                # bundle file this installation accepts, from a ConfigMap the
+                # operator creates per bundle (docs/air-gap.md, "Trust").
+                # Without it, write access to the inbox volume is what decides
+                # which data is installed.
+                - name: OCTO_ENRICHMENT_BUNDLE_SHA256
+                  valueFrom:
+                    configMapKeyRef:
+                      name: shapoclyack-enrichment-bundle
+                      key: sha256
+                      optional: true
               resources:
                 requests:
                   cpu: 100m

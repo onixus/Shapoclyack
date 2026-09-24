@@ -28,11 +28,16 @@
 # which file in the inbox is in the cluster's own audit log. docs/air-gap.md
 # has the longer version.
 #
-# Same namespace transformer as base/enrichment, for the same reason.
+# network-scan for this component's own objects, through an unsetOnly
+# NamespaceTransformer rather than `namespace:`: a component's transformer runs
+# over everything the overlay has accumulated, and `namespace:` would move
+# objects that already belong elsewhere (a scanner-executor namespace, #338)
+# into network-scan and collide. unsetOnly fills in only what has none.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-namespace: network-scan
+transformers:
+  - namespace-transformer.yaml
 
 resources:
   - serviceaccount.yaml

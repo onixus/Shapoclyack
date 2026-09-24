@@ -98,8 +98,6 @@ k8s/shapoclyack/
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +sensor pods) only
 ├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patches
-├── base/enrichment-bundle/ # air-gap component: offline-bundle loader CronJob + inbox PVC, online refresh off (docs/air-gap.md)
-├── overlays/airgap/      # internal-registry images + enrichment from an offline bundle
 ├── overlays/dev/         # smaller resources, --mode safe
 ├── overlays/prod/        # hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
@@ -553,6 +551,13 @@ replica puts them in object storage instead
 ([#336](https://github.com/onixus/Shapoclyack/issues/336)): see
 `overlays/prod-ha/artifacts-s3-patch.yaml` and
 [docs/high-availability.md](../docs/high-availability.md).
+
+## Air-gapped installation
+
+`overlays/airgap` is `base` + `base/enrichment` + `base/enrichment-bundle`:
+every image from an internal registry, the pull secret on every pod, and the
+enrichment data installed from an offline bundle by a CronJob instead of
+fetched. The procedure is [docs/air-gap.md](../docs/air-gap.md).
 
 ## Optional: build images yourself
 
