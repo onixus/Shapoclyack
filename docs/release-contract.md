@@ -168,7 +168,7 @@ git show "$TAG:scripts/pulse-pinned.sha256" > "pins-$TAG.sha256"
 `Jenkinsfile.publish` at both tags — so the `v1.1.0` pins first committed for
 0.46 are the reference for 0.45 as well
 (`git show shapoclyack-0.46-0922:scripts/pulse-pinned.sha256`). Whether the
-0.45 image actually contains those bytes is what check 3 answers; its build
+0.45 image actually contains those bytes is what check 2 answers; its build
 checked only the release's own `checksums.txt`.
 
 ### 0. The image, by a digest you trust
@@ -222,7 +222,8 @@ patched derived image — and it states that the build installed the pinned
 tarball, by the build's own account. Whoever can replace the binary can rewrite
 the record next to it, and the verifier would then say VERIFIED. Against
 deliberate tampering it is therefore **only as good as the image digest you
-verified** in step 0; check 2 does not depend on the image at all. Images of
+verified** in step 0; check 2 does not rely on anything the image says about
+itself. Images of
 `shapoclyack-0.46-0922` and earlier have no record, and the verifier says so and
 asks for check 2.
 

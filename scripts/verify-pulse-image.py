@@ -23,7 +23,7 @@ came out of it. Two ways bridge that gap:
   the build installed the pinned tarball by its own account. Against someone
   who rewrites both, it is only as good as the image digest you verified:
   check an image by ``...@sha256:<digest>`` you trust, and use ``--tarball``
-  for a check that does not depend on the image at all.
+  for a check that does not rely on anything the image says about itself.
 
 The pin file to trust is the one **at the release tag the image was built
 from**, in your own clone. This script is newer than most releases, so run it
