@@ -1,5 +1,5 @@
 # Restrict remote scanner agents: DNS + API (+ optional NATS) only.
-# Apply with agent Deployment (examples/agent-deployment.example.yaml).
+# Apply with the example sensor (examples/agent-deployment.example.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

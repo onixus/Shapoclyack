@@ -1,0 +1,23 @@
+# Replace the API pod instead of surging a second one (#338 review).
+#
+# base rolls the single API pod with maxSurge: 1 (#331), which keeps the old
+# pod serving until the new one is ready and relies on both landing on the node
+# that holds the ReadWriteOnce `scanner-data` volume. Before #338 this overlay
+# pinned the API to the scanner pool, which made that likely; it no longer
+# does (kustomization.yaml says why), so the new pod is scheduled wherever
+# there is room, the volume cannot attach there while the old pod holds it
+# (Multi-Attach), and the rollout stalls with the previous release still
+# running.
+#
+# Recreate detaches first: every rollout is a short outage of the console and
+# the API — the agents keep scanning and retry their uploads. overlays/prod-ha
+# does not take this: its volume is ReadWriteMany (or object storage), and its
+# replicas roll one by one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null

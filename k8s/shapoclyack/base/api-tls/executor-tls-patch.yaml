@@ -1,14 +1,15 @@
-# The stand's API speaks only TLS (api-tls-patch.yaml), so the executor talks
-# to it over https, with verification, against the development CA that
-# scripts/dev-tls-cert.sh issues (#338). The server certificate already names
+# The API speaks only TLS (api-tls-patch.yaml), so the executor talks to it
+# over https, with verification, against the CA in ConfigMap
+# shapoclyack-api-ca (#338). The server certificate has to name
 # shapoclyack-api.network-scan.svc; the CA reaches this namespace as a
-# ConfigMap because a pod cannot mount one from network-scan — dev-tls-cert.sh
-# writes both. Public material, not a Secret: it is the CA certificate only.
+# ConfigMap because a pod cannot mount one from network-scan. On the kind
+# stand scripts/dev-tls-cert.sh writes both. Public material, not a Secret: it
+# is the CA certificate only.
 #
 # Not optional: without it the pod waits in ContainerCreating naming the
 # ConfigMap, which is a clearer failure than a TLS handshake error in a loop.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-scanner-executor
 spec:

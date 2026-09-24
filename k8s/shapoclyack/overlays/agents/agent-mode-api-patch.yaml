@@ -3,7 +3,7 @@
 # what it depends on even if base changes.
 #
 # The in-cluster executors keep claiming over HTTP (see
-# base/scanner-executor/deployment.yaml); the offers published here reach
+# base/scanner-executor/statefulset.yaml); the offers published here reach
 # sensors outside the cluster that were given the `agent` NATS user.
 apiVersion: apps/v1
 kind: Deployment

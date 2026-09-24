@@ -1,6 +1,6 @@
 # Default executor replica count for the agents overlay (spread needs >1).
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-scanner-executor
 spec:

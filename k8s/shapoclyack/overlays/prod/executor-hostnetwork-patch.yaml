@@ -10,13 +10,16 @@
 # redirect the traffic of anything else scheduled beside it. That is why the
 # nodes are tainted and why nothing else here tolerates the taint — the API
 # used to (it shared an RWO volume with the scan Jobs) and no longer does.
+# DaemonSets that tolerate every taint (the CNI agent, log shippers,
+# node-exporter) still run there, and those on the host network share this
+# network namespace: their ports on 127.0.0.1 are the executor's localhost.
 # docs/k8s-hardening.md lists this as the one deviation beyond `baseline` that
 # is not a capability.
 #
 # Prerequisite, unchanged: nodes labelled `workload=scanner` and tainted
 # `scanner=true:NoSchedule`.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-scanner-executor
 spec:

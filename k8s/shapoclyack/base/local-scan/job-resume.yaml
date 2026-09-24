@@ -51,7 +51,7 @@ spec:
               cpu: "8"
               memory: 8Gi
           # Same deviations from `restricted` as the scanner-executor, for the
-          # same reasons (base/scanner-executor/deployment.yaml,
+          # same reasons (base/scanner-executor/statefulset.yaml,
           # docs/k8s-hardening.md); everything else is the baseline (#338).
           securityContext:
             allowPrivilegeEscalation: true

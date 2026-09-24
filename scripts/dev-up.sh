@@ -143,10 +143,10 @@ fi
 # Same byte-identical PodSpec problem as the API above, once there is a pod to
 # restart. An executor without its Secret yet is left to start on its own.
 if kubectl -n "${EXECUTOR_NAMESPACE}" get secret "${EXECUTOR_SECRET}" >/dev/null 2>&1 \
-    && kubectl -n "${EXECUTOR_NAMESPACE}" get deployment/shapoclyack-scanner-executor >/dev/null 2>&1; then
+    && kubectl -n "${EXECUTOR_NAMESPACE}" get statefulset/shapoclyack-scanner-executor >/dev/null 2>&1; then
   echo "==> Restarting the scanner-executor to pick up the rebuilt image"
-  kubectl -n "${EXECUTOR_NAMESPACE}" rollout restart deployment/shapoclyack-scanner-executor
-  kubectl -n "${EXECUTOR_NAMESPACE}" rollout status deployment/shapoclyack-scanner-executor --timeout=180s
+  kubectl -n "${EXECUTOR_NAMESPACE}" rollout restart statefulset/shapoclyack-scanner-executor
+  kubectl -n "${EXECUTOR_NAMESPACE}" rollout status statefulset/shapoclyack-scanner-executor --timeout=180s
 fi
 
 # Only an overlay with base/local-scan still has a scan Job/CronJob (#338).
@@ -179,5 +179,5 @@ echo "Sign in as operator / operator-change-me"
 echo "Change the JWT secret and demo passwords before exposing this beyond a trusted lab."
 echo
 echo "Logs:   kubectl -n ${NAMESPACE} logs deploy/shapoclyack-api -f"
-echo "        kubectl -n ${EXECUTOR_NAMESPACE} logs deploy/shapoclyack-scanner-executor -f"
+echo "        kubectl -n ${EXECUTOR_NAMESPACE} logs statefulset/shapoclyack-scanner-executor -f"
 echo "Down:   scripts/dev-down.sh"

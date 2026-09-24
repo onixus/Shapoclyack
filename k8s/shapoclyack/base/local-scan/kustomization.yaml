@@ -17,13 +17,17 @@
 #     would be admitted under `baseline`.
 #
 # and it removes the scanner-executor, which has nothing to claim when the API
-# runs its own jobs.
+# runs its own jobs. Only from the render: `kubectl apply` prunes nothing, so
+# switching an installation to this overlay leaves the running executor and
+# its namespace behind until they are deleted (docs/k8s-hardening.md § Local
+# execution).
 #
 # Reasons an installation might still choose it: the features that only exist
-# in local execution — installation config overrides and custom wordlists reach
-# the scan only when the API runs it (api/services/job_submission.py refuses a
-# wordlist in agent mode), a CronJob scan driven from a Secret of targets — or a
-# single-node lab where one pod is the point. What it costs is the whole reason
+# in local execution — custom wordlists reach the scan only when the API runs
+# it (api/services/job_submission.py refuses a wordlist in agent mode), a
+# CronJob scan driven from a Secret of targets — or a single-node lab where one
+# pod is the point. (Config overrides and scan intents reach an executor too
+# since the #338 review, as the job's config overlay.) What it costs is the whole reason
 # #338 exists: an RCE in the API is an RCE with raw sockets, next to every
 # credential of the control plane. docs/k8s-hardening.md § Local execution.
 #
@@ -46,7 +50,8 @@ patches:
   # One object per file: kustomize v5.4.2 (kubectl 1.31, what CI runs)
   # segfaults on a multi-document `$patch: delete` — see
   # overlays/prod-ha/postgres-delete-statefulset.yaml.
-  - path: delete-executor-deployment.yaml
+  - path: delete-executor-statefulset.yaml
+  - path: delete-executor-pdb.yaml
   - path: delete-executor-networkpolicy.yaml
   - path: delete-executor-configmap.yaml
   - path: delete-executor-serviceaccount.yaml

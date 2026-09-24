@@ -1,8 +1,14 @@
-# Example sensor Deployment for a cluster OTHER than the one running the API —
-# a branch office, a customer segment. The in-cluster sensor is base's
-# scanner-executor (base/scanner-executor/, #338); this is the same pod, with
-# the API reached over its public URL instead of a Service name. Pair with
-# Secret shapoclyack-agent holding a provisioning key for the tenant it scans.
+# Example sensor for a cluster OTHER than the one running the API — a branch
+# office, a customer segment. The in-cluster sensor is base's scanner-executor
+# (base/scanner-executor/, #338); this is the same pod, with the API reached
+# over its public URL instead of a Service name. Pair with Secret
+# shapoclyack-agent holding a provisioning key for the tenant it scans — an
+# agent only ever takes its own tenant's jobs.
+#
+# A StatefulSet, as the executor is since the #338 review, so each pod keeps
+# its agent id (its own name) across restarts: a quarantine or a group set on
+# it in the console outlives the pod, and the fleet view gets no ghosts. The
+# file keeps its old name so links to it keep working.
 #
 # The namespace must not enforce Pod Security `baseline` or `restricted`:
 # NET_RAW/NET_ADMIN are outside both (docs/k8s-hardening.md, which also has the
@@ -11,7 +17,7 @@
 #   pod-security.kubernetes.io/warn=restricted
 # and keep nothing else in it.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-agent
   namespace: network-scan-executor
@@ -20,6 +26,10 @@ metadata:
     app.kubernetes.io/component: agent
 spec:
   replicas: 2
+  # No Service: nothing connects to a sensor. The ordinals are identity, not
+  # order.
+  serviceName: shapoclyack-agent
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app.kubernetes.io/name: shapoclyack
@@ -63,11 +73,16 @@ spec:
             # The console's public URL — whatever your Ingress serves.
             - name: OCTO_API_URL
               value: https://shapoclyack.example.com
-            - name: OCTO_AGENT_PROVISIONING_KEY
+            # A file, re-read on every exchange: a rotated Secret is picked up
+            # without a restart, and the key is not in the environment the
+            # scanner's tools inherit.
+            - name: OCTO_AGENT_PROVISIONING_KEY_FILE
+              value: /etc/shapoclyack/agent-key/provisioning_key
+            # This pod's own name, kept across restarts.
+            - name: OCTO_AGENT_ID
               valueFrom:
-                secretKeyRef:
-                  name: shapoclyack-agent
-                  key: OCTO_AGENT_PROVISIONING_KEY
+                fieldRef:
+                  fieldPath: metadata.name
             - name: OCTO_CONFIG
               value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR
@@ -87,7 +102,7 @@ spec:
             # - name: OCTO_NATS_URL
             #   value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
           # The scanner-executor's securityContext, for its reasons
-          # (base/scanner-executor/deployment.yaml): NET_RAW/NET_ADMIN because
+          # (base/scanner-executor/statefulset.yaml): NET_RAW/NET_ADMIN because
           # the image grants them to naabu/pulse/nmap as file capabilities, and
           # allowPrivilegeEscalation: true because no_new_privs would make the
           # kernel ignore those. Everything else is the restricted baseline.
@@ -100,16 +115,22 @@ spec:
               add:
                 - NET_RAW
                 - NET_ADMIN
+          # ephemeral-storage for the emptyDirs below, as on the executor.
           resources:
             requests:
               cpu: "500m"
               memory: 512Mi
+              ephemeral-storage: 8Gi
             limits:
               cpu: "2"
               memory: 2Gi
+              ephemeral-storage: 32Gi
           volumeMounts:
             - name: config
               mountPath: /app/scanner/config
+              readOnly: true
+            - name: agent-key
+              mountPath: /etc/shapoclyack/agent-key
               readOnly: true
             - name: work
               mountPath: /app/scanner/output
@@ -125,6 +146,15 @@ spec:
         - name: config
           configMap:
             name: scanner-config
+        # Readable by the pod's fsGroup only; required, so a missing Secret
+        # is a FailedMount event naming it.
+        - name: agent-key
+          secret:
+            secretName: shapoclyack-agent
+            defaultMode: 0440
+            items:
+              - key: OCTO_AGENT_PROVISIONING_KEY
+                path: provisioning_key
         - name: work
           emptyDir:
             sizeLimit: 20Gi

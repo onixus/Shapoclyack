@@ -18,8 +18,10 @@
 # and apply only shapoclyack-capabilities-scanner-executor from here.
 #
 # Checked with `gator test` (Gatekeeper 3.18.2, library templates from master)
-# against base's render: no violations; with the exclusions removed, the
-# executor's capabilities and privilege escalation are the only ones.
+# against every overlay's render: no violations but overlays/prod's host
+# network, which gatekeeper-prod-hostnetwork.example.yaml then allows; with the
+# exclusions removed, the executor's capabilities and privilege escalation are
+# the only ones.
 apiVersion: constraints.gatekeeper.sh/v1beta1
 kind: K8sPSPCapabilities
 metadata:
@@ -78,10 +80,7 @@ spec:
         kinds: ["Pod"]
     namespaces: ["network-scan", "network-scan-executor"]
 ---
-# Host network off in network-scan. For network-scan-executor, add a
-# K8sPSPHostNetworkingPorts with `hostNetwork: true` scoped to it only where
-# overlays/prod runs the executor on the host network; otherwise extend this
-# one's `namespaces` to cover it too.
+# Host network off in network-scan.
 apiVersion: constraints.gatekeeper.sh/v1beta1
 kind: K8sPSPHostNetworkingPorts
 metadata:
@@ -92,5 +91,24 @@ spec:
       - apiGroups: [""]
         kinds: ["Pod"]
     namespaces: ["network-scan"]
+  parameters:
+    hostNetwork: false
+---
+# And off in network-scan-executor, which is `privileged` to Pod Security and
+# would otherwise admit a host-network pod from anyone who can create one there.
+# overlays/prod is the one place the executor needs it: there,
+# gatekeeper-prod-hostnetwork.example.yaml replaces this constraint (same name),
+# and has to be applied after this file every time — applying this file alone
+# again puts the prohibition back, and the next executor pod is refused.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPHostNetworkingPorts
+metadata:
+  name: shapoclyack-executor-host-network
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan-executor"]
   parameters:
     hostNetwork: false

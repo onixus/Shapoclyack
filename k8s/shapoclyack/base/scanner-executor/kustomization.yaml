@@ -12,7 +12,7 @@
 # (docs/k8s-hardening.md § Enrolling the scanner-executor).
 #
 # Its own `namespace:` here rather than metadata.namespace in each file: the
-# overlays' patches then name the Deployment the way they name every other
+# overlays' patches then name the StatefulSet the way they name every other
 # object, without a namespace. base/kustomization.yaml leaves an object that
 # already has a namespace alone (unsetOnly), so this one survives it.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -23,5 +23,6 @@ namespace: network-scan-executor
 resources:
   - namespace.yaml
   - serviceaccount.yaml
-  - deployment.yaml
+  - statefulset.yaml
+  - pdb.yaml
   - networkpolicy.yaml

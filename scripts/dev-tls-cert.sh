@@ -85,7 +85,7 @@ fi
 # The scanner-executor verifies this certificate too (#338), from its own
 # namespace, where it cannot read the Secret above and has no business holding
 # the key. It gets the CA certificate only, as a ConfigMap
-# (k8s/shapoclyack/overlays/kind-dev/executor-tls-patch.yaml mounts it).
+# (k8s/shapoclyack/base/api-tls/executor-tls-patch.yaml mounts it; overlays/kind-dev takes that component).
 EXECUTOR_NAMESPACE="${EXECUTOR_NAMESPACE:-network-scan-executor}"
 if command -v kubectl >/dev/null 2>&1 && kubectl get namespace "${EXECUTOR_NAMESPACE}" >/dev/null 2>&1; then
   echo "==> Putting the CA certificate in ${EXECUTOR_NAMESPACE}/shapoclyack-api-ca"

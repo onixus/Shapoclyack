@@ -17,6 +17,11 @@ resources:
 images:
   - name: ghcr.io/onixus/shapoclyack-aio
     newTag: kind-dev
+  # The one image the kind stand builds serves as the API image too, as in
+  # overlays/kind-dev.
+  - name: ghcr.io/onixus/shapoclyack-api
+    newName: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev
 
 patches:
   - target:
@@ -78,7 +83,14 @@ patches:
   # replaced were deleted here before). One object per patch, as above.
   - patch: |-
       apiVersion: apps/v1
-      kind: Deployment
+      kind: StatefulSet
+      metadata:
+        name: shapoclyack-scanner-executor
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
       metadata:
         name: shapoclyack-scanner-executor
         namespace: network-scan-executor

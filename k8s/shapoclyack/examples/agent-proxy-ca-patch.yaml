@@ -14,7 +14,8 @@
 #
 # It targets the example sensor (agent-deployment.example.yaml). For base's
 # in-cluster sensor, change the name below to shapoclyack-scanner-executor and
-# the container name to `executor` (#338).
+# the container name to `executor` (#338). Both are StatefulSets since the
+# #338 review; a patch naming `kind: Deployment` no longer matches either.
 #
 # The CA bundle is a ConfigMap holding one PEM file, in the sensor's own
 # namespace. It is public material, not a secret:
@@ -39,7 +40,7 @@
 # and it covers the NATS connection too where one is used — one internal root,
 # named once.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-agent
 spec:

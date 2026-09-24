@@ -16,3 +16,4 @@ resources:
 
 patches:
   - path: executor-hostnetwork-patch.yaml
+  - path: api-recreate-patch.yaml

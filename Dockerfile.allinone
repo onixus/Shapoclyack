@@ -298,6 +298,19 @@ RUN bash scripts/fetch-vulscan-db.sh -o /usr/share/nmap/scripts/vulscan || true
 # same non-fatal build-step philosophy as the fetches above).
 RUN bash scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates || true
 
+# No setuid or setgid binaries (#338 review). The Kubernetes scanner-executor
+# runs with allowPrivilegeEscalation: true — without it the kernel ignores the
+# file capabilities on naabu, pulse and nmap — and the same setting lets a
+# setuid-root binary take the process to uid 0: su, passwd, mount, chfn and the
+# rest of the Debian base, ssh-keysign from openssh-client. Nothing in this
+# image uses one. Here, after the last package install, so none comes back;
+# chmod leaves the file capabilities above alone. fping is checked because its
+# package falls back to setuid root when setcap fails: had it done so, this
+# line would quietly take ICMP discovery away, so the build fails instead.
+RUN set -eux; \
+    find / -xdev -perm /6000 -type f -exec chmod a-s {} +; \
+    getcap /usr/bin/fping | grep -q cap_net_raw
+
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     mkdir -p /app/scanner/output /app/scanner/state /app/scanner/inputs && \
     chown -R octo:octo /app

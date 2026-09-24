@@ -12,11 +12,16 @@ metadata:
 spec:
   targetRef:
     apiVersion: apps/v1
-    kind: Deployment
+    kind: StatefulSet
     name: shapoclyack-scanner-executor
   updatePolicy:
-    # Auto: recreate pods when recommendations change (avoids OOM on heavy scans).
-    updateMode: Auto
+    # Initial, not Auto (#338 review): Auto resizes a running pod by evicting
+    # it, and an evicted executor drops the scan it is running — the job waits
+    # out its lease and starts again from nothing. Initial applies the
+    # recommendation when a pod is created anyway: a rollout, a node drain, a
+    # crash. A scan that outgrows its memory before then is OOMKilled and
+    # requeued the same way, which Auto would not have prevented either.
+    updateMode: Initial
   resourcePolicy:
     containerPolicies:
       - containerName: executor

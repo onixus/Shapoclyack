@@ -8,16 +8,21 @@
 # Scoped three ways at once — policy + rule, namespace, and name — so the
 # exception covers the executor's pods and nothing that is later put beside
 # them. The `autogen-` rule names are the ones Kyverno generates for the
-# Deployment and ReplicaSet; listing only the Pod rule would admit the pod and
-# block the Deployment that creates it.
+# StatefulSet; listing only the Pod rule would admit the pod and block the
+# StatefulSet that creates it.
+#
+# overlays/prod also runs the executor on the host network: that exception is
+# kyverno-policyexception-prod-hostnetwork.example.yaml, a file of its own so
+# it is applied only where that overlay is.
 #
 # Kyverno >= 1.13 (kyverno.io/v2). On 1.11/1.12 use kyverno.io/v2beta1; on any
 # version, PolicyExceptions must be enabled (--enablePolicyException), and if
 # --exceptionNamespace is set, apply this into that namespace instead.
 #
-# Checked with `kyverno apply` 1.13.4 against the upstream set and base's
-# render: 3 failures without this file (the three rules below, all on the
-# executor), none with it.
+# Checked with `kyverno apply` 1.13.4 against the upstream set and every
+# overlay's render: without this file the executor fails the three rules below
+# and nothing else fails; with it, nothing fails — except overlays/prod, whose
+# host network is the other file's.
 apiVersion: kyverno.io/v2
 kind: PolicyException
 metadata:
@@ -47,36 +52,7 @@ spec:
       - resources:
           kinds:
             - Pod
-            - Deployment
-            - ReplicaSet
-          namespaces:
-            - network-scan-executor
-          names:
-            - shapoclyack-scanner-executor*
----
-# overlays/prod only: the executor on the host network. Apply this one only
-# where that overlay is — it is the widest exception here.
-apiVersion: kyverno.io/v2
-kind: PolicyException
-metadata:
-  name: shapoclyack-scanner-executor-hostnetwork
-  namespace: network-scan-executor
-  labels:
-    app.kubernetes.io/name: shapoclyack
-    app.kubernetes.io/component: scanner-executor
-spec:
-  exceptions:
-    - policyName: disallow-host-namespaces
-      ruleNames:
-        - host-namespaces
-        - autogen-host-namespaces
-  match:
-    any:
-      - resources:
-          kinds:
-            - Pod
-            - Deployment
-            - ReplicaSet
+            - StatefulSet
           namespaces:
             - network-scan-executor
           names:

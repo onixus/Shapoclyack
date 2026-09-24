@@ -16,14 +16,18 @@ Two layers, checked separately because they answer different questions:
   there has to be exercised by some manifest and named in docs/k8s-hardening.md
   — an exception nobody uses or nobody documented fails.
 
-Rendering uses ``kubectl kustomize`` (or a standalone ``kustomize``); without
-either the render-based tests skip and say so, and the static checks on
-examples/ and the hand-applied Job still run.
+Rendering uses ``kubectl kustomize`` (or a standalone ``kustomize``), or reads
+what k8s/scripts/validate-kustomize.sh rendered into ``OCTO_K8S_RENDER_DIR`` —
+the Jenkins test containers have no kubectl, the stage around them does. With
+neither, the render-based tests skip and say so on a laptop, and *fail* under
+``OCTO_REQUIRE_INTEGRATION=1``: the CI run that skipped 79 of them in silence
+is what let eight mutations of these manifests through review (#338).
 """
 
 from __future__ import annotations
 
 import functools
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -31,6 +35,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from tests.integration_gate import require_integration
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 K8S = REPO_ROOT / "k8s" / "shapoclyack"
@@ -76,17 +82,47 @@ def _kustomize_command() -> list[str] | None:
     return None
 
 
+RENDER_DIR_VAR = "OCTO_K8S_RENDER_DIR"
+
+
+def _render_dir() -> Path | None:
+    value = os.environ.get(RENDER_DIR_VAR, "").strip()
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _can_render() -> bool:
+    return _render_dir() is not None or _kustomize_command() is not None
+
+
 requires_kustomize = pytest.mark.skipif(
-    _kustomize_command() is None,
-    reason="neither kubectl nor kustomize on PATH: the rendered manifests cannot be "
-    "checked here (k8s/scripts/validate-kustomize.sh has the same requirement)",
+    not _can_render() and not require_integration(),
+    reason=f"neither kubectl nor kustomize on PATH and {RENDER_DIR_VAR} unset: the "
+    "rendered manifests cannot be checked here (under OCTO_REQUIRE_INTEGRATION=1 "
+    "this fails instead of skipping)",
 )
 
 
 @functools.cache
 def _render(target: str) -> tuple[dict, ...]:
+    render_dir = _render_dir()
+    if render_dir is not None:
+        # Every target, or the run fails: a directory rendered before an
+        # overlay was added must not quietly leave that overlay unchecked.
+        path = render_dir / f"{target}.yaml"
+        assert path.is_file(), (
+            f"{path} is missing: {RENDER_DIR_VAR} is set, so every target has to be "
+            f"rendered into it ({RENDER_DIR_VAR}=<dir> k8s/scripts/validate-kustomize.sh)"
+        )
+        return tuple(doc for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")) if doc)
     command = _kustomize_command()
-    assert command is not None
+    assert command is not None, (
+        "OCTO_REQUIRE_INTEGRATION declares the test infrastructure available, but there "
+        f"is no kubectl or kustomize on PATH and {RENDER_DIR_VAR} is unset — render the "
+        "manifests first (the Jenkinsfile's Tests stage does) or drop the flag"
+    )
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [*command, str(K8S / target)],
         capture_output=True,
@@ -327,13 +363,13 @@ _RAW_SOCKETS_WHY = (
 )
 
 EXCEPTIONS: tuple[Exception_, ...] = (
-    Exception_("Deployment", EXECUTOR, "executor", _RAW_SOCKETS, _RAW_SOCKETS_WHY),
+    Exception_("StatefulSet", EXECUTOR, "executor", _RAW_SOCKETS, _RAW_SOCKETS_WHY),
     Exception_(
-        "Deployment", EXECUTOR, None, frozenset({"hostNetwork=true"}),
+        "StatefulSet", EXECUTOR, None, frozenset({"hostNetwork=true"}),
         "overlays/prod scans from the node's own network on a tainted scanner pool",
         targets=frozenset({"overlays/prod"}),
     ),
-    Exception_("Deployment", "shapoclyack-agent", "agent", _RAW_SOCKETS,
+    Exception_("StatefulSet", "shapoclyack-agent", "agent", _RAW_SOCKETS,
                "examples/: the scanner-executor for a cluster other than the API's; " + _RAW_SOCKETS_WHY),
     Exception_("Job", "network-scan", "scanner", _RAW_SOCKETS,
                "base/local-scan: scans onto the PVC the API reads; " + _RAW_SOCKETS_WHY),
@@ -518,7 +554,7 @@ def test_the_unenforced_namespace_holds_the_executor_and_nothing_else(target: st
     overlay's plain `namespace:` field would do — breaks the reason it exists."""
     docs = _render(target)
     in_executor_ns = [w for w in _workloads(docs, target) if w.namespace == EXECUTOR_NS]
-    assert [(w.kind, w.name) for w in in_executor_ns] in ([], [("Deployment", EXECUTOR)])
+    assert [(w.kind, w.name) for w in in_executor_ns] in ([], [("StatefulSet", EXECUTOR)])
     executors = [w for w in _workloads(docs, target) if w.name == EXECUTOR]
     assert all(w.namespace == EXECUTOR_NS for w in executors), [w.namespace for w in executors]
     if executors:
@@ -641,7 +677,9 @@ def test_example_patches_do_not_loosen_the_workloads_they_patch(path: Path) -> N
 
 def _all_usage() -> set[Exception_]:
     used: set[Exception_] = set()
-    if _kustomize_command() is not None:
+    # Under the integration flag with no renderer, _render fails and says why,
+    # rather than this reporting every render-only exception as unused.
+    if _can_render() or require_integration():
         for target in RENDER_TARGETS:
             for workload in _workloads(_render(target), target):
                 used |= _unexcused(workload, target)[1]
