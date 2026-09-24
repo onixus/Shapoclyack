@@ -898,7 +898,21 @@ def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> Non
         )
 
 
-def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
+def get_fleet_summary(
+    tenant_id: str | None = None, *, ready_tenant_id: str | None = None
+) -> AgentFleetSummary:
+    """The fleet tiles; ``tenant_id`` None counts every tenant.
+
+    ``scan_ready_agents`` answers "would a scan started here run", so it is
+    counted for ``ready_tenant_id`` (the caller's tenant; a platform admin's
+    unscoped view is still fleet-wide for every other count) and only for
+    agents a claim would not refuse: online, active, scanner kind, not below
+    the version floor, declaring every capability a job may need (#338).
+    """
+    from api.services.scan_policy import AGENT_CAPABILITY as POLICY_CAPABILITY
+    from scanner.pipeline.config_overlay import CAPABILITY as OVERLAY_CAPABILITY
+
+    needed = {POLICY_CAPABILITY, OVERLAY_CAPABILITY}
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         query = select(models.Agent)
@@ -922,9 +936,13 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
             stale += 1
         else:
             online += 1
-            if (r.agent_kind or KIND_SCANNER) == KIND_SCANNER and (
-                r.lifecycle_status or LIFECYCLE_ACTIVE
-            ) == LIFECYCLE_ACTIVE:
+            if (
+                (r.agent_kind or KIND_SCANNER) == KIND_SCANNER
+                and (r.lifecycle_status or LIFECYCLE_ACTIVE) == LIFECYCLE_ACTIVE
+                and (ready_tenant_id is None or t == ready_tenant_id)
+                and not is_below_min_version(r.version or "")
+                and needed <= set(_extract_detail(r.detail)[2] or [])
+            ):
                 scan_ready += 1
             if r.status == "busy":
                 busy += 1

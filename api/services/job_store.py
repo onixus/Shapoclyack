@@ -27,10 +27,38 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z") if dt else None
 
 
+def required_capabilities(scan_options: dict[str, Any] | None) -> frozenset[str]:
+    """What an agent must declare to be handed a job with these options.
+
+    The same two checks ``job_control.claim_job`` refuses on (#362, #338), so
+    the queue flag and the claim cannot disagree about who can take a job.
+    """
+    from api.services import scan_policy
+    from scanner.pipeline import config_overlay
+
+    options = scan_options or {}
+    return frozenset(
+        capability
+        for key, capability in (
+            ("scan_policy", scan_policy.AGENT_CAPABILITY),
+            ("config_overlay", config_overlay.CAPABILITY),
+        )
+        if options.get(key)
+    )
+
+
+def sensor_available(
+    tenant_id: str, scan_options: dict[str, Any] | None, live: dict[str, list[frozenset[str]]]
+) -> bool:
+    """Whether a live sensor of the tenant would be handed this job."""
+    required = required_capabilities(scan_options)
+    return any(required <= capabilities for capabilities in live.get(tenant_id, []))
+
+
 def to_info(
     row: models.Job,
     live_groups: set[tuple[str, str]] | None = None,
-    live_tenants: set[str] | None = None,
+    live_sensors: dict[str, list[frozenset[str]]] | None = None,
 ) -> JobInfo:
     """One job row as the API reports it.
 
@@ -38,8 +66,8 @@ def to_info(
     take a job right now — see ``agent_groups.live_groups``. Passed in by the
     read paths that render a queue so one query answers a whole page; ``None``
     from the write paths, which report the job they just changed and make no
-    claim about who is listening. ``live_tenants`` is the same for a job
-    addressed to no group (``agent_groups.live_tenants``).
+    claim about who is listening. ``live_sensors`` is the same for a job
+    addressed to no group (``agent_groups.live_sensors``).
     """
     tenant_id = row.tenant_id or tenants_service.DEFAULT_TENANT_ID
     return JobInfo(
@@ -82,8 +110,8 @@ def to_info(
             not row.agent_group
             and row.execution == "agent"
             and row.status == job_states.QUEUED
-            and live_tenants is not None
-            and tenant_id not in live_tenants
+            and live_sensors is not None
+            and not sensor_available(tenant_id, row.scan_options, live_sensors)
         ),
     )
 

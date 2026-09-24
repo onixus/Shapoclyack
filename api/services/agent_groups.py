@@ -497,33 +497,43 @@ def live_groups(settings: Settings, tenant_ids: set[str]) -> set[tuple[str, str]
         }
 
 
-def live_tenants(settings: Settings, tenant_ids: set[str]) -> set[str]:
-    """The tenants among ``tenant_ids`` with an agent able to take a scan now.
+def live_sensors(settings: Settings, tenant_ids: set[str]) -> dict[str, list[frozenset[str]]]:
+    """Per tenant, the capabilities of each agent able to take a scan now.
 
     The ungrouped counterpart of :func:`live_groups` (#338 review): an agent
     claims only its own tenant's jobs, so a job addressed to no group waits on
-    "any active scanner agent of this tenant", and a tenant without one — the
-    executor not enrolled yet, enrolled under another tenant's key, or its key
-    expired — has a queue nothing will ever move. Scanner kind only, unlike
-    the group query: an endpoint agent is refused scan jobs on claim, and
-    groups hold scanners only.
+    "an active scanner agent of this tenant that will not be refused it", and a
+    tenant without one — the executor not enrolled yet, enrolled under another
+    tenant's key, its key expired, or every sensor too old for what the job
+    carries — has a queue nothing will move. Scanner kind only (an endpoint
+    agent is refused scan jobs on claim), and not below the version floor
+    (refused too, #363). Capabilities rather than a yes/no because the answer
+    depends on the job: one with a scan policy or a config overlay needs a
+    sensor that declares it (review round 2).
     """
     if not tenant_ids:
-        return set()
+        return {}
+    from api.services import agents as agents_service
+
     cutoff = _now() - timedelta(seconds=settings.agent_stale_seconds)
     with get_session(settings.postgres_url) as session:
-        return set(
-            session.execute(
-                select(models.Agent.tenant_id)
-                .where(
-                    models.Agent.tenant_id.in_(sorted(tenant_ids)),
-                    models.Agent.agent_kind == "scanner",
-                    models.Agent.lifecycle_status == "active",
-                    models.Agent.last_seen_at >= cutoff,
-                )
-                .distinct()
-            ).scalars()
-        )
+        rows = session.execute(
+            select(models.Agent.tenant_id, models.Agent.detail, models.Agent.version).where(
+                models.Agent.tenant_id.in_(sorted(tenant_ids)),
+                models.Agent.agent_kind == "scanner",
+                models.Agent.lifecycle_status == "active",
+                models.Agent.last_seen_at >= cutoff,
+            )
+        ).all()
+    out: dict[str, list[frozenset[str]]] = {}
+    for tenant_id, detail, version in rows:
+        if agents_service.is_below_min_version(version or ""):
+            continue
+        # Capabilities travel in the packed ``detail`` document
+        # (agents._pack_detail), as the claim reads them.
+        capabilities = agents_service._extract_detail(detail)[2]
+        out.setdefault(tenant_id, []).append(frozenset(capabilities or []))
+    return out
 
 
 def resolve_for_scan(

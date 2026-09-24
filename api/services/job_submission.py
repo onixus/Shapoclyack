@@ -465,6 +465,15 @@ def start_scan(
         queued_at=_now(),
     )
 
+    # Whether any sensor of the tenant would be handed this job: none online,
+    # or none that declares what its policy and overlay need. Asked here, once
+    # the overlay is known, and reported after the row exists (below).
+    live_sensors = (
+        agent_groups_service.live_sensors(settings, {tenant_id})
+        if execution == "agent" and not agent_group
+        else None
+    )
+
     # Reserved last, just before the row: every refusal above is then one that
     # leaves nothing behind. Released on every way out below that creates no job.
     reserved = (
@@ -497,13 +506,9 @@ def start_scan(
                     if agent_group
                     else None
                 ),
-                # Answered by admission a moment ago, so the start response
-                # can say it while the operator is still looking (#338).
-                (
-                    {tenant_id}
-                    if admission.tenant_has_live_sensor
-                    else set()
-                ),
+                # So the start response can say it while the operator is
+                # still looking (#338).
+                live_sensors,
             )
     except ValueError:
         _release_run_dir(reserved)
@@ -541,6 +546,23 @@ def start_scan(
         raise IdempotentReplay(existing) from None
 
     job_store.refresh_job_gauges(settings)
+
+    if info.sensor_unavailable:
+        # Warned, not refused: an executor rollout, a schedule firing during
+        # one and the minutes between applying the manifests and enrolling the
+        # executor are ordinary, and a refused scan is one somebody has to
+        # notice was never run. The job answers ``sensor_unavailable`` for as
+        # long as it is true (``job_store.to_info``). Logged only now that the
+        # row exists, so the id it names is one that can be looked up.
+        _log.warning(
+            "Job %s (tenant %s) is queued for agent execution, and no active "
+            "scanner agent of the tenant seen within OCTO_AGENT_STALE_SECONDS "
+            "would be handed it (none online, or none declaring %s): it stays "
+            "queued until one does",
+            job_id,
+            tenant_id,
+            ", ".join(sorted(job_store.required_capabilities(row.scan_options))) or "-",
+        )
 
     if execution == "local":
         thread = thread_factory(

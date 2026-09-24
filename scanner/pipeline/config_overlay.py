@@ -19,6 +19,13 @@ that host's business — where alerts go and with which credentials, output
 paths, tool arguments. So the scanner accepts only :data:`OVERLAY_PATHS`, the
 scan-shaping settings the console and the intents can set, and refuses the
 whole run on anything else rather than applying the part it recognises.
+
+And one installation-wide console override now reaches every tenant's
+sensors, so for the settings that decide how hard a sensor hits its network
+the host's own file stays the limit (review round 2): rates, concurrency and
+nmap timing take the lower of the two, nuclei's excluded tags are the union,
+and screenshots run only where the host enabled them. An overlay can make a
+sensor gentler, never rougher; a tenant scan policy (#362) lowers it further.
 """
 
 from __future__ import annotations
@@ -28,13 +35,21 @@ import json
 from pathlib import Path
 from typing import Any
 
+from scanner.pipeline.config_schema import AppConfig
+
 #: The claim input name, and the file the worker writes it to.
 INPUT_NAME = "config_overlay.json"
 
-#: The document version this build applies. A later API that sends a shape this
-#: build does not know is refused by the capability check on claim; this is the
-#: second line for a document that arrives some other way.
+#: The document version this build applies — and the set of settings it
+#: accepts: a release that adds or removes a path in :data:`OVERLAY_PATHS`
+#: bumps this (tests/test_agent_config_overlay.py pins a digest per version),
+#: so a sensor that knows an older set is refused the job on claim, by
+#: :data:`CAPABILITY`, instead of refusing the run on the host.
 OVERLAY_VERSION = 1
+
+#: What a sensor built from this tree declares, and what the API requires of a
+#: job's claimant. Versioned for the reason above.
+CAPABILITY = f"config_overlay.v{OVERLAY_VERSION}"
 
 _PROFILES = ("safe", "balanced", "fast", "test")
 _PROFILE_LEAVES = ("discover_rate", "port_rate", "top_ports", "nmap_timing")
@@ -47,10 +62,12 @@ _ORG_PROFILE_STAGES = (
     "controls",
 )
 
-#: Every dot-path an overlay may set. The console's editable settings minus the
-#: one secret among them (``enrichment.cvss4.nvd_api_key`` never leaves the
-#: API), plus what the scan intents set. ``tests/test_agent_config_overlay.py``
-#: holds the API's two lists to this one.
+#: Every dot-path an overlay may set. The console's editable settings minus
+#: the ones that belong to the API's host — the NVD key, a secret, and
+#: ``nuclei.templates_dir``, a directory on the API's filesystem that a sensor
+#: does not have, where nuclei then skipped without a word — plus what the scan
+#: intents set. ``tests/test_agent_config_overlay.py`` holds the API's lists to
+#: this one.
 OVERLAY_PATHS: frozenset[str] = frozenset(
     {
         "fingerprint.enabled",
@@ -60,7 +77,6 @@ OVERLAY_PATHS: frozenset[str] = frozenset(
         "nuclei.enabled",
         "nuclei.severities",
         "nuclei.exclude_tags",
-        "nuclei.templates_dir",
         "nuclei.concurrency",
         "nuclei.rate_limit",
         "nuclei.timeout_seconds",
@@ -73,6 +89,11 @@ OVERLAY_PATHS: frozenset[str] = frozenset(
         *(f"org_profile.{stage}.enabled" for stage in _ORG_PROFILE_STAGES),
     }
 )
+
+
+#: Settings where the host's value is a ceiling: the overlay may lower them.
+_CEILINGS_PROFILE = ("discover_rate", "port_rate")
+_CEILINGS_NUCLEI = ("rate_limit", "concurrency")
 
 
 class ConfigOverlayError(ValueError):
@@ -118,20 +139,62 @@ def load_overlay(path: Path) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ConfigOverlayError("config overlay must be a JSON object")
     version = document.get("overlay_version")
-    if version != OVERLAY_VERSION:
+    # Older versions are subsets of this one's settings; a newer one may carry
+    # a setting this build does not know.
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= OVERLAY_VERSION:
         raise ConfigOverlayError(
             f"config overlay version {version!r} is not one this build applies "
-            f"(expected {OVERLAY_VERSION}); upgrade the agent"
+            f"(1 to {OVERLAY_VERSION}); upgrade the agent"
         )
     return check_config(document.get("config"))
 
 
-def apply_overlay(raw: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """``raw`` with ``overlay`` deep-merged onto it; neither is modified."""
+def _merge(raw: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(raw) if isinstance(raw, dict) else {}
     for key, value in overlay.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = apply_overlay(out[key], value)
+            out[key] = _merge(out[key], value)
         else:
             out[key] = copy.deepcopy(value)
+    return out
+
+
+def _timing_level(value: str) -> int:
+    return int(str(value)[1:])
+
+
+def apply_overlay(
+    raw: dict[str, Any], overlay: dict[str, Any], host: AppConfig | None = None
+) -> dict[str, Any]:
+    """``raw`` with ``overlay`` deep-merged onto it; neither is modified.
+
+    ``host`` is ``raw`` as the schema reads it — defaults filled in — and makes
+    the host's file the limit for the settings above. ``None`` is a plain merge.
+    """
+    out = _merge(raw, overlay)
+    if host is None:
+        return out
+    for profile, settings in (overlay.get("profiles") or {}).items():
+        own = host.profiles.get(profile)
+        target = out["profiles"][profile]
+        if own is None:
+            continue
+        for leaf in _CEILINGS_PROFILE:
+            if leaf in settings:
+                target[leaf] = min(settings[leaf], getattr(own, leaf))
+        if "nmap_timing" in settings:
+            target["nmap_timing"] = min(
+                settings["nmap_timing"], own.nmap_timing, key=_timing_level
+            )
+    nuclei = overlay.get("nuclei") or {}
+    for leaf in _CEILINGS_NUCLEI:
+        if leaf in nuclei:
+            out["nuclei"][leaf] = min(nuclei[leaf], getattr(host.nuclei, leaf))
+    if "exclude_tags" in nuclei:
+        own_tags = list(host.nuclei.exclude_tags or [])
+        out["nuclei"]["exclude_tags"] = own_tags + [
+            tag for tag in nuclei["exclude_tags"] if tag not in own_tags
+        ]
+    if "enabled" in (overlay.get("screenshots") or {}):
+        out["screenshots"]["enabled"] = bool(overlay["screenshots"]["enabled"]) and host.screenshots.enabled
     return out

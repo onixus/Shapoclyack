@@ -161,7 +161,7 @@ def test_the_fleet_summary_counts_the_agents_that_can_take_a_scan(tmp_path, monk
     assert ready() == 0
     _register(client, "laptop-7", agent_kind="endpoint")
     assert ready() == 0
-    sensor = _register(client, "scanner-executor-0")
+    sensor = _register(client, "scanner-executor-0", capabilities=["scan_policy", "config_overlay.v1"])
     assert ready() == 1
     client.patch(
         f"/api/agents/{sensor}",
@@ -169,3 +169,89 @@ def test_the_fleet_summary_counts_the_agents_that_can_take_a_scan(tmp_path, monk
         json={"status": "quarantined", "reason": "wrong segment"},
     )
     assert ready() == 0
+
+
+# ---------------------------------------------------------------------------
+# Review round 2: a sensor that would be refused the job is no sensor for it
+# ---------------------------------------------------------------------------
+
+CURRENT = ["scan_policy", "config_overlay.v1"]
+
+
+def _start_body(client, **body):
+    response = client.post(
+        "/api/jobs",
+        headers=auth_headers(client, "operator"),
+        json={"mode": "balanced", "ranges": "127.0.0.1\n", "domains": "\n", **body},
+    )
+    assert response.status_code == 202, response.text
+    return response.json()
+
+
+def test_an_outdated_sensor_is_not_one_for_a_job_it_would_be_refused(tmp_path, monkeypatch):
+    """API upgraded, sensors not yet: every console scan with an intent is
+    refused on claim (426), and the job used to read as waiting for a busy
+    sensor while the banner said one was ready."""
+    client = _client(tmp_path, monkeypatch)
+    _register(client, "old-sensor", capabilities=["scan_policy"])
+    with_overlay = _start_body(client, intent="inventory")
+    plain = _start_body(client)
+    assert with_overlay["sensor_unavailable"] is True
+    assert _job(client, with_overlay["job_id"])["sensor_unavailable"] is True
+    assert _job(client, plain["job_id"])["sensor_unavailable"] is False
+    summary = client.get("/api/agents/summary", headers=auth_headers(client, "viewer")).json()
+    assert summary["online_agents"] == 1
+    assert summary["scan_ready_agents"] == 0
+
+
+def test_a_sensor_below_the_version_floor_is_not_a_sensor(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, agent_min_version="99.0")
+    _register(client, "old-sensor", capabilities=CURRENT, version="0.3.2.1")
+    started = _start_body(client)
+    assert _job(client, started["job_id"])["sensor_unavailable"] is True
+
+
+def test_a_platform_admin_is_told_about_the_tenant_they_are_in(tmp_path, monkeypatch):
+    """Unscoped, the fleet summary counts every tenant's agents - right for
+    the fleet tiles, wrong for "can a scan I start here run": a sensor of
+    another tenant never claims it."""
+    client = _client(tmp_path, monkeypatch)
+    admin = login(client, "admin")
+    assert client.post(
+        "/api/tenants", headers=bearer(admin), json={"tenant_id": "acme", "name": "Acme"}
+    ).status_code in (200, 201)
+    key = client.post(
+        "/api/tenants/acme/provisioning-keys", headers=bearer(admin), json={"label": "acme"}
+    ).json()["key"]
+    token = client.post("/api/auth/agent/token", json={"provisioning_key": key}).json()["access_token"]
+    registered = client.post(
+        "/api/agent/register",
+        headers=bearer(token),
+        json={"hostname": "acme-sensor", "capabilities": CURRENT},
+    )
+    assert registered.status_code == 200, registered.text
+
+    summary = client.get("/api/agents/summary", headers=bearer(admin)).json()
+    assert summary["online_agents"] == 1  # the fleet view is still fleet-wide
+    assert summary["scan_ready_agents"] == 0  # but nothing takes a `default` scan
+
+
+def test_a_refused_start_does_not_log_a_queued_job(tmp_path, monkeypatch, caplog):
+    """The warning names a job id; one for a job that was never created
+    sends the reader looking for it."""
+    import logging
+
+    client = _client(tmp_path, monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        refused = client.post(
+            "/api/jobs",
+            headers=auth_headers(client, "operator"),
+            json={"mode": "balanced", "ranges": "127.0.0.1\n", "domains": "\n", "wordlist_id": "wl-1"},
+        )
+    assert refused.status_code in (400, 422), refused.text
+    assert not [r for r in caplog.records if "queued for agent execution" in r.getMessage()]
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        started = _start_body(client)
+    assert [r for r in caplog.records if started["job_id"] in r.getMessage()]

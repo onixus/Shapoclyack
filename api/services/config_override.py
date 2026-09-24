@@ -25,6 +25,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.settings import Settings
+from scanner.pipeline import config_overlay
 from scanner.pipeline.config_schema import NaabuTopPorts, ValidationError, load_config
 
 LOG = logging.getLogger(__name__)
@@ -364,8 +365,15 @@ def effective_config_path(
 
 
 #: What an agent reports when it hands a claim's ``config_overlay.json`` to the
-#: scanner as ``--config-overlay``. Kept equal to ``agent/worker.CAPABILITIES``.
-AGENT_CAPABILITY = "config_overlay"
+#: scanner as ``--config-overlay``: versioned with the set of settings the
+#: overlay may carry (scanner/pipeline/config_overlay.py). Kept equal to
+#: ``agent/worker.CAPABILITIES``.
+AGENT_CAPABILITY = config_overlay.CAPABILITY
+
+#: Editable settings that stay with the API's own host and are never sent to a
+#: sensor: the NVD key (a secret the sensor's scans do not use) and the nuclei
+#: templates directory (a path on the API's filesystem).
+HOST_ONLY_PATHS: frozenset[str] = SECRET_PATHS | {"nuclei.templates_dir"}
 
 
 class AgentOverlayUnsupported(PermissionError):
@@ -387,18 +395,18 @@ def agent_overlay(settings: Settings, extra: dict[str, Any] | None) -> dict[str,
     same order — stored overrides, then ``extra`` — so an intent wins over an
     override it contradicts on both paths.
 
-    ``SECRET_PATHS`` are left out on purpose. The NVD key feeds the online CVE
-    lookup and the CVSS-4 database fetch, neither of which an executor runs by
-    default, and the claim response it would travel in is stored on a host in
-    somebody else's network. An executor that needs it is given it by its own
-    operator. ``None`` when there is nothing to send, so an agent that predates
+    ``HOST_ONLY_PATHS`` are left out on purpose. The NVD key feeds the online
+    CVE lookup and the CVSS-4 database fetch, neither of which an executor runs
+    by default, and the claim response it would travel in is stored on a host
+    in somebody else's network; an executor that needs it is given it by its
+    own operator. The templates directory is a path on this host. ``None`` when there is nothing to send, so an agent that predates
     the overlay keeps taking the jobs of an installation that never used it.
     """
     overrides = unflatten(
         {
             path: value
             for path, value in _flatten(get_overrides(settings)).items()
-            if path not in SECRET_PATHS
+            if path not in HOST_ONLY_PATHS
         }
     )
     merged = _deep_merge(overrides, extra) if extra else overrides

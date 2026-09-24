@@ -41,10 +41,6 @@ class ScanAdmission:
     agent_group: str | None
     group_has_live_agent: bool
     parsed_targets: ParsedTargets | None
-    # For an ungrouped agent job: whether the tenant has any agent able to take
-    # it (#338 review). Always True for a local job and a grouped one, which
-    # ``group_has_live_agent`` speaks for.
-    tenant_has_live_sensor: bool = True
 
 
 def admit_scan(
@@ -263,27 +259,6 @@ def admit_scan(
             agent_group,
         )
 
-    tenant_has_live_sensor = (
-        execution != "agent"
-        or bool(agent_group)
-        or tenant_id in agent_groups_service.live_tenants(settings, {tenant_id})
-    )
-    if not tenant_has_live_sensor:
-        # Warned, not refused, for the group case's reason above — and three
-        # more that are ordinary operations: an executor rollout, a schedule
-        # firing during one, and the minutes between applying the manifests and
-        # enrolling the executor. The job answers ``sensor_unavailable`` for as
-        # long as it is true (``job_store.to_info``); refusing would turn each
-        # of those into a scan an operator has to notice was never run.
-        _log.warning(
-            "Job %s (tenant %s) is queued for agent execution, and the tenant "
-            "has no active scanner agent seen within OCTO_AGENT_STALE_SECONDS: "
-            "it stays queued until one enrolls — an agent only takes its own "
-            "tenant's jobs",
-            job_id,
-            tenant_id,
-        )
-
     return ScanAdmission(
         tenant_id=tenant_id,
         scope=scope,
@@ -293,5 +268,4 @@ def admit_scan(
         agent_group=agent_group,
         group_has_live_agent=group_has_live_agent,
         parsed_targets=parsed,
-        tenant_has_live_sensor=tenant_has_live_sensor,
     )

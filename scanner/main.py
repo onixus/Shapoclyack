@@ -261,8 +261,14 @@ def _config_for_run(args: argparse.Namespace) -> tuple[AppConfig, str, str]:
     if overlay_path:
         # Refused whole rather than applied in part: a job that asked for
         # nuclei off and ran it anyway is the defect this overlay exists to fix.
+        # The host's own file, validated first, is the limit for rates, timing,
+        # nuclei exclusions and screenshots (scanner/pipeline/config_overlay.py).
         try:
-            raw = apply_config_overlay(raw, load_config_overlay(Path(overlay_path)))
+            host = load_config(raw)
+        except ValidationError as exc:
+            raise _RunConfigError(format_validation_error(exc)) from exc
+        try:
+            raw = apply_config_overlay(raw, load_config_overlay(Path(overlay_path)), host)
         except ConfigOverlayError as exc:
             raise _RunConfigError(str(exc)) from exc
     try:

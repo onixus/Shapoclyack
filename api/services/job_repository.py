@@ -203,8 +203,10 @@ def _live_groups_for(
     return agent_groups_service.live_groups(settings, tenants)
 
 
-def _live_tenants_for(settings: Settings, rows: Sequence[models.Job]) -> set[str] | None:
-    """``live_tenants`` for the ungrouped queued agent jobs among these rows.
+def _live_sensors_for(
+    settings: Settings, rows: Sequence[models.Job]
+) -> dict[str, list[frozenset[str]]] | None:
+    """``live_sensors`` for the ungrouped queued agent jobs among these rows.
 
     None when there are none, for the reason ``_live_groups_for`` gives: a page
     of finished jobs, or of local ones, costs no second query.
@@ -218,7 +220,7 @@ def _live_tenants_for(settings: Settings, rows: Sequence[models.Job]) -> set[str
     }
     if not tenants:
         return None
-    return agent_groups_service.live_tenants(settings, tenants)
+    return agent_groups_service.live_sensors(settings, tenants)
 
 
 def list_jobs(
@@ -282,8 +284,8 @@ def list_jobs(
     # the overwhelming majority of installations have no groups at all and must
     # not pay a second query per listing for a column they never show.
     live = _live_groups_for(settings, rows)
-    live_tenants = _live_tenants_for(settings, rows)
-    return [job_store.to_info(row, live, live_tenants) for row in rows], total
+    live_sensors = _live_sensors_for(settings, rows)
+    return [job_store.to_info(row, live, live_sensors) for row in rows], total
 
 
 def summary(settings: Settings, *, tenant_id: str | None = None) -> dict[str, Any]:
@@ -342,7 +344,7 @@ def get_job(settings: Settings, job_id: str) -> JobInfo | None:
         if row is None:
             return None
         live = _live_groups_for(settings, [row])
-        return job_store.to_info(row, live, _live_tenants_for(settings, [row]))
+        return job_store.to_info(row, live, _live_sensors_for(settings, [row]))
 
 
 def reset_for_tests(settings: Settings) -> None:

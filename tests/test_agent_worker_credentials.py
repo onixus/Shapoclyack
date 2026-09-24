@@ -145,3 +145,13 @@ def test_the_scan_does_not_inherit_the_workers_credentials(monkeypatch, tmp_path
     assert not leaked, leaked
     assert env.get("NVD_API_KEY") == "operator-nvd-key"
     assert env.get("PATH")
+
+
+def test_the_key_file_wins_over_the_environment(tmp_path):
+    """The manifests set both while the pinned image predates the file
+    (review round 2); a current worker must use the file, which is the one
+    that follows a rotation."""
+    key_file = tmp_path / "provisioning_key"
+    key_file.write_text("from-file\n", encoding="utf-8")
+    args = _args(provisioning_key="from-env", provisioning_key_file=str(key_file))
+    assert worker._provisioning_key(args) == "from-file"

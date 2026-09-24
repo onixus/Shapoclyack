@@ -68,11 +68,13 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 # an older worker silently ignores would read as enforced and would not be.
 # Kept equal to api/services/scan_policy.AGENT_CAPABILITY.
 #
-# ``config_overlay`` (#338): a claim's ``config_overlay.json`` — the scan
+# ``config_overlay.v1`` (#338): a claim's ``config_overlay.json`` — the scan
 # intent's settings and the console's config overrides — is passed to the
 # scanner as ``--config-overlay``. Refused on claim without it, for the same
-# reason. Kept equal to api/services/config_override.AGENT_CAPABILITY.
-CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay")
+# reason. Versioned with the settings the overlay may carry, so a later API is
+# refused to this build rather than failing its scans. Kept equal to
+# scanner/pipeline/config_overlay.CAPABILITY.
+CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1")
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"

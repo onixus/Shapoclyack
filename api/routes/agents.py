@@ -554,7 +554,12 @@ def get_fleet_summary(
         if principal.is_platform_admin and not principal.tenant_requested
         else principal.tenant_id
     )
-    return agents_service.get_fleet_summary(tenant_id=tenant_id)
+    # The readiness count is always the caller's own tenant: a platform admin
+    # looking at the whole fleet is still starting scans in one tenant, and
+    # another tenant's sensor never claims them.
+    return agents_service.get_fleet_summary(
+        tenant_id=tenant_id, ready_tenant_id=principal.tenant_id
+    )
 
 
 @router.get("/agents/{agent_id}", response_model=AgentInfo)
