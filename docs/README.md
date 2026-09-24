@@ -80,6 +80,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Architecture](architecture.md) | Components, control-plane behavior, trust boundaries, storage, messaging |
 | [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, endpoint groups |
 | [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, redistribution notes |
+| [Supply chain](supply-chain.md) | Signed release images and provenance, verifying them, admission policies, hash-locked Python dependencies, digest-pinned images, Renovate |
 | [Security policy](../.github/SECURITY.md) | Supported versions, disclosure, release controls, operator baseline |
 
 ## Engineering and planning documentation
