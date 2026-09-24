@@ -40,7 +40,7 @@ spec:
         url: https://rekor.sigstore.dev
       attestations:
         - name: slsa-provenance
-          predicateType: slsaprovenance1
+          predicateType: https://slsa.dev/provenance/v1
     - name: github-actions-keyless
       keyless:
         url: https://fulcio.sigstore.dev
@@ -51,4 +51,4 @@ spec:
         url: https://rekor.sigstore.dev
       attestations:
         - name: slsa-provenance
-          predicateType: slsaprovenance1
+          predicateType: https://slsa.dev/provenance/v1

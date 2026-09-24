@@ -31,18 +31,27 @@ def SBOM_GENERATOR = 'docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e
 // (docs/supply-chain.md). Keyless здесь не выйдет: Fulcio выдаёт сертификат
 // только на OIDC-токен известного ему провайдера, а у локального Jenkins
 // такого нет. Проверка ключа — до сборки: полтора часа сборки, чтобы
-// узнать, что в Jenkins не тот credential, никому не нужны.
+// узнать, что в Jenkins не тот credential, никому не нужны. Ключ — файловый
+// credential; ключ в KMS потребует правки здесь и в стадии подписи.
 def checkSigningKey() {
-  withCredentials([
-    file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
-    string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
-  ]) {
-    sh '''
-      set -eu
-      scripts/install-cosign.sh "$WORKSPACE/.tools"
-      PATH="$WORKSPACE/.tools:$PATH" scripts/sign-release-image.sh \
-        --check-key --key "$COSIGN_KEY" --pubkey cosign.pub
-    '''
+  try {
+    withCredentials([
+      file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
+      string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
+    ]) {
+      sh '''
+        set -eu
+        .release-tooling/scripts/install-cosign.sh "$WORKSPACE/.tools"
+        PATH="$WORKSPACE/.tools:$PATH" .release-tooling/scripts/sign-release-image.sh \
+          --check-key --key "$COSIGN_KEY" --pubkey .release-tooling/cosign.pub
+      '''
+    }
+  } catch (err) {
+    // Самое вероятное состояние сразу после мержа — credential'ов ещё нет, и
+    // withCredentials падает безликим "Could not find credentials entry",
+    // из которого не понять, что делать. Сбой остаётся сбоем.
+    echo "Подпись релиза не настроена или ключ не тот (${err}). Разовая настройка — docs/supply-chain.md, раздел «Release key: one-time setup and rotation»: пара cosign, COSIGN_PRIVATE_KEY и COSIGN_PASSWORD в Jenkins, cosign.pub в репозитории."
+    throw err
   }
 }
 
@@ -135,6 +144,24 @@ pipeline {
           ]],
         ])
         sh 'git --no-pager log --oneline -1'
+        // Подписывает не тег, а эта ревизия пайплайна (#313): скрипты подписи и
+        // cosign.pub берутся оттуда же, откуда загружен сам Jenkinsfile.publish,
+        // в отдельный каталог рядом с тегом. Тег, срезанный до #313, этих
+        // файлов не содержит, и его перепубликация иначе упала бы на
+        // отсутствующем скрипте; а новый тег не должен приносить свой, более
+        // старый код подписи. Забирается после checkout тега — тот его уже не
+        // перезапишет. `scm` есть только у джобы "Pipeline script from SCM".
+        script {
+          try {
+            dir('.release-tooling') {
+              deleteDir()
+              checkout scm
+            }
+          } catch (err) {
+            echo "Не удалось забрать инструменты подписи из ревизии пайплайна (${err}). Джоба должна загружать Jenkinsfile.publish из SCM, а не держать его inline-скриптом."
+            throw err
+          }
+        }
       }
     }
 
@@ -240,8 +267,8 @@ pipeline {
                 sh """
                   set -eu
                   digest="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' .publish/${m.name}.json)"
-                  PATH="\$WORKSPACE/.tools:\$PATH" scripts/sign-release-image.sh \
-                    --key "\$COSIGN_KEY" --pubkey cosign.pub --release '${params.TAG}' \
+                  PATH="\$WORKSPACE/.tools:\$PATH" .release-tooling/scripts/sign-release-image.sh \
+                    --key "\$COSIGN_KEY" --pubkey .release-tooling/cosign.pub --release '${params.TAG}' \
                     ${tagArgs} \
                     "${m.image}@\$digest"
                 """

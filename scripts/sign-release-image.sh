@@ -11,11 +11,12 @@
 #
 # The order is the point. The pipeline pushes the image by digest with no
 # tag, so nobody pulls it by name yet. This script signs that digest (never a
-# tag: a tag can be moved after signing, a digest cannot), attests the SLSA
-# provenance BuildKit recorded for it, verifies both with exactly the identity
-# a customer will use, and only then points the release tags at it. Anything
-# failing on the way leaves an untagged, unsigned digest in the registry and a
-# red build — never a tag on an image that is not signed.
+# tag: a tag can be moved after signing, a digest cannot) and each platform
+# manifest in it, attests the SLSA provenance BuildKit recorded for every
+# platform on both the index and that platform's manifest, verifies all of it
+# with exactly the identity a customer will use, and only then points the
+# release tags at it. Anything failing on the way leaves an untagged digest in
+# the registry and a red build — never a tag on an image that is not signed.
 #
 # The signature covers more than the image: BuildKit writes its SBOM and
 # provenance into the same image index, and the index digest is a hash over
@@ -65,7 +66,10 @@ refs=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --key) key="${2:?--key needs a value}"; mode="${mode:-key}"; shift 2 ;;
+    # Refused in either order: a --key that quietly lost to --keyless would
+    # sign with an identity the caller did not ask for.
+    --key) [[ "${mode}" == "keyless" ]] && die "--key and --keyless are exclusive"
+      key="${2:?--key needs a value}"; mode="key"; shift 2 ;;
     --pubkey) pubkey="${2:?--pubkey needs a value}"; shift 2 ;;
     --keyless) [[ "${mode}" == "key" ]] && die "--key and --keyless are exclusive"; mode="keyless"; shift ;;
     --identity) identity="${2:?--identity needs a value}"; shift 2 ;;
@@ -137,54 +141,105 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
-# The provenance BuildKit attached to this digest, one predicate per platform.
+# The provenance BuildKit attached, one SLSA v1 predicate per platform, paired
+# with that platform's manifest in the index. Every platform must have one: a
+# platform without provenance would be signed and still fail every admission
+# policy, and one platform's record says nothing about how the other was built.
 # SLSA v1 only (the pipelines build with --provenance version=v1): the type
 # attested and verified below, and required by the admission examples.
-echo "[sign] ${ref}: reading build provenance"
+echo "[sign] ${ref}: reading the index and its build provenance"
+docker buildx imagetools inspect "${ref}" --format '{{json .Manifest}}' > "${tmp}/index.json"
 docker buildx imagetools inspect "${ref}" --format '{{json .Provenance}}' > "${tmp}/provenance.json"
-python3 - "${tmp}/provenance.json" "${tmp}" <<'PY' || die "${ref}: no usable SLSA v1 provenance; was it built with --provenance mode=max,version=v1?"
+python3 - "${tmp}/index.json" "${tmp}/provenance.json" "${tmp}" <<'PY' \
+  || die "${ref}: no usable SLSA v1 provenance for every platform; was it built with --provenance mode=max,version=v1?"
 import json
 import sys
 from pathlib import Path
 
-data = json.loads(Path(sys.argv[1]).read_text() or "null") or {}
-# One platform: {"SLSA": {...}}; several: {"linux/amd64": {"SLSA": {...}}, ...}.
-per_platform = {"image": data} if "SLSA" in data else data
-written = 0
-for platform, stub in sorted(per_platform.items()):
-    predicate = (stub or {}).get("SLSA")
-    if not predicate:
+index = json.loads(Path(sys.argv[1]).read_text() or "null") or {}
+provenance = json.loads(Path(sys.argv[2]).read_text() or "null") or {}
+out = Path(sys.argv[3])
+
+# Platform manifests; BuildKit's attestation manifests are unknown/unknown.
+platforms = {}
+for entry in index.get("manifests") or []:
+    platform = entry.get("platform") or {}
+    annotations = entry.get("annotations") or {}
+    if platform.get("os", "unknown") == "unknown":
         continue
+    if annotations.get("vnd.docker.reference.type") == "attestation-manifest":
+        continue
+    name = "/".join(p for p in (platform["os"], platform["architecture"], platform.get("variant")) if p)
+    platforms[name] = entry["digest"]
+if not platforms:
+    sys.exit("not an image index with platform manifests, so no provenance can be attached")
+
+# One platform: {"SLSA": {...}}; several: {"linux/amd64": {"SLSA": {...}}, ...}.
+if "SLSA" in provenance:
+    if len(platforms) != 1:
+        sys.exit("one provenance record for an index of several platforms")
+    provenance = {next(iter(platforms)): provenance}
+extra = sorted(set(provenance) - set(platforms))
+if extra:
+    sys.exit(f"provenance for {', '.join(extra)}, which the index does not hold")
+plan = []
+for platform, digest in sorted(platforms.items()):
+    predicate = (provenance.get(platform) or {}).get("SLSA")
+    if not predicate:
+        sys.exit(f"{platform}: no provenance attached")
     if "buildDefinition" not in predicate or "runDetails" not in predicate:
         sys.exit(f"{platform}: provenance is not SLSA v1")
-    name = platform.replace("/", "-")
-    Path(sys.argv[2], f"provenance-{name}.json").write_text(json.dumps(predicate))
-    written += 1
-if not written:
-    sys.exit("no provenance attached")
+    path = out / f"provenance-{platform.replace('/', '-')}.json"
+    path.write_text(json.dumps(predicate))
+    plan.append(f"{digest} {path}")
+(out / "plan").write_text("\n".join(plan) + "\n")
 PY
 
 echo "[sign] ${ref}: signing"
 cosign sign --yes --recursive --tlog-upload=true \
   ${sign_id[@]+"${sign_id[@]}"} ${annotations[@]+"${annotations[@]}"} "${ref}"
 
-for predicate in "${tmp}"/provenance-*.json; do
-  echo "[sign] ${ref}: attesting $(basename "${predicate}" .json)"
-  cosign attest --yes --tlog-upload=true --type slsaprovenance1 \
-    ${sign_id[@]+"${sign_id[@]}"} --predicate "${predicate}" "${ref}"
+# Each platform's provenance is attested twice: on the index, which is what the
+# manifests and admission policies name, and on that platform's own manifest,
+# which --recursive has just signed and which a pod may name directly. On the
+# index, the platform shows in the predicate itself (the ?platform= of the base
+# images in resolvedDependencies), not in the subject.
+platform_refs=()
+while read -r platform_digest predicate; do
+  platform_ref="${repo}@${platform_digest}"
+  platform_refs+=("${platform_ref}")
+  echo "[sign] attesting $(basename "${predicate}" .json) on the index and on ${platform_digest}"
+  for subject in "${ref}" "${platform_ref}"; do
+    cosign attest --yes --tlog-upload=true --type slsaprovenance1 \
+      ${sign_id[@]+"${sign_id[@]}"} --predicate "${predicate}" "${subject}"
+  done
+done < "${tmp}/plan"
+
+# Verified the way a customer verifies, before any tag points here — the index
+# and every platform manifest, signature and provenance both.
+echo "[sign] ${ref}: verifying"
+for subject in "${ref}" "${platform_refs[@]}"; do
+  cosign verify "${verify_id[@]}" ${annotations[@]+"${annotations[@]}"} "${subject}" > /dev/null
+  cosign verify-attestation "${verify_id[@]}" --type slsaprovenance1 "${subject}" > /dev/null
 done
 
-# Verified the way a customer verifies, before any tag points here.
-echo "[sign] ${ref}: verifying"
-cosign verify "${verify_id[@]}" ${annotations[@]+"${annotations[@]}"} "${ref}" > /dev/null
-cosign verify-attestation "${verify_id[@]}" --type slsaprovenance1 "${ref}" > /dev/null
+# What each tag would point at is checked before any tag exists. imagetools
+# create re-uses a single source index byte for byte, so the dry run must hash
+# to the signed digest; if it ever re-wrapped the index, the tag would name an
+# unsigned one. --dry-run prints the manifest it would push plus a newline.
+for tag in ${tags[@]+"${tags[@]}"}; do
+  docker buildx imagetools create --dry-run --tag "${tag}" "${ref}" > "${tmp}/would-push"
+  would="$(python3 -c 'import hashlib, sys
+data = open(sys.argv[1], "rb").read()
+print("sha256:" + hashlib.sha256(data[:-1] if data.endswith(b"\n") else data).hexdigest())' "${tmp}/would-push")"
+  [[ "${would}" == "${digest}" ]] \
+    || die "${tag} would point at ${would}, not the signed ${digest}; nothing was tagged"
+done
 
 for tag in ${tags[@]+"${tags[@]}"}; do
   echo "[sign] tagging ${tag}"
   docker buildx imagetools create --tag "${tag}" "${ref}"
-  # imagetools create re-uses a single source index unchanged, so the tag has
-  # to resolve to the digest just signed. If it ever re-wrapped it, the tag
-  # would point at an unsigned index; stop rather than publish that.
+  # And read back: a registry that rewrote the manifest on push would show here.
   resolved="$(docker buildx imagetools inspect "${tag}" --format '{{json .Manifest}}' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
   [[ "${resolved}" == "${digest}" ]] \
