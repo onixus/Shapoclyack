@@ -18,20 +18,28 @@ tenant's rows out. The pieces:
 from __future__ import annotations
 
 import contextvars
+import json
 import threading
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import pytest
+from fastapi import Depends
 from sqlalchemy import Column, MetaData, String, Table, create_engine, delete, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
+from api import auth
 from api.db import engine as db_engine
 from api.db import models, tenant_scope
 from api.db.engine import get_session
 from tests.conftest import (
     POSTGRES_URL,
+    auth_headers,
+    bearer,
+    configured_client,
     make_settings,
     requires_postgres,
 )
@@ -40,6 +48,7 @@ pytestmark = requires_postgres
 
 TENANT_A = "rls-tenant-a"
 TENANT_B = "rls-tenant-b"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _now() -> datetime:
@@ -423,3 +432,152 @@ def test_the_setting_is_refused_when_misspelled(monkeypatch) -> None:
     assert load_settings().tenant_rls == "off"
     monkeypatch.delenv("OCTO_TENANT_RLS")
     assert load_settings().tenant_rls == "enforce"
+
+
+# --------------------------------------------------------------------------- #
+# Through the API
+# --------------------------------------------------------------------------- #
+
+
+def _leaky_route(client: Any) -> None:
+    """A route with its tenant guard and without its WHERE — the bug class #311 is about."""
+
+    @client.app.get("/api/rls-probe/agent-groups")
+    def list_every_group(
+        _: Any = Depends(auth.require_tenant(auth.Role.viewer)),
+    ) -> list[str]:
+        with get_session(POSTGRES_URL) as session:
+            return sorted(session.execute(select(models.AgentGroup.tenant_id)).scalars().all())
+
+
+def _seed_groups_in_two_tenants(client: Any, admin: dict[str, str]) -> str:
+    other = client.post("/api/tenants", headers=admin, json={"name": "Other"}).json()["tenant_id"]
+    with get_session(POSTGRES_URL) as session:
+        session.add(_group("default", "ours"))
+        session.add(_group(other, "theirs"))
+    return other
+
+
+def test_a_route_that_forgot_its_where_still_answers_for_one_tenant(tmp_path, monkeypatch) -> None:
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    other = _seed_groups_in_two_tenants(client, admin)
+    _leaky_route(client)
+
+    operator = client.get("/api/rls-probe/agent-groups", headers=auth_headers(client, "operator"))
+    assert operator.status_code == 200, operator.text
+    assert operator.json() == ["default"]
+
+    # The platform admin is authorized in every tenant, and its requests are
+    # not narrowed: the cross-tenant views are built on that.
+    everything = client.get("/api/rls-probe/agent-groups", headers=admin)
+    assert sorted(everything.json()) == sorted(["default", other])
+
+
+def test_a_route_with_no_guard_cannot_read_a_tenant_table(tmp_path, monkeypatch) -> None:
+    """Every request starts undeclared (``TenantScopeMiddleware``). A route
+    that neither resolves a tenant nor declares itself cross-tenant is refused
+    by the database the moment it touches tenant data — the runtime twin of
+    ``tests/test_route_tenant_guards.py``."""
+    client = configured_client(tmp_path, monkeypatch)
+    _seed_groups_in_two_tenants(client, auth_headers(client, "admin"))
+
+    @client.app.get("/api/rls-probe/unguarded")
+    def unguarded() -> list[str]:
+        with get_session(POSTGRES_URL) as session:
+            return sorted(session.execute(select(models.AgentGroup.tenant_id)).scalars().all())
+
+    with pytest.raises(DBAPIError, match="tenant_scope_undeclared"):
+        client.get("/api/rls-probe/unguarded")
+
+
+def test_off_is_the_old_behaviour_through_the_api(tmp_path, monkeypatch) -> None:
+    client = configured_client(tmp_path, monkeypatch, tenant_rls="off")
+    admin = auth_headers(client, "admin")
+    other = _seed_groups_in_two_tenants(client, admin)
+    _leaky_route(client)
+
+    operator = client.get("/api/rls-probe/agent-groups", headers=auth_headers(client, "operator"))
+    assert sorted(operator.json()) == sorted(["default", other])
+
+
+def test_a_service_token_is_held_to_its_tenant_even_behind_a_global_role_gate(
+    tmp_path, monkeypatch
+) -> None:
+    """``GET /api/usage/tenants`` is ``require_role(admin)``, and an admin-role
+    service token passes that on its role. The route's first line assumes a
+    platform admin; the second one knows the caller is a tenant's token."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    other = client.post("/api/tenants", headers=admin, json={"name": "Other"}).json()["tenant_id"]
+    token = client.post(
+        "/api/tenants/default/service-tokens",
+        headers=admin,
+        json={"name": "ci", "scopes": ["*"], "role": "admin"},
+    ).json()["token"]
+
+    as_platform = client.get("/api/usage/tenants", headers=admin).json()
+    assert {row["tenant_id"] for row in as_platform["tenants"]} >= {"default", other}
+
+    as_token = client.get("/api/usage/tenants", headers=bearer(token))
+    assert as_token.status_code == 200, as_token.text
+    assert {row["tenant_id"] for row in as_token.json()["tenants"]} == {"default"}
+
+
+# --------------------------------------------------------------------------- #
+# Ids a client chooses: refused by name, not by a duplicate-key error
+# --------------------------------------------------------------------------- #
+#
+# Two primary keys are picked by the caller rather than minted here — an
+# agent's ``agent_id`` and an inventory ``snapshot_id`` — and both services
+# refuse one that another tenant already holds. Under the tenant scope that
+# other tenant's row is invisible, so without an explicit system-scoped look
+# the refusal would become an INSERT that dies on the primary key: a 500, and
+# one that still says "this id exists".
+
+
+def _other_tenant(client: Any, admin: dict[str, str]) -> str:
+    return client.post("/api/tenants", headers=admin, json={"name": "Other"}).json()["tenant_id"]
+
+
+def test_an_agent_id_held_by_another_tenant_is_still_refused_by_name(tmp_path, monkeypatch) -> None:
+    client = configured_client(tmp_path, monkeypatch)
+    other = _other_tenant(client, auth_headers(client, "admin"))
+    with get_session(POSTGRES_URL) as session:
+        session.add(
+            models.Agent(
+                agent_id="rls-shared-id", tenant_id=other, registered_at=_now(), last_seen_at=_now()
+            )
+        )
+
+    # The legacy shared token acts for the default tenant and names its own id.
+    response = client.post(
+        "/api/agent/register",
+        headers={"Authorization": "Bearer test-agent-token"},
+        json={"agent_id": "rls-shared-id", "hostname": "h"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert "different tenant" in response.json()["detail"]
+    with get_session(POSTGRES_URL) as session:
+        assert session.get(models.Agent, "rls-shared-id").tenant_id == other
+
+
+def test_a_snapshot_id_held_by_another_tenant_is_still_a_conflict(tmp_path, monkeypatch) -> None:
+    client = configured_client(tmp_path, monkeypatch, endpoint_inventory_enabled=True)
+    other = _other_tenant(client, auth_headers(client, "admin"))
+    body = json.loads((FIXTURES / "endpoint_inventory_v1_valid.json").read_text("utf-8"))
+    body["collected_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    headers = {"Authorization": "Bearer test-agent-token"}
+    assert client.post("/api/endpoint/inventory", headers=headers, json=body).status_code == 201
+    with get_session(POSTGRES_URL) as session:
+        session.execute(
+            models.EndpointInventorySnapshot.__table__.update()
+            .where(models.EndpointInventorySnapshot.snapshot_id == body["snapshot_id"])
+            .values(tenant_id=other)
+        )
+
+    response = client.post("/api/endpoint/inventory", headers=headers, json=body)
+
+    assert response.status_code == 409, response.text
+    assert "different tenant" in response.json()["detail"]

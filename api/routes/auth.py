@@ -53,6 +53,7 @@ from api.schemas import (
 from api.core import permissions as permission_catalog
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
+from api.db import tenant_scope
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.routes._session_cookie import (
@@ -96,7 +97,15 @@ def _client_ip(request: Request, settings: Settings) -> str:
     )
 
 
-@router.post("/auth/login", response_model=LoginResponse)
+# Signing in, and everything else that establishes *who* is calling, runs
+# before there is a tenant to scope to; ``/auth/me`` then answers with every
+# tenant the caller belongs to. Declared per route rather than for the router,
+# because the tenant administration routes below resolve a tenant of their own
+# (#311).
+_AUTHENTICATION = [Depends(tenant_scope.cross_tenant("authentication"))]
+
+
+@router.post("/auth/login", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def login(
     body: LoginRequest,
     request: Request,
@@ -210,7 +219,7 @@ def login(
     )
 
 
-@router.post("/auth/refresh", response_model=LoginResponse)
+@router.post("/auth/refresh", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def refresh(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -293,7 +302,9 @@ def _refresh_refused(settings: Settings, detail: str) -> JSONResponse:
     return answer
 
 
-@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=_AUTHENTICATION
+)
 def logout(
     request: Request,
     user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
@@ -359,7 +370,11 @@ def logout(
     return answer
 
 
-@router.post("/auth/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/sessions/revoke-all",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_AUTHENTICATION,
+)
 def revoke_own_sessions(
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -415,7 +430,11 @@ def list_auth_events(
     return build_page([AuthEventInfo.model_validate(item) for item in items], total, params)
 
 
-@router.get("/auth/me", response_model=MeResponse)
+@router.get(
+    "/auth/me",
+    response_model=MeResponse,
+    dependencies=[Depends(tenant_scope.cross_tenant("the caller's own tenants"))],
+)
 def me(
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -500,7 +519,7 @@ def sso_status(settings: Annotated[Settings, Depends(get_settings)]) -> SsoStatu
     return SsoStatus.model_validate(oidc_service.public_config(settings))
 
 
-@router.get("/auth/oidc/login", response_model=OidcLoginResponse)
+@router.get("/auth/oidc/login", response_model=OidcLoginResponse, dependencies=_AUTHENTICATION)
 def oidc_login(
     settings: Annotated[Settings, Depends(get_settings)],
     redirect: Annotated[bool, Query(description="Send a 307 instead of JSON")] = True,
@@ -550,7 +569,7 @@ def _safe_next(value: str | None) -> str:
     return candidate[:512]
 
 
-@router.get("/auth/oidc/callback", response_model=LoginResponse)
+@router.get("/auth/oidc/callback", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def oidc_callback(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -702,7 +721,7 @@ def oidc_callback(
     return answer
 
 
-@router.post("/auth/agent/token", response_model=AgentTokenResponse)
+@router.post("/auth/agent/token", response_model=AgentTokenResponse, dependencies=_AUTHENTICATION)
 def agent_token(
     body: AgentTokenRequest,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -727,7 +746,7 @@ def agent_token(
     return AgentTokenResponse.model_validate(result)
 
 
-@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse)
+@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse, dependencies=_AUTHENTICATION)
 def auth_exchange(
     body: AuthExchangeRequest,
     settings: Annotated[Settings, Depends(get_settings)],

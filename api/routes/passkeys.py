@@ -39,6 +39,7 @@ from api.auth import (
     get_settings,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
+from api.db import tenant_scope
 from api.routes._audit import AuditDep
 from api.schemas import (
     WebAuthnCredentialInfo,
@@ -49,7 +50,13 @@ from api.schemas import (
 from api.services import passkeys as passkeys_service
 from api.settings import Settings
 
-router = APIRouter(tags=["auth"])
+# An account's own security keys belong to the account, not to any tenant it is a
+# member of, and signing in with one happens before there is a tenant at
+# all (#311).
+router = APIRouter(
+    tags=["auth"],
+    dependencies=[Depends(tenant_scope.cross_tenant("account security keys"))],
+)
 
 
 def _binding(user: TokenUser) -> str:

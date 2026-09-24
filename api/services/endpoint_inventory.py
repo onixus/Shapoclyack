@@ -21,7 +21,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.schemas import EndpointInventorySnapshotRequest
 from api.services import metrics as metrics_service
@@ -264,6 +264,20 @@ def ingest_snapshot(
     digest = _canonical_digest(request)
     collected_at = _parse_dt(request.collected_at)
     now = _now()
+
+    # ``snapshot_id`` is the collector's choice and the table's key, so whether
+    # another tenant already used it is asked across tenants (#311), as in
+    # ``agents.register_agent``; in the agent's own scope the row would be
+    # invisible and the conflict a duplicate-key error at the insert.
+    with tenant_scope.system("inventory ingest: is this snapshot id another tenant's"):
+        with get_session(settings.postgres_url) as session:
+            owner = session.execute(
+                select(models.EndpointInventorySnapshot.tenant_id).where(
+                    models.EndpointInventorySnapshot.snapshot_id == request.snapshot_id
+                )
+            ).scalar_one_or_none()
+    if owner is not None and owner != tenant_id:
+        raise ConflictError("snapshot_id already used by a different tenant")
 
     with get_session(settings.postgres_url) as session:
         existing_snapshot = session.get(models.EndpointInventorySnapshot, request.snapshot_id)

@@ -17,6 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth import Role, StepUpDep, TokenUser, get_current_user, get_settings, require_role
+from api.db import tenant_scope
 from api.routes._audit import AuditDep
 from api.schemas import (
     ChangeOwnPasswordRequest,
@@ -222,7 +223,12 @@ def delete_user(
         raise _not_found(username)
 
 
-@router.post("/auth/password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    # The caller's own account, which belongs to no tenant (#311).
+    dependencies=[Depends(tenant_scope.cross_tenant("account password"))],
+)
 def change_own_password(
     body: ChangeOwnPasswordRequest,
     user: Annotated[TokenUser, Depends(get_current_user)],

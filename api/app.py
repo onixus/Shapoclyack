@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -313,7 +313,11 @@ def create_app() -> FastAPI:
         # allowed to know about dependencies.
         return {"status": "ok"}
 
-    @app.get("/readyz", include_in_schema=False)
+    # The two probes count every tenant's unpublished backlog, which is the
+    # installation's state and no tenant's (#311).
+    probe_scope = [Depends(tenant_scope.cross_tenant("readiness counts every tenant's backlog"))]
+
+    @app.get("/readyz", include_in_schema=False, dependencies=probe_scope)
     def readyz() -> JSONResponse:
         report = health_service.check_readiness(get_settings())
         # The status code and the body answer different questions: 503 means
@@ -329,7 +333,9 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/api/health", response_model=HealthResponse, tags=["health"])
+    @app.get(
+        "/api/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
+    )
     def health() -> HealthResponse:
         settings = get_settings()
         # The same sweep /readyz runs, reported in this endpoint's older shape:
