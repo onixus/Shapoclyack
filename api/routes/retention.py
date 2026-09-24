@@ -51,6 +51,23 @@ def _require_tenant(tenant_id: str) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
 
 
+@router.get("/tenants/legal-holds", response_model=list[LegalHoldInfo])
+def list_legal_holds(
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_LEGAL_HOLD_MANAGE)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[LegalHoldInfo]:
+    """Every hold in force, oldest first — the register an auditor asks for.
+
+    Platform admins only, reason and author included: it is the one view
+    across tenants, and the matters behind the holds are not the tenants' to
+    read (see ``legal_hold``'s module docstring).
+    """
+    return [LegalHoldInfo.model_validate(hold) for hold in legal_hold.list_holds(settings)]
+
+
 @router.get("/tenants/{tenant_id}/retention", response_model=RetentionPolicyInfo)
 def get_retention(
     tenant_id: str,

@@ -84,9 +84,13 @@ def settings(tmp_path):
     yield s
     # The hold's foreign key is RESTRICT: leaving it would break the next
     # test's tenant reset, and an order-dependent failure is the worst kind.
+    # The trail goes too, and only after the hold: a held tenant's rows are the
+    # one thing the prune function will not remove, so a row one test wrote
+    # would otherwise outlive it and fail the next run on the same database.
     with get_session(s.postgres_url) as session:
         session.query(models.TenantLegalHold).delete()
         session.query(models.TenantRetentionPolicy).delete()
+    audit_retention.prune(s, cutoff=datetime.max)
 
 
 # --------------------------------------------------------------------------- #
@@ -515,6 +519,71 @@ def test_the_database_refuses_to_prune_a_held_tenant_whoever_asks(settings):
     assert "plain" not in _audit_ids(settings)
 
 
+def test_a_temp_table_cannot_talk_the_prune_functions_out_of_a_hold(settings):
+    """Review round 1, #1. Both functions are SECURITY DEFINER; with ``pg_temp``
+    searched first, a caller's temporary ``tenant_legal_holds`` stood in for
+    the real one inside them and the hold read as empty."""
+    _audit_row(settings, HELD, "held-shadowed", days=5000)
+    far_future = datetime(2999, 1, 1)
+    with get_session(settings.postgres_url) as session:
+        session.execute(text("CREATE TEMP TABLE tenant_legal_holds (tenant_id text)"))
+        session.execute(text("CREATE TEMP TABLE tenant_retention_policies (tenant_id text)"))
+        session.execute(
+            text("SELECT audit_events_prune_tenant(:t, :c)"), {"t": HELD, "c": far_future}
+        )
+        session.execute(text("SELECT audit_events_prune(:c)"), {"c": far_future})
+        session.execute(text("DROP TABLE pg_temp.tenant_legal_holds"))
+        session.execute(text("DROP TABLE pg_temp.tenant_retention_policies"))
+    assert "held-shadowed" in _audit_ids(settings)
+
+
+def test_the_prune_functions_pin_their_search_path_with_pg_temp_last(settings):
+    with get_session(settings.postgres_url) as session:
+        configs = dict(
+            session.execute(
+                text(
+                    "SELECT proname, array_to_string(proconfig, ',') FROM pg_proc "
+                    "WHERE proname IN ('audit_events_prune', 'audit_events_prune_tenant')"
+                )
+            ).all()
+        )
+    assert configs == {
+        "audit_events_prune": "search_path=pg_catalog, public, pg_temp",
+        "audit_events_prune_tenant": "search_path=pg_catalog, public, pg_temp",
+    }
+
+
+def test_a_raised_floor_binds_overrides_stored_before_it(settings):
+    """Review round 1, #3. Bounds were checked on write only, so a window stored
+    under the compiled 365-day floor kept deleting at 365 after the operator
+    raised the floor to 1095 — the configured floor was not one."""
+    from api.services import audit as audit_service
+
+    audit_service.configure(settings)
+    audit_service.reset_for_tests()
+    settings.audit_event_retention_days = 3650
+    _set_policy(settings, OWN, audit_event_days=365, run_days=300)
+    settings.retention_bounds = {"audit_events": {"min": 1095}, "runs": {"max": 90}}
+    retention_policy.validate_configuration(settings)
+    _audit_row(settings, OWN, "own-500", days=500)
+
+    audit_retention.sweep(settings)
+
+    assert "own-500" in _audit_ids(settings)
+    # Both directions: a lowered ceiling binds too — it is the platform's
+    # storage decision, made in configuration like the floor.
+    plan = retention_policy.load_plan(settings, retention_policy.RUNS)
+    assert plan.days_for(OWN) == 90
+    described = {
+        item["category"]: item for item in retention_policy.describe(settings, OWN)["categories"]
+    }
+    assert described["audit_events"]["override_days"] == 365
+    assert described["audit_events"]["effective_days"] == 1095
+    assert described["audit_events"]["out_of_bounds"] is True
+    assert described["runs"]["effective_days"] == 90
+    assert described["reports"]["out_of_bounds"] is False
+
+
 def test_a_held_tenant_cannot_be_deleted(settings):
     with pytest.raises(IntegrityError):
         with get_session(settings.postgres_url) as session:
@@ -581,6 +650,60 @@ def test_sign_ins_of_a_held_tenants_members_outlive_the_login_window(settings):
             session.query(models.User).filter(
                 models.User.username.in_(("custodian", "bystander"))
             ).delete()
+
+
+def test_sign_ins_of_everyone_a_held_tenants_record_names_are_kept(settings):
+    """Review round 1, #5. The person a hold is about is often the one whose
+    access was revoked when the matter began, or a platform admin who acted in
+    the tenant without a membership — the same "belongs, belonged or acted"
+    set the erasure guard reads, not only today's members."""
+    from api.services import audit as audit_service
+    from api.services import users as users_service
+
+    users_service.configure(settings)
+    audit_service.configure(settings)
+    auth_audit.configure(settings)
+    auth_audit.reset_for_tests()
+    settings.auth_event_retention_days = 90
+    now = datetime.now(UTC)
+    people = ("former-member", "acting-admin", "bystander")
+    with get_session(settings.postgres_url) as session:
+        for username in people:
+            session.add(models.User(username=username, created_at=_naive(now), updated_at=_naive(now)))
+            session.add(
+                models.AuthEvent(
+                    occurred_at=_naive(now - timedelta(days=400)),
+                    username=username,
+                    client_ip="192.0.2.66",
+                    outcome="success",
+                )
+            )
+        session.flush()
+        audit_service.record(
+            session,
+            audit_service.AuditContext(actor="admin"),
+            action=audit_service.ACTION_MEMBERSHIP_REVOKE,
+            resource_type="membership",
+            resource_id="former-member",
+            tenant_id=HELD,
+            before={"role": "admin"},
+        )
+        audit_service.record(
+            session,
+            audit_service.AuditContext(actor="acting-admin"),
+            action=audit_service.ACTION_CONFIG_UPDATE,
+            resource_type="scan_policy",
+            resource_id=HELD,
+            tenant_id=HELD,
+        )
+    try:
+        auth_audit._maybe_prune(settings)
+        with get_session(settings.postgres_url) as session:
+            left = set(session.execute(select(models.AuthEvent.username)).scalars())
+        assert left == {"former-member", "acting-admin"}
+    finally:
+        with get_session(settings.postgres_url) as session:
+            session.query(models.User).filter(models.User.username.in_(people)).delete()
 
 
 def test_the_deployment_journal_of_a_held_tenant_is_not_trimmed(settings, monkeypatch):

@@ -502,6 +502,11 @@ def delete_subscription(subscription_id: str) -> bool:
         row = session.get(models.WebhookSubscription, subscription_id)
         if row is None:
             return False
+        # Not while the tenant is on legal hold (#332): the delete below takes
+        # the whole delivery log with it, which is exactly what a hold keeps.
+        from api.services import legal_hold
+
+        legal_hold.assert_not_on_hold(session, row.tenant_id, action="webhook.delete")
         # Deliveries cascade with the subscription: the audit trail is "what did
         # we send to this endpoint", and the endpoint is gone. A tenant-level
         # export before deletion is a reporting feature, not a retention one.

@@ -132,6 +132,29 @@ def test_every_column_that_can_name_an_account_is_decided():
     assert not stale, f"classified columns that no longer exist: {sorted(stale)}"
 
 
+def test_every_json_column_is_decided_too():
+    """Review round 1, #4: a JSON document can hold an address under any key
+    (``notification_channels.config["to"]`` did), and no column name says so.
+    So every JSON column is classified, not only the ones whose name looks like
+    a person."""
+    from sqlalchemy import JSON
+
+    undecided = []
+    for mapper in models.Base.registry.mappers:
+        table = mapper.local_table
+        for column in table.columns:
+            kind = column.type
+            is_json = isinstance(kind, JSON) or isinstance(
+                getattr(kind, "impl", None), JSON
+            ) or "JSON" in type(kind).__name__.upper()
+            key = (table.name, column.name)
+            if is_json and key not in data_subject.SUBJECT_COLUMNS and key not in (
+                data_subject.NOT_SUBJECT_COLUMNS
+            ):
+                undecided.append(f"{table.name}.{column.name}")
+    assert not undecided, f"JSON columns nobody has classified: {undecided}"
+
+
 # --------------------------------------------------------------------------- #
 # Export
 # --------------------------------------------------------------------------- #
@@ -246,23 +269,24 @@ def test_erasure_leaves_a_pseudonym_the_trail_still_points_at(env):
         ).status_code
         == 422
     )
-    assert (
-        client.put(
-            "/api/users/dana/password", headers=admin, json={"password": "new-password-1234"}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.put("/api/users/dana/disabled", headers=admin, json={"disabled": False}).status_code
-        == 409
-    )
-    assert (
-        client.put(
-            "/api/tenants/default/members/dana", headers=admin, json={"role": "viewer"}
-        ).status_code
-        == 422
-    )
-    assert client.delete("/api/users/dana", headers=admin).status_code == 409
+    # Every write to the tombstone is the same refusal (review round 1, #10):
+    # the pseudonym must not be handed a credential, a role, an address or a
+    # grant, and must not be freed for reuse.
+    for method, path, body in (
+        ("put", "/api/users/dana/password", {"password": "new-password-1234"}),
+        ("put", "/api/users/dana/role", {"role": "admin"}),
+        ("put", "/api/users/dana/email", {"email": "someone@example.test", "verified": True}),
+        ("put", "/api/users/dana/disabled", {"disabled": False}),
+        ("put", "/api/tenants/default/members/dana", {"role": "viewer"}),
+        ("delete", "/api/users/dana", None),
+    ):
+        kwargs = {"headers": admin} if body is None else {"headers": admin, "json": body}
+        refused = getattr(client, method)(path, **kwargs)
+        assert refused.status_code == 409, (method, path, refused.text)
+        assert "erased" in refused.json()["detail"]
+    with get_session(settings.postgres_url) as session:
+        tombstone = session.get(models.User, "dana")
+        assert (tombstone.role, tombstone.email, tombstone.password_hash) == ("viewer", None, "")
 
     again = client.post("/api/users/dana/erase", headers=admin)
     assert again.status_code == 200
@@ -354,11 +378,18 @@ def test_erasure_needs_a_recent_second_factor(tmp_path, monkeypatch):
     refused = client.post("/api/users/viewer/erase", headers=headers)
     assert refused.status_code == 403
     assert "multi-factor" in refused.json()["detail"]
+    # The export too: a bulk copy of somebody else's addresses and sign-in
+    # history is not what an eight-hour-old session should be enough for.
+    exported = client.get("/api/users/viewer/export", headers=headers)
+    assert exported.status_code == 403
+    assert "multi-factor" in exported.json()["detail"]
 
 
 def test_an_erased_account_is_not_linked_again_by_sso(env):
     """The address and the IdP subject are gone, and the name is taken: the
-    person signing in again gets a *new* account, never the pseudonym back."""
+    person signing in again with the same username claim is *refused* — never
+    handed the pseudonym back. An admin who wants them back creates an account
+    under another name (docs/data-retention.md, 4.2)."""
     client, settings, admin = env
     _dana(client, admin)
     assert client.post("/api/users/dana/erase", headers=admin).status_code == 200
@@ -374,3 +405,106 @@ def test_an_erased_account_is_not_linked_again_by_sso(env):
             tenant_id="default",
             jit_enabled=True,
         )
+
+
+def _email_channel(settings, channel_id: str, *recipients: str) -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.NotificationChannel(
+                channel_id=channel_id,
+                tenant_id="default",
+                name=channel_id,
+                kind="email",
+                config={"to": list(recipients)},
+                created_at=now,
+            )
+        )
+
+
+def test_erasure_takes_the_address_off_email_notification_channels(env):
+    """Review round 1, #4: report schedules lost the address, a tenant's email
+    notification channel kept mailing it."""
+    client, settings, admin = env
+    _dana(client, admin)
+    _email_channel(settings, "nc-shared", EMAIL.upper(), "soc@example.test")
+    _email_channel(settings, "nc-only-dana", EMAIL)
+
+    exported = client.get("/api/users/dana/export", headers=admin).json()
+    assert sorted(
+        (item["channel_id"], item["tenant_id"]) for item in exported["notification_recipient_of"]
+    ) == [("nc-only-dana", "default"), ("nc-shared", "default")]
+
+    erased = client.post("/api/users/dana/erase", headers=admin)
+    assert erased.status_code == 200, erased.text
+    assert erased.json()["removed"]["notification_recipients"] == 2
+    with get_session(settings.postgres_url) as session:
+        shared = session.get(models.NotificationChannel, "nc-shared")
+        only = session.get(models.NotificationChannel, "nc-only-dana")
+        assert shared.config["to"] == ["soc@example.test"]
+        assert shared.enabled is True
+        # A channel left with nobody to mail is switched off rather than left
+        # failing every run with "no recipients".
+        assert only.config["to"] == []
+        assert only.enabled is False
+    changed = _trail(settings, action="notification_channel.update", tenant_id="default")
+    assert sorted(row.resource_id for row in changed) == ["nc-only-dana", "nc-shared"]
+    assert EMAIL.lower() not in json.dumps([[row.before, row.after] for row in changed]).lower()
+
+
+def test_a_service_token_minted_by_an_erased_account_stops_working(env):
+    """Review round 1, #6: the docs said every token the account holds is
+    refused, and a token it minted for a tenant kept working."""
+    client, settings, admin = env
+    dana = _dana(client, admin)
+    minted = client.post(
+        "/api/tenants/default/service-tokens",
+        headers=dana,
+        json={"name": "dana-ci", "role": "viewer", "scopes": ["*:read"], "ttl_days": 30},
+    )
+    assert minted.status_code in (200, 201), minted.text
+    token = bearer(minted.json()["token"])
+    assert client.get("/api/assets", headers=token).status_code == 200
+
+    erased = client.post("/api/users/dana/erase", headers=admin)
+    assert erased.status_code == 200
+    assert erased.json()["removed"]["service_tokens"] == 1
+    assert client.get("/api/assets", headers=token).status_code == 401
+    revoked = _trail(settings, action="service_token.revoke", tenant_id="default")
+    assert [row.resource_id for row in revoked] == [minted.json()["token_id"]]
+
+
+def test_a_deleted_accounts_service_tokens_stop_working_too(env):
+    """The same gap on the older path: ``DELETE /api/users/{u}``."""
+    client, _settings, admin = env
+    dana = _dana(client, admin)
+    minted = client.post(
+        "/api/tenants/default/service-tokens",
+        headers=dana,
+        json={"name": "dana-ci", "role": "viewer", "scopes": ["*:read"], "ttl_days": 30},
+    )
+    token = bearer(minted.json()["token"])
+    assert client.delete("/api/users/dana", headers=admin).status_code == 204
+    assert client.get("/api/assets", headers=token).status_code == 401
+
+
+def test_an_export_that_runs_too_long_is_stopped_and_says_so(env, monkeypatch):
+    """Review round 1, #11: the export counts attributions across the schema in
+    a GET. It runs under a statement timeout, and hitting it is a 503 naming
+    what happened rather than a request that holds a connection for minutes."""
+    from sqlalchemy import text as sql
+
+    client, _settings, admin = env
+    _dana(client, admin)
+    monkeypatch.setattr(data_subject, "STATEMENT_TIMEOUT_MS", 50)
+    original = data_subject._attributions
+
+    def slow(session, username):
+        session.execute(sql("SELECT pg_sleep(1)"))
+        return original(session, username)
+
+    monkeypatch.setattr(data_subject, "_attributions", slow)
+    refused = client.get("/api/users/dana/export", headers=admin)
+    assert refused.status_code == 503, refused.text
+    assert "statement timeout" in refused.json()["detail"]
+

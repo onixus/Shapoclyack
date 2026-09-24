@@ -94,6 +94,7 @@ def test_a_tenant_admin_reads_and_sets_its_own_windows(env):
         "min_days": 1,
         "max_days": 365,
         "source": "default",
+        "out_of_bounds": False,
     }
     assert shown.json()["legal_hold"] is None
 
@@ -306,3 +307,110 @@ def test_a_service_token_reaches_none_of_it(env):
         ).status_code
         == 403
     )
+
+
+def _held_tenant_objects(settings) -> None:
+    """A generated report and a webhook subscription with a delivery, in ACME."""
+    from datetime import UTC, datetime
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.GeneratedReport(
+                report_id="rep-held", tenant_id=ACME, status="ready", fmt="json", generated_at=now
+            )
+        )
+        session.add(
+            models.WebhookSubscription(
+                subscription_id="sub-held",
+                tenant_id=ACME,
+                name="held",
+                url="https://receiver.invalid/hook",
+                created_at=now,
+            )
+        )
+        session.flush()
+        session.add(
+            models.WebhookDelivery(
+                delivery_id="del-held",
+                tenant_id=ACME,
+                subscription_id="sub-held",
+                event_id="ev-held",
+                event_kind="test",
+                status="delivered",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def test_a_hold_stops_the_tenant_deleting_what_it_preserves(env):
+    """Review round 1, #7. The sweeps stopped, but a tenant admin deleting a
+    webhook cascaded its whole delivery log away, and an operator could delete
+    a generated report. Both are 409 while the tenant is on hold — without the
+    matter's reason, which is not the tenant's to read."""
+    client, settings, admin = env
+    acme_admin = _member(client, admin, "ada", ACME, "admin")
+    _held_tenant_objects(settings)
+    placed = client.put(
+        f"/api/tenants/{ACME}/legal-hold", headers=admin, json={"reason": "matter 2026-17"}
+    )
+    assert placed.status_code == 200
+
+    for path in ("/api/webhooks/sub-held", "/api/reports/rep-held"):
+        refused = client.delete(path, headers=acme_admin, params={"tenant_id": ACME})
+        assert refused.status_code == 409, (path, refused.text)
+        assert "legal hold" in refused.json()["detail"]
+        assert "matter 2026-17" not in refused.json()["detail"]
+
+    assert client.delete(f"/api/tenants/{ACME}/legal-hold", headers=admin).status_code == 204
+    for path in ("/api/webhooks/sub-held", "/api/reports/rep-held"):
+        allowed = client.delete(path, headers=acme_admin, params={"tenant_id": ACME})
+        assert allowed.status_code == 204, (path, allowed.text)
+
+
+def test_the_platform_admin_reads_the_register_of_holds(env):
+    """Review round 1, #14: "what is on hold" is the first question an auditor
+    asks, and the answer was one tenant page at a time."""
+    client, _settings, admin = env
+    acme_admin = _member(client, admin, "ada", ACME, "admin")
+    assert client.get("/api/tenants/legal-holds", headers=admin).json() == []
+    for tenant_id, reason in ((ACME, "matter 1"), (GLOBEX, "matter 2")):
+        assert (
+            client.put(
+                f"/api/tenants/{tenant_id}/legal-hold", headers=admin, json={"reason": reason}
+            ).status_code
+            == 200
+        )
+    register = client.get("/api/tenants/legal-holds", headers=admin)
+    assert register.status_code == 200, register.text
+    assert [(item["tenant_id"], item["reason"]) for item in register.json()] == [
+        (ACME, "matter 1"),
+        (GLOBEX, "matter 2"),
+    ]
+    assert client.get("/api/tenants/legal-holds", headers=acme_admin).status_code == 403
+    for tenant_id in (ACME, GLOBEX):
+        client.delete(f"/api/tenants/{tenant_id}/legal-hold", headers=admin)
+
+
+def test_an_override_the_bounds_no_longer_allow_is_flagged(env):
+    """Review round 1, #3, as the console sees it: the stored value, what
+    applies instead, and a flag saying why they differ."""
+    client, settings, admin = env
+    acme_admin = _member(client, admin, "ada", ACME, "admin")
+    saved = client.put(
+        f"/api/tenants/{ACME}/retention",
+        headers=acme_admin,
+        json={"overrides": {"audit_events": 400}},
+    )
+    assert saved.status_code == 200
+    settings.retention_bounds = {"audit_events": {"min": 1095}}
+    shown = _by_category(client.get(f"/api/tenants/{ACME}/retention", headers=acme_admin).json())
+    assert shown["audit_events"]["override_days"] == 400
+    assert shown["audit_events"]["effective_days"] == 1095
+    assert shown["audit_events"]["out_of_bounds"] is True
+    assert shown["runs"]["out_of_bounds"] is False
+

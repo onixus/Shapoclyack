@@ -656,6 +656,11 @@ def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = N
         # Memberships cascade (FK from migration 0013), so no orphan grant
         # survives to be silently re-attached if the name is recreated later.
         session.delete(row)
+        # The tokens it minted do not cascade — they belong to a tenant — but a
+        # credential nobody can answer for any more is a leaver's key (#332).
+        from api.services import service_tokens as service_tokens_service
+
+        service_tokens_service.revoke_created_by(session, username, audit=audit)
         audit_service.record(
             session,
             audit,

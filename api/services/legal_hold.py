@@ -14,9 +14,14 @@ A hold is one row in ``tenant_legal_holds``. While it exists:
   GDPR Art. 17(3)(e) exempts data needed for legal claims, and the mapping from
   a username to a person is exactly what a claim may turn on.
 
-What it does *not* stop is an operator's explicit, audited deletion of one
-object — a report, a wordlist, an asset. A hold suspends automated disposition
-and purge; it is not a lock on the console.
+* **the tenant cannot delete the categories a hold preserves** from the
+  console either: ``DELETE /api/reports/{id}`` (a generated report) and
+  ``DELETE /api/webhooks/{id}`` (which takes its delivery log with it) answer
+  409 through :func:`assert_not_on_hold`.
+
+What it does *not* stop is the deletion of an object no retention category
+covers — a wordlist, an asset, a template. A hold suspends disposition of the
+record; it is not a lock on the console.
 
 **The contract tenant deletion is built on (#325).** Purging a tenant must, in
 one transaction and before anything irreversible (artifact deletion included):
@@ -52,7 +57,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, union
 from sqlalchemy.orm import Session
 
 from api.db import models
@@ -96,6 +101,16 @@ class LegalHoldActive(PermissionError):
         self.set_at = set_at
         self.action = action
 
+    @property
+    def public_detail(self) -> str:
+        """The refusal for a caller who is not a platform admin: that the tenant
+        is held, never who placed the hold or why (see the module docstring)."""
+        verb = f"{self.action} refused: " if self.action else ""
+        return (
+            f"{verb}tenant {self.tenant_id!r} is on legal hold, and this would delete "
+            "data the hold preserves"
+        )
+
 
 def _now() -> datetime:
     # Naive UTC, like every timestamp column in this schema.
@@ -135,6 +150,59 @@ def held_tenants(session: Session) -> frozenset[str]:
     )
 
 
+def _naming_held(*, member: Any, actor: Any, grantee: Any) -> tuple[Any, Any, Any]:
+    """The three ways a username appears in a held tenant's record.
+
+    A member now; a member once — the grant and its revocation are in the
+    tenant's trail; anyone who acted in it, a platform admin included, who
+    needs no membership. The person a hold is about is often exactly the one
+    whose access was revoked when the matter began.
+    """
+    held = select(models.TenantLegalHold.tenant_id)
+    return (
+        select(member).where(models.UserTenant.tenant_id.in_(held)),
+        select(actor).where(
+            models.AuditEvent.tenant_id.in_(held),
+            models.AuditEvent.actor_type == audit_service.ACTOR_USER,
+        ),
+        select(grantee).where(
+            models.AuditEvent.tenant_id.in_(held),
+            models.AuditEvent.resource_type == "membership",
+        ),
+    )
+
+
+def custodian_names():
+    """Every username a held tenant's record names, as one SQL set.
+
+    A subquery rather than a list read first, so a reaper's check and its
+    delete are one statement over one snapshot.
+    """
+    member, actor, grantee = _naming_held(
+        member=models.UserTenant.username,
+        actor=models.AuditEvent.actor,
+        grantee=models.AuditEvent.resource_id,
+    )
+    return union(member, actor, grantee).subquery()
+
+
+def held_tenants_naming(session: Session, username: str) -> set[str]:
+    """The held tenants whose record names ``username``, by the same three rules."""
+    member, actor, grantee = _naming_held(
+        member=models.UserTenant.tenant_id,
+        actor=models.AuditEvent.tenant_id,
+        grantee=models.AuditEvent.tenant_id,
+    )
+    found: set[str] = set()
+    for query in (
+        member.where(models.UserTenant.username == username),
+        actor.where(models.AuditEvent.actor == username).distinct(),
+        grantee.where(models.AuditEvent.resource_id == username).distinct(),
+    ):
+        found.update(session.execute(query).scalars())
+    return found
+
+
 def assert_not_on_hold(session: Session, tenant_id: str, *, action: str) -> None:
     """Raise :class:`LegalHoldActive` when ``tenant_id`` is on hold.
 
@@ -164,12 +232,6 @@ def public_view(hold: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 # -- the write side, platform admins only -------------------------------------
-
-
-def get_hold(settings: Settings, tenant_id: str) -> dict[str, Any] | None:
-    with get_session(settings.postgres_url) as session:
-        row = session.get(models.TenantLegalHold, tenant_id)
-        return _to_dict(row) if row is not None else None
 
 
 def list_holds(settings: Settings) -> list[dict[str, Any]]:
