@@ -1,9 +1,9 @@
 # A StatefulSet for the pod names, not for storage (#338 review). Each pod is
-# one agent to the API, and its name is the agent id it sends (OCTO_AGENT_ID
-# below): shapoclyack-scanner-executor-0 is the same agent after a rollout, an
-# eviction or a node drain. As a Deployment every pod start minted a fresh
-# agent, so a restart undid a quarantine (#308), dropped the agent's group
-# (#361) and left the old id in the fleet view as a stale ghost.
+# one agent to the API, and its name — behind the enrollment's random prefix —
+# is the agent id it sends (OCTO_AGENT_ID below): the same agent after a
+# rollout, an eviction or a node drain. As a Deployment every pod start minted
+# a fresh agent, so a restart undid a quarantine (#308), dropped the agent's
+# group (#361) and left the old id in the fleet view as a stale ghost.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -89,14 +89,38 @@ spec:
             # scanner-executor.
             - name: OCTO_AGENT_PROVISIONING_KEY_FILE
               value: /etc/shapoclyack/executor-key/provisioning_key
-            # This pod's own name — shapoclyack-scanner-executor-<ordinal> —
-            # as the agent id it keeps across restarts. The API refuses to
-            # issue a token for an id that is quarantined or disabled, so an
-            # operator's decision about this executor outlives the pod.
-            - name: OCTO_AGENT_ID
+            # The same key as a variable, for the image pinned above: its
+            # worker predates the file and exits without a key otherwise. A
+            # current worker prefers the file and starts the scan without any
+            # OCTO_AGENT_* variable. Remove with the first pin past
+            # shapoclyack-0.46-0922 (docs/k8s-hardening.md § What changes).
+            - name: OCTO_AGENT_PROVISIONING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-scanner-executor
+                  key: provisioning_key
+            # The agent id this pod keeps across restarts: its own name —
+            # shapoclyack-scanner-executor-<ordinal> — behind a random prefix
+            # generated at enrollment and kept in the Secret beside the key.
+            # The API refuses a token for an id that is quarantined or
+            # disabled, so an operator's decision outlives the pod. The prefix
+            # is what keeps the id from being guessed: agent ids are unique
+            # across the installation, and a bare pod name could be registered
+            # first by any tenant admin with a key of their own, locking the
+            # executor out (review round 2). Not a secret, and not rotated with
+            # the key — a new prefix is a new agent, i.e. a way out of a
+            # quarantine for whoever can write this Secret.
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: OCTO_AGENT_ID_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-scanner-executor
+                  key: agent_id_prefix
+            - name: OCTO_AGENT_ID
+              value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
             - name: OCTO_CONFIG
               value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR

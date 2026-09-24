@@ -33,3 +33,5 @@ dist/
 # Development TLS material for the kind stand (scripts/dev-tls-cert.sh).
 # A private key, and a CA whose only job is to be trusted by lab agents.
 .dev-tls/
+# Manifests rendered for the k8s contract tests (OCTO_K8S_RENDER_DIR, #338)
+.k8s-render/

@@ -133,8 +133,12 @@ enroll_executor() {
     echo "         stay queued until it is enrolled (docs/k8s-hardening.md)." >&2
     return 0
   fi
+  # agent_id_prefix: 64 random bits in front of the pod name, so the
+  # executor's agent id cannot be registered first by another tenant
+  # (docs/k8s-hardening.md § Enrolling the scanner-executor).
   printf '%s' "${key}" | kubectl -n "${EXECUTOR_NAMESPACE}" create secret generic "${EXECUTOR_SECRET}" \
-    --from-file=provisioning_key=/dev/stdin >/dev/null
+    --from-file=provisioning_key=/dev/stdin \
+    --from-literal=agent_id_prefix="$(python3 -c 'import secrets; print(secrets.token_hex(8))')" >/dev/null
 }
 
 if [ "${OVERLAY}" = "kind-dev" ] || [ "${OVERLAY}" = "kind-enrichment" ]; then

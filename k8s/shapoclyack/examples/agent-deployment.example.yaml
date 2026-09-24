@@ -78,11 +78,22 @@ spec:
             # scanner's tools inherit.
             - name: OCTO_AGENT_PROVISIONING_KEY_FILE
               value: /etc/shapoclyack/agent-key/provisioning_key
-            # This pod's own name, kept across restarts.
-            - name: OCTO_AGENT_ID
+            # Its own name behind a random prefix from the Secret (key
+            # OCTO_AGENT_ID_PREFIX, e.g. `openssl rand -hex 8`, generated once
+            # per site and never rotated): kept across restarts, and not a
+            # name another tenant — or another site deploying this same file —
+            # can already hold (docs/k8s-hardening.md § Enrolling).
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: OCTO_AGENT_ID_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-agent
+                  key: OCTO_AGENT_ID_PREFIX
+            - name: OCTO_AGENT_ID
+              value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
             - name: OCTO_CONFIG
               value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR

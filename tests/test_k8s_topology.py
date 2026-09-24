@@ -152,7 +152,13 @@ def test_the_executor_key_is_a_required_file_not_an_environment_variable(target:
         pytest.skip(f"{target} renders no executor")
     container = _container(executor, "executor")
     env = _env(container)
-    assert "OCTO_AGENT_PROVISIONING_KEY" not in env, "the key is in the environment"
+    # The one exception (review round 2): the image the manifests pin predates
+    # OCTO_AGENT_PROVISIONING_KEY_FILE, and its worker exits without a key. The
+    # same Secret's key, by reference, never a value in the manifest.
+    if "OCTO_AGENT_PROVISIONING_KEY" in env:
+        ref = env["OCTO_AGENT_PROVISIONING_KEY"]["valueFrom"]["secretKeyRef"]
+        assert (ref["name"], ref["key"]) == (EXECUTOR_SECRET, "provisioning_key")
+        assert ref.get("optional") is not True
     path = env["OCTO_AGENT_PROVISIONING_KEY_FILE"]["value"]
     mount = next(
         m for m in container["volumeMounts"] if path.startswith(m["mountPath"].rstrip("/") + "/")
@@ -180,8 +186,18 @@ def test_the_executor_keeps_its_identity_across_restarts(target: str) -> None:
     if executor is None:
         pytest.skip(f"{target} renders no executor")
     assert executor["kind"] == "StatefulSet"
-    agent_id = _env(_container(executor, "executor"))["OCTO_AGENT_ID"]
-    assert agent_id["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
+    container = _container(executor, "executor")
+    env = _env(container)
+    order = [e["name"] for e in container["env"]]
+    # The pod name alone was predictable and agent ids are installation-wide,
+    # so another tenant could register it first (review round 2): behind a
+    # random prefix from the executor's own Secret, kept across key rotations.
+    assert env["POD_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
+    prefix = env["OCTO_AGENT_ID_PREFIX"]["valueFrom"]["secretKeyRef"]
+    assert (prefix["name"], prefix["key"]) == (EXECUTOR_SECRET, "agent_id_prefix")
+    assert prefix.get("optional") is not True
+    assert env["OCTO_AGENT_ID"]["value"] == "$(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)"
+    assert order.index("OCTO_AGENT_ID") > max(order.index("POD_NAME"), order.index("OCTO_AGENT_ID_PREFIX"))
 
     labels = executor["spec"]["selector"]["matchLabels"]
     pdbs = [
@@ -354,5 +370,9 @@ def test_the_executor_image_carries_no_setuid_binaries() -> None:
     final = text[text.rindex("\nFROM ") :]
     strip = re.search(r"find / -xdev -perm /6000 -type f -exec chmod a-s \{\} \+", final)
     assert strip, "the final stage does not clear setuid/setgid bits"
+    # fping's package falls back to setuid root when its own setcap fails; the
+    # image grants the capability itself so the strip cannot take ICMP away.
+    fping = re.search(r'setcap cap_net_raw\+ep "\$\(command -v fping\)"', final)
+    assert fping and fping.start() < strip.start(), "fping's capability is not set before the strip"
     installs = [m.end() for m in re.finditer(r"apt-get install", final)]
     assert installs and strip.start() > max(installs), "a package installed after the strip may bring one back"

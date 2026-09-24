@@ -221,6 +221,10 @@ RUN set -eux; \
     if [ "${INSTALL_NMAP}" = "1" ] && [ -x /usr/bin/nmap ]; then \
       setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap; \
     fi; \
+    # fping's own postinst sets this, and falls back to setuid root when it
+    # cannot; set it here so the setuid strip below never depends on which
+    # branch that took (#338).
+    setcap cap_net_raw+ep "$(command -v fping)"; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -304,12 +308,11 @@ RUN bash scripts/fetch-nuclei-templates.sh /usr/share/nuclei-templates || true
 # setuid-root binary take the process to uid 0: su, passwd, mount, chfn and the
 # rest of the Debian base, ssh-keysign from openssh-client. Nothing in this
 # image uses one. Here, after the last package install, so none comes back;
-# chmod leaves the file capabilities above alone. fping is checked because its
-# package falls back to setuid root when setcap fails: had it done so, this
-# line would quietly take ICMP discovery away, so the build fails instead.
+# chmod leaves the file capabilities above alone, fping's included; the check
+# fails the build rather than ship an fping without raw sockets.
 RUN set -eux; \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} +; \
-    getcap /usr/bin/fping | grep -q cap_net_raw
+    getcap "$(command -v fping)" | grep -q cap_net_raw
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin octo && \
     mkdir -p /app/scanner/output /app/scanner/state /app/scanner/inputs && \
