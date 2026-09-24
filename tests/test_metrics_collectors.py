@@ -167,11 +167,14 @@ def test_pool_reports_checkouts_overflow_and_timeouts(tmp_path):
         waits_before = _histogram_count(metrics.DB_POOL_CHECKOUT_DURATION_SECONDS)
 
         held.append(engine.connect())
+        assert not db_engine.pool_status().saturated, "the overflow connection is still free"
         held.append(engine.connect())
         samples = _samples(metrics.DB_POOL_COLLECTOR)
         assert _value(samples, "octo_db_pool_checked_out") == 2
         assert _value(samples, "octo_db_pool_checked_in") == 0
         assert _value(samples, "octo_db_pool_overflow") == 1
+        # What keeps the fleet query from queueing behind requests.
+        assert db_engine.pool_status().saturated
 
         with pytest.raises(sa_exc.TimeoutError):
             engine.connect()
@@ -192,6 +195,19 @@ def test_pool_reports_checkouts_overflow_and_timeouts(tmp_path):
         for connection in held:
             connection.close()
         db_engine.reset_for_tests()
+
+
+def test_an_unlimited_overflow_is_never_saturated():
+    """SQLAlchemy spells "no overflow limit" as -1. Settings floors it at 0, but
+    an unconfigured tool's engine can have it, and ``size + -1`` would read a
+    pool with room as a full one."""
+    status = db_engine.PoolStatus(
+        size=5, max_overflow=-1, timeout=30, checked_out=9, checked_in=0, overflow=4
+    )
+    assert not status.saturated
+    assert db_engine.PoolStatus(
+        size=5, max_overflow=0, timeout=30, checked_out=5, checked_in=0, overflow=0
+    ).saturated
 
 
 def test_a_timed_out_checkout_lands_in_a_finite_bucket():
