@@ -60,12 +60,15 @@ def _parse_pins(text: str) -> dict[tuple[str, str], str]:
 
 
 def _default_arg(path: Path, name: str) -> str:
-    """The default of `ARG <name>=…` / `<name>="${<name>:-…}"` in a build file."""
+    """The value of `<name>` in a build file: `ARG <name>=…`,
+    `<name>="${<name>:-…}"`, `def <name> = '…'`, or an indented `<name>=v…`
+    line of a workflow's `build-args` block."""
     text = path.read_text()
     for pattern in (
         rf"^ARG {name}=(\S+)$",
         rf'^\w+="\$\{{{name}:-(v?[0-9][^}}"]*)\}}"',
         rf"^def {name} = '([^']+)'$",
+        rf"^\s+{name}=(v\S+)$",
     ):
         match = re.search(pattern, text, re.MULTILINE)
         if match:
@@ -87,6 +90,11 @@ def test_pinned_version_matches_every_build_file():
         ),
         "Jenkinsfile.publish": _default_arg(
             REPO_ROOT / "Jenkinsfile.publish", "PULSE_VERSION"
+        ),
+        # Disabled for automatic triggers, but still runnable by hand with
+        # push: true, and it hardcodes the version (review round 1, #4).
+        ".github/workflows/docker-publish.yml": _default_arg(
+            REPO_ROOT / ".github" / "workflows" / "docker-publish.yml", "PULSE_VERSION"
         ),
     }
     assert len(set(declared.values())) == 1, declared
@@ -315,6 +323,10 @@ def test_the_install_record_ties_the_binary_to_the_pin(fake_release):
         "v9.9.9", pins=f"v9.9.9 {asset} {digest}", image_layout=True
     )
     assert proc.returncode == 0, proc.stderr
+    # `COPY scripts /app/scripts` puts the build's own pins next to the record.
+    image_pins = fake_release.rootfs / "app" / "scripts" / "pulse-pinned.sha256"
+    image_pins.parent.mkdir(parents=True)
+    image_pins.write_text(fake_release.pins.read_text())
     record = _read_record(fake_release.rootfs)
     assert record == {
         "version": "v9.9.9",

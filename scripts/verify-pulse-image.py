@@ -8,43 +8,51 @@ this repository pins is the SHA-256 of the GenDec release *tarball*
 (``scripts/pulse-pinned.sha256``), while the image keeps only the binary that
 came out of it. Two ways bridge that gap:
 
-* ``--tarball``: the pinned tarball itself. Its digest is looked up in the pin
-  file, the ``pulse`` member is hashed in memory (never unpacked to disk) and
-  compared with the binary in the image. This does not rest on anything the
-  image says about itself, and it works for every published image. It needs
-  the tarball, which today only a holder of a GenDec token can download --
-  see docs/adr/0001-pulse-distribution-model.md.
+* ``--tarball``: the pinned tarball itself, read once into memory. Its digest
+  must be in the pin file before anything in it is parsed; then the ``pulse``
+  member is hashed (never unpacked to disk) and compared with the binary in
+  the image. This does not rest on anything the image says about itself, and
+  it works for every published image. It needs the tarball, which today only a
+  holder of a GenDec token can download -- see
+  docs/adr/0001-pulse-distribution-model.md.
 * The install record ``/usr/local/share/shapoclyack/pulse-install.txt`` that
   ``scripts/install-pulse.sh`` writes in images built after #340: which tarball
   was installed, which check it passed and what the binary hashed to. It is
-  written by the build it describes, so it proves the image was not changed
-  after that build and that the build used the pinned tarball *by its own
-  account* -- not that the build was honest. Use it with a signature on the
-  image (#313) or with ``--tarball``.
+  unsigned and lives in the same image as the binary, so it catches a binary
+  replaced *without* its record -- a later layer, a patched image -- and says
+  the build installed the pinned tarball by its own account. Against someone
+  who rewrites both, it is only as good as the image digest you verified:
+  check an image by ``...@sha256:<digest>`` you trust, and use ``--tarball``
+  for a check that does not depend on the image at all.
 
-The pin file to trust is the one from **your** checkout of the release tag the
-image was built from (the default is the file next to this script). The copy
-inside the image is only compared against it: a disagreement means the image
-was built from different pins than the tag says.
+The pin file to trust is the one **at the release tag the image was built
+from**, in your own clone. This script is newer than most releases, so run it
+from ``main`` (or a newer release) and hand it that tag's pins:
 
-    git checkout shapoclyack-0.47-MMDD
-    scripts/verify-pulse-image.py --image ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.47-MMDD \\
-        --platform linux/amd64 [--tarball pulse-v1.1.0-linux-amd64.tar.gz]
-    scripts/verify-pulse-image.py --rootfs ./unpacked-image [--tarball …]
+    git show shapoclyack-0.46-0922:scripts/pulse-pinned.sha256 > pins-0.46-0922.sha256
+    scripts/verify-pulse-image.py --pins pins-0.46-0922.sha256 --platform linux/amd64 \\
+        --image ghcr.io/onixus/shapoclyack-scanner@sha256:<digest> [--tarball pulse-v1.1.0-linux-amd64.tar.gz]
+    scripts/verify-pulse-image.py --pins ... --rootfs ./unpacked-image [--tarball ...]
+
+The copy inside the image is only compared against that file: a disagreement
+means the image was built from different pins than the tag says.
 
 ``--image`` uses ``docker create`` + ``docker cp`` (``--engine podman`` works
-too) and never starts the container, so nothing from the image under review is
-executed. Only the Python standard library is used.
+too), never starts the container, and removes it with its anonymous volumes;
+nothing from the image under review is executed. It prints the image ID and
+repository digests the engine resolved, which is what was actually checked.
+Python 3.9 or later, standard library only.
 
 Exit status: 0 verified; 1 not verified (a check failed, or nothing ties the
-binary to a pin); 2 usage or environment error; 3 the image contains no Pulse
-(an ``INSTALL_PULSE=0`` build, which has no service-probe backend of its own).
+binary to a pin); 2 usage or environment error (a file that cannot be read, no
+engine, no temporary directory); 3 the image contains no Pulse.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import re
 import stat
 import subprocess
@@ -63,8 +71,11 @@ DEFAULT_PINS = Path(__file__).resolve().with_name("pulse-pinned.sha256")
 # OCI platform -> the asset suffix install-pulse.sh and the pin file use.
 PLATFORMS = {"linux/amd64": "linux-amd64", "linux/arm64": "linux-arm64"}
 
-# The Pulse binary is a few MB. A tarball member claiming more than this is not
-# a Pulse release, and hashing it would only be a way to make this tool hang.
+# The Pulse binary and its tarball are a few MB. Anything larger than these is
+# not a Pulse release, and reading it would only be a way to make this tool hang
+# or exhaust memory: the tarball is held in memory so that the bytes whose
+# digest is checked are the bytes that are parsed.
+MAX_TARBALL_BYTES = 256 * 1024 * 1024
 MAX_MEMBER_BYTES = 512 * 1024 * 1024
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -146,31 +157,44 @@ def sha256_file(path: Path) -> str:
         return _sha256_stream(handle)
 
 
-def tarball_binary_sha256(tarball: Path) -> str:
-    """SHA-256 of the ``pulse`` member of a release tarball, read in memory.
+def read_bounded(path: Path, limit: int) -> bytes:
+    """The whole file, read once; more than ``limit`` bytes is refused.
 
-    Nothing is extracted to disk, so a hostile archive (``../`` names, links,
-    devices) has nothing to write. The member must be the one regular file
-    named ``pulse`` at the top of the archive -- the layout install-pulse.sh
-    unpacks and installs.
+    Read once so that nothing can swap the file between the digest check and
+    the parse (a second open of the same path is a second, different read).
+    """
+    with path.open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise EvidenceError(f"{path.name} is larger than {limit} bytes; no Pulse release tarball is")
+    return data
+
+
+def tarball_binary_sha256(data: bytes, name: str) -> str:
+    """SHA-256 of the ``pulse`` member of a release tarball held in memory.
+
+    Called only on bytes whose digest is already pinned. Nothing is extracted
+    to disk, so a hostile archive (``../`` names, links, devices) has nothing
+    to write. The member must be the one regular file named ``pulse`` at the
+    top of the archive -- the layout install-pulse.sh unpacks and installs.
     """
     try:
-        with tarfile.open(tarball, "r:gz") as archive:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             matches = [m for m in archive.getmembers() if m.name.removeprefix("./") == "pulse"]
             if len(matches) != 1:
-                raise EvidenceError(f"{tarball.name} has {len(matches)} top-level 'pulse' entries, expected exactly one")
+                raise EvidenceError(f"{name} has {len(matches)} top-level 'pulse' entries, expected exactly one")
             member = matches[0]
             if not member.isreg():
-                raise EvidenceError(f"'pulse' in {tarball.name} is not a regular file")
+                raise EvidenceError(f"'pulse' in {name} is not a regular file")
             if member.size > MAX_MEMBER_BYTES:
-                raise EvidenceError(f"'pulse' in {tarball.name} claims {member.size} bytes")
+                raise EvidenceError(f"'pulse' in {name} claims {member.size} bytes")
             handle = archive.extractfile(member)
             if handle is None:  # pragma: no cover - isreg() already excludes this
-                raise EvidenceError(f"'pulse' in {tarball.name} cannot be read")
+                raise EvidenceError(f"'pulse' in {name} cannot be read")
             with handle:
                 return _sha256_stream(handle, MAX_MEMBER_BYTES)
     except (tarfile.TarError, OSError, EOFError) as exc:
-        raise EvidenceError(f"{tarball.name} is not a readable .tar.gz: {exc}") from exc
+        raise EvidenceError(f"{name} is not a readable .tar.gz: {exc}") from exc
 
 
 def _regular_or_none(path: Path, rel: str) -> Path | None:
@@ -195,18 +219,24 @@ class Evidence:
     binary: Path | None
     record: Path | None
     image_pins: Path | None
+    # What the engine resolved --image to; None for --rootfs.
+    identity: str | None = None
 
 
 def evidence_from_rootfs(root: Path) -> Evidence:
-    base = root.resolve()
     found: list[Path | None] = []
-    for rel in (IMAGE_BINARY, IMAGE_RECORD, IMAGE_PINS):
-        candidate = base / rel
-        # A directory on the way that is a symlink could lead out of the tree;
-        # the leaf itself is checked by _regular_or_none.
-        if not candidate.parent.resolve().is_relative_to(base):
-            raise EvidenceError(f"/{rel} resolves outside {root}; refusing to follow it")
-        found.append(_regular_or_none(candidate, rel))
+    try:
+        base = root.resolve()
+        for rel in (IMAGE_BINARY, IMAGE_RECORD, IMAGE_PINS):
+            candidate = base / rel
+            # A directory on the way that is a symlink could lead out of the
+            # tree; the leaf itself is checked by _regular_or_none.
+            if not candidate.parent.resolve().is_relative_to(base):
+                raise EvidenceError(f"/{rel} resolves outside {root}; refusing to follow it")
+            found.append(_regular_or_none(candidate, rel))
+    except RuntimeError as exc:
+        # A symlink loop: RuntimeError up to Python 3.12, OSError from 3.13.
+        raise OSError(f"cannot read the image filesystem under {root}: {exc}") from exc
     return Evidence(*found)
 
 
@@ -231,6 +261,17 @@ def evidence_from_image(image: str, platform: str | None, engine: str, workdir: 
         raise OSError(f"{engine} create {image} printed no container id")
     container = output[-1]
     try:
+        # The ID and repository digests of what the engine actually resolved
+        # the reference to: a tag can be re-pushed between two pulls, and a
+        # verdict is only worth something next to the digest it was about.
+        image_id = call("inspect", "--format", "{{.Image}}", container)
+        if image_id.returncode != 0 or not image_id.stdout.strip():
+            raise OSError(f"{engine} inspect {container} failed: {image_id.stderr.strip()}")
+        ident = image_id.stdout.strip()
+        digests = call("image", "inspect", "--format", "{{json .RepoDigests}}", ident)
+        if digests.returncode != 0:
+            raise OSError(f"{engine} image inspect {ident} failed: {digests.stderr.strip()}")
+        identity = f"image id {ident}, repository digests {digests.stdout.strip() or '[]'}"
         found: list[Path | None] = []
         for index, rel in enumerate((IMAGE_BINARY, IMAGE_RECORD, IMAGE_PINS)):
             dest = workdir / f"{index}-{Path(rel).name}"
@@ -241,9 +282,11 @@ def evidence_from_image(image: str, platform: str | None, engine: str, workdir: 
                     continue
                 raise OSError(f"{engine} cp /{rel} failed: {copied.stderr.strip()}")
             found.append(_regular_or_none(dest, rel))
-        return Evidence(*found)
+        return Evidence(*found, identity=identity)
     finally:
-        call("rm", "-f", container)
+        # -v: the images declare VOLUMEs, and `create` made an anonymous
+        # volume for each of them.
+        call("rm", "-f", "-v", container)
 
 
 @dataclass
@@ -265,7 +308,7 @@ def verify(
     *,
     anchor_name: str,
     platform: str | None,
-    tarball: Path | None,
+    tarball: tuple[str, bytes] | None,
 ) -> tuple[Report, list[str]]:
     """Run every check that the evidence allows; returns the report and what passed.
 
@@ -277,6 +320,8 @@ def verify(
     chains: list[str] = []
     if evidence.binary is None:
         raise ValueError("verify() needs a binary; an image without one has nothing to verify")
+    if evidence.identity is not None:
+        report.check(True, f"examined {evidence.identity}")
     actual = sha256_file(evidence.binary)
     report.check(True, f"pulse binary in the image: sha256 {actual}")
     key: tuple[str, str] | None = None
@@ -319,38 +364,57 @@ def verify(
             chains.append("install record")
 
     if tarball is not None:
-        try:
-            tar_sha = sha256_file(tarball)
-            member_sha = tarball_binary_sha256(tarball)
-        except (EvidenceError, OSError) as exc:
-            report.check(False, f"tarball: {exc}")
-        else:
-            pinned_as = [k for k, v in anchor.items() if v == tar_sha]
-            ok = report.check(
-                len(pinned_as) == 1,
-                f"tarball {tarball.name} sha256 {tar_sha} "
-                + (
-                    f"is pinned in {anchor_name} as {' '.join(pinned_as[0])}"
-                    if len(pinned_as) == 1
-                    else f"matches {len(pinned_as) or 'no'} pin(s) in {anchor_name}"
-                ),
-            )
-            if len(pinned_as) == 1:
-                key = key or pinned_as[0]
-            if record is not None:
-                ok &= report.check(
-                    record["tarball_sha256"] == tar_sha,
-                    f"install record names the same tarball ({record['tarball_sha256'] or '(none)'})",
-                )
+        name, data = tarball
+        tar_sha = hashlib.sha256(data).hexdigest()
+        pinned_as = [k for k, v in anchor.items() if v == tar_sha]
+        ok = report.check(
+            len(pinned_as) == 1,
+            f"tarball {name} sha256 {tar_sha} "
+            + (
+                f"is pinned in {anchor_name} as {' '.join(pinned_as[0])}"
+                if len(pinned_as) == 1
+                else f"matches {len(pinned_as) or 'no'} pin(s) in {anchor_name}; its contents are not examined"
+            ),
+        )
+        if record is not None:
             ok &= report.check(
-                member_sha == actual,
-                f"'pulse' in the tarball: sha256 {member_sha} "
-                + ("matches the binary in the image" if member_sha == actual else "DIFFERS from the binary in the image"),
+                record["tarball_sha256"] == tar_sha,
+                f"install record names the same tarball ({record['tarball_sha256'] or '(none)'})",
             )
-            if ok:
-                chains.append("pinned tarball")
+        # Parsed only once the pin has vouched for these exact bytes: an
+        # unpinned archive is untrusted input and proves nothing either way.
+        if len(pinned_as) == 1:
+            key = key or pinned_as[0]
+            try:
+                member_sha = tarball_binary_sha256(data, name)
+            except EvidenceError as exc:
+                ok &= report.check(False, f"tarball: {exc}")
+            else:
+                ok &= report.check(
+                    member_sha == actual,
+                    f"'pulse' in the tarball: sha256 {member_sha} "
+                    + ("matches the binary in the image" if member_sha == actual else "DIFFERS from the binary in the image"),
+                )
+        if ok:
+            chains.append("pinned tarball")
 
-    if evidence.image_pins is not None and key is not None and key in anchor:
+    if evidence.image_pins is None:
+        if record is not None:
+            # Every build that writes the record also runs `COPY scripts
+            # /app/scripts`; a record without the pins it was checked against
+            # is an altered image, and the comparison is a required one.
+            report.check(
+                False,
+                f"the image carries an install record but no /{IMAGE_PINS}; "
+                "the build's own pins cannot be compared",
+            )
+        else:
+            report.check(
+                True,
+                f"not compared: the image has no /{IMAGE_PINS} "
+                "(images of shapoclyack-0.45-0916 and earlier predate it)",
+            )
+    elif key is not None and key in anchor:
         try:
             inside = parse_pins(evidence.image_pins.read_text(encoding="utf-8")).get(key)
         except (EvidenceError, UnicodeDecodeError) as exc:
@@ -373,6 +437,14 @@ def verify(
     return report, ([] if report.failed else chains)
 
 
+def _collect(args: argparse.Namespace, workdir: Path | None) -> Evidence:
+    if args.image:
+        if workdir is None:  # pragma: no cover - main() always passes one
+            raise ValueError("--image needs a working directory")
+        return evidence_from_image(args.image, args.platform, args.engine, workdir)
+    return evidence_from_rootfs(args.rootfs)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Check the Pulse binary in a Shapoclyack image against scripts/pulse-pinned.sha256 (#340).",
@@ -384,7 +456,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--engine", default="docker", help="container CLI for --image (docker, podman)")
     parser.add_argument(
         "--pins", type=Path, default=DEFAULT_PINS,
-        help="the trusted pin file: from your checkout of the release tag (default: next to this script)",
+        help="the trusted pin file: the one at the release tag the image was built from, e.g. "
+        "`git show <tag>:scripts/pulse-pinned.sha256 > pins` (default: the file next to this script)",
     )
     parser.add_argument("--tarball", type=Path, help="the pinned GenDec release tarball, for the independent check")
     args = parser.parse_args(argv)
@@ -401,44 +474,63 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cannot read the pin file {args.pins}: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    with tempfile.TemporaryDirectory(prefix="verify-pulse-") as workdir:
+    if args.rootfs is not None and not args.rootfs.is_dir():
+        print(f"--rootfs {args.rootfs} is not a directory", file=sys.stderr)
+        return EXIT_USAGE
+    where = args.image or str(args.rootfs)
+
+    tarball: tuple[str, bytes] | None = None
+    if args.tarball is not None:
         try:
-            if args.image:
-                evidence = evidence_from_image(args.image, args.platform, args.engine, Path(workdir))
-                where = args.image
-            else:
-                if not args.rootfs.is_dir():
-                    print(f"--rootfs {args.rootfs} is not a directory", file=sys.stderr)
-                    return EXIT_USAGE
-                evidence = evidence_from_rootfs(args.rootfs)
-                where = str(args.rootfs)
+            tarball = (args.tarball.name, read_bounded(args.tarball, MAX_TARBALL_BYTES))
         except EvidenceError as exc:
-            print(f"NOT VERIFIED: {exc}")
+            print(f"  FAIL  tarball: {exc}\nNOT VERIFIED")
             return EXIT_FAILED
         except OSError as exc:
-            print(str(exc), file=sys.stderr)
+            print(f"cannot read --tarball {args.tarball}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
-        if evidence.binary is None:
-            print(
-                f"{where} contains no /{IMAGE_BINARY}: built with INSTALL_PULSE=0, so it has no "
-                "service-probe backend of its own and a run with service_probe.backend: pulse fails "
-                "(docs/pulse-backend.md). Nothing to verify."
-            )
-            return EXIT_NO_PULSE
+    # Any read of the image below can fail on the host doing the check -- an
+    # unreadable file, a symlink loop, no temporary directory. That is no
+    # evidence either way: exit 2, not a verdict and not a traceback.
+    try:
+        if args.image:
+            # Only --image copies anything out, so only it needs a directory.
+            with tempfile.TemporaryDirectory(prefix="verify-pulse-") as workdir:
+                return _judge(_collect(args, Path(workdir)), anchor, args, tarball, where)
+        return _judge(_collect(args, None), anchor, args, tarball, where)
+    except EvidenceError as exc:
+        print(f"NOT VERIFIED: {exc}")
+        return EXIT_FAILED
+    except OSError as exc:
+        print(f"cannot read what was to be verified: {exc}", file=sys.stderr)
+        return EXIT_USAGE
 
-        report, chains = verify(
-            evidence, anchor, anchor_name=args.pins.name, platform=args.platform, tarball=args.tarball
+
+def _judge(
+    evidence: Evidence,
+    anchor: dict[tuple[str, str], str],
+    args: argparse.Namespace,
+    tarball: tuple[str, bytes] | None,
+    where: str,
+) -> int:
+    if evidence.binary is None:
+        print(
+            f"{where} contains no /{IMAGE_BINARY}. A Shapoclyack image built with INSTALL_PULSE=0 "
+            "looks like this: it has no service-probe backend of its own, and a run with "
+            "service_probe.backend: pulse fails (docs/pulse-backend.md). Nothing to verify."
         )
+        return EXIT_NO_PULSE
 
+    report, chains = verify(evidence, anchor, anchor_name=args.pins.name, platform=args.platform, tarball=tarball)
     for ok, message in report.lines:
         print(f"  {'ok  ' if ok else 'FAIL'}  {message}")
     if chains:
         print(f"VERIFIED against {' and '.join(chains)}")
         if chains == ["install record"]:
             print(
-                "  (the record is the build's own account; pair it with the image signature "
-                "or --tarball for a check that does not rest on the build)"
+                "  (the record is unsigned and lives in the image it describes: it is only as good as "
+                "the image digest you verified. --tarball checks the binary without relying on the image.)"
             )
         return EXIT_OK
     print("NOT VERIFIED")

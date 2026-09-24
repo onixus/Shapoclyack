@@ -112,10 +112,11 @@ COPY scripts/install-pulse.sh scripts/pulse-release-lib.sh scripts/pulse-pinned.
 # the unmasked trace in `docker buildx history logs`).
 # /out mirrors /usr/local of the final stage: bin/pulse, plus the install
 # record (#340) that scripts/verify-pulse-image.py reads back out of a
-# published image to tie the binary to its pinned tarball.
+# published image to tie the binary to its pinned tarball. Both directories
+# exist even with INSTALL_PULSE=0: the final stage copies each of them.
 RUN --mount=type=secret,id=github_token,required=false \
     set -eu; \
-    mkdir -p /out; \
+    mkdir -p /out/bin /out/share; \
     if [ "${INSTALL_PULSE}" != "1" ]; then \
       echo "INSTALL_PULSE=0: building without the Pulse CLI"; \
       rm -rf /tmp/pulse; \
@@ -176,11 +177,14 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
-# Copied as a directory, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
-# the stage leaves /out empty and this copies nothing, which is how the image
+# Copied as directories, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
+# the stage leaves both empty and this copies nothing, which is how the image
 # builds at all without a token for the private GenDec repository. Otherwise
 # it lands /usr/local/bin/pulse and /usr/local/share/shapoclyack/pulse-install.txt.
-COPY --from=pulse-bin /out/ /usr/local/
+# One COPY per directory: a COPY also stamps its source directory's metadata
+# onto the target, and /usr/local itself is not the pulse-bin stage's to set.
+COPY --from=pulse-bin /out/bin/ /usr/local/bin/
+COPY --from=pulse-bin /out/share/ /usr/local/share/
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.

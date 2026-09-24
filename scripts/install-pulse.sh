@@ -69,10 +69,11 @@ install_bin() {
 # The image keeps the binary, not the tarball, and the tarball's digest is the
 # only one scripts/pulse-pinned.sha256 holds. This record is what ties the two
 # together afterwards: which tarball, which check it passed, and what the
-# installed binary hashes to. It is written by the same build it describes, so
-# on its own it proves the image was not altered after that build, not that the
-# build was honest -- scripts/verify-pulse-image.py --tarball is the check that
-# does not rest on it.
+# installed binary hashes to. It is unsigned and sits in the same image as the
+# binary: it catches a binary replaced without it (a later layer, a patched
+# image), but whoever can rewrite one can rewrite both, so against deliberate
+# tampering it is only as good as the image digest that was verified.
+# scripts/verify-pulse-image.py --tarball is the check that does not rest on it.
 write_record() {  # write_record <verified: pin|checksums|none|source> [<tarball> <sha256>]
   [[ -n "$RECORD" ]] || return 0
   mkdir -p "$(dirname "$RECORD")"
