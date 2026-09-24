@@ -3105,6 +3105,10 @@ class RetentionCategoryInfo(BaseModel):
     min_days: int
     max_days: int
     source: Literal["tenant", "default"]
+    # The stored override lies outside the bounds configured *now* (they moved
+    # after it was saved); ``effective_days`` is it clamped to them, which is
+    # what the sweeps apply.
+    out_of_bounds: bool = False
 
 
 class LegalHoldInfo(BaseModel):

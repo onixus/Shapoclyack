@@ -21,6 +21,7 @@ from api.schemas import (
     WebhookDeliveryInfo,
     WebhookInfo,
 )
+from api.services import legal_hold
 from api.services.integrations import delivery as delivery_transport
 from api.services.integrations import tickets as ticket_transport
 from api.services.integrations import webhooks
@@ -182,7 +183,12 @@ def delete_webhook(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
 ) -> None:
     _require_own_webhook(subscription_id, principal)
-    if not webhooks.delete_subscription(subscription_id):
+    try:
+        deleted = webhooks.delete_subscription(subscription_id)
+    except legal_hold.LegalHoldActive as exc:
+        # Takes the delivery log with it, which a hold preserves (#332).
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.public_detail) from exc
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook not found")
 
 

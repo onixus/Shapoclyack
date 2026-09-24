@@ -43,6 +43,12 @@ def _not_found(username: str) -> HTTPException:
     )
 
 
+def _erased(exc: Exception) -> HTTPException:
+    """Every write to an erased account's tombstone is one refusal (#332): a
+    conflict with the account's state, not a malformed request."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+
 @router.get("/users", response_model=list[UserInfo])
 def list_users(_: Annotated[TokenUser, Depends(require_role(Role.admin))]) -> list[UserInfo]:
     return [UserInfo.model_validate(u) for u in users_service.list_users()]
@@ -95,6 +101,8 @@ def set_user_password(
     """
     try:
         updated = users_service.set_password(username, body.password, audit=audit)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -121,6 +129,8 @@ def set_user_role(
         )
     try:
         updated = users_service.set_role(username, body.role, audit=audit)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -153,6 +163,8 @@ def set_user_email(
     """
     try:
         updated = users_service.set_email(username, body.email, verified=body.verified)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -237,6 +249,9 @@ def delete_user(
 def export_user_data(
     username: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # A bulk copy of somebody else's addresses, IdP identity and sign-in
+    # history: not what an eight-hour-old session should be enough for.
+    __: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> dict[str, Any]:
@@ -246,12 +261,15 @@ def export_user_data(
     security keys, sessions, sign-in history, what it did and what was done to
     it, and a count of the records elsewhere that name it — see
     ``api/services/data_subject.py`` for what each section holds and what is
-    left out on purpose. Recorded as ``user.export``.
+    left out on purpose. Recorded as ``user.export``. 503 when a statement runs
+    past the export's timeout.
     """
     try:
         return data_subject.export_user(settings, username, audit=audit)
     except LookupError as exc:
         raise _not_found(username) from exc
+    except data_subject.ExportTooSlow as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.post("/users/{username}/erase", response_model=UserErasureResult)
@@ -278,6 +296,8 @@ def erase_user(
         raise _not_found(username) from exc
     except (data_subject.ErasureRefused, legal_hold.LegalHoldActive) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except data_subject.ExportTooSlow as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return UserErasureResult.model_validate(result)
 
 

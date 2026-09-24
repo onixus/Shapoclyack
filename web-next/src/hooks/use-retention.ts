@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   downloadUserDataExport,
   eraseUser,
+  fetchLegalHolds,
   fetchRetentionPolicy,
   placeLegalHold,
   releaseLegalHold,
@@ -29,12 +30,27 @@ export function useRetentionPolicy(tenantId: string, enabled: boolean) {
   });
 }
 
+/** The register of holds across tenants. Platform admins only; the caller
+ * gates on that, and the API refuses anybody else. */
+export function useLegalHolds(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.legalHolds,
+    queryFn: fetchLegalHolds,
+    enabled,
+  });
+}
+
 /** Every mutation here answers with, or changes, the same document, so each
- * one refreshes it rather than patching the cache: the server clamps nothing
- * but it does decide `effective_days`, and the page should show its answer. */
+ * one refreshes it rather than patching the cache: the server decides
+ * `effective_days` (an override clamped into the current bounds), and the
+ * page should show its answer. A hold also changes the register. */
 function useRefresh(tenantId: string) {
   const queryClient = useQueryClient();
-  return () => queryClient.invalidateQueries({ queryKey: queryKeys.retention(tenantId) });
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.retention(tenantId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.legalHolds }),
+    ]);
 }
 
 export function useUpdateRetentionPolicy(tenantId: string) {

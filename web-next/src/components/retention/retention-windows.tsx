@@ -180,6 +180,18 @@ export function RetentionWindows({
                   </td>
                   <td className="py-2 font-medium tabular-nums">
                     {daysLabel(item.effective_days, t)}
+                    {item.out_of_bounds ? (
+                      <p
+                        className="text-[11px] font-normal text-amber-600 dark:text-amber-400"
+                        title={t("retention.storedOutOfBoundsHint", {
+                          days: item.override_days ?? 0,
+                          min: item.min_days,
+                          max: item.max_days,
+                        })}
+                      >
+                        {t("retention.storedOutOfBounds")}
+                      </p>
+                    ) : null}
                   </td>
                 </tr>
               );

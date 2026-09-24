@@ -52,19 +52,27 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import JSON, delete, func, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import legal_hold
+from api.services import service_tokens as service_tokens_service
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.data-subject")
 
 EXPORT_FORMAT = "shapoclyack.data-subject-export"
 EXPORT_VERSION = 1
+
+#: Per-statement cap for the export and the erasure (review round 1). Both read
+#: the audit trail and the findings by columns nothing indexes for them, and an
+#: index on ``audit_events`` would need its owner — the role the GRANT layout
+#: takes away from the migration. A minute is generous for a request.
+STATEMENT_TIMEOUT_MS = 60_000
 
 # What erasure does to a column that can name an account.
 DELETED = "deleted"  # the row exists only for the account and goes with it
@@ -139,6 +147,29 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("retro_match_state", "refresh_requested_by"): (PSEUDONYM, "attribution"),
     ("tenant_retention_policies", "updated_by"): (PSEUDONYM, "attribution"),
     ("tenant_legal_holds", "set_by"): (PSEUDONYM, "who placed a hold"),
+    # JSON documents (review round 1): no column name says a document holds an
+    # address, so every JSON column is decided here or below.
+    ("notification_channels", "config"): (
+        CLEARED,
+        'the account\'s address in an email channel\'s "to"; a channel left '
+        "with no recipient is switched off",
+    ),
+    ("users", "mfa_recovery_codes"): (CLEARED, "second-factor recovery codes"),
+    ("webauthn_credentials", "transports"): (DELETED, "goes with the security key"),
+    ("audit_events", "before"): (RETAINED, "append-only trail; see audit_events.actor"),
+    ("audit_events", "after"): (RETAINED, "append-only trail; see audit_events.actor"),
+    ("generated_reports", "delivery"): (
+        RETAINED,
+        "log of a disclosure already made; ages out with the report",
+    ),
+    ("webhook_deliveries", "payload"): (
+        RETAINED,
+        "what was sent where, may name the account as an actor; ages out with "
+        "the webhook window",
+    ),
+    ("vulnerability_events", "detail"): (PSEUDONYM, "remediation trail"),
+    ("idempotency_records", "response"): (RETAINED, "expires by itself within 24 hours"),
+    ("nats_outbox", "payload"): (RETAINED, "a message in flight, deleted once published"),
 }
 
 #: Columns that look like they name an account and do not, so the check in the
@@ -151,6 +182,37 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("sla_escalation_policies", "escalate_owner_team"): "a team name",
     ("jobs", "owner_id"): "a job-queue owner token, not a person",
     ("audit_events", "actor_type"): "what kind of actor, not who",
+    # JSON documents that carry no console account.
+    ("agent_deployments", "logs"): "the SSH push's log against the target host",
+    ("agents", "labels"): "host labels",
+    ("endpoint_devices", "labels"): "host labels",
+    ("asset_services", "cpe"): "a service fingerprint",
+    ("asset_services", "match_summary"): "a CVE match summary",
+    ("config_overrides", "data"): "scanner configuration",
+    ("endpoint_agent_policies", "settings"): "agent collection settings",
+    ("endpoint_inventory_snapshots", "collector_warnings"): "agent warnings about a host",
+    ("endpoint_inventory_snapshots", "response"): "the ingest answer sent to the agent",
+    ("jobs", "command"): "the scanner command line",
+    ("jobs", "scan_options"): "scan parameters",
+    ("jobs", "target_counts"): "counts of targets",
+    ("maintenance_windows", "scope_targets"): "network targets",
+    ("report_templates", "sections"): "report layout",
+    ("retro_match_state", "last_stats"): "matcher counters",
+    ("risk_score_snapshots", "by_risk_level_open"): "counters",
+    ("risk_score_snapshots", "by_severity_open"): "counters",
+    ("risk_score_snapshots", "by_sla"): "counters",
+    ("risk_score_snapshots", "by_state"): "counters",
+    ("scan_schedules", "scan_options"): "scan parameters",
+    ("scan_schedules", "targets"): "network targets",
+    ("software_cve_matches", "evidence"): "package versions and advisories",
+    ("tenant_scan_policies", "avoid_ports"): "port numbers",
+    ("tenant_scan_scopes", "agent_groups"): "sensor group names",
+    ("vulnerabilities", "cwe"): "weakness identifiers",
+    ("vulnerabilities", "fp_evidence"): "the scanner evidence a false-positive verdict rests on",
+    ("vulnerabilities", "match_evidence"): "why a retro match was made",
+    ("webhook_subscriptions", "event_kinds"): "event names",
+    ("webhook_subscriptions", "headers"): "HTTP headers for the receiver, set by the tenant",
+    ("webhook_subscriptions", "transport_config"): "tracker project/table/test ids",
 }
 
 
@@ -171,19 +233,21 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z"
 
 
-def _attribution_columns() -> list[tuple[Any, str, str]]:
-    """``(column, table, name)`` for every plain-string column that names an account."""
-    columns = []
+def _attribution_columns() -> dict[str, tuple[Any, list[Any]]]:
+    """``{table: (table, [string columns that name an account])}``, by table name."""
+    grouped: dict[str, tuple[Any, list[Any]]] = {}
     for mapper in models.Base.registry.mappers:
         table = mapper.local_table
         for column in table.columns:
             treatment = SUBJECT_COLUMNS.get((table.name, column.name))
             if treatment is None or treatment[0] != PSEUDONYM:
                 continue
-            if (table.name, column.name) == ("users", "username"):
+            if (table.name, column.name) == ("users", "username") or isinstance(
+                column.type, JSON
+            ):
                 continue
-            columns.append((column, table.name, column.name))
-    return sorted(columns, key=lambda item: (item[1], item[2]))
+            grouped.setdefault(table.name, (table, []))[1].append(column)
+    return dict(sorted(grouped.items()))
 
 
 # -- export --------------------------------------------------------------------
@@ -209,8 +273,28 @@ def export_user(
     The export is itself recorded (``user.export``) in the same transaction:
     a bulk copy of one person's data leaving the platform is the thing a
     reviewer of the trail most wants to find.
+
+    Raises :class:`ExportTooSlow` when a statement runs past
+    :data:`STATEMENT_TIMEOUT_MS`; nothing is recorded then, because nothing
+    left the platform.
     """
+    try:
+        return _export(settings, username, audit)
+    except OperationalError as exc:
+        if _timed_out(exc):
+            raise ExportTooSlow(
+                f"the export of {username!r} stopped at its statement timeout "
+                f"({STATEMENT_TIMEOUT_MS // 1000} s): the audit trail or the findings are "
+                "too large to scan inside a request right now. Retry off-peak."
+            ) from exc
+        raise
+
+
+def _export(
+    settings: Settings, username: str, audit: audit_service.AuditContext | None
+) -> dict[str, Any]:
     with get_session(settings.postgres_url) as session:
+        _bound(session)
         row = session.get(models.User, username)
         if row is None:
             raise LookupError(f"user '{username}' not found")
@@ -235,6 +319,7 @@ def export_user(
                 models.AuditEvent.resource_id == username,
             ),
             "report_recipient_of": _report_schedules_listing(session, row.email),
+            "notification_recipient_of": _channels_listing(session, row.email),
             "attributions": _attributions(session, username),
             "retention": {
                 "sign_in_history_days": settings.auth_event_retention_days,
@@ -260,6 +345,7 @@ def export_user(
                     "administrative_activity",
                     "changes_to_account",
                     "report_recipient_of",
+                    "notification_recipient_of",
                 )
             },
         )
@@ -406,15 +492,65 @@ def _report_schedules_listing(session: Session, email: str | None) -> list[dict[
     ]
 
 
+def _email_channels_with(session: Session, address: str) -> list[models.NotificationChannel]:
+    """Email notification channels whose ``config["to"]`` holds ``address``."""
+    return [
+        row
+        for row in session.execute(
+            select(models.NotificationChannel).where(models.NotificationChannel.kind == "email")
+        ).scalars()
+        if any(
+            str(target or "").strip().lower() == address
+            for target in (row.config or {}).get("to") or []
+        )
+    ]
+
+
+def _channels_listing(session: Session, email: str | None) -> list[dict[str, Any]]:
+    if not email:
+        return []
+    return [
+        {"tenant_id": row.tenant_id, "channel_id": row.channel_id, "name": row.name}
+        for row in _email_channels_with(session, email.strip().lower())
+    ]
+
+
 def _attributions(session: Session, username: str) -> list[dict[str, Any]]:
     counts = []
-    for column, table, name in _attribution_columns():
-        count = session.execute(
-            select(func.count()).select_from(column.table).where(column == username)
-        ).scalar_one()
-        if count:
-            counts.append({"table": table, "column": name, "rows": int(count)})
+    for name, (table, columns) in _attribution_columns().items():
+        # One scan per table, every column counted in it (review round 1): the
+        # findings table alone names people in six columns, none indexed for it.
+        row = session.execute(
+            select(*[func.count().filter(column == username) for column in columns]).select_from(
+                table
+            )
+        ).one()
+        for column, count in zip(columns, row):
+            if count:
+                counts.append({"table": name, "column": column.name, "rows": int(count)})
     return counts
+
+
+class ExportTooSlow(RuntimeError):
+    """The export hit :data:`STATEMENT_TIMEOUT_MS`. Routes answer 503."""
+
+
+def _bound(session: Session) -> None:
+    """Cap every statement of this transaction at :data:`STATEMENT_TIMEOUT_MS`.
+
+    The export and the erasure's hold check read the audit trail and the
+    findings by columns nothing indexes for them, inside a request. A cap turns
+    "the API held a connection for ten minutes" into a refusal that says so.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT set_config('statement_timeout', :ms, true)"),
+            {"ms": str(int(STATEMENT_TIMEOUT_MS))},
+        )
+
+
+def _timed_out(exc: OperationalError) -> bool:
+    return getattr(exc.orig, "sqlstate", None) == "57014"
 
 
 # -- erasure ---------------------------------------------------------------------
@@ -456,37 +592,7 @@ def _assert_no_hold(session: Session, username: str) -> None:
     revoked membership takes neither the account's actions nor its grant out
     of that trail.
     """
-    held = legal_hold.held_tenants(session)
-    if not held:
-        return
-    member_of = set(
-        session.execute(
-            select(models.UserTenant.tenant_id).where(
-                models.UserTenant.username == username,
-                models.UserTenant.tenant_id.in_(sorted(held)),
-            )
-        ).scalars()
-    )
-    acted_in = set(
-        session.execute(
-            select(models.AuditEvent.tenant_id)
-            .where(
-                models.AuditEvent.tenant_id.in_(sorted(held)),
-                or_(
-                    and_(
-                        models.AuditEvent.actor == username,
-                        models.AuditEvent.actor_type == audit_service.ACTOR_USER,
-                    ),
-                    and_(
-                        models.AuditEvent.resource_type == "membership",
-                        models.AuditEvent.resource_id == username,
-                    ),
-                ),
-            )
-            .distinct()
-        ).scalars()
-    )
-    for tenant_id in sorted(member_of | acted_in):
+    for tenant_id in sorted(legal_hold.held_tenants_naming(session, username)):
         legal_hold.assert_not_on_hold(session, tenant_id, action="user.erase")
 
 
@@ -510,7 +616,25 @@ def erase_user(
     """
     if username == requested_by:
         raise ErasureRefused("cannot erase the account you are signed in as")
+    try:
+        return _erase(settings, username, requested_by, audit)
+    except OperationalError as exc:
+        if _timed_out(exc):
+            raise ExportTooSlow(
+                f"the erasure of {username!r} stopped at its statement timeout "
+                f"({STATEMENT_TIMEOUT_MS // 1000} s) and changed nothing. Retry off-peak."
+            ) from exc
+        raise
+
+
+def _erase(
+    settings: Settings,
+    username: str,
+    requested_by: str,
+    audit: audit_service.AuditContext | None,
+) -> dict[str, Any]:
     with get_session(settings.postgres_url) as session:
+        _bound(session)
         row = session.execute(
             select(models.User).where(models.User.username == username).with_for_update()
         ).scalar_one_or_none()
@@ -534,6 +658,15 @@ def erase_user(
             "security_keys": _count(session, models.WebAuthnCredential, username),
             "sessions": _count(session, models.SessionFamily, username),
             "report_recipients": _strip_report_recipient(session, address) if address else 0,
+            "notification_recipients": (
+                _strip_channel_recipient(session, address, audit) if address else 0
+            ),
+            # Minted by the account for a tenant's automation. The docs promise
+            # every credential the account holds is refused, and a token its
+            # creator can no longer answer for is a leaver's key (review round 1).
+            "service_tokens": service_tokens_service.revoke_created_by(
+                session, username, audit=audit
+            ),
         }
 
         for membership in memberships:
@@ -615,4 +748,42 @@ def _strip_report_recipient(session: Session, address: str) -> int:
         if len(kept) != len(entries):
             removed += len(entries) - len(kept)
             schedule.recipients = kept
+    return removed
+
+
+def _strip_channel_recipient(
+    session: Session, address: str, audit: audit_service.AuditContext | None
+) -> int:
+    """Take ``address`` off every email notification channel (review round 1).
+
+    A channel left with nobody to mail is switched off rather than left to fail
+    every run with "no recipients". Each change is ``notification_channel.update``
+    in the channel's tenant, as a tenant admin's own edit would be — counted, not
+    quoted: the removed address must not reach the append-only trail.
+    """
+    removed = 0
+    for channel in _email_channels_with(session, address):
+        config = dict(channel.config or {})
+        recipients = list(config.get("to") or [])
+        kept = [target for target in recipients if str(target or "").strip().lower() != address]
+        config["to"] = kept
+        channel.config = config
+        was_enabled = channel.enabled
+        if not kept:
+            channel.enabled = False
+        removed += len(recipients) - len(kept)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_NOTIFICATION_CHANNEL_UPDATE,
+            resource_type="notification_channel",
+            resource_id=channel.channel_id,
+            tenant_id=channel.tenant_id,
+            before={"recipients": len(recipients), "enabled": was_enabled},
+            after={
+                "recipients": len(kept),
+                "enabled": channel.enabled,
+                "reason": "a recipient's account was erased",
+            },
+        )
     return removed

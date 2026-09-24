@@ -43,7 +43,18 @@ tenant was in litigation. This revision adds the three things that were missing.
     enforced by the database for the one table whose deletions already go
     through a privileged function: a retention job built from an older image,
     or one passing a wrong cutoff, still cannot delete a held tenant's trail.
-    Both are SECURITY DEFINER with EXECUTE revoked from PUBLIC, like 0037's.
+    Both are SECURITY DEFINER with EXECUTE revoked from PUBLIC, like 0037's,
+    and both pin ``search_path = pg_catalog, public, pg_temp`` and name every
+    table by schema: with ``pg_temp`` left implicit it is searched *first*, and
+    a caller's temporary ``tenant_legal_holds`` would stand in for the real one
+    inside the definer and read as "nobody is on hold".
+
+**Split installs.** ``docs/operations.md`` recommends moving
+``audit_events_prune`` to a dedicated owner role, and this migration runs as
+the API's. ``CREATE OR REPLACE FUNCTION`` needs ownership, so on such an install
+the upgrade stops *before* changing anything and names the statements that let
+it through (see ``_require_prune_ownership``) — rather than failing halfway on
+a bare ``InsufficientPrivilege``.
 
 Three permissions are seeded with the catalogue rows 0049 introduced:
 ``tenant.retention.read`` (admin, auditor, platform-admin),
@@ -59,10 +70,13 @@ an old retention job calling it after this revision keeps held and overridden
 tenants' rows instead of deleting them.
 
 **Downgrade** restores 0037's function body, drops the new function, the two
-tables, the column and the permission rows. Lossy for the policies and holds
-themselves (their history stays in ``audit_events``); an erased account's
-tombstone survives as a disabled account with no password, which is still one
-nobody can sign in to.
+tables, the column and the permission rows — and **refuses** while a tenant is
+on legal hold or an erased account exists. The previous release knows neither:
+it would sweep the held tenant on the next tick and let an admin re-enable a
+tombstone and give its pseudonym a password. Release the holds first; a
+tombstone can only be removed by hand, accepting that its username becomes
+reusable. The policies themselves are lost (their history stays in
+``audit_events``).
 """
 from __future__ import annotations
 
@@ -111,12 +125,15 @@ _CATEGORY_COLUMNS = (
 # Written out rather than interpolated, like 0037: an f-string reaching
 # sa.text() is the shape CI's semgrep gate refuses. The GUC and the owner check
 # are 0037's; only the WHERE clause is new.
+# ``pg_temp`` last and every table schema-qualified: a SECURITY DEFINER that
+# leaves ``pg_temp`` implicit searches it first, so a caller's temporary table
+# of the same name would be read in place of the real one (review round 1).
 _PRUNE_FUNCTION = """
 CREATE OR REPLACE FUNCTION audit_events_prune(cutoff timestamp without time zone)
 RETURNS bigint
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     removed bigint;
@@ -127,13 +144,13 @@ BEGIN
     -- audit_events_prune_tenant on that window instead of this one. Rows with
     -- no tenant (platform-level acts) and rows of tenants that no longer exist
     -- have neither, and age out here.
-    DELETE FROM audit_events AS a
+    DELETE FROM public.audit_events AS a
      WHERE a.occurred_at < cutoff
        AND NOT EXISTS (
-           SELECT 1 FROM tenant_legal_holds AS h WHERE h.tenant_id = a.tenant_id
+           SELECT 1 FROM public.tenant_legal_holds AS h WHERE h.tenant_id = a.tenant_id
        )
        AND NOT EXISTS (
-           SELECT 1 FROM tenant_retention_policies AS p
+           SELECT 1 FROM public.tenant_retention_policies AS p
             WHERE p.tenant_id = a.tenant_id AND p.audit_event_days IS NOT NULL
        );
     GET DIAGNOSTICS removed = ROW_COUNT;
@@ -150,7 +167,7 @@ CREATE OR REPLACE FUNCTION audit_events_prune_tenant(
 RETURNS bigint
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     removed bigint;
@@ -165,11 +182,12 @@ BEGIN
     END IF;
     -- Checked here and not only by the caller: the hold is the one thing this
     -- function must never be talked out of.
-    IF EXISTS (SELECT 1 FROM tenant_legal_holds WHERE tenant_id = target_tenant) THEN
+    IF EXISTS (SELECT 1 FROM public.tenant_legal_holds WHERE tenant_id = target_tenant) THEN
         RETURN 0;
     END IF;
     PERFORM set_config('shapoclyack.audit_retention', 'on', true);
-    DELETE FROM audit_events WHERE tenant_id = target_tenant AND occurred_at < cutoff;
+    DELETE FROM public.audit_events
+     WHERE tenant_id = target_tenant AND occurred_at < cutoff;
     GET DIAGNOSTICS removed = ROW_COUNT;
     PERFORM set_config('shapoclyack.audit_retention', 'off', true);
     RETURN removed;
@@ -200,7 +218,48 @@ $$;
 """
 
 
+_PRUNE = "audit_events_prune(timestamp without time zone)"
+_PRUNE_TENANT = "audit_events_prune_tenant(text, timestamp without time zone)"
+
+
+def _require_prune_ownership(bind, *signatures: str) -> None:
+    """Stop before changing anything when this role may not replace the functions.
+
+    ``CREATE OR REPLACE`` and ``DROP FUNCTION`` need the privileges of the
+    function's owner. The GRANT layout in ``docs/operations.md`` moves the
+    prune function to a dedicated owner role and the migration runs as the
+    API's, so on exactly the installations that followed the recommended
+    hardening this would otherwise fail mid-transaction on a bare
+    ``InsufficientPrivilege``, with nothing saying what to do about it.
+    """
+    for signature in signatures:
+        row = bind.execute(
+            sa.text(
+                "SELECT pg_get_userbyid(p.proowner) AS owner, current_user AS me, "
+                "pg_has_role(current_user, p.proowner, 'USAGE') AS allowed "
+                "FROM pg_proc AS p WHERE p.oid = to_regprocedure(:signature)"
+            ),
+            {"signature": signature},
+        ).first()
+        if row is None or row.allowed:
+            continue
+        raise RuntimeError(
+            f"migration 0065 (#332) has to replace {signature}, which is owned by "
+            f'"{row.owner}", and it runs as "{row.me}", which does not hold that '
+            "role's privileges — the GRANT layout of docs/operations.md moves the "
+            "function there on purpose. Nothing has been changed. Either run this "
+            f'one upgrade as a superuser or a member of "{row.owner}", or hand the '
+            "functions to the migration role for its duration:\n\n"
+            f'    ALTER FUNCTION {signature} OWNER TO "{row.me}";\n\n'
+            "run the migration again, and then re-apply the ownership and grants "
+            "of docs/data-retention.md, section 7 — including\n\n"
+            f'    ALTER FUNCTION audit_events_prune(timestamp without time zone) OWNER TO "{row.owner}";\n'
+            f'    ALTER FUNCTION audit_events_prune_tenant(text, timestamp without time zone) OWNER TO "{row.owner}";\n'
+        )
+
+
 def upgrade() -> None:
+    _require_prune_ownership(op.get_bind(), _PRUNE)
     op.create_table(
         "tenant_retention_policies",
         sa.Column("tenant_id", sa.String(), nullable=False),
@@ -259,7 +318,34 @@ def upgrade() -> None:
     )
 
 
+def _refuse_while_in_use(bind) -> None:
+    """The previous release would sweep a held tenant and resurrect a tombstone."""
+    holds = bind.execute(sa.text("SELECT count(*) FROM tenant_legal_holds")).scalar_one()
+    if holds:
+        raise RuntimeError(
+            f"refusing to downgrade 0065 (#332): {holds} tenant(s) are on legal hold, "
+            "and the previous release does not know holds — its retention sweeps "
+            "would delete what they preserve on the next tick. Release them first "
+            "(DELETE /api/tenants/{tenant_id}/legal-hold), with the matter's say-so."
+        )
+    erased = bind.execute(
+        sa.text("SELECT count(*) FROM users WHERE erased_at IS NOT NULL")
+    ).scalar_one()
+    if erased:
+        raise RuntimeError(
+            f"refusing to downgrade 0065 (#332): {erased} account(s) were erased under "
+            "a data-subject request, and the previous release would let an admin "
+            "re-enable such a tombstone and give its pseudonym — and the audit history "
+            "attributed to it — a new password. Only delete the tombstones by hand "
+            "(DELETE FROM users WHERE erased_at IS NOT NULL) if you accept that their "
+            "usernames can then be issued to somebody else."
+        )
+
+
 def downgrade() -> None:
+    bind = op.get_bind()
+    _refuse_while_in_use(bind)
+    _require_prune_ownership(bind, _PRUNE, _PRUNE_TENANT)
     op.execute(
         sa.text(
             "DROP FUNCTION IF EXISTS "

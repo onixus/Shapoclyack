@@ -125,6 +125,7 @@ export const queryKeys = {
   fleetUsage: ["usage", "tenants"] as const,
   tenantQuota: (tenantId: string) => ["tenants", tenantId, "quota"] as const,
   retention: (tenantId: string) => ["tenants", tenantId, "retention"] as const,
+  legalHolds: ["tenants", "legal-holds"] as const,
   /** Under `tenants`, so a suspension that changes the listing refreshes it too. */
   tenantLifecycle: (tenantId: string) => ["tenants", tenantId, "lifecycle"] as const,
   scanScope: (tenantId: string) => ["tenants", tenantId, "scan-scope"] as const,

@@ -30,7 +30,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import artifact_store, retention_policy, workflow_events
+from api.services import artifact_store, legal_hold, retention_policy, workflow_events
 from api.services.compliance import frameworks as catalog
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
@@ -702,6 +702,12 @@ def delete_report(
     row = get_report(settings, report_id, tenant_id=tenant_id)
     if row is None:
         return False
+    # Before the bytes go (#332): a generated report is one of the categories a
+    # legal hold preserves, and the object store has no transaction to roll back.
+    with get_session(settings.postgres_url) as session:
+        legal_hold.assert_not_on_hold(
+            session, row["tenant_id"], action="report.delete"
+        )
     try:
         key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
         artifact_store.get_store(settings).delete(key)

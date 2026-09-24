@@ -295,8 +295,13 @@ def load_plan(
             return load_plan(settings, category, session=own)
     held = legal_hold.held_tenants(session)
     column = getattr(models.TenantRetentionPolicy, spec.column)
+    # Held to the bounds *in force*, not the ones the value was written under
+    # (review round 1): an operator who raises the audit floor means every
+    # tenant, including one that saved a year before the change, and a lowered
+    # ceiling is the same kind of platform decision.
+    limits = bounds(settings)[category]
     overrides = {
-        tenant_id: int(days)
+        tenant_id: clamp(int(days), limits)
         for tenant_id, days in session.execute(
             select(models.TenantRetentionPolicy.tenant_id, column).where(column.is_not(None))
         ).all()
@@ -305,6 +310,12 @@ def load_plan(
     return RetentionPlan(
         category=category, default_days=base, overrides=overrides, held=held
     )
+
+
+def clamp(days: int, limits: tuple[int, int]) -> int:
+    """A stored window, held to the bounds currently configured."""
+    low, high = limits
+    return min(max(days, low), high)
 
 
 def expired_clause(plan: RetentionPlan, *, tenant_column, time_column, now: datetime):
@@ -423,7 +434,13 @@ def describe(settings: Settings, tenant_id: str) -> dict[str, Any]:
                     "description": category.description,
                     "default_days": platform,
                     "override_days": override,
-                    "effective_days": override if override is not None else platform,
+                    # A value saved under bounds that have since moved is
+                    # reported as saved, applied as the bounds allow, and
+                    # flagged, so the console can say why the two differ.
+                    "effective_days": (
+                        clamp(override, (low, high)) if override is not None else platform
+                    ),
+                    "out_of_bounds": override is not None and not low <= override <= high,
                     "min_days": low,
                     "max_days": high,
                     "source": "tenant" if override is not None else "default",

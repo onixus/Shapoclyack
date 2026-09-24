@@ -825,7 +825,7 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-request timeout. A receiver needing longer is doing work in the request instead of queueing it |
 | `OCTO_WEBHOOK_DISPATCH_INTERVAL_SECONDS` | `5` | How often the due end of the queue is drained |
 | `OCTO_WEBHOOK_DISPATCH_BATCH_SIZE` | `50` | Deliveries claimed per tick |
-| `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Age past which delivered/dead rows are pruned; `0` keeps the audit trail forever. Pending rows are never pruned |
+| `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Platform default: age past which delivered/dead rows are pruned; `0` keeps them for tenants without an override of their own (#332 — a tenant's window is still applied). Pending rows are never pruned. Swept by the dispatcher, so it has no switch of its own |
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
@@ -938,7 +938,7 @@ send anything anywhere:
 | `OCTO_SLA_ESCALATION_ENABLED` | `true` | Run the worker that derives `sla_due_soon`, `sla_breached`, `exception_expiring` and `agent_offline`. Leader-locked, so it is safe to leave on in every replica. Set it to `false` **before** an upgrade if the installation would rather not have its whole existing breach backlog announced by the first tick |
 | `OCTO_SLA_ESCALATION_INTERVAL_SECONDS` | `900` | Worker tick (floored at 30). An SLA is measured in days, so a tighter tick buys nothing; a longer one delays a notification rather than losing it, because the marker table decides what has already been said |
 | `OCTO_SLA_ESCALATION_MAX_FINDINGS` | `500` | Findings one tenant's tick may announce, oldest deadline first. A tenant that imports a backlog of overdue findings must not turn one tick into that many webhook deliveries. A **window**, not a ceiling: the worker keeps a cursor per tenant and the next tick continues after the last deadline this one reached, so a backlog of 600 findings at the default is drained in two ticks (30 minutes) rather than stopping at 500. The same budget and the same cursor now bound the fleet-wide `agent_offline` sweep, which had neither: a site outage that silenced eight hundred sensors announced all eight hundred in one tick |
-| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` disables both the sweep and the re-announcement. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
+| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` keeps the markers — and so stops the re-announcement — for tenants without an override of their own (#332; a tenant's window is still applied). Swept by the SLA worker, so it has no switch of its own. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
 
 The owner digest uses the report relay (`OCTO_REPORT_SMTP_*` below): with no
 relay configured the digest is skipped with a logged reason and the webhook
@@ -975,7 +975,7 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORTS_ENABLED` | `true` | Register `/api/reports`. Off means no report API at all |
 | `OCTO_REPORT_DISPATCH_ENABLED` | `true` | Run the scheduled-report loop in *this* replica; leader-locked, so only one replica ever sends |
 | `OCTO_REPORT_DISPATCH_INTERVAL_SECONDS` | `60` | Poll interval for due schedules (floored at 5) |
-| `OCTO_REPORT_RETENTION_DAYS` | `365` | Age past which generated reports and their files are pruned; `0` keeps them |
+| `OCTO_REPORT_RETENTION_DAYS` | `365` | Platform default: age past which generated reports and their files are pruned; `0` keeps them for tenants without an override of their own (#332 — a tenant's window is still applied). Swept by the dispatcher, so it has no switch of its own |
 | `OCTO_REPORT_SMTP_HOST` | *(empty)* | Relay for emailed reports. Empty means email recipients are recorded as `skipped`, with the reason, rather than silently dropped |
 | `OCTO_REPORT_SMTP_PORT` | `25` | Relay port |
 | `OCTO_REPORT_SMTP_FROM` | *(empty)* | Envelope sender; required alongside the host |
@@ -1148,9 +1148,9 @@ inventory agent; `agent_kind = endpoint`):
 | `OCTO_ENDPOINT_INVENTORY_MAX_FUTURE_SKEW_SECONDS` | `300` | Tolerated clock skew on `collected_at` |
 | `OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR` | `12` | Accepted submissions per Agent per hour |
 | `OCTO_ENDPOINT_STALE_HOURS` | `48` | Age after which a device reports `status: "stale"` |
-| `OCTO_ENDPOINT_RETENTION_ENABLED` | `true` | Run the in-process retention sweep |
-| `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which a snapshot's software rows are pruned |
-| `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Age after which software change events are deleted |
+| `OCTO_ENDPOINT_RETENTION_ENABLED` | `true` | Run the in-process retention sweep (both categories below, every tenant) |
+| `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` | `90` | Platform default: age after which a snapshot's software rows are pruned. `0` keeps them for tenants without an override of their own; before #332 it deleted every superseded list |
+| `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Platform default: age after which software change events are deleted. `0` keeps them for tenants without an override of their own; before #332 it deleted all of them |
 | `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval |
 | `OCTO_ENDPOINT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement |
 
@@ -1215,7 +1215,7 @@ Web screenshots (ROADMAP P4.4 / Phase 9.3):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_SCREENSHOT_RETENTION_ENABLED` | `true` | Run the in-process PNG reaper. Safe in every replica; deletes are idempotent |
-| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is deleted, from the artifact store. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
+| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is deleted, from the artifact store. Platform default: `0` keeps them for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_SCREENSHOT_RETENTION_ENABLED=false` is the switch). `screenshots.json` is never deleted by this worker |
 | `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Scan run artifact retention (ROADMAP #187):
@@ -1223,7 +1223,7 @@ Scan run artifact retention (ROADMAP #187):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
-| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which a run is deleted — from the artifact store, so the same setting bounds a volume and a bucket. `0` disables the reaper. Do **not** add a bucket lifecycle rule as well: it would expire runs the console still lists |
+| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which a run is deleted — from the artifact store, so the same setting bounds a volume and a bucket. Platform default: `0` keeps runs for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_RUN_RETENTION_ENABLED=false` is the switch). Do **not** add a bucket lifecycle rule as well: it would expire runs the console still lists |
 | `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Risk snapshot retention (#229):
@@ -1231,7 +1231,7 @@ Risk snapshot retention (#229):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` | `true` | Run the in-process `risk_score_snapshots` sweep. Safe in every replica; the delete is a range delete |
-| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which risk snapshots are deleted. `0` disables the sweep. Keep at or above the window the trend chart requests |
+| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Platform default: age after which risk snapshots are deleted. `0` keeps them for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED=false` is the switch). Keep at or above the window the trend chart requests |
 | `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval (floored at 60) |
 
 Per-tenant retention (#332). Every `OCTO_*_RETENTION_DAYS` above is the
@@ -1241,7 +1241,7 @@ and a platform admin may place a tenant on legal hold. See
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_RETENTION_BOUNDS` | empty (compiled bounds) | JSON object `{"category": {"min": days, "max": days}}` merged over the per-category bounds in [data-retention.md](data-retention.md#11-data-deleted-on-a-retention-window) — e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. Bounds constrain tenant overrides only, never the inherited default. A malformed value, an unknown category, a `min` below 1 or a `max` above 3650 refuses to start |
+| `OCTO_RETENTION_BOUNDS` | empty (compiled bounds) | JSON object `{"category": {"min": days, "max": days}}` merged over the per-category bounds in [data-retention.md](data-retention.md#11-data-deleted-on-a-retention-window) — e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. Bounds constrain tenant overrides only, never the inherited default. A bound changed after a tenant saved an override binds it from the next sweep: the stored value is clamped into the new bounds and flagged `out_of_bounds`. Give the audit retention CronJob the same value. A malformed value, an unknown category, a `min` below 1 or a `max` above 3650 refuses to start |
 
 Tenant suspension and deletion (#325). See
 [tenant-lifecycle.md](tenant-lifecycle.md):

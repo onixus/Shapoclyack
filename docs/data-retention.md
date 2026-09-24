@@ -28,8 +28,12 @@ named authorities of [API and RBAC](api-and-rbac.md#permissions).
 
 Each row is a **category**: a kind of data with a window of its own. The
 platform default is the setting in the second column; a tenant may override it
-within the bounds in the third (section 2). `0` as a platform default means the
-data is kept until deleted by hand.
+within the bounds in the third (section 2). `0` as a platform default keeps the
+data of every tenant **without an override** until it is deleted by hand; a
+tenant that set a window of its own is still swept on it, because the sweep
+runs whenever any tenant has a window. For the two endpoint categories this is
+a change: before #332 a `0` there deleted everything older than the moment of
+the sweep (see the changelog).
 
 | Category (API name) | What it is | Platform default | Override bounds | Deleted by, how often |
 |---|---|---|---|---|
@@ -113,16 +117,39 @@ PUT /api/tenants/acme/retention
   1.1, e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. A
   malformed value, an unknown category, a `min` below 1 or a `max` above 3650
   stops the API at startup rather than quietly lowering a floor.
+- **Bounds that change later bind what is stored.** A floor raised (or a
+  ceiling lowered) after a tenant saved its override applies from the next
+  sweep: the sweeps clamp the stored value into the current bounds when they
+  build their plan, so a tenant's 365-day audit window is swept on 1095 days
+  the moment the floor is raised to three years. The stored value is left as
+  the tenant wrote it; `GET` reports the clamped window as `effective_days`
+  and flags the category `out_of_bounds: true`, the console marks it *outside
+  the bounds*, and the tenant's next `PUT` must pick a value within them. The
+  audit retention CronJob builds its own plan, so it must be given the **same**
+  `OCTO_RETENTION_BOUNDS` as the API — the example manifest has the variable
+  for that; a job without it applies the compiled bounds.
 - **Whole document.** `PUT` replaces the policy; a category left out goes back
   to the default. `DELETE` puts every category back on the default.
 - **Audit.** Every change is `retention_policy.update` in the tenant's own
   audit trail, with the policy before and after. Shortening a window is a
   deletion scheduled for the next sweep; the step-up (a recent second factor,
   for accounts that have one) and the audit row are there because of that.
-- **Kill switches.** `OCTO_*_RETENTION_ENABLED=false` stops a sweep on the
-  installation for every tenant, overrides included. An installation that turns
-  one off must say so in its own DPA annex: the windows above are what the
-  sweeps apply, not a promise made by the table.
+- **Kill switches.** Four sweeps have a switch of their own, and turning one
+  off stops it on the installation for every tenant, overrides included:
+  `OCTO_RUN_RETENTION_ENABLED` (`runs`), `OCTO_SCREENSHOT_RETENTION_ENABLED`
+  (`screenshots`), `OCTO_ENDPOINT_RETENTION_ENABLED` (both endpoint
+  categories) and `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` (`risk_snapshots`).
+  The other three have none: `reports` is swept by the report dispatcher,
+  `webhook_deliveries` by the webhook dispatcher and `workflow_markers` by the
+  SLA escalation worker, and each stops only with its worker
+  (`OCTO_REPORT_DISPATCH_ENABLED`, `OCTO_WEBHOOK_DISPATCH_ENABLED`,
+  `OCTO_SLA_ESCALATION_ENABLED` — which also stops sending reports, webhooks
+  and escalations). The audit trail is swept only by its CronJob; suspend the
+  CronJob to stop it. Setting a platform default to `0` is not a switch: it
+  keeps the data of tenants without an override, and the others are still
+  swept. An installation that stops a sweep must say so in its own DPA annex:
+  the windows above are what the sweeps apply, not a promise made by the
+  table.
 
 ## 3. Legal hold
 
@@ -130,8 +157,11 @@ A hold is one row in `tenant_legal_holds`: the tenant, the reason, who placed
 it and when. While it exists:
 
 - **no retention sweep deletes any of the tenant's data** — every category in
-  section 1.1, the SSH deployment journal, and the sign-in trail of the
-  tenant's members. The sweeps read the hold table at the start of every pass;
+  section 1.1, the SSH deployment journal, and the sign-in trail of every
+  username the tenant's record names: its members, its former members (the
+  grant and the revocation are in its trail) and anyone who acted in it, a
+  platform admin included. The person a hold is about is often the one whose
+  access was revoked when the matter began. The sweeps read the hold table at the start of every pass;
   one that cannot read it deletes nothing that pass. For the audit trail the
   hold is also enforced **inside the database**: `audit_events_prune` and
   `audit_events_prune_tenant` skip a held tenant themselves, so a retention job
@@ -143,22 +173,32 @@ it and when. While it exists:
   and answers `409` naming it; the key is the backstop;
 - **its console accounts cannot be erased** (section 4.2): data needed for
   legal claims is exempt from erasure (GDPR Art. 17(3)(e)), and erasure destroys
-  exactly the link from a username in the tenant's records to a person.
+  exactly the link from a username in the tenant's records to a person;
+- **the tenant cannot delete what the hold preserves from the console**:
+  `DELETE /api/reports/{id}` (a generated report) and
+  `DELETE /api/webhooks/{id}` (which takes the subscription's delivery log with
+  it) answer `409` saying the tenant is on hold, and nothing more.
 
 A hold covers the whole tenant. It is not scoped to categories: the platform
 cannot know which of a tenant's data a claim will turn on, and a hold that lets
-some of it age out fails exactly when it is tested. It does not stop an
-operator's explicit, audited deletion of one object (a report, an asset), nor
-the recomputation of derived state (software→CVE matches are replaced by each
-re-match of the snapshot they describe); it suspends automated disposition and
-purge.
+some of it age out fails exactly when it is tested. It does not stop the
+deletion of an object no category in section 1.1 covers (an asset, a wordlist,
+a report template), nor the recomputation of derived state (software→CVE
+matches are replaced by each re-match of the snapshot they describe). Sign-in
+sessions and refresh tokens of the tenant's members still expire and are
+swept: they are credentials, not a record, and what happened with them is in
+the sign-in and audit trails, which the hold keeps.
 
 ```http
+GET    /api/tenants/legal-holds                # every hold in force, oldest first
 PUT    /api/tenants/{tenant_id}/legal-hold   {"reason": "Preservation order, matter 2026-17"}
 DELETE /api/tenants/{tenant_id}/legal-hold
 ```
 
-Both need `platform.legal_hold.manage` — platform admins only — and a step-up.
+All three need `platform.legal_hold.manage` — platform admins only — and the
+two writes a step-up. The list is the register an auditor asks for ("what is
+on hold, since when, placed by whom, why"); the console shows it on
+*Administration → Data retention* to platform admins.
 A tenant that could release its own hold could let evidence age out
 mid-litigation. Placing a hold that exists amends its reason and keeps when and
 by whom it was first placed.
@@ -207,6 +247,7 @@ One JSON document (`"format": "shapoclyack.data-subject-export"`):
 | `administrative_activity` | every audit row the account performed: time, tenant, action, object, client address and user agent, request id |
 | `changes_to_account` | every audit row about the account itself |
 | `report_recipient_of` | report schedules that mail the account's address |
+| `notification_recipient_of` | email notification channels whose recipients include the account's address |
 | `attributions` | per table and column, how many records elsewhere name the account (who approved a scope, who accepted a risk, who started a scan …) |
 
 Audit rows are exported **without** their `before`/`after` documents: those
@@ -214,7 +255,15 @@ describe what the account did *to other accounts and tenants*, and other
 people's data stays out of one person's copy (GDPR Art. 15(4)). Attributions are
 counted, not copied: they are the tenants' operational records, and the
 controller answering the request decides which of them to disclose. Every
-export is recorded as `user.export`.
+export is recorded as `user.export`. The route needs a recent second factor for
+accounts that have one, like erasure: an export is a copy of one person's
+account leaving the platform.
+
+Export and erasure each run under a statement timeout of 60 seconds. The
+attribution counts scan every table that names accounts once; on a very large
+installation that can exceed it, and the request then answers `503` saying so
+rather than holding a connection for as long as it takes. Retry off-peak, or
+count the attributions in a read replica.
 
 ### 4.2 Erasure, and why the actor stays a pseudonym
 
@@ -239,7 +288,8 @@ In one transaction with its audit rows, erasure:
 |---|---|
 | Credentials and identity | password hash, address and its verified flag, identity-provider issuer and subject, TOTP secret, recovery codes, enrolment time, security keys and passkeys, pending WebAuthn challenges |
 | Access | all memberships (each recorded as `membership.revoke` in *that* tenant's trail, so its admin sees the member leave), all sign-in sessions and refresh tokens, the logout denylist entries; the account is disabled, lowered to `viewer`, and every token it holds is refused |
-| Future processing of the address | the address is taken off every report schedule's recipients |
+| Future processing of the address | the address is taken off every report schedule's recipients and every email notification channel's `to`; a channel left with no recipient is disabled. Each channel changed is recorded as `notification_channel.update` in its tenant's trail, with counts, not the address |
+| Access through tokens it minted | every service token the account created is revoked (`service_token.revoke` in the token's tenant). A token outliving the person who holds its secret is exactly the access erasure is meant to end. Deleting an account (`DELETE /api/users/{username}`) revokes them too |
 
 | Keeps | Why (legal basis) |
 |---|---|
@@ -248,6 +298,11 @@ In one transaction with its audit rows, erasure:
 | The sign-in trail for the username | security log (Art. 6(1)(f)); the rate limiter reads it; ages out after `OCTO_AUTH_EVENT_RETENTION_DAYS` |
 | Delivery logs of reports already sent to the address | the record of a disclosure that happened; ages out with the report (section 1.1) |
 | Free text an operator typed that happens to name the person (an asset owner's address, a finding comment) | tenant business data, edited or deleted by the tenant through the ordinary console |
+
+Because the name is never reissued, a person who comes back through SSO
+with the same username claim cannot sign in: the tombstone refuses them, and
+they need an account under another name (a different claim, or a renamed
+identity at the IdP).
 
 The pseudonym is only as good as the username. An installation whose usernames
 **are** addresses — `OCTO_OIDC_USERNAME_CLAIM=email`, or local accounts named
@@ -309,6 +364,26 @@ subprocessor of whoever configured them, not of the platform. Optional threat
 intelligence and vulnerability datasets are downloaded *to* the installation
 and carry no customer data out.
 
+**Scanner stages that query third parties.** Some discovery stages exist to
+ask an outside service about the tenant's domains. Each is off in
+`scanner/config/default.yaml` and is turned on per scan policy or profile;
+where one is on, the service in the second column receives what the third
+names, and the operator's annex should list it:
+
+| Stage (setting) | Service contacted | What it receives |
+|---|---|---|
+| `discovery.cloudflare.enabled` | Cloudflare API (`api.cloudflare.com`), with `OCTO_CLOUDFLARE_API_TOKEN` | the tenant's API token; the stage reads the zones it can list |
+| `discovery.ct.enabled`, `providers: [crtsh]` / `certspotter` / `otx` | crt.sh, SSLMate Cert Spotter (`api.certspotter.com`), AlienVault OTX passive DNS | the seed domains |
+| `discovery.asn.enabled` | RIPEstat (`stat.ripe.net`) — ASN and announced BGP prefixes | the addresses the seed domains resolve to, and their ASNs |
+| `discovery.cloud.enabled`, `providers: [s3, gcs, azure]` | AWS S3, Google Cloud Storage, Azure Blob public endpoints | candidate bucket names derived from the seed domains |
+| `org_profile.ownership.enabled` | IANA RDAP bootstrap (`data.iana.org`), the domain's registry RDAP server, `rdap.org` as fallback | the seed domains |
+| `org_profile.related_domains.enabled`, source `ct_org` | crt.sh | the organisation name from the tenant's certificates |
+| `org_profile.credential_leaks.enabled`, `provider: hibp` | Have I Been Pwned (`haveibeenpwned.com`), with `OCTO_HIBP_API_KEY` | the tenant's email domains |
+| the scanner's own `alerts:` (Slack, Telegram, SMTP) | the configured webhook, `api.telegram.org`, the SMTP relay; the SMTP deliverability check resolves DKIM records through Cloudflare DNS-over-HTTPS (`cloudflare-dns.com`) | alert text: run summaries and findings; the sender's domain |
+
+The scan targets themselves are the tenant's, named in its approved scope
+(operations.md, *Approved scan scope per tenant*), and are not third parties.
+
 ## 7. Operating it
 
 **Checking a tenant.** `GET /api/tenants/{id}/retention` lists every category
@@ -318,7 +393,24 @@ with its default, override, effective window and bounds, and the hold.
 `legal_hold.release`, `user.export`, `user.erase` — filterable on the audit page
 and in the export.
 
-**The audit retention job needs two more grants.** The CronJob in
+**Before upgrading to `0065` on an installation with the GRANT layout.**
+`0065` replaces `audit_events_prune`, and `CREATE OR REPLACE FUNCTION` needs the
+privileges of the function's owner — which the
+[GRANT layout](operations.md#recommended-grant-layout) moved off the role the
+migration runs as. The migration checks this first and stops, changing
+nothing, with an error naming the statements below. Either run this one
+upgrade as a superuser or a member of `shapoclyack_audit_owner`, or hand the
+function to the migration role for its duration:
+
+```sql
+-- before the upgrade, as a superuser or the function's owner
+ALTER FUNCTION audit_events_prune(timestamp without time zone)
+  OWNER TO shapoclyack_api;
+```
+
+and after it apply the statements below, which give both functions back.
+
+**The audit retention job needs four more statements.** The CronJob in
 [`k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`](../k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml)
 builds its plan from the policy and hold tables and calls a second function for
 tenants with an audit window of their own. With the
@@ -337,7 +429,19 @@ GRANT EXECUTE ON FUNCTION audit_events_prune_tenant(text, timestamp without time
 -- Both functions read the hold and policy tables as their owner.
 GRANT SELECT ON TABLE tenant_retention_policies, tenant_legal_holds
   TO shapoclyack_audit_owner;
+-- Only if you handed the first function to the migration role above:
+ALTER FUNCTION audit_events_prune(timestamp without time zone)
+  OWNER TO shapoclyack_audit_owner;
 ```
+
+Both functions pin `search_path` to `pg_catalog, public, pg_temp` and name
+their tables with the schema: a `SECURITY DEFINER` function otherwise resolves
+an unqualified name against the caller's temporary schema first, and a
+retention job that created a temporary `tenant_legal_holds` could talk it out
+of a hold.
+
+Give the job the same `OCTO_RETENTION_BOUNDS` as the API (section 2): it
+clamps the tenants' audit windows into those bounds when it builds its plan.
 
 Migration `0065` revokes `EXECUTE` on the new function from `PUBLIC`, like
 `0037` did for the first. Run the job's image at the API's version: a job older
@@ -346,11 +450,20 @@ overridden tenants' rows — it errs on the side of keeping, but those tenants'
 own windows are then not applied until the job is upgraded.
 
 **Rolling upgrade.** Until every API replica runs the release with `0065`, an
-old replica keeps sweeping on the global window. For a tenant with a *longer*
-window of its own, or on hold, that replica can delete what the new ones would
-keep, for as long as the rollout lasts. Place holds after the rollout
-completes, or disable the retention workers (`OCTO_*_RETENTION_ENABLED=false`)
-for its duration.
+old replica keeps sweeping on the global window: it cannot read the policy and
+hold tables. Before the rollout nothing is lost by that — no tenant has a window
+or a hold yet, since only the new release can write them. During it, a window
+set or a hold placed through a new replica is ignored by the old ones. So set
+windows longer than the default, and place holds, once the rollout has
+completed (`kubectl rollout status deployment/…`); for a hold that cannot
+wait, the audit trail is already safe — its prune functions read the hold
+inside the database — and the rest waits the few minutes the rollout takes.
+
+**Downgrade.** `0065`'s downgrade refuses while any hold is in force or any
+account has been erased: it would drop the hold table (so the next sweep of an
+older release deletes what the hold kept) and `users.erased_at` (so a
+tombstone becomes an account whose name can be reissued). Release the holds,
+and decide what the erased accounts become, before downgrading past it.
 
 ## 8. Limits of this implementation
 

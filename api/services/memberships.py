@@ -131,7 +131,9 @@ def grant(
         if account is not None and account.erased_at is not None:
             # An erased account is a pseudonym, not a person (#332); a grant
             # would be the first step of giving its history to somebody.
-            raise ValueError(f"user '{username}' was erased and cannot be granted access")
+            from api.services.users import AccountErased
+
+            raise AccountErased(f"user '{username}' was erased and cannot be granted access")
         row = session.execute(
             select(models.UserTenant).where(
                 models.UserTenant.username == username,

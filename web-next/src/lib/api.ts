@@ -4001,7 +4001,10 @@ export async function deleteTenantQuota(tenantId: string) {
 /** One kind of data and how long this tenant keeps it. `0` in a window means
  * "kept until deleted by hand"; `override_days` is `null` when the tenant
  * inherits the platform default. `min_days`/`max_days` bound an override and
- * are platform configuration, not something this page can change. */
+ * are platform configuration, not something this page can change.
+ * `out_of_bounds` marks an override saved before the bounds moved past it:
+ * the sweeps apply `effective_days` — the override clamped into the bounds —
+ * until the tenant saves a value within them. Absent from an older API. */
 export type RetentionCategory = {
   category: string;
   description: string;
@@ -4011,6 +4014,7 @@ export type RetentionCategory = {
   min_days: number;
   max_days: number;
   source: "tenant" | "default";
+  out_of_bounds?: boolean;
 };
 
 /** A hold in force. `reason` and `set_by` come back `null` to anyone but a
@@ -4089,6 +4093,18 @@ export async function placeLegalHold(tenantId: string, reason: string) {
 export async function releaseLegalHold(tenantId: string) {
   try {
     await api.delete(tenantPath(tenantId, "legal-hold"));
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Every hold in force, oldest first, reason and author included. Platform
+ * admin only (`platform.legal_hold.manage`): it is the one view across
+ * tenants, the register an auditor asks for. */
+export async function fetchLegalHolds() {
+  try {
+    const { data } = await api.get<LegalHold[]>("/tenants/legal-holds");
+    return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));
   }
