@@ -1,0 +1,43 @@
+# overlays/prod-ha plus the opt-in monitoring components (#334).
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/prod-ha-monitoring
+#
+# Everything overlays/prod-ha requires (docs/high-availability.md — it is
+# deliberately un-appliable until its placeholders are filled), and in addition:
+#
+#   * base/monitoring — the Prometheus Operator's CRDs (monitoring.coreos.com/v1).
+#     Without them this apply fails; that is why prod-ha does not carry it.
+#   * base/grafana-dashboards — a Grafana dashboards sidecar that watches this
+#     namespace. Without one the ConfigMaps are inert.
+#
+# Prometheus selects ServiceMonitors and PrometheusRules by a label only your
+# installation knows (kube-prometheus-stack: `release: <helm release name>`).
+# Uncomment the patch below with your value, or the two objects apply cleanly
+# and are never read. An installation on overlays/prod or its own overlay adds
+# the same two `components:` lines there instead. docs/observability.md has the
+# whole picture.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Repeated for the same reason as in prod-ha: base's label transformer applies
+# to base's own resources, not to the objects the components add here.
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: shapoclyack
+    includeSelectors: false
+
+resources:
+  - ../prod-ha
+
+components:
+  - ../../base/monitoring
+  - ../../base/grafana-dashboards
+
+# patches:
+#   - target:
+#       group: monitoring.coreos.com
+#     patch: |-
+#       - op: add
+#         path: /metadata/labels/release
+#         value: kube-prometheus-stack

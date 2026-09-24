@@ -1,0 +1,158 @@
+# promtool unit tests for prometheus-slo.rules.yaml (#334).
+#
+#   promtool test rules k8s/shapoclyack/examples/prometheus-slo.rules.test.yaml
+#   (k8s/scripts/validate-prometheus-rules.sh runs it)
+#
+# They cover the pool and fleet groups: the ones whose expressions carry a
+# decision beyond a threshold — per replica or cluster-wide, which agent kind,
+# and when an empty fleet must not page.
+rule_files:
+  - prometheus-slo.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # One replica holding 14 of 15 connections, the other 12 of 15: only the
+  # first crosses 90 %, and it is named by its own instance.
+  - interval: 1m
+    input_series:
+      - series: 'octo_db_pool_checked_out{job="shapoclyack-api",instance="a:8080"}'
+        values: '14x30'
+      - series: 'octo_db_pool_size{job="shapoclyack-api",instance="a:8080"}'
+        values: '5x30'
+      - series: 'octo_db_pool_max_overflow{job="shapoclyack-api",instance="a:8080"}'
+        values: '10x30'
+      - series: 'octo_db_pool_checked_out{job="shapoclyack-api",instance="b:8080"}'
+        values: '12x30'
+      - series: 'octo_db_pool_size{job="shapoclyack-api",instance="b:8080"}'
+        values: '5x30'
+      - series: 'octo_db_pool_max_overflow{job="shapoclyack-api",instance="b:8080"}'
+        values: '10x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ShapoclyackDbPoolSaturated
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ShapoclyackDbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              job: shapoclyack-api
+              instance: a:8080
+            exp_annotations:
+              summary: API replica a:8080 is holding 90 % of its database connections
+              description: >-
+                octo_db_pool_checked_out has been at 90 % of OCTO_DB_POOL_SIZE +
+                OCTO_DB_MAX_OVERFLOW for 10m. The next burst waits for a connection
+                and then fails after OCTO_DB_POOL_TIMEOUT. Size the pool against
+                the server's max_connections (docs/high-availability.md) or find
+                what holds connections (docs/observability.md § Database pool).
+
+  # One timed-out checkout at minute 3: it alerts at once and clears once the
+  # 10m window has moved past it.
+  - interval: 1m
+    input_series:
+      - series: 'octo_db_pool_checkout_timeouts_total{job="shapoclyack-api",instance="a:8080"}'
+        values: '0 0 0 1x40'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              job: shapoclyack-api
+              instance: a:8080
+            exp_annotations:
+              summary: Requests on a:8080 are failing for want of a database connection
+              description: >-
+                A checkout waited OCTO_DB_POOL_TIMEOUT for a free connection and
+                gave up, so the request behind it answered 500 without reaching
+                the database. A longer timeout only makes the wait longer; see
+                docs/observability.md § Database pool.
+      - eval_time: 30m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts: []
+
+  # Two replicas report the same fleet: two stale sensors and five sleeping
+  # endpoint agents. One alert, counting sensors once, and none for the laptops.
+  # Jobs wait with a sensor still online, so nothing pages.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="b:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '1x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="b:8080",agent_kind="scanner",state="idle"}'
+        values: '1x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="endpoint",state="stale"}'
+        values: '5x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: 2 active sensor(s) have not been heard from for longer than OCTO_AGENT_STALE_SECONDS
+              description: >-
+                Sensors that are neither disabled nor quarantined have been stale
+                for 15m, so the scans addressed to their group wait. A sensor that
+                is gone on purpose should be disabled or deleted in the Sensor
+                Fleet page rather than left to hold this alert open.
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts: []
+
+  # Every sensor stale and jobs waiting: that pages.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="busy"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="error"}'
+        values: '0x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Scans are queued and no sensor is online to take them
+              description: >-
+                Every active sensor is stale and jobs are waiting, so no scan runs
+                at all. Local-mode installations with no sensors registered do not
+                fire this. docs/observability.md § Sensors and agents.
+
+  # Local execution: jobs are queued and there are no sensors at all. Neither
+  # alert fires — an empty fleet is not a stale one.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '0x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts: []

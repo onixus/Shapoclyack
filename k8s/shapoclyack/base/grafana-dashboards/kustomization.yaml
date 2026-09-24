@@ -1,0 +1,56 @@
+# Optional Grafana dashboards (#334), as ConfigMaps for the Grafana sidecar.
+#
+#   components:
+#     - ../../base/grafana-dashboards
+#
+# (overlays/prod-ha-monitoring is prod-ha with this and base/monitoring.)
+#
+# The dashboards sidecar of the grafana and kube-prometheus-stack Helm charts
+# (`sidecar.dashboards.enabled: true`) loads every ConfigMap carrying the label
+# below — `grafana_dashboard: "1"` is its default label and value. It has to
+# watch this namespace: `sidecar.dashboards.searchNamespace: ALL`, or a list
+# that names it. `grafana_folder` is read only where the chart sets
+# `sidecar.dashboards.folderAnnotation: grafana_folder`; elsewhere the
+# dashboards land in the sidecar's default folder.
+#
+# Needs no CRD, so unlike base/monitoring it cannot make an apply fail. It is
+# opt-in all the same: an installation without Grafana has no use for ~120 kB
+# of ConfigMaps.
+#
+# The JSON files are the source of truth, and are importable as they are
+# (Dashboards → New → Import) on a Grafana outside the cluster: both choose
+# their Prometheus data source through a variable. docs/observability.md
+# describes the panels; tests/test_observability_assets.py fails when a query
+# names a series the API does not export.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+namespace: network-scan
+
+configMapGenerator:
+  # One ConfigMap per dashboard, and names without a content hash: the sidecar
+  # selects by label, and a hashed name would leave the previous revision's
+  # ConfigMap behind on every edit — two files with one dashboard uid, which
+  # Grafana's provisioning refuses to load.
+  - name: shapoclyack-dashboard-platform
+    files:
+      - shapoclyack-platform.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: dashboards
+      annotations:
+        grafana_folder: Shapoclyack
+  - name: shapoclyack-dashboard-product
+    files:
+      - shapoclyack-product.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: dashboards
+      annotations:
+        grafana_folder: Shapoclyack
