@@ -4172,6 +4172,16 @@ export type TenantLifecycle = {
   two_person: boolean;
 };
 
+/** The deletion journal (#325), newest first, tombstones included; paged. */
+export async function fetchTenantDeletions(params: { limit?: number; offset?: number } = {}) {
+  try {
+    const { data } = await api.get<TenantDeletion[]>("/tenants/deletions", { params });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchTenantLifecycle(tenantId: string) {
   try {
     const { data } = await api.get<TenantLifecycle>(tenantPath(tenantId, "lifecycle"));

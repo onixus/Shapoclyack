@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   approveTenantDeletion,
   cancelTenantDeletion,
+  fetchTenantDeletions,
   fetchTenantLifecycle,
   requestTenantDeletion,
   resumeTenant,
@@ -22,6 +23,15 @@ export function useTenantLifecycle(tenantId: string, enabled: boolean) {
     queryFn: () => fetchTenantLifecycle(tenantId),
     enabled: enabled && Boolean(tenantId),
     refetchInterval: (query) => (query.state.data?.status === "deleting" ? 5000 : false),
+  });
+}
+
+/** The last hundred deletions, tombstones included (#325). Platform admins only. */
+export function useTenantDeletions(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.tenantDeletions,
+    queryFn: () => fetchTenantDeletions({ limit: 100 }),
+    enabled,
   });
 }
 

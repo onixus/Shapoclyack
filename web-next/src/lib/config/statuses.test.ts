@@ -14,6 +14,7 @@ import {
   SEVERITY_STATUS,
   RISK_LEVEL_STATUS,
   SLA_STATUS,
+  TENANT_DELETION_STATUS,
   TENANT_DELETION_STEP_STATUS,
   TENANT_STATUS,
   VULN_LIFECYCLE_STATUS,
@@ -61,6 +62,13 @@ describe("status maps", () => {
       "pending_deletion",
       "suspended",
     ]);
+    expect(Object.keys(TENANT_DELETION_STATUS).sort()).toEqual([
+      "blocked",
+      "cancelled",
+      "completed",
+      "pending",
+      "purging",
+    ]);
     expect(Object.keys(TENANT_DELETION_STEP_STATUS).sort()).toEqual([
       "done",
       "failed",
@@ -107,6 +115,7 @@ describe("status maps", () => {
       AGENT_STATUS,
       TENANT_STATUS,
       TENANT_DELETION_STEP_STATUS,
+      TENANT_DELETION_STATUS,
       ASSET_STATUS,
       SEVERITY_STATUS,
       VULN_LIFECYCLE_STATUS,

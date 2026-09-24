@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataTable } from "@/components/data-table";
 import { ScanScopePanel } from "@/components/scan-scope-panel";
+import { TenantDeletionsList } from "@/components/tenants/tenant-deletions-list";
 import { TenantLifecyclePanel } from "@/components/tenants/tenant-lifecycle-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useCreateTenantWithKey, useTenantPosture, useTenants } from "@/hooks/use-tenants";
@@ -363,6 +364,8 @@ export default function TenantsPage() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {isAdmin ? <TenantDeletionsList /> : null}
 
       <Dialog
         open={lifecycleTenant !== null}

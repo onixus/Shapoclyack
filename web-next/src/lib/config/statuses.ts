@@ -17,6 +17,7 @@ import type {
   ScanScopeEffect,
   SlaState,
   SoftwareCveMatchStatus,
+  TenantDeletionState,
   TenantDeletionStepState,
   TenantInfo,
   VulnerabilitySource,
@@ -101,6 +102,15 @@ export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   // way out.
   pending_deletion: { label: "pending deletion", variant: "destructive", className: DANGER },
   deleting: { label: "deleting", variant: "destructive", className: DANGER },
+};
+
+/** One entry of the tenant deletion journal (#325). */
+export const TENANT_DELETION_STATUS: Record<TenantDeletionState, StatusStyle> = {
+  pending: { label: "pending", className: IN_PROGRESS },
+  purging: { label: "purging", variant: "destructive", className: DANGER },
+  blocked: { label: "blocked", variant: "destructive", className: DANGER },
+  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
+  completed: { label: "completed", className: SUCCESS },
 };
 
 /** One store of a tenant purge (#325). */
