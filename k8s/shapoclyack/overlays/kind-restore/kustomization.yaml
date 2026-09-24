@@ -1,10 +1,16 @@
-# Isolated restore-drill overlay (#158).
+# Isolated restore-drill overlay (#158, #333).
 #
 # Same image and Postgres/API as kind-dev, in namespace shapoclyack-restore,
 # without NodePort (so it does not steal :8080 from the source lab) and
-# without NATS/ClickHouse/scan Jobs (ingress and external integrations stay
-# off, as docs/operations.md requires). Postgres + API is the path
-# scripts/restore-postgres.sh validates.
+# without NATS/scan Jobs (ingress and external integrations stay off, as
+# docs/disaster-recovery.md requires). Postgres + API is the path
+# scripts/restore-postgres.sh validates; ClickHouse stays so that
+# scripts/restore-clickhouse.sh has a server to restore into (the API here has
+# no OCTO_CLICKHOUSE_URL, as in base, so nothing ingests into it meanwhile).
+#
+# Neither backup CronJob runs here: a drill namespace that uploads into the
+# production bucket and prefix would put drill data among the real restore
+# points.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -50,30 +56,6 @@ patches:
         name: shapoclyack-nats-config
       $patch: delete
   - patch: |-
-      apiVersion: apps/v1
-      kind: StatefulSet
-      metadata:
-        name: shapoclyack-clickhouse
-      $patch: delete
-  - patch: |-
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: shapoclyack-clickhouse
-      $patch: delete
-  - patch: |-
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: shapoclyack-clickhouse-client
-      $patch: delete
-  - patch: |-
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: shapoclyack-clickhouse-config
-      $patch: delete
-  - patch: |-
       apiVersion: batch/v1
       kind: Job
       metadata:
@@ -90,4 +72,16 @@ patches:
       kind: CronJob
       metadata:
         name: shapoclyack-postgres-backup
+      $patch: delete
+  - patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: shapoclyack-clickhouse-backup
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: shapoclyack-clickhouse-backup-script
       $patch: delete
