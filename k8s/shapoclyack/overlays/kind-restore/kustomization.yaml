@@ -73,6 +73,24 @@ patches:
       metadata:
         name: shapoclyack-postgres-backup
       $patch: delete
+  # A rehearsal next to the source lab on one kind node, not a sized
+  # installation: base's 2 Gi request and 50 Gi claim are for the latter.
+  - target:
+      kind: StatefulSet
+      name: shapoclyack-clickhouse
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 5Gi
   - patch: |-
       apiVersion: batch/v1
       kind: CronJob
