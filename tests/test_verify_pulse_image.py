@@ -116,6 +116,12 @@ def _rootfs(
     return root
 
 
+def _failed(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    """The FAIL lines of a verifier run, without their prefix: which checks,
+    and only which checks, said no."""
+    return [line.split("FAIL  ", 1)[1] for line in proc.stdout.splitlines() if line.startswith("  FAIL  ")]
+
+
 def _run(*args: str | Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(VERIFIER), *map(str, args)],
@@ -141,10 +147,13 @@ def test_a_pinned_install_record_verifies(tmp_path, release):
 
 def test_a_binary_changed_after_the_install_is_caught(tmp_path, release):
     _tarball_path, pin, pins = release
-    root = _rootfs(tmp_path, binary=BINARY + b"backdoor", record=_record(tarball_sha256=pin))
+    root = _rootfs(
+        tmp_path, binary=BINARY + b"backdoor", record=_record(tarball_sha256=pin), image_pins=pins.read_text()
+    )
     proc = _run("--rootfs", root, "--pins", pins)
     assert proc.returncode == 1
-    assert "changed after the install" in proc.stdout
+    [line] = _failed(proc)
+    assert line.startswith("binary does not match the install record") and "changed after the install" in line
     assert "NOT VERIFIED" in proc.stdout
 
 
@@ -152,10 +161,11 @@ def test_a_record_of_a_tarball_other_than_the_pinned_one_fails(tmp_path, release
     """The build installed *something* it called pinned, but not the bytes this
     checkout pins: a different pin file, or a build that lied."""
     _tarball_path, pin, pins = release
-    root = _rootfs(tmp_path, record=_record(tarball_sha256="c" * 64))
+    root = _rootfs(tmp_path, record=_record(tarball_sha256="c" * 64), image_pins=pins.read_text())
     proc = _run("--rootfs", root, "--pins", pins)
     assert proc.returncode == 1
-    assert f"{'c' * 64} vs pin {pin}" in proc.stdout
+    [line] = _failed(proc)
+    assert line.startswith(f"install record tarball sha256 {'c' * 64} vs pin {pin}"), line
 
 
 @pytest.mark.parametrize(
@@ -168,22 +178,24 @@ def test_a_record_of_a_tarball_other_than_the_pinned_one_fails(tmp_path, release
 )
 def test_an_install_that_did_not_check_the_pin_fails(tmp_path, release, verified, explanation):
     _tarball_path, pin, pins = release
-    root = _rootfs(tmp_path, record=_record(verified=verified, tarball_sha256=pin))
+    root = _rootfs(tmp_path, record=_record(verified=verified, tarball_sha256=pin), image_pins=pins.read_text())
     proc = _run("--rootfs", root, "--pins", pins)
     assert proc.returncode == 1
-    assert f"verified={verified}" in proc.stdout
-    assert explanation in proc.stdout
+    [line] = _failed(proc)
+    assert f"verified={verified}" in line
+    assert explanation in line
 
 
 def test_a_pin_file_from_another_tag_says_which_one_to_use(tmp_path, release):
     _tarball_path, pin, _pins_file = release
     other = tmp_path / "other-tag.sha256"
     other.write_text(_pins({("v1.0.0", PLATFORM): "d" * 64}))
-    root = _rootfs(tmp_path, record=_record(tarball_sha256=pin))
+    root = _rootfs(tmp_path, record=_record(tarball_sha256=pin), image_pins=other.read_text())
     proc = _run("--rootfs", root, "--pins", other)
     assert proc.returncode == 1
-    assert f"pins no {VERSION} {PLATFORM}" in proc.stdout
-    assert "release tag this image was built from" in proc.stdout
+    [line] = _failed(proc)
+    assert line.startswith(f"{other.name} pins no {VERSION} {PLATFORM}"), line
+    assert "release tag this image was built from" in line
 
 
 def test_an_image_built_from_other_pins_fails(tmp_path, release):
@@ -202,29 +214,31 @@ def test_an_image_built_from_other_pins_fails(tmp_path, release):
 
 def test_a_platform_other_than_the_one_asked_for_fails(tmp_path, release):
     _tarball_path, pin, pins = release
-    root = _rootfs(tmp_path, record=_record(tarball_sha256=pin))
+    root = _rootfs(tmp_path, record=_record(tarball_sha256=pin), image_pins=pins.read_text())
     proc = _run("--rootfs", root, "--pins", pins, "--platform", "linux/arm64")
     assert proc.returncode == 1
-    assert "vs requested linux/arm64" in proc.stdout
+    assert _failed(proc) == [f"install record platform {PLATFORM} vs requested linux/arm64"]
 
 
 @pytest.mark.parametrize(
-    "record",
+    ("record", "reason"),
     [
-        _record() + "extra=1\n",
-        _record() + f"version={VERSION}\n",
-        _record(verified="trusted"),
-        _record(binary_sha256="not-a-digest"),
-        "version=v9.9.9\n",
+        (_record() + "extra=1\n", "is not a known 'key=value'"),
+        (_record() + f"version={VERSION}\n", "sets version twice"),
+        (_record(verified="trusted"), "unknown verified='trusted'"),
+        (_record(binary_sha256="not-a-digest"), "binary_sha256 is not a sha256"),
+        (_record(binary_sha256=""), "has no binary_sha256"),
+        ("version=v9.9.9\n", "is missing platform"),
     ],
-    ids=["unknown-key", "duplicate-key", "unknown-verified", "bad-digest", "incomplete"],
+    ids=["unknown-key", "duplicate-key", "unknown-verified", "bad-digest", "no-binary-digest", "incomplete"],
 )
-def test_a_malformed_record_is_not_guessed_at(tmp_path, release, record):
+def test_a_malformed_record_is_not_guessed_at(tmp_path, release, record, reason):
     _tarball_path, _pin, pins = release
-    root = _rootfs(tmp_path, record=record)
+    root = _rootfs(tmp_path, record=record, image_pins=pins.read_text())
     proc = _run("--rootfs", root, "--pins", pins)
     assert proc.returncode == 1
-    assert "install record:" in proc.stdout
+    [line] = _failed(proc)
+    assert line.startswith("install record: ") and reason in line, line
 
 
 def test_a_consistently_rewritten_record_is_not_detected_and_the_output_says_so(tmp_path, release):
@@ -409,6 +423,37 @@ def test_record_and_tarball_that_name_different_pins_do_not_verify(tmp_path, rel
     proc = _run("--rootfs", root, "--pins", pins, "--tarball", other)
     assert proc.returncode == 1, proc.stdout
     assert "FAIL  install record names the same tarball" in proc.stdout
+
+
+def test_the_tarball_is_read_no_further_than_the_limit(tmp_path):
+    """The bound is on the read, not only on the verdict: a source that never
+    ends (here, a pipe whose writer stays open) is refused once it passes the
+    limit instead of being read to the end first."""
+    fifo = tmp_path / "endless"
+    os.mkfifo(fifo)
+    outcome: dict[str, object] = {}
+
+    def read() -> None:
+        try:
+            verify_pulse_image.read_bounded(fifo, 16)
+        except Exception as exc:  # noqa: BLE001 - reported below, whatever it is
+            outcome["error"] = exc
+
+    # O_RDWR does not wait for a reader (Linux), so a reader that dies before
+    # opening the pipe fails this test instead of hanging it.
+    held = os.open(fifo, os.O_RDWR)
+    try:
+        os.write(held, b"x" * 64)
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        reader.join(timeout=10)
+        stuck = reader.is_alive()
+    finally:
+        os.close(held)  # the only writer is gone; a stuck reader now sees EOF
+    reader.join(timeout=10)
+    assert not stuck, "read past the limit, waiting for the end of the file"
+    assert isinstance(outcome.get("error"), verify_pulse_image.EvidenceError), outcome
+    assert "larger than 16 bytes" in str(outcome["error"])
 
 
 def test_a_tarball_larger_than_any_release_is_refused_unread(tmp_path, release, monkeypatch, capsys):
