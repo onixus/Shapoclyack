@@ -6,6 +6,31 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Sensor fleet, connection pool and process series on `/metrics`, with
+  Grafana dashboards and opt-in monitoring components**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). Sensor and
+  endpoint-agent heartbeats come from one grouped query over the `agents` table
+  — `octo_agents{agent_kind,state}`, the gauge histogram
+  `octo_agent_heartbeat_age_seconds{agent_kind}`, the longest silence per kind
+  and the stale threshold — labelled from a fixed vocabulary only (no tenant,
+  id or hostname), cached for 15 s per replica because `/metrics` is
+  unauthenticated by default, skipped while the pool has nothing free, and
+  withdrawn rather than frozen when the query fails. Every Postgres engine gets
+  an instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout
+  wait as a histogram and checkout timeouts as a counter. The private registry
+  now carries the `process_*` / `python_gc_*` / `python_info` collectors it
+  never had. New alerts `ShapoclyackDbPoolSaturated`,
+  `ShapoclyackDbPoolCheckoutTimeouts`, `ShapoclyackSensorsStale` and
+  `ShapoclyackNoSensorOnline`, with `promtool test rules` unit tests. Two
+  dashboards (Platform, Product) as JSON, shipped for the Grafana sidecar by the
+  component `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule
+  ship as `base/monitoring`, and `overlays/prod-ha-monitoring` is `prod-ha` with
+  both — not `prod-ha` itself, which would then fail to apply wherever the
+  Prometheus Operator's CRDs are missing. Every series and label the dashboards
+  and rules name is checked against the registry, and every dashboard query is
+  parsed by promtool in `validate-prometheus-rules.sh`, which now uses a local
+  `promtool` when there is one. Catalogue with label bounds:
+  `docs/observability.md`.
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.
@@ -196,6 +221,16 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
+  route matched — every 404 on an API without the console build, every CORS
+  preflight — used its raw URL as the `path` label of the HTTP series, and the
+  client's method went through verbatim; they are now `path="<unmatched>"` and
+  `method="OTHER"`. `ShapoclyackClickHouseIngestLag` and
+  `ShapoclyackClickHouseIngestStale` matched the consumer's retired name
+  `octo-ch-ingest`, so neither could fire, and the second compared the scrape
+  time with itself; both now select `octo-ch-ingest-results`, and staleness
+  reads the new `octo_nats_consumer_pending_timestamp_seconds`.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

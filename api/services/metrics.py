@@ -8,7 +8,10 @@ restrict at the network/gateway layer, not app auth).
 
 Most series here are pushed by the code path they describe. The ones at the
 bottom are read when Prometheus asks (#334): the process view, the SQLAlchemy
-pool, and the sensor/agent fleet out of the ``agents`` table.
+pool, and the sensor/agent fleet out of the ``agents`` table. The catalogue,
+with the bound on every label, is docs/observability.md;
+tests/test_observability_assets.py fails when a series here has no entry there,
+or when a dashboard or alert names one that is not here.
 """
 
 from __future__ import annotations

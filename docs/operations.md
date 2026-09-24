@@ -2260,6 +2260,11 @@ kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
+The catalogue of every series with the bound on each of its labels, the
+Grafana dashboards, the sensor-heartbeat and connection-pool series, and the
+opt-in ServiceMonitor / PrometheusRule / dashboard components are in
+[observability.md](observability.md) (#334).
+
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts
 referenced above. It answers anyone who can reach the API unless
 `OCTO_METRICS_TOKEN` is set, in which case the scraper sends

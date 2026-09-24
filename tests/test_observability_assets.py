@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_DIR = ROOT / "k8s/shapoclyack/base/grafana-dashboards"
 DASHBOARDS = sorted(DASHBOARD_DIR.glob("*.json"))
 RULES = ROOT / "k8s/shapoclyack/examples/prometheus-slo.rules.yaml"
+CATALOGUE = ROOT / "docs/observability.md"
 
 #: Series every replica reports identically, because they are counted in a
 #: shared table (or are configuration) rather than in the process. sum() over
@@ -282,3 +283,26 @@ def test_no_series_carries_an_unbounded_label():
         if family.labels & FORBIDDEN_LABELS
     }
     assert not offending, offending
+
+
+# --- docs/observability.md ---------------------------------------------------------
+
+
+def test_the_catalogue_names_only_exported_series():
+    unknown = metric_catalogue.unknown_series(
+        CATALOGUE.read_text(encoding="utf-8"), family_names=True
+    )
+    assert not unknown, f"docs/observability.md names series the API does not export: {sorted(unknown)}"
+
+
+def test_the_catalogue_covers_every_exported_family():
+    """Adding a series means saying in the catalogue what its labels are bounded by."""
+    text = CATALOGUE.read_text(encoding="utf-8")
+    mentioned = set(metric_catalogue.SERIES_NAME.findall(text))
+    missing = sorted(
+        family.name
+        for family in metric_catalogue.families().values()
+        if family.name.startswith("octo_")
+        and not mentioned & {family.name, *family.sample_names}
+    )
+    assert not missing, f"docs/observability.md does not describe: {missing}"

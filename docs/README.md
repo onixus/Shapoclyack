@@ -64,6 +64,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
 | [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
+| [Observability](observability.md) | Metrics catalogue and label bounds, Grafana dashboards, opt-in ServiceMonitor/PrometheusRule components, pool and sensor alerts |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
