@@ -92,7 +92,10 @@ kubectl -n network-scan patch serviceaccount default \
 ```
 
 A workload in another namespace needs the secret created in that namespace
-too — a pull secret is namespaced. A cluster whose nodes already authenticate
+too — a pull secret is namespaced (with the scanner-executor of
+[#338](https://github.com/onixus/Shapoclyack/issues/338), that is
+`network-scan-executor`; the overlay's patches already put the secret on its
+pod). A cluster whose nodes already authenticate
 to the registry (a kubelet credential provider, or containerd's own registry
 config) needs none of this.
 

@@ -862,7 +862,9 @@ def test_a_negative_size_header_cannot_bypass_the_meter(tmp_path: Path, site: Pa
         return real(self, size)
 
     monkeypatch.setattr(enrichment_bundle._Meter, "read", guarded)
-    _assert_refused(bomb, site, "size")
+    # Refused at the header, before any read is sized from it; the meter's own
+    # refusal (next test) is the second line.
+    _assert_refused(bomb, site, "has a negative size")
 
 
 def test_the_meter_refuses_a_negative_read_itself() -> None:
@@ -948,6 +950,15 @@ def test_a_bundle_built_in_the_future_is_refused(tmp_path: Path, site: Path) -> 
     out = tmp_path / "future.tar.gz"
     enrichment_bundle.build_bundle(_data_dir(tmp_path), out, built_at="2200-01-01T00:00:00+00:00")
     _assert_refused(out, site, "future")
+
+
+def test_a_build_date_a_tar_header_cannot_hold_is_a_clean_refusal(tmp_path: Path) -> None:
+    """Past 2242 the ustar mtime field overflows: the builder died in tarfile
+    with a traceback and left its temporary file behind."""
+    out = tmp_path / "far.tar.gz"
+    with pytest.raises(BundleError, match="tar header"):
+        enrichment_bundle.build_bundle(_data_dir(tmp_path), out, built_at="2300-01-01T00:00:00+00:00")
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("far")) == []
 
 
 @pytest.mark.parametrize(
