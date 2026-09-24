@@ -26,6 +26,9 @@ const ACTIONS = [
   "user.delete",
   "user.password_reset",
   "user.password_change",
+  // Data-subject requests and retention (#332).
+  "user.export",
+  "user.erase",
   "membership.grant",
   "membership.revoke",
   "service_token.create",
@@ -52,6 +55,9 @@ const ACTIONS = [
   "notification_channel.delete",
   "vulnerability.bulk",
   "asset.bulk",
+  "retention_policy.update",
+  "legal_hold.place",
+  "legal_hold.release",
 ] as const;
 
 /** ISO instant from a `datetime-local` value, or undefined when it is empty.

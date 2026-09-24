@@ -297,9 +297,11 @@ export const USER_ROLE_STATUS: Record<Role, StatusStyle> = {
 
 /** Whether the account can sign in. Disabling beats deleting — the memberships
  * and the history survive it — so it reads as muted rather than as a failure. */
-export const ACCOUNT_STATUS: Record<"active" | "disabled", StatusStyle> = {
+export const ACCOUNT_STATUS: Record<"active" | "disabled" | "erased", StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  // A data-subject erasure's tombstone (#332): disabled for good.
+  erased: { label: "erased", variant: "secondary", className: MUTED },
 };
 
 /** The account's second factor (#315). "pending" is a setup that was started
