@@ -88,3 +88,52 @@ def test_merge_l2_names_preserves_dns_provenance():
     assert merged["10.0.0.5"]["forward"] == ["plc.example"]
     assert merged["10.0.0.5"]["l2"] == ["plc-01", "panel.local"]
     assert merged["10.0.0.5"]["names"] == ["plc.example", "plc-01", "panel.local"]
+
+
+def test_run_l2_discovery_skips_policy_excluded_name_ports(tmp_path: Path, monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        out = Path(command[command.index("-oX") + 1])
+        out.write_text(NAME_XML if "-sU" in command else ARP_XML, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.run_command", fake_run)
+    cfg = L2DiscoveryConfig(enabled=True, max_hosts=300)
+
+    run_l2_discovery(["10.0.0.0/24"], cfg, tmp_path, exclude_ports=[137])
+    assert commands[1][commands[1].index("-p") + 1] == "5353"
+    assert "nbstat" not in commands[1][commands[1].index("--script") + 1]
+
+    commands.clear()
+    result = run_l2_discovery(["10.0.0.0/24"], cfg, tmp_path, exclude_ports=[137, 5353])
+    assert len(commands) == 1 and "-sU" not in commands[0]
+    assert result["alive_hosts"] == ["10.0.0.5"]
+
+
+def test_run_l2_discovery_timeout_is_recorded_not_raised(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    def fake_run(command, **kwargs):
+        if "-sU" in command:
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout") or 1)
+        Path(command[command.index("-oX") + 1]).write_text(ARP_XML, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.run_command", fake_run)
+    cfg = L2DiscoveryConfig(enabled=True, max_hosts=300)
+
+    result = run_l2_discovery(["10.0.0.0/24"], cfg, tmp_path)
+    assert result["alive_hosts"] == ["10.0.0.5"]
+    assert result["names_skipped_reason"] == "names.failed:TimeoutExpired"
+
+    def always_timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 1)
+
+    monkeypatch.setattr("scanner.pipeline.l2_discovery.run_command", always_timeout)
+    result = run_l2_discovery(["10.0.0.0/24"], cfg, tmp_path / "second")
+    assert result["alive_hosts"] == []
+    assert result["skipped_reason"] == "arp.failed:TimeoutExpired"

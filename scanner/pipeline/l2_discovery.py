@@ -186,8 +186,16 @@ def run_l2_discovery(
     output_dir: Path,
     *,
     retries: int = 0,
+    exclude_ports: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Run bounded ARP discovery, then optional mDNS/NetBIOS probes."""
+    """Run bounded ARP discovery, then optional mDNS/NetBIOS probes.
+
+    The stage is opt-in enrichment, so a command that times out or cannot
+    start is recorded as a skipped reason instead of failing the whole run.
+    ``exclude_ports`` is ``ports.exclude_ports``: a name probe on a port the
+    policy forbids is dropped, and with none left the UDP pass does not run.
+    """
+    excluded = {int(port) for port in (exclude_ports or [])}
     artifact = output_dir / "l2_discovery.json"
     result: dict[str, Any] = {
         "enabled": config.enabled,
@@ -232,12 +240,18 @@ def run_l2_discovery(
     if config.interface:
         command.extend(["-e", config.interface])
     command.extend(str(network) for network in networks)
-    completed = run_command(
-        command,
-        timeout=config.timeout_seconds,
-        retries=retries,
-        check=False,
-    )
+    try:
+        completed = run_command(
+            command,
+            timeout=config.timeout_seconds,
+            retries=retries,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - TimeoutExpired, OSError
+        LOG.warning("L2 ARP sweep did not complete: %s", exc)
+        result["skipped_reason"] = f"arp.failed:{type(exc).__name__}"
+        save_json(artifact, result)
+        return result
     if not arp_xml.exists():
         result["skipped_reason"] = f"arp.failed:{completed.returncode}"
         save_json(artifact, result)
@@ -250,16 +264,18 @@ def run_l2_discovery(
     result["alive_hosts"] = alive
     write_lines(discover_dir / "l2-alive.txt", alive)
 
-    if alive and (config.mdns or config.netbios):
+    if alive and (
+        (config.netbios and 137 not in excluded) or (config.mdns and 5353 not in excluded)
+    ):
         name_targets = discover_dir / "l2-name.targets.txt"
         name_xml = discover_dir / "l2-names.xml"
         write_lines(name_targets, alive)
         scripts: list[str] = []
         ports: list[str] = []
-        if config.netbios:
+        if config.netbios and 137 not in excluded:
             scripts.append("nbstat")
             ports.append("137")
-        if config.mdns:
+        if config.mdns and 5353 not in excluded:
             scripts.append("dns-service-discovery")
             ports.append("5353")
         name_command = [
@@ -280,12 +296,16 @@ def run_l2_discovery(
         ]
         if config.interface:
             name_command.extend(["-e", config.interface])
-        run_command(
-            name_command,
-            timeout=config.timeout_seconds,
-            retries=retries,
-            check=False,
-        )
+        try:
+            run_command(
+                name_command,
+                timeout=config.timeout_seconds,
+                retries=retries,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the ARP evidence
+            LOG.warning("L2 name probes did not complete: %s", exc)
+            result["names_skipped_reason"] = f"names.failed:{type(exc).__name__}"
         if name_xml.exists():
             names, evidence = parse_name_xml(
                 name_xml.read_text(encoding="utf-8", errors="replace"), scope

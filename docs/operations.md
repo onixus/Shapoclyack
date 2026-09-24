@@ -157,10 +157,16 @@ The stage:
 2. refuses networks once their combined usable address count would exceed
    `max_hosts`;
 3. runs bounded nmap ARP discovery and records MAC/vendor evidence;
-4. optionally probes the ARP-alive hosts for NetBIOS and mDNS names.
+4. optionally probes the ARP-alive hosts for NetBIOS and mDNS names. A policy
+   `avoid_ports` entry of 137 or 5353 drops that probe, and `skip_service_probe`
+   drops both.
 
 The artifact records every skipped network and reason (`outside_scan_scope`,
-`host_cap_exceeded`, missing nmap, or command failure). ARP-alive hosts seed the
+`host_cap_exceeded`, missing nmap, or command failure). A sweep that exceeds
+`timeout_seconds` is recorded as `arp.failed:TimeoutExpired` (or
+`names_skipped_reason` for the name pass) and the run continues without L2
+evidence; at a low `max_discover_rate`, size `max_hosts` so that
+`max_hosts / max_rate` fits inside `timeout_seconds`. ARP-alive hosts seed the
 ordinary discovery result, so a device that ignores routed ICMP/TCP probes still
 continues into port scanning. Link-local names are marked `l2`; they are not
 misrepresented as forward DNS.

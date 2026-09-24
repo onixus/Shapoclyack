@@ -670,6 +670,7 @@ def _run_pipeline_body(
                 config.discovery.l2,
                 paths.output_dir,
                 retries=retries,
+                exclude_ports=config.ports.exclude_ports,
             ),
         )
         checkpoint.mark_done("discover-l2")
