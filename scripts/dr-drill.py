@@ -44,8 +44,10 @@ an argument. Exit status: 0 verified, 1 a phase failed or a check differed,
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
+import io
 import json
 import os
 import platform
@@ -54,6 +56,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -79,37 +82,85 @@ CH_INGEST_CONSUMER = "octo-ch-ingest-results"
 PG_DUMP_FLAGS = ["--format=custom", "--compress=6", "--no-owner", "--no-privileges"]
 PG_RESTORE_FLAGS = ["--clean", "--if-exists", "--no-owner", "--no-privileges", "--exit-on-error"]
 
-# One scan's worth of results, published the way the API publishes an accepted
-# run (results_ingest.publish_raw_results). Hosts are outside the seed's
-# 10.0.0.0/8 so the rows are countable by run_id and by nothing else.
+# The controls stage's fixed catalogue: every run writes one row per control,
+# so two runs are two parts of exactly the same size in shapoclyack_controls —
+# the shape that made deduplicated count.txt objects undercount a manifest.
+CONTROLS = (
+    "asset_inventory", "attack_surface", "credential_leaks", "dns_hygiene", "email_security",
+    "exposed_services", "mail_protection", "patch_currency", "remote_access", "tls_posture",
+    "vulnerability_exposure", "web_security",
+)
+
+
+def run_archive(run_id: str, hosts: int, subnet: int) -> bytes:
+    """One scan's results as the run archive the API publishes on INGEST.
+
+    Hosts sit in 172.16.<subnet>.0/24, outside the seed's 10.0.0.0/8, so a
+    run's rows are countable by run_id. Runs with the same ``hosts`` produce
+    parts with identical row counts in all three ClickHouse tables.
+    """
+    addresses = [f"172.16.{subnet}.{n}" for n in range(1, hosts + 1)]
+    files = {
+        "vulnerabilities.json": json.dumps(
+            [{"host": ip, "port": "443", "cve": "CVE-2024-3094", "cvss": 10.0, "severity": "critical"}
+             for ip in addresses]
+        ).encode(),
+        "open_ports.txt": "".join(f"{ip}:443/tcp\n{ip}:22/tcp\n" for ip in addresses).encode(),
+        "run_meta.json": json.dumps({"started_at": "2026-09-24T02:00:00Z"}).encode(),
+        "controls.json": json.dumps({
+            "overall_verdict": "partial",
+            "overall_risk": "moderate",
+            "evaluated_at": "2026-09-24T02:30:00Z",
+            "controls": [
+                {"control": name, "title": name.replace("_", " "), "status": "ok", "impact": "high",
+                 "risk_level": "low", "coverage": {"checked": hosts, "total": hosts},
+                 "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0}}
+                for name in CONTROLS
+            ],
+        }).encode(),
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mtime = 1790208000
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+# A run published the way the API publishes an accepted one
+# (results_ingest.publish_raw_results); the archive comes in on stdin.
 _PUBLISH_RUN = """
-import io, json, sys, tarfile
+import base64, sys
 from api.services import results_ingest
 
-run_id, hosts = sys.argv[1], int(sys.argv[2])
-nats_url, tenant = sys.argv[3], sys.argv[4]
-index = 0 if run_id.endswith("a") else 1
-addresses = [f"172.16.{index}.{n}" for n in range(1, hosts + 1)]
-files = {
-    "vulnerabilities.json": json.dumps(
-        [{"host": ip, "port": "443", "cve": "CVE-2024-3094", "cvss": 10.0, "severity": "critical"}
-         for ip in addresses]
-    ).encode(),
-    "open_ports.txt": "".join(f"{ip}:443/tcp\\n{ip}:22/tcp\\n" for ip in addresses).encode(),
-    "run_meta.json": json.dumps({"started_at": "2026-09-24T02:00:00Z"}).encode(),
-}
-buf = io.BytesIO()
-with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-    for name, data in files.items():
-        info = tarfile.TarInfo(name=name)
-        info.size = len(data)
-        tf.addfile(info, io.BytesIO(data))
+run_id, nats_url, tenant = sys.argv[1], sys.argv[2], sys.argv[3]
 result = results_ingest.publish_raw_results(
     nats_url=nats_url, job_id="job-" + run_id, run_id=run_id, agent_id="dr-drill",
-    exit_code=0, archive_bytes=buf.getvalue(), tenant_id=tenant,
+    exit_code=0, archive_bytes=base64.b64decode(sys.stdin.read()), tenant_id=tenant,
 )
 if not result["published"]:
     raise SystemExit("publish refused")
+"""
+
+# The same run landed the way the ingest worker lands a message it consumed:
+# its transform, its inserts — for the drill without a broker.
+_PROJECT_RUN = """
+import base64, os, sys
+from api.services import ch_transform
+from api.services import clickhouse_client as ch
+from api.settings import load_settings
+
+run_id, tenant = sys.argv[1], sys.argv[2]
+payload = {"tenant_id": tenant, "run_id": run_id, "job_id": "job-" + run_id,
+           "archive_b64": sys.stdin.read().strip()}
+vulns, ports, controls = ch_transform.transform_ingest_payload(payload, settings=load_settings())
+client = ch.get_client(os.environ["OCTO_CLICKHOUSE_URL"])
+ch.insert_rows(client, ch.VULN_TABLE, ch.VULN_COLUMNS, vulns)
+ch.insert_rows(client, ch.PORTS_TABLE, ch.PORT_COLUMNS, ports)
+ch.insert_rows(client, ch.CONTROLS_TABLE, ch.CONTROL_COLUMNS, controls)
+print(len(vulns), len(ports), len(controls))
 """
 
 # JetStream administration the runbook does with the `nats` CLI, done with the
@@ -251,12 +302,19 @@ class Drill:
         return self.run(argv, stdin=sql)
 
     def ch_env(self, **extra: str) -> dict[str, str]:
-        return {
+        env = {
             "CLICKHOUSE_CLIENT": self.args.clickhouse_client,
             "CLICKHOUSE_HOST": self.args.clickhouse_host,
             "CLICKHOUSE_PORT": str(self.args.clickhouse_port),
             **extra,
         }
+        if self.args.script_path:
+            # The pod runs Alpine: busybox awk/sed/mktemp, not this host's.
+            env["PATH"] = self.args.script_path
+        return env
+
+    def script(self, path: Path, *args: str) -> list[str]:
+        return [*shlex.split(self.args.script_shell), str(path), *args]
 
     def pg(self, sql: str, *, admin: bool = False) -> list[tuple]:
         import psycopg
@@ -367,18 +425,36 @@ class Drill:
                 DRILL_PASSWORD=self.api_password,
                 **self.api_env(),
             )
-            # Merge now, so the drill backs up what a quiet installation at
-            # 02:45 has — merged parts — rather than a fresh insert's part count.
+            # Merge the bulk seed, as a quiet installation's background merges
+            # would have by 02:45 ...
             self.ch(
                 "OPTIMIZE TABLE shapoclyack.shapoclyack_vulnerabilities FINAL;"
                 "OPTIMIZE TABLE shapoclyack.shapoclyack_open_ports FINAL;"
             )
+            # ... and then the day's runs on top, unmerged: one part per run in
+            # each table, of identical size, controls included.
+            projected = []
+            for number in range(1, self.args.daily_runs + 1):
+                run_id = f"dr-drill-day-{number}"
+                out = self.run(
+                    [sys.executable, "-c", _PROJECT_RUN, run_id, TENANT],
+                    stdin=base64.b64encode(run_archive(run_id, self.args.run_hosts, 100 + number)).decode(),
+                    **self.api_env(),
+                )
+                projected.append(out.split())
+            record.detail["daily_runs"] = projected
+            record.detail["parts"] = self.ch(
+                "SELECT table, count(), groupArray(rows) FROM system.parts "
+                "WHERE database = 'shapoclyack' AND active GROUP BY table ORDER BY table FORMAT TSVRaw"
+            ).strip().splitlines()
 
     def ingest(self, name: str, run_id: str) -> None:
         """Publish one run through INGEST and wait until ClickHouse has it."""
+        subnet = 0 if run_id.endswith("a") else 1
         with self.phase(name) as record, self.api(nats=True) as (_, ready):
             self.run(
-                [sys.executable, "-c", _PUBLISH_RUN, run_id, str(self.args.run_hosts), self.args.nats_url, TENANT],
+                [sys.executable, "-c", _PUBLISH_RUN, run_id, self.args.nats_url, TENANT],
+                stdin=base64.b64encode(run_archive(run_id, self.args.run_hosts, subnet)).decode(),
                 **self.api_env(nats=True),
             )
             record.detail["ready_seconds"] = ready
@@ -427,13 +503,23 @@ class Drill:
             record.detail["dump_bytes"] = dump.stat().st_size
             record.detail["backup_timestamp_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with self.phase("backup_clickhouse") as record:
+            # As the CronJob signs in: the dedicated user when its password is
+            # given, so the drill exercises its grants, not default's.
+            backup_password = os.environ.get("CLICKHOUSE_BACKUP_PASSWORD", "")
+            credentials = (
+                {"CLICKHOUSE_USER": "shapoclyack_backup", "CLICKHOUSE_PASSWORD": backup_password}
+                if backup_password
+                else {"CLICKHOUSE_USER": "default"}
+            )
+            record.detail["clickhouse_user"] = credentials["CLICKHOUSE_USER"]
             out = self.run(
-                ["sh", str(BACKUP_SCRIPT)],
+                self.script(BACKUP_SCRIPT),
                 **self.ch_env(
                     CLICKHOUSE_BACKUP_POLL_SECONDS="1",
                     S3_ENDPOINT_URL=self.args.s3_endpoint,
                     S3_BUCKET=self.args.s3_bucket,
                     S3_PREFIX=self.args.s3_prefix,
+                    **credentials,
                 ),
             )
             line = next(item for item in out.splitlines() if item.startswith("backup_success "))
@@ -467,13 +553,13 @@ class Drill:
             record.detail["migrate_seconds"] = round(time.monotonic() - started, 3)
         with self.phase("restore_clickhouse_dry_run") as record:
             out = self.run(
-                ["sh", str(RESTORE_CLICKHOUSE), "--local", "--dry-run", "--backup-url", backup_url],
+                self.script(RESTORE_CLICKHOUSE, "--local", "--dry-run", "--backup-url", backup_url),
                 **self.ch_env(),
             )
             record.detail["result"] = out.strip().splitlines()[-1]
         with self.phase("restore_clickhouse") as record:
             out = self.run(
-                ["sh", str(RESTORE_CLICKHOUSE), "--local", "--backup-url", backup_url],
+                self.script(RESTORE_CLICKHOUSE, "--local", "--backup-url", backup_url),
                 **self.ch_env(CLICKHOUSE_RESTORE_POLL_SECONDS="1"),
             )
             record.detail["result"] = out.strip().splitlines()[-1]
@@ -552,6 +638,8 @@ class Drill:
             "postgres": settings,
             "clickhouse_version": self.ch("SELECT version() FORMAT TSVRaw").strip(),
             "s3_endpoint": self.args.s3_endpoint or "aws",
+            "script_shell": self.args.script_shell,
+            "script_path": self.args.script_path or None,
             "nats_url": self.args.nats_url or None,
         }
 
@@ -623,7 +711,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("--s3-prefix", default="dr-drill")
     parser.add_argument("--nats-url", default="", help="also run the JetStream legs (drops its streams)")
-    parser.add_argument("--run-hosts", type=int, default=50, help="hosts in each run published through INGEST")
+    parser.add_argument("--run-hosts", type=int, default=50, help="hosts in each synthetic run")
+    parser.add_argument("--daily-runs", type=int, default=3,
+                        help="runs landed unmerged on top of the seed: equal-sized parts, controls included")
+    parser.add_argument("--script-shell", default="sh",
+                        help='shell for the two scripts, e.g. "busybox ash" for the Alpine pod\'s')
+    parser.add_argument("--script-path", default="",
+                        help="PATH for the two scripts (a directory of busybox applets, say)")
     parser.add_argument("--assets", type=int, default=10000)
     parser.add_argument("--api-port", type=int, default=18080)
     parser.add_argument("--skip-seed", action="store_true", help="back up what is already there")
