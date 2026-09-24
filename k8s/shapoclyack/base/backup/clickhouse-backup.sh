@@ -14,19 +14,25 @@
 # base, so a bucket lifecycle rule that expires by age would silently break the
 # chain; and these tables are ReplacingMergeTree, whose merges rewrite parts, so
 # the saving decays between merges anyway (measured in docs/disaster-recovery.md).
+# For the same manifest's sake, files are not deduplicated either: with
+# `deduplicate_files` on, parts whose count.txt has the same bytes share one
+# object, and the manifest — which counts those objects — undercounts.
 #
-# Credentials: CLICKHOUSE_PASSWORD is read by clickhouse-client from the
-# environment; the S3 key pair has to travel inside the statement, because
-# the server is the one talking to S3. It is written to the client's stdin,
-# never to argv. The server masks the secret in system.backups, query_log and
-# its own log, but clickhouse-client appends the full statement to any error it
-# prints, so every byte the client writes goes through scrub() first.
+# Credentials: the job signs in as `shapoclyack_backup` (base/clickhouse users.xml:
+# BACKUP on the database, S3, temporary tables, system.backups — not `default`,
+# the API's account) with CLICKHOUSE_PASSWORD, which clickhouse-client reads from
+# the environment. The S3 key pair — its own, scoped to PREFIX/clickhouse/ — has
+# to travel inside the statement, because the server is the one talking to S3.
+# It is written to the client's stdin, never to argv. The server masks the
+# secret in system.backups, query_log and its own log, but clickhouse-client
+# repeats the statement after any error it prints, so every byte the client
+# writes goes through scrub() first.
 set -eu
 umask 077
 
 CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-shapoclyack-clickhouse-client}"
 CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-9000}"
-CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
+CLICKHOUSE_USER="${CLICKHOUSE_USER:-shapoclyack_backup}"
 CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-shapoclyack}"
 CLICKHOUSE_CLIENT="${CLICKHOUSE_CLIENT:-clickhouse-client}"
 CLICKHOUSE_BACKUP_TIMEOUT_SECONDS="${CLICKHOUSE_BACKUP_TIMEOUT_SECONDS:-3000}"
@@ -63,14 +69,24 @@ esac
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# An EXIT trap alone does not run on a fatal signal in dash or busybox ash.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Masks the S3 secret and the ClickHouse password wherever they appear, and
-# drops the "(query: …)" block clickhouse-client appends to an error — the
-# statement it echoes there carries the S3 secret in plain text.
+secret_q=""
+
+# Masks the S3 secret — raw, and SQL-escaped as the statements carry it — and
+# the ClickHouse password wherever they appear, and drops the "(query: …)" block
+# clickhouse-client appends to an error. A parse error quotes the statement's
+# tail inside its own message instead, which is why the masking does not rely
+# on that block. The escaped form reaches awk through its environment, never as
+# an argument.
 scrub() {
-  awk '
+  SCRUB_SECRET_SQL="$secret_q" awk '
     BEGIN {
       n = 0
+      if (ENVIRON["SCRUB_SECRET_SQL"] != "") secret[++n] = ENVIRON["SCRUB_SECRET_SQL"]
       if (ENVIRON["AWS_SECRET_ACCESS_KEY"] != "") secret[++n] = ENVIRON["AWS_SECRET_ACCESS_KEY"]
       if (ENVIRON["CLICKHOUSE_PASSWORD"] != "") secret[++n] = ENVIRON["CLICKHOUSE_PASSWORD"]
     }
@@ -140,13 +156,25 @@ secret_q="$(printf '%s' "$AWS_SECRET_ACCESS_KEY" | sql_quote)"
 creds="'${key_q}', '${secret_q}'"
 
 started="$(date +%s)"
+
+# Giving up at the timeout below does not stop the server's BACKUP, and the
+# Job's retry would start a second one beside it. The row is in server memory,
+# so this sees every attempt since the last restart of ClickHouse.
+running="$(ch <<SQL
+SELECT id FROM system.backups WHERE status = 'CREATING_BACKUP' AND startsWith(id, '${db}-') LIMIT 1 FORMAT TSVRaw
+SQL
+)" || fail "reason=status_unreadable id=${backup_id}"
+if [ -n "$running" ]; then
+  fail "reason=backup_in_flight running=${running} id=${backup_id}"
+fi
+
 printf 'backup_started id=%s database=%s url=%s\n' "$backup_id" "$db" "$backup_url"
 
 # ASYNC and a poll rather than one long statement: a synchronous BACKUP of a
 # large database outlives the client's receive_timeout, and system.backups is
 # where the server reports the outcome either way.
 ch >/dev/null <<SQL || fail "reason=statement_refused id=${backup_id}"
-BACKUP DATABASE \`${db}\` TO S3('${url_q}', ${creds}) SETTINGS id = '${backup_id}' ASYNC
+BACKUP DATABASE \`${db}\` TO S3('${url_q}', ${creds}) SETTINGS id = '${backup_id}', deduplicate_files = 0 ASYNC
 SQL
 
 deadline=$((started + CLICKHOUSE_BACKUP_TIMEOUT_SECONDS))
@@ -178,6 +206,32 @@ SQL
   fi
   sleep "$CLICKHOUSE_BACKUP_POLL_SECONDS"
 done
+
+# `.backup` lists every part's count.txt, stored or not; the manifest can only
+# count the ones that are objects. Any table where the two differ would get a
+# manifest that fails its own restore, so there is no manifest at all instead.
+unreadable="$(ch <<SQL
+SELECT l.table, l.listed, p.parts
+FROM
+(
+    SELECT decodeURLComponent(arrayJoin(extractAll(raw_blob, '<name>data/${db}/([^/<]*)/[^/<]*/count[.]txt</name>'))) AS table, count() AS listed
+    FROM s3('${url_q}/.backup', ${creds}, 'RawBLOB')
+    GROUP BY table
+) AS l
+LEFT JOIN
+(
+    SELECT decodeURLComponent(splitByChar('/', _path)[-3]) AS table, count() AS parts
+    FROM s3('${url_q}/data/${db}/*/*/count.txt', ${creds}, 'LineAsString')
+    GROUP BY table
+) AS p USING (table)
+WHERE l.listed != p.parts
+FORMAT TSVRaw
+SQL
+)" || fail "reason=backup_unreadable id=${backup_id}"
+if [ -n "$unreadable" ]; then
+  printf '%s\n' "$unreadable" | awk -F '\t' '{ printf "table=%s listed=%s readable=%s\n", $1, $2, $3 }' >&2
+  fail "reason=parts_unreadable id=${backup_id}"
+fi
 
 # The manifest is read back from the bucket, not from the live tables: rows
 # inserted while the backup ran are in the tables and not in the backup, and a
