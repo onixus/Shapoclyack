@@ -242,12 +242,16 @@ answer the question; so does the `api.db.tenant_scope` startup log line
 
 ### Backups and other clients
 
-`pg_dump` sets `row_security = off` and refuses to dump a table row security
-would filter for its role. The shipped backup CronJob and
+`pg_dump` sets `row_security = off`, and for a role that row security applies
+to — anything that is not a superuser, `BYPASSRLS` or the table's owner — that
+is a refusal, however permissive the policy: `query would be affected by
+row-level security policy for table "…"`. The shipped backup CronJob and
 `scripts/restore-postgres.sh` run as the superuser `octo`, which bypasses row
-security. A backup role of your own needs `BYPASSRLS` or ownership of the tables.
-Any other client (a BI tool, `psql`) sees every row through the permissive
-policy unless it switches to `shapoclyack_tenant` itself.
+security, so they are unaffected. A backup role of your own either gets
+`BYPASSRLS`, or runs `pg_dump --enable-row-security`, which then dumps every row
+through the permissive policy (checked against PostgreSQL 16 with a non-owner
+role holding only `SELECT`). Any other client (a BI tool, `psql`) sees every
+row through that policy unless it switches to `shapoclyack_tenant` itself.
 
 ### Cost
 
