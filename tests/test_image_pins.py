@@ -17,6 +17,7 @@ workflow or manifest is covered without anyone remembering to add it here.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import shlex
 from pathlib import Path
@@ -25,7 +26,10 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PINNED = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
+# name:tag@sha256:<digest>. The tag is required too: a bare name@sha256 pulls
+# the right bytes but gives Renovate nothing to compare a newer release with,
+# so the pin would never be proposed for a refresh and would quietly age.
+PINNED = re.compile(r"^[a-z0-9][a-z0-9._/:-]*:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}@sha256:[0-9a-f]{64}$")
 
 # Built by the job or script that runs them, never pulled from a registry, so
 # there is no digest to pin. Matched as a prefix of the reference.
@@ -294,11 +298,31 @@ def test_the_server_installer_writes_only_pinned_images():
 
 @pytest.mark.parametrize(
     "ref",
-    ["python:3.12-slim", "aquasec/trivy:latest", "nginx", "postgres:16-alpine@sha256:abc"],
+    [
+        "python:3.12-slim",
+        "aquasec/trivy:latest",
+        "nginx",
+        "postgres:16-alpine@sha256:abc",
+        # Pinned, but with no tag for Renovate to track.
+        "lscr.io/linuxserver/openssh-server@sha256:" + "0" * 64,
+        "registry.example:5000/app@sha256:" + "0" * 64,
+    ],
 )
 def test_an_unpinned_reference_is_refused(ref: str):
     with pytest.raises(AssertionError):
         _assert_pinned("test", ref)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "python:3.12-slim@sha256:" + "0" * 64,
+        "lscr.io/linuxserver/openssh-server:10.3_p1-r1-ls235@sha256:" + "0" * 64,
+        "registry.example:5000/team/app:1.2@sha256:" + "0" * 64,
+    ],
+)
+def test_a_tagged_digest_is_accepted(ref: str):
+    _assert_pinned("test", ref)
 
 
 def test_docker_run_parsing_finds_the_image_argument():
@@ -307,3 +331,56 @@ def test_docker_run_parsing_finds_the_image_argument():
         "docker run -d --name n -p 1:1 \\\n  nats:2 --jetstream\n"
     )
     assert _docker_run_images(script) == ["aquasec/trivy:latest", "nats:2"]
+
+
+# --- Renovate can see every pin outside the files its own managers parse ------
+
+RENOVATE = (REPO_ROOT / ".github" / "renovate.json5").read_text(encoding="utf-8")
+_ANY_PIN = re.compile(r"[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9._-]*)?@sha256:[0-9a-f]{64}")
+
+
+def _renovate_regex_managers() -> list[tuple[list[re.Pattern], list[re.Pattern]]]:
+    """(file patterns, match strings) of each customManagers entry.
+
+    Read from the JSON5 text rather than parsed: the two lists are plain JSON
+    strings, which is all that is needed, and Renovate's (?<name>…) groups are
+    turned into Python's (?P<name>…)."""
+    managers = []
+    for files, strings in re.findall(
+        r"managerFilePatterns:\s*\[(.*?)\],\s*matchStrings:\s*\[(.*?)\],", RENOVATE, re.S
+    ):
+        decode = [json.loads(f'"{s}"') for s in re.findall(r'"((?:[^"\\]|\\.)*)"', files)]
+        file_patterns = [re.compile(p.strip("/")) for p in decode]
+        match_strings = [
+            re.compile(json.loads(f'"{s}"').replace("(?<", "(?P<"))
+            for s in re.findall(r'"((?:[^"\\]|\\.)*)"', strings)
+        ]
+        managers.append((file_patterns, match_strings))
+    assert managers, "no customManagers found in .github/renovate.json5"
+    return managers
+
+
+# Files whose pins only a regex manager can reach: no Renovate manager parses
+# Groovy, shell defaults or a Python constant.
+_REGEX_MANAGED = [
+    *JENKINSFILES,
+    *_script_files(),
+    "scripts/install-server.py",
+]
+
+
+@pytest.mark.parametrize("path", _REGEX_MANAGED)
+def test_renovate_tracks_every_pin_in_files_only_a_regex_manager_reads(path: str):
+    """A pin Renovate cannot see is never proposed for a refresh; the SSH test
+    image sat as a bare name@sha256 that no match string could read."""
+    text = _text(path)
+    tracked = set()
+    for file_patterns, match_strings in _renovate_regex_managers():
+        if not any(p.search(path) for p in file_patterns):
+            continue
+        for pattern in match_strings:
+            for m in pattern.finditer(text):
+                tracked.add(f"{m['depName']}:{m['currentValue']}@{m['currentDigest']}")
+    for ref in _ANY_PIN.findall(text):
+        if not _is_local(ref):
+            assert ref in tracked, f"{path}: Renovate does not track {ref}"

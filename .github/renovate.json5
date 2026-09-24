@@ -116,6 +116,15 @@
       matchPackageNames: ["ghcr.io/onixus/**"],
       enabled: false,
     },
+    // linuxserver tags are <upstream>_p<patch>-r<alpine rev>-ls<build>
+    // (10.3_p1-r1-ls235): each build is a new tag, never a new digest under
+    // an old one, so without this Renovate would read the suffix as a
+    // different image flavour and propose nothing.
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["lscr.io/linuxserver/**"],
+      versioning: "regex:^(?<major>\\d+)\\.(?<minor>\\d+)_p(?<patch>\\d+)-r(?<build>\\d+)-ls(?<revision>\\d+)$",
+    },
     // Refreshing a pinned digest under the same tag is the routine bump that
     // clears base-image CVEs: one PR a week for all of them.
     {

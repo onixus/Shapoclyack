@@ -38,6 +38,9 @@ def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc44
 def NODE_IMAGE = 'node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2'
 def TRIVY_IMAGE = 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
 def SYFT_IMAGE = 'anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02'
+// Тег при digest — для Renovate: голый name@sha256 он не видит и не
+// предложит обновить (#313). Digest прежний: это и есть 10.3_p1-r1-ls235.
+def SSHD_IMAGE = 'lscr.io/linuxserver/openssh-server:10.3_p1-r1-ls235@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47'
 
 pipeline {
   agent none
@@ -238,7 +241,7 @@ pipeline {
           def net = "shapoclyack-ssh-${CI_SLUG}"
           sh "docker network create ${net}"
           try {
-            docker.image('lscr.io/linuxserver/openssh-server@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47').withRun(
+            docker.image(SSHD_IMAGE).withRun(
               "--network ${net} --network-alias sshd " +
               "-e PASSWORD_ACCESS=true -e USER_NAME=deploy -e USER_PASSWORD=deploy-ci-secret -e PUID=1000 -e PGID=1000"
             ) { sshd ->
