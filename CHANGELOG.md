@@ -10,7 +10,8 @@ All notable changes to Shapoclyack are documented in this file.
   ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
   isolation in the database was the `WHERE tenant_id` of each query and nothing
   else. Migration `0067_tenant_rls` puts a restrictive policy on every table
-  with a `tenant_id` (49 today) that applies to one new NOLOGIN role,
+  with a `tenant_id` (49 today, plus `asset_tags`, held to its asset's tenant)
+  that applies to one new NOLOGIN role,
   `shapoclyack_tenant`; every transaction of a tenant-scoped request — a console
   user's, a **service token's** (pinned at authentication, so a `require_role`
   route it reaches is held to its tenant too) or a **sensor's** — switches to
@@ -22,11 +23,20 @@ All notable changes to Shapoclyack are documented in this file.
   bypasses row security — this works on them unchanged. Workers, CLI tools,
   authentication and platform-admin requests keep the connecting role and see
   what they saw; a request that touches a tenant table before any guard said
-  whose it is fails loudly. `OCTO_TENANT_RLS=enforce` is the default and refuses
-  to start on a database that cannot enforce it; `off` is the kill switch (a
-  restart, no migration rollback). The migration needs `CREATEROLE`, which the
-  stock `octo` and managed-service master users have; the grants for split
-  roles, the diagnostics and the reasoning are in
+  whose it is fails loudly — including a non-admin behind a global role gate.
+  `OCTO_TENANT_RLS=enforce` is the default and refuses to start on a database
+  that cannot enforce it; `off` is the kill switch (a restart, no migration
+  rollback). The migration needs `CREATEROLE`, which the stock `octo` and
+  managed-service master users have (CloudNativePG's `app` does not: a DBA
+  creates the role first). It locks one table at a time, each in its own
+  transaction under a 5 s `lock_timeout`, so a long transaction makes it fail
+  fast and the rollout retry it rather than stall traffic; a table another role
+  owns (`audit_events` after the recommended ownership split) is left to that
+  owner with the statements logged, and `enforce` names it until they run.
+  **`GET /api/system` no longer counts endpoint devices across tenants** for
+  callers without `platform.fleet.read`: like the tenant and agent counts, they
+  are nulls. The grants for split roles, PostgreSQL 14/15, the diagnostics and
+  the reasoning are in
   [docs/tenant-isolation.md](docs/tenant-isolation.md). A new
   `tests/test_route_tenant_guards.py` fails for any route with neither a tenant
   guard nor a reviewed, reasoned allowlist entry; a later migration that adds a

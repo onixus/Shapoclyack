@@ -296,6 +296,11 @@ def after_begin(session: Session, transaction: SessionTransaction, connection: A
     """
     if _mode != MODE_ENFORCE:
         return
+    if transaction.nested:
+        # A SAVEPOINT inside a transaction that was scoped when it began: the
+        # settings hold inside it, and survive its rollback, because they were
+        # made before it. Re-applying them cost a round trip per savepoint.
+        return
     scope = current()
     if scope.kind == KIND_SYSTEM:
         return
@@ -323,12 +328,41 @@ class TenantRlsUnavailable(RuntimeError):
 _NARROWED_PRIVILEGES = {"audit_events": ("SELECT", "INSERT")}
 _FULL_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
+#: Tenant data without a ``tenant_id`` column, held to the tenant through the
+#: parent row it belongs to (0067): a tag is visible when its asset is.
+PARENT_SCOPED_TABLES = {"asset_tags": "assets"}
+
 _verified: set[str] = set()
 
 
 def tenant_tables(metadata: Any) -> list[str]:
-    """Every model table with a ``tenant_id`` column: what must carry a policy."""
-    return sorted(table.name for table in metadata.sorted_tables if "tenant_id" in table.c)
+    """Every model table that must carry the tenant policies.
+
+    Every table with a ``tenant_id`` column, and the tables in
+    :data:`PARENT_SCOPED_TABLES` that hold tenant data without one.
+    """
+    return sorted(
+        table.name
+        for table in metadata.sorted_tables
+        if "tenant_id" in table.c or table.name in PARENT_SCOPED_TABLES
+    )
+
+
+def _grant_hint(name: str, version: int) -> str:
+    """How ``name`` gets permission to switch to the tenant role, by server version.
+
+    ``WITH INHERIT FALSE`` is PostgreSQL 16 syntax. Before 16 an inherit-free
+    membership exists only as a property of the *member* (``NOINHERIT``), which
+    also stops it inheriting every other role it is a member of — so that hint
+    says so rather than hiding it.
+    """
+    if version >= 160000:
+        return f"GRANT {TENANT_ROLE} TO {name} WITH INHERIT FALSE"
+    return (
+        f"ALTER ROLE {name} NOINHERIT; GRANT {TENANT_ROLE} TO {name} "
+        f"(PostgreSQL < 16: NOINHERIT applies to all of {name}'s memberships — "
+        "or connect the API as a superuser, or run OCTO_TENANT_RLS=off)"
+    )
 
 
 def database_problems(connection: Any, metadata: Any) -> list[str]:
@@ -339,9 +373,7 @@ def database_problems(connection: Any, metadata: Any) -> list[str]:
     """
     problems: list[str] = []
     role = connection.execute(
-        text(
-            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = :role"
-        ),
+        text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = :role"),
         {"role": TENANT_ROLE},
     ).first()
     if role is None:
@@ -371,13 +403,15 @@ def database_problems(connection: Any, metadata: Any) -> list[str]:
         if not can_switch:
             problems.append(
                 f"{me.name} cannot SET ROLE {TENANT_ROLE}: as a superuser run "
-                f"GRANT {TENANT_ROLE} TO {me.name} WITH INHERIT FALSE"
+                + _grant_hint(me.name, me.version)
             )
     tables = tenant_tables(metadata)
     rows = connection.execute(
         text(
             "SELECT c.relname, c.relrowsecurity,"
             " pg_get_userbyid(c.relowner) AS owner,"
+            " EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid"
+            "   AND p.polpermissive AND p.polname = 'shapoclyack_unscoped') AS unscoped,"
             " EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid"
             "   AND NOT p.polpermissive AND to_regrole(:role) = ANY (p.polroles)) AS isolated"
             " FROM pg_class c"
@@ -388,13 +422,24 @@ def database_problems(connection: Any, metadata: Any) -> list[str]:
     ).all()
     found = {row.relname: row for row in rows}
     uncovered = [
-        name for name in tables
-        if name not in found or not (found[name].relrowsecurity and found[name].isolated)
+        name
+        for name in tables
+        if name not in found
+        or not (found[name].relrowsecurity and found[name].isolated and found[name].unscoped)
     ]
     if uncovered:
+        # Without the restrictive policy a tenant transaction sees the whole
+        # table; without the permissive one every role row security applies
+        # to — a non-owner API role, its workers included — sees none of it.
+        owned_elsewhere = sorted(
+            name for name in uncovered if name in found and found[name].owner != me.name
+        )
         problems.append(
-            "no tenant-isolation policy on " + ", ".join(uncovered)
-            + ": a migration created a tenant table without one (docs/tenant-isolation.md)"
+            "tenant policies missing or incomplete on " + ", ".join(uncovered)
+            + ": run the migrations; a table another role owns"
+            + (f" ({', '.join(owned_elsewhere)})" if owned_elsewhere else "")
+            + " has to be protected by that owner — 0067 logged the statements, and "
+            "docs/tenant-isolation.md lists them"
         )
     if not me.rolsuper and not me.rolbypassrls and not role.rolsuper:
         inherits = connection.execute(
@@ -408,7 +453,7 @@ def database_problems(connection: Any, metadata: Any) -> list[str]:
             problems.append(
                 f"{me.name} inherits {TENANT_ROLE}, so the tenant policy also applies to "
                 f"its own statements on {', '.join(sorted(foreign))}: REVOKE {TENANT_ROLE} "
-                f"FROM {me.name}; GRANT {TENANT_ROLE} TO {me.name} WITH INHERIT FALSE"
+                f"FROM {me.name}; " + _grant_hint(me.name, me.version)
             )
     # One query for the lot. has_table_privilege() with a list answers "any
     # of", not "all of", so each privilege is its own row.
@@ -436,10 +481,25 @@ def database_problems(connection: Any, metadata: Any) -> list[str]:
             },
         )
     ]
+    # A serial column's INSERT needs its sequence: audit_events_id_seq is the
+    # one the ownership split moves away from the migrating role.
+    missing += [
+        f"USAGE on sequence {row.seq}"
+        for row in connection.execute(
+            text(
+                "SELECT s.oid::regclass::text AS seq"
+                " FROM pg_class s"
+                " WHERE s.relkind = 'S' AND s.relnamespace = current_schema()::regnamespace"
+                "   AND NOT CASE WHEN s.relkind = 'S'"
+                "     THEN has_sequence_privilege(:role, s.oid, 'USAGE') ELSE true END"
+            ),
+            {"role": TENANT_ROLE},
+        )
+    ]
     if missing:
         problems.append(
             f"{TENANT_ROLE} lacks " + ", ".join(missing)
-            + f": GRANT them to {TENANT_ROLE} (the owner of those tables must run it)"
+            + f": GRANT them to {TENANT_ROLE} (the owner of those objects must run it)"
         )
     return problems
 
