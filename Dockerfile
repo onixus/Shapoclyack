@@ -110,6 +110,9 @@ ARG INSTALL_PULSE=1
 COPY scripts/install-pulse.sh scripts/pulse-release-lib.sh scripts/pulse-pinned.sha256 /tmp/pulse/
 # No `set -x`: the token would be traced into the build log (BuildKit keeps
 # the unmasked trace in `docker buildx history logs`).
+# /out mirrors /usr/local of the final stage: bin/pulse, plus the install
+# record (#340) that scripts/verify-pulse-image.py reads back out of a
+# published image to tie the binary to its pinned tarball.
 RUN --mount=type=secret,id=github_token,required=false \
     set -eu; \
     mkdir -p /out; \
@@ -122,10 +125,12 @@ RUN --mount=type=secret,id=github_token,required=false \
     if [ -s /run/secrets/github_token ]; then \
       GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export GITHUB_TOKEN; \
     fi; \
-    PULSE_DEST=/out/pulse PULSE_VERSION="${PULSE_VERSION}" \
+    PULSE_DEST=/out/bin/pulse PULSE_RECORD=/out/share/shapoclyack/pulse-install.txt \
+      PULSE_VERSION="${PULSE_VERSION}" \
       PULSE_GITHUB_REPO="${PULSE_GITHUB_REPO}" PULSE_SKIP_CHECKSUM="${PULSE_SKIP_CHECKSUM}" \
       bash /tmp/pulse/install-pulse.sh; \
-    test -x /out/pulse; \
+    test -x /out/bin/pulse; \
+    test -s /out/share/shapoclyack/pulse-install.txt; \
     rm -rf /tmp/pulse; \
     rm -rf /var/lib/apt/lists/*
 
@@ -171,10 +176,11 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Pulse CLI for service_probe.backend=pulse|hybrid (GenDec release; see docs/pulse-backend.md).
-# Copied as a directory, not as /out/pulse: with --build-arg INSTALL_PULSE=0
+# Copied as a directory, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
 # the stage leaves /out empty and this copies nothing, which is how the image
-# builds at all without a token for the private GenDec repository.
-COPY --from=pulse-bin /out/ /usr/local/bin/
+# builds at all without a token for the private GenDec repository. Otherwise
+# it lands /usr/local/bin/pulse and /usr/local/share/shapoclyack/pulse-install.txt.
+COPY --from=pulse-bin /out/ /usr/local/
 
 # Pin external scanner versions AND their artifact sha256 (per arch) so the
 # downloaded bytes are verified against values committed in this repo.
