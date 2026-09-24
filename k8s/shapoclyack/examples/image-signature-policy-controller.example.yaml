@@ -1,0 +1,54 @@
+# Admission policy for the Sigstore policy-controller: only Shapoclyack images
+# signed by the Shapoclyack release pipelines, with signed SLSA v1 build
+# provenance, may run (#313). The Kyverno equivalent is
+# image-signature-kyverno.example.yaml; docs/supply-chain.md explains the
+# identities and the cosign commands that check the same thing by hand.
+#
+# An image passes if it satisfies ONE authority below (policy-controller ORs
+# them), and each authority also requires the provenance attestation:
+#
+#   * release-key — Jenkinsfile.publish, the release path. The public half is
+#     cosign.pub at the root of the repository, at the release tag, stored in
+#     the controller's namespace:
+#
+#       kubectl -n cosign-system create secret generic shapoclyack-release-key \
+#         --from-file=cosign.pub=cosign.pub
+#
+#   * github-actions-keyless — .github/workflows/docker-publish.yml, the
+#     fallback publisher, run from a release tag.
+#
+# policy-controller only enforces in namespaces that opt in:
+#
+#   kubectl label namespace network-scan policy.sigstore.dev/include=true
+#
+# tests/test_admission_policies.py keeps the identity, the tag pattern and the
+# image list here equal to what the pipelines publish.
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: shapoclyack-release-images
+spec:
+  mode: enforce
+  images:
+    - glob: "ghcr.io/onixus/shapoclyack-*"
+  authorities:
+    - name: release-key
+      key:
+        secretRef:
+          name: shapoclyack-release-key
+      ctlog:
+        url: https://rekor.sigstore.dev
+      attestations:
+        - name: slsa-provenance
+          predicateType: slsaprovenance1
+    - name: github-actions-keyless
+      keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: '^https://github\.com/onixus/Shapoclyack/\.github/workflows/docker-publish\.yml@refs/tags/shapoclyack-[0-9]+\.[0-9]+-[0-9]{4}(-(alpha|beta|rc)[0-9]+)?$'
+      ctlog:
+        url: https://rekor.sigstore.dev
+      attestations:
+        - name: slsa-provenance
+          predicateType: slsaprovenance1
