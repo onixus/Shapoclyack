@@ -304,7 +304,7 @@ Off unless `OCTO_METRICS_TENANT_TOP_N` is set — see
 
 | Series | Type | Labels and their bound | Scope |
 |---|---|---|---|
-| `octo_tenant_open_findings` | gauge | `tenant` (top N ids + `_other`), `severity` (`critical`, `high`, `medium`, `low`, `unknown`) | C |
+| `octo_tenant_open_findings` | gauge | `tenant` (top N active ids, fixed for the hour, + `_other`), `severity` (`critical`, `high`, `medium`, `low`, `unknown`) | C |
 | `octo_tenant_sla_breached_findings` | gauge | `tenant` as above | C |
 | `octo_tenant_scans_finished_24h` | gauge, a trailing-window count (not a counter) | `tenant` as above, `status` (`succeeded`, `failed`, `cancelled`) | C |
 
@@ -338,6 +338,15 @@ See [Database pool](#database-pool) below.
 | `octo_db_pool_checkout_duration_seconds` | histogram, 1 ms – 60 s | — | E |
 | `octo_db_pool_checkout_timeouts_total` | counter | — | E |
 
+### Scrape-time snapshots
+
+See [Scrape-time series](#scrape-time-series-cost-and-failure-behaviour) below.
+
+| Series | Type | Labels and their bound | Scope |
+|---|---|---|---|
+| `octo_metrics_snapshot_age_seconds` | gauge | `snapshot` (`cluster`, `tenant`) | R |
+| `octo_metrics_snapshot_misses_total` | counter | `snapshot` as above, `reason` (`pool_busy`, `error`) | R |
+
 ### Process
 
 The collectors `prometheus_client` puts on its default registry, which the
@@ -364,7 +373,7 @@ Two snapshots, each one short transaction:
 | Snapshot | Reads | Reused for | Withdrawn after |
 |---|---|---|---|
 | Cluster | one grouped scan of `agents`, a grouped count of active `jobs`, one aggregate over `endpoint_devices` | 15 s | 60 s |
-| Tenants (opt-in) | tenant ids, a grouped count of open `vulnerabilities`, a grouped count of `jobs` finished in 24 h | 60 s | 180 s |
+| Tenants (opt-in) | active tenant ids, one grouped pass over `vulnerabilities` (open now, open when the hour began, breached), a grouped count of `jobs` finished in 24 h | 60 s, and at the first scrape of each hour | 180 s |
 
 What keeps a scrape from costing more than that:
 
@@ -384,6 +393,26 @@ What keeps a scrape from costing more than that:
   It is a check, not a reservation — a burst between the check and the
   checkout can still make the scrape wait up to `OCTO_DB_POOL_TIMEOUT`, which
   the statement timeout does not bound.
+
+**When a snapshot is not being taken, that is visible.** A failed attempt logs
+a WARNING with the error's class and first line (a statement timeout reads
+`OperationalError: (psycopg.errors.QueryCanceled) canceling statement due to
+statement timeout`). A pool that keeps having fewer than two connections free
+is logged once every 10 minutes once the snapshot is past its shelf life,
+with the pool's numbers. That case is not hypothetical: the six leader-locked
+workers hold one connection each for as long as they lead (see
+[Database pool](#database-pool)), so a replica with `OCTO_DB_POOL_SIZE=5` and
+`OCTO_DB_MAX_OVERFLOW=2` that leads them all never has two free, and its
+fleet and queue series never appear. The defaults (5 + 10) leave room. Per
+replica, `octo_metrics_snapshot_age_seconds{snapshot}` is how long ago the
+snapshot was last taken (since start, if it never was) and
+`octo_metrics_snapshot_misses_total{snapshot,reason}` counts the refreshes
+that were due and produced nothing — `pool_busy` or `error`. With the
+per-tenant series off, the tenant snapshot reads nothing, so it never waits
+for the pool and is never reported starved.
+`ShapoclyackFleetMetricsBlind` fires when no replica has taken the cluster
+snapshot for 5 minutes, held for 10: that is when `ShapoclyackSensorsStale`
+and `ShapoclyackNoSensorOnline` cannot fire.
 
 A snapshot past its shelf life is withdrawn rather than served, and a failed
 attempt withdraws the series at once: gaps are honest, frozen numbers are not.
@@ -445,25 +474,54 @@ OCTO_METRICS_TENANT_TOP_N=10   # 0 (the default) publishes no tenant label at al
 OCTO_METRICS_TOKEN=…           # required with it under OCTO_ENV=prod
 ```
 
-- **Bounded twice.** The N tenants with the most open findings plus scans in
-  the last 24 h keep their id; every other tenant is summed into
-  `tenant="_other"`. N is capped at 50 whatever is configured, so the series
-  count is at most (50 + 1) × 9 = 459 per replica (five severities, one breach
-  count, three scan outcomes). Which tenants are in the top N can change
-  between snapshots; a tenant that drops out moves into `_other`, and its own
-  series disappear.
+- **Bounded twice.** The N active tenants with the most open findings keep
+  their id; every other tenant — suspended ones included, whatever their
+  volume — is summed into `tenant="_other"`. N is capped at 50 whatever is
+  configured, so the series count is at most (50 + 1) × 9 = 459 per replica
+  (five severities, one breach count, three scan outcomes).
+- **The named set changes on the hour, and every replica names the same
+  tenants.** The ranking counts the findings that were open when the current
+  wall-clock hour began (first seen before it, not closed by then), ties going
+  to the lower id; the counts themselves are live and refresh every minute.
+  Ranked on live numbers, replicas refreshing a minute apart disagreed while a
+  tenant crossed the line — one named it, the other still counted it in
+  `_other` — and `sum(max by (tenant, …))` counted it twice; and with the
+  day's scans in the ranking, two tenants near the line swapped places on
+  every scan either finished. Now membership can change once an hour, at the
+  first scrape past it (each replica re-ranks then, even inside its TTL), plus
+  only when the history the ranking reads is rewritten within the hour: an
+  old closed finding is reopened, or findings are purged. A tenant that drops
+  out moves into `_other`, and its own series end.
 - **Ids from the tenants table only**, never from a finding or job row, and only
   ids that pass the rule tenant creation enforces (`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`,
   not the reserved `h_` prefix). A legacy id that predates the rule is counted,
   under `_other`, but never named. `_other` cannot collide with a tenant: ids
   start with a letter or digit.
-- **Not on an open endpoint.** The series are the customer list and each
-  customer's open and breached findings. Under `OCTO_ENV=prod` the API refuses
-  to start with `OCTO_METRICS_TENANT_TOP_N` set and `OCTO_METRICS_TOKEN` unset.
-- **Cost.** One snapshot per replica per minute: a grouped count over open
-  findings (index `ix_vulnerabilities_due`) and over the day's finished jobs,
-  under the same 2 s statement timeout — on an estate where that is not enough
-  the series are withdrawn and the warning says so once a minute.
+- **Not on an open endpoint — and the token is only the first hop.** The
+  series are the customer list and each customer's open and breached
+  findings. Under `OCTO_ENV=prod` the API refuses to start with
+  `OCTO_METRICS_TENANT_TOP_N` set and `OCTO_METRICS_TOKEN` unset. That token
+  protects the scrape, nothing after it: once scraped, the tenant ids are in
+  Prometheus's storage, in every `remote_write` target, and on the Tenants
+  dashboard for everyone who can open it — and it is one platform-wide token,
+  not a per-tenant one. An MSSP that should not show customer names there
+  keeps the opaque ids tenant creation hands out by default (`ten_<hex>`)
+  rather than naming tenants after customers.
+- **Cost: a full pass over `vulnerabilities`, per replica, every minute.** No
+  index serves it. Measured on PostgreSQL 16 (warm cache, four shared CPUs)
+  with 1 M findings (600 k open) across 200 tenants and 200 k jobs, during
+  the review of #334: a parallel sequential scan of `vulnerabilities` in
+  172 ms (405 ms on one core), a sequential scan of `jobs` in 40 ms, 0.13 –
+  0.18 s for the whole snapshot — `cluster_snapshot` is 5 ms. The ranking
+  column added since reads the same pass. Linear from there, a single core
+  reaches the 2 s statement timeout at about 5 M findings; the platform's own
+  scale model (three findings per asset) puts 50 k assets at 150 k. Each
+  replica pays it, so the HPA ceiling of `prod-ha` (6) multiplies it. Past
+  the timeout the series are withdrawn and retried once a minute, and the
+  WARNING names the cause. A covering index — `(state, tenant_id, severity)
+  INCLUDE (due_at, exception_until, first_seen_at)`, plus `closed_at` for the
+  findings closed within the hour — would turn the pass into an index-only
+  scan; it needs a migration and is left to a follow-up.
 
 The **Shapoclyack / Tenants** dashboard reads only these series and is empty
 while they are off.
@@ -535,6 +593,7 @@ PrometheusRule objects in `examples/prometheusrule-slo.example.yaml` and
 | `ShapoclyackDbPoolCheckoutTimeouts` | ticket | any checkout timed out in the last 10 m, per replica |
 | `ShapoclyackSensorsStale` | ticket | an active sensor has been stale for 15 m |
 | `ShapoclyackNoSensorOnline` | page | jobs queued (`min()` across replicas), sensors registered, none online, for 15 m |
+| `ShapoclyackFleetMetricsBlind` | ticket | no replica has taken the cluster snapshot for 5 m (`min()` of `octo_metrics_snapshot_age_seconds`), for 10 m |
 | `ShapoclyackClickHouseIngestLag` | ticket | the freshest readings of `octo-ch-ingest-results` above 1000 for 10 m — once per consumer |
 | `ShapoclyackClickHouseIngestStale` | ticket | a replica has not read the consumer's lag for 5 m |
 

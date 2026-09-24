@@ -8,7 +8,8 @@ read. Two snapshots, each one short transaction:
   reports the same numbers; they used to be *set* by whichever replica handled
   the last job event or retention sweep, and replicas disagreed for good.
 * :func:`tenant_snapshot` — the opt-in per-tenant product series
-  (OCTO_METRICS_TENANT_TOP_N), with the tenant label capped.
+  (OCTO_METRICS_TENANT_TOP_N), with the tenant label capped and the named set
+  fixed for the wall-clock hour.
 
 Every statement goes through :func:`scrape_session`, and nothing else in the
 scrape path opens a session. That is deliberate: it is the one place to put
@@ -18,6 +19,7 @@ tomorrow the row-level-security scope these cluster-wide aggregates will need.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ from api.services import agents as agents_service
 from api.services import endpoint_inventory
 from api.services import job_states, job_store, vuln_states
 from api.services import tenants as tenants_service
+from api.services import vulnerabilities as vulnerabilities_service
 from api.settings import Settings
 from scanner.pipeline.report import SEVERITY_ORDER
 
@@ -51,6 +54,11 @@ TENANT_OTHER = "_other"
 TENANT_SEVERITIES = tuple(sorted(SEVERITY_ORDER, key=lambda severity: -SEVERITY_ORDER[severity]))
 TENANT_SCAN_STATUSES = tuple(sorted(job_states.TERMINAL))
 TENANT_SCAN_WINDOW = timedelta(hours=24)
+#: The named set changes only on this wall-clock boundary. Every replica ranks
+#: on the numbers the period began with, so they agree on it however far apart
+#: their minutes fall — a tenant named by one replica and still inside
+#: ``_other`` on another is counted twice by every ``sum(max by (tenant, …))``.
+TENANT_MEMBERSHIP_SECONDS = 3600
 
 
 def configure(settings: Settings) -> None:
@@ -58,9 +66,25 @@ def configure(settings: Settings) -> None:
     _settings = settings
 
 
+def tenant_series_enabled() -> bool:
+    """Whether :func:`tenant_snapshot` reads anything at all."""
+    return _settings is not None and bool(_settings.metrics_tenant_top_n)
+
+
 def _now() -> datetime:
     """Naive UTC, like the columns it is compared with."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def membership_epoch(timestamp: float | None = None) -> int:
+    """The wall-clock period the named tenants belong to: the hour, as a number."""
+    return int((time.time() if timestamp is None else timestamp) // TENANT_MEMBERSHIP_SECONDS)
+
+
+def membership_start(now: datetime) -> datetime:
+    """When ``now``'s period began, naive UTC like the columns."""
+    epoch = membership_epoch(now.replace(tzinfo=UTC).timestamp())
+    return datetime.fromtimestamp(epoch * TENANT_MEMBERSHIP_SECONDS, UTC).replace(tzinfo=None)
 
 
 @contextmanager
@@ -146,35 +170,52 @@ def _nameable(tenant_id: str) -> bool:
 
 
 def tenant_snapshot(now: datetime | None = None) -> TenantSnapshot | None:
-    """The top-N tenants by volume keep their id; everyone else is ``_other``.
+    """The top-N tenants keep their id; everyone else is ``_other``.
 
-    Volume is open findings plus scans finished in the window, ties broken by
-    id so the set does not flap between two equal tenants. Label values come
-    from the tenants table only, never from the finding or job rows.
-    ``None`` while OCTO_METRICS_TENANT_TOP_N is 0 — the default.
+    **Who is named** is decided on the findings that were open when the
+    current hour began (:data:`TENANT_MEMBERSHIP_SECONDS`): first seen before
+    it and not closed by then. That number is the same whenever in the hour
+    it is read, so replicas refreshing a minute apart name the same tenants,
+    and the set can change only on the hour — not on every finished scan, as
+    it did when scans were part of the volume. Ties go to the lower id. The
+    one thing that moves it within the hour is history being rewritten: an
+    old finding reopened (its ``closed_at`` is cleared) or rows purged.
+
+    Candidates are the *active* rows of the tenants table, never the ids on
+    finding or job rows. **The counts** are live: open findings, breaches and
+    scans as of ``now``. ``None`` while OCTO_METRICS_TENANT_TOP_N is 0 — the
+    default.
     """
     settings = _settings
     if settings is None or not settings.metrics_tenant_top_n:
         return None
     now = now or _now()
+    ranked_at = membership_start(now)
     finding = models.Vulnerability
     job = models.Job
-    breached = case(
-        (
-            and_(
-                finding.due_at.is_not(None),
-                finding.due_at <= now,
-                or_(finding.exception_until.is_(None), finding.exception_until <= now),
-            ),
-            1,
-        ),
-        else_=0,
+    open_now = finding.state.in_(tuple(vuln_states.ACTIVE))
+    # The console's own definition, so the two cannot drift.
+    breached = and_(*vulnerabilities_service._sla_filters("breached", now))  # noqa: SLF001
+    open_when_ranked = and_(
+        finding.first_seen_at < ranked_at,
+        or_(finding.closed_at.is_(None), finding.closed_at >= ranked_at),
     )
     with scrape_session(settings) as session:
-        tenant_ids = session.execute(select(models.Tenant.tenant_id)).scalars().all()
+        tenant_ids = (
+            session.execute(select(models.Tenant.tenant_id).where(models.Tenant.status == "active"))
+            .scalars()
+            .all()
+        )
         findings = session.execute(
-            select(finding.tenant_id, finding.severity, func.count(), func.sum(breached))
-            .where(finding.state.in_(tuple(vuln_states.ACTIVE)))
+            select(
+                finding.tenant_id,
+                finding.severity,
+                func.sum(case((open_now, 1), else_=0)),
+                func.sum(case((breached, 1), else_=0)),
+                func.sum(case((open_when_ranked, 1), else_=0)),
+            )
+            # Open now, or closed since the hour began: still open when it did.
+            .where(or_(open_now, finding.closed_at >= ranked_at))
             .group_by(finding.tenant_id, finding.severity)
         ).all()
         scans = session.execute(
@@ -183,14 +224,12 @@ def tenant_snapshot(now: datetime | None = None) -> TenantSnapshot | None:
             .group_by(job.tenant_id, job.status)
         ).all()
 
-    volume: dict[str, int] = {}
-    for tenant_id, _severity, count, _breached in findings:
-        volume[tenant_id] = volume.get(tenant_id, 0) + int(count)
-    for tenant_id, _status, count in scans:
-        volume[tenant_id] = volume.get(tenant_id, 0) + int(count)
+    ranking: dict[str, int] = {}
+    for tenant_id, _severity, _open, _breached, open_at_start in findings:
+        ranking[tenant_id] = ranking.get(tenant_id, 0) + int(open_at_start or 0)
     candidates = [tenant_id for tenant_id in tenant_ids if _nameable(tenant_id)]
     named = set(
-        sorted(candidates, key=lambda tenant_id: (-volume.get(tenant_id, 0), tenant_id))[
+        sorted(candidates, key=lambda tenant_id: (-ranking.get(tenant_id, 0), tenant_id))[
             : settings.metrics_tenant_top_n
         ]
     )
@@ -202,9 +241,9 @@ def tenant_snapshot(now: datetime | None = None) -> TenantSnapshot | None:
     open_findings = {(tenant, severity): 0 for tenant in labels for severity in TENANT_SEVERITIES}
     sla_breached = dict.fromkeys(labels, 0)
     scans_finished = {(tenant, status): 0 for tenant in labels for status in TENANT_SCAN_STATUSES}
-    for tenant_id, severity, count, breached_count in findings:
+    for tenant_id, severity, open_count, breached_count, _open_at_start in findings:
         severity = severity if severity in SEVERITY_ORDER else "unknown"
-        open_findings[(label(tenant_id), severity)] += int(count)
+        open_findings[(label(tenant_id), severity)] += int(open_count or 0)
         sla_breached[label(tenant_id)] += int(breached_count or 0)
     for tenant_id, status, count in scans:
         scans_finished[(label(tenant_id), status)] += int(count)

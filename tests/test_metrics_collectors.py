@@ -12,6 +12,7 @@ say, and that reading them cannot hurt the replica being scraped.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 import threading
 import time
@@ -720,36 +721,90 @@ def test_the_scrape_statement_timeout_does_not_outlive_the_scrape(tmp_path):
         db_engine.reset_for_tests()
 
 
+def _gives_up_behind_a_table_lock(settings, table: str, read) -> None:
+    """``read`` fails on the statement timeout while ``table`` is locked.
+
+    The read runs in a thread the test waits 10 s for, and the lock is then
+    released either way: a statement timeout that regressed would otherwise
+    park the read, and the test with it, until CI's job timeout (review of
+    #334, where one such mutation hung until its backend was cancelled).
+    """
+    db_engine.reset_for_tests()
+    try:
+        db_engine.configure(settings)
+        tenants_service.configure(settings)
+        tenants_service.reset_for_tests()
+        tenants_service.load_tenants(settings)
+        metrics_sources.configure(settings)
+        raw = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+        outcome: dict[str, object] = {}
+
+        def run() -> None:
+            started = time.monotonic()
+            try:
+                read()
+            except Exception as exc:  # noqa: BLE001 - asserted below
+                outcome["error"] = exc
+            outcome["elapsed"] = time.monotonic() - started
+
+        with psycopg.connect(raw) as locker:
+            locker.execute(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")
+            reader = threading.Thread(target=run, name="scrape-behind-lock", daemon=True)
+            reader.start()
+            reader.join(10)
+            waited_it_out = reader.is_alive()
+            locker.rollback()
+        reader.join(10)
+        assert not waited_it_out, f"the scrape waited behind the lock on {table}: no statement timeout"
+        assert isinstance(outcome.get("error"), sa_exc.OperationalError), outcome
+        assert 1.5 < outcome["elapsed"] < 5, outcome
+    finally:
+        db_engine.reset_for_tests()
+
+
 @requires_postgres
 def test_the_scrape_gives_up_behind_a_table_lock(tmp_path):
     """A migration's ``ALTER TABLE agents`` holds an exclusive lock; without the
     cap the scrape would wait for it past Prometheus's timeout, holding a
     worker thread and a connection."""
-    settings = make_settings(tmp_path)
-    db_engine.reset_for_tests()
-    try:
-        db_engine.configure(settings)
-        tenants_service.configure(settings)
-        tenants_service.load_tenants(settings)
+    _gives_up_behind_a_table_lock(make_settings(tmp_path), "agents", metrics_sources.cluster_snapshot)
+
+
+@requires_postgres
+def test_the_tenant_scrape_gives_up_behind_a_table_lock(tmp_path):
+    """The per-tenant read goes through the same scrape session: the one place
+    the statement timeout, and #311's system scope after it, are applied."""
+    settings = make_settings(tmp_path, metrics_tenant_top_n=3)
+    _gives_up_behind_a_table_lock(settings, "vulnerabilities", metrics_sources.tenant_snapshot)
+
+
+@requires_postgres
+def test_the_real_cluster_snapshot_reads_devices_only_with_the_inventory_on(tmp_path):
+    for enabled, expected in ((False, None), (True, {"active": 0, "stale": 0})):
+        settings = make_settings(tmp_path, endpoint_inventory_enabled=enabled)
         metrics_sources.configure(settings)
-        raw = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
-        with psycopg.connect(raw) as locker:
-            locker.execute("LOCK TABLE agents IN ACCESS EXCLUSIVE MODE")
-            started = time.monotonic()
-            with pytest.raises(sa_exc.OperationalError):
-                metrics_sources.cluster_snapshot()
-            elapsed = time.monotonic() - started
-            locker.rollback()
-        assert 1.5 < elapsed < 5, elapsed
-    finally:
-        db_engine.reset_for_tests()
+        snapshot = metrics_sources.cluster_snapshot()
+        assert snapshot is not None
+        assert snapshot.endpoint_devices == expected, enabled
 
 
 # --- opt-in per-tenant series -----------------------------------------------------------
 
 
-def _seed_finding(session, tenant_id: str, *, severity: str, state: str = "OPEN", due_at=None, exception_until=None):
+def _seed_finding(
+    session,
+    tenant_id: str,
+    *,
+    severity: str,
+    state: str = "OPEN",
+    due_at=None,
+    exception_until=None,
+    first_seen=None,
+) -> str:
     now = datetime.now(UTC).replace(tzinfo=None)
+    # Before the current hour by default: the top N is ranked on the findings
+    # open when the hour began.
+    first_seen = first_seen or now - timedelta(hours=2)
     asset_id = f"asset-{tenant_id}"
     if session.get(models.Asset, asset_id) is None:
         session.add(
@@ -766,16 +821,17 @@ def _seed_finding(session, tenant_id: str, *, severity: str, state: str = "OPEN"
             title="seeded",
             severity=severity,
             state=state,
-            state_changed_at=now,
-            first_seen_at=now,
-            last_seen_at=now,
-            sla_started_at=now,
+            state_changed_at=first_seen,
+            first_seen_at=first_seen,
+            last_seen_at=first_seen,
+            sla_started_at=first_seen,
             due_at=due_at,
             exception_until=exception_until,
-            created_at=now,
-            updated_at=now,
+            created_at=first_seen,
+            updated_at=first_seen,
         )
     )
+    return vuln_id
 
 
 def _seed_scan(session, tenant_id: str, *, status: str, finished_ago: timedelta):
@@ -791,12 +847,12 @@ def _seed_scan(session, tenant_id: str, *, status: str, finished_ago: timedelta)
     )
 
 
-def _tenant(session, tenant_id: str) -> None:
+def _tenant(session, tenant_id: str, *, status: str = "active") -> None:
     session.add(
         models.Tenant(
             tenant_id=tenant_id,
             name=tenant_id,
-            status="active",
+            status=status,
             created_at=datetime.now(UTC).replace(tzinfo=None),
         )
     )
@@ -881,3 +937,291 @@ def test_tenant_series_carry_a_bounded_vocabulary():
     assert _value(samples, "octo_tenant_sla_breached_findings", tenant="_other") == 0
     assert _value(samples, "octo_tenant_scans_finished_24h", tenant="acme", status="succeeded") == 1
     assert {name for _, labels in samples for name, _ in labels} == {"tenant", "severity", "status"}
+
+
+# --- round 2: who is named, and when (#334) -------------------------------------------
+
+
+def _tenant_settings(tmp_path, top_n: int):
+    settings = make_settings(tmp_path, metrics_tenant_top_n=top_n)
+    tenants_service.configure(settings)
+    tenants_service.reset_for_tests()
+    tenants_service.load_tenants(settings)
+    metrics_sources.configure(settings)
+    return settings
+
+
+def _named(snapshot) -> set[str]:
+    return {tenant for tenant, _ in snapshot.open_findings} - {metrics_sources.TENANT_OTHER}
+
+
+def _hour_start() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+
+
+@requires_postgres
+def test_replicas_agree_on_the_named_tenants_through_the_hour(tmp_path):
+    """Each replica refreshes on its own minute. When the top N was ranked on
+    live numbers, a tenant crossing the line was named by one replica and still
+    inside ``_other`` on the other, and ``sum(max by (tenant, …))`` counted it
+    twice (review of #334: 250 drawn for 150). The ranking is now taken on the
+    findings open when the hour began, which every replica reads alike however
+    far apart they refresh; the counts stay live."""
+    settings = _tenant_settings(tmp_path, top_n=1)
+    hour = _hour_start()
+    with get_session(settings.postgres_url) as session:
+        _tenant(session, "bank-a")
+        _tenant(session, "bank-b")
+        bank_a = [
+            _seed_finding(session, "bank-a", severity="high", first_seen=hour - timedelta(minutes=10))
+            for _ in range(3)
+        ]
+        for _ in range(2):
+            _seed_finding(session, "bank-b", severity="high", first_seen=hour - timedelta(minutes=10))
+    replica_a = metrics_sources.tenant_snapshot(now=hour + timedelta(minutes=5))
+
+    # Between the two replicas' refreshes: bank-b gains findings and finishes a
+    # scan, bank-a closes two of its three.
+    with get_session(settings.postgres_url) as session:
+        for _ in range(5):
+            _seed_finding(session, "bank-b", severity="high", first_seen=hour + timedelta(minutes=6))
+        _seed_scan(session, "bank-b", status="succeeded", finished_ago=timedelta(minutes=1))
+        session.execute(
+            update(models.Vulnerability)
+            .where(models.Vulnerability.vuln_id.in_(bank_a[:2]))
+            .values(state="CLOSED", closed_at=hour + timedelta(minutes=6))
+        )
+    replica_b = metrics_sources.tenant_snapshot(now=hour + timedelta(minutes=6, seconds=30))
+
+    assert _named(replica_a) == _named(replica_b) == {"bank-a"}
+    assert replica_b.open_findings[("bank-a", "high")] == 1, "the counts are live"
+    assert replica_b.open_findings[("_other", "high")] == 7
+    # The next hour ranks on the numbers that hour began with.
+    next_hour = metrics_sources.tenant_snapshot(now=hour + timedelta(hours=1, minutes=1))
+    assert _named(next_hour) == {"bank-b"}
+
+
+@requires_postgres
+def test_one_finished_scan_does_not_move_a_tenant_in_or_out_of_the_top_n(tmp_path):
+    """Volume used to be open findings plus scans finished in the last 24
+    hours, so two tenants near the line swapped places every time one of them
+    finished a scan: nine series ended, nine began, and ``_other`` jumped
+    (review of #334). The ranking reads open findings only."""
+    settings = _tenant_settings(tmp_path, top_n=1)
+    with get_session(settings.postgres_url) as session:
+        for tenant_id in ("bank-a", "bank-b"):
+            _tenant(session, tenant_id)
+            for _ in range(5):
+                _seed_finding(session, tenant_id, severity="high")
+    assert _named(metrics_sources.tenant_snapshot()) == {"bank-a"}
+    with get_session(settings.postgres_url) as session:
+        _seed_scan(session, "bank-b", status="succeeded", finished_ago=timedelta(minutes=1))
+    snapshot = metrics_sources.tenant_snapshot()
+    assert _named(snapshot) == {"bank-a"}
+    assert snapshot.scans_finished[("_other", "succeeded")] == 1
+
+
+@requires_postgres
+def test_the_named_tenants_come_from_the_active_rows_of_the_tenants_table(tmp_path):
+    """Candidates are the tenants table, not whoever has findings: a quiet
+    tenant can hold a free slot. A suspended tenant cannot hold one at all —
+    its findings are counted, under ``_other``."""
+    settings = _tenant_settings(tmp_path, top_n=3)
+    with get_session(settings.postgres_url) as session:
+        _tenant(session, "acme")
+        _tenant(session, "quiet")
+        _tenant(session, "paused", status="suspended")
+        _seed_finding(session, "acme", severity="low")
+        for _ in range(5):
+            _seed_finding(session, "paused", severity="low")
+    snapshot = metrics_sources.tenant_snapshot()
+    assert _named(snapshot) == {"acme", "default", "quiet"}
+    assert snapshot.open_findings[("_other", "low")] == 5
+
+
+@requires_postgres
+def test_ties_go_to_the_lower_id_and_odd_severities_are_unknown(tmp_path):
+    """Equal tenants are ordered by id, not by where their rows happen to sit
+    in the table; a severity outside the vocabulary is reported as
+    ``unknown`` instead of failing the whole snapshot."""
+    settings = _tenant_settings(tmp_path, top_n=1)
+    with get_session(settings.postgres_url) as session:
+        _tenant(session, "zeta")
+        _tenant(session, "alpha")
+        _seed_finding(session, "zeta", severity="high")
+        _seed_finding(session, "alpha", severity="informational")
+    snapshot = metrics_sources.tenant_snapshot()
+    assert _named(snapshot) == {"alpha"}
+    assert snapshot.open_findings[("alpha", "unknown")] == 1
+    assert {severity for _, severity in snapshot.open_findings} == set(metrics_sources.TENANT_SEVERITIES)
+
+
+@requires_postgres
+def test_metrics_endpoint_reports_the_tenant_series(tmp_path, monkeypatch):
+    """Through the real route: the one test that fails when a scope the route
+    needs — #311's system scope for these cluster-wide reads — is missing."""
+    client = configured_client(tmp_path, monkeypatch, metrics_tenant_top_n=2)
+    settings = make_settings(tmp_path)
+    with get_session(settings.postgres_url) as session:
+        _tenant(session, "acme")
+        _seed_finding(session, "acme", severity="critical")
+    _expire_scrape_caches()
+    body = client.get("/metrics").text
+    assert 'octo_tenant_open_findings{severity="critical",tenant="acme"} 1.0' in body
+    assert 'octo_tenant_sla_breached_findings{tenant="_other"} 0.0' in body
+
+
+def test_the_tenant_snapshot_is_retaken_when_the_hour_turns(monkeypatch):
+    """The named set changes on the hour, so a snapshot taken in the previous
+    hour is not served into the next one: every replica moves to the new set
+    at its first scrape past the hour, not up to a TTL later."""
+    hour = [100]
+    monkeypatch.setattr(metrics_sources, "membership_epoch", lambda: hour[0])
+    clock = _Clock()
+    calls = []
+    empty = metrics_sources.TenantSnapshot(open_findings={}, sla_breached={}, scans_finished={})
+    collector = metrics.tenant_collector(
+        snapshot=lambda: calls.append(1) or empty, clock=clock, pool_too_busy=lambda: False
+    )
+    _samples(collector)
+    clock.now += 1
+    _samples(collector)
+    assert len(calls) == 1
+    hour[0] += 1
+    clock.now += 1
+    _samples(collector)
+    assert len(calls) == 2, "retaken inside the TTL because the hour turned"
+    clock.now += 1
+    _samples(collector)
+    assert len(calls) == 2
+
+
+def test_the_membership_hour_is_the_wall_clock_hour():
+    assert metrics_sources.membership_epoch(7200.0) == metrics_sources.membership_epoch(10_799.0) == 2
+    assert metrics_sources.membership_epoch(10_800.0) == 3
+    start = datetime(2026, 9, 24, 10, 0)
+    assert metrics_sources.membership_start(start + timedelta(minutes=59, seconds=59)) == start
+    assert metrics_sources.membership_start(start) == start
+
+
+# --- round 2: a snapshot that is not being taken says so (#334) ---------------------------
+
+
+def test_the_warning_says_why_the_snapshot_failed(caplog):
+    """The cause used to reach DEBUG only, so a statement timeout on a large
+    estate read as an unexplained gap in the dashboards."""
+
+    def snapshot():
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    with caplog.at_level(logging.WARNING, logger=metrics.LOG.name):
+        _samples(_collector(snapshot, _Clock()))
+    [record] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "RuntimeError" in record.getMessage()
+    assert "statement timeout" in record.getMessage()
+
+
+def test_a_pool_too_busy_for_the_snapshot_is_logged_once_and_exported(caplog):
+    """Six leader-lock workers each hold a connection for good, so a small pool
+    (5 + 2) never has two free: the fleet and queue series never appeared,
+    ``ShapoclyackNoSensorOnline`` could never fire, and nothing said so
+    (review of #334). A snapshot past its shelf life for that reason is now
+    logged — once per interval, not per scrape — and its age and the refreshes
+    it missed are exported."""
+    clock = _Clock()
+    busy = [False]
+    collector = _collector(_cluster, clock, busy=lambda: busy[0])
+    health = metrics.SnapshotHealthCollector({"cluster": collector})
+    _samples(collector)
+    busy[0] = True
+    with caplog.at_level(logging.WARNING, logger=metrics.LOG.name):
+        for _ in range(20):
+            clock.now += metrics.CLUSTER_TTL_SECONDS
+            _samples(collector)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "OCTO_DB_POOL_SIZE" in warnings[0].getMessage()
+    samples = _samples(health)
+    assert _value(samples, "octo_metrics_snapshot_age_seconds", snapshot="cluster") == 300
+    assert _value(samples, "octo_metrics_snapshot_misses_total", snapshot="cluster", reason="pool_busy") == 20
+    assert _value(samples, "octo_metrics_snapshot_misses_total", snapshot="cluster", reason="error") == 0
+
+    busy[0] = False
+    clock.now += metrics.CLUSTER_TTL_SECONDS
+    _samples(collector)
+    assert _value(_samples(health), "octo_metrics_snapshot_age_seconds", snapshot="cluster") == 0
+
+    # A new episode is a new line, however soon after the last one.
+    busy[0] = True
+    with caplog.at_level(logging.WARNING, logger=metrics.LOG.name):
+        for _ in range(6):
+            clock.now += metrics.CLUSTER_TTL_SECONDS
+            _samples(collector)
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+
+def test_the_snapshot_age_counts_from_start_until_the_first_snapshot():
+    """Before any snapshot there is still an age to alert on: a replica whose
+    pool was too small from the start never had one."""
+    clock = _Clock()
+    collector = _collector(_cluster, clock, busy=lambda: True)
+    health = metrics.SnapshotHealthCollector({"cluster": collector})
+    clock.now += 90
+    _samples(collector)
+    assert _value(_samples(health), "octo_metrics_snapshot_age_seconds", snapshot="cluster") == 90
+
+
+def test_the_registry_reports_both_snapshots():
+    names = {
+        (sample.name, sample.labels.get("snapshot"))
+        for family in metrics.SNAPSHOT_HEALTH.collect()
+        for sample in family.samples
+    }
+    assert ("octo_metrics_snapshot_age_seconds", "cluster") in names
+    assert ("octo_metrics_snapshot_age_seconds", "tenant") in names
+
+
+def test_the_snapshot_age_counts_from_the_last_snapshot_through_failures():
+    """A failure withdraws the series but does not reset the age: it is the
+    last snapshot that was taken, not the last attempt, that the alert reads."""
+    clock = _Clock()
+    answers = [_cluster()]
+
+    def snapshot():
+        if not answers:
+            raise RuntimeError("database is down")
+        return answers.pop()
+
+    collector = _collector(snapshot, clock)
+    health = metrics.SnapshotHealthCollector({"cluster": collector})
+    clock.now += 100
+    _samples(collector)
+    clock.now += metrics.CLUSTER_TTL_SECONDS
+    assert _samples(collector) == {}
+    samples = _samples(health)
+    assert _value(samples, "octo_metrics_snapshot_age_seconds", snapshot="cluster") == metrics.CLUSTER_TTL_SECONDS
+    assert _value(samples, "octo_metrics_snapshot_misses_total", snapshot="cluster", reason="error") == 1
+
+
+def test_tenant_series_that_are_off_are_never_starved(tmp_path, monkeypatch, caplog):
+    """Off, the tenant snapshot reads nothing: a busy pool must not count
+    against it or log that it is starved — on a small pool that would be a
+    warning about a feature nobody turned on."""
+    monkeypatch.setattr(metrics, "_pool_too_busy", lambda: True)
+    metrics_sources.configure(make_settings(tmp_path))
+    clock = _Clock()
+    collector = metrics.tenant_collector(snapshot=lambda: None, clock=clock)
+    health = metrics.SnapshotHealthCollector({"tenant": collector})
+    with caplog.at_level(logging.WARNING, logger=metrics.LOG.name):
+        for _ in range(10):
+            clock.now += metrics.TENANT_TTL_SECONDS
+            _samples(collector)
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    samples = _samples(health)
+    assert _value(samples, "octo_metrics_snapshot_misses_total", snapshot="tenant", reason="pool_busy") == 0
+    assert _value(samples, "octo_metrics_snapshot_age_seconds", snapshot="tenant") == 0
+
+    metrics_sources.configure(make_settings(tmp_path, metrics_tenant_top_n=3))
+    clock.now += metrics.TENANT_TTL_SECONDS
+    _samples(collector)
+    assert _value(_samples(health), "octo_metrics_snapshot_misses_total", snapshot="tenant", reason="pool_busy") == 1

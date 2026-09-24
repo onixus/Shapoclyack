@@ -366,7 +366,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Failed / all finished scans in the trailing 24 hours. SLO 3 is 95 % success across the installation.",
+      "description": "Failed / (succeeded + failed) scans in the trailing 24 hours. Cancelled scans are left out, as SLO 3 leaves them out: an operator's stop is not a failure. SLO 3 is 95 % success across the installation.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -419,7 +419,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (tenant) (max by (tenant, status) (octo_tenant_scans_finished_24h{job=~\"$job\",tenant=~\"$tenant\",status=\"failed\"})) / sum by (tenant) (max by (tenant, status) (octo_tenant_scans_finished_24h{job=~\"$job\",tenant=~\"$tenant\"}))",
+          "expr": "sum by (tenant) (max by (tenant, status) (octo_tenant_scans_finished_24h{job=~\"$job\",tenant=~\"$tenant\",status=\"failed\"})) / sum by (tenant) (max by (tenant, status) (octo_tenant_scans_finished_24h{job=~\"$job\",tenant=~\"$tenant\",status=~\"succeeded|failed\"}))",
           "legendFormat": "{{tenant}}",
           "refId": "A"
         }
@@ -483,7 +483,7 @@
           "uid": "${datasource}"
         },
         "definition": "label_values(octo_tenant_open_findings{job=~\"$job\"}, tenant)",
-        "description": "Tenants that keep their own id on the per-tenant series (the top OCTO_METRICS_TENANT_TOP_N by volume), and _other for all the rest together.",
+        "description": "Tenants that keep their own id on the per-tenant series (the top OCTO_METRICS_TENANT_TOP_N by open findings when the hour began; the set changes only on the hour), and _other for all the rest together.",
         "hide": 0,
         "includeAll": true,
         "label": "Tenant",

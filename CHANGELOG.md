@@ -19,19 +19,22 @@ All notable changes to Shapoclyack are documented in this file.
   15 s however often `/metrics` is asked — it is unauthenticated by default —
   tried once per TTL when it fails, under a transaction-scoped 2 s statement
   timeout, skipped while fewer than two pooled connections are free, and
-  withdrawn rather than frozen on failure. Every Postgres engine gets an
+  withdrawn rather than frozen on failure; `octo_metrics_snapshot_age_seconds`
+  and `octo_metrics_snapshot_misses_total{reason}` say when a snapshot is not
+  being taken, and a pool too busy to take it is logged. Every Postgres engine gets an
   instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout wait
   as a histogram and checkout timeouts as a counter. The private registry now
   carries the `process_*` / `python_gc_*` / `python_info` collectors it never
-  had, and `python -m api` pins uvicorn to one worker so `instance` is one
-  process. `OCTO_METRICS_TENANT_TOP_N` (off by default, capped at 50) adds
+  had. `OCTO_METRICS_TENANT_TOP_N` (off by default, capped at 50) adds
   `octo_tenant_open_findings`, `octo_tenant_sla_breached_findings` and
-  `octo_tenant_scans_finished_24h` for the top N tenants by volume, every
-  other tenant summed into `_other`, ids only from the tenants table; under
-  `prod` it refuses to start without `OCTO_METRICS_TOKEN`. New alerts
-  `ShapoclyackDbPoolSaturated`, `ShapoclyackDbPoolCheckoutTimeouts`,
-  `ShapoclyackSensorsStale` and `ShapoclyackNoSensorOnline`, with `promtool
-  test rules` unit tests. Three dashboards (Platform, Product, Tenants) as
+  `octo_tenant_scans_finished_24h` for the top N active tenants by open
+  findings when the hour began — so every replica names the same tenants and
+  the set changes only on the hour — every other tenant summed into `_other`,
+  ids only from the tenants table; under `prod` it refuses to start without
+  `OCTO_METRICS_TOKEN`. New alerts `ShapoclyackDbPoolSaturated`,
+  `ShapoclyackDbPoolCheckoutTimeouts`, `ShapoclyackSensorsStale`,
+  `ShapoclyackNoSensorOnline` and `ShapoclyackFleetMetricsBlind`, with
+  `promtool test rules` unit tests. Three dashboards (Platform, Product, Tenants) as
   JSON, shipped for the Grafana sidecar by the component
   `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule ship as
   `base/monitoring`. Neither component sets a namespace — the including overlay
@@ -172,6 +175,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **`python -m api` runs exactly one uvicorn worker, whatever
+  `WEB_CONCURRENCY` says** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  uvicorn read that variable when no worker count was passed, and several
+  worker processes behind one port made every per-replica series — the pool
+  gauges, the process view, the request counters — one process's share, picked
+  at random per scrape. Scale with replicas, as the manifests do; nothing in
+  the repository set the variable.
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
   response used to answer `401`, which the console treats as "session over"

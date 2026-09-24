@@ -953,6 +953,8 @@ FLEET_STATES = ("idle", "busy", "error", "stale", "disabled", "quarantined")
 #: beat late — then coarse out to a week, which is where a sleeping laptop's
 #: endpoint agent, or a sensor somebody forgot to delete, ends up.
 HEARTBEAT_AGE_BUCKETS = (30, 60, 90, 120, 300, 900, 3600, 21600, 86400, 604800)
+
+
 @dataclass(frozen=True)
 class FleetHeartbeats:
     """One reading of the fleet, shaped for the /metrics collector (#334)."""

@@ -344,6 +344,17 @@ def test_the_tenants_dashboard_reads_only_the_capped_series():
     assert named and named <= TENANT_FAMILIES
 
 
+def test_the_failed_share_panel_leaves_cancelled_scans_out_like_slo_3():
+    """SLO 3 does not count an operator's stop against the success ratio; the
+    panel that cites it divided by cancelled scans too, so a tenant that
+    cancels a lot looked healthier than it was (review of #334)."""
+    board = _load(DASHBOARD_DIR / "shapoclyack-tenants.json")
+    [expr] = [expr for title, expr, _ in _queries(board) if title == "Failed share of scans by tenant"]
+    numerator, denominator = expr.split(" / ")
+    assert 'status="failed"' in numerator
+    assert 'status=~"succeeded|failed"' in denominator
+
+
 # --- rules -------------------------------------------------------------------
 
 
@@ -442,6 +453,16 @@ def test_an_explicit_promtool_at_another_version_is_refused(tmp_path):
     assert result.returncode != 0
     assert "2.54.1" in result.stderr
     assert "check" not in (tmp_path / "calls.log").read_text(encoding="utf-8")
+
+
+def test_a_promtool_that_is_not_there_is_named_not_swallowed(tmp_path):
+    """``set -e`` ended the script inside the version probe: exit 127 and not
+    a word about which promtool was missing (review of #334)."""
+    missing = tmp_path / "nowhere" / "promtool"
+    result = _run_rules_script(tmp_path, PROMTOOL=str(missing))
+    assert result.returncode == 1
+    assert str(missing) in result.stderr
+    assert "unknown" in result.stderr
 
 
 # --- the registry itself -------------------------------------------------------

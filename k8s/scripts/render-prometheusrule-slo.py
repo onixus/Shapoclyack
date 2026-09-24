@@ -6,8 +6,9 @@ objects with the same groups:
 
 * ``examples/prometheusrule-slo.example.yaml`` — pinned to ``network-scan``, for
   ``kubectl apply -f`` by operators who wire monitoring by hand;
-* ``base/monitoring/prometheusrule-slo.yaml`` — namespace-less, because the
-  opt-in ``base/monitoring`` component (#334) sets it with its own transformer.
+* ``base/monitoring/prometheusrule-slo.yaml`` — namespace-less, like the
+  opt-in ``base/monitoring`` component (#334) it belongs to: the overlay that
+  includes the component sets the namespace.
 
 ``tests/test_prometheus_slo_rules.py`` fails if either drifts from the rules.
 """

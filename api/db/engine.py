@@ -115,7 +115,6 @@ class InstrumentedQueuePool(QueuePool):
             metrics_service.DB_POOL_CHECKOUT_DURATION_SECONDS.observe(time.perf_counter() - started)
 
 
-
 def _pool_class_kwargs(url: str) -> dict[str, Any]:
     """The instrumented pool, where the default would be a ``QueuePool`` anyway.
 

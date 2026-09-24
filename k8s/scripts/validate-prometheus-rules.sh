@@ -43,9 +43,16 @@ promtool_version() {
 }
 
 if [[ -n "${PROMTOOL:-}" ]]; then
-  found="$(promtool_version "$PROMTOOL")"
+  # || true: under pipefail a PROMTOOL that is not there would end the script
+  # here, exit 127 and not a word; the message below names it instead.
+  found="$(promtool_version "$PROMTOOL" || true)"
+  if [[ -z "$found" ]]; then
+    echo "PROMTOOL=$PROMTOOL did not answer --version as promtool (version unknown);" >&2
+    echo "the pin is $PINNED ($IMAGE). Point PROMTOOL at a promtool $PINNED, or unset it." >&2
+    exit 1
+  fi
   if [[ "$found" != "$PINNED" && "${PROMTOOL_ALLOW_VERSION_DRIFT:-}" != "1" ]]; then
-    echo "PROMTOOL=$PROMTOOL is version ${found:-unknown}, the pin is $PINNED ($IMAGE)." >&2
+    echo "PROMTOOL=$PROMTOOL is version $found, the pin is $PINNED ($IMAGE)." >&2
     echo "A pass with it would not mean the CI check passes; set PROMTOOL_ALLOW_VERSION_DRIFT=1" >&2
     echo "to use it anyway." >&2
     exit 1
