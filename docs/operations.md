@@ -844,6 +844,15 @@ legal hold; the retention role then also needs `SELECT` on the policy and hold
 tables. The four extra statements are in
 [data-retention.md](data-retention.md#7-operating-it).
 
+**Before upgrading to `0065` with this layout applied:** the migration
+replaces `audit_events_prune`, which only its owner may do, and the migration
+role is no longer it. `0065` checks first and stops without changing anything,
+naming the statement to run. Run that one upgrade as a superuser or a member of
+`shapoclyack_audit_owner`, or hand the function to the migration role
+beforehand (`ALTER FUNCTION audit_events_prune(timestamp without time zone)
+OWNER TO shapoclyack_api;`) and give both functions back afterwards with the
+statements in [data-retention.md, section 7](data-retention.md#7-operating-it).
+
 A superuser can still do anything at all; what this layout buys is that the
 credential in the API's Secret is not enough.
 
