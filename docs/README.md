@@ -63,6 +63,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
 | [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
 | [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |
+| [Air-gapped installation](air-gap.md) | Images by digest from an internal registry, pull secrets, feed mirrors, the offline enrichment bundle, and what stays unavailable offline |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |

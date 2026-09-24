@@ -6,6 +6,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Air-gapped installations: feed mirrors, an offline enrichment bundle, pull
+  secrets** ([#339](https://github.com/onixus/Shapoclyack/issues/339)). Every
+  enrichment feed can now be pointed at an internal mirror — `EPSS_URL`,
+  `KEV_URL`, `GEOIP_URL`, `ASN_URL`, `NVD_API_URL` (CVSS v4 and the NVD CPE
+  ranges), `DEBIAN_TRACKER_URL`, `UBUNTU_USN_URL`, `MSRC_CVRF_BASE_URL` (the
+  index's month URLs are rebased onto it, and a month on any other host is
+  skipped), `EXPLOITDB_CSV_URL`, `METASPLOIT_MODULES_URL`, `VULSCAN_BASE_URLS` —
+  read by the scripts and the in-process fetchers alike, and every download
+  goes through `scripts/feed_fetch.py` and so through `OCTO_HTTPS_PROXY` /
+  `OCTO_CA_BUNDLE` (#359), refusing an `https`→`http` redirect and recording
+  its source without credentials. Where there is no mirror at all, `make
+  enrichment-bundle` refreshes every feed on a connected host into one
+  deterministic tarball with a manifest (per-file sha256, size, source URL,
+  data date, schema version), and `scripts/enrichment_bundle.py install` loads
+  it: regular files at whitelisted dataset paths only, every size and hash
+  checked against the manifest, a metered stream that stops a compression bomb
+  at what it declared, content checked (a usable dataset is never replaced by
+  a stub, an older bundle is refused without `--allow-older`), and an atomic,
+  journaled swap that a crash rolls back. The `overlays/airgap` overlay rewrites
+  images to an internal registry and adds `base/enrichment-bundle`: a hardened
+  loader CronJob reading an inbox volume, the online refresh suspended, and the
+  API's cold-start refresh run with the new `OCTO_ENRICHMENT_OFFLINE`. Installed
+  datasets report `origin: bundle`, and `GET /api/system` gains
+  `enrichment_bundle` (id, built/installed times) and the MSRC dataset. The
+  `scanner` and `api` ServiceAccounts carry `imagePullSecrets`
+  (`shapoclyack-registry`, a placeholder). `fetch-nuclei-templates.sh` takes
+  templates from a git mirror pinned by commit (`NUCLEI_TEMPLATES_REPO` /
+  `_REF` / `_COMMIT`) without asking nuclei to update, and the scanner now runs
+  naabu and dnsx, as it already ran nuclei, with `-disable-update-check`: each
+  invocation used to attempt an update check against the internet. The
+  procedure is [docs/air-gap.md](docs/air-gap.md).
+
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.

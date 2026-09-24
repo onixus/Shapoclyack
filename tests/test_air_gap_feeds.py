@@ -1,7 +1,7 @@
 """Every enrichment feed can be pointed at a mirror, and nothing phones home (#339).
 
-Before this, three of the eleven upstream URLs could be overridden and none of
-the fetchers but the advisory ones went through the proxy/CA settings of #359.
+Before this, only the EPSS, KEV and vulscan URLs could be overridden, and none
+of the fetchers but the advisory ones went through the proxy/CA settings of #359.
 An air-gapped or proxy-only site therefore lost half its feeds with nothing to
 configure. These tests drive each fetcher — the shell scripts, the Python
 scripts and the in-process fetchers — at a loopback server, a ``file://``
@@ -131,6 +131,34 @@ def _recording_opener(answers, seen: list[str]):
 # --------------------------------------------------------------------------
 # The shared machinery
 # --------------------------------------------------------------------------
+
+
+#: Every feed, the variable that points it at a mirror, and where it is read.
+#: The same table is in docs/air-gap.md; the test below holds the two together.
+OVERRIDES = [
+    ("EPSS_URL", ["scripts/fetch-epss-db.sh"]),
+    ("KEV_URL", ["scripts/fetch-kev-db.sh"]),
+    ("GEOIP_URL", ["scripts/fetch-geoip-db.sh", "scripts/fetch-enrichment.sh"]),
+    ("ASN_URL", ["scripts/fetch-asn-db.sh", "scripts/fetch-enrichment.sh"]),
+    ("NVD_API_URL", ["scripts/fetch-cvss4-db.py", "api/services/cpe_ranges_fetch.py"]),
+    ("DEBIAN_TRACKER_URL", ["api/services/advisories/fetch.py"]),
+    ("UBUNTU_USN_URL", ["api/services/advisories/fetch.py"]),
+    ("MSRC_CVRF_BASE_URL", ["api/services/advisories/fetch.py"]),
+    ("EXPLOITDB_CSV_URL", ["scripts/fetch-exploit-db.py"]),
+    ("METASPLOIT_MODULES_URL", ["scripts/fetch-exploit-db.py"]),
+    ("VULSCAN_BASE_URLS", ["scripts/fetch-vulscan-db.sh"]),
+    ("NUCLEI_TEMPLATES_REPO", ["scripts/fetch-nuclei-templates.sh"]),
+    ("NUCLEI_TEMPLATES_REF", ["scripts/fetch-nuclei-templates.sh"]),
+    ("NUCLEI_TEMPLATES_COMMIT", ["scripts/fetch-nuclei-templates.sh"]),
+]
+
+
+@pytest.mark.parametrize(("variable", "readers"), OVERRIDES, ids=[v for v, _ in OVERRIDES])
+def test_every_feed_override_is_read_where_it_is_documented(variable: str, readers: list[str]) -> None:
+    guide = (REPO_ROOT / "docs" / "air-gap.md").read_text(encoding="utf-8")
+    assert f"`{variable}`" in guide, f"{variable} is not in docs/air-gap.md"
+    for reader in readers:
+        assert variable in (REPO_ROOT / reader).read_text(encoding="utf-8"), f"{reader} does not read {variable}"
 
 
 #: The two implementations: the scripts' (scripts/feed_fetch.py, which has to
