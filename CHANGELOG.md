@@ -196,6 +196,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Sensors no longer fill their disk with finished runs.** `agent/worker.py`
+  left every `runs/<run_id>` it scanned on disk for ever, so a systemd sensor
+  grew without bound and an in-cluster one grew its `emptyDir` until the pod
+  was evicted mid-scan. A run whose archive the API acknowledged (the results
+  call answered 2xx) is now removed at the end of its job, with its per-run
+  state directory; a run the API did not acknowledge is kept
+  `OCTO_AGENT_RUN_RETENTION_HOURS` (default `72`) for debugging, and
+  `OCTO_AGENT_RUN_MAX_BYTES` (default 5 GiB) removes the oldest removable runs
+  past a size budget. The sweep runs at startup, after every job and every
+  15 minutes while idle. Never removed: the run in progress, a cancelled
+  scan's unacknowledged partial results for an hour (#360), and the run the
+  scanner's `latest_run.json` names — the next scan diffs against it, and
+  that diff is where asset events and their webhooks come from, so removing
+  it straight after its upload would have silently stopped them for every
+  sensor-executed scan. One acknowledged run therefore stays until the next
+  replaces it. **On the first start after upgrading**, run directories older
+  than the retention are removed, as is anything past the budget. A sensor
+  whose `OCTO_OUTPUT_DIR` also holds an API's run store (`runs/_tenants`)
+  only removes runs it executed itself.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped
