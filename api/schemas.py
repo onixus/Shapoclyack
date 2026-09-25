@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, StrictInt
 
 # Single source of truth for the intent vocabulary: the resolver in
 # api.services.scan_intents owns which intents exist and what each one does.
@@ -1190,6 +1190,22 @@ class UserInfo(BaseModel):
     # the default tenant (see api/services/memberships.py).
     tenants: list[str] = Field(default_factory=list)
     is_platform_admin: bool = False
+    # Set on the tombstone a data-subject erasure leaves (#332): the username
+    # is kept as a pseudonym, and the account refuses every change.
+    erased_at: str | None = None
+
+
+class UserErasureResult(BaseModel):
+    """What ``POST /api/users/{username}/erase`` removed (#332).
+
+    ``removed`` is counts and flags only — never the erased values, which is
+    also all the audit row records.
+    """
+
+    username: str
+    erased_at: str | None = None
+    already_erased: bool = False
+    removed: dict[str, Any] | None = None
 
 
 class SetUserEmailRequest(BaseModel):
@@ -1430,20 +1446,25 @@ class ChangeOwnPasswordRequest(BaseModel):
     new_password: str = _PASSWORD
 
 
+#: Every status a tenant row can hold (#325; ``tenants.STATUSES``).
+TenantStatus = Literal["active", "suspended", "pending_deletion", "deleting"]
+
+
 class TenantInfo(BaseModel):
     tenant_id: str
     name: str
-    #: ``suspended`` is the one non-active state a tenant has, and the word is
+    #: ``suspended`` is the word for a tenant every gate refuses, and it is
     #: canonical: it is what :func:`api.services.tenants.require_active`
-    #: refuses with, what #325 will set, and what the docs call it. It is
-    #: deliberately *not* ``disabled`` — that word is already an account
-    #: (``PUT /api/users/{u}/disabled``) and an agent
+    #: refuses with, what ``POST /api/tenants/{id}/suspend`` sets, and what the
+    #: docs call it. It is deliberately *not* ``disabled`` — that word is already
+    #: an account (``PUT /api/users/{u}/disabled``) and an agent
     #: (``lifecycle_status``), and a third meaning on a third object is how a
-    #: reader ends up guessing. The literal is narrow on purpose: this model
+    #: reader ends up guessing. ``pending_deletion`` and ``deleting`` (#325) are
+    #: refused the same way. The literal is narrow on purpose: this model
     #: serialises rows read straight out of ``tenants.status``, so anything
     #: written there that is not named here is a 500 on the tenant switcher
     #: rather than a refusal — which is exactly how the mismatch was found.
-    status: Literal["active", "suspended"] = "active"
+    status: TenantStatus = "active"
     created_at: str | None = None
 
 
@@ -3085,6 +3106,157 @@ class TenantQuotaRequest(BaseModel):
     max_assets: int | None = Field(default=None, ge=0, le=10_000_000)
     max_scans_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
     note: str = Field(default="", max_length=500)
+
+
+class RetentionCategoryInfo(BaseModel):
+    """One retention category for one tenant (#332).
+
+    ``default_days`` is the platform's window and ``override_days`` the
+    tenant's own, ``null`` when it inherits; ``effective_days`` is what the
+    reapers apply unless the tenant is on legal hold, when they apply nothing.
+    ``0`` in either means "kept until deleted by hand". ``min_days`` and
+    ``max_days`` bound what an override may be, and are platform configuration.
+    """
+
+    category: str
+    description: str
+    default_days: int
+    override_days: int | None = None
+    effective_days: int
+    min_days: int
+    max_days: int
+    source: Literal["tenant", "default"]
+    # The stored override lies outside the bounds configured *now* (they moved
+    # after it was saved); ``effective_days`` is it clamped to them, which is
+    # what the sweeps apply.
+    out_of_bounds: bool = False
+
+
+class LegalHoldInfo(BaseModel):
+    """A hold in force. ``reason`` and ``set_by`` are ``null`` for anyone but a
+    platform admin: the matter behind a hold can be one the tenant must not
+    learn of from its own console."""
+
+    tenant_id: str
+    reason: str | None = None
+    set_by: str | None = None
+    set_at: str | None = None
+
+
+class RetentionPolicyInfo(BaseModel):
+    """A tenant's retention windows, every category listed, and its hold."""
+
+    tenant_id: str
+    categories: list[RetentionCategoryInfo]
+    note: str = ""
+    updated_at: str | None = None
+    updated_by: str = ""
+    legal_hold: LegalHoldInfo | None = None
+
+
+class RetentionPolicyRequest(BaseModel):
+    """The tenant's overrides, replacing whatever it had (#332).
+
+    Whole-document: a category left out, or sent as ``null``, inherits the
+    platform default. A value outside the platform bounds is refused with 422
+    naming them, never clamped.
+    """
+
+    # Strict: ``true`` or ``"30"`` is a client bug, not a number of days, and a
+    # coerced 1 would be a one-day window nobody asked for.
+    overrides: dict[str, StrictInt | None] = Field(default_factory=dict)
+    note: str = Field(default="", max_length=500)
+
+
+class LegalHoldRequest(BaseModel):
+    """Why the tenant is on hold. Required: a hold nobody can explain is one
+    nobody dares release."""
+
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SuspendTenantRequest(BaseModel):
+    """Why the tenant is being suspended (#325), and whether its credentials go.
+
+    ``revoke_credentials`` is on by default: the tenant's provisioning keys and
+    service tokens are revoked and stay revoked after a resume. Off keeps them
+    for a short suspension — they are refused by the status gate on every
+    request either way.
+    """
+
+    reason: str = Field(min_length=1, max_length=1000)
+    revoke_credentials: bool = True
+
+
+class TenantDeletionRequest(BaseModel):
+    """Step one of a tenant's deletion (#325). ``confirm`` is the tenant id,
+    typed: the API refuses anything else, whatever the console did."""
+
+    confirm: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class TenantDeletionApproval(BaseModel):
+    """Step two: start the purge. The tenant id typed again, by the approver."""
+
+    confirm: str = Field(min_length=1, max_length=64)
+
+
+class TenantDeletionStepInfo(BaseModel):
+    """One store of a purge: where it is, how often it was tried, what it removed."""
+
+    step: str
+    position: int
+    state: Literal["pending", "running", "waiting", "failed", "done", "skipped"]
+    attempts: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    #: The last failure, or why the step is waiting or was skipped.
+    last_error: str | None = None
+    counts: dict[str, Any] = Field(default_factory=dict)
+
+
+class TenantDeletionInfo(BaseModel):
+    """One entry of the deletion journal (#325). A ``completed`` one carries the
+    tombstone in ``outcome``: counts per store, nothing the tenant wrote."""
+
+    deletion_id: str
+    tenant_id: str
+    state: Literal["pending", "cancelled", "purging", "blocked", "completed"]
+    reason: str
+    requested_by: str
+    requested_at: str | None = None
+    #: The end of the grace period; the purge cannot be approved before it.
+    purge_after: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    cancelled_by: str | None = None
+    cancelled_at: str | None = None
+    completed_at: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    next_attempt_at: str | None = None
+    outcome: dict[str, Any] | None = None
+    steps: list[TenantDeletionStepInfo] = Field(default_factory=list)
+
+
+class TenantLifecycleInfo(BaseModel):
+    """A tenant's status, why, its legal hold and its deletion, for a platform
+    admin (#325). ``status`` is ``deleted`` for an id the journal says was
+    purged; ``cut`` is what a suspension or deletion request just revoked."""
+
+    tenant_id: str
+    name: str | None = None
+    status: Literal["active", "suspended", "pending_deletion", "deleting", "deleted"]
+    status_reason: str | None = None
+    status_changed_at: str | None = None
+    status_changed_by: str | None = None
+    legal_hold: LegalHoldInfo | None = None
+    deletion: TenantDeletionInfo | None = None
+    history: list[TenantDeletionInfo] = Field(default_factory=list)
+    grace_days: int = 0
+    two_person: bool = True
+    cut: dict[str, Any] | None = None
 
 
 class EndpointAgentPolicyRequest(BaseModel):

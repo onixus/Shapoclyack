@@ -347,20 +347,18 @@ def endpoint_inventory_status(settings: Settings) -> dict[str, Any]:
     """Endpoint-inventory footprint, staleness, and retention posture (S9).
 
     Fail-soft like every other panel here: an unconfigured Postgres or a
-    disabled feature degrades to ``None`` counts rather than raising. Also
-    refreshes the ``octo_endpoint_devices`` gauge, which otherwise only moves
-    on a retention sweep.
+    disabled feature degrades to ``None`` counts rather than raising. The
+    ``octo_endpoint_devices`` gauge is no longer refreshed here: it is read at
+    scrape time since #334, so it does not depend on which replica served the
+    last System page view.
     """
     counts: dict[str, int | None] = {"devices_total": None, "devices_stale": None}
     if settings.endpoint_inventory_enabled:
         try:
             from api.services import endpoint_inventory as endpoint_inventory_service
-            from api.services import metrics as metrics_service
 
             tallied = endpoint_inventory_service.device_counts()
             counts = {"devices_total": tallied["total"], "devices_stale": tallied["stale"]}
-            metrics_service.ENDPOINT_DEVICES.labels("active").set(tallied["active"])
-            metrics_service.ENDPOINT_DEVICES.labels("stale").set(tallied["stale"])
         except Exception:  # noqa: BLE001 - fail-soft status view
             LOG.warning("system_status: could not count endpoint devices", exc_info=True)
 
