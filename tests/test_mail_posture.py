@@ -19,6 +19,10 @@ from scanner.pipeline.mail_posture import (
     check_mail_posture,
 )
 
+#: What every stage call below passes as ``resolvers`` and every dnsx fake
+#: asserts it received, so a stage that drops the argument fails here.
+RESOLVERS = ["192.0.2.53:53"]
+
 PUBLIC_IP = "93.184.216.34"
 
 
@@ -34,10 +38,12 @@ def _patch_dnsx(monkeypatch, *, mx: dict | None = None, txt: dict | None = None)
     """
     kinds: list[str] = []
 
-    def fake_mx(domains, output_dir, *, timeout, retries):
+    def fake_mx(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {domain: dict((mx or {}).get(domain, {})) for domain in domains}
 
-    def fake_txt(names, output_dir, *, kind, timeout, retries):
+    def fake_txt(names, output_dir, *, kind, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         kinds.append(kind)
         return {name: dict((txt or {}).get(name, {})) for name in names if name in (txt or {})}
 
@@ -103,14 +109,16 @@ def _serve(monkeypatch, responses: list[_FakeResponse]) -> list[str]:
 
 
 def test_mail_posture_disabled(tmp_path: Path):
-    result = check_mail_posture(["example.com"], MailPostureConfig(enabled=False), tmp_path)
+    result = check_mail_posture(
+        ["example.com"], MailPostureConfig(enabled=False), tmp_path, resolvers=RESOLVERS
+    )
     assert result["skipped_reason"] == "mail_posture.disabled"
     assert (tmp_path / "mail_posture.json").exists()
     assert (tmp_path / "mail_posture_findings.txt").exists()
 
 
 def test_mail_posture_no_domains(tmp_path: Path):
-    result = check_mail_posture([], MailPostureConfig(enabled=True), tmp_path)
+    result = check_mail_posture([], MailPostureConfig(enabled=True), tmp_path, resolvers=RESOLVERS)
     assert result["skipped_reason"] == "no_domains"
     assert (tmp_path / "mail_posture.json").exists()
 
@@ -121,6 +129,7 @@ def test_mail_posture_truncates_at_max_domains(tmp_path: Path, monkeypatch):
         ["a.example", "b.example"],
         MailPostureConfig(enabled=True, max_domains=1, mta_sts_http=False),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["truncated"] is True
     assert result["seed_domains"] == ["a.example"]
@@ -139,6 +148,7 @@ def test_dkim_query_budget_truncates_the_domain_list(tmp_path: Path, monkeypatch
             mta_sts_http=False,
         ),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["truncated"] is True
     checked = [
@@ -153,7 +163,8 @@ def test_mx_set_is_capped_per_domain(tmp_path: Path, monkeypatch):
     many = [f"{index} mx{index}.example.com" for index in range(mail_posture.MAX_MX_PER_DOMAIN + 3)]
     _patch_dnsx(monkeypatch, mx={"example.com": {"mx": many}})
     result = check_mail_posture(
-        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     mx = result["domains"]["example.com"]["mx"]
     assert len(mx["entries"]) == mail_posture.MAX_MX_PER_DOMAIN
@@ -206,7 +217,8 @@ def test_spf_include_cycle_stops_and_is_reported(tmp_path: Path, monkeypatch):
     kinds = _patch_dnsx(monkeypatch, mx={"a.example": {"mx": ["10 mx.a.example"]}}, txt=txt)
 
     result = check_mail_posture(
-        ["a.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["a.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
 
     # Terminates: without the visited set this recurses until the process dies.
@@ -220,7 +232,7 @@ def test_spf_include_cycle_stops_and_is_reported(tmp_path: Path, monkeypatch):
 def test_spf_lookup_limit_is_a_finding(tmp_path: Path, monkeypatch):
     record = "v=spf1 " + " ".join(f"include:i{index}.example" for index in range(12)) + " -all"
     evaluation = mail_posture._evaluate_spf(
-        "example.com", record, tmp_path, timeout=5, retries=0
+        "example.com", record, tmp_path, timeout=5, retries=0, resolvers=RESOLVERS
     )
     assert evaluation["lookup_limit_exceeded"] is True
     _, findings = _classify_spf("example.com", [record], evaluation)
@@ -251,7 +263,8 @@ def test_dmarc_policies():
 def test_dkim_unknown_selector_is_not_checked_not_a_failure(tmp_path: Path, monkeypatch):
     _patch_dnsx(monkeypatch, mx={"example.com": {"mx": ["10 mx.example.com"]}})
     result = check_mail_posture(
-        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     dkim = result["domains"]["example.com"]["dkim"]
     # Selectors are arbitrary: silence is not evidence of absence.
@@ -272,6 +285,7 @@ def test_dkim_found_selector_and_revoked_key(tmp_path: Path, monkeypatch):
             enabled=True, dkim_selectors=["default", "google"], mta_sts_http=False
         ),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     dkim = result["domains"]["example.com"]["dkim"]
     assert dkim["status"] == "present"
@@ -328,7 +342,9 @@ def test_mta_sts_http_is_skipped_without_the_txt_record(tmp_path: Path, monkeypa
     _patch_dnsx(monkeypatch, mx={"example.com": {"mx": ["10 mx.example.com"]}})
     monkeypatch.setattr(mail_posture, "_fetch_mta_sts_policy", explode)
 
-    result = check_mail_posture(["example.com"], MailPostureConfig(enabled=True), tmp_path)
+    result = check_mail_posture(
+        ["example.com"], MailPostureConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     assert result["domains"]["example.com"]["mta_sts"]["status"] == "missing"
     assert "mta_sts_missing" in _kinds(result)
 
@@ -343,7 +359,8 @@ def test_domain_without_mx_needs_spf_reject_and_dmarc_reject(tmp_path: Path, mon
     }
     _patch_dnsx(monkeypatch, txt=txt)
     result = check_mail_posture(
-        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     finding = next(f for f in result["findings"] if f["kind"] == "no_mx_domain_spoofable")
     assert finding["severity"] == "high"
@@ -358,7 +375,8 @@ def test_domain_without_mx_that_is_locked_down_has_no_finding(tmp_path: Path, mo
     }
     _patch_dnsx(monkeypatch, txt=txt)
     result = check_mail_posture(
-        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     assert "no_mx_domain_spoofable" not in _kinds(result)
 
@@ -367,7 +385,8 @@ def test_null_mx_domain_is_still_required_to_be_unspoofable(tmp_path: Path, monk
     txt = {"parked.example": {"txt": ["v=spf1 ~all"]}}
     _patch_dnsx(monkeypatch, mx={"parked.example": {"mx": ["0 ."]}}, txt=txt)
     result = check_mail_posture(
-        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["parked.example"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["domains"]["parked.example"]["mx"]["null_mx"] is True
     assert "no_mx_domain_spoofable" in _kinds(result)
@@ -376,7 +395,8 @@ def test_null_mx_domain_is_still_required_to_be_unspoofable(tmp_path: Path, monk
 def test_domain_with_no_dns_answer_is_not_checked(tmp_path: Path, monkeypatch):
     _patch_dnsx(monkeypatch)
     result = check_mail_posture(
-        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path
+        ["example.com"], MailPostureConfig(enabled=True, mta_sts_http=False), tmp_path,
+        resolvers=RESOLVERS,
     )
     record = result["domains"]["example.com"]
     assert record["status"] == "not_checked"
@@ -402,6 +422,7 @@ def test_spf_diamond_include_is_not_a_cycle():
             Path("."),
             timeout=5,
             retries=0,
+            resolvers=RESOLVERS,
         )
     assert result["cycles"] == []
     assert "shared.example" in result["visited"]
@@ -417,6 +438,7 @@ def test_spf_self_reference_is_still_a_cycle():
             Path("."),
             timeout=5,
             retries=0,
+            resolvers=RESOLVERS,
         )
     assert result["cycles"] == ["loop.example->seed.example"]
 

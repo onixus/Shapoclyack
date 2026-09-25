@@ -12,6 +12,8 @@ from scanner.pipeline.hostnames import (
     primary_hostname,
 )
 
+RESOLVERS = ["192.0.2.53:53"]
+
 
 def test_merge_name_lists_deduplicates():
     assert merge_name_lists(["App.Example.com.", "app.example.com"], ["other.example.com"]) == [
@@ -74,6 +76,7 @@ def test_enrich_discovery_hostnames_forward_only(tmp_path: Path, monkeypatch):
         discovery,
         timeout=30,
         retries=1,
+        resolvers=RESOLVERS,
     )
     assert called["ptr"] is False
     assert result["10.0.0.10"]["primary"] == "web.local"

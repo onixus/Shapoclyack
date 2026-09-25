@@ -7,10 +7,12 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .config_schema import BruteForceSubdomainConfig, CertificateTransparencyConfig, DiscoveryConfig
+from .dnsx import command as dnsx_command
 from .utils import load_json, run_command, save_json, write_lines
 
 DEFAULT_WORDLIST_PATH = Path(__file__).resolve().parents[2] / "scanner" / "data" / "wordlists" / "subdomains-small.txt"
@@ -43,6 +45,7 @@ def reverse_map_from_ptr(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, list[str]]:
     """Run dnsx PTR lookup for alive IPs. Returns ip -> PTR names."""
     if not hosts:
@@ -55,16 +58,7 @@ def reverse_map_from_ptr(
     write_lines(input_file, sorted(set(hosts)))
 
     run_command(
-        [
-            "dnsx",
-            "-l",
-            str(input_file),
-            "-ptr",
-            "-json",
-            "-silent",
-            "-o",
-            str(json_out),
-        ],
+        dnsx_command(input_file, ["-ptr"], json_out, resolvers=resolvers),
         timeout=timeout,
         retries=retries,
     )
@@ -141,6 +135,7 @@ def enrich_discovery_hostnames(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, list[str] | str]]:
     """Resolve forward (input FQDNs) and/or reverse (PTR) names for alive hosts."""
     hostnames_cfg = discovery.hostnames
@@ -168,6 +163,7 @@ def enrich_discovery_hostnames(
             output_dir,
             timeout=timeout,
             retries=retries,
+            resolvers=resolvers,
         )
         logging.info("discovery hostnames: PTR resolved for %s IP(s)", len(reverse))
 

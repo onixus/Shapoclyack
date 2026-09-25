@@ -15,7 +15,10 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # DNS
+    # Cluster DNS: the API's Service name and every scan target. The scanner
+    # hands dnsx the pod's /etc/resolv.conf nameserver as -r, so this rule
+    # covers dnsx too. A sensor with dns.resolvers set in its scanner config
+    # asks those addresses instead and needs UDP/TCP 53 to them added here.
     - to:
         - namespaceSelector: {}
       ports:
