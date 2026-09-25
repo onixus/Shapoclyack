@@ -27,14 +27,17 @@ gates, all mandatory:
 3. **Address.** Every address of a nameserver must pass
    ``safe_http.is_public_address``. An NS record is written by the scanned
    party, so ``ns1.target.example -> 10.0.0.5`` would turn the probe into a
-   TCP/53 connection inside the agent's own network.
+   TCP/53 connection inside the agent's own network. The gate is only worth
+   something if the checked address is the one dialled, which is why the
+   transfer is spoken here over one TCP connection to that IP literal and not
+   through ``dnsx -axfr`` -- dnsx chases the zone's NS set on its own and
+   dials addresses nobody checked (see ``_probe_axfr``).
 
-And the transfer never reaches a log or an artifact. ``utils.run_command``
-logs both the command line and the child's stdout into the run log, which
-outlives the artifacts and is not a restricted class -- a successful transfer
-would put the target's entire zone in ``scan.log``. The probe therefore drives
-``subprocess`` directly, keeps the output in memory, and records only the fact
-of the transfer and the number of records.
+And the transfer never reaches a log or an artifact. ``scan.log`` outlives the
+artifacts and is not a restricted class, so a successful transfer must not
+land there: the answer is parsed in memory, owner names are compared with the
+apex and dropped, RDATA is never decoded, and only the fact of the transfer
+and the number of records are kept.
 
 HONESTY about sources, per the module invariant of #182:
 
@@ -56,11 +59,11 @@ Absence of data never yields ``ok``: a domain nothing answered for is
 from __future__ import annotations
 
 import ipaddress
-import json
 import logging
 import re
 import secrets
-import subprocess
+import socket
+import struct
 import time
 from pathlib import Path
 from typing import Any
@@ -90,6 +93,25 @@ _SOA_TIMER_RANGES = {
 }
 
 _CAA_RE = re.compile(r'^\s*(\d+)\s+([a-z0-9]+)\s+"?([^"]*)"?\s*$', re.IGNORECASE)
+
+#: A transfer is written by the scanned party too, so its size is capped on
+#: this side. Only the count is kept; past the cap it is a lower bound.
+MAX_AXFR_BYTES = 16 * 1024 * 1024
+
+_DNS_PORT = 53
+_CLASS_IN = 1
+_TYPE_SOA = 6
+_TYPE_AXFR = 252
+#: Labels plus compression pointers one name may take. A legal name has at
+#: most 127 labels; the cap exists for a pointer chain that loops.
+_MAX_NAME_STEPS = 256
+#: RFC 1035/2136 mnemonics, for the reason string only.
+_RCODE_NAMES = {1: "formerr", 2: "servfail", 3: "nxdomain", 4: "notimp", 5: "refused", 9: "notauth"}
+#: The RCODEs that are a server saying no to the transfer. SERVFAIL is not one:
+#: it says the server could not answer (a secondary that has not loaded the
+#: zone, say), nothing about its transfer policy -- and neither does an RCODE
+#: this module has no name for.
+_REFUSAL_RCODES = frozenset({1, 3, 4, 5, 9})
 
 
 def _finding(kind: str, severity: str, domain: str, **extra: Any) -> dict[str, Any]:
@@ -412,6 +434,213 @@ def _classify_wildcard(
     return block, findings
 
 
+class _AxfrProtocolError(Exception):
+    """The peer sent something that is not an answer to this transfer."""
+
+
+def _zone_labels(domain: str) -> tuple[bytes, ...] | None:
+    """The zone apex as lowercased wire labels, or None if it cannot be one."""
+    try:
+        encoded = domain.rstrip(".").encode("idna")
+    except UnicodeError:
+        return None
+    labels = tuple(encoded.lower().split(b"."))
+    if not all(labels) or any(len(label) > 63 for label in labels):
+        return None
+    if sum(len(label) + 1 for label in labels) + 1 > 255:
+        return None
+    return labels
+
+
+def _axfr_query(query_id: int, zone: tuple[bytes, ...]) -> bytes:
+    """One length-prefixed AXFR query (RFC 5936): no RD, no EDNS, no TSIG."""
+    qname = b"".join(bytes([len(label)]) + label for label in zone) + b"\x00"
+    message = (
+        struct.pack("!HHHHHH", query_id, 0, 1, 0, 0, 0)
+        + qname
+        + struct.pack("!HH", _TYPE_AXFR, _CLASS_IN)
+    )
+    return struct.pack("!H", len(message)) + message
+
+
+def _read_name(message: bytes, offset: int) -> tuple[tuple[bytes, ...], int]:
+    """One possibly compressed name -> (lowercased labels, offset past it).
+
+    The message is written by the scanned party, so every length and pointer
+    is bounds-checked and the pointer chain is capped: a pointer to itself
+    must end in :class:`_AxfrProtocolError`, not in a loop.
+    """
+    labels: list[bytes] = []
+    resume: int | None = None
+    wire_length = 1
+    for _ in range(_MAX_NAME_STEPS):
+        if offset >= len(message):
+            raise _AxfrProtocolError("name runs past the message")
+        length = message[offset]
+        if length == 0:
+            return tuple(labels), offset + 1 if resume is None else resume
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(message):
+                raise _AxfrProtocolError("truncated compression pointer")
+            if resume is None:
+                resume = offset + 2
+            offset = ((length & 0x3F) << 8) | message[offset + 1]
+            continue
+        if length & 0xC0:
+            raise _AxfrProtocolError("unsupported label type")
+        label = message[offset + 1 : offset + 1 + length]
+        wire_length += length + 1
+        if len(label) != length or wire_length > 255:
+            raise _AxfrProtocolError("label runs past the message or the name is too long")
+        labels.append(label.lower())
+        offset += 1 + length
+    raise _AxfrProtocolError("compression pointer loop")
+
+
+def _parse_axfr_message(
+    message: bytes, query_id: int
+) -> tuple[int, list[tuple[tuple[bytes, ...], int]]]:
+    """``(rcode, [(owner, type), ...])`` of one transfer message.
+
+    RDATA is skipped unread: owner and type are all the counting needs, and
+    they are dropped by the caller once compared against the apex.
+    """
+    if len(message) < 12:
+        raise _AxfrProtocolError("message shorter than a DNS header")
+    message_id, flags, qdcount, ancount, _, _ = struct.unpack_from("!HHHHHH", message)
+    if message_id != query_id or not flags & 0x8000 or (flags >> 11) & 0xF:
+        raise _AxfrProtocolError("not an answer to this query")
+    offset = 12
+    for _ in range(qdcount):
+        _, offset = _read_name(message, offset)
+        offset += 4
+    answers: list[tuple[tuple[bytes, ...], int]] = []
+    for _ in range(ancount):
+        owner, offset = _read_name(message, offset)
+        if offset + 10 > len(message):
+            raise _AxfrProtocolError("record header runs past the message")
+        rrtype, _, _, rdlength = struct.unpack_from("!HHIH", message, offset)
+        offset += 10 + rdlength
+        if offset > len(message):
+            raise _AxfrProtocolError("record data runs past the message")
+        answers.append((owner, rrtype))
+    return flags & 0xF, answers
+
+
+def _recv_exact(sock: socket.socket, size: int, deadline: float) -> bytes:
+    """``size`` bytes -- fewer only if the peer closed the stream first.
+
+    The remaining budget is pushed onto the socket before every read, so a
+    peer that trickles one byte at a time cannot outlive the deadline.
+    """
+    chunks: list[bytes] = []
+    while size > 0:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("AXFR deadline exceeded")
+        sock.settimeout(remaining)
+        chunk = sock.recv(min(size, 65_536))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+
+def _cut_short(records: int, reason: str) -> tuple[str, str | None, int]:
+    """A transfer that ended before its closing SOA.
+
+    Records past the opening SOA were handed out however the stream ended, so
+    that is still ``open`` -- with ``records`` as a lower bound, which the
+    reason says. With none, nothing was disclosed and nothing was refused.
+    """
+    if records:
+        return "open", reason, records
+    return "error", reason, 0
+
+
+def _axfr_over_tcp(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    zone: tuple[bytes, ...],
+    *,
+    deadline: float,
+) -> tuple[str, str | None, int]:
+    """One AXFR over one TCP connection to one approved IP literal.
+
+    Returns ``(status, reason, records)``. Nothing is resolved here -- the
+    connection goes to the literal and nowhere else, whatever the zone says
+    about its own nameservers -- and nothing but the count survives: owner
+    names are compared with the apex and dropped, RDATA is never decoded.
+    """
+    query_id = secrets.randbits(16)
+    try:
+        sock = socket.create_connection(
+            (str(address), _DNS_PORT), timeout=max(deadline - time.perf_counter(), 0.001)
+        )
+    except OSError:
+        return "error", "connect_failed", 0
+
+    started = False
+    records = 0
+    received = 0
+    try:
+        with sock:
+            sock.sendall(_axfr_query(query_id, zone))
+            while True:
+                prefix = _recv_exact(sock, 2, deadline)
+                if not prefix and not started:
+                    # A clean hang-up before a single byte of answer: a
+                    # refusal some servers phrase this way.
+                    return "closed", "connection_closed", 0
+                if len(prefix) < 2:
+                    return _cut_short(records, "transfer_incomplete")
+                (length,) = struct.unpack("!H", prefix)
+                received += 2 + length
+                if received > MAX_AXFR_BYTES:
+                    return _cut_short(records, "transfer_capped")
+                message = _recv_exact(sock, length, deadline)
+                if len(message) < length:
+                    # The server had started to answer; whatever it was going
+                    # to say, a stream cut mid-message is not a refusal.
+                    return _cut_short(records, "transfer_incomplete")
+
+                rcode, answers = _parse_axfr_message(message, query_id)
+                if rcode:
+                    if started:
+                        return _cut_short(records, "transfer_incomplete")
+                    reason = f"rcode_{_RCODE_NAMES.get(rcode, rcode)}"
+                    return ("closed" if rcode in _REFUSAL_RCODES else "error"), reason, 0
+                for owner, rrtype in answers:
+                    apex_soa = rrtype == _TYPE_SOA and owner == zone
+                    if not started:
+                        if not apex_soa:
+                            raise _AxfrProtocolError("transfer does not open with the zone's SOA")
+                        started = True
+                    elif apex_soa:
+                        if records:
+                            return "open", None, records
+                        return "closed", "soa_only", 0
+                    else:
+                        records += 1
+                if not started:
+                    # NOERROR with nothing in it: another way of saying no.
+                    return "closed", "empty_answer", 0
+    except _AxfrProtocolError:
+        return _cut_short(records, "malformed_response")
+    except TimeoutError:
+        if received:
+            return _cut_short(records, "transfer_incomplete")
+        return "error", "timeout", 0
+    except ConnectionError:
+        if received:
+            return _cut_short(records, "transfer_incomplete")
+        # Unlike a clean hang-up, a reset may as well come from a middlebox on
+        # this side of the wire; it says nothing about the nameserver.
+        return "error", "connection_reset", 0
+    except OSError:
+        return _cut_short(records, "connection_error")
+
+
 def _probe_axfr(
     domain: str,
     nameserver: str,
@@ -422,14 +651,18 @@ def _probe_axfr(
     """Try one zone transfer against one nameserver. Never raises, never logs
     the zone.
 
-    ``subprocess`` is driven directly instead of ``utils.run_command`` for one
-    reason: ``run_command`` logs the child's stdout into the run log, and on a
-    successful transfer that stdout *is* the target's entire zone. Nothing but
-    the record count leaves this function, and no ``-o`` file is written, so
-    the zone reaches neither ``scan.log`` nor the artifact directory.
+    The transfer is spoken here, over one TCP connection to the first gated
+    address, and not through ``dnsx -axfr``. dnsx 1.2.3 (retryabledns
+    v1.0.111) cannot be pinned: given ``-resolver X`` it asks X for the zone's
+    NS set, resolves those names through X and attempts AXFR over TCP/53
+    against every answer -- none of which passed the gate below -- and only
+    then tries X itself, over UDP, which real servers refuse. Under ``-json``
+    it also prints a line for a refused transfer. All three verified live on
+    2026-09-25; the dialled address is now the checked one by construction.
 
-    The nameserver is dialled by validated IP literal, so the address checked
-    here is the address used -- the same pinning rule as ``safe_http``.
+    Nothing but the record count leaves this function: no file is written and
+    no log line carries a name or an RDATA, so the zone reaches neither
+    ``scan.log`` nor the artifact directory.
     """
     parsed: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for address in addresses:
@@ -454,76 +687,31 @@ def _probe_axfr(
             "records": 0,
         }
 
-    address = parsed[0]
-    # dnsx appends ":53" only to a value with no colon, and Go reads an
-    # unbracketed "2001:500:8f::53:53" as one IPv6 host -- not the one that
-    # passed the gate above. Brackets keep the checked address the dialled one.
-    resolver = f"[{address}]:53" if address.version == 6 else f"{address}:53"
-    try:
-        completed = subprocess.run(
-            # -disable-update-check: no phone-home from an air-gapped scan (#339).
-            ["dnsx", "-axfr", "-resolver", resolver, "-json", "-silent", "-disable-update-check"],
-            input=f"{domain}\n",
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        # Deliberately logs the exception type and not the output: a transfer
-        # that partially succeeded before the timeout would otherwise print.
+    zone = _zone_labels(domain)
+    if zone is None:
+        return {
+            "nameserver": nameserver,
+            "status": "skipped",
+            "reason": "invalid_domain",
+            "records": 0,
+        }
+
+    deadline = time.perf_counter() + max(1.0, float(timeout))
+    status, reason, records = _axfr_over_tcp(parsed[0], zone, deadline=deadline)
+    if status == "open":
         LOG.warning(
-            "dns_hygiene: AXFR probe against %s for %s failed: %s",
-            nameserver,
+            "dns_hygiene: zone transfer succeeded for %s at %s (%d record(s)%s)",
             domain,
-            type(exc).__name__,
+            nameserver,
+            records,
+            f", {reason}, count is a lower bound" if reason else "",
         )
-        return {"nameserver": nameserver, "status": "error", "reason": "probe_failed", "records": 0}
-
-    records = _count_axfr_records(completed.stdout)
-    if records <= 0:
-        return {"nameserver": nameserver, "status": "closed", "reason": None, "records": 0}
-    LOG.warning(
-        "dns_hygiene: zone transfer succeeded for %s at %s (%d record(s))",
-        domain,
-        nameserver,
-        records,
-    )
-    return {"nameserver": nameserver, "status": "open", "reason": None, "records": records}
-
-
-def _count_axfr_records(stdout: str) -> int:
-    """How many records a transfer returned. The records themselves are dropped.
-
-    dnsx has changed the shape of its ``-axfr`` JSON between releases, so every
-    list-valued field of the object is counted rather than one hard-coded key,
-    and a non-JSON line counts as one record. The count is the only thing this
-    module is allowed to keep, so it is worth being liberal about finding it.
-    """
-    total = 0
-    for line in (stdout or "").splitlines():
-        if not line.strip():
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            total += 1
-            continue
-        if not isinstance(parsed, dict):
-            total += 1
-            continue
-        counted = False
-        for key in ("axfr", "all", "raw", "records"):
-            value = parsed.get(key)
-            if isinstance(value, list):
-                total += len(value)
-                counted = True
-            elif isinstance(value, dict) and isinstance(value.get("records"), list):
-                total += len(value["records"])
-                counted = True
-        if not counted:
-            total += 1
-    return total
+    elif status == "error":
+        # The reason is one of the fixed strings above, never peer data.
+        LOG.warning(
+            "dns_hygiene: AXFR probe against %s for %s failed: %s", nameserver, domain, reason
+        )
+    return {"nameserver": nameserver, "status": status, "reason": reason, "records": records}
 
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
