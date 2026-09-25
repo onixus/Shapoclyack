@@ -746,7 +746,10 @@ class AgentDeploymentSnippetResponse(BaseModel):
     systemd_oneliner: str
     docker_run: str
     docker_compose: str
+    # Holds no key: the Deployment reads it from a Secret, which the command
+    # below creates. Only the command carries the key (or the placeholder).
     kubernetes_yaml: str
+    kubernetes_secret_command: str
 
 
 class CreateAgentDeploymentKeyRequest(BaseModel):

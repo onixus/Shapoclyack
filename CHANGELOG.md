@@ -246,6 +246,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The console's sensor snippets run an image that exists, and can scan.**
+  **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
+  which is not published; the Docker, Compose and Kubernetes snippets now run
+  `ghcr.io/onixus/shapoclyack-aio` at the API's own release tag. The
+  Kubernetes one was a bare Deployment in `default` with the provisioning key
+  as a literal `value:` and no securityContext, so naabu and pulse — which
+  carry `cap_net_raw,cap_net_admin+eip` — failed `execve` with EPERM. It is now
+  `examples/agent-deployment.example.yaml`: a namespace labelled
+  `pod-security.kubernetes.io/enforce=privileged`, `NET_RAW`/`NET_ADMIN` with
+  `allowPrivilegeEscalation: true`, and otherwise seccomp `RuntimeDefault`,
+  non-root, `drop: [ALL]`, a read-only root with sized `emptyDir`s for
+  `scanner/output`, `scanner/state`, `/tmp` and `$HOME`, and no
+  service-account token. The key is read from Secret `shapoclyack-agent`;
+  the manifest never contains it, and a new `kubernetes_secret_command` in
+  `GET`/`POST /api/agent/deployment-command` creates the Secret by piping the
+  key into `kubectl … --from-file=provisioning_key=/dev/stdin`. The Docker
+  snippets add `--cap-add NET_RAW --cap-add NET_ADMIN`, as
+  `scripts/install-agent.sh --docker` already did.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

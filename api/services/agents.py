@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1049,6 +1050,21 @@ DEPLOYMENT_KEY_LABEL = "Web UI Deployment Key"
 # so it happens on POST, never as a side effect of a GET.
 DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
 
+# The image the snippets run the sensor from: the ``agent`` package and the
+# scanner toolchain, as the in-cluster scanner-executor and
+# k8s/shapoclyack/examples/agent-deployment.example.yaml run it. It has no
+# ENTRYPOINT, so ``python -m agent`` is the whole command; the scanner-only
+# image's ``scanner.main`` ENTRYPOINT would take it as arguments. Tagged with
+# this API's release rather than ``latest``, so a sensor deployed from the
+# snippets reports the version the fleet page compares against
+# (LATEST_AGENT_VERSION), not whatever ``latest`` was when its node pulled.
+SENSOR_IMAGE = f"ghcr.io/onixus/shapoclyack-aio:shapoclyack-{__version__}"
+# The Kubernetes snippet's namespace, the example's, which it labels to admit
+# NET_RAW/NET_ADMIN; and the Secret its Deployment reads the key from.
+SENSOR_K8S_NAMESPACE = "network-scan-executor"
+SENSOR_K8S_SECRET = "shapoclyack-agent"
+SENSOR_K8S_SECRET_KEY = "provisioning_key"
+
 
 def get_deployment_snippets(
     tenant_id: str,
@@ -1066,6 +1082,11 @@ def get_deployment_snippets(
     invoke ``python -m agent`` with no arguments, so it does not end up in the
     long-lived argv of the agent process, which every local user on that host
     can read. The variable names are the ones ``agent/worker.py`` reads.
+
+    The Kubernetes manifest never holds the key, placeholder or real: it is
+    the file an operator commits or pastes into a ticket. The Deployment reads
+    the key from a Secret, and ``kubernetes_secret_command`` creates that
+    Secret by piping the key into ``kubectl`` on stdin, out of its argv.
     """
     key_minted = bool(provisioning_key)
     if not provisioning_key:
@@ -1077,51 +1098,166 @@ def get_deployment_snippets(
         f"curl -sSL {install_url} | sudo bash -s -- "
         f"--server {clean_server} --key {provisioning_key} --tenant {tenant_id}"
     )
+    # NET_RAW and NET_ADMIN, as scripts/install-agent.sh --docker adds them:
+    # the image grants both to naabu/pulse/nmap as file capabilities, and
+    # Docker's default set lacks NET_ADMIN, so without it their execve fails
+    # with EPERM.
     docker_run = (
         f"docker run -d --name shapoclyack-agent --restart always "
+        f"--cap-add NET_RAW --cap-add NET_ADMIN "
         f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
         f"-e OCTO_TENANT_ID={tenant_id} "
-        f"ghcr.io/onixus/shapoclyack:latest python -m agent"
+        f"{SENSOR_IMAGE} python -m agent"
     )
     docker_compose = f"""version: '3.8'
 services:
   shapoclyack-agent:
-    image: ghcr.io/onixus/shapoclyack:latest
+    image: {SENSOR_IMAGE}
     container_name: shapoclyack-agent
     restart: always
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     environment:
       - OCTO_API_URL={clean_server}
       - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
       - OCTO_TENANT_ID={tenant_id}
     command: python -m agent
 """
-    kubernetes_yaml = f"""apiVersion: apps/v1
+    # k8s/shapoclyack/examples/agent-deployment.example.yaml with the API's URL
+    # filled in, less what a fresh cluster lacks: the scanner-config ConfigMap
+    # (the image's scanner/config/default.yaml is used, as by the container
+    # snippets) and the second replica. Why each securityContext field:
+    # docs/k8s-hardening.md. Interpolated values are JSON-quoted, which YAML
+    # reads as double-quoted scalars whatever the URL contains.
+    kubernetes_yaml = f"""# Shapoclyack sensor. The provisioning key is not in this file:
+#   1. kubectl apply -f <this file>
+#   2. create Secret {SENSOR_K8S_SECRET} (key {SENSOR_K8S_SECRET_KEY}) in {SENSOR_K8S_NAMESPACE}
+#      with the command shown next to this manifest, which reads the key on stdin:
+#        kubectl -n {SENSOR_K8S_NAMESPACE} create secret generic {SENSOR_K8S_SECRET} \\
+#          --from-file={SENSOR_K8S_SECRET_KEY}=/dev/stdin
+#      Until it exists the pod waits in CreateContainerConfigError.
+#
+# The namespace does not enforce Pod Security: the sensor needs NET_RAW and
+# NET_ADMIN, which neither `baseline` nor `restricted` admits, and Pod Security
+# has no per-pod exemption. audit/warn stay `restricted`. Keep nothing else in it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {SENSOR_K8S_NAMESPACE}
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: shapoclyack-agent
-  namespace: default
+  namespace: {SENSOR_K8S_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: shapoclyack-agent
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: agent
   template:
     metadata:
       labels:
-        app: shapoclyack-agent
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: agent
     spec:
+      # The sensor never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-      - name: agent
-        image: ghcr.io/onixus/shapoclyack:latest
-        env:
-        - name: OCTO_API_URL
-          value: "{clean_server}"
-        - name: OCTO_AGENT_PROVISIONING_KEY
-          value: "{provisioning_key}"
-        - name: OCTO_TENANT_ID
-          value: "{tenant_id}"
-        command: ["python", "-m", "agent"]
+        - name: agent
+          image: {SENSOR_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "agent"]
+          env:
+            - name: OCTO_API_URL
+              value: {json.dumps(clean_server)}
+            - name: OCTO_AGENT_PROVISIONING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {SENSOR_K8S_SECRET}
+                  key: {SENSOR_K8S_SECRET_KEY}
+            # For the operator: the sensor's tenant is the one its key was minted for.
+            - name: OCTO_TENANT_ID
+              value: {json.dumps(tenant_id)}
+            - name: OCTO_OUTPUT_DIR
+              value: scanner/output
+            - name: OCTO_AGENT_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # NET_RAW/NET_ADMIN: the image grants both to naabu/pulse/nmap as file
+          # capabilities, and a binary whose file capabilities are not all in
+          # the bounding set fails execve with EPERM. allowPrivilegeEscalation:
+          # true, because no_new_privs makes the kernel ignore file capabilities
+          # and naabu would run without raw sockets. The rest is `restricted`.
+          securityContext:
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_RAW
+                - NET_ADMIN
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          # Everything the sensor writes: the run and its checkpoints, the
+          # per-job workdir (target lists, the run archive before upload), and
+          # $HOME, where nuclei, naabu and dnsx write ~/.config/<tool> on every
+          # start and exit when they cannot.
+          volumeMounts:
+            - name: output
+              mountPath: /app/scanner/output
+            - name: state
+              mountPath: /app/scanner/state
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/octo
+      # Sized so that a full disk evicts this pod rather than filling the node:
+      # the sensor keeps each finished run under output/ until the pod goes.
+      volumes:
+        - name: output
+          emptyDir:
+            sizeLimit: 20Gi
+        - name: state
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi
 """
+    # printf is a shell builtin, so the key is in no process's argv on the way
+    # to kubectl, which reads it from stdin.
+    kubernetes_secret_command = (
+        f"printf '%s' {shlex.quote(provisioning_key)} | "
+        f"kubectl -n {SENSOR_K8S_NAMESPACE} create secret generic {SENSOR_K8S_SECRET} "
+        f"--from-file={SENSOR_K8S_SECRET_KEY}=/dev/stdin"
+    )
     return {
         "tenant_id": tenant_id,
         "provisioning_key": provisioning_key if key_minted else None,
@@ -1131,6 +1267,7 @@ spec:
         "docker_run": docker_run,
         "docker_compose": docker_compose.strip(),
         "kubernetes_yaml": kubernetes_yaml.strip(),
+        "kubernetes_secret_command": kubernetes_secret_command,
     }
 
 
