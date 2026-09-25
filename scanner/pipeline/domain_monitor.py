@@ -4,7 +4,9 @@ Two independent, opt-in, findings-only sub-checks:
 
 1. Typosquat / look-alike domains: generate look-alike candidates of the
    org's seed domains (omission, adjacent transposition, keyboard-adjacent
-   substitution, doubling/de-doubling, homoglyph substitution, TLD swap),
+   substitution, doubling/de-doubling, homoglyph substitution, TLD swap; the
+   Public Suffix List decides what is label and what is suffix, so for
+   ``bbc.co.uk`` only ``bbc`` is mutated and ``co.uk`` is swapped whole),
    DNS-resolve them (A/AAAA only), and report the ones that resolve as
    findings. A candidate that resolves means *someone* has registered it --
    these domains are never owned by the org and are never merged into scan
@@ -41,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_schema import DomainMonitorConfig
+from .public_suffix import registrable_domain
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.domain-monitor")
@@ -69,9 +72,20 @@ _CNAME_TAKEOVER_SUFFIXES = (
 
 
 def _split_domain(domain: str) -> tuple[str, str]:
-    """Split "example.com" -> ("example", "com"). Multi-label TLDs (e.g.
-    .co.uk) are not specially handled -- the last label is treated as the
-    swappable TLD and everything before it as the label."""
+    """Split a seed into (registrable label, public suffix) by the Public
+    Suffix List: "example.com" -> ("example", "com"), "bbc.co.uk" ->
+    ("bbc", "co.uk"), "x.github.io" -> ("x", "github.io"). A subdomain seed
+    is cut to its registrable domain first, so "shop.example.com.ru" ->
+    ("example", "com.ru"): the generators then mutate the one label a
+    squatter would register and never a dot or a suffix label.
+
+    A name with no registrable domain (a public suffix itself, an IP literal,
+    a bare label) keeps the old split at the last dot -- "co.uk" ->
+    ("co", "uk") -- so such a seed still yields what it did before."""
+    registrable = registrable_domain(domain)
+    if registrable:
+        label, _, suffix = registrable.partition(".")
+        return label, suffix
     parts = domain.split(".")
     if len(parts) < 2:
         return domain, ""
@@ -126,11 +140,20 @@ def _homoglyph_candidates(label: str, tld: str) -> list[str]:
 
 
 def _tld_swap_candidates(label: str, tld: str) -> list[str]:
-    out = []
-    for new_tld in _TLD_SWAP_LIST:
-        if new_tld != tld:
-            out.append(f"{label}.{new_tld}")
-    return out
+    """Replace the whole public suffix, never just its last label.
+
+    ``tld`` is everything ``_split_domain`` put right of the label, so
+    "bbc" + "co.uk" gives "bbc.com", "bbc.co", ... and not "bbc.co.com". A
+    multi-label suffix also contributes its own TLD, first: "bbc.uk" for
+    "co.uk", "example.ru" for "com.ru" -- the nearest look-alike of such a
+    seed, and one the fixed list does not carry. For a private-section
+    suffix the platform is swapped away too ("x.github.io" -> "x.io",
+    "x.com"): the same name under a registry, not a neighbour on the
+    platform, which the label mutations already cover."""
+    swaps = list(_TLD_SWAP_LIST)
+    if "." in tld:
+        swaps.insert(0, tld.rsplit(".", 1)[1])
+    return [f"{label}.{new_tld}" for new_tld in dict.fromkeys(swaps) if new_tld != tld]
 
 
 def _round_robin(class_lists: list[list[str]]) -> list[str]:
@@ -167,8 +190,12 @@ def _generate_typosquat_candidates(domain: str, max_candidates: int) -> list[str
         _tld_swap_candidates(label, tld),
     ]
 
+    # The seed itself and, for a subdomain seed, its registrable domain: a
+    # transposition of "bbc" is "bbc" again, and "www.bbc.co.uk" must not
+    # report "bbc.co.uk" as somebody else's look-alike.
+    own = {domain, f"{label}.{tld}"}
     candidates = _round_robin(class_lists)
-    candidates = [c for c in candidates if c.lower() != domain]
+    candidates = [c for c in candidates if c.lower() not in own]
     return candidates[:max_candidates]
 
 
