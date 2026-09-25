@@ -2313,6 +2313,12 @@ no agent, device, asset, tenant, or product names):
 
 ## Backup and disaster recovery
 
+The full runbook — every store, the order of restore, how restore points of
+Postgres, artifacts and ClickHouse are reconciled, the RPO/RTO table and the
+drill that measured it — is [disaster-recovery.md](disaster-recovery.md)
+([#333](https://github.com/onixus/Shapoclyack/issues/333)). This section keeps
+the PostgreSQL backup and its restore script.
+
 > **`overlays/prod-ha` moves this out of the cluster.** That overlay deletes the
 > in-cluster PostgreSQL StatefulSet and the `pg_dump` CronJob below along with
 > it, because the database is expected to be a managed one (RDS, Cloud SQL,
@@ -2327,8 +2333,9 @@ The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
 That schedule gives a **design RPO of at most 24 hours** for PostgreSQL, assuming
 the scheduled backup succeeds and is uploaded. The **RTO target is 60 minutes**
 for restoring Postgres + API into an isolated namespace (the path
-`scripts/restore-postgres.sh` implements). ClickHouse and the artifact PVC have
-no in-repo snapshot object — see below.
+`scripts/restore-postgres.sh` implements). ClickHouse, the artifacts and
+JetStream have their own rows in
+[disaster-recovery.md § Recovery objectives](disaster-recovery.md#recovery-objectives).
 
 | Measure | Target | Last measured |
 |---|---:|---:|
@@ -2339,10 +2346,10 @@ no in-repo snapshot object — see below.
 
 Namespace `shapoclyack-restore`, overlay `k8s/shapoclyack/overlays/kind-restore`.
 Row counts after restore matched the source. JetStream was **not** replayed —
-Postgres is the durable store; see [NATS / JetStream recovery](#nats--jetstream-recovery).
+Postgres is the durable store; see [disaster-recovery.md § JetStream](disaster-recovery.md#jetstream).
 ClickHouse and `scanner-data` were not snapshotted (kind `local-path` has no
-`VolumeSnapshotClass`); that remains an install-specific choice, not an unmeasured
-Postgres drill.
+`VolumeSnapshotClass`); the 10k-asset drill of all stores is in
+[disaster-recovery.md § Drill](disaster-recovery.md#drill).
 
 ### PostgreSQL scheduled backup
 
@@ -2382,7 +2389,8 @@ restore script refuses the base `network-scan` namespace unless
 1. Create an isolated namespace and deploy the same Shapoclyack Postgres + API
    version that will consume the backup. On the kind lab that is
    `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` (namespace
-   `shapoclyack-restore`, no NodePort, no NATS/ClickHouse/scan Jobs). Elsewhere:
+   `shapoclyack-restore`, no NodePort, no NATS, no scan Jobs or backup
+   CronJobs; ClickHouse stays, as the target of `scripts/restore-clickhouse.sh`). Elsewhere:
    same image tag as the source, Postgres and API secrets present, ingress and
    external integrations disabled. Wait until Postgres is Ready and the API has
    rolled out once — the restore script then replaces that empty schema.
@@ -2416,64 +2424,18 @@ reproduce the calculation.
 A restore that completes `pg_restore` but cannot start the current API image is
 a failed drill, not a successful database restore.
 
-### Artifact PVC recovery
+### ClickHouse, artifacts and JetStream
 
-`scanner-data` contains reports, raw scan artifacts, checkpoints, and other run
-state. The base PVC intentionally does not assume a storage vendor or a
-`VolumeSnapshotClass`, so the repository cannot safely provide one universal
-snapshot object.
-
-For production, configure CSI `VolumeSnapshot` or the storage provider's native
-snapshot/backup mechanism for `scanner-data`. Restore the snapshot to a **new
-PVC in the isolated namespace** and mount that PVC into the recovery deployment
-before validating reports or attempting resume. Do not overwrite the production
-PVC during a drill.
-
-Snapshot cadence must be chosen so artifact retention is compatible with the
-PostgreSQL RPO. If PostgreSQL is restored to time T but the artifact PVC is much
-older, runs referenced by the database may have missing files.
-
-### ClickHouse recovery
-
-The base ClickHouse StatefulSet is single-replica and stores data under
-`clickhouse-data`. Production installations must choose one of these recovery
-methods and test it with the PostgreSQL drill:
-
-- ClickHouse native `BACKUP`/`RESTORE` to configured external object storage; or
-- a CSI/storage-provider snapshot of `clickhouse-data`, taken while writes are
-  quiesced or using a storage mechanism documented as application-consistent.
-
-Restore ClickHouse into the isolated namespace before enabling the ingest
-worker. Validate `/ping`, expected tables, and representative historical
-queries. Do not infer ClickHouse consistency merely because a PVC snapshot
-object exists.
-
-### NATS / JetStream recovery
-
-JetStream is an operational queue, not the source of truth for assets or scan
-history. Recover durable stores first. Only then decide whether a JetStream
-snapshot is required for messages that were accepted but not durably processed.
-
-Shapoclyack publishes with stable `Nats-Msg-Id` values and uses idempotent
-result/event identifiers. The EVENTS stream also has a duplicate window. A
-restored stream can nevertheless contain messages whose effects already exist
-in PostgreSQL or ClickHouse, especially when the queue snapshot and database
-backup were taken at different times.
-
-Recovery order:
-
-1. restore and validate PostgreSQL, artifact PVC, and ClickHouse;
-2. keep API/worker consumers that mutate durable state paused while inspecting
-   the JetStream snapshot boundary;
-3. identify queued messages newer than the durable recovery point and preserve
-   their original `Nats-Msg-Id` / idempotency identifiers;
-4. restore/replay only the required range;
-5. re-enable consumers and verify duplicate/idempotency counters and durable
-   record counts before exposing the recovered stack.
-
-Never replay a restored stream by republishing every message with new message
-IDs. That defeats the deduplication mechanisms the recovery procedure relies
-on.
+These used to be described here in prose only. They now have a backup
+CronJob (`base/backup/clickhouse-cronjob.yaml`), a restore script with a
+verification step (`scripts/restore-clickhouse.sh`), a CSI snapshot example for
+`scanner-data` (`examples/pvc-snapshot.example.yaml`), and a runbook that says
+which store wins when their restore points disagree:
+[disaster-recovery.md](disaster-recovery.md) —
+[ClickHouse](disaster-recovery.md#clickhouse),
+[artifacts](disaster-recovery.md#artifacts),
+[JetStream](disaster-recovery.md#jetstream),
+[reconciling restore points](disaster-recovery.md#reconciling-restore-points).
 
 ### NATS outbox
 
@@ -3082,7 +3044,7 @@ manifests themselves:
 | Service | Port | Legitimate clients |
 |---------|------|--------------------|
 | Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
-| ClickHouse | 8123 / 9000 | API |
+| ClickHouse | 8123 / 9000 | API; 9000 also the ClickHouse backup CronJob (#333) |
 | NATS | 4222 | API, sensors |
 
 That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
@@ -3132,9 +3094,10 @@ publish forged `jobs.scan` offers. Since #225 all three require credentials.
 |--------|------|-------------|
 | `shapoclyack-postgres` | `password` | Postgres, API, backup CronJob |
 | `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API |
+| `shapoclyack-clickhouse-backup` | `password` | ClickHouse StatefulSet (user `shapoclyack_backup`), ClickHouse backup CronJob ([#333](https://github.com/onixus/Shapoclyack/issues/333)) |
 | `shapoclyack-nats` | `api_password`, `agent_password` | NATS StatefulSet, API, sensors |
 
-`base/kustomization.yaml` generates dev placeholders for all three, the same
+`base/kustomization.yaml` generates dev placeholders for all of these, the same
 way it always has for Postgres — a fresh `kubectl apply -k` comes up without
 any manual step. The placeholders are published in this repository. Override
 them with `examples/api-secrets.example.yaml` (or
