@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          # Keyed on what is installed (#313): a relock that moves only a
+          # transitive pin leaves requirements*.txt, the default key, as is.
+          cache-dependency-path: requirements-dev.lock
       # Version and scope both live in scripts/ci-lint.sh (the pin is read out
       # of requirements-dev.txt), which the Jenkinsfile and both READMEs point
       # at too. Spelled out here, the copies drifted to different Ruff versions
@@ -62,7 +65,7 @@ jobs:
       # Native service: Postgres needs no CMD args, just env — health-checked
       # by the runner itself, no manual polling loop required.
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         env:
           POSTGRES_DB: shapoclyack
           POSTGRES_USER: octo
@@ -80,8 +83,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          # Keyed on what is installed (#313): a relock that moves only a
+          # transitive pin leaves requirements*.txt, the default key, as is.
+          cache-dependency-path: requirements-dev.lock
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # The hash-pinned lock, not requirements-dev.txt (#313); quoted
+        # because ":all: " would otherwise read as a YAML mapping.
+        run: "pip install --require-hashes --only-binary=:all: -r requirements-dev.lock"
       - name: Compile sources
         run: python -m compileall scanner api tests agent
       - name: Start JetStream broker
@@ -89,9 +97,11 @@ jobs:
         # GitHub Actions' native `services:` cannot override (services only
         # take image/env/ports/options — no way to change the container's
         # command) — so this stays a manual docker run.
+        env:
+          NATS_IMAGE: nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314
         run: |
           docker run -d --name ci-nats-js -p 4222:4222 -p 8222:8222 \
-            nats:2.10.24-alpine --jetstream --store_dir=/data --http_port=8222
+            "${NATS_IMAGE}" --jetstream --store_dir=/data --http_port=8222
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8222/healthz >/dev/null && break
             sleep 0.5
@@ -155,6 +165,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+        with:
+          # The BuildKit daemon that runs the build, pinned like a base image
+          # (#313): the action's default is the moving buildx-stable-1 tag.
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -248,6 +262,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+        with:
+          # The BuildKit daemon that runs the build, pinned like a base image
+          # (#313): the action's default is the moving buildx-stable-1 tag.
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
       - name: Build image (INSTALL_NMAP=1)
         uses: docker/build-push-action@v6
         with:

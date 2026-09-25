@@ -31,7 +31,7 @@ spec:
             fsGroupChangePolicy: OnRootMismatch
           initContainers:
             - name: dump
-              image: postgres:16-alpine
+              image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
@@ -86,7 +86,7 @@ spec:
                   mountPath: /backup
           containers:
             - name: upload
-              image: amazon/aws-cli:2.17.40
+              image: amazon/aws-cli:2.17.40@sha256:db8d39443ef512d4724becfac59ec9b7c4f8621e7b3c6200be56cd4fc2dc9570
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

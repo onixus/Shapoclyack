@@ -6,7 +6,7 @@
 #   tests/load/run.sh [IMAGE] [--hosts N] [--config PATH] [--resume-test] [--run-id ID]
 #
 # Environment:
-#   TARGET_IMAGE   target container image (default: nginx:alpine)
+#   TARGET_IMAGE   target container image (default: nginx:alpine, pinned by digest)
 #   MIN_FRACTION   minimum fraction of targets that must pass (default: 0.95)
 set -euo pipefail
 
@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TARGET_IMAGE="${TARGET_IMAGE:-nginx:alpine}"
+TARGET_IMAGE="${TARGET_IMAGE:-nginx:alpine@sha256:1ed1b0e1d7652937d6cbdaf4018c7b6fc009a7dd6c3047351e2eddda745de43f}"
 MIN_FRACTION="${MIN_FRACTION:-0.95}"
 NET="scan-load-net-$$"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -38,3 +38,11 @@ scanner/data/.enrichment-bundle.lock
 # Development TLS material for the kind stand (scripts/dev-tls-cert.sh).
 # A private key, and a CA whose only job is to be trusted by lab agents.
 .dev-tls/
+
+# The release signing key (docs/supply-chain.md). Only its public half,
+# cosign.pub, belongs in the repository; `cosign generate-key-pair` writes both
+# next to each other.
+cosign.key
+# Jenkinsfile.publish: its own revision's signing tooling, and buildx metadata.
+.release-tooling/
+.publish/

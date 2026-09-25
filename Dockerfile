@@ -18,7 +18,10 @@
 # and Makefile), which is what we do below, so these binaries differ from the
 # released ones only in the toolchain and the x/crypto bump. In particular
 # naabu's SYN path stays exactly as upstream ships it and needs no libpcap.
-FROM golang:1.26-bookworm AS go-tools
+# Every stage is pinned by index digest, not only the final one (#313): a
+# build stage's toolchain ends up in the binaries just as surely as the base
+# ends up in the image. Renovate proposes the refresh as a reviewed PR.
+FROM golang:1.26-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d AS go-tools
 
 # v3.11.1 is the first release that pins kin-openapi >= 0.144.0
 # (GHSA-r277-6w6q-xmqw); do not downgrade below it.
@@ -87,7 +90,7 @@ RUN set -eux; \
 # github_token for private GenDec release assets. scripts/install-pulse.sh
 # does the fetch and the checksums.txt check; see docs/pulse-backend.md.
 # Docs: https://github.com/onixus/GenDec/blob/main/docs/release.md
-FROM debian:bookworm-slim AS pulse-bin
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS pulse-bin
 ARG PULSE_VERSION=v1.1.0
 ARG PULSE_GITHUB_REPO=onixus/GenDec
 # GenDec's release job treats checksums.txt as optional (docs/release.md);
@@ -258,21 +261,16 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
-# five MEDIUM and one LOW advisory that the scan reports against our image.
-# Pinned rather than left as --upgrade so the build stays reproducible; raise
-# it deliberately, the same way the base digest above is refreshed.
-# 26.2.1 is the newest pip and still vendors msgpack 1.1.2
-# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) and setuptools 70.3.0 (as
-# pkg_resources; CVE-2025-47273), both read from pip/_vendor/vendor.txt.
-# Neither is ours to bump, and pip cannot be dropped from the image while the
-# Smoke stage installs pytest with it. Raise PIP_VERSION once a release
-# vendors fixed copies.
-ARG PIP_VERSION=26.2.1
+# Installed from the hash-pinned locks, not from requirements.txt (#313): every
+# transitive dependency is pinned and every file checked against its sha256,
+# and --only-binary keeps pip from building an sdist whose build dependencies
+# it would fetch unchecked. pip itself is upgraded first, from its own lock;
+# requirements-pip.txt says why that version. Regenerate the locks with
+# scripts/lock-python-deps.sh.
+COPY requirements-pip.lock requirements.lock /app/
 RUN set -eux; \
-    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
-    pip install --no-cache-dir -r /app/requirements.txt
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

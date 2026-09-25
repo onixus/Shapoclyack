@@ -1,5 +1,7 @@
 # Shapoclyack thin API + Web UI v2 image (no scanner tools).
-FROM node:26-bookworm-slim AS web-build
+# Every stage is pinned by index digest, not only the final one (#313); see
+# the go-tools stage in Dockerfile.
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS web-build
 WORKDIR /web
 COPY web-next/package.json web-next/package-lock.json ./
 RUN npm ci
@@ -27,15 +29,12 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends openssh-client fonts-dejavu-core; \
     rm -rf /var/lib/apt/lists/*
-COPY requirements.txt requirements-api.txt /app/
-# Upgrade pip before installing: the base image's bundled pip (25.0.1) carries
-# five MEDIUM and one LOW advisory that the scan reports against our image.
-# Pinned rather than left as --upgrade so the build stays reproducible; raise
-# it deliberately, the same way the base digest above is refreshed.
-ARG PIP_VERSION=26.2.1
+# Installed from the hash-pinned locks, not from requirements-api.txt (#313);
+# see the same step in Dockerfile for why and requirements-pip.txt for the pip.
+COPY requirements-pip.lock requirements-api.lock /app/
 RUN set -eux; \
-    pip install --no-cache-dir "pip==${PIP_VERSION}"; \
-    pip install --no-cache-dir -r requirements-api.txt
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-pip.lock; \
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-api.lock
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

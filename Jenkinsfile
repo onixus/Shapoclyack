@@ -23,6 +23,25 @@ def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
 def CI_SLUG = "${env.JOB_NAME}-${env.BUILD_NUMBER}".replaceAll(/[^A-Za-z0-9]+/, '-').toLowerCase()
 def IMAGE_TAG = "network-scan-cli:ci-${CI_SLUG}"
 
+// Образы, в которых идут стадии, — по digest, как и базовые образы в
+// Dockerfile (#313). python:3.12-slim или aquasec/trivy:latest от билда к
+// билду означали разные образы, а гейт Trivy и SBOM из такого образа
+// проверяют сборку тем, что было свежим в момент запуска. Обновления
+// предлагает Renovate отдельным PR; tests/test_image_pins.py не пропустит
+// тег без digest. Ключи PYTHON_IMAGES — матрица стадии Tests.
+def PYTHON_IMAGES = [
+  '3.11': 'python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9',
+  '3.12': 'python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9',
+]
+def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
+def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'
+def NODE_IMAGE = 'node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2'
+def TRIVY_IMAGE = 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
+def SYFT_IMAGE = 'anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02'
+// Тег при digest — для Renovate: голый name@sha256 он не видит и не
+// предложит обновить (#313). Digest прежний: это и есть 10.3_p1-r1-ls235.
+def SSHD_IMAGE = 'lscr.io/linuxserver/openssh-server:10.3_p1-r1-ls235@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47'
+
 pipeline {
   agent none
 
@@ -35,14 +54,14 @@ pipeline {
 
   stages {
     stage('APEX contract') {
-      agent { docker { image 'python:3.12-slim'; reuseNode true } }
+      agent { docker { image PYTHON_IMAGES['3.12']; reuseNode true } }
       steps {
         sh 'python apex-contract/validate.py'
       }
     }
 
     stage('Lint (ruff)') {
-      agent { docker { image 'python:3.12-slim'; args PIP_CACHE; reuseNode true } }
+      agent { docker { image PYTHON_IMAGES['3.12']; args PIP_CACHE; reuseNode true } }
       steps {
         // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
         // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
@@ -98,17 +117,17 @@ pipeline {
                 // обязателен: без него tmpfs растёт до половины RAM VM и
                 // разросшаяся база уронит OOM-killer'ом что попало вместо
                 // внятной ошибки записи postgres.
-                docker.image('postgres:16-alpine').withRun(
+                docker.image(POSTGRES_IMAGE).withRun(
                   "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
                   "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
                 ) { pg ->
                   // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
                   // причина, по которой в GHA это был ручной docker run.
-                  docker.image('nats:2.10.24-alpine').withRun(
+                  docker.image(NATS_IMAGE).withRun(
                     "--network ${net} --network-alias nats",
                     "--jetstream --store_dir=/data --http_port=8222"
                   ) { nats ->
-                    docker.image("python:${PY}-slim").inside("--network ${net} ${PIP_CACHE}") {
+                    docker.image(PYTHON_IMAGES[PY]).inside("--network ${net} ${PIP_CACHE}") {
                       withEnv([
                         'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
                         'OCTO_NATS_URL=nats://nats:4222',
@@ -127,7 +146,7 @@ pipeline {
                           # колесе, компилятор не нужен, а ожидание сервисов
                           # сделано на stdlib. Раньше тут стоял apt-get, и
                           # матрица падала, когда deb.debian.org не ответил.
-                          pip install --quiet -r requirements-dev.txt
+                          pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
 
                           python -m compileall scanner api tests agent
 
@@ -171,7 +190,7 @@ pipeline {
     }
 
     stage('Web dashboard') {
-      agent { docker { image 'node:26-bookworm-slim'; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
+      agent { docker { image NODE_IMAGE; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
       steps {
         // npm ci must not unpack node_modules into the workspace: on macOS that
         // is a VirtioFS bind mount, which drops writes silently. Build #25 died
@@ -222,7 +241,7 @@ pipeline {
           def net = "shapoclyack-ssh-${CI_SLUG}"
           sh "docker network create ${net}"
           try {
-            docker.image('lscr.io/linuxserver/openssh-server@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47').withRun(
+            docker.image(SSHD_IMAGE).withRun(
               "--network ${net} --network-alias sshd " +
               "-e PASSWORD_ACCESS=true -e USER_NAME=deploy -e USER_PASSWORD=deploy-ci-secret -e PUID=1000 -e PGID=1000"
             ) { sshd ->
@@ -235,7 +254,7 @@ pipeline {
                 if (!fingerprint) { sleep 1 }
               }
               if (!fingerprint) { error 'sshd never wrote its host key' }
-              docker.image('python:3.12-slim').inside("--network ${net} ${PIP_CACHE}") {
+              docker.image(PYTHON_IMAGES['3.12']).inside("--network ${net} ${PIP_CACHE}") {
                 withEnv([
                   'OCTO_SSHD_TEST_HOST=sshd',
                   'OCTO_SSHD_TEST_PORT=2222',
@@ -250,7 +269,7 @@ pipeline {
                       echo "[ci] apt attempt $i failed; retrying"; sleep 10
                     done
                     ssh -V
-                    pip install --quiet -r requirements-dev.txt
+                    pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
                     for i in $(seq 1 60); do
                       python -c "import socket;socket.create_connection(('sshd',2222),1)" 2>/dev/null && break
                       sleep 1
@@ -373,14 +392,14 @@ pipeline {
 
               # Отчёт — не блокирующий
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy aquasec/trivy:latest image \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
                 --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
               # Гейт — падаем на исправимых CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                 -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
                 -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
-                aquasec/trivy:latest image \
+                ${TRIVY_IMAGE} image \
                 --format table --severity CRITICAL --ignore-unfixed \
                 --ignorefile /.trivyignore.yaml --exit-code 1 ${IMAGE_TAG}
             """
@@ -392,7 +411,7 @@ pipeline {
             sh """
               set -eu
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "\$WORKSPACE":/w -w /w anchore/syft:latest \
+                -v "\$WORKSPACE":/w -w /w ${SYFT_IMAGE} \
                 ${IMAGE_TAG} -o spdx-json=sbom.spdx.json
             """
             archiveArtifacts artifacts: 'sbom.spdx.json', fingerprint: true

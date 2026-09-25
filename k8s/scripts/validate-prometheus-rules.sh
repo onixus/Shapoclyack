@@ -30,7 +30,7 @@ for file in "$RULES" "$RULE_TESTS"; do
   fi
 done
 
-IMAGE="${PROMTOOL_IMAGE:-prom/prometheus:v2.54.1}"
+IMAGE="${PROMTOOL_IMAGE:-prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94}"
 if [[ "$IMAGE" =~ :v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
   PINNED="${BASH_REMATCH[1]}"
 else

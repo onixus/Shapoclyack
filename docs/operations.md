@@ -3024,6 +3024,11 @@ below safe, and it is the reason a rollback procedure can be short.
    cross-check). `DRY_RUN` defaults to true, so a first run builds without
    publishing.
 
+   Verify the signature of the `tag@sha256:digest` you are about to deploy
+   (`cosign verify --key cosign.pub -a release=<tag> …`, see
+   [supply-chain.md](supply-chain.md#verify-an-image)); an admission policy
+   does this for you if you run one.
+
    A prerelease is the same tag with an `-alpha<N>`, `-beta<N>` or `-rc<N>`
    suffix (`shapoclyack-0.44-0907-beta1`). It is published exactly like a
    release except that it does **not** move `:latest`, so anything tracking

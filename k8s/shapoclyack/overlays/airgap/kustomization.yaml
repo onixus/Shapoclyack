@@ -7,10 +7,10 @@
 # Copy it and change the placeholders:
 #
 #   1. `registry.internal.example` below → your registry. The images are
-#      mirrored by digest (docs/air-gap.md, "Mirror the images"); the aio
-#      image keeps its digest through the rename, and the upstream datastore
-#      images, which the base pins by tag only, should get a `digest:` line of
-#      their own here from your mirror.
+#      mirrored by digest (docs/air-gap.md, "Mirror the images"), and each
+#      keeps the tag and digest the base pins through the rename (#313).
+#      Leave the entries at newName: a `digest:` alone drops the tag, a
+#      `newTag:` alone drops the digest.
 #   2. The pull secret `shapoclyack-registry`: create it in network-scan
 #      (docs/air-gap.md, "The pull secret"), or rename it — in the
 #      ServiceAccounts (base) and in the pod-spec patches below alike.

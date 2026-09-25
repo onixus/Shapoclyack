@@ -24,7 +24,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: nats
-          image: nats:2.10.24-alpine
+          image: nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314
           imagePullPolicy: IfNotPresent
           # store_dir is already set in nats.conf's jetstream block (configmap.yaml)
           # — passing --store_dir here too makes nats-server reject the config

@@ -497,6 +497,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Release images are signed, their provenance is attested, and every build
+  input is pinned** ([#313](https://github.com/onixus/Shapoclyack/issues/313)).
+  `Jenkinsfile.publish` now pushes each image by digest with no tag, and
+  `scripts/sign-release-image.sh` signs that digest (index and platform
+  manifests) with the release key, attests BuildKit's SLSA v1 provenance of
+  every platform on the index and on that platform's manifest, verifies all of
+  it against the committed `cosign.pub`, checks what each tag would point at,
+  and only then tags it — a failure anywhere fails the release and leaves no
+  tag on an unsigned image. The signing scripts and `cosign.pub` come from the
+  pipeline's own revision, not from the tag being built, so an older tag can
+  be re-published and signed. The dormant `docker-publish.yml` does the same
+  keylessly as `docker-publish.yml@refs/tags/<release>`, with its actions
+  pinned to commit SHAs. **Publishing now needs a one-time setup**: a cosign
+  key pair, its private half in Jenkins (`COSIGN_PRIVATE_KEY`,
+  `COSIGN_PASSWORD`) and `cosign.pub` committed; until then a real run stops
+  at the `Signing key` stage with a pointer to the setup, and a `DRY_RUN`
+  turns yellow. Example Kyverno and Sigstore policy-controller policies admit
+  only images signed by either identity with provenance, and the guide says
+  what they need in an air-gapped cluster. Python dependencies install from
+  hash-pinned locks (`requirements*.lock`, `scripts/lock-python-deps.sh`,
+  extras kept) with `pip install --require-hashes --only-binary=:all:` in
+  every image and pipeline; pip's own
+  version moved from `ARG PIP_VERSION` to `requirements-pip.txt`. The script
+  also relocks the native sensor's `requirements-agent.lock`
+  ([#476](https://github.com/onixus/Shapoclyack/pull/476)) and rewrites its
+  copy inside `scripts/install-agent.sh`. Every
+  remaining mutable image reference — the `golang`, `debian` and `node` build
+  stages, the Postgres/NATS/ClickHouse/aws-cli manifests, Jenkins' stage
+  images, Trivy/Syft/Semgrep (previously `:latest`), the BuildKit daemon, the
+  e2e targets — is pinned by digest, and `tests/test_image_pins.py` fails on a
+  new one, in the files and in every rendered overlay. Renovate
+  (`.github/renovate.json5`) proposes the updates, grouped and rate-limited,
+  regenerating the locks with each bump. See
+  [docs/supply-chain.md](docs/supply-chain.md).
+
 - **Seed domains stop at the registrable domain, and AXFR is never sent to a
   public suffix.** Every stage whose `domains` list is left empty — `ct`, `asn`,
   `cloud`, `domain_monitor`, `org_profile.ownership`, `dns_hygiene`,
