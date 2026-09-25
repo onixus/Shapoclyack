@@ -495,6 +495,70 @@ All notable changes to Shapoclyack are documented in this file.
   place rather than cleared and rebuilt, so a scrape can no longer catch it
   empty.
 
+### Security
+
+- **Release images are signed, their provenance is attested, and every build
+  input is pinned** ([#313](https://github.com/onixus/Shapoclyack/issues/313)).
+  `Jenkinsfile.publish` now pushes each image by digest with no tag, and
+  `scripts/sign-release-image.sh` signs that digest (index and platform
+  manifests) with the release key, attests BuildKit's SLSA v1 provenance of
+  every platform on the index and on that platform's manifest, verifies all of
+  it against the committed `cosign.pub`, checks what each tag would point at,
+  and only then tags it — a failure anywhere fails the release and leaves no
+  tag on an unsigned image. The signing scripts and `cosign.pub` come from the
+  pipeline's own revision, not from the tag being built, so an older tag can
+  be re-published and signed. The dormant `docker-publish.yml` does the same
+  keylessly as `docker-publish.yml@refs/tags/<release>`, with its actions
+  pinned to commit SHAs. **Publishing now needs a one-time setup**: a cosign
+  key pair, its private half in Jenkins (`COSIGN_PRIVATE_KEY`,
+  `COSIGN_PASSWORD`) and `cosign.pub` committed; until then a real run stops
+  at the `Signing key` stage with a pointer to the setup, and a `DRY_RUN`
+  turns yellow. Example Kyverno and Sigstore policy-controller policies admit
+  only images signed by either identity with provenance, and the guide says
+  what they need in an air-gapped cluster. Python dependencies install from
+  hash-pinned locks (`requirements*.lock`, `scripts/lock-python-deps.sh`,
+  extras kept) with `pip install --require-hashes --only-binary=:all:` in
+  every image and pipeline; pip's own
+  version moved from `ARG PIP_VERSION` to `requirements-pip.txt`. The script
+  also relocks the native sensor's `requirements-agent.lock`
+  ([#476](https://github.com/onixus/Shapoclyack/pull/476)) and rewrites its
+  copy inside `scripts/install-agent.sh`. Every
+  remaining mutable image reference — the `golang`, `debian` and `node` build
+  stages, the Postgres/NATS/ClickHouse/aws-cli manifests, Jenkins' stage
+  images, Trivy/Syft/Semgrep (previously `:latest`), the BuildKit daemon, the
+  e2e targets — is pinned by digest, and `tests/test_image_pins.py` fails on a
+  new one, in the files and in every rendered overlay. Renovate
+  (`.github/renovate.json5`) proposes the updates, grouped and rate-limited,
+  regenerating the locks with each bump. See
+  [docs/supply-chain.md](docs/supply-chain.md).
+
+- **Seed domains stop at the registrable domain, and AXFR is never sent to a
+  public suffix.** Every stage whose `domains` list is left empty — `ct`, `asn`,
+  `cloud`, `domain_monitor`, `org_profile.ownership`, `dns_hygiene`,
+  `mail_posture`, `credential_leaks` — took its seed from
+  `base_domains_from_fqdns`, which kept the last two labels: `www.bbc.co.uk`,
+  `shop.example.com.ru` and `x.github.io` became `co.uk`, `com.ru` and
+  `github.io`. With `org_profile.dns_hygiene.axfr_probe: true` that was a
+  zone-transfer attempt against the nameservers of a registry, a registrar or
+  GitHub Pages — somebody else's infrastructure, which the module's own scope
+  gate forbids — and CT asked crt.sh for `%.co.uk`. Seeds now come from a
+  bundled [Public Suffix List](https://publicsuffix.org/) snapshot
+  (`scanner/pipeline/public_suffix_list.dat`, ICANN and private sections,
+  read from disk only and never fetched at run time), so they are
+  `bbc.co.uk`, `example.com.ru` and `x.github.io`; a name that is itself a
+  suffix, an IP literal or a bare label contributes no seed at all (an IP used
+  to become e.g. `3.4`). Independently of the seed, the AXFR probe refuses a
+  public suffix even when it is listed explicitly in
+  `org_profile.dns_hygiene.domains` (`axfr.status: refused`,
+  `reason: public_suffix`, before any nameserver is dialled), and
+  `dns_hygiene.json` records which snapshot decided (`public_suffix_list`).
+  `asset_identity.registrable_domain` — console clustering by domain, the
+  related-domains stage and credential-leak canonicalisation — uses the same
+  list in place of its twelve-entry stand-in, so names under a hosting
+  platform's suffix (`*.herokuapp.com`, `ec2-….compute-1.amazonaws.com`) no
+  longer cluster under the platform as if it owned them. No new Python
+  dependency; refresh the snapshot with `scripts/fetch-public-suffix-list.sh`.
+
 ### Fixed
 
 - **The scanner's SSRF gate judges the IPv4 address behind NAT64.**
@@ -679,43 +743,6 @@ All notable changes to Shapoclyack are documented in this file.
     of starting a second one beside it.
   - A failed `import agent.worker` check now prints the last lines of the
     traceback instead of discarding them.
-
-### Security
-
-- **Release images are signed, their provenance is attested, and every build
-  input is pinned** ([#313](https://github.com/onixus/Shapoclyack/issues/313)).
-  `Jenkinsfile.publish` now pushes each image by digest with no tag, and
-  `scripts/sign-release-image.sh` signs that digest (index and platform
-  manifests) with the release key, attests BuildKit's SLSA v1 provenance of
-  every platform on the index and on that platform's manifest, verifies all of
-  it against the committed `cosign.pub`, checks what each tag would point at,
-  and only then tags it — a failure anywhere fails the release and leaves no
-  tag on an unsigned image. The signing scripts and `cosign.pub` come from the
-  pipeline's own revision, not from the tag being built, so an older tag can
-  be re-published and signed. The dormant `docker-publish.yml` does the same
-  keylessly as `docker-publish.yml@refs/tags/<release>`, with its actions
-  pinned to commit SHAs. **Publishing now needs a one-time setup**: a cosign
-  key pair, its private half in Jenkins (`COSIGN_PRIVATE_KEY`,
-  `COSIGN_PASSWORD`) and `cosign.pub` committed; until then a real run stops
-  at the `Signing key` stage with a pointer to the setup, and a `DRY_RUN`
-  turns yellow. Example Kyverno and Sigstore policy-controller policies admit
-  only images signed by either identity with provenance, and the guide says
-  what they need in an air-gapped cluster. Python dependencies install from
-  hash-pinned locks (`requirements*.lock`, `scripts/lock-python-deps.sh`,
-  extras kept) with `pip install --require-hashes --only-binary=:all:` in
-  every image and pipeline; pip's own
-  version moved from `ARG PIP_VERSION` to `requirements-pip.txt`. The script
-  also relocks the native sensor's `requirements-agent.lock`
-  ([#476](https://github.com/onixus/Shapoclyack/pull/476)) and rewrites its
-  copy inside `scripts/install-agent.sh`. Every
-  remaining mutable image reference — the `golang`, `debian` and `node` build
-  stages, the Postgres/NATS/ClickHouse/aws-cli manifests, Jenkins' stage
-  images, Trivy/Syft/Semgrep (previously `:latest`), the BuildKit daemon, the
-  e2e targets — is pinned by digest, and `tests/test_image_pins.py` fails on a
-  new one, in the files and in every rendered overlay. Renovate
-  (`.github/renovate.json5`) proposes the updates, grouped and rate-limited,
-  regenerating the locks with each bump. See
-  [docs/supply-chain.md](docs/supply-chain.md).
 
 ## [0.46-0922] — 2026-09-22
 
