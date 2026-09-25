@@ -27,5 +27,9 @@ spec:
               value: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
             - name: OCTO_CLICKHOUSE_URL
               value: http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
+            # Both stores configured: none is declared unused for the tenant
+            # purge (#325; base/api-deployment.yaml).
+            - name: OCTO_TENANT_PURGE_UNUSED_STORES
+              value: ""
             - name: OCTO_CH_INGEST_ENABLED
               value: "true"

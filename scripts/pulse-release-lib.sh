@@ -2,7 +2,8 @@
 # Shared "talk to a GenDec release" helpers, sourced by scripts/install-pulse.sh
 # and scripts/pulse-pin.sh. Not executable on its own.
 #
-# The caller sets, before sourcing:
+# The caller sets, before calling any of these (they are read at call time, so
+# sourcing may come first):
 #   REPO    owner/repo of the GenDec repository
 #   VERSION release tag, with the leading v
 #   TOKEN   GitHub token, or "" for the public path

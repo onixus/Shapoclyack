@@ -1,0 +1,11 @@
+# network-scan for the objects this component adds (its ServiceAccount, the
+# inbox PVC, the loader CronJob), which arrive after base's namespace has been
+# applied. unsetOnly: a component's transformer runs over everything the
+# overlay has accumulated, and an object that already names another namespace
+# keeps it — see kustomization.yaml.
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true
