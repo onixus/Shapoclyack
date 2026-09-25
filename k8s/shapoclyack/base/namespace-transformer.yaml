@@ -10,9 +10,10 @@
 # namespace that enforces `baseline` -- where the API server rejects it.
 #
 # Every overlay or component that sets a namespace has to follow the same rule
-# for the same reason; base/enrichment and overlays/prod-ha carry a copy of
-# this file. tests/test_k8s_pod_security.py fails if the executor ever renders
-# anywhere else.
+# for the same reason; base/enrichment, base/enrichment-bundle, overlays/prod-ha
+# and overlays/prod-ha-monitoring carry a copy of this file.
+# tests/test_k8s_pod_security.py fails if the executor ever renders anywhere
+# else.
 apiVersion: builtin
 kind: NamespaceTransformer
 metadata:
