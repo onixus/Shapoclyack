@@ -202,6 +202,15 @@ infer it from the fact that a scan was started.
 - **Only this run's own seed domains** are probed. Attribution candidates from
   the related-domains stage are never probed: a wrongly attributed domain would
   mean an active request against a third party's infrastructure.
+- **A public suffix is never probed**, not even when it is listed in
+  `org_profile.dns_hygiene.domains`. The nameservers of `co.uk`, `com.ru` or
+  `github.io` belong to a registry, a registrar or a hosting platform, not to
+  anyone under them. The seed derived from scope already stops at the
+  registrable domain (see below); this refusal is what holds if a suffix gets
+  in anyway. It happens before any nameserver is contacted and is recorded as
+  `axfr.status: refused`, `reason: public_suffix` (or `not_a_domain_name` for
+  an IP literal or similar), with a `refusing AXFR for <domain>` warning in the
+  log.
 - **A nameserver on a non-public address is refused**, not dialled. NS records
   are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
   turn the probe into a TCP/53 connection inside the sensor's own network. The
@@ -231,8 +240,28 @@ infer it from the fact that a scan was started.
   it yourself with `dig axfr` — the scanner will not keep a copy for you.
 
 Before switching `axfr_probe` on, confirm the engagement covers active testing
-of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
-run derives from its scope, when that list is empty).
+of the domains in `org_profile.dns_hygiene.domains` (or of every registrable
+domain the run derives from its scope, when that list is empty).
+
+**How the seed is derived.** When a stage's `domains` list is empty, its seed
+is the registrable domain of each in-scope name, taken from the Public Suffix
+List: `www.bbc.co.uk` gives `bbc.co.uk`, `shop.example.com.ru` gives
+`example.com.ru`, `x.github.io` gives `x.github.io` itself. The list is a
+snapshot committed at `scanner/pipeline/public_suffix_list.dat` and read from
+disk only — a sensor in a restricted network never fetches it — and
+`dns_hygiene.json` names the snapshot in `public_suffix_list`. Both sections
+of the list are used; the private one is what keeps hosting platforms
+(`github.io`, `herokuapp.com`) from becoming seeds. Two consequences worth
+knowing:
+
+- a stale snapshot does not know a suffix added upstream since, and derives
+  the last two labels for it — the pre-list behaviour. Refresh with
+  `scripts/fetch-public-suffix-list.sh`, review the diff and ship it like any
+  other change; the script refuses a truncated download;
+- an organisation whose own domain is listed in the private section (a
+  platform scanning its own `*.platform.example`) gets per-customer seeds, not
+  the platform domain. Name the platform domain in `domains` explicitly — and
+  note that AXFR will still refuse it, because it is a public suffix.
 
 ## Approved scan scope per tenant
 
