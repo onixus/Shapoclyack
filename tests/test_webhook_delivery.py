@@ -262,24 +262,7 @@ def test_post_does_not_follow_redirects(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture
-def _no_proxy_env(monkeypatch):
-    """Delivery tests must not inherit the developer's own proxy."""
-    for name in (
-        "OCTO_HTTP_PROXY",
-        "OCTO_HTTPS_PROXY",
-        "OCTO_NO_PROXY",
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
-def test_delivery_goes_through_the_proxy_when_one_is_configured(monkeypatch, _no_proxy_env):
+def test_delivery_goes_through_the_proxy_when_one_is_configured(monkeypatch):
     """Webhook delivery was on raw ``http.client`` and ignored every proxy
     variable, so on a network whose only egress is a proxy no webhook ever
     left (#359)."""
@@ -307,7 +290,7 @@ def test_delivery_goes_through_the_proxy_when_one_is_configured(monkeypatch, _no
     assert seen["target"].hostname == "receiver.example"
 
 
-def test_no_proxy_keeps_the_pinned_direct_dial(monkeypatch, _no_proxy_env):
+def test_no_proxy_keeps_the_pinned_direct_dial(monkeypatch):
     """The pinning in #151 is the stronger boundary, so a receiver exempted
     from the proxy must keep it rather than silently lose it."""
     approved = ipaddress.ip_address("93.184.216.34")
@@ -331,9 +314,7 @@ def test_no_proxy_keeps_the_pinned_direct_dial(monkeypatch, _no_proxy_env):
     assert seen["address"] == approved
 
 
-def test_the_ssrf_boundary_still_refuses_an_internal_target_behind_a_proxy(
-    monkeypatch, _no_proxy_env
-):
+def test_the_ssrf_boundary_still_refuses_an_internal_target_behind_a_proxy(monkeypatch):
     """A proxy changes who opens the socket, not what may be reached: an
     internal receiver is refused before any wire call, proxied or not.
 
@@ -353,9 +334,7 @@ def test_the_ssrf_boundary_still_refuses_an_internal_target_behind_a_proxy(
     assert "non-public address" in (result.error or "")
 
 
-def test_a_name_resolving_to_an_internal_address_is_refused_behind_a_proxy(
-    monkeypatch, _no_proxy_env
-):
+def test_a_name_resolving_to_an_internal_address_is_refused_behind_a_proxy(monkeypatch):
     """The realistic shape of the attack: the subscription holds a name, not a
     literal, and it answers with an internal address. The #151 policy runs on
     what the name resolved to, proxy or no proxy."""
@@ -374,9 +353,7 @@ def test_a_name_resolving_to_an_internal_address_is_refused_behind_a_proxy(
     assert "non-public address" in (result.error or "")
 
 
-def test_a_name_the_local_resolver_cannot_see_is_refused_even_behind_a_proxy(
-    monkeypatch, _no_proxy_env
-):
+def test_a_name_the_local_resolver_cannot_see_is_refused_even_behind_a_proxy(monkeypatch):
     """The addresses are *what the boundary inspects*. With none of them
     nothing about the host has been checked, so handing the bare name to a
     proxy that can resolve it would make the proxy an SSRF oracle: any internal
@@ -405,7 +382,7 @@ def test_a_name_the_local_resolver_cannot_see_is_refused_even_behind_a_proxy(
     assert "DNS resolution failed" in (direct.error or "")
 
 
-def test_the_proxied_request_keeps_end_to_end_tls_to_the_receiver(monkeypatch, _no_proxy_env):
+def test_the_proxied_request_keeps_end_to_end_tls_to_the_receiver(monkeypatch):
     """HTTPS through a proxy must be a CONNECT tunnel verified against the
     receiver's own name — not a plaintext hop the proxy re-encrypts, and not a
     certificate checked against the proxy."""
@@ -449,7 +426,7 @@ def test_the_proxied_request_keeps_end_to_end_tls_to_the_receiver(monkeypatch, _
     assert "Proxy-Authorization" not in headers
 
 
-def test_a_proxied_plain_http_request_uses_the_absolute_uri(monkeypatch, _no_proxy_env):
+def test_a_proxied_plain_http_request_uses_the_absolute_uri(monkeypatch):
     """A proxy is asked for ``http://host/path``; sending the origin form makes
     it answer 400, which reads as the receiver rejecting the payload."""
     monkeypatch.setattr(

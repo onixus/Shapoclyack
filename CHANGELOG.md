@@ -536,6 +536,10 @@ All notable changes to Shapoclyack are documented in this file.
   transfer, which was counted as one record: practically every reachable
   nameserver came out `open` with a critical `axfr_open` finding, and a real
   transfer (`axfr.chain[].all` in 1.2.3) was counted as one record as well.
+  An IPv6-only nameserver was handed over as `2001:500:8f::53:53`, which dnsx
+  reads as a different IPv6 host, so it was never reached and came out
+  `closed`; bracketing it for dnsx (#474) fixed that address but none of the
+  above, and is superseded here.
   The probe now speaks AXFR itself (RFC 5936, stdlib only) over one TCP
   connection to the checked IP literal, IPv6 included, and counts the records
   between the opening and closing SOA. A refusal (`REFUSED`, `NOTAUTH`,

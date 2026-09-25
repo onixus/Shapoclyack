@@ -342,6 +342,27 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _ambient_egress_vars() -> tuple[str, ...]:
+    """Every variable that can reroute or re-trust this process's outgoing HTTP.
+
+    Taken from the egress modules themselves, so a variable either of them
+    starts reading is cleared here without anyone remembering to. The rest are
+    what the standard library's ``getproxies()`` and httpx's ``trust_env`` read
+    even though egress does not -- uppercase ``HTTP_PROXY`` is refused there
+    for httpoxy, not absent from a developer's shell.
+    """
+    from agent import egress as agent_egress
+    from api.services import egress as api_egress
+
+    names = {"HTTP_PROXY", "ALL_PROXY", "all_proxy"}
+    for module in (api_egress, agent_egress):
+        names.update(module._HTTP_PROXY_VARS)
+        names.update(module._HTTPS_PROXY_VARS)
+        names.update(module._NO_PROXY_VARS)
+        names.add(module.CA_BUNDLE_VAR)
+    return tuple(sorted(names))
+
+
 #: How long a thread a test started is given to finish once the test is over.
 #: Generous on purpose: this is not there to police slow work but to catch the
 #: writer that is never coming back, so a healthy test pays nothing for it and
@@ -443,6 +464,29 @@ def _stop_local_scans(_no_thread_outlives_its_test):
     assert jobs_service.stop_local_scans(), (
         f"a local scan outlived its test: {jobs_service.live_local_scans()}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_egress(_stop_local_scans, monkeypatch):
+    """No test inherits the proxy or CA bundle of the shell that ran pytest.
+
+    A developer behind a corporate proxy, or a cloud container with an egress
+    proxy, exports ``HTTPS_PROXY`` -- and every delivery test that monkeypatches
+    the direct dial then watched the request go to the proxy instead: 13 of the
+    40 in ``test_webhook_delivery.py`` failed there and nowhere else. A test
+    about proxy behaviour sets its own values with ``monkeypatch.setenv``, which
+    runs after this and is undone with it.
+
+    Requesting :func:`_stop_local_scans` is again an ordering statement. This
+    fixture is the first user of ``monkeypatch`` in every test, so whatever
+    requests it earliest decides when *all* of a test's patches are undone.
+    Asked for before the scan fixture, it kept them in place through that
+    teardown -- and a test that pins ``time.monotonic`` to a short iterator
+    (``test_webhook_worker``) then broke ``stop_local_scans`` with a
+    ``StopIteration`` that was not its own.
+    """
+    for name in _ambient_egress_vars():
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------
