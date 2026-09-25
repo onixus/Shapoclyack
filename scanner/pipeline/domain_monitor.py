@@ -198,6 +198,7 @@ def _run_dnsx_a_aaaa(
             "-aaaa",
             "-json",
             "-silent",
+            "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
             "-o",
             str(json_out),
         ],
@@ -248,6 +249,7 @@ def _run_dnsx_cname(
             "-resp",
             "-json",
             "-silent",
+            "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
             "-o",
             str(json_out),
         ],

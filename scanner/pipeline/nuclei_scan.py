@@ -199,6 +199,11 @@ def run_nuclei_scan(
 
     command = [
         "nuclei",
+        # First, and in the literal itself, so no branch below can build a
+        # command without it: unasked, nuclei checks for a newer release and
+        # installs templates it cannot find, which on an air-gapped network is
+        # a DNS timeout per run and anywhere else a beacon (#339).
+        "-disable-update-check",
         "-list", str(targets_file),
         "-templates", str(templates_dir),
     ]
@@ -216,7 +221,6 @@ def run_nuclei_scan(
         "-concurrency", str(config.concurrency),
         "-timeout", str(config.timeout_seconds),
         "-retries", str(config.retries),
-        "-disable-update-check",
         "-silent",
         "-no-color",
     ])  # fmt: skip

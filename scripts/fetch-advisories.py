@@ -34,15 +34,21 @@ Exit codes:
 opted into is recorded as neither a refresh nor a failure rather than as one of
 them. 3 is for a direct invocation — the by-hand form in docs/configuration.md.
 
+Mirrors (#339): ``DEBIAN_TRACKER_URL``, ``UBUNTU_USN_URL`` and
+``MSRC_CVRF_BASE_URL`` point each dataset elsewhere; the service reads them, so
+this script and an in-process refresh follow the same variable (docs/air-gap.md).
+
 Usage:
   python3 scripts/fetch-advisories.py debian
   python3 scripts/fetch-advisories.py ubuntu -o /data/advisories/ubuntu-advisories.json
+  DEBIAN_TRACKER_URL=https://mirror.internal/debian/json python3 scripts/fetch-advisories.py debian
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -131,11 +137,17 @@ def main() -> int:
     args = parser.parse_args()
     min_entries = args.min_entries if args.min_entries is not None else default_min_entries(args.dataset)
 
+    # What is printed is where the run will ask, mirror included (#339), and
+    # redacted: a mirror URL may carry credentials. It is not validated here —
+    # the service does that after the opt-in check, so an installation that
+    # never opted in still exits 3 whatever the variable says.
     if args.dataset == "msrc":
-        url = fetch.MSRC_INDEX_URL
+        variable, default = fetch.MSRC_BASE_URL_VARIABLE, fetch.MSRC_API_BASE
         default_path = msrc.DEFAULT_DATASET
     else:
-        url, _, default_path, _ = fetch.SOURCES[args.dataset]
+        variable, default = fetch.URL_VARIABLES[args.dataset], fetch.SOURCES[args.dataset][0]
+        default_path = fetch.SOURCES[args.dataset][2]
+    url = fetch.redact_url(os.environ.get(variable, "").strip() or default)
     output = args.output or Path(default_path)
     # Staged beside the destination so the promotion below is a rename on the
     # same filesystem, and so a failed run leaves the live dataset untouched.
@@ -160,7 +172,10 @@ def main() -> int:
     # urllib's URLError/HTTPError are OSError subclasses, so the network,
     # the disk and a feed that is not JSON all land here — every one of them
     # leaves the live dataset alone, which is the only behaviour a caller cares about.
-    except (fetch.FetchTooLargeError, OSError, json.JSONDecodeError) as exc:
+    # FeedURLError is a mirror variable naming a scheme nothing here opens, and
+    # RuntimeError an MSRC index that listed nothing — a mirror that has not
+    # synced yet looks exactly like that.
+    except (fetch.FetchTooLargeError, fetch.FeedURLError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         staging.unlink(missing_ok=True)
         print(f"error: {args.dataset} fetch failed: {exc}", file=sys.stderr)
         return EXIT_FAILED

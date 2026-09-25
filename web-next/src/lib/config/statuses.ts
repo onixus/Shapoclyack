@@ -17,6 +17,8 @@ import type {
   ScanScopeEffect,
   SlaState,
   SoftwareCveMatchStatus,
+  TenantDeletionState,
+  TenantDeletionStepState,
   TenantInfo,
   VulnerabilitySource,
   VulnLifecycleState,
@@ -96,6 +98,29 @@ export const SCHEDULE_ENABLED_STATUS: Record<"enabled" | "disabled", StatusStyle
 export const TENANT_STATUS: Record<TenantInfo["status"], StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   suspended: { label: "suspended", variant: "destructive", className: DANGER },
+  // The deletion's two halves (#325): refused like a suspension, and on its
+  // way out.
+  pending_deletion: { label: "pending deletion", variant: "destructive", className: DANGER },
+  deleting: { label: "deleting", variant: "destructive", className: DANGER },
+};
+
+/** One entry of the tenant deletion journal (#325). */
+export const TENANT_DELETION_STATUS: Record<TenantDeletionState, StatusStyle> = {
+  pending: { label: "pending", className: IN_PROGRESS },
+  purging: { label: "purging", variant: "destructive", className: DANGER },
+  blocked: { label: "blocked", variant: "destructive", className: DANGER },
+  cancelled: { label: "cancelled", variant: "secondary", className: MUTED },
+  completed: { label: "completed", className: SUCCESS },
+};
+
+/** One store of a tenant purge (#325). */
+export const TENANT_DELETION_STEP_STATUS: Record<TenantDeletionStepState, StatusStyle> = {
+  pending: { label: "pending", variant: "secondary", className: MUTED },
+  running: { label: "running", className: IN_PROGRESS },
+  waiting: { label: "waiting", className: IN_PROGRESS },
+  failed: { label: "failed", variant: "destructive", className: DANGER },
+  done: { label: "done", className: SUCCESS },
+  skipped: { label: "skipped", variant: "secondary", className: MUTED },
 };
 
 /** An allow/deny entry of a tenant's approved scanning scope (#226). Deny is
@@ -297,9 +322,11 @@ export const USER_ROLE_STATUS: Record<Role, StatusStyle> = {
 
 /** Whether the account can sign in. Disabling beats deleting — the memberships
  * and the history survive it — so it reads as muted rather than as a failure. */
-export const ACCOUNT_STATUS: Record<"active" | "disabled", StatusStyle> = {
+export const ACCOUNT_STATUS: Record<"active" | "disabled" | "erased", StatusStyle> = {
   active: { label: "active", className: SUCCESS },
   disabled: { label: "disabled", variant: "secondary", className: MUTED },
+  // A data-subject erasure's tombstone (#332): disabled for good.
+  erased: { label: "erased", variant: "secondary", className: MUTED },
 };
 
 /** The account's second factor (#315). "pending" is a setup that was started

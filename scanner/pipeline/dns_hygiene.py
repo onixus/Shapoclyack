@@ -457,7 +457,8 @@ def _probe_axfr(
     resolver = str(parsed[0])
     try:
         completed = subprocess.run(
-            ["dnsx", "-axfr", "-resolver", f"{resolver}:53", "-json", "-silent"],
+            # -disable-update-check: no phone-home from an air-gapped scan (#339).
+            ["dnsx", "-axfr", "-resolver", f"{resolver}:53", "-json", "-silent", "-disable-update-check"],
             input=f"{domain}\n",
             text=True,
             capture_output=True,
