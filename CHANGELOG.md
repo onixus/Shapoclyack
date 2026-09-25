@@ -6,6 +6,45 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Sensor fleet, connection pool, process and opt-in per-tenant series on
+  `/metrics`, with Grafana dashboards and opt-in monitoring components**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). Sensor and
+  endpoint-agent heartbeats come from one grouped query over the `agents` table
+  — `octo_agents{agent_kind,state}`, the gauge histogram
+  `octo_agent_heartbeat_age_seconds{agent_kind}`, the longest silence per kind
+  and the stale threshold — labelled from a fixed vocabulary only (no tenant,
+  id or hostname). They are read at scrape time together with the job queue
+  and the endpoint devices, through one function
+  (`metrics_sources.scrape_session`): one short transaction per replica every
+  15 s however often `/metrics` is asked — it is unauthenticated by default —
+  tried once per TTL when it fails, under a transaction-scoped 2 s statement
+  timeout, skipped while fewer than two pooled connections are free, and
+  withdrawn rather than frozen on failure; `octo_metrics_snapshot_age_seconds`
+  and `octo_metrics_snapshot_misses_total{reason}` say when a snapshot is not
+  being taken, and a pool too busy to take it is logged. Every Postgres engine gets an
+  instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout wait
+  as a histogram and checkout timeouts as a counter. The private registry now
+  carries the `process_*` / `python_gc_*` / `python_info` collectors it never
+  had. `OCTO_METRICS_TENANT_TOP_N` (off by default, capped at 50) adds
+  `octo_tenant_open_findings`, `octo_tenant_sla_breached_findings` and
+  `octo_tenant_scans_finished_24h` for the top N active tenants by open
+  findings when the hour began — so every replica names the same tenants and
+  the set changes only on the hour — every other tenant summed into `_other`,
+  ids only from the tenants table; under `prod` it refuses to start without
+  `OCTO_METRICS_TOKEN`. New alerts `ShapoclyackDbPoolSaturated`,
+  `ShapoclyackDbPoolCheckoutTimeouts`, `ShapoclyackSensorsStale`,
+  `ShapoclyackNoSensorOnline` and `ShapoclyackFleetMetricsBlind`, with
+  `promtool test rules` unit tests. Three dashboards (Platform, Product, Tenants) as
+  JSON, shipped for the Grafana sidecar by the component
+  `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule ship as
+  `base/monitoring`. Neither component sets a namespace — the including overlay
+  does — and `overlays/prod-ha-monitoring` is `prod-ha` with both, not
+  `prod-ha` itself, which would then fail to apply wherever the Prometheus
+  Operator's CRDs are missing. Every series and label the dashboards and rules
+  name is checked against the registry, and every dashboard query is parsed by
+  promtool in `validate-prometheus-rules.sh`, which now uses a local
+  `promtool` only at the pinned version. Catalogue with label bounds:
+  `docs/observability.md`.
 - **Disaster recovery beyond PostgreSQL** ([#333](https://github.com/onixus/Shapoclyack/issues/333)).
   A new `shapoclyack-clickhouse-backup` CronJob in `base/backup` runs
   `BACKUP DATABASE … TO S3 … ASYNC` (full, `deduplicate_files = 0`) daily at
@@ -243,6 +282,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **`python -m api` runs exactly one uvicorn worker, whatever
+  `WEB_CONCURRENCY` says** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  uvicorn read that variable when no worker count was passed, and several
+  worker processes behind one port made every per-replica series — the pool
+  gauges, the process view, the request counters — one process's share, picked
+  at random per scrape. Scale with replicas, as the manifests do; nothing in
+  the repository set the variable.
 - **Breaking: a retention window of `0` means "keep" everywhere, and a tenant's
   own window is still applied
   ([#332](https://github.com/onixus/Shapoclyack/issues/332)).**
@@ -318,6 +364,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
+  route matched — every 404 on an API without the console build, every CORS
+  preflight — used its raw URL as the `path` label of the HTTP series, and the
+  client's method went through verbatim; they are now `path="<unmatched>"` and
+  `method="OTHER"`. `ShapoclyackClickHouseIngestLag` and
+  `ShapoclyackClickHouseIngestStale` matched the consumer's retired name
+  `octo-ch-ingest`, so neither could fire, and the second compared the scrape
+  time with itself; both now select `octo-ch-ingest-results`, and staleness
+  reads the new `octo_nats_consumer_pending_timestamp_seconds`; the lag alert
+  now fires once per consumer and counts only replicas whose reading is fresh,
+  instead of once per replica and on after the queue drained. Console assets
+  served by a mount are `path="/_next/*"` (or `/assets/*`) rather than
+  `<unmatched>`.
+- **`octo_jobs_queued`, `octo_jobs_running` and `octo_endpoint_devices` agree
+  across replicas** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  They were set by whichever replica handled the last job event, retention
+  sweep or System page view, so a scan submitted through one replica and
+  claimed through another stayed queued on the first for good — and
+  `ShapoclyackNoSensorOnline` paged over an empty queue when a sensor
+  rebooted. They are read from the database at scrape time now, and the alert
+  takes `min()` of the queue.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

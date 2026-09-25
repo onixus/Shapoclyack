@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import case, extract, func, or_, select, update
 
 from api import __version__
 from api.db import models
@@ -1001,6 +1002,110 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
         outdated_agents=outdated,
         latest_version=LATEST_AGENT_VERSION,
         by_tenant=by_tenant,
+    )
+
+
+#: The label vocabulary of the fleet series on /metrics (#334). Fixed, and the
+#: query below folds every row into it: the columns behind them are strings the
+#: request schemas constrain on the way in, but a label must never be whatever
+#: a row happens to hold — every value it could take is one more series.
+FLEET_KINDS = (KIND_SCANNER, KIND_ENDPOINT)
+FLEET_STATES = ("idle", "busy", "error", "stale", "disabled", "quarantined")
+#: Upper bounds of ``octo_agent_heartbeat_age_seconds``. Dense around the
+#: sensor's 60 s heartbeat and the default 120 s stale threshold — 90 is one
+#: beat late — then coarse out to a week, which is where a sleeping laptop's
+#: endpoint agent, or a sensor somebody forgot to delete, ends up.
+HEARTBEAT_AGE_BUCKETS = (30, 60, 90, 120, 300, 900, 3600, 21600, 86400, 604800)
+
+
+@dataclass(frozen=True)
+class FleetHeartbeats:
+    """One reading of the fleet, shaped for the /metrics collector (#334)."""
+
+    #: ``(kind, state) -> agents``, every combination present.
+    counts: dict[tuple[str, str], int]
+    #: Cumulative counts per kind, aligned with HEARTBEAT_AGE_BUCKETS; the
+    #: +Inf bucket is ``age_totals``. Active agents only, like the two below.
+    age_buckets: dict[str, list[int]]
+    age_totals: dict[str, int]
+    age_sums: dict[str, float]
+    #: Longest silence per kind; a kind with no active agent has no entry.
+    age_max: dict[str, float]
+    stale_seconds: int
+
+
+def fleet_heartbeats(session: Any, *, now: datetime, stale_seconds: int) -> FleetHeartbeats:
+    """Count and age the whole fleet in one grouped query (#334).
+
+    Runs on the caller's session: the scrape reads through
+    ``api.services.metrics_sources.scrape_session``, which bounds every
+    statement it makes.
+
+    Grouped by the stored columns, with staleness and the age buckets summed
+    inside each group, so the rows coming back number at most kinds ×
+    lifecycles × statuses however large the fleet is. Grouping by the derived
+    state instead would put a CASE on a bound cutoff in both the select list
+    and GROUP BY, which Postgres matches only if both render the same
+    parameter. Ages are taken from ``now`` here: the only date arithmetic in
+    SQL is the summed epoch, and ``extract('epoch', …)`` compiles on Postgres
+    and on the SQLite fallback alike.
+
+    Disabled and quarantined agents are counted under that state and left out
+    of the ages: they are silent by an operator's decision, and their age would
+    otherwise be the oldest one on every panel.
+    """
+    last_seen = models.Agent.last_seen_at
+    stale_before = now - timedelta(seconds=stale_seconds)
+    query = select(
+        models.Agent.agent_kind,
+        models.Agent.lifecycle_status,
+        models.Agent.status,
+        func.count(),
+        func.sum(case((last_seen < stale_before, 1), else_=0)),
+        func.min(last_seen),
+        func.sum(extract("epoch", last_seen)),
+        *(
+            func.sum(case((last_seen >= now - timedelta(seconds=bound), 1), else_=0))
+            for bound in HEARTBEAT_AGE_BUCKETS
+        ),
+    ).group_by(models.Agent.agent_kind, models.Agent.lifecycle_status, models.Agent.status)
+    rows = session.execute(query).all()
+
+    counts = {(kind, state): 0 for kind in FLEET_KINDS for state in FLEET_STATES}
+    age_buckets = {kind: [0] * len(HEARTBEAT_AGE_BUCKETS) for kind in FLEET_KINDS}
+    age_totals = dict.fromkeys(FLEET_KINDS, 0)
+    epoch_sums = dict.fromkeys(FLEET_KINDS, 0.0)
+    oldest: dict[str, datetime] = {}
+    for stored_kind, lifecycle, status, total, stale, min_seen, epoch_sum, *within in rows:
+        # ``row.agent_kind or KIND_SCANNER`` in _to_info; anything else a row
+        # could hold is folded the same way rather than becoming a label.
+        kind = KIND_ENDPOINT if stored_kind == KIND_ENDPOINT else KIND_SCANNER
+        total, stale = int(total), int(stale or 0)
+        if (lifecycle or LIFECYCLE_ACTIVE) != LIFECYCLE_ACTIVE:
+            # Anything but active is refused a claim; only quarantine is told apart.
+            counts[(kind, "quarantined" if lifecycle == "quarantined" else "disabled")] += total
+            continue
+        counts[(kind, "stale")] += stale
+        counts[(kind, status if status in ("busy", "error") else "idle")] += total - stale
+        for index, count in enumerate(within):
+            age_buckets[kind][index] += int(count or 0)
+        age_totals[kind] += total
+        epoch_sums[kind] += float(epoch_sum or 0)
+        if min_seen is not None and (kind not in oldest or min_seen < oldest[kind]):
+            oldest[kind] = min_seen
+
+    now_epoch = now.replace(tzinfo=UTC).timestamp()
+    return FleetHeartbeats(
+        counts=counts,
+        age_buckets=age_buckets,
+        age_totals=age_totals,
+        # A replica whose clock is behind the one that wrote last_seen_at would
+        # compute negative ages; nothing was heard from later than now.
+        age_sums={
+            kind: max(0.0, age_totals[kind] * now_epoch - epoch_sums[kind]) for kind in FLEET_KINDS
+        },
+        age_max={kind: max(0.0, (now - seen).total_seconds()) for kind, seen in oldest.items()},
+        stale_seconds=stale_seconds,
     )
 
 

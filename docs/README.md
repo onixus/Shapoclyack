@@ -68,6 +68,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Disaster recovery](disaster-recovery.md) | Backup and restore of PostgreSQL, ClickHouse, artifacts and JetStream; restore order, reconciling restore points, RPO/RTO, the drill |
 | [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
+| [Observability](observability.md) | Metrics catalogue and label bounds, Grafana dashboards, opt-in ServiceMonitor/PrometheusRule components, pool and sensor alerts |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
