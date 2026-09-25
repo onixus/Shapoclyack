@@ -522,6 +522,26 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- **The sensor deployment snippets run an image that exists, and pin it.** The
+  console's `docker run`, Compose and Kubernetes snippets named
+  `ghcr.io/onixus/shapoclyack:latest`, a repository the release has never
+  published, so the pull failed. They, and the `--docker` default of
+  `scripts/install-agent.sh` (also what the SSH push deploys), now run the
+  released scanner image as `tag@sha256:…` (`SENSOR_IMAGE` in
+  `api/services/agents.py`), re-pinned with `k8s/` each release. With that
+  image the `docker run` and Compose snippets also had to replace its
+  `scanner.main` entrypoint instead of passing `python -m agent` to the scanner
+  as arguments, and all three now grant `NET_RAW`/`NET_ADMIN`: without
+  `NET_ADMIN` naabu's exec fails with EPERM, and in a Kubernetes pod with
+  `allowPrivilegeEscalation: false` it silently drops to a connect scan.
+- **The native sensor install is hash-pinned.** `install-agent.sh` without
+  `--docker` used to upgrade pip, setuptools and wheel from PyPI and install
+  `fastapi httpx pydantic psutil requests` unpinned — packages the sensor does
+  not import, while `nats-py`, which it needs for `OCTO_NATS_URL`, was missing.
+  It now installs `requirements-agent.lock` (`nats-py`, `psutil`, compiled from
+  `requirements-agent.txt`) with `--require-hashes --only-binary :all:`, from a
+  copy inside the script, and leaves the venv's own pip alone. Wheels exist
+  for x86_64 and aarch64, glibc and musl.
 - The DNS-hygiene AXFR probe handed dnsx an IPv6-only nameserver as
   `2001:500:8f::53:53`. dnsx reads that as a different IPv6 host on port 53,
   not the gated address, so the probe never reached the nameserver and
