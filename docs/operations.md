@@ -1597,12 +1597,31 @@ network, `NET_RAW`/`NET_ADMIN`, `--env-file` pointing at that file, entrypoint
 arguments, which would be in the docker client's own argv.
 
 Without it, the native path installs Python and a virtualenv under
-`/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
-`/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
-systemd is present — installs and enables `shapoclyack-agent.service`
-(`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
-systemd the sensor is started with `nohup` and is **not** restarted on boot; on
-such a host, supervise it yourself.
+`/opt/shapoclyack-agent`, creates a `shapoclyack` system account in a
+`shapoclyack` group, writes `/etc/shapoclyack/agent.env` (`0600`, owned by that
+account), and — where systemd is present — installs and enables
+`shapoclyack-agent.service` (`Restart=always`,
+`EnvironmentFile=/etc/shapoclyack/agent.env`). Without systemd (Alpine with
+OpenRC, containers) the sensor is started in the background with `nohup` as
+that account (`runuser`, or BusyBox `su`; `sudo` is not needed). It logs to
+`/opt/shapoclyack-agent/agent.log` and is **not** restarted on boot or after a
+crash, so supervise it yourself on such a host. The installer fails if that
+process has exited three seconds after start. A re-run stops the process the
+previous run started before it starts the new one.
+
+**The sensor needs Python 3.11 or newer.** The installer uses `python3` when it
+is new enough. If it is older, the installer installs `python3.12` or
+`python3.11` from the distribution: AppStream on RHEL/Rocky/Alma 9, whose
+`python3` is 3.9, and universe on Ubuntu 22.04, whose `python3` is 3.10. Where
+no such package exists (Ubuntu 20.04, Debian 11), it stops before creating the
+account and names the version it found. Install a 3.11+ interpreter with its
+`venv` module yourself, or use `--docker`. A virtualenv left by an earlier run
+on an older interpreter is rebuilt.
+
+**If the `shapoclyack` account already exists**, its primary group must be
+`shapoclyack`, or the installer stops and says so. Installers before this fix
+created it in `nogroup` on Alpine and then failed at `chown`. Remove that
+account (`deluser shapoclyack`) and re-run.
 
 **The native path does not ship the sensor source.** The API serves no sensor
 bundle, so the package has to come from somewhere explicit: pass

@@ -197,25 +197,112 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
 fi
 
 # Native Systemd Installation Mode
+
+# The agent needs Python 3.11 or newer (`from datetime import UTC` in
+# agent/logging_setup.py; ruff targets py311). Several supported distributions
+# still point `python3` at something older and ship a newer interpreter as a
+# separately named package beside it: RHEL/Rocky/Alma 9 default to 3.9 with
+# python3.11/python3.12 in AppStream, Ubuntu 22.04 to 3.10 with python3.11 in
+# universe. Without this check such a host got a venv the agent cannot run in,
+# and the failure surfaced only as "import agent.worker failed".
+python_ok() {
+    "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' &>/dev/null
+}
+
+find_python() {
+    local candidate
+    for candidate in python3 python3.14 python3.13 python3.12 python3.11; do
+        if command -v "${candidate}" &>/dev/null && python_ok "${candidate}"; then
+            PYTHON="$(command -v "${candidate}")"
+            return 0
+        fi
+    done
+    return 1
+}
+
 log "Detecting OS package manager..."
+PKG_MANAGER=""
+# RHEL 9 and its rebuilds ship curl-minimal, which provides /usr/bin/curl and
+# conflicts with the full curl package: asking dnf for "curl" there fails the
+# whole transaction. Only ask for curl where there is none.
+CURL_PKG=""
+command -v curl &>/dev/null || CURL_PKG="curl"
 if command -v apt-get &>/dev/null; then
+    PKG_MANAGER="apt"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv curl tar ca-certificates
+    apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv ${CURL_PKG} tar ca-certificates
 elif command -v dnf &>/dev/null; then
-    dnf install -y -q python3 python3-pip curl tar ca-certificates
+    PKG_MANAGER="dnf"
+    dnf install -y -q python3 python3-pip ${CURL_PKG} tar ca-certificates
 elif command -v yum &>/dev/null; then
-    yum install -y -q python3 python3-pip curl tar ca-certificates
+    PKG_MANAGER="yum"
+    yum install -y -q python3 python3-pip ${CURL_PKG} tar ca-certificates
 elif command -v apk &>/dev/null; then
-    apk add --no-cache python3 py3-pip curl tar ca-certificates
+    PKG_MANAGER="apk"
+    apk add --no-cache python3 py3-pip ${CURL_PKG} tar ca-certificates
 elif command -v pacman &>/dev/null; then
-    pacman -Sy --noconfirm python python-pip curl tar ca-certificates
+    PKG_MANAGER="pacman"
+    pacman -Sy --noconfirm python python-pip ${CURL_PKG} tar ca-certificates
 fi
 
-# Create dedicated system user
-if ! id -u shapoclyack &>/dev/null; then
+PYTHON=""
+if ! find_python; then
+    log "The default python3 is older than 3.11; looking for a newer interpreter package..."
+    for version in 3.12 3.11; do
+        case "${PKG_MANAGER}" in
+            apt)
+                apt-cache show "python${version}-venv" &>/dev/null || continue
+                apt-get install -y -qq "python${version}" "python${version}-venv" || continue
+                ;;
+            dnf|yum)
+                "${PKG_MANAGER}" -q info "python${version}" &>/dev/null || continue
+                "${PKG_MANAGER}" install -y -q "python${version}" || continue
+                ;;
+            *)
+                break
+                ;;
+        esac
+        find_python && break
+    done
+fi
+if [[ -z "${PYTHON}" ]]; then
+    error "The agent needs Python 3.11 or newer, and none was found or installable.
+  Found: $(command -v python3 &>/dev/null && python3 --version 2>&1 || echo 'no python3').
+  Install python3.11 (or newer) with its venv module and re-run this installer,
+  or use --docker, which brings its own interpreter."
+fi
+log "Using $(${PYTHON} --version 2>&1) at ${PYTHON}."
+
+# Create dedicated system user and group
+#
+# The group is created explicitly rather than left to useradd's
+# USERGROUPS_ENAB default, and BusyBox (Alpine) has no default at all:
+# `adduser -S` without -G puts the account in 'nogroup' and creates no
+# 'shapoclyack' group, so every `chown shapoclyack:shapoclyack` below and the
+# unit's Group= would fail. A failed creation stops the install here instead
+# of surfacing later as an unrelated chown error.
+if id -u shapoclyack &>/dev/null; then
+    if [[ "$(id -gn shapoclyack)" != "shapoclyack" ]]; then
+        # Typically left behind by an older installer on Alpine. Rewriting an
+        # existing account is not this script's call.
+        error "The account 'shapoclyack' exists but its primary group is '$(id -gn shapoclyack)', not 'shapoclyack'.
+  Remove it (userdel shapoclyack, or deluser shapoclyack on Alpine) and re-run."
+    fi
+else
     log "Creating system user 'shapoclyack'..."
-    useradd --system --shell /usr/sbin/nologin --home-dir "${INSTALL_DIR}" --create-home shapoclyack || \
-    adduser -S -D -H -h "${INSTALL_DIR}" -s /sbin/nologin shapoclyack 2>/dev/null || true
+    if command -v useradd &>/dev/null \
+        && { getent group shapoclyack &>/dev/null || groupadd --system shapoclyack; } \
+        && useradd --system --gid shapoclyack --shell /usr/sbin/nologin \
+            --home-dir "${INSTALL_DIR}" --create-home shapoclyack; then
+        :
+    elif command -v adduser &>/dev/null \
+        && { getent group shapoclyack &>/dev/null || addgroup -S shapoclyack; } \
+        && adduser -S -D -H -G shapoclyack -h "${INSTALL_DIR}" -s /sbin/nologin shapoclyack; then
+        :
+    fi
+    if ! id -u shapoclyack &>/dev/null || [[ "$(id -gn shapoclyack)" != "shapoclyack" ]]; then
+        error "Could not create the system user 'shapoclyack' in group 'shapoclyack' (tried useradd and adduser)."
+    fi
 fi
 
 # Prepare directories
@@ -223,8 +310,15 @@ mkdir -p "${INSTALL_DIR}" "${CONF_DIR}"
 chown -R shapoclyack:shapoclyack "${INSTALL_DIR}"
 
 # Create Python Virtual Environment
+#
+# A venv left by an earlier run on a too-old interpreter is rebuilt: `venv`
+# does not replace an existing bin/python, so building over it would keep 3.9.
 log "Setting up virtual environment in ${INSTALL_DIR}/venv..."
-python3 -m venv "${INSTALL_DIR}/venv"
+VENV_CLEAR=""
+if [[ -d "${INSTALL_DIR}/venv" ]] && ! python_ok "${INSTALL_DIR}/venv/bin/python"; then
+    VENV_CLEAR=1
+fi
+"${PYTHON}" -m venv ${VENV_CLEAR:+--clear} "${INSTALL_DIR}/venv"
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet pip setuptools wheel
 
 # Fetch agent bundle or install dependencies
@@ -267,8 +361,9 @@ chown -R shapoclyack:shapoclyack "${INSTALL_DIR}"
 # Fail here rather than in a restart loop: if the worker cannot be imported,
 # systemd would report the unit as active while it crashes every RestartSec.
 log "Verifying the agent package is importable..."
-if ! (cd "${INSTALL_DIR}" && "${INSTALL_DIR}/venv/bin/python" -c "import agent.worker" 2>/dev/null); then
-    error "The agent package in ${INSTALL_DIR} cannot be imported ('import agent.worker' failed).
+if ! IMPORT_OUTPUT=$(cd "${INSTALL_DIR}" && "${INSTALL_DIR}/venv/bin/python" -c "import agent.worker" 2>&1); then
+    error "The agent package in ${INSTALL_DIR} cannot be imported ('import agent.worker' failed):
+$(printf '%s\n' "${IMPORT_OUTPUT}" | tail -n 5 | sed 's/^/    /')
   The installation is incomplete; the service has not been started."
 fi
 
@@ -321,10 +416,67 @@ else
     # The env file is sourced inside the child rather than expanded into an
     # `env VAR=value` argument list, which would put the provisioning key back
     # into this host's process list.
-    nohup sudo -u shapoclyack sh -c \
-        'set -a; . "$1"; set +a; exec "$2" -m agent' \
-        sh "${CONF_DIR}/agent.env" "${INSTALL_DIR}/venv/bin/python" \
+    #
+    # Not sudo: Alpine (OpenRC, the usual host without systemd) and minimal
+    # Debian images have none, and the old `nohup sudo …&` failed in the
+    # background while this script went on to report success. runuser is
+    # util-linux; su covers BusyBox, where `su USER -c CMD ARG0 ARGS` hands
+    # the trailing arguments to the shell. `-s /bin/sh` because the account's
+    # own shell is nologin.
+    #
+    # The `cd` is the unit's WorkingDirectory=: `-m agent` resolves the package
+    # from the working directory, and without it the agent died at once with
+    # "No module named agent" — which nobody saw, for the reason above.
+    LAUNCH_SCRIPT='set -a; . "$1"; set +a; cd "$3" && exec "$2" -m agent'
+
+    # A reinstall is the upgrade path, and without a supervisor nothing else
+    # stops the agent the previous run started: it would go on running the old
+    # code beside the new one, both claiming jobs. Found by owner and exact
+    # command line rather than a pid file, which the agent account could
+    # rewrite to point this root script at any process.
+    AGENT_UID="$(id -u shapoclyack)"
+    OLD_PIDS=()
+    for proc in /proc/[0-9]*; do
+        [[ "$(stat -c %u "${proc}" 2>/dev/null)" == "${AGENT_UID}" ]] || continue
+        cmdline="$(tr '\0' ' ' < "${proc}/cmdline" 2>/dev/null)" || continue
+        [[ "${cmdline}" == "${INSTALL_DIR}/venv/bin/python -m agent " ]] && OLD_PIDS+=("${proc#/proc/}")
+    done
+    if [[ ${#OLD_PIDS[@]} -gt 0 ]]; then
+        log "Stopping the agent started by a previous install (pid ${OLD_PIDS[*]})..."
+        kill -TERM "${OLD_PIDS[@]}" 2>/dev/null || true
+        for _ in $(seq 1 30); do
+            still_running=0
+            for pid in "${OLD_PIDS[@]}"; do
+                kill -0 "${pid}" 2>/dev/null && still_running=1
+            done
+            [[ "${still_running}" -eq 0 ]] && break
+            sleep 1
+        done
+        if [[ "${still_running}" -eq 1 ]]; then
+            warn "The previous agent did not stop within 30s of SIGTERM; killing it."
+            kill -KILL "${OLD_PIDS[@]}" 2>/dev/null || true
+        fi
+    fi
+
+    if command -v runuser &>/dev/null; then
+        DROP_PRIVS=(runuser -u shapoclyack -- /bin/sh -c "${LAUNCH_SCRIPT}")
+    else
+        DROP_PRIVS=(su -s /bin/sh shapoclyack -c "${LAUNCH_SCRIPT}")
+    fi
+    nohup "${DROP_PRIVS[@]}" \
+        sh "${CONF_DIR}/agent.env" "${INSTALL_DIR}/venv/bin/python" "${INSTALL_DIR}" \
         > "${INSTALL_DIR}/agent.log" 2>&1 &
+    AGENT_PID=$!
+
+    # Same reasoning as the systemd branch: a background launch that dies
+    # immediately must not be reported as an installed agent.
+    sleep 3
+    if ! kill -0 "${AGENT_PID}" 2>/dev/null; then
+        error "The agent exited right after start.
+  Last lines of ${INSTALL_DIR}/agent.log:
+$(tail -n 5 "${INSTALL_DIR}/agent.log" 2>/dev/null | sed 's/^/    /')"
+    fi
+    log "Agent started in background (pid ${AGENT_PID}), logging to ${INSTALL_DIR}/agent.log."
 fi
 
 log "================================================================="
