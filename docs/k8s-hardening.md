@@ -331,7 +331,10 @@ with another name and Secret, enrolled with that tenant's key) or gives each
 tenant its own sensor. A tenant with no executor online is not refused scans:
 its jobs are accepted and wait, flagged `sensor_unavailable` in the job list,
 with a banner above the launcher and the System page's scan-execution tile
-reading "no sensor online".
+reading "no sensor online". When a tenant is deleted
+([#325](https://github.com/onixus/Shapoclyack/issues/325)), delete its
+executor and Secret as well: the purge reaches the API's stores, not the run
+directories in the executor's `emptyDir`s, which go only with the pod.
 
 **Scan state lives with the pod.** The delta baseline (`--delta` / the `delta`
 intent) and the previous run the report diff compares against are under
@@ -524,6 +527,14 @@ To rotate, before the old key expires:
 
 Revoking before the Secret is updated makes the executor retry with the revoked
 key until the file changes; nothing is lost, the jobs wait.
+
+**After a tenant is suspended and resumed**
+([tenant lifecycle](tenant-lifecycle.md), [#325](https://github.com/onixus/Shapoclyack/issues/325)): a suspension
+revokes the tenant's provisioning keys unless it was asked to keep them, and a
+resume does not bring them back. The executor holding that tenant's key keeps
+retrying it after the resume, and the tenant's scans queue `sensor_unavailable`,
+until it has a new one: mint a key and replace it as in step 2, keeping the
+prefix.
 
 ## Kyverno and Gatekeeper
 
