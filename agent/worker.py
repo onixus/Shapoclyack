@@ -35,6 +35,7 @@ import logging
 import os
 import signal
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -1006,6 +1007,70 @@ def _archive_run(output_dir: Path, workdir: Path, run_id: str) -> Path | None:
     return archive_path
 
 
+#: One safe path segment, kept equal to scanner/pipeline/run_ids.RUN_ID_RE.
+#: Checked again here because the id arrives in a claim response and becomes
+#: the argument of an ``rmtree``: an empty one is ``runs/`` itself, and ``..``
+#: is the directory above it.
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def _scanner_state_dir(config: Path) -> Path | None:
+    """``runtime.state_dir`` of the scanner config this agent runs with.
+
+    Read from the YAML rather than passed in: the scanner takes its state
+    directory from the config and from nothing else, so the config is the only
+    place that says where the checkpoints of a run went. ``None`` — and the
+    state left where it is — when the config cannot be read, or uses the flat
+    layout, where the state directory is the base itself and no part of it
+    belongs to one run.
+    """
+    try:
+        import yaml
+
+        raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        LOG.warning("Could not read runtime.state_dir from %s", config, exc_info=True)
+        return None
+    runtime = raw.get("runtime") if isinstance(raw, dict) else None
+    runtime = runtime if isinstance(runtime, dict) else {}
+    if runtime.get("per_run_output", True) is False:
+        return None
+    # The default of scanner/pipeline/config_schema.RuntimeConfig.state_dir.
+    return Path(str(runtime.get("state_dir") or "scanner/state"))
+
+
+def _discard_run(output_dir: Path, state_dir: Path | None, run_id: str) -> None:
+    """Remove ``runs/<run_id>`` under the output and state directories.
+
+    Only a directory that is ``runs/<run_id>`` itself once every link is
+    resolved: a run id that is not one path segment, and a ``runs/<run_id>``
+    that is a symlink to somewhere else, are left alone and logged — the
+    deletion is housekeeping, and the one thing it must never do is take
+    another run's directory, or anything outside ``runs/``, with it. Failures
+    are logged and swallowed: the job is settled by now, and a directory that
+    could not be removed is disk, not a result.
+    """
+    if not _RUN_ID_RE.fullmatch(run_id):
+        LOG.warning("Not removing run %r: not a single path segment", run_id)
+        return
+    for base in (output_dir, state_dir):
+        if base is None:
+            continue
+        runs = base / "runs"
+        target = runs / run_id
+        if not target.exists() and not target.is_symlink():
+            continue
+        if target.is_symlink() or target.resolve().parent != runs.resolve():
+            LOG.warning("Not removing %s: it resolves outside %s", target, runs)
+            continue
+        try:
+            shutil.rmtree(target)
+        except OSError:
+            LOG.warning("Could not remove %s", target, exc_info=True)
+        else:
+            LOG.info("Removed the local copy of run %s from %s", run_id, runs)
+
+
 @contextlib.contextmanager
 def _busy_heartbeats(
     client: AgentClient,
@@ -1100,6 +1165,7 @@ def _execute_job(
     output_dir: Path,
     heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
     scan_timeout: float | None = 7200.0,
+    keep_runs: bool = False,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
     cancel_event = threading.Event()
@@ -1179,7 +1245,7 @@ def _execute_job(
                     job["job_id"],
                     exc,
                 )
-                return
+                completed = False
             except AgentResultRejected as exc:
                 # Not an error of this agent's making and not retried: the job
                 # belongs to another attempt now, and this result was declined
@@ -1189,7 +1255,20 @@ def _execute_job(
                 LOG.warning(
                     "The API rejected the result of job %s: %s", job["job_id"], exc
                 )
-                return
+                completed = False
+            else:
+                completed = True
+    # Past this point the API has the result, or has one from this agent's
+    # earlier copy, or does not want it; in none of those cases is the local
+    # copy read again. A failed upload never gets here — it raised out of the
+    # ``try`` above — so the run it could not send stays on disk for an
+    # operator to recover. Without this the sensor keeps every run it ever
+    # made: a systemd host fills its disk, and the executor's ``emptyDir``
+    # evicts the pod with the next scan half done.
+    if not keep_runs:
+        _discard_run(output_dir, _scanner_state_dir(config), str(job["run_id"]))
+    if not completed:
+        return
     LOG.info(
         "Job %s finished exit=%s%s", job["job_id"], exit_code, " (cancelled)" if cancelled else ""
     )
@@ -1674,6 +1753,7 @@ def run_loop(args: argparse.Namespace) -> int:
                     config=Path(args.config),
                     output_dir=Path(args.output_dir),
                     scan_timeout=getattr(args, "scan_timeout", 7200.0),
+                    keep_runs=getattr(args, "keep_runs", False),
                 )
             except KeyboardInterrupt:
                 LOG.info("Shutting down")
@@ -1803,6 +1883,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Shape the results upload to this many KiB/s (or "
             "OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS); 0 = no limit"
+        ),
+    )
+    parser.add_argument(
+        "--keep-runs",
+        action="store_true",
+        default=os.environ.get("OCTO_AGENT_KEEP_RUNS", "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        help=(
+            "Keep each run's output and state directories after its result was "
+            "accepted (or OCTO_AGENT_KEEP_RUNS=1); by default they are removed"
         ),
     )
     parser.add_argument("--timeout", type=float, default=60.0)

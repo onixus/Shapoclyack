@@ -706,6 +706,20 @@ For an installation moving from a pre-#338 release:
   `base/enrichment`'s volume (a PVC is mounted from its own namespace only), so
   the scanner's GeoIP and CVSS4 lookups use the data baked into the image at
   build time. The API's EPSS/KEV/CVSS4 scoring still reads the refreshed volume.
+- **The sensor removes a run once its result is in.** `agent/worker.py`
+  deletes `scanner/output/runs/<run_id>` and the scanner's
+  `scanner/state/runs/<run_id>` (`runtime.state_dir` of the config it runs
+  with) after the API accepted the upload, or answered `409` — the result is
+  already being ingested from an earlier copy, or was declined. A failed upload
+  keeps both on disk, and the job goes back to the queue when its lease lapses.
+  Before this every run stayed: the executor's `output` `emptyDir` filled and
+  evicted the pod with the next scan half done, and a systemd-installed sensor
+  grew without bound. Two things read the previous run from that directory and
+  now find none: delta discovery scans the whole scope instead of the hosts
+  that were not alive last time, and the scanner's report diff is skipped —
+  which is what the executor already did after every restart.
+  `OCTO_AGENT_KEEP_RUNS=1` keeps the old behaviour for an operator who relies
+  on the local copies.
 - **Features that need local execution** are listed under
   [Local execution](#local-execution).
 
@@ -714,10 +728,6 @@ Not done here, and why:
 - **`NET_ADMIN` is still granted.** Whether Pulse needs it cannot be tested
   without the private Pulse build; until it is, dropping it from `setcap` would
   risk breaking OS fingerprinting in every image.
-- **The sensor never deletes finished runs** from `scanner/output`
-  (`agent/worker.py`). On the executor the directory is an `emptyDir` sized to
-  evict the pod before the node fills, which empties it; a systemd-installed
-  sensor grows without bound.
 
 ## Upgrading
 

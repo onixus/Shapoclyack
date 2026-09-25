@@ -136,6 +136,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **A sensor removes a run once the API has its result.** `agent/worker.py`
+  kept every run it ever made under `scanner/output/runs/` and
+  `scanner/state/runs/`: a systemd-installed sensor grew without bound, and the
+  in-cluster scanner-executor filled its `emptyDir` and was evicted with the
+  next scan half done. The run's output and state directories are now deleted
+  after the upload is accepted or answered `409` (already being ingested,
+  declined); a failed upload keeps them. The run id is held to one path
+  segment and a run directory that resolves outside `runs/` is left alone.
+  Delta discovery and the scanner's report diff on a sensor no longer find the
+  previous run, so a delta scan there covers the whole scope;
+  `OCTO_AGENT_KEEP_RUNS=1` (`--keep-runs`) keeps the old behaviour.
 - **The API pod passes Pod Security `restricted`; scans moved to a
   `scanner-executor` in a namespace of its own
   ([#338](https://github.com/onixus/Shapoclyack/issues/338)).** The API held

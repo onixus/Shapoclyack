@@ -1461,3 +1461,154 @@ def test_the_results_upload_waits_as_long_as_the_api_takes_to_ingest(monkeypatch
         except AssertionError:
             pass
     assert seen == [60.0, client.upload_timeout]
+
+
+def _scanner_layout(tmp_path, run_ids=("run-1",)):
+    """A config naming its own state directory, and a run on disk under both
+    roots — the tree ``scanner.main --run-id`` leaves behind."""
+    output_dir = tmp_path / "output"
+    state_dir = tmp_path / "state"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"runtime:\n  output_dir: {output_dir}\n  state_dir: {state_dir}\n  per_run_output: true\n",
+        encoding="utf-8",
+    )
+    for run_id in run_ids:
+        (output_dir / "runs" / run_id / "logs").mkdir(parents=True)
+        (output_dir / "runs" / run_id / "alive_ips.txt").write_text("10.0.0.1\n", encoding="utf-8")
+        (state_dir / "runs" / run_id).mkdir(parents=True)
+        (state_dir / "runs" / run_id / "checkpoint.json").write_text("{}", encoding="utf-8")
+    return config, output_dir, state_dir
+
+
+def _run_job(client, config, output_dir, *, run_id="run-1", keep_runs=False):
+    worker._execute_job(  # noqa: SLF001
+        client,
+        agent_id="agent-1",
+        job={"job_id": "job-1", "run_id": run_id, "attempt": 1},
+        config=config,
+        output_dir=output_dir,
+        heartbeat_interval=60.0,
+        keep_runs=keep_runs,
+    )
+
+
+def test_an_accepted_upload_removes_the_runs_output_and_state(monkeypatch, tmp_path):
+    """Nothing reads the local copy once the API has the archive. Kept, every
+    run the sensor ever made stays on its disk: a systemd host fills up, and
+    the executor's emptyDir evicts the pod with the next scan half done."""
+    config, output_dir, state_dir = _scanner_layout(tmp_path)
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    _run_job(_FakeClient(), config, output_dir)
+
+    assert not (output_dir / "runs" / "run-1").exists()
+    assert not (state_dir / "runs" / "run-1").exists()
+    # runs/ itself, and the scanner's pointer next to it, are not the run's.
+    assert (output_dir / "runs").is_dir()
+    assert (state_dir / "runs").is_dir()
+
+
+def test_a_declined_or_in_flight_result_also_removes_the_run(monkeypatch, tmp_path):
+    """Both 409s mean the local copy will never be sent again: the API either
+    holds this agent's earlier copy or does not want the result at all."""
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+    for exc in (
+        worker.AgentResultInFlight("409: already being processed"),
+        worker.AgentResultRejected("409: on attempt 2"),
+    ):
+        root = tmp_path / type(exc).__name__
+        root.mkdir()
+        config, output_dir, state_dir = _scanner_layout(root)
+        client = _FakeClient()
+
+        def _refused(job_id: str, _exc=exc, **kwargs: Any):
+            raise _exc
+
+        client.upload_results = _refused  # type: ignore[method-assign]
+        _run_job(client, config, output_dir)
+
+        assert not (output_dir / "runs" / "run-1").exists(), type(exc).__name__
+        assert not (state_dir / "runs" / "run-1").exists(), type(exc).__name__
+
+
+def test_a_failed_upload_keeps_the_run(monkeypatch, tmp_path):
+    """A transport failure is the one case where the archive did not arrive:
+    the run stays for the operator, and the job goes back to the queue when
+    its lease lapses."""
+    import pytest
+
+    config, output_dir, state_dir = _scanner_layout(tmp_path)
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+    client = _FakeClient()
+
+    def _unreachable(job_id: str, **kwargs: Any):
+        raise RuntimeError(f"POST /api/agent/jobs/{job_id}/results -> network error: refused")
+
+    client.upload_results = _unreachable  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="network error"):
+        _run_job(client, config, output_dir)
+
+    assert (output_dir / "runs" / "run-1" / "alive_ips.txt").is_file()
+    assert (state_dir / "runs" / "run-1" / "checkpoint.json").is_file()
+
+
+def test_keep_runs_leaves_an_accepted_run_on_disk(monkeypatch, tmp_path):
+    config, output_dir, state_dir = _scanner_layout(tmp_path)
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    _run_job(_FakeClient(), config, output_dir, keep_runs=True)
+
+    assert (output_dir / "runs" / "run-1" / "alive_ips.txt").is_file()
+    assert (state_dir / "runs" / "run-1" / "checkpoint.json").is_file()
+
+
+def test_keep_runs_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("OCTO_AGENT_KEEP_RUNS", "1")
+    assert worker.build_parser().parse_args([]).keep_runs is True
+    monkeypatch.setenv("OCTO_AGENT_KEEP_RUNS", "")
+    assert worker.build_parser().parse_args([]).keep_runs is False
+    assert worker.build_parser().parse_args(["--keep-runs"]).keep_runs is True
+
+
+def test_removing_a_run_never_touches_another_runs_directory(monkeypatch, tmp_path, caplog):
+    """The run id comes from a claim response and ends up in an ``rmtree``.
+    Only ``runs/<run_id>`` itself goes: never a sibling, never ``runs/``, and
+    never anything a hostile or malformed id could name."""
+    config, output_dir, state_dir = _scanner_layout(tmp_path, run_ids=("run-1", "run-2"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x", encoding="utf-8")
+    # A run directory that is a link out of runs/ is not the run's to remove.
+    (output_dir / "runs" / "linked").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    _run_job(_FakeClient(), config, output_dir, run_id="run-1")
+    for hostile in ("", ".", "..", "../outside", "run-2/..", "/tmp", "linked"):
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            _run_job(_FakeClient(), config, output_dir, run_id=hostile)
+        # Refused by name, not saved by rmtree declining a symlink: each id is
+        # turned away by the check meant for it.
+        expected = "resolves outside" if hostile == "linked" else "not a single path segment"
+        assert any(expected in record.message for record in caplog.records), hostile
+
+    assert not (output_dir / "runs" / "run-1").exists()
+    assert (output_dir / "runs" / "run-2" / "alive_ips.txt").is_file()
+    assert (state_dir / "runs" / "run-2" / "checkpoint.json").is_file()
+    assert (outside / "keep.txt").is_file()
+    assert (output_dir / "runs" / "linked").is_symlink()
+    assert (state_dir / "runs").is_dir()
+
+
+def test_an_unreadable_config_leaves_the_state_directory_alone(monkeypatch, tmp_path):
+    """The state directory is named by the config and nothing else; guessing
+    one when it cannot be read would be an rmtree under a directory nobody
+    named. The output side is the agent's own ``--output-dir`` and still goes."""
+    _config, output_dir, state_dir = _scanner_layout(tmp_path)
+    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (0, None, None))
+
+    _run_job(_FakeClient(), tmp_path / "missing.yaml", output_dir)
+
+    assert not (output_dir / "runs" / "run-1").exists()
+    assert (state_dir / "runs" / "run-1" / "checkpoint.json").is_file()
