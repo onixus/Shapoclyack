@@ -1446,20 +1446,25 @@ class ChangeOwnPasswordRequest(BaseModel):
     new_password: str = _PASSWORD
 
 
+#: Every status a tenant row can hold (#325; ``tenants.STATUSES``).
+TenantStatus = Literal["active", "suspended", "pending_deletion", "deleting"]
+
+
 class TenantInfo(BaseModel):
     tenant_id: str
     name: str
-    #: ``suspended`` is the one non-active state a tenant has, and the word is
+    #: ``suspended`` is the word for a tenant every gate refuses, and it is
     #: canonical: it is what :func:`api.services.tenants.require_active`
-    #: refuses with, what #325 will set, and what the docs call it. It is
-    #: deliberately *not* ``disabled`` — that word is already an account
-    #: (``PUT /api/users/{u}/disabled``) and an agent
+    #: refuses with, what ``POST /api/tenants/{id}/suspend`` sets, and what the
+    #: docs call it. It is deliberately *not* ``disabled`` — that word is already
+    #: an account (``PUT /api/users/{u}/disabled``) and an agent
     #: (``lifecycle_status``), and a third meaning on a third object is how a
-    #: reader ends up guessing. The literal is narrow on purpose: this model
+    #: reader ends up guessing. ``pending_deletion`` and ``deleting`` (#325) are
+    #: refused the same way. The literal is narrow on purpose: this model
     #: serialises rows read straight out of ``tenants.status``, so anything
     #: written there that is not named here is a 500 on the tenant switcher
     #: rather than a refusal — which is exactly how the mismatch was found.
-    status: Literal["active", "suspended"] = "active"
+    status: TenantStatus = "active"
     created_at: str | None = None
 
 
@@ -3147,6 +3152,90 @@ class LegalHoldRequest(BaseModel):
     nobody dares release."""
 
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class SuspendTenantRequest(BaseModel):
+    """Why the tenant is being suspended (#325), and whether its credentials go.
+
+    ``revoke_credentials`` is on by default: the tenant's provisioning keys and
+    service tokens are revoked and stay revoked after a resume. Off keeps them
+    for a short suspension — they are refused by the status gate on every
+    request either way.
+    """
+
+    reason: str = Field(min_length=1, max_length=1000)
+    revoke_credentials: bool = True
+
+
+class TenantDeletionRequest(BaseModel):
+    """Step one of a tenant's deletion (#325). ``confirm`` is the tenant id,
+    typed: the API refuses anything else, whatever the console did."""
+
+    confirm: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class TenantDeletionApproval(BaseModel):
+    """Step two: start the purge. The tenant id typed again, by the approver."""
+
+    confirm: str = Field(min_length=1, max_length=64)
+
+
+class TenantDeletionStepInfo(BaseModel):
+    """One store of a purge: where it is, how often it was tried, what it removed."""
+
+    step: str
+    position: int
+    state: Literal["pending", "running", "waiting", "failed", "done", "skipped"]
+    attempts: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    #: The last failure, or why the step is waiting or was skipped.
+    last_error: str | None = None
+    counts: dict[str, Any] = Field(default_factory=dict)
+
+
+class TenantDeletionInfo(BaseModel):
+    """One entry of the deletion journal (#325). A ``completed`` one carries the
+    tombstone in ``outcome``: counts per store, nothing the tenant wrote."""
+
+    deletion_id: str
+    tenant_id: str
+    state: Literal["pending", "cancelled", "purging", "blocked", "completed"]
+    reason: str
+    requested_by: str
+    requested_at: str | None = None
+    #: The end of the grace period; the purge cannot be approved before it.
+    purge_after: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    cancelled_by: str | None = None
+    cancelled_at: str | None = None
+    completed_at: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    next_attempt_at: str | None = None
+    outcome: dict[str, Any] | None = None
+    steps: list[TenantDeletionStepInfo] = Field(default_factory=list)
+
+
+class TenantLifecycleInfo(BaseModel):
+    """A tenant's status, why, its legal hold and its deletion, for a platform
+    admin (#325). ``status`` is ``deleted`` for an id the journal says was
+    purged; ``cut`` is what a suspension or deletion request just revoked."""
+
+    tenant_id: str
+    name: str | None = None
+    status: Literal["active", "suspended", "pending_deletion", "deleting", "deleted"]
+    status_reason: str | None = None
+    status_changed_at: str | None = None
+    status_changed_by: str | None = None
+    legal_hold: LegalHoldInfo | None = None
+    deletion: TenantDeletionInfo | None = None
+    history: list[TenantDeletionInfo] = Field(default_factory=list)
+    grace_days: int = 0
+    two_person: bool = True
+    cut: dict[str, Any] | None = None
 
 
 class EndpointAgentPolicyRequest(BaseModel):

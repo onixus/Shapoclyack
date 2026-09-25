@@ -6,6 +6,40 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Suspending, resuming and deleting a tenant, with a journaled purge
+  ([#325](https://github.com/onixus/Shapoclyack/issues/325)).** `suspended` was a
+  status every gate refused and nothing could set. `POST /api/tenants/{id}/suspend`
+  and `…/resume` (new permission `platform.tenant.lifecycle`, platform admins,
+  step-up, audited with a reason) now cut every path in at once: members with no
+  other active tenant are signed out, the tenant's service tokens and
+  provisioning keys are revoked (unless asked to keep them), agents' JWTs are
+  refused on every request (a heartbeat naming a job being stopped is answered
+  with the stop and nothing else, so #360's channel still reaches the sensor —
+  unless its key was revoked before the tenant closed),
+  queued scans are cancelled and running agent scans stopped, and schedules,
+  SLA escalation, ticket sync,
+  webhooks and notifications skip the tenant. Resuming restores what was paused
+  but not what was revoked, and moves overdue schedules to their next
+  occurrence instead of firing a burst. Deletion is two steps and, by default,
+  two people: a request with the tenant id typed (the tenant is suspended, a
+  grace period of `OCTO_TENANT_DELETION_GRACE_DAYS` starts, cancellable), then
+  an approval after it by another platform admin. A new worker purges the
+  tenant from JetStream (consumers matched by filter subject, subjects, the
+  legacy ingest copies), the artifact store (tenant-scoped and legacy flat runs,
+  job inputs, reports), ClickHouse (mutations, verified by count) and every
+  Postgres table in batches, re-checking the legal hold (#332) under the tenant
+  row lock before each batch; a hold stops it and leaves it `blocked`. Each
+  step is resumable after a crash, retried with backoff and visible per store in
+  the console; the journal keeps a tombstone of counts per store, the audit
+  trail is kept, and a deleted tenant's id is never reused. A store that is
+  not configured on the replica running its step fails the step unless it is
+  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`; the k8s base declares
+  both, the patches that enable a store take it off), and an approval on a
+  replica that would fail that way is refused up front. The console lists the
+  deletion journal with each tombstone, a page at a time. Downgrading
+  migration 0066 is refused while a purge is under way or blocked. See
+  [docs/tenant-lifecycle.md](docs/tenant-lifecycle.md), including how to
+  re-apply deletions after restoring a backup.
 - **Per-tenant retention, legal hold, and data-subject requests for console
   accounts ([#332](https://github.com/onixus/Shapoclyack/issues/332)).** Every
   reaper used to apply one global window to every tenant. A tenant admin can now

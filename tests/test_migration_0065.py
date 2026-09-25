@@ -119,7 +119,9 @@ def test_the_upgrade_names_the_ownership_it_needs_on_a_split_install(split_insta
 
 def test_the_downgrade_refuses_while_a_hold_or_a_tombstone_exists(fresh_database) -> None:
     url = fresh_database
-    migrate._upgrade("head")  # noqa: SLF001
+    # To this revision, not "head": a later one (0066, #325) downgrades first,
+    # in the same transaction, and the refusal would roll the schema back to it.
+    migrate._upgrade(REVISION)  # noqa: SLF001
     engine = create_engine(url, future=True)
     try:
         with engine.begin() as conn:

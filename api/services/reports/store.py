@@ -430,15 +430,40 @@ def delete_schedule(
 
 
 def due_schedules(settings: Settings, now: datetime) -> list[dict[str, Any]]:
+    from api.services import tenants as tenants_service
+
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.ReportSchedule).where(
                 models.ReportSchedule.enabled.is_(True),
                 models.ReportSchedule.next_run_at.is_not(None),
                 models.ReportSchedule.next_run_at <= now,
+                # Paused while the tenant is not active (#325): a suspended
+                # customer's report is still a customer's data mailed out.
+                models.ReportSchedule.tenant_id.in_(tenants_service.active_tenant_ids()),
             )
         ).scalars().all()
         return [_schedule_dict(row) for row in rows]
+
+
+def reanchor_overdue(session, tenant_id: str, *, now: datetime) -> int:
+    """Move a resumed tenant's overdue report schedules past ``now`` (#325).
+
+    The report half of ``scan_schedules.reanchor_overdue``, for the same
+    reason: one report per schedule on its next occurrence, not every missed
+    one at the moment of the resume. In the caller's session.
+    """
+    rows = session.execute(
+        select(models.ReportSchedule).where(
+            models.ReportSchedule.tenant_id == tenant_id,
+            models.ReportSchedule.enabled.is_(True),
+            models.ReportSchedule.next_run_at.is_not(None),
+            models.ReportSchedule.next_run_at <= now,
+        )
+    ).scalars().all()
+    for row in rows:
+        row.next_run_at = next_cron_time(row.cron, after=now)
+    return len(rows)
 
 
 def record_dispatch(

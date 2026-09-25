@@ -685,6 +685,12 @@ OCTO_SOFTWARE_MATCH_ENABLED
 OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS
 OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS
 OCTO_STATE_DIR
+OCTO_TENANT_DELETION_GRACE_DAYS
+OCTO_TENANT_DELETION_TWO_PERSON
+OCTO_TENANT_PURGE_BATCH_SIZE
+OCTO_TENANT_PURGE_ENABLED
+OCTO_TENANT_PURGE_INTERVAL_SECONDS
+OCTO_TENANT_PURGE_UNUSED_STORES
 OCTO_TICKET_SYNC_BATCH_SIZE
 OCTO_TICKET_SYNC_ENABLED
 OCTO_TICKET_SYNC_INTERVAL_SECONDS
@@ -1237,6 +1243,18 @@ and a platform admin may place a tenant on legal hold. See
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RETENTION_BOUNDS` | empty (compiled bounds) | JSON object `{"category": {"min": days, "max": days}}` merged over the per-category bounds in [data-retention.md](data-retention.md#11-data-deleted-on-a-retention-window) — e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. Bounds constrain tenant overrides only, never the inherited default. A bound changed after a tenant saved an override binds it from the next sweep: the stored value is clamped into the new bounds and flagged `out_of_bounds`. Give the audit retention CronJob the same value. A malformed value, an unknown category, a `min` below 1 or a `max` above 3650 refuses to start |
+
+Tenant suspension and deletion (#325). See
+[tenant-lifecycle.md](tenant-lifecycle.md):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_TENANT_DELETION_GRACE_DAYS` | `7` | Days between a deletion request and the earliest moment its purge may be approved. The tenant is suspended for the whole period and the request can be cancelled with nothing lost. `0` allows approving at once |
+| `OCTO_TENANT_DELETION_TWO_PERSON` | `true` | The platform admin who approves a purge must not be the one who requested the deletion. Only `false`, `0`, `no` or `off` turn it off — anything else, a typo included, keeps it on. Turn off only on an installation with a single platform admin |
+| `OCTO_TENANT_PURGE_ENABLED` | `true` | Run the purge worker. Safe in every replica: a deletion is claimed with `FOR UPDATE SKIP LOCKED` and held on a lease renewed between batches |
+| `OCTO_TENANT_PURGE_INTERVAL_SECONDS` | `30` | How often the worker looks for an approved deletion (floored at 5) |
+| `OCTO_TENANT_PURGE_BATCH_SIZE` | `1000` | Rows per `DELETE` in the Postgres steps. Every batch re-checks the legal hold under the tenant row lock |
+| `OCTO_TENANT_PURGE_UNUSED_STORES` | empty | Comma-separated stores this installation does not run: `clickhouse`, `jetstream`. The purge skips a store only when it is named here; a store not configured on the replica running the step (`OCTO_CLICKHOUSE_URL`/`OCTO_NATS_URL` unset) and not named here **fails** the step, so a replica with drifted configuration cannot record another replica's data as absent, and the approval of a purge is refused (409) on a replica where it would fail that way. An unknown name refuses to start. Set it before deleting a tenant on an installation without ClickHouse or NATS; the k8s base declares both (`clickhouse,jetstream`) and each patch that sets a URL takes its store off (docs/tenant-lifecycle.md §8) |
 
 
 Never commit real URLs containing credentials. Supply them through the platform

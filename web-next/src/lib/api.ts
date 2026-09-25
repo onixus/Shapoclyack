@@ -927,13 +927,16 @@ export type AgentDeploymentSnippetResponse = {
 export type TenantInfo = {
   tenant_id: string;
   name: string;
-  /** `suspended` is the one non-active state, and the word is the API's:
-   * `disabled` is an account and an agent, never a tenant (#318). A suspended
-   * tenant refuses every request from a non-platform-admin, and drops out of
-   * this listing for them, so only a platform admin ever sees the value. */
-  status: "active" | "suspended";
+  /** Anything but `active` refuses every request from a non-platform-admin and
+   * drops out of this listing for them, so only a platform admin ever sees the
+   * other three. `suspended` is the API's word: `disabled` is an account and an
+   * agent, never a tenant (#318). `pending_deletion` and `deleting` are the two
+   * halves of a deletion (#325). */
+  status: TenantStatus;
   created_at: string | null;
 };
+
+export type TenantStatus = "active" | "suspended" | "pending_deletion" | "deleting";
 
 export type AssetStatus = "active" | "stale" | "decommissioned";
 
@@ -4101,6 +4104,152 @@ export async function releaseLegalHold(tenantId: string) {
 export async function fetchLegalHolds() {
   try {
     const { data } = await api.get<LegalHold[]>("/tenants/legal-holds");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// -- Tenant lifecycle (#325) ------------------------------------------------
+
+export type TenantDeletionStepState =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "failed"
+  | "done"
+  | "skipped";
+
+/** One store of a purge, in the order the worker walks them. */
+export type TenantDeletionStep = {
+  step: string;
+  position: number;
+  state: TenantDeletionStepState;
+  attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The last failure, or why the step waits or was skipped. */
+  last_error: string | null;
+  counts: Record<string, number>;
+};
+
+export type TenantDeletionState = "pending" | "cancelled" | "purging" | "blocked" | "completed";
+
+export type TenantDeletion = {
+  deletion_id: string;
+  tenant_id: string;
+  state: TenantDeletionState;
+  reason: string;
+  requested_by: string;
+  requested_at: string | null;
+  /** End of the grace period: the purge cannot be approved before it. */
+  purge_after: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  cancelled_by: string | null;
+  cancelled_at: string | null;
+  completed_at: string | null;
+  attempts: number;
+  last_error: string | null;
+  next_attempt_at: string | null;
+  /** The tombstone of a completed purge: counts per store. */
+  outcome: Record<string, unknown> | null;
+  steps: TenantDeletionStep[];
+};
+
+/** Platform admins only: the API serves none of this to a tenant's members. */
+export type TenantLifecycle = {
+  tenant_id: string;
+  name: string | null;
+  status: TenantStatus | "deleted";
+  status_reason: string | null;
+  status_changed_at: string | null;
+  status_changed_by: string | null;
+  legal_hold: LegalHold | null;
+  deletion: TenantDeletion | null;
+  history: TenantDeletion[];
+  grace_days: number;
+  two_person: boolean;
+};
+
+/** The deletion journal (#325), newest first, tombstones included; paged. */
+export async function fetchTenantDeletions(params: { limit?: number; offset?: number } = {}) {
+  try {
+    const { data } = await api.get<TenantDeletion[]>("/tenants/deletions", { params });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchTenantLifecycle(tenantId: string) {
+  try {
+    const { data } = await api.get<TenantLifecycle>(tenantPath(tenantId, "lifecycle"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function suspendTenant(
+  tenantId: string,
+  body: { reason: string; revoke_credentials: boolean },
+) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "suspend"), body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function resumeTenant(tenantId: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "resume"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Step one: suspends the tenant and starts the grace period. `confirm` is the
+ * tenant id as typed; the API compares it, not the console. */
+export async function requestTenantDeletion(
+  tenantId: string,
+  body: { confirm: string; reason: string },
+) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion"), body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function cancelTenantDeletion(tenantId: string) {
+  try {
+    const { data } = await api.delete<TenantLifecycle>(tenantPath(tenantId, "deletion"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Step two, irreversible: starts the purge. */
+export async function approveTenantDeletion(tenantId: string, confirm: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion/approve"), {
+      confirm,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function retryTenantDeletion(tenantId: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion/retry"));
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

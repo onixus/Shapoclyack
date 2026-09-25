@@ -110,6 +110,12 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("idempotency_records", "actor"): (RETAINED, "expires by itself within 24 hours"),
     ("config_overrides", "updated_by"): (PSEUDONYM, "attribution"),
     ("tenants", "change_freeze_by"): (PSEUDONYM, "attribution"),
+    # The tenant lifecycle (#325): who suspended or deleted a customer, and the
+    # deletion journal that outlives the tenant as its tombstone.
+    ("tenants", "status_changed_by"): (PSEUDONYM, "who suspended or resumed the tenant"),
+    ("tenant_deletions", "requested_by"): (PSEUDONYM, "deletion journal"),
+    ("tenant_deletions", "approved_by"): (PSEUDONYM, "deletion journal"),
+    ("tenant_deletions", "cancelled_by"): (PSEUDONYM, "deletion journal"),
     ("service_tokens", "created_by"): (PSEUDONYM, "attribution"),
     ("roles", "created_by"): (PSEUDONYM, "attribution"),
     ("asset_context_events", "actor"): (PSEUDONYM, "attribution of an asset edit"),
@@ -203,6 +209,10 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("risk_score_snapshots", "by_sla"): "counters",
     ("risk_score_snapshots", "by_state"): "counters",
     ("scan_schedules", "scan_options"): "scan parameters",
+    # Counts per table and store, by construction (#325): the tombstone of a
+    # purge names no account, which is what lets it outlive the tenant.
+    ("tenant_deletion_steps", "counts"): "counters",
+    ("tenant_deletions", "outcome"): "counters per store",
     ("scan_schedules", "targets"): "network targets",
     ("software_cve_matches", "evidence"): "package versions and advisories",
     ("tenant_scan_policies", "avoid_ports"): "port numbers",

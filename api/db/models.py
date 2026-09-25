@@ -59,8 +59,20 @@ class Tenant(Base):
 
     tenant_id: Mapped[str] = mapped_column(primary_key=True)
     name: Mapped[str]
+    # active | suspended | pending_deletion | deleting (#325). Every gate
+    # refuses anything but ``active``; see api/services/tenant_lifecycle.py for
+    # what moves a tenant between them.
     status: Mapped[str] = mapped_column(default="active")
     created_at: Mapped[datetime]
+    # Why the tenant is in its current status, since when and on whose word
+    # (migration 0066, #325). Shown to platform admins only: the reason a
+    # customer was suspended is the platform's business, not the customer's
+    # members'.
+    status_reason: Mapped[str | None] = mapped_column(default=None)
+    status_changed_at: Mapped[datetime | None] = mapped_column(default=None)
+    # When the tenant last left ``active`` (#325, 0066); NULL while active.
+    closed_at: Mapped[datetime | None] = mapped_column(default=None)
+    status_changed_by: Mapped[str | None] = mapped_column(default=None)
     # Change freeze (#352). Distinct from ``status``: a frozen tenant is fully
     # operational — its console works, its findings are readable — it has
     # simply declared that nothing may touch its estate right now, so scan
@@ -2497,6 +2509,86 @@ class TenantLegalHold(Base):
     reason: Mapped[str]
     set_by: Mapped[str]
     set_at: Mapped[datetime]
+
+
+class TenantDeletion(Base):
+    """One request to delete a tenant, and what became of it (#325).
+
+    The journal the purge worker drives (``api/services/tenant_purge``) and the
+    record that outlives the tenant: ``tenant_id`` is deliberately **not** a
+    foreign key, because the row that proves a deletion happened has to survive
+    the ``DELETE FROM tenants`` it describes. A completed row's ``outcome`` is
+    the tombstone — how much was removed from each store, counts only — and the
+    list of completed rows is what an operator re-applies after restoring a
+    backup taken before them (``docs/tenant-lifecycle.md``).
+
+    ``state``: ``pending`` through the grace period (``purge_after``), then
+    ``purging`` once a platform admin approves; ``blocked`` when a legal hold
+    appeared mid-purge, until somebody retries after it is released;
+    ``completed`` or ``cancelled`` at the end. One open row per tenant, by a
+    partial unique index (migration 0066).
+    """
+
+    __tablename__ = "tenant_deletions"
+
+    deletion_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str]
+    state: Mapped[str]
+    reason: Mapped[str]
+    requested_by: Mapped[str]
+    requested_at: Mapped[datetime]
+    purge_after: Mapped[datetime]
+    approved_by: Mapped[str | None] = mapped_column(default=None)
+    approved_at: Mapped[datetime | None] = mapped_column(default=None)
+    cancelled_by: Mapped[str | None] = mapped_column(default=None)
+    cancelled_at: Mapped[datetime | None] = mapped_column(default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(default=None)
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The worker's claim, renewed between batches; a replica that finds it in
+    # the past may take the row over (steps are idempotent).
+    lease_owner: Mapped[str | None] = mapped_column(default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(default=None)
+    outcome: Mapped[dict | None] = mapped_column(JSON, default=None)
+
+    __table_args__ = (
+        Index("ix_tenant_deletions_tenant", "tenant_id"),
+        Index("ix_tenant_deletions_due", "state", "next_attempt_at"),
+        Index(
+            "uq_tenant_deletions_open",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'purging', 'blocked')"),
+            sqlite_where=text("state IN ('pending', 'purging', 'blocked')"),
+        ),
+    )
+
+
+class TenantDeletionStep(Base):
+    """One store a tenant's purge walks, with its own outcome (#325).
+
+    Separate rows rather than a JSON document on the journal so that each step
+    records its progress in the same transaction as the batch it describes —
+    the Postgres step counts the rows it deleted in the transaction that
+    deleted them — and so that "which store failed, how often and why" is a
+    query, not a parse.
+    """
+
+    __tablename__ = "tenant_deletion_steps"
+
+    deletion_id: Mapped[str] = mapped_column(
+        ForeignKey("tenant_deletions.deletion_id", ondelete="CASCADE"), primary_key=True
+    )
+    step: Mapped[str] = mapped_column(primary_key=True)
+    position: Mapped[int]
+    # pending | waiting | failed | done | skipped
+    state: Mapped[str] = mapped_column(default="pending", server_default="pending")
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    counts: Mapped[dict | None] = mapped_column(JSON, default=None)
 
 
 class SlaEscalationPolicy(Base):
