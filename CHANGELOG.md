@@ -624,6 +624,39 @@ All notable changes to Shapoclyack are documented in this file.
   An unreachable nameserver, a reset, `SERVFAIL` or an answer that broke off
   before any record is `error`, not `closed`. `axfr_open` findings from runs
   before this release are unreliable: re-run before acting on them.
+- **The native sensor install works on Alpine, RHEL 9 and Ubuntu 22.04.**
+  Checked in `alpine:3.20`, `debian:bookworm-slim` (also under a real
+  systemd), `rockylinux:9` and `ubuntu:22.04` with the package staged in
+  `/opt/shapoclyack-agent`:
+  - On Alpine it stopped at `chown: unknown user/group shapoclyack:shapoclyack`.
+    There is no `useradd` there, and BusyBox `adduser -S` without `-G` puts the
+    account in `nogroup` and creates no `shapoclyack` group. The fallback's
+    `2>/dev/null || true` hid that. The installer now creates the group first
+    on every distribution (`groupadd --system` / `addgroup -S`). It stops with
+    an error if no account comes out in that group, or if an existing
+    `shapoclyack` account has another primary group, which is what the old
+    installer left on Alpine: remove it and re-run.
+  - The agent needs Python 3.11+ (`from datetime import UTC`). RHEL/Rocky/Alma
+    9 default `python3` to 3.9 and Ubuntu 22.04 to 3.10, so the venv was built
+    on an interpreter the agent cannot import in. The installer now uses
+    `python3` only if it is 3.11+. Otherwise it installs `python3.12` or
+    `python3.11` from the distribution (AppStream, universe), or stops before
+    touching the host and names the version it found (Ubuntu 20.04, Debian
+    11). A venv left on an older interpreter is rebuilt with `--clear`, since
+    `venv` does not replace an existing `bin/python`.
+  - On RHEL 9 it never reached Python: asking dnf for `curl` conflicts with the
+    preinstalled `curl-minimal`. curl is now requested only where there is no
+    `curl` command.
+  - Without systemd (Alpine's OpenRC, containers) the agent was started with
+    `nohup sudo …&`. Those hosts have no `sudo`, and even with it the process
+    started outside the install directory and died with `No module named
+    agent`. Either way the installer reported success. It now drops to the
+    account with `runuser` or BusyBox `su`, starts from the install directory
+    (the unit's `WorkingDirectory=`), and fails if the process is gone three
+    seconds later. A re-run stops the agent the previous run started instead
+    of starting a second one beside it.
+  - A failed `import agent.worker` check now prints the last lines of the
+    traceback instead of discarding them.
 
 ## [0.46-0922] — 2026-09-22
 
