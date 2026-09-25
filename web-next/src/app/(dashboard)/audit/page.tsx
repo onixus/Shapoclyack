@@ -26,6 +26,9 @@ const ACTIONS = [
   "user.delete",
   "user.password_reset",
   "user.password_change",
+  // Data-subject requests and retention (#332).
+  "user.export",
+  "user.erase",
   "membership.grant",
   "membership.revoke",
   "service_token.create",
@@ -52,6 +55,20 @@ const ACTIONS = [
   "notification_channel.delete",
   "vulnerability.bulk",
   "asset.bulk",
+  "retention_policy.update",
+  "legal_hold.place",
+  "legal_hold.release",
+  // The tenant lifecycle (#325). Platform-level rows: a platform admin's
+  // filter, and the last three are the purge worker's own.
+  "tenant.suspend",
+  "tenant.resume",
+  "tenant.delete.request",
+  "tenant.delete.cancel",
+  "tenant.delete.approve",
+  "tenant.delete.retry",
+  "tenant.delete.fail",
+  "tenant.delete.block",
+  "tenant.delete.complete",
 ] as const;
 
 /** ISO instant from a `datetime-local` value, or undefined when it is empty.

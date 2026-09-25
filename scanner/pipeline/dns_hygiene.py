@@ -454,10 +454,15 @@ def _probe_axfr(
             "records": 0,
         }
 
-    resolver = str(parsed[0])
+    address = parsed[0]
+    # dnsx appends ":53" only to a value with no colon, and Go reads an
+    # unbracketed "2001:500:8f::53:53" as one IPv6 host -- not the one that
+    # passed the gate above. Brackets keep the checked address the dialled one.
+    resolver = f"[{address}]:53" if address.version == 6 else f"{address}:53"
     try:
         completed = subprocess.run(
-            ["dnsx", "-axfr", "-resolver", f"{resolver}:53", "-json", "-silent"],
+            # -disable-update-check: no phone-home from an air-gapped scan (#339).
+            ["dnsx", "-axfr", "-resolver", resolver, "-json", "-silent", "-disable-update-check"],
             input=f"{domain}\n",
             text=True,
             capture_output=True,

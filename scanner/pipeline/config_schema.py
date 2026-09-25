@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from .dns_resolvers import parse_resolver
+
 #: One DNS label. Guards config values that are interpolated into a query name
 #: and handed to an external tool (currently mail_posture.dkim_selectors).
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
@@ -716,6 +718,28 @@ class ScreenshotConfig(BaseModel):
         return ports
 
 
+class DnsConfig(BaseModel):
+    """DNS servers the scanner hands to nuclei with ``-resolvers``.
+
+    Empty (the default) means the ``nameserver`` lines of ``/etc/resolv.conf``,
+    i.e. whatever the host itself asks. Without an explicit list nuclei mixes
+    its built-in public resolvers (1.1.1.1, 8.8.8.8, ...) into the rotation,
+    so internal names leak and split-horizon names fail to resolve. See
+    ``scanner/pipeline/dns_resolvers.py``. Entries are address literals, with
+    an optional port: ``10.0.0.53``, ``10.0.0.53:5353``, ``2001:db8::53``,
+    ``[2001:db8::53]:5353``.
+    """
+
+    resolvers: list[str] = Field(default_factory=list)
+
+    @field_validator("resolvers")
+    @classmethod
+    def validate_resolvers(cls, resolvers: list[str]) -> list[str]:
+        for resolver in resolvers:
+            parse_resolver(resolver)
+        return [resolver.strip() for resolver in resolvers]
+
+
 class NucleiConfig(BaseModel):
     """Nuclei template-based vulnerability/misconfig scanning.
 
@@ -1083,6 +1107,7 @@ class AppConfig(BaseModel):
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
+    dns: DnsConfig = Field(default_factory=DnsConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)

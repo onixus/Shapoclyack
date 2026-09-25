@@ -555,12 +555,19 @@ def notify_run_complete(
     ``post_fn`` is the injection seam the tests drive; production passes
     nothing and gets ``delivery.post``.
     """
+    from api.services import tenants as tenants_service
+
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.NotificationChannel).where(
                 models.NotificationChannel.tenant_id == tenant_id,
                 models.NotificationChannel.enabled.is_(True),
+                # A suspended tenant's runs are not announced (#325). A local
+                # scan that was already running when the tenant was suspended
+                # still finishes — nothing can stop it — but its summary does
+                # not leave the platform on the tenant's channels.
+                models.NotificationChannel.tenant_id.in_(tenants_service.active_tenant_ids()),
             )
         ).scalars().all()
         # Decrypted inside the session, serialised out of it: the send itself

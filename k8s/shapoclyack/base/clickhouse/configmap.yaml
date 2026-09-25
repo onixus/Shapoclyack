@@ -67,11 +67,44 @@ data:
           </networks>
           <profile>default</profile>
           <quota>default</quota>
-          <!-- 0, not 1: the API only reads and inserts. With access_management
-               on, anyone reaching 8123 with this account could CREATE USER and
-               keep access across a password rotation. -->
+          <!-- 0, not 1: the API reads, inserts, and deletes one tenant's rows
+               when a tenant is purged (ALTER DELETE, #325) — none of which
+               needs user management. With access_management on, anyone
+               reaching 8123 with this account could CREATE USER and keep access
+               across a password rotation. -->
           <access_management>0</access_management>
         </default>
+        <!-- The backup CronJob's account (#333), so that pod does not hold the
+             API's: BACKUP of this database, S3 (the upload and the manifest's
+             s3() reads, which also need temporary tables) and its own
+             progress in system.backups. Measured on 24.8: it cannot SELECT the
+             tables, DROP, INSERT, RESTORE, call url(), run SYSTEM or manage
+             users. S3 ON *.* is not scoped to a bucket in 24.8 — the bucket
+             key's own policy is that boundary.
+
+             The password is from_env like default's, and the variable must
+             never be unset: an unset from_env is an EMPTY password on 24.8
+             (one warning in the log). statefulset.yaml therefore reads it from
+             a Secret base always generates, without optional: true. -->
+        <shapoclyack_backup>
+          <password from_env="CLICKHOUSE_BACKUP_PASSWORD"/>
+          <networks>
+            <ip>10.0.0.0/8</ip>
+            <ip>172.16.0.0/12</ip>
+            <ip>192.168.0.0/16</ip>
+            <ip>127.0.0.1</ip>
+            <ip>::1</ip>
+          </networks>
+          <profile>default</profile>
+          <quota>default</quota>
+          <access_management>0</access_management>
+          <grants>
+            <query>GRANT BACKUP ON shapoclyack.*</query>
+            <query>GRANT S3 ON *.*</query>
+            <query>GRANT CREATE TEMPORARY TABLE ON *.*</query>
+            <query>GRANT SELECT ON system.backups</query>
+          </grants>
+        </shapoclyack_backup>
       </users>
       <profiles>
         <default>

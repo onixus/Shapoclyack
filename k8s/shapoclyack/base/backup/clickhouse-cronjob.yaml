@@ -1,0 +1,167 @@
+# ClickHouse native BACKUP to the Postgres dump's bucket, under its own prefix
+# and with its own key (#333).
+#
+# The server does the work — it reads its own parts and uploads them — so this
+# pod is a thin client: it issues `BACKUP DATABASE … TO S3(…) ASYNC`, polls
+# system.backups, and writes a manifest next to the backup that
+# scripts/restore-clickhouse.sh verifies against. The logic lives in
+# clickhouse-backup.sh (mounted from a generated ConfigMap) rather than inline
+# here, so scripts/dr-drill.py can run the same file against a local server.
+#
+# ClickHouse is an analytics projection, not a source of truth; whether to
+# restore it, replay it from JetStream or rebuild it is a choice made in
+# docs/disaster-recovery.md. This job exists so that the choice is there.
+#
+# Least privilege on both ends:
+# - it signs in as `shapoclyack_backup` (base/clickhouse/configmap.yaml users.xml:
+#   BACKUP on the database, S3, temporary tables, SELECT on system.backups) —
+#   not as `default`, the API's account with DDL, DROP and url();
+# - its bucket key comes from `shapoclyack-clickhouse-backup-s3`, same keys as
+#   the Postgres job's `shapoclyack-backup`, so it can be scoped to
+#   PREFIX/clickhouse/* — BACKUP needs s3:DeleteObject for its `.lock`, which
+#   on the shared key would be delete rights over every dump.
+#
+# Consequences outside this file:
+# - the ClickHouse server (not this pod) needs egress to the S3 endpoint, and
+#   its trust store has to accept the endpoint's certificate;
+# - base/networkpolicy-datastores.yaml admits this pod's label to :9000;
+# - the `shapoclyack-clickhouse-backup-s3` Secret is the installation's to
+#   create (examples/externalsecret.example.yaml); without it the pod does not
+#   start, the Job fails at its deadline and ShapoclyackClickHouseBackupJobFailed
+#   fires — as with the Postgres job and `shapoclyack-backup`;
+# - an overlay that deletes the ClickHouse StatefulSet must delete this
+#   CronJob and its script ConfigMap too (overlays/kind-restore does).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: shapoclyack-clickhouse-backup
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: clickhouse-backup
+spec:
+  # Daily at 02:45 UTC — half an hour after the Postgres dump (02:15), so the
+  # analytics restore point is never older than the database's; see
+  # docs/disaster-recovery.md § Reconciling restore points.
+  schedule: "45 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shapoclyack
+            app.kubernetes.io/component: clickhouse-backup
+        spec:
+          restartPolicy: Never
+          # Talks to ClickHouse and nothing else; no Kubernetes API.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            # uid of the clickhouse user in the official image.
+            runAsUser: 101
+            runAsGroup: 101
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # The server's own image, pinned by the digest of the tag's
+              # multi-arch index (#313): the client that issues BACKUP is then
+              # the server's release, and an overlay that mirrors the server
+              # image with `images:` moves this one with it.
+              image: clickhouse/clickhouse-server:24.8-alpine@sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - /opt/shapoclyack/clickhouse-backup.sh
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: CLICKHOUSE_HOST
+                  value: shapoclyack-clickhouse-client
+                - name: CLICKHOUSE_PORT
+                  value: "9000"
+                - name: CLICKHOUSE_USER
+                  value: shapoclyack_backup
+                - name: CLICKHOUSE_DATABASE
+                  value: shapoclyack
+                # Leaves 10 minutes of activeDeadlineSeconds for the manifest.
+                - name: CLICKHOUSE_BACKUP_TIMEOUT_SECONDS
+                  value: "3000"
+                # Read by clickhouse-client from the environment — never an
+                # argument, so it is not in /proc/<pid>/cmdline. The same
+                # Secret defines the user on the server (base/clickhouse).
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup
+                      key: password
+                # Same keys as the Postgres job's `shapoclyack-backup`, in a
+                # Secret of its own so the key can be scoped to this prefix.
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: access_key_id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: secret_access_key
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: region
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: bucket
+                - name: S3_PREFIX
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: prefix
+                - name: S3_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: shapoclyack-clickhouse-backup-s3
+                      key: endpoint_url
+                      optional: true
+              resources:
+                requests:
+                  cpu: "20m"
+                  memory: 64Mi
+                limits:
+                  cpu: "250m"
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/shapoclyack
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: script
+              configMap:
+                name: shapoclyack-clickhouse-backup-script
+                defaultMode: 0444
+            # Client output is staged here before it is scrubbed; memory, so
+            # nothing that passes through it reaches a node disk.
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 16Mi
