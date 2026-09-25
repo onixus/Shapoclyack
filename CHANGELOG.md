@@ -37,6 +37,215 @@ All notable changes to Shapoclyack are documented in this file.
   drift test now also covers `.github/workflows/docker-publish.yml`. Images of
   `shapoclyack-0.46-0922` and earlier have no record and can be checked only
   with `--tarball`, which today needs GenDec access.
+- **Sizing model: N assets / M sensors / K scans a day → CPU, memory, volumes**
+  ([#337](https://github.com/onixus/Shapoclyack/issues/337)).
+  [docs/sizing.md](docs/sizing.md) gives requests, limits and volume sizes for
+  the API, sensors, Postgres, ClickHouse, NATS and the run artifacts at 1k /
+  10k / 50k assets, the formulas behind them and the measured coefficients.
+  `tests/fixtures/scale_measure.py` measures those by driving the product's
+  own code over the `scale_seed` estate — the report stage, the run
+  projection, the results gateway and ClickHouse transform, `python -m api`
+  under the `api_latency` probe, Lariska snapshots — and
+  `tests/fixtures/scale_sizing.py` turns them into the table, so a stand
+  re-measures and regenerates it instead of trusting the sandbox's numbers.
+  The harness refuses a database or ClickHouse that holds any other tenant's
+  data. `stage_timings.json` now also records the scan's CPU-seconds and peak
+  RSS, its own and its tools' (`resources`), which is what sizes a sensor from
+  real runs (`scale_measure runs-dir`). Measuring surfaced limits the doc
+  details: the shipped `nats.conf` (`max_file: 4G`) cannot hold the 11 GiB the
+  API's streams reserve, so the bus fails to start wherever NATS is enabled
+  with it; an ingest message over NATS's default 1 MiB `max_payload` is
+  refused, which with the measured archive sizes keeps runs of more than about
+  1 900 hosts out of ClickHouse; `vulnerability_events` and `jobs` grow with
+  every scan and have no retention; ClickHouse's `system.*_log` tables have no
+  TTL. A stand's table prints `n/m` for what it did not measure unless
+  `--fill-from-sandbox` fills it, marked; `scale_measure purge` removes the
+  harness's rows; the writing steps need `--i-own-database NAME`.
+- **Air-gapped installations: feed mirrors, an offline enrichment bundle, pull
+  secrets** ([#339](https://github.com/onixus/Shapoclyack/issues/339)). Every
+  enrichment feed can now be pointed at an internal mirror — `EPSS_URL`,
+  `KEV_URL`, `GEOIP_URL`, `ASN_URL`, `NVD_API_URL` (CVSS v4 and the NVD CPE
+  ranges), `DEBIAN_TRACKER_URL`, `UBUNTU_USN_URL`, `MSRC_CVRF_BASE_URL` (the
+  index's month URLs are rebased onto it, and a month on any other host is
+  skipped), `EXPLOITDB_CSV_URL`, `METASPLOIT_MODULES_URL`, `VULSCAN_BASE_URLS` —
+  read by the scripts and the in-process fetchers alike, and every download
+  goes through the egress settings of #359 (`OCTO_HTTPS_PROXY` /
+  `OCTO_CA_BUNDLE`), refusing an `https`→`http` redirect, holding its
+  deadline during a trickling read, never sending `NVD_API_KEY` over plain
+  `http`, and recording its source without credentials. Where there is no mirror at all, `make
+  enrichment-bundle` refreshes every feed on a connected host into one
+  deterministic tarball with a manifest (per-file sha256, size, source URL,
+  data date, schema version), and `scripts/enrichment_bundle.py install` loads
+  it: regular files at whitelisted dataset paths only, every size and hash
+  checked against the manifest, a metered stream that stops a compression bomb
+  at what it declared, content checked (a usable dataset is never replaced by
+  a stub, a `.mmdb` must open in the MaxMind reader, a bundle older than the
+  installed one needs `--allow-older` and one dated in the future is refused),
+  and an atomic, fsynced, journaled swap that a crash rolls back — or, with a
+  journal it cannot trust, stops without touching anything. An optional pin
+  (`OCTO_ENRICHMENT_BUNDLE_SHA256`, a ConfigMap in the overlay) installs only
+  the bundle with that checksum; without it, write access to the inbox is the
+  trust boundary. Installed files keep the age they had on the connected side,
+  and a dataset that was stale there stays `source_origin: stale` here. The
+  `overlays/airgap` overlay rewrites images to an internal registry, puts the
+  pull secret on every pod, and adds `base/enrichment-bundle`: a hardened
+  loader CronJob reading an inbox volume (a no-op run reads only the bundle's
+  manifest), the online refresh suspended, and the API's cold-start refresh
+  run with the new `OCTO_ENRICHMENT_OFFLINE`, which waits for an install in
+  progress. Installed datasets report `origin: bundle`, and `GET /api/system`
+  gains `enrichment_bundle` (id, built/installed times), `source_origin` and
+  the MSRC dataset. The `scanner` and `api` ServiceAccounts carry
+  `imagePullSecrets` (`shapoclyack-registry`, a placeholder). `fetch-nuclei-templates.sh` takes
+  templates from a git mirror pinned by commit (`NUCLEI_TEMPLATES_REPO` /
+  `_REF` / `_COMMIT`) without asking nuclei to update, and the scanner now runs
+  naabu and dnsx, as it already ran nuclei, with `-disable-update-check`: each
+  invocation used to attempt an update check against the internet. The
+  procedure is [docs/air-gap.md](docs/air-gap.md).
+- **Sensor fleet, connection pool, process and opt-in per-tenant series on
+  `/metrics`, with Grafana dashboards and opt-in monitoring components**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). Sensor and
+  endpoint-agent heartbeats come from one grouped query over the `agents` table
+  — `octo_agents{agent_kind,state}`, the gauge histogram
+  `octo_agent_heartbeat_age_seconds{agent_kind}`, the longest silence per kind
+  and the stale threshold — labelled from a fixed vocabulary only (no tenant,
+  id or hostname). They are read at scrape time together with the job queue
+  and the endpoint devices, through one function
+  (`metrics_sources.scrape_session`): one short transaction per replica every
+  15 s however often `/metrics` is asked — it is unauthenticated by default —
+  tried once per TTL when it fails, under a transaction-scoped 2 s statement
+  timeout, skipped while fewer than two pooled connections are free, and
+  withdrawn rather than frozen on failure; `octo_metrics_snapshot_age_seconds`
+  and `octo_metrics_snapshot_misses_total{reason}` say when a snapshot is not
+  being taken, and a pool too busy to take it is logged. Every Postgres engine gets an
+  instrumented pool: `octo_db_pool_*` gauges read at scrape time, checkout wait
+  as a histogram and checkout timeouts as a counter. The private registry now
+  carries the `process_*` / `python_gc_*` / `python_info` collectors it never
+  had. `OCTO_METRICS_TENANT_TOP_N` (off by default, capped at 50) adds
+  `octo_tenant_open_findings`, `octo_tenant_sla_breached_findings` and
+  `octo_tenant_scans_finished_24h` for the top N active tenants by open
+  findings when the hour began — so every replica names the same tenants and
+  the set changes only on the hour — every other tenant summed into `_other`,
+  ids only from the tenants table; under `prod` it refuses to start without
+  `OCTO_METRICS_TOKEN`. New alerts `ShapoclyackDbPoolSaturated`,
+  `ShapoclyackDbPoolCheckoutTimeouts`, `ShapoclyackSensorsStale`,
+  `ShapoclyackNoSensorOnline` and `ShapoclyackFleetMetricsBlind`, with
+  `promtool test rules` unit tests. Three dashboards (Platform, Product, Tenants) as
+  JSON, shipped for the Grafana sidecar by the component
+  `base/grafana-dashboards`; the ServiceMonitor and PrometheusRule ship as
+  `base/monitoring`. Neither component sets a namespace — the including overlay
+  does — and `overlays/prod-ha-monitoring` is `prod-ha` with both, not
+  `prod-ha` itself, which would then fail to apply wherever the Prometheus
+  Operator's CRDs are missing. Every series and label the dashboards and rules
+  name is checked against the registry, and every dashboard query is parsed by
+  promtool in `validate-prometheus-rules.sh`, which now uses a local
+  `promtool` only at the pinned version. Catalogue with label bounds:
+  `docs/observability.md`.
+- **Disaster recovery beyond PostgreSQL** ([#333](https://github.com/onixus/Shapoclyack/issues/333)).
+  A new `shapoclyack-clickhouse-backup` CronJob in `base/backup` runs
+  `BACKUP DATABASE … TO S3 … ASYNC` (full, `deduplicate_files = 0`) daily at
+  02:45 UTC, waits on `system.backups`, and writes a `manifest.jsonl` of
+  per-table part and row counts read back from the uploaded backup — refusing
+  to write one when `.backup` lists parts whose `count.txt` is not an object of
+  its own, and refusing to start while an earlier attempt's BACKUP is still
+  running. It signs in as a new ClickHouse user, `shapoclyack_backup` (BACKUP
+  on the database, S3, temporary tables, `system.backups`; password in a new
+  base-generated `shapoclyack-clickhouse-backup` Secret, never optional), and
+  uses a bucket key of its own, `shapoclyack-clickhouse-backup-s3`, so the key
+  can be scoped to `PREFIX/clickhouse/*`. **Rollout:** the ClickHouse
+  StatefulSet gains the `CLICKHOUSE_BACKUP_PASSWORD` variable and restarts;
+  create `shapoclyack-clickhouse-backup-s3` and replace the new placeholder
+  password. `scripts/restore-clickhouse.sh` (`--dry-run`, `--namespace` or
+  `--local`) refuses a backup that no longer matches its manifest (counts,
+  `.backup` digest, listed-but-unstored parts), a manifest table name that is
+  not an identifier, and a target with rows in any table; it rebuilds the empty
+  target from the backup's schema, reports `schema_drift` columns, restores
+  with merges stopped, compares every table's count to the manifest, and
+  restarts merges on exit and on INT/TERM/HUP. The S3 secret travels only on
+  the client's stdin, and everything `clickhouse-client` prints is scrubbed of
+  it, raw and SQL-escaped. The pod is pinned by digest, runs as uid 101 with a
+  read-only root and no service-account token, and is admitted to ClickHouse
+  `:9000` by its own label only. `examples/prometheusrule-backup.example.yaml`
+  gains `ShapoclyackClickHouseBackupStale` and
+  `ShapoclyackClickHouseBackupJobFailed`; `examples/pvc-snapshot.example.yaml`
+  is a CSI snapshot of `scanner-data` and its restore into the drill namespace.
+  `overlays/kind-restore` keeps a lab-sized ClickHouse and drops both backup
+  CronJobs. `docs/disaster-recovery.md` is the runbook: which store is the
+  truth, the restore order (artifact claim before the overlay, revocations
+  re-applied before the doors open), how restore points of Postgres, artifacts
+  and ClickHouse are reconciled, JetStream re-creation and the INGEST replay
+  that closes the ClickHouse gap, the keys no backup contains, and an RPO/RTO
+  table. `scripts/dr-drill.py` runs seed → backup → wipe → restore → verify on
+  a local stack, the scripts under busybox as in the pod; recorded at 10k
+  assets (off-cluster, shared 4 vCPU): console-path RTO 4.7–6.6 s, all stores
+  7.0–10.6 s.
+- **Suspending, resuming and deleting a tenant, with a journaled purge
+  ([#325](https://github.com/onixus/Shapoclyack/issues/325)).** `suspended` was a
+  status every gate refused and nothing could set. `POST /api/tenants/{id}/suspend`
+  and `…/resume` (new permission `platform.tenant.lifecycle`, platform admins,
+  step-up, audited with a reason) now cut every path in at once: members with no
+  other active tenant are signed out, the tenant's service tokens and
+  provisioning keys are revoked (unless asked to keep them), agents' JWTs are
+  refused on every request (a heartbeat naming a job being stopped is answered
+  with the stop and nothing else, so #360's channel still reaches the sensor —
+  unless its key was revoked before the tenant closed),
+  queued scans are cancelled and running agent scans stopped, and schedules,
+  SLA escalation, ticket sync,
+  webhooks and notifications skip the tenant. Resuming restores what was paused
+  but not what was revoked, and moves overdue schedules to their next
+  occurrence instead of firing a burst. Deletion is two steps and, by default,
+  two people: a request with the tenant id typed (the tenant is suspended, a
+  grace period of `OCTO_TENANT_DELETION_GRACE_DAYS` starts, cancellable), then
+  an approval after it by another platform admin. A new worker purges the
+  tenant from JetStream (consumers matched by filter subject, subjects, the
+  legacy ingest copies), the artifact store (tenant-scoped and legacy flat runs,
+  job inputs, reports), ClickHouse (mutations, verified by count) and every
+  Postgres table in batches, re-checking the legal hold (#332) under the tenant
+  row lock before each batch; a hold stops it and leaves it `blocked`. Each
+  step is resumable after a crash, retried with backoff and visible per store in
+  the console; the journal keeps a tombstone of counts per store, the audit
+  trail is kept, and a deleted tenant's id is never reused. A store that is
+  not configured on the replica running its step fails the step unless it is
+  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`; the k8s base declares
+  both, the patches that enable a store take it off), and an approval on a
+  replica that would fail that way is refused up front. The console lists the
+  deletion journal with each tombstone, a page at a time. Downgrading
+  migration 0066 is refused while a purge is under way or blocked. See
+  [docs/tenant-lifecycle.md](docs/tenant-lifecycle.md), including how to
+  re-apply deletions after restoring a backup.
+- **Per-tenant retention, legal hold, and data-subject requests for console
+  accounts ([#332](https://github.com/onixus/Shapoclyack/issues/332)).** Every
+  reaper used to apply one global window to every tenant. A tenant admin can now
+  set each category's window — scan runs, screenshots, reports, endpoint
+  software lists and change history, risk history, webhook deliveries, workflow
+  markers, audit trail — within bounds the platform configures
+  (`OCTO_RETENTION_BOUNDS`; the audit trail's floor defaults to a year, so a
+  tenant cannot shorten the record of what it did), through
+  `GET/PUT/DELETE /api/tenants/{id}/retention` (`tenant.retention.read` /
+  `.manage`, step-up) and the new console page `/retention`. A platform admin
+  can place a tenant on **legal hold** (`PUT/DELETE /api/tenants/{id}/legal-hold`,
+  `platform.legal_hold.manage`, step-up): while it stands no sweep deletes any
+  of the tenant's data, the audit trail's prune functions skip it inside the
+  database, and the tenant cannot be deleted — the hold's foreign key is
+  `RESTRICT`. `api/services/legal_hold.py` is the contract tenant offboarding
+  (#325) builds on. `GET /api/users/{u}/export` returns one account's data as
+  JSON (step-up); `POST /api/users/{u}/erase` removes the address,
+  identity-provider link, second factors, sessions, memberships, the address on
+  report schedules and email notification channels, and revokes the service
+  tokens the account minted, and keeps the username as a tombstone, so the
+  append-only audit trail keeps pointing at a pseudonym that can never be
+  reissued. Both are audited (`user.export`, `user.erase`); erasure refuses the
+  requester's own account, the last admin, and an account that belongs to,
+  belonged to or acted in a tenant on hold. `GET /api/tenants/legal-holds` is
+  the platform admin's register of holds. Migration `0065`
+  (`tenant_retention_policies`, `tenant_legal_holds`, `users.erased_at`, three
+  permissions, and a replaced `audit_events_prune` plus a new
+  `audit_events_prune_tenant`, both with a pinned `search_path`). **On an
+  installation with the audit GRANT layout, `0065` must run as the prune
+  function's owner or be handed it first** — the migration stops with the
+  statements to run, and the retention job then needs four more statements
+  ([data-retention.md, section 7](docs/data-retention.md#7-operating-it)). The
+  migration's downgrade refuses while a hold or an erased account exists. The
+  annex a DPA can cite is [docs/data-retention.md](docs/data-retention.md).
 
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
@@ -168,6 +377,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **`python -m api` runs exactly one uvicorn worker, whatever
+  `WEB_CONCURRENCY` says** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  uvicorn read that variable when no worker count was passed, and several
+  worker processes behind one port made every per-replica series — the pool
+  gauges, the process view, the request counters — one process's share, picked
+  at random per scrape. Scale with replicas, as the manifests do; nothing in
+  the repository set the variable.
+- **Breaking: a retention window of `0` means "keep" everywhere, and a tenant's
+  own window is still applied
+  ([#332](https://github.com/onixus/Shapoclyack/issues/332)).**
+  `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS=0` and
+  `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS=0` used to put the cutoff at
+  the moment of the sweep and delete every superseded software list or every
+  change event; they now keep them, like `0` for every other category. And
+  for all of them `0` is now the platform *default* rather than a switch: a
+  tenant with a window of its own is still swept on it. To stop a sweep, use
+  its `OCTO_*_RETENTION_ENABLED` switch, or for reports, webhook deliveries and
+  workflow markers its worker's
+  ([data-retention.md, section 2](docs/data-retention.md#2-per-tenant-retention)).
+  Deleting a generated report or a webhook subscription of a tenant on legal
+  hold answers `409`.
+
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key
   response used to answer `401`, which the console treats as "session over"
@@ -228,6 +459,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
+  ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
+  route matched — every 404 on an API without the console build, every CORS
+  preflight — used its raw URL as the `path` label of the HTTP series, and the
+  client's method went through verbatim; they are now `path="<unmatched>"` and
+  `method="OTHER"`. `ShapoclyackClickHouseIngestLag` and
+  `ShapoclyackClickHouseIngestStale` matched the consumer's retired name
+  `octo-ch-ingest`, so neither could fire, and the second compared the scrape
+  time with itself; both now select `octo-ch-ingest-results`, and staleness
+  reads the new `octo_nats_consumer_pending_timestamp_seconds`; the lag alert
+  now fires once per consumer and counts only replicas whose reading is fresh,
+  instead of once per replica and on after the queue drained. Console assets
+  served by a mount are `path="/_next/*"` (or `/assets/*`) rather than
+  `<unmatched>`.
+- **`octo_jobs_queued`, `octo_jobs_running` and `octo_endpoint_devices` agree
+  across replicas** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
+  They were set by whichever replica handled the last job event, retention
+  sweep or System page view, so a scan submitted through one replica and
+  claimed through another stayed queued on the first for good — and
+  `ShapoclyackNoSensorOnline` paged over an empty queue when a sensor
+  rebooted. They are read from the database at scrape time now, and the alert
+  takes `min()` of the queue.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

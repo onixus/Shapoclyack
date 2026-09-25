@@ -327,8 +327,9 @@ def test_a_suspended_tenant_stops_its_people_not_only_its_agents(tmp_path, monke
     member = _account(client, "paused-user", "paused", "operator")
     assert client.get("/api/assets?tenant_id=paused", headers=member).status_code == 200
 
-    # No route sets this yet — suspension is #325 — so the state is written
-    # where the enforcement will read it from.
+    # Written directly, so this pins the per-request gate on its own; the
+    # route that sets it (#325) also cuts sessions and credentials, which is
+    # tests/test_tenant_lifecycle.py's subject.
     from api.auth import get_settings
 
     settings = get_settings()

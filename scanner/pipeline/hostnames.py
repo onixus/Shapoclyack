@@ -62,6 +62,7 @@ def reverse_map_from_ptr(
             "-ptr",
             "-json",
             "-silent",
+            "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
             "-o",
             str(json_out),
         ],

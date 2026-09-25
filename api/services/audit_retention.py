@@ -21,6 +21,17 @@ become "keep nothing" because a variable was unset in the job's environment.
 The SQLite dev fallback has neither trigger nor function, so :func:`prune`
 deletes directly there — the same split ``api/db/engine.py`` already makes
 between a migrated Postgres and a developer's file.
+
+Per tenant since #332. ``--days`` (``OCTO_AUDIT_EVENT_RETENTION_DAYS``) is the
+platform default, pruned by ``audit_events_prune``; a tenant with an audit
+window of its own is pruned by ``audit_events_prune_tenant`` on that window,
+and a tenant on legal hold is pruned by neither. Both functions check the hold
+and the override themselves (migration 0065), so this job cannot delete a held
+tenant's trail even when it is handed a wrong plan — or is an image that
+predates the policy table and calls only the first. The retention role
+therefore needs ``SELECT`` on ``tenant_retention_policies`` and
+``tenant_legal_holds`` to build its plan, and ``EXECUTE`` on both functions;
+see docs/data-retention.md.
 """
 
 from __future__ import annotations
@@ -31,28 +42,41 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete, or_, text
 
 from api.db import models
 from api.db.engine import get_engine, get_session
+from api.services import legal_hold, retention_policy
 from api.settings import Settings, load_settings
 
 LOG = logging.getLogger("shapoclyack.audit-retention")
 
 
 def prune(settings: Settings, *, cutoff: datetime) -> int:
-    """Delete audit rows older than ``cutoff``. Returns how many went.
+    """The default pass: rows older than ``cutoff``. Returns how many went.
 
     ``cutoff`` is naive UTC, like the column. On Postgres the delete happens
     inside ``audit_events_prune``; a caller without EXECUTE on it gets the
-    database's refusal, unchanged, rather than a quiet no-op.
+    database's refusal, unchanged, rather than a quiet no-op. Rows of a tenant
+    on legal hold, or of one with an audit window of its own, are not this
+    pass's to delete (#332) — the function skips them, and so does the SQLite
+    branch here.
     """
     engine = get_engine(settings.postgres_url)
     if engine.dialect.name != "postgresql":
         with get_session(settings.postgres_url) as session:
-            result = session.execute(
-                delete(models.AuditEvent).where(models.AuditEvent.occurred_at < cutoff)
+            plan = retention_policy.load_plan(
+                settings, retention_policy.AUDIT_EVENTS, session=session
             )
+            conditions = [models.AuditEvent.occurred_at < cutoff]
+            if plan.excluded:
+                conditions.append(
+                    or_(
+                        models.AuditEvent.tenant_id.is_(None),
+                        models.AuditEvent.tenant_id.not_in(sorted(plan.excluded)),
+                    )
+                )
+            result = session.execute(delete(models.AuditEvent).where(*conditions))
             return int(result.rowcount or 0)
     with get_session(settings.postgres_url) as session:
         removed = session.execute(
@@ -61,16 +85,50 @@ def prune(settings: Settings, *, cutoff: datetime) -> int:
         return int(removed or 0)
 
 
+def prune_tenant(settings: Settings, tenant_id: str, *, cutoff: datetime) -> int:
+    """One tenant's rows older than ``cutoff``; none while it is on legal hold."""
+    engine = get_engine(settings.postgres_url)
+    if engine.dialect.name != "postgresql":
+        with get_session(settings.postgres_url) as session:
+            if legal_hold.is_on_legal_hold(session, tenant_id):
+                return 0
+            result = session.execute(
+                delete(models.AuditEvent).where(
+                    models.AuditEvent.tenant_id == tenant_id,
+                    models.AuditEvent.occurred_at < cutoff,
+                )
+            )
+            return int(result.rowcount or 0)
+    with get_session(settings.postgres_url) as session:
+        removed = session.execute(
+            text("SELECT audit_events_prune_tenant(:tenant_id, :cutoff)"),
+            {"tenant_id": tenant_id, "cutoff": cutoff},
+        ).scalar_one()
+        return int(removed or 0)
+
+
 def sweep(settings: Settings, *, now: datetime | None = None) -> int:
-    """One retention pass over ``audit_event_retention_days``. 0 keeps forever."""
-    days = settings.audit_event_retention_days
-    if days <= 0:
-        LOG.info("audit retention disabled (audit_event_retention_days=0); nothing pruned")
-        return 0
+    """One retention pass: the platform default, then each tenant's own window.
+
+    ``audit_event_retention_days`` of 0 keeps forever for every tenant without
+    a window of its own; a tenant that set one is still pruned on it.
+    """
     moment = now or datetime.now(UTC).replace(tzinfo=None)
-    cutoff = moment - timedelta(days=days)
-    removed = prune(settings, cutoff=cutoff)
-    LOG.info("pruned %d audit_events older than %s", removed, cutoff.isoformat())
+    plan = retention_policy.load_plan(settings, retention_policy.AUDIT_EVENTS)
+    removed = 0
+    if plan.default_days > 0:
+        cutoff = moment - timedelta(days=plan.default_days)
+        removed += prune(settings, cutoff=cutoff)
+        LOG.info("pruned audit_events older than %s (platform default)", cutoff.isoformat())
+    else:
+        LOG.info("audit retention default disabled (audit_event_retention_days=0)")
+    for tenant_id, days in sorted(plan.overrides.items()):
+        cutoff = moment - timedelta(days=days)
+        removed += prune_tenant(settings, tenant_id, cutoff=cutoff)
+        LOG.info("pruned tenant %s's audit_events older than %s", tenant_id, cutoff.isoformat())
+    if plan.held:
+        LOG.info("audit retention skipped %d tenant(s) on legal hold", len(plan.held))
+    LOG.info("pruned %d audit_events in total", removed)
     return removed
 
 

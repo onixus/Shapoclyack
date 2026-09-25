@@ -388,6 +388,40 @@ def revoke_token(
         return revoked
 
 
+def revoke_created_by(
+    session: Any,
+    username: str,
+    *,
+    audit: "audit_service.AuditContext | None" = None,
+) -> int:
+    """Revoke every live token ``username`` minted, in the caller's session (#332).
+
+    For an account that is erased or deleted: a token its creator can no longer
+    answer for is a leaver's key, and it goes in the same transaction as the
+    account, each revocation recorded in the token's own tenant so that
+    tenant's admin sees why its automation stopped.
+    """
+    rows = session.execute(
+        select(models.ServiceToken).where(
+            models.ServiceToken.created_by == username,
+            models.ServiceToken.revoked_at.is_(None),
+        )
+    ).scalars().all()
+    for row in rows:
+        row.revoked_at = _now()
+        session.flush()
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_SERVICE_TOKEN_REVOKE,
+            resource_type="service_token",
+            resource_id=row.token_id,
+            tenant_id=row.tenant_id,
+            after={**_to_dict(row), "reason": "the account that minted it was removed"},
+        )
+    return len(rows)
+
+
 # --------------------------------------------------------------------------- #
 # Verification
 # --------------------------------------------------------------------------- #
