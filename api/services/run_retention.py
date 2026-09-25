@@ -15,6 +15,13 @@ existed.
 0 days disables the reaper. Deletes are fail-soft per run directory. Multiple
 API replicas may sweep the same tree; removing an already-deleted directory is
 handled cleanly.
+
+The window is the owning tenant's since #332
+(:mod:`api.services.retention_policy`): a tenant may keep its runs longer or
+shorter than ``run_retention_days`` within the platform bounds, and a tenant on
+legal hold keeps all of them. A run's owner is its path segment, or for a flat
+run its ``tenant.json``; a marker that cannot be read leaves the run for the
+next tick rather than guessing whose it is.
 """
 
 from __future__ import annotations
@@ -26,7 +33,11 @@ import threading
 from datetime import UTC, datetime
 from typing import Any
 
-from api.services import artifact_store
+from sqlalchemy import select
+
+from api.db import models
+from api.db.engine import get_session
+from api.services import artifact_store, retention_policy
 from api.services.artifact_store import workspace
 from api.settings import Settings
 
@@ -53,7 +64,23 @@ def _timestamp_from_meta(data: Any) -> float | None:
     return None
 
 
-def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
+def _job_owners(settings: Settings, job_ids: list[str]) -> dict[str, str]:
+    """``{job_id: tenant_id}`` for the listed job inputs that still have a job row."""
+    if not job_ids:
+        return {}
+    with get_session(settings.postgres_url) as session:
+        return dict(
+            session.execute(
+                select(models.Job.job_id, models.Job.tenant_id).where(
+                    models.Job.job_id.in_(job_ids)
+                )
+            ).all()
+        )
+
+
+def _sweep_job_inputs(
+    settings: Settings, plan: retention_policy.RetentionPlan, now: float
+) -> dict[str, int]:
     """Delete aged ``job_inputs/<job_id>/`` subtrees (#258).
 
     The completion paths in ``api.services.jobs`` remove these when a job
@@ -64,6 +91,10 @@ def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
     second mechanism -- a scan still running after ``run_retention_days`` is
     not a scan anyone is waiting for, and the reaper never runs at all when
     retention is disabled.
+
+    By the job's tenant's window since #332. A directory whose job row is gone
+    is nobody's any more and goes on the platform default: a held tenant
+    cannot be deleted, so its jobs cannot be the ones missing.
     """
     deleted = errors = kept = 0
     store = artifact_store.get_store(settings)
@@ -72,17 +103,22 @@ def _sweep_job_inputs(settings: Settings, cutoff: float) -> dict[str, int]:
     except artifact_store.ArtifactStoreError:
         LOG.warning("Run retention: could not list job inputs", exc_info=True)
         return {"deleted": 0, "errors": 1, "kept": 0}
+    owners = _job_owners(settings, job_ids) if plan.tenant_specific else {}
 
     for job_id in job_ids:
         prefix = artifact_store.keys.job_inputs_prefix(job_id)
         try:
+            days = plan.days_for(owners.get(job_id))
+            if days <= 0:
+                kept += 1
+                continue
             newest = _prefix_modified(store, prefix)
             if newest is None:
                 # Listed a moment ago and empty now: another replica swept it
                 # between the two calls, which is the outcome either way.
                 deleted += 1
                 continue
-            if newest > cutoff:
+            if newest > now - days * 86400.0:
                 kept += 1
                 continue
             store.delete_prefix(prefix)
@@ -143,23 +179,40 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     unaffected.
     """
     now = now or _now()
-    days = settings.run_retention_days
-    if days <= 0:
+    # Before anything is listed: a plan that cannot be read raises, and the
+    # tick deletes nothing rather than sweeping a held tenant on the default.
+    plan = retention_policy.load_plan(settings, retention_policy.RUNS)
+    if not plan.active:
         return _stats()
 
-    cutoff = now.timestamp() - days * 86400.0
+    moment = now.timestamp()
+    segments = retention_policy.segment_map(plan)
     deleted = errors = kept = 0
     store = artifact_store.get_store(settings)
 
     for run in workspace.run_refs(settings):
         run_id = run.path
         try:
+            days = plan.default_days
+            if plan.tenant_specific:
+                owner = retention_policy.run_owner(store, run, segments)
+                if owner is None:
+                    errors += 1
+                    LOG.warning(
+                        "Run retention: owner of run %s unreadable; left for the next tick",
+                        run_id,
+                    )
+                    continue
+                days = plan.days_for(owner)
+            if days <= 0:
+                kept += 1
+                continue
             age_base = _run_age(store, run)
             if age_base is None:
                 # Gone between the listing and now.
                 deleted += 1
                 continue
-            if age_base > cutoff:
+            if age_base > moment - days * 86400.0:
                 kept += 1
                 continue
             workspace.delete_run(settings, run)
@@ -173,7 +226,7 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
             errors += 1
             LOG.exception("Run retention: unexpected error removing %s", run_id)
 
-    return _stats((deleted, errors, kept), _sweep_job_inputs(settings, cutoff))
+    return _stats((deleted, errors, kept), _sweep_job_inputs(settings, plan, moment))
 
 
 def _run_age(

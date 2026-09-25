@@ -74,9 +74,14 @@ def _subscribe(kinds: list[str]) -> None:
 
 def _queued(settings: Settings, kind: str) -> list[dict]:
     with get_session(settings.postgres_url) as session:
+        # In the order they were queued: without an ORDER BY, Postgres returns
+        # heap order, which depends on what earlier tests left in the table and
+        # flipped the threshold sequence in full-suite runs.
         return [
             row.payload
-            for row in session.query(models.WebhookDelivery).all()
+            for row in session.query(models.WebhookDelivery)
+            .order_by(models.WebhookDelivery.created_at)
+            .all()
             if row.event_kind == kind
         ]
 

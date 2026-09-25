@@ -379,11 +379,14 @@ Naming these is the point of the page.
   flat `runs/<run_id>` keys and are still read from there, so a bucket policy
   scoped to a tenant's prefix does not yet cover all of that tenant's runs
   ([operations.md](operations.md#run-directories)).
-* **Disaster recovery beyond Postgres is unproven.**
-  [#333](https://github.com/onixus/Shapoclyack/issues/333) tracks a rehearsed
-  restore of ClickHouse, artifacts and JetStream state. Only the Postgres drill
-  in [operations.md](operations.md#backup-and-disaster-recovery) has been run —
-  and this overlay hands even that to the managed provider.
+* **Disaster recovery beyond Postgres is rehearsed off-cluster only.**
+  ClickHouse has a backup CronJob (kept by this overlay) and a verifying
+  restore script, the artifacts a snapshot example — the S3 backend needs
+  none — and JetStream is recreated rather than restored:
+  [disaster-recovery.md](disaster-recovery.md)
+  ([#333](https://github.com/onixus/Shapoclyack/issues/333)). Its 10k-asset
+  drill ran on a local stack; the same drill on a cluster has not been run,
+  and this overlay hands the Postgres half to the managed provider.
 * **No multi-cluster or multi-region story.** Zone spread is best-effort
   (`whenUnsatisfiable: ScheduleAnyway`) because a single-zone cluster would
   otherwise leave every pod after the first unschedulable.

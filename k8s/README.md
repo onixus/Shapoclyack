@@ -36,12 +36,13 @@ enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
 already runs, so a rebuild cannot silently strip enrichment from the API.
 Tear down with `scripts/dev-down.sh`.
 
-A PostgreSQL restore drill uses a second namespace, not the source lab:
+A restore drill uses a second namespace, not the source lab:
 `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` then
-`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …`
-(see [docs/operations.md](../docs/operations.md) § Backup and disaster recovery).
-The overlay is Postgres + API only (no NodePort, so it does not steal
-`http://127.0.0.1:8080`).
+`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …` and
+`scripts/restore-clickhouse.sh --namespace shapoclyack-restore --backup-url …`
+(see [docs/disaster-recovery.md](../docs/disaster-recovery.md)).
+The overlay is Postgres + API + ClickHouse, with no NATS, no backup CronJobs
+and no NodePort (so it does not steal `http://127.0.0.1:8080`).
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
@@ -94,6 +95,7 @@ k8s/shapoclyack/
 ├── base/                 # namespace, SA, PVC, NATS, ClickHouse, Job, CronJob, aio API
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
+├── base/backup/          # daily pg_dump and ClickHouse BACKUP CronJobs to S3 (docs/disaster-recovery.md)
 ├── base/config/k8s.yaml  # scanner ConfigMap source
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup, +sensor pods) only
 ├── base/agents/          # optional sensor Deployment (`shapoclyack-agent`) + VPA (not in default base)
