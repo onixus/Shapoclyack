@@ -25,17 +25,22 @@
 # ships, at their current revision. computec.ch is kept as a fallback for closed
 # networks that mirror it but block GitHub.
 #
+# Mirror (#339): VULSCAN_BASE_URLS replaces the whole list (space-separated,
+# tried in order; https, http or file://). Downloads go through
+# scripts/feed_fetch.py, so OCTO_HTTPS_PROXY / OCTO_CA_BUNDLE apply.
+#
 # Usage:
 #   ./scripts/fetch-vulscan-db.sh                             # -> /usr/share/nmap/scripts/vulscan
 #   ./scripts/fetch-vulscan-db.sh -o /path/to/vulscan/dir
 #   VULSCAN_BASE_URLS="https://mirror.internal/vulscan" ./scripts/fetch-vulscan-db.sh
 set -uo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="/usr/share/nmap/scripts/vulscan"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o|--output) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -45,7 +50,7 @@ mkdir -p "$OUT"
 databases="cve exploitdb openvas osvdb scipvuldb securityfocus securitytracker xforce"
 BASE_URLS="${VULSCAN_BASE_URLS:-https://raw.githubusercontent.com/scipag/vulscan/master https://www.computec.ch/projekte/vulscan/download}"
 
-# A challenge page arrives as an error status and is rejected by curl -f, but a
+# A challenge page arrives as an error status and is rejected by the fetch, but a
 # mirror or a captive portal can answer 200 with HTML. vulscan's databases are
 # semicolon-separated rows starting with a numeric id, so anything opening with
 # '<' is a page, not a database — and overwriting a good CSV with one would
@@ -61,9 +66,10 @@ for db in $databases; do
   tmp="$(mktemp)"
   fetched=0
   for base in $BASE_URLS; do
-    if curl -fsSL "${base}/${db}.csv" -o "$tmp" && looks_like_csv "$tmp"; then
+    if python3 "$HERE/feed_fetch.py" get "${base}/${db}.csv" -o "$tmp" >/dev/null \
+        && looks_like_csv "$tmp"; then
       mv "$tmp" "$OUT/${db}.csv"
-      echo "==> ${db}.csv: ok (${base})"
+      echo "==> ${db}.csv: ok ($(python3 "$HERE/feed_fetch.py" redact "$base"))"
       fetched=1
       break
     fi

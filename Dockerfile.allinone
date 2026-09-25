@@ -109,9 +109,13 @@ ARG INSTALL_PULSE=1
 COPY scripts/install-pulse.sh scripts/pulse-release-lib.sh scripts/pulse-pinned.sha256 /tmp/pulse/
 # No `set -x`: the token would be traced into the build log (BuildKit keeps
 # the unmasked trace in `docker buildx history logs`).
+# /out mirrors /usr/local of the final stage: bin/pulse, plus the install
+# record (#340) that scripts/verify-pulse-image.py reads back out of a
+# published image to tie the binary to its pinned tarball. Both directories
+# exist even with INSTALL_PULSE=0: the final stage copies each of them.
 RUN --mount=type=secret,id=github_token,required=false \
     set -eu; \
-    mkdir -p /out; \
+    mkdir -p /out/bin /out/share; \
     if [ "${INSTALL_PULSE}" != "1" ]; then \
       echo "INSTALL_PULSE=0: building without the Pulse CLI"; \
       rm -rf /tmp/pulse; \
@@ -121,10 +125,12 @@ RUN --mount=type=secret,id=github_token,required=false \
     if [ -s /run/secrets/github_token ]; then \
       GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export GITHUB_TOKEN; \
     fi; \
-    PULSE_DEST=/out/pulse PULSE_VERSION="${PULSE_VERSION}" \
+    PULSE_DEST=/out/bin/pulse PULSE_RECORD=/out/share/shapoclyack/pulse-install.txt \
+      PULSE_VERSION="${PULSE_VERSION}" \
       PULSE_GITHUB_REPO="${PULSE_GITHUB_REPO}" PULSE_SKIP_CHECKSUM="${PULSE_SKIP_CHECKSUM}" \
       bash /tmp/pulse/install-pulse.sh; \
-    test -x /out/pulse; \
+    test -x /out/bin/pulse; \
+    test -s /out/share/shapoclyack/pulse-install.txt; \
     rm -rf /tmp/pulse; \
     rm -rf /var/lib/apt/lists/*
 
@@ -168,10 +174,14 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ${PKGS}; \
     rm -rf /var/lib/apt/lists/*
 
-# Copied as a directory, not as /out/pulse: with --build-arg INSTALL_PULSE=0
-# the stage leaves /out empty and this copies nothing, which is how the image
-# builds at all without a token for the private GenDec repository.
-COPY --from=pulse-bin /out/ /usr/local/bin/
+# Copied as directories, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
+# the stage leaves both empty and this copies nothing, which is how the image
+# builds at all without a token for the private GenDec repository. Otherwise
+# it lands /usr/local/bin/pulse and /usr/local/share/shapoclyack/pulse-install.txt.
+# One COPY per directory: a COPY also stamps its source directory's metadata
+# onto the target, and /usr/local itself is not the pulse-bin stage's to set.
+COPY --from=pulse-bin /out/bin/ /usr/local/bin/
+COPY --from=pulse-bin /out/share/ /usr/local/share/
 
 # dnsx and naabu: built from source in the go-tools stage above, which is also
 # where their versions are pinned — see the note there on why they are no

@@ -627,6 +627,16 @@ and report artifacts. Configure credentials only through secrets or environment
 injection. Test notification delivery with non-sensitive data before enabling
 production findings.
 
+## Sizing
+
+CPU, memory and volume sizes for N assets, M sensors and K scans a day — the
+model, a table for 1k / 10k / 50k assets, the measured coefficients behind it
+and how to re-measure them on your own stand — are in [sizing.md](sizing.md)
+([#337](https://github.com/onixus/Shapoclyack/issues/337)). Read it before
+choosing volume sizes: two Postgres tables grow with every scan and have no
+retention (`vulnerability_events`, `jobs`), and the JetStream volume has to
+hold what the streams *reserve*, not what they currently contain.
+
 ## Retention
 
 Retention must cover all stateful layers:
@@ -641,6 +651,23 @@ Retention must cover all stateful layers:
 Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
+
+Every window below is the platform default. Since #332 a tenant may keep each
+category longer or shorter within bounds the platform configures, a platform
+admin may place a tenant on **legal hold** (no sweep deletes its data, and the
+tenant cannot be deleted), and console users' personal data can be exported
+and erased with the username kept as a pseudonym. What is kept, for how long,
+by which mechanism, and what the DPA annex should say about it:
+[data-retention.md](data-retention.md).
+
+Offboarding a customer is not a retention window: a platform admin suspends a
+tenant (its members' sessions, its tokens, keys and agents cut at once, its
+running agent scans told to stop), or deletes it
+in two steps with a grace period, after which a worker purges it from
+Postgres, ClickHouse, the artifact store and JetStream and keeps a tombstone.
+A restore from a backup taken before the purge brings the tenant back; the
+deletion journal is what to re-apply:
+[tenant-lifecycle.md](tenant-lifecycle.md).
 
 ### ClickHouse analytical data retention (ROADMAP #187)
 
@@ -829,6 +856,21 @@ GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
 The migration initContainer runs as the API's role in the shipped manifests, so
 re-run the ownership statements after any future migration that recreates the
 table or the functions.
+
+Migration `0065` (#332) adds a second function, `audit_events_prune_tenant`,
+for tenants with an audit window of their own, and makes both skip a tenant on
+legal hold; the retention role then also needs `SELECT` on the policy and hold
+tables. The four extra statements are in
+[data-retention.md](data-retention.md#7-operating-it).
+
+**Before upgrading to `0065` with this layout applied:** the migration
+replaces `audit_events_prune`, which only its owner may do, and the migration
+role is no longer it. `0065` checks first and stops without changing anything,
+naming the statement to run. Run that one upgrade as a superuser or a member of
+`shapoclyack_audit_owner`, or hand the function to the migration role
+beforehand (`ALTER FUNCTION audit_events_prune(timestamp without time zone)
+OWNER TO shapoclyack_api;`) and give both functions back afterwards with the
+statements in [data-retention.md, section 7](data-retention.md#7-operating-it).
 
 A superuser can still do anything at all; what this layout buys is that the
 credential in the API's Secret is not enough.
@@ -2279,6 +2321,11 @@ kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
+The catalogue of every series with the bound on each of its labels, the
+Grafana dashboards, the sensor-heartbeat and connection-pool series, and the
+opt-in ServiceMonitor / PrometheusRule / dashboard components are in
+[observability.md](observability.md) (#334).
+
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts
 referenced above. It answers anyone who can reach the API unless
 `OCTO_METRICS_TOKEN` is set, in which case the scraper sends
@@ -2300,6 +2347,12 @@ no agent, device, asset, tenant, or product names):
 
 ## Backup and disaster recovery
 
+The full runbook — every store, the order of restore, how restore points of
+Postgres, artifacts and ClickHouse are reconciled, the RPO/RTO table and the
+drill that measured it — is [disaster-recovery.md](disaster-recovery.md)
+([#333](https://github.com/onixus/Shapoclyack/issues/333)). This section keeps
+the PostgreSQL backup and its restore script.
+
 > **`overlays/prod-ha` moves this out of the cluster.** That overlay deletes the
 > in-cluster PostgreSQL StatefulSet and the `pg_dump` CronJob below along with
 > it, because the database is expected to be a managed one (RDS, Cloud SQL,
@@ -2314,8 +2367,9 @@ The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
 That schedule gives a **design RPO of at most 24 hours** for PostgreSQL, assuming
 the scheduled backup succeeds and is uploaded. The **RTO target is 60 minutes**
 for restoring Postgres + API into an isolated namespace (the path
-`scripts/restore-postgres.sh` implements). ClickHouse and the artifact PVC have
-no in-repo snapshot object — see below.
+`scripts/restore-postgres.sh` implements). ClickHouse, the artifacts and
+JetStream have their own rows in
+[disaster-recovery.md § Recovery objectives](disaster-recovery.md#recovery-objectives).
 
 | Measure | Target | Last measured |
 |---|---:|---:|
@@ -2326,10 +2380,10 @@ no in-repo snapshot object — see below.
 
 Namespace `shapoclyack-restore`, overlay `k8s/shapoclyack/overlays/kind-restore`.
 Row counts after restore matched the source. JetStream was **not** replayed —
-Postgres is the durable store; see [NATS / JetStream recovery](#nats--jetstream-recovery).
+Postgres is the durable store; see [disaster-recovery.md § JetStream](disaster-recovery.md#jetstream).
 ClickHouse and `scanner-data` were not snapshotted (kind `local-path` has no
-`VolumeSnapshotClass`); that remains an install-specific choice, not an unmeasured
-Postgres drill.
+`VolumeSnapshotClass`); the 10k-asset drill of all stores is in
+[disaster-recovery.md § Drill](disaster-recovery.md#drill).
 
 ### PostgreSQL scheduled backup
 
@@ -2369,7 +2423,8 @@ restore script refuses the base `network-scan` namespace unless
 1. Create an isolated namespace and deploy the same Shapoclyack Postgres + API
    version that will consume the backup. On the kind lab that is
    `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` (namespace
-   `shapoclyack-restore`, no NodePort, no NATS/ClickHouse/scan Jobs). Elsewhere:
+   `shapoclyack-restore`, no NodePort, no NATS, no scan Jobs or backup
+   CronJobs; ClickHouse stays, as the target of `scripts/restore-clickhouse.sh`). Elsewhere:
    same image tag as the source, Postgres and API secrets present, ingress and
    external integrations disabled. Wait until Postgres is Ready and the API has
    rolled out once — the restore script then replaces that empty schema.
@@ -2403,64 +2458,18 @@ reproduce the calculation.
 A restore that completes `pg_restore` but cannot start the current API image is
 a failed drill, not a successful database restore.
 
-### Artifact PVC recovery
+### ClickHouse, artifacts and JetStream
 
-`scanner-data` contains reports, raw scan artifacts, checkpoints, and other run
-state. The base PVC intentionally does not assume a storage vendor or a
-`VolumeSnapshotClass`, so the repository cannot safely provide one universal
-snapshot object.
-
-For production, configure CSI `VolumeSnapshot` or the storage provider's native
-snapshot/backup mechanism for `scanner-data`. Restore the snapshot to a **new
-PVC in the isolated namespace** and mount that PVC into the recovery deployment
-before validating reports or attempting resume. Do not overwrite the production
-PVC during a drill.
-
-Snapshot cadence must be chosen so artifact retention is compatible with the
-PostgreSQL RPO. If PostgreSQL is restored to time T but the artifact PVC is much
-older, runs referenced by the database may have missing files.
-
-### ClickHouse recovery
-
-The base ClickHouse StatefulSet is single-replica and stores data under
-`clickhouse-data`. Production installations must choose one of these recovery
-methods and test it with the PostgreSQL drill:
-
-- ClickHouse native `BACKUP`/`RESTORE` to configured external object storage; or
-- a CSI/storage-provider snapshot of `clickhouse-data`, taken while writes are
-  quiesced or using a storage mechanism documented as application-consistent.
-
-Restore ClickHouse into the isolated namespace before enabling the ingest
-worker. Validate `/ping`, expected tables, and representative historical
-queries. Do not infer ClickHouse consistency merely because a PVC snapshot
-object exists.
-
-### NATS / JetStream recovery
-
-JetStream is an operational queue, not the source of truth for assets or scan
-history. Recover durable stores first. Only then decide whether a JetStream
-snapshot is required for messages that were accepted but not durably processed.
-
-Shapoclyack publishes with stable `Nats-Msg-Id` values and uses idempotent
-result/event identifiers. The EVENTS stream also has a duplicate window. A
-restored stream can nevertheless contain messages whose effects already exist
-in PostgreSQL or ClickHouse, especially when the queue snapshot and database
-backup were taken at different times.
-
-Recovery order:
-
-1. restore and validate PostgreSQL, artifact PVC, and ClickHouse;
-2. keep API/worker consumers that mutate durable state paused while inspecting
-   the JetStream snapshot boundary;
-3. identify queued messages newer than the durable recovery point and preserve
-   their original `Nats-Msg-Id` / idempotency identifiers;
-4. restore/replay only the required range;
-5. re-enable consumers and verify duplicate/idempotency counters and durable
-   record counts before exposing the recovered stack.
-
-Never replay a restored stream by republishing every message with new message
-IDs. That defeats the deduplication mechanisms the recovery procedure relies
-on.
+These used to be described here in prose only. They now have a backup
+CronJob (`base/backup/clickhouse-cronjob.yaml`), a restore script with a
+verification step (`scripts/restore-clickhouse.sh`), a CSI snapshot example for
+`scanner-data` (`examples/pvc-snapshot.example.yaml`), and a runbook that says
+which store wins when their restore points disagree:
+[disaster-recovery.md](disaster-recovery.md) —
+[ClickHouse](disaster-recovery.md#clickhouse),
+[artifacts](disaster-recovery.md#artifacts),
+[JetStream](disaster-recovery.md#jetstream),
+[reconciling restore points](disaster-recovery.md#reconciling-restore-points).
 
 ### NATS outbox
 
@@ -2838,6 +2847,12 @@ since the API's enrichment initContainer runs the same script without the flag �
 leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
+**No egress, or only to internal mirrors?** Every feed has a `*_URL` mirror
+override, and an offline bundle (`make enrichment-bundle` on a connected host,
+loaded by the `overlays/airgap` CronJob) carries the datasets across; installed
+datasets report `origin: bundle`. The procedure — images, pull secret, mirrors,
+bundle, what stays unavailable — is [air-gap.md](air-gap.md).
+
 ## Upgrade and rollback
 
 > With `base` and `overlays/prod` there is a single API replica, so the probes
@@ -3069,7 +3084,7 @@ manifests themselves:
 | Service | Port | Legitimate clients |
 |---------|------|--------------------|
 | Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
-| ClickHouse | 8123 / 9000 | API |
+| ClickHouse | 8123 / 9000 | API; 9000 also the ClickHouse backup CronJob (#333) |
 | NATS | 4222 | API, sensors |
 
 That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
@@ -3119,9 +3134,10 @@ publish forged `jobs.scan` offers. Since #225 all three require credentials.
 |--------|------|-------------|
 | `shapoclyack-postgres` | `password` | Postgres, API, backup CronJob |
 | `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API |
+| `shapoclyack-clickhouse-backup` | `password` | ClickHouse StatefulSet (user `shapoclyack_backup`), ClickHouse backup CronJob ([#333](https://github.com/onixus/Shapoclyack/issues/333)) |
 | `shapoclyack-nats` | `api_password`, `agent_password` | NATS StatefulSet, API, sensors |
 
-`base/kustomization.yaml` generates dev placeholders for all three, the same
+`base/kustomization.yaml` generates dev placeholders for all of these, the same
 way it always has for Postgres — a fresh `kubectl apply -k` comes up without
 any manual step. The placeholders are published in this repository. Override
 them with `examples/api-secrets.example.yaml` (or

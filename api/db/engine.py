@@ -6,14 +6,20 @@ Mirrors api/services/clickhouse_client.py's lazy-singleton-by-url pattern.
 from __future__ import annotations
 
 import logging
+import math
 import threading
+import time
 from contextlib import contextmanager
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Any, Iterator
 
 from sqlalchemy import Column, Engine, MetaData, create_engine, inspect
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry, QueuePool
 
+from api.services import metrics as metrics_service
 from api.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -67,13 +73,119 @@ def _pool_kwargs(url: str) -> dict[str, int]:
     return dict(_pool_options)
 
 
+#: Whether this thread is inside an observed checkout (see InstrumentedQueuePool).
+_checkout = threading.local()
+
+
+class InstrumentedQueuePool(QueuePool):
+    """The pool every Postgres engine gets: SQLAlchemy's own, with its waits timed (#334).
+
+    A checkout has no event before it starts, so neither the wait for a free
+    connection nor a checkout that gives up after OCTO_DB_POOL_TIMEOUT is
+    visible from outside the pool — the caller just gets a ``TimeoutError``,
+    which the API turns into a 500 with nothing on /metrics to say why.
+    ``_do_get`` is where each SQLAlchemy pool class implements handing out a
+    connection (``QueuePool`` overrides it from ``Pool``), so timing it covers
+    the queue wait and, when the pool grows, the new connection's handshake —
+    and not the pre-ping or the session work after it, which are not the
+    pool's time. The class survives ``Engine.dispose()``: ``recreate()`` builds
+    ``self.__class__``.
+
+    ``QueuePool._do_get`` calls ``self._do_get()`` again when another thread
+    takes the last overflow slot between its two checks, which re-enters this
+    override: one checkout that then timed out was counted, and timed, twice.
+    Only the outermost call on a thread observes. Overriding the public
+    ``Pool.connect()`` instead would avoid the recursion, but it also runs the
+    pre-ping — a database round trip on every checkout — and the wait would
+    report the server's latency as pool pressure.
+    """
+
+    def _do_get(self) -> ConnectionPoolEntry:
+        if getattr(_checkout, "active", False):
+            return super()._do_get()
+        _checkout.active = True
+        started = time.perf_counter()
+        try:
+            return super()._do_get()
+        except sa_exc.TimeoutError:
+            metrics_service.DB_POOL_CHECKOUT_TIMEOUTS_TOTAL.inc()
+            raise
+        finally:
+            _checkout.active = False
+            metrics_service.DB_POOL_CHECKOUT_DURATION_SECONDS.observe(time.perf_counter() - started)
+
+
+def _pool_class_kwargs(url: str) -> dict[str, Any]:
+    """The instrumented pool, where the default would be a ``QueuePool`` anyway.
+
+    Not for SQLite: an in-memory database gets a ``SingletonThreadPool``, and a
+    queue in its place would hand every thread its own empty database.
+    """
+    if url.startswith("sqlite"):
+        return {}
+    return {"poolclass": InstrumentedQueuePool}
+
+
+@dataclass(frozen=True)
+class PoolStatus:
+    """What ``Pool.status()`` prints, as numbers (#334)."""
+
+    size: int
+    max_overflow: int
+    timeout: float
+    checked_out: int
+    checked_in: int
+    overflow: int
+
+    @property
+    def free(self) -> float:
+        """Checkouts that would not wait for somebody's return; 0 is a full pool."""
+        # A negative max_overflow is SQLAlchemy's "no limit"; Settings floors
+        # it at 0, so only a tool's unconfigured engine can have one.
+        if self.max_overflow < 0:
+            return math.inf
+        return max(0, self.size + self.max_overflow - self.checked_out)
+
+
+def pool_status() -> PoolStatus | None:
+    """The live pool's numbers, or ``None`` with no engine or no queue to report.
+
+    Never builds an engine: a replica that has not opened its database yet has
+    no pool, which is a different answer from an empty one.
+    """
+    with _lock:
+        engine = _engine
+    if engine is None or not isinstance(engine.pool, QueuePool):
+        return None
+    pool = engine.pool
+    return PoolStatus(
+        size=pool.size(),
+        # Private, but read by the pool's own status() and pinned by
+        # tests/test_db_engine.py since #335; there is no public accessor.
+        max_overflow=pool._max_overflow,  # noqa: SLF001
+        timeout=pool._timeout,  # noqa: SLF001
+        checked_out=pool.checkedout(),
+        checked_in=pool.checkedin(),
+        # overflow() starts at -pool_size and counts up as connections open,
+        # so it is negative until the pool is full; only the positive part is
+        # connections beyond the pool.
+        overflow=max(0, pool.overflow()),
+    )
+
+
 def get_engine(url: str) -> Engine:
     global _engine, _engine_url, _SessionLocal
     with _lock:
         if _engine is None or _engine_url != url:
             if _engine is not None:
                 _engine.dispose()
-            _engine = create_engine(url, pool_pre_ping=True, future=True, **_pool_kwargs(url))
+            _engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                future=True,
+                **_pool_class_kwargs(url),
+                **_pool_kwargs(url),
+            )
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
             _create_schema_if_unmanaged(_engine)

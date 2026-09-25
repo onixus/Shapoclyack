@@ -1,0 +1,17 @@
+# The API's cold-start initContainer (base/enrichment/api-enrichment-patch.yaml)
+# still runs: on a fresh volume it is what puts the image's seed floor there
+# before the first bundle arrives. Offline it makes no connection attempt —
+# every rollout would otherwise wait out one timeout per feed — and leaves the
+# manifest's origins as the bundle recorded them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: fetch-enrichment
+          env:
+            - name: OCTO_ENRICHMENT_OFFLINE
+              value: "true"

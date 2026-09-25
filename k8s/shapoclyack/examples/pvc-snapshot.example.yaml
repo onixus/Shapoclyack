@@ -1,0 +1,112 @@
+# CSI VolumeSnapshot of the artifact volume, and a restore of it into the
+# isolated drill namespace (#333). Procedure and the reasoning behind the
+# timing: docs/disaster-recovery.md § Artifacts.
+#
+# Only for OCTO_ARTIFACT_BACKEND=local, where run directories live on the
+# `scanner-data` PVC. With the S3 backend (#336) the bucket is the artifact
+# store and the PVC is a cache — protect the bucket (versioning, replication)
+# instead, and do not snapshot this.
+#
+# Not applied by any overlay: the snapshot class names a CSI driver, which is
+# the one thing the repository cannot know. Requires the external-snapshotter
+# CRDs and controller, and a VolumeSnapshotClass for the driver that
+# provisioned `scanner-data`:
+#
+#   kubectl get volumesnapshotclass
+#   kubectl -n network-scan get pvc scanner-data -o jsonpath='{.spec.storageClassName}'
+#
+# kind's local-path provisioner has no snapshot support; nothing here can be
+# exercised there.
+#
+# ---------------------------------------------------------------------------
+# 1. The snapshot, in the source namespace. Take it right AFTER the Postgres
+#    dump finishes (the dump runs at 02:15 UTC), so the artifacts are never
+#    older than the database that references them. Name it after the moment
+#    it was taken — that name is how an operator later pairs it with a dump.
+# ---------------------------------------------------------------------------
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: scanner-data-20260924t0230z
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: storage
+spec:
+  volumeSnapshotClassName: REPLACE-WITH-YOUR-VOLUMESNAPSHOTCLASS
+  source:
+    persistentVolumeClaimName: scanner-data
+---
+# ---------------------------------------------------------------------------
+# 2. Restore into shapoclyack-restore — which has to exist first:
+#      kubectl create namespace shapoclyack-restore
+#    A PVC can only be provisioned from a VolumeSnapshot in its own namespace,
+#    so the snapshot is re-bound there
+#    through a pre-provisioned VolumeSnapshotContent that points at the same
+#    storage-side handle. Read the handle from the source snapshot:
+#
+#      kubectl -n network-scan get volumesnapshot scanner-data-20260924t0230z \
+#        -o jsonpath='{.status.boundVolumeSnapshotContentName}'
+#      kubectl get volumesnapshotcontent <that name> \
+#        -o jsonpath='{.status.snapshotHandle}'
+#
+#    deletionPolicy: Retain — deleting the drill namespace must never delete
+#    the storage-side snapshot the production restore point depends on.
+# ---------------------------------------------------------------------------
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotContent
+metadata:
+  name: scanner-data-20260924t0230z-restore
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: storage
+spec:
+  deletionPolicy: Retain
+  driver: REPLACE-WITH-YOUR-CSI-DRIVER
+  volumeSnapshotClassName: REPLACE-WITH-YOUR-VOLUMESNAPSHOTCLASS
+  source:
+    snapshotHandle: REPLACE-WITH-THE-SNAPSHOT-HANDLE
+  volumeSnapshotRef:
+    name: scanner-data-20260924t0230z
+    namespace: shapoclyack-restore
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: scanner-data-20260924t0230z
+  namespace: shapoclyack-restore
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: storage
+spec:
+  volumeSnapshotClassName: REPLACE-WITH-YOUR-VOLUMESNAPSHOTCLASS
+  source:
+    volumeSnapshotContentName: scanner-data-20260924t0230z-restore
+---
+# ---------------------------------------------------------------------------
+# 3. The claim the restored stack mounts. Same name as base's, created BEFORE
+#    `kubectl apply -k overlays/kind-restore` (or your restore overlay):
+#    dataSource is immutable, so a claim the overlay created empty cannot be
+#    pointed at the snapshot afterwards. The overlay's apply then leaves this
+#    claim's dataSource alone. Size must be at least the snapshot's
+#    restoreSize.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scanner-data
+  namespace: shapoclyack-restore
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: REPLACE-WITH-THE-SOURCE-STORAGECLASS
+  resources:
+    requests:
+      storage: 20Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: scanner-data-20260924t0230z
