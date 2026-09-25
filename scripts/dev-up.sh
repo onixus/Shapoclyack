@@ -21,6 +21,9 @@ cd "${ROOT_DIR}"
 CLUSTER_NAME="shapoclyack-dev"
 IMAGE="ghcr.io/onixus/shapoclyack-aio:kind-dev"
 NAMESPACE="network-scan"
+# Where scans run since #338: the scanner-executor, in a namespace of its own.
+EXECUTOR_NAMESPACE="network-scan-executor"
+EXECUTOR_SECRET="shapoclyack-scanner-executor"
 
 if ! kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   echo "==> Creating kind cluster '${CLUSTER_NAME}'"
@@ -93,6 +96,64 @@ echo "==> Restarting the API to pick up the rebuilt image"
 kubectl -n "${NAMESPACE}" rollout restart deployment/shapoclyack-api
 kubectl -n "${NAMESPACE}" rollout status deployment/shapoclyack-api --timeout=180s
 
+# Scans run in the scanner-executor (#338), which starts only once it holds a
+# provisioning key -- until then it waits in CreateContainerConfigError naming
+# the Secret. A key is minted by the API, so it cannot ship with the manifests;
+# on the stand the demo admin account can mint one, which is what this does.
+# Once: an existing Secret is kept, because every run minting a new key would
+# leave the previous ones valid and unaccounted for.
+#
+# The key reaches kubectl on stdin (printf is a builtin), never through argv or
+# the terminal: it is a credential that enrolls scanners into tenant `default`.
+# Checked for emptiness first -- a Secret holding an empty key would satisfy
+# the "already enrolled" test above on every later run.
+enroll_executor() {
+  local api="https://127.0.0.1:8080" ca=".dev-tls/ca.crt" token key
+  if kubectl -n "${EXECUTOR_NAMESPACE}" get secret "${EXECUTOR_SECRET}" >/dev/null 2>&1; then
+    echo "==> scanner-executor already enrolled (Secret ${EXECUTOR_NAMESPACE}/${EXECUTOR_SECRET})"
+    return 0
+  fi
+  echo "==> Enrolling the scanner-executor into tenant 'default'"
+  token="$(curl -fsS --cacert "${ca}" "${api}/api/auth/login" \
+      -H 'Content-Type: application/json' \
+      -d '{"username":"admin","password":"admin-change-me"}' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token") or "")' 2>/dev/null)" || token=""
+  if [ -z "${token}" ]; then
+    echo "WARNING: could not sign in as the demo admin, so the scanner-executor is not" >&2
+    echo "         enrolled and scans will stay queued. Mint a key and store it:" >&2
+    echo "           docs/k8s-hardening.md § Enrolling the scanner-executor" >&2
+    return 0
+  fi
+  key="$(curl -fsS --cacert "${ca}" -X POST "${api}/api/tenants/default/provisioning-keys" \
+      -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+      -d '{"label":"kind scanner-executor (scripts/dev-up.sh)"}' \
+    | python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin).get("key") or "")' 2>/dev/null)" || key=""
+  if [ -z "${key}" ]; then
+    echo "WARNING: minting the scanner-executor's provisioning key failed; scans will" >&2
+    echo "         stay queued until it is enrolled (docs/k8s-hardening.md)." >&2
+    return 0
+  fi
+  # agent_id_prefix: 64 random bits in front of the pod name, so the
+  # executor's agent id cannot be registered first by another tenant
+  # (docs/k8s-hardening.md § Enrolling the scanner-executor).
+  printf '%s' "${key}" | kubectl -n "${EXECUTOR_NAMESPACE}" create secret generic "${EXECUTOR_SECRET}" \
+    --from-file=provisioning_key=/dev/stdin \
+    --from-literal=agent_id_prefix="$(python3 -c 'import secrets; print(secrets.token_hex(8))')" >/dev/null
+}
+
+if [ "${OVERLAY}" = "kind-dev" ] || [ "${OVERLAY}" = "kind-enrichment" ]; then
+  enroll_executor
+fi
+# Same byte-identical PodSpec problem as the API above, once there is a pod to
+# restart. An executor without its Secret yet is left to start on its own.
+if kubectl -n "${EXECUTOR_NAMESPACE}" get secret "${EXECUTOR_SECRET}" >/dev/null 2>&1 \
+    && kubectl -n "${EXECUTOR_NAMESPACE}" get statefulset/shapoclyack-scanner-executor >/dev/null 2>&1; then
+  echo "==> Restarting the scanner-executor to pick up the rebuilt image"
+  kubectl -n "${EXECUTOR_NAMESPACE}" rollout restart statefulset/shapoclyack-scanner-executor
+  kubectl -n "${EXECUTOR_NAMESPACE}" rollout status statefulset/shapoclyack-scanner-executor --timeout=180s
+fi
+
+# Only an overlay with base/local-scan still has a scan Job/CronJob (#338).
 # The API tolerates a missing scan-targets Secret (its volume is optional), but
 # job.yaml / job-resume.yaml / cronjob.yaml mount it as required. Without it the
 # kubelet cannot create the scan pod at all: it sits in ContainerCreating until
@@ -100,7 +161,8 @@ kubectl -n "${NAMESPACE}" rollout status deployment/shapoclyack-api --timeout=18
 # every log and event -- with it, so the failure surfaces as a bare
 # DeadlineExceeded an hour later with nothing to read. Nothing inside the pod can
 # warn about this (no container ever starts), so check from out here.
-if ! kubectl -n "${NAMESPACE}" get secret scan-targets >/dev/null 2>&1; then
+if kubectl -n "${NAMESPACE}" get cronjob network-scan-scheduled >/dev/null 2>&1 \
+    && ! kubectl -n "${NAMESPACE}" get secret scan-targets >/dev/null 2>&1; then
   echo
   echo "WARNING: Secret 'scan-targets' is missing -- the API is fine, but any" >&2
   echo "         scan Job/CronJob will hang in ContainerCreating and then fail" >&2
@@ -121,4 +183,5 @@ echo "Sign in as operator / operator-change-me"
 echo "Change the JWT secret and demo passwords before exposing this beyond a trusted lab."
 echo
 echo "Logs:   kubectl -n ${NAMESPACE} logs deploy/shapoclyack-api -f"
+echo "        kubectl -n ${EXECUTOR_NAMESPACE} logs statefulset/shapoclyack-scanner-executor -f"
 echo "Down:   scripts/dev-down.sh"

@@ -1741,6 +1741,10 @@ with `--key` yourself — use `--key-stdin`, or accept that the key is in your
 shell history and in the host's process list while the installer runs. Rotate
 the key if the host is shared.
 
+A sensor can read its key from a file instead —
+`OCTO_AGENT_PROVISIONING_KEY_FILE`, read again on every exchange, which is what
+the Kubernetes scanner-executor does ([k8s-hardening.md](k8s-hardening.md#key-expiry-and-rotation)).
+
 The variables in `agent.env` are `OCTO_API_URL`, `OCTO_AGENT_PROVISIONING_KEY`,
 `OCTO_AGENT_ID`, `OCTO_TENANT_ID` and `OCTO_NATS_URL`. All but one are what
 `agent/worker.py` reads; `OCTO_TENANT_ID` is written for the operator's
@@ -1833,6 +1837,22 @@ A few edges worth knowing before you rely on it:
   it disappears by itself the moment a sensor of that group heartbeats — it
   never claims a job cannot run because nothing was listening an hour ago. The
   fix is to register a sensor into the group (or re-address the scan).
+- **A job addressed to no group** answers the same question as
+  `sensor_unavailable` ([#338](https://github.com/onixus/Shapoclyack/issues/338)):
+  `true` while it is queued for agent execution and no active scanner sensor
+  of its tenant with a recent heartbeat would be handed it — no executor
+  enrolled yet, one enrolled with another tenant's key (a sensor claims only
+  its own tenant's jobs), one whose provisioning key has expired, or only
+  sensors below the version floor or without the capability the job's policy
+  or config overlay needs. Recomputed on every read
+  like the group flag; the scan start logs a warning instead of refusing, and
+  the start response already carries it. `GET /api/agents/summary` reports
+  `scan_ready_agents` (online, active, scanner kind, not below the version
+  floor, declaring every capability a job may need; always for the caller's own
+  tenant, even when a platform admin's other counts are fleet-wide) for the
+  same purpose: the
+  console shows a banner above the scan launcher and "no sensor online" on the
+  System page when it is `0` in agent mode.
 - **With NATS, each group has its own subject.** A job addressed to a group is
   offered on `jobs.scan.{tenant}.{group}` (durable consumer
   `octo-agents-{tenant}-{group}`), and a sensor binds only the subjects it is
@@ -3166,7 +3186,7 @@ manifests themselves:
 |---------|------|--------------------|
 | Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
 | ClickHouse | 8123 / 9000 | API; 9000 also the ClickHouse backup CronJob (#333) |
-| NATS | 4222 | API, sensors |
+| NATS | 4222 | API; sensors outside the cluster (the in-cluster scanner-executor claims over HTTP, [#338](https://github.com/onixus/Shapoclyack/issues/338)) |
 
 That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
 is a base resource: one `Ingress`-only policy per datastore, default-deny by
@@ -3194,7 +3214,9 @@ must admit. Run on 2026-09-02 against Calico v3.30.3: 16 of 16 rows matched —
 an unlabeled pod is refused by Postgres, ClickHouse (both ports) and NATS
 4222 and admitted by NATS 8222; a `backup`-labelled pod reaches Postgres and
 nothing else; an `agent`-labelled pod (a sensor) reaches NATS and nothing else; the API
-pod reaches all three. The datastores' kubelet probes kept passing, as the
+pod reaches all three. (Since #338 no in-cluster pod but the API is admitted to NATS;
+the script now expects the `agent` label to be refused and probes from the
+scanner-executor's namespace too — see [Kubernetes hardening](k8s-hardening.md).) The datastores' kubelet probes kept passing, as the
 manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.

@@ -7,21 +7,22 @@
 # Copy it and change the placeholders:
 #
 #   1. `registry.internal.example` below → your registry. The images are
-#      mirrored by digest (docs/air-gap.md, "Mirror the images"); the aio
-#      image keeps its digest through the rename, and the upstream datastore
-#      images, which the base pins by tag only, should get a `digest:` line of
-#      their own here from your mirror.
-#   2. The pull secret `shapoclyack-registry`: create it in network-scan
-#      (docs/air-gap.md, "The pull secret"), or rename it — in the
-#      ServiceAccounts (base) and in the pod-spec patches below alike.
+#      mirrored by digest (docs/air-gap.md, "Mirror the images"); the aio and
+#      API images keep their digests through the rename, and the upstream
+#      datastore images, which the base pins by tag only, should get a
+#      `digest:` line of their own here from your mirror.
+#   2. The pull secret `shapoclyack-registry`: create it in network-scan and in
+#      network-scan-executor (docs/air-gap.md, "The pull secret"), or rename
+#      it — in the ServiceAccounts (base) and in the pod-spec patches below
+#      alike.
 #
 # Every pod gets the secret declaratively: from its ServiceAccount (scanner,
-# api, enrichment-bundle), or from its own pod spec through the patches below —
-# the datastores, the backup CronJob and the online enrichment refresh run as
-# the namespace's `default` account, which these manifests do not own and so do
-# not patch. The pod-spec patches cover every workload kind, so a workload a
-# later base adds is covered too; one that lands in another namespace needs the
-# secret created there as well.
+# api, scanner-executor, enrichment-bundle), or from its own pod spec through
+# the patches below — the datastores, the backup CronJobs and the online
+# enrichment refresh run as the namespace's `default` account, which these
+# manifests do not own and so do not patch. The pod-spec patches cover every
+# workload kind, so a workload a later base adds is covered too; one that lands
+# in another namespace needs the secret created there as well.
 #
 # Prerequisites are the enrichment overlay's (an RWX StorageClass for
 # enrichment-data) plus an RWO class for the bundle inbox.
@@ -38,6 +39,9 @@ components:
 images:
   - name: ghcr.io/onixus/shapoclyack-aio
     newName: registry.internal.example/shapoclyack/shapoclyack-aio
+  # The API and its migrate init container run the API image since #338.
+  - name: ghcr.io/onixus/shapoclyack-api
+    newName: registry.internal.example/shapoclyack/shapoclyack-api
   - name: postgres
     newName: registry.internal.example/library/postgres
   - name: nats

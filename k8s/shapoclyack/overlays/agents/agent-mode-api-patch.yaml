@@ -1,4 +1,10 @@
-# Enable API agent job execution mode for the agents overlay.
+# NATS job dispatch on the API for the agents overlay. Agent execution mode
+# itself is base's default since #338; the entry stays so this overlay says
+# what it depends on even if base changes.
+#
+# The in-cluster executors keep claiming over HTTP (see
+# base/scanner-executor/statefulset.yaml); the offers published here reach
+# sensors outside the cluster that were given the `agent` NATS user.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

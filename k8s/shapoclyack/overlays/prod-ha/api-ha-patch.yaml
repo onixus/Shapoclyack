@@ -18,10 +18,10 @@ spec:
   replicas: 2
   template:
     spec:
-      # No nodeSelector, unlike overlays/prod. That patch pins the API to a
-      # scanner node so an RWO PVC can be shared with the scan Jobs; spreading
-      # replicas across nodes is the opposite requirement, and it is why this
-      # overlay needs RWX storage (pvc-rwx-patch.yaml).
+      # No nodeSelector. overlays/prod used to pin the API to a scanner node so
+      # an RWO PVC could be shared with the scan Jobs (#338 ended that);
+      # spreading replicas across nodes is the opposite requirement, and it is
+      # why this overlay needs RWX storage (pvc-rwx-patch.yaml).
       affinity:
         podAntiAffinity:
           # Preferred, not required: `required` caps the Deployment at one pod

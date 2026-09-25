@@ -13,6 +13,7 @@ import {
   Plus,
   ShieldCheck,
   Timer,
+  TriangleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { PageHeader } from "@/components/page-header";
 import { JobsTable } from "@/components/scans/jobs-table";
 import { ScanLauncher } from "@/components/scans/scan-launcher";
 import { SurfaceKpis } from "@/components/scans/surface-kpis";
+import { useAgentSummary } from "@/hooks/use-agents";
 import { useJobs } from "@/hooks/use-jobs";
 import { usePagination } from "@/hooks/use-pagination";
 import { useRuns } from "@/hooks/use-runs";
@@ -195,6 +197,14 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
   const showLauncher = canOperate && (launcherOpen ?? noJobsYet);
   const agentMode = system?.runtime.job_execution_mode === "agent";
   const scanStartDisabled = system ? !system.runtime.allow_scan_start : false;
+  // In agent mode a scan is accepted and queued whether or not anything can
+  // run it, which is right for a sensor that is restarting and wrong to keep
+  // quiet about when there is none at all: before the executor is enrolled,
+  // for a tenant the executor's key does not belong to, and after that key
+  // expires (#338). `=== 0`, so an API that does not report the count says
+  // nothing rather than a false alarm.
+  const { data: fleet } = useAgentSummary();
+  const noSensor = agentMode && fleet?.scan_ready_agents === 0;
   // This one is a link to /tenants, where the scope is approved — and that
   // page's listings hang off `require_role` on the account, so it is the
   // global role that decides whether the link goes anywhere.
@@ -273,6 +283,21 @@ function ScanOperationsInner({ surface }: { surface: OperationsSurface }) {
           </p>
         </div>
       </PageHeader>
+
+      {noSensor ? (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+        >
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p>
+            {t("page.scans.noSensor")}{" "}
+            <Link href="/agents" className="font-semibold underline-offset-2 hover:underline">
+              {t("page.scans.noSensorLink")}
+            </Link>
+          </p>
+        </div>
+      ) : null}
 
       <SurfaceKpis surface={surface} canOperate={canReadJobs} />
 

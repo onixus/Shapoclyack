@@ -53,6 +53,7 @@ from api.services import agents as agents_service
 from api.services import endpoint_agent_mgmt
 from api.services import ingest_gate
 from api.services import audit as audit_service
+from api.services import config_override as config_override_service
 from api.services import jobs as jobs_service
 from api.services import scan_policy
 from api.settings import Settings
@@ -351,11 +352,15 @@ def claim_job(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except scan_policy.AgentPolicyUnsupported as exc:
+    except (
+        scan_policy.AgentPolicyUnsupported,
+        config_override_service.AgentOverlayUnsupported,
+    ) as exc:
         # 426, like the version floor above and for the same reason: the fix is
         # on the agent's host, the worker already backs off on this status
         # while staying registered, and the job it was refused stays queued for
-        # a worker that can hold to the tenant's rate limits (#362).
+        # a worker that can hold to the tenant's rate limits (#362) or apply
+        # the job's config overlay (#338).
         raise HTTPException(
             status_code=status.HTTP_426_UPGRADE_REQUIRED, detail=str(exc)
         ) from exc
@@ -597,7 +602,12 @@ def get_fleet_summary(
         if principal.is_platform_admin and not principal.tenant_requested
         else principal.tenant_id
     )
-    return agents_service.get_fleet_summary(tenant_id=tenant_id)
+    # The readiness count is always the caller's own tenant: a platform admin
+    # looking at the whole fleet is still starting scans in one tenant, and
+    # another tenant's sensor never claims them.
+    return agents_service.get_fleet_summary(
+        tenant_id=tenant_id, ready_tenant_id=principal.tenant_id
+    )
 
 
 @router.get("/agents/{agent_id}", response_model=AgentInfo)

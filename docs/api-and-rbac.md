@@ -1447,6 +1447,20 @@ has a scan policy is handed only to a sensor that reports the `scan_policy`
 capability (on `register` and on every heartbeat), because the ceilings are
 applied by the executor and a sensor that ignores them would scan at whatever
 its local config says. The detail names the capability; the job stays queued.
+A third since [#338](https://github.com/onixus/Shapoclyack/issues/338): a job
+carrying a **config overlay** — its scan intent's settings and the
+configurator's overrides, sent as the claim input `config_overlay.json` because
+a sensor scans with its own config file — is handed only to a sensor reporting
+the `config_overlay.v1` capability — versioned with the settings the overlay
+may carry, so a sensor that knows an older set is refused rather than failing
+the run — which passes it to `scanner.main` as
+`--config-overlay`. The overlay never holds a secret (the NVD key is left out),
+the scanner accepts only the settings listed in
+`scanner/pipeline/config_overlay.py`, and the tenant's scan policy is applied
+after it. A job with neither an intent nor overrides carries none and goes to
+any sensor. For both capabilities the claim hands a sensor the oldest job it
+*can* run, and answers `426` only when the jobs waiting for it are all ones it
+cannot — a job it could run is never stuck behind one it cannot.
 `capabilities` has three states on both `register` and `heartbeat`, and
 they mean different things. **Omitted** leaves the stored list alone — an
 sensor that declares its capabilities only on the heartbeat must not lose

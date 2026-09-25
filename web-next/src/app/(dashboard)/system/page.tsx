@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { ConfigEditor } from "@/components/config-editor";
 import { KpiCard } from "@/components/kpi-card";
+import { useAgentSummary } from "@/hooks/use-agents";
 import { useRetroMatchStatus } from "@/hooks/use-retro-match";
 import { useSystemStatus } from "@/hooks/use-system";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
@@ -50,6 +51,12 @@ export default function SystemPage() {
   const t = useT();
   const { data, isLoading, error, isFetching } = useSystemStatus();
   const retroDataset = useRetroMatchStatus().data?.dataset ?? null;
+  // "active" only says scan start is allowed. In agent mode a started scan
+  // also needs a sensor to take it, and with none the tile used to read
+  // "active" over a queue that would never move (#338).
+  const fleet = useAgentSummary().data;
+  const noSensor =
+    data?.runtime.job_execution_mode === "agent" && fleet?.scan_ready_agents === 0;
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
   // GET /api/config needs `config.read` since #318, which a viewer does not
   // hold: rendering the panel for one would show an error where there used to
@@ -101,7 +108,19 @@ export default function SystemPage() {
               }
               decorationColor="emerald"
             />
-            <KpiCard label={t("kpi.scanExecution")} value={data.runtime.allow_scan_start ? "active" : "disabled"} decorationColor="amber" />
+            <KpiCard
+              label={t("kpi.scanExecution")}
+              value={
+                !data.runtime.allow_scan_start
+                  ? "disabled"
+                  : noSensor
+                    ? t("kpi.scanExecutionNoSensor")
+                    : "active"
+              }
+              hint={noSensor ? t("kpi.scanExecutionNoSensorHint") : undefined}
+              href={noSensor ? "/agents" : undefined}
+              decorationColor={noSensor ? "rose" : "amber"}
+            />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-2">

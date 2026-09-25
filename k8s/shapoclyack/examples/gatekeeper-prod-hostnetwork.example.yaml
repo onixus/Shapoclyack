@@ -1,0 +1,25 @@
+# overlays/prod only: the scanner-executor on the host network (#338).
+#
+#   kubectl apply -f k8s/shapoclyack/examples/gatekeeper-exemptions.example.yaml \
+#                 -f k8s/shapoclyack/examples/gatekeeper-prod-hostnetwork.example.yaml
+#
+# In that order, every time: this replaces the constraint of the same name in
+# gatekeeper-exemptions.example.yaml, which forbids the host network in
+# network-scan-executor everywhere else. Applied without it, the prohibition
+# comes back and the next executor pod is refused — the failure is loud, not a
+# widened namespace.
+#
+# The template's port range is left at its default: the executor declares no
+# container ports, so it binds no host port that this would have to allow.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPHostNetworkingPorts
+metadata:
+  name: shapoclyack-executor-host-network
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan-executor"]
+  parameters:
+    hostNetwork: true

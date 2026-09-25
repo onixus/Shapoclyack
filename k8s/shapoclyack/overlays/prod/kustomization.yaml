@@ -1,3 +1,13 @@
+# Production profile: base, with the scanner-executor on a dedicated, tainted
+# node pool and on the host network (executor-hostnetwork-patch.yaml).
+#
+# Before #338 this overlay put the scan Job/CronJob there instead, and pinned
+# the API to the same pool so that both could mount one ReadWriteOnce volume.
+# Neither is true any more: scans run in the executor, which shares no volume
+# with the API, so the API is scheduled like any other workload and stays off
+# the nodes where a pod holds NET_ADMIN in the host's network namespace. The
+# first rollout after upgrading moves the API pod — read docs/k8s-hardening.md
+# § Upgrading before applying, for the ReadWriteOnce volume it takes along.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -5,6 +15,5 @@ resources:
   - ../../base
 
 patches:
-  - path: job-hostnetwork-patch.yaml
-  - path: cronjob-hostnetwork-patch.yaml
-  - path: api-replicas-patch.yaml
+  - path: executor-hostnetwork-patch.yaml
+  - path: api-recreate-patch.yaml

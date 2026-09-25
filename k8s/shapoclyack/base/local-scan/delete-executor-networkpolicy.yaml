@@ -1,0 +1,7 @@
+# Companion to delete-executor-deployment.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-scanner-executor-ingress
+  namespace: network-scan-executor
+$patch: delete

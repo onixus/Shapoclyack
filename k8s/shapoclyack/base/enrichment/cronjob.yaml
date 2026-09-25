@@ -24,10 +24,14 @@ spec:
             app.kubernetes.io/component: enrichment-cronjob
         spec:
           restartPolicy: Never
+          automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
+            runAsGroup: 1000
             fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: fetch-enrichment
               image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
@@ -97,15 +101,24 @@ spec:
                   # at admission and lose the daily refresh of every feed, for a
                   # dataset it never asked for.
                   memory: 1Gi
+              # Read-only image (#338): the datasets land on the volume, and the
+              # geoip/asn/epss/kev fetchers download into `mktemp -d` first.
               securityContext:
                 allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
                 capabilities:
                   drop:
                     - ALL
               volumeMounts:
                 - name: enrichment-data
                   mountPath: /app/scanner/data
+                - name: tmp
+                  mountPath: /tmp
           volumes:
             - name: enrichment-data
               persistentVolumeClaim:
                 claimName: enrichment-data
+            # The largest thing staged here is a GeoIP City database.
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi

@@ -34,11 +34,13 @@ the overlay you will apply, so nothing is missed:
 kubectl kustomize k8s/shapoclyack/overlays/airgap | grep -E '^\s+image:' | sort -u
 ```
 
-For a release that is the all-in-one image (pinned by digest in every
-manifest) and the upstream datastore images `postgres`, `nats`,
-`clickhouse/clickhouse-server` and `amazon/aws-cli` (backup upload), which the
-base pins by tag. Copy each with its digest intact — `skopeo` shown, `crane
-copy` or `oras copy` are equivalent:
+For a release that is the all-in-one image and the API image
+`shapoclyack-api`, which the API pod runs since
+[#338](https://github.com/onixus/Shapoclyack/issues/338) (both pinned by
+digest in every manifest), and the upstream datastore images `postgres`,
+`nats`, `clickhouse/clickhouse-server` and `amazon/aws-cli` (backup upload),
+which the base pins by tag. Copy each with its digest intact — `skopeo` shown,
+`crane copy` or `oras copy` are equivalent:
 
 ```bash
 REG=registry.internal.example
@@ -53,14 +55,15 @@ skopeo inspect --format '{{.Digest}}' docker://$REG/library/postgres:16-alpine  
 
 Then rewrite the image names in an overlay. `k8s/shapoclyack/overlays/airgap/`
 is that overlay with `registry.internal.example` as a placeholder: kustomize's
-`images:` transformer replaces the registry and keeps the aio image's digest,
+`images:` transformer replaces the registry and keeps the aio and API images' digests,
 and for the datastore images add a `digest:` line with the value `skopeo
 inspect` printed, so they are pinned too.
 
 ### The pull secret
 
 The ServiceAccounts in `k8s/shapoclyack/base/serviceaccount.yaml` (`scanner`,
-`api`) and the bundle loader's (`enrichment-bundle`) carry
+`api`), the scanner-executor's (`scanner-executor`, in `network-scan-executor`)
+and the bundle loader's (`enrichment-bundle`) carry
 `imagePullSecrets: [shapoclyack-registry]`, so no workload manifest names a
 secret. The name is a placeholder: nothing creates it, and a cluster that
 pulls from public registries does not need it (the kubelet records a
@@ -83,8 +86,8 @@ a test renders it and checks that every pod can pull. To use an existing secret
 under another name, change the name in those two patches and uncomment the
 ServiceAccount patch below them.
 
-An overlay without those patches (the sensors in `base/agents`, for example)
-gets the same result from one command:
+An overlay without those patches (`overlays/prod`, for example) gets the same
+result from one command:
 
 ```bash
 kubectl -n network-scan patch serviceaccount default \
@@ -92,12 +95,12 @@ kubectl -n network-scan patch serviceaccount default \
 ```
 
 A workload in another namespace needs the secret created in that namespace
-too — a pull secret is namespaced (with the scanner-executor of
-[#338](https://github.com/onixus/Shapoclyack/issues/338), that is
-`network-scan-executor`; the overlay's patches already put the secret on its
-pod). A cluster whose nodes already authenticate
-to the registry (a kubelet credential provider, or containerd's own registry
-config) needs none of this.
+too — a pull secret is namespaced. The scanner-executor of
+[#338](https://github.com/onixus/Shapoclyack/issues/338) runs in
+`network-scan-executor`: create `shapoclyack-registry` there as well (its
+ServiceAccount and the overlay's patches already name it). A cluster whose
+nodes already authenticate to the registry (a kubelet credential provider, or
+containerd's own registry config) needs none of this.
 
 ## 2. Feeds: a mirror, or a bundle
 
@@ -521,14 +524,14 @@ EPSS, KEV, exploit maturity), software→CVE matching (the vendor advisories),
 retro matching (the CPE ranges), GeoIP on the API side and the System page —
 reads the enrichment volume the bundle is installed into. **A scan** reads
 GeoIP, ASN and the CVSS v4 overlay at scan time from wherever *its* pod finds
-them: the scheduled scan CronJob and scans the API runs itself mount the same
-volume and use the bundle's copies; the one-off scan Job (`job.yaml`) and remote
-sensors use the copies baked into their image. Where scans run in a separate
-executor namespace (the Kubernetes hardening of
-[#338](https://github.com/onixus/Shapoclyack/issues/338)), no scan pod can mount
-the volume — a PVC is namespaced — and every scan uses the image's copies; the
-API side is unchanged. Refresh scan-time GeoIP/CVSS4 there by mirroring a newer
-image.
+them. Scans run in the scanner-executor, in a namespace of its own
+([#338](https://github.com/onixus/Shapoclyack/issues/338)), where no scan pod
+can mount the volume — a PVC is namespaced — so they, like remote sensors, use
+the copies baked into their image; the API side is unchanged. Refresh
+scan-time GeoIP/CVSS4 by mirroring a newer image. Only the opt-in
+`overlays/local-scan` topology differs, and only in part: the scans the API
+runs itself read the volume the API mounts, so the bundle's copies, while its
+scan Job and CronJob use the image's.
 
 ## See also
 

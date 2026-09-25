@@ -1,0 +1,114 @@
+# OPA Gatekeeper constraints for Shapoclyack's two namespaces (#338), built on
+# the gatekeeper-library pod-security-policy templates (K8sPSPCapabilities,
+# K8sPSPAllowPrivilegeEscalationContainer, K8sPSPHostNetworkingPorts,
+# K8sPSPReadOnlyRootFilesystem). Install those templates first.
+#
+# Gatekeeper has no exception object: an exemption is a constraint that does
+# not match (`match.namespaces` / `match.excludedNamespaces`). So the pattern is
+# the strict constraint for network-scan and, where the template can express
+# it, a narrow one for network-scan-executor allowing exactly what the
+# scanner-executor needs. Where the template cannot (privilege escalation has
+# no "allowed" parameter), the executor's namespace is only left out, and the
+# Pod Security `privileged` label plus the namespace holding nothing else is
+# the boundary (docs/k8s-hardening.md).
+#
+# Scoped to Shapoclyack's namespaces so applying this file changes nothing
+# else in the cluster. Already running cluster-wide constraints of these
+# kinds? Add network-scan-executor to their `spec.match.excludedNamespaces`
+# and apply only shapoclyack-capabilities-scanner-executor from here.
+#
+# Checked with `gator test` (Gatekeeper 3.18.2, library templates from master)
+# against every overlay's render: no violations but overlays/prod's host
+# network, which gatekeeper-prod-hostnetwork.example.yaml then allows; with the
+# exclusions removed, the executor's capabilities and privilege escalation are
+# the only ones.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPCapabilities
+metadata:
+  name: shapoclyack-drop-all-capabilities
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan"]
+  parameters:
+    allowedCapabilities: []
+    requiredDropCapabilities: ["ALL"]
+---
+# The executor: NET_RAW and NET_ADMIN and nothing else, everything dropped
+# first. Narrower than excluding the namespace from the constraint above.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPCapabilities
+metadata:
+  name: shapoclyack-capabilities-scanner-executor
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan-executor"]
+  parameters:
+    allowedCapabilities: ["NET_RAW", "NET_ADMIN"]
+    requiredDropCapabilities: ["ALL"]
+---
+# allowPrivilegeEscalation: true is the executor's other deviation, and the
+# template has no parameter to allow it, so network-scan-executor is left out.
+# A cluster-wide constraint of this kind says the same thing with
+# `excludedNamespaces: ["network-scan-executor"]`.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPAllowPrivilegeEscalationContainer
+metadata:
+  name: shapoclyack-no-privilege-escalation
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan"]
+---
+# No exemption needed: every Shapoclyack container, the executor's included,
+# runs with a read-only root filesystem.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPReadOnlyRootFilesystem
+metadata:
+  name: shapoclyack-read-only-root-filesystem
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan", "network-scan-executor"]
+---
+# Host network off in network-scan.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPHostNetworkingPorts
+metadata:
+  name: shapoclyack-no-host-network
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan"]
+  parameters:
+    hostNetwork: false
+---
+# And off in network-scan-executor, which is `privileged` to Pod Security and
+# would otherwise admit a host-network pod from anyone who can create one there.
+# overlays/prod is the one place the executor needs it: there,
+# gatekeeper-prod-hostnetwork.example.yaml replaces this constraint (same name),
+# and has to be applied after this file every time — applying this file alone
+# again puts the prohibition back, and the next executor pod is refused.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPSPHostNetworkingPorts
+metadata:
+  name: shapoclyack-executor-host-network
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["network-scan-executor"]
+  parameters:
+    hostNetwork: false

@@ -67,7 +67,14 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 # whose tenant has a policy to an agent that does not declare this — a ceiling
 # an older worker silently ignores would read as enforced and would not be.
 # Kept equal to api/services/scan_policy.AGENT_CAPABILITY.
-CAPABILITIES: tuple[str, ...] = ("scan_policy",)
+#
+# ``config_overlay.v1`` (#338): a claim's ``config_overlay.json`` — the scan
+# intent's settings and the console's config overrides — is passed to the
+# scanner as ``--config-overlay``. Refused on claim without it, for the same
+# reason. Versioned with the settings the overlay may carry, so a later API is
+# refused to this build rather than failing its scans. Kept equal to
+# scanner/pipeline/config_overlay.CAPABILITY.
+CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1")
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"
@@ -732,6 +739,44 @@ class AgentClient:
             body.close()
 
 
+def _uses_provisioning_key(args: argparse.Namespace) -> bool:
+    return bool(args.provisioning_key or getattr(args, "provisioning_key_file", ""))
+
+
+def _provisioning_key(args: argparse.Namespace) -> str:
+    """The key to exchange now.
+
+    Read from ``--provisioning-key-file`` on every call when one is named
+    (#338): a Secret rotated under a running pod reaches the next exchange
+    without a restart, and the key is not in the environment every scan tool
+    inherits. An unreadable file is an empty key, which the API refuses like
+    any other bad one — the loop backs off and reads the file again.
+    """
+    path = getattr(args, "provisioning_key_file", "") or ""
+    if not path:
+        return args.provisioning_key
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        LOG.error("Cannot read the provisioning key file %s: %s", path, exc)
+        return ""
+
+
+#: Variables the worker reads and the scan it starts has no use for (#338): the
+#: enrollment key, the agent token, the broker's URL (which may carry its
+#: password) and TLS key. Everything else — an NVD or HIBP key, a proxy, a CA
+#: bundle the operator gave the scanner — is passed through.
+_WORKER_ONLY_ENV_PREFIXES = ("OCTO_AGENT_", "OCTO_NATS_")
+
+
+def _scan_env() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(_WORKER_ONLY_ENV_PREFIXES)
+    }
+
+
 def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
     args: list[str] = []
     if "ranges.txt" in inputs or "domains.txt" in inputs:
@@ -766,6 +811,13 @@ def _write_inputs(workdir: Path, inputs: dict[str, str]) -> list[str]:
         policy_path = workdir / "scan_policy.json"
         policy_path.write_text(inputs["scan_policy.json"], encoding="utf-8")
         args.extend(["--scan-policy", str(policy_path)])
+    if "config_overlay.json" in inputs:
+        # The job's config overlay (#338). Handed through unread as well: the
+        # scanner merges it onto --config and refuses any setting outside its
+        # own allow-list (scanner/pipeline/config_overlay.py).
+        overlay_path = workdir / "config_overlay.json"
+        overlay_path.write_text(inputs["config_overlay.json"], encoding="utf-8")
+        args.extend(["--config-overlay", str(overlay_path)])
     if "promoted_domains.txt" in inputs:
         # Related domains the tenant promoted (org_profile M4). Also handed
         # through unread: the pipeline merges them into its name scope and
@@ -888,6 +940,7 @@ def _run_scan(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=use_session,
+            env=_scan_env(),
         )
     except Exception as exc:
         return 1, f"failed to spawn scan process: {exc}", None
@@ -1428,7 +1481,7 @@ def run_loop(args: argparse.Namespace) -> int:
         check_nats_transport(args.nats_url)
     # The provisioning-key exchange itself happens inside the run loop below,
     # where a refusal is backed off instead of killing the process (#308).
-    if not args.provisioning_key and not args.token:
+    if not _uses_provisioning_key(args) and not args.token:
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
 
@@ -1462,7 +1515,7 @@ def run_loop(args: argparse.Namespace) -> int:
     # Due immediately with a provisioning key (the bootstrap exchange happens
     # inside the loop, so a refusal is backed off instead of killing the
     # process); never with a legacy shared token, which is not exchanged.
-    token_refresh_at = 0.0 if args.provisioning_key else float("inf")
+    token_refresh_at = 0.0 if _uses_provisioning_key(args) else float("inf")
 
     shutdown_event = threading.Event()
     last_upgrade_message = ""
@@ -1484,7 +1537,7 @@ def run_loop(args: argparse.Namespace) -> int:
     def _exchange() -> None:
         nonlocal agent_id, tenant_id, token_refresh_at, registered
         exchanged = client.exchange_provisioning_key(
-            args.provisioning_key, agent_id=agent_id or None
+            _provisioning_key(args), agent_id=agent_id or None
         )
         client.set_token(str(exchanged["access_token"]))
         expires = int(exchanged.get("expires_in") or 3600)
@@ -1531,7 +1584,7 @@ def run_loop(args: argparse.Namespace) -> int:
     try:
         while not shutdown_event.is_set():
             try:
-                if args.provisioning_key and time.time() >= token_refresh_at:
+                if _uses_provisioning_key(args) and time.time() >= token_refresh_at:
                     _exchange()
                 if not registered:
                     # Inside the loop, and inside the same handlers as every
@@ -1626,7 +1679,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 LOG.info("Shutting down")
                 return 0
             except AgentTokenRejected as exc:
-                if not args.provisioning_key:
+                if not _uses_provisioning_key(args):
                     LOG.error("Agent token rejected and no provisioning key to re-exchange: %s", exc)
                     time.sleep(args.poll_interval)
                     continue
@@ -1689,6 +1742,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--provisioning-key",
         default=os.environ.get("OCTO_AGENT_PROVISIONING_KEY", ""),
         help="Phase 2 provisioning key (exchanged for agent JWT); or OCTO_AGENT_PROVISIONING_KEY",
+    )
+    parser.add_argument(
+        "--provisioning-key-file",
+        default=os.environ.get("OCTO_AGENT_PROVISIONING_KEY_FILE", ""),
+        help=(
+            "File holding the provisioning key, read again on every exchange so a "
+            "rotated Secret is picked up without a restart; or "
+            "OCTO_AGENT_PROVISIONING_KEY_FILE. Wins over --provisioning-key"
+        ),
     )
     parser.add_argument(
         "--jwt-refresh-seconds",
@@ -1765,7 +1827,7 @@ def main(argv: list[str] | None = None) -> int:
     # reaches for while watching one run, and having the environment override
     # it would make the flag look broken (#330).
     logging_setup.configure_logging(level=logging.DEBUG if args.verbose else None)
-    if not args.token and not args.provisioning_key:
+    if not args.token and not _uses_provisioning_key(args):
         LOG.error("OCTO_AGENT_TOKEN / --token or OCTO_AGENT_PROVISIONING_KEY is required")
         return 2
     return run_loop(args)

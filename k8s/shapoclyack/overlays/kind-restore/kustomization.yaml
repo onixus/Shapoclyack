@@ -2,11 +2,12 @@
 #
 # Same image and Postgres/API as kind-dev, in namespace shapoclyack-restore,
 # without NodePort (so it does not steal :8080 from the source lab) and
-# without NATS/scan Jobs (ingress and external integrations stay off, as
-# docs/disaster-recovery.md requires). Postgres + API is the path
-# scripts/restore-postgres.sh validates; ClickHouse stays so that
-# scripts/restore-clickhouse.sh has a server to restore into (the API here has
-# no OCTO_CLICKHOUSE_URL, as in base, so nothing ingests into it meanwhile).
+# without NATS/the scanner-executor (ingress and external integrations stay
+# off, as docs/disaster-recovery.md requires; a restored database must not
+# start scanning). Postgres + API is the path scripts/restore-postgres.sh
+# validates; ClickHouse stays so that scripts/restore-clickhouse.sh has a
+# server to restore into (the API here has no OCTO_CLICKHOUSE_URL, as in base,
+# so nothing ingests into it meanwhile).
 #
 # Neither backup CronJob runs here: a drill namespace that uploads into the
 # production bucket and prefix would put drill data among the real restore
@@ -21,6 +22,11 @@ resources:
 
 images:
   - name: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev
+  # The one image the kind stand builds serves as the API image too, as in
+  # overlays/kind-dev.
+  - name: ghcr.io/onixus/shapoclyack-api
+    newName: ghcr.io/onixus/shapoclyack-aio
     newTag: kind-dev
 
 patches:
@@ -55,17 +61,48 @@ patches:
       metadata:
         name: shapoclyack-nats-config
       $patch: delete
+  # The scanner-executor and its namespace (#338; the scan Job/CronJob it
+  # replaced were deleted here before). One object per patch, as above.
   - patch: |-
-      apiVersion: batch/v1
-      kind: Job
+      apiVersion: apps/v1
+      kind: StatefulSet
       metadata:
-        name: network-scan
+        name: shapoclyack-scanner-executor
+        namespace: network-scan-executor
       $patch: delete
   - patch: |-
-      apiVersion: batch/v1
-      kind: CronJob
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
       metadata:
-        name: network-scan-scheduled
+        name: shapoclyack-scanner-executor
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: shapoclyack-scanner-executor-ingress
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: scanner-config
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: scanner-executor
+        namespace: network-scan-executor
+      $patch: delete
+  - patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: network-scan-executor
       $patch: delete
   - patch: |-
       apiVersion: batch/v1

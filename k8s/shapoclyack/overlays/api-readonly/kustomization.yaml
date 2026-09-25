@@ -1,10 +1,20 @@
-# Thin results-only API image (shapoclyack-api, no local scan start).
-# Prefer overlays/dev for all-in-one (shapoclyack-aio).
+# Thin results-only API image (shapoclyack-api, no scan start): the console
+# over runs that the scan Job and CronJob write onto the shared scanner-data
+# volume. Prefer overlays/dev for all-in-one (shapoclyack-aio).
+#
+# The Job/CronJob come from base/local-scan (#338), because they need
+# NET_RAW/NET_ADMIN inside network-scan to share that volume — which takes
+# the namespace's Pod Security enforcement down to `privileged`, exactly as in
+# overlays/local-scan. The API here is patched back to `restricted`: it starts
+# no scans, and its image has no scanner in it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../base
+
+components:
+  - ../../base/local-scan
 
 patches:
   - path: api-readonly-patch.yaml

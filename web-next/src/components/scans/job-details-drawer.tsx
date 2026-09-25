@@ -148,6 +148,18 @@ export function JobDetailsDrawer({
             </div>
           </div>
         ) : null}
+        {current.sensor_unavailable ? (
+          <div
+            role="status"
+            className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+          >
+            <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div>
+              <p className="font-semibold">{t("jobs.sensorUnavailable")}</p>
+              <p className="mt-0.5">{t("jobs.sensorUnavailableHint")}</p>
+            </div>
+          </div>
+        ) : null}
         {current.asset_upsert_error ? (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SystemPage from "@/app/(dashboard)/system/page";
 import * as apiModule from "@/lib/api";
@@ -258,5 +258,49 @@ describe("SystemPage configuration panel", () => {
     renderPage();
 
     expect(await screen.findByText("Scanner Configuration Tuner")).toBeInTheDocument();
+  });
+});
+
+describe("SystemPage scan execution tile", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+  });
+
+  function agentMode(): SystemStatus {
+    const s = status([]);
+    return { ...s, runtime: { ...s.runtime, job_execution_mode: "agent" } };
+  }
+
+  function fleet(ready: number) {
+    return {
+      total_agents: ready,
+      online_agents: ready,
+      scan_ready_agents: ready,
+      busy_agents: 0,
+      stale_agents: 0,
+      error_agents: 0,
+      outdated_agents: 0,
+      latest_version: "",
+      by_tenant: {},
+    } as apiModule.AgentFleetSummary;
+  }
+
+  // "active" said only that scan start is allowed. In agent mode the scans it
+  // allowed queued for ever when no sensor was enrolled (#338).
+  it("does not read active when no sensor can take a scan", async () => {
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(agentMode());
+    vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(0));
+    renderPage();
+    expect(await screen.findByText("no sensor online")).toBeInTheDocument();
+  });
+
+  it("reads active once one is online", async () => {
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(agentMode());
+    const summary = vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(1));
+    renderPage();
+    expect(await screen.findByText("active")).toBeInTheDocument();
+    await waitFor(() => expect(summary).toHaveBeenCalled());
+    expect(screen.queryByText("no sensor online")).toBeNull();
   });
 });

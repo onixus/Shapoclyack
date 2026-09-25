@@ -1,0 +1,12 @@
+# network-scan for this component's PVC and CronJob, which are added after
+# base's own namespace transformer has run. A copy of
+# base/namespace-transformer.yaml, because a component may not load a file from
+# outside its directory; unsetOnly for the reason given there (#338) — a
+# component's transformer runs over everything the overlay has accumulated,
+# the scanner-executor in network-scan-executor included.
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true

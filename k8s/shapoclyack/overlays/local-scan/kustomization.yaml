@@ -1,0 +1,15 @@
+# base, with scans run by the API itself and by the scan Job/CronJob, all in
+# network-scan — the topology before #338. Read base/local-scan/ for what this
+# gives up; docs/k8s-hardening.md § Local execution for when it is worth it.
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/local-scan
+#
+# Needs the scan-targets Secret for the Job/CronJob, as before.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../base/local-scan

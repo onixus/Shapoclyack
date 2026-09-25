@@ -1,16 +1,35 @@
-# Example remote agent Deployment (scanner image). Prefer overlays/agents for
-# production (topology spread + VPA). Pair with agent-mode-api-patch.yaml and
-# Secret shapoclyack-agent.
+# Example sensor for a cluster OTHER than the one running the API — a branch
+# office, a customer segment. The in-cluster sensor is base's scanner-executor
+# (base/scanner-executor/, #338); this is the same pod, with the API reached
+# over its public URL instead of a Service name. Pair with Secret
+# shapoclyack-agent holding a provisioning key for the tenant it scans — an
+# agent only ever takes its own tenant's jobs.
+#
+# A StatefulSet, as the executor is since the #338 review, so each pod keeps
+# its agent id (its own name) across restarts: a quarantine or a group set on
+# it in the console outlives the pod, and the fleet view gets no ghosts. The
+# file keeps its old name so links to it keep working.
+#
+# The namespace must not enforce Pod Security `baseline` or `restricted`:
+# NET_RAW/NET_ADMIN are outside both (docs/k8s-hardening.md, which also has the
+# Kyverno/Gatekeeper exceptions to scope to it). Create it labelled
+#   pod-security.kubernetes.io/enforce=privileged
+#   pod-security.kubernetes.io/warn=restricted
+# and keep nothing else in it.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-agent
-  namespace: network-scan
+  namespace: network-scan-executor
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
 spec:
   replicas: 2
+  # No Service: nothing connects to a sensor. The ordinals are identity, not
+  # order.
+  serviceName: shapoclyack-agent
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app.kubernetes.io/name: shapoclyack
@@ -21,6 +40,15 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: agent
     spec:
+      # The sensor never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -41,24 +69,33 @@ spec:
           image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "agent"]
-          args:
-            - "--config"
-            - "scanner/config/k8s.yaml"
-            - "--api-url"
-            - "http://shapoclyack-api:8080"
           env:
-            - name: OCTO_AGENT_PROVISIONING_KEY
+            # The console's public URL — whatever your Ingress serves.
+            - name: OCTO_API_URL
+              value: https://shapoclyack.example.com
+            # A file, re-read on every exchange: a rotated Secret is picked up
+            # without a restart, and the key is not in the environment the
+            # scanner's tools inherit.
+            - name: OCTO_AGENT_PROVISIONING_KEY_FILE
+              value: /etc/shapoclyack/agent-key/provisioning_key
+            # Its own name behind a random prefix from the Secret (key
+            # OCTO_AGENT_ID_PREFIX, e.g. `openssl rand -hex 8`, generated once
+            # per site and never rotated): kept across restarts, and not a
+            # name another tenant — or another site deploying this same file —
+            # can already hold (docs/k8s-hardening.md § Enrolling).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OCTO_AGENT_ID_PREFIX
               valueFrom:
                 secretKeyRef:
                   name: shapoclyack-agent
-                  key: OCTO_AGENT_PROVISIONING_KEY
-                  optional: true
-            - name: OCTO_AGENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: shapoclyack-agent
-                  key: OCTO_AGENT_TOKEN
-                  optional: true
+                  key: OCTO_AGENT_ID_PREFIX
+            - name: OCTO_AGENT_ID
+              value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
+            - name: OCTO_CONFIG
+              value: scanner/config/k8s.yaml
             - name: OCTO_OUTPUT_DIR
               value: scanner/output
             - name: OCTO_AGENT_HOSTNAME
@@ -75,40 +112,69 @@ spec:
             #       key: agent_password
             # - name: OCTO_NATS_URL
             #   value: nats://agent:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+          # The scanner-executor's securityContext, for its reasons
+          # (base/scanner-executor/statefulset.yaml): NET_RAW/NET_ADMIN because
+          # the image grants them to naabu/pulse/nmap as file capabilities, and
+          # allowPrivilegeEscalation: true because no_new_privs would make the
+          # kernel ignore those. Everything else is the restricted baseline.
           securityContext:
-            # This worker runs the full scanner pipeline (nmap -O / naabu need
-            # NET_RAW+NET_ADMIN file capabilities, set at build time via
-            # Dockerfile setcap, to take effect for the non-root user);
-            # allowPrivilegeEscalation:false sets no_new_privs, which blocks
-            # that file-capability grant on exec regardless of what's listed
-            # below (matches job.yaml/cronjob.yaml's working config).
             allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
               add:
                 - NET_RAW
                 - NET_ADMIN
+          # ephemeral-storage for the emptyDirs below, as on the executor.
           resources:
             requests:
               cpu: "500m"
               memory: 512Mi
+              ephemeral-storage: 8Gi
             limits:
               cpu: "2"
               memory: 2Gi
+              ephemeral-storage: 32Gi
           volumeMounts:
             - name: config
               mountPath: /app/scanner/config
+              readOnly: true
+            - name: agent-key
+              mountPath: /etc/shapoclyack/agent-key
               readOnly: true
             - name: work
               mountPath: /app/scanner/output
             - name: work-state
               mountPath: /app/scanner/state
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/octo
       volumes:
+        # A ConfigMap of that name in this namespace: the scanner config
+        # (k8s/shapoclyack/base/config/k8s.yaml or your own).
         - name: config
           configMap:
             name: scanner-config
+        # Readable by the pod's fsGroup only; required, so a missing Secret
+        # is a FailedMount event naming it.
+        - name: agent-key
+          secret:
+            secretName: shapoclyack-agent
+            defaultMode: 0440
+            items:
+              - key: OCTO_AGENT_PROVISIONING_KEY
+                path: provisioning_key
         - name: work
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 20Gi
         - name: work-state
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

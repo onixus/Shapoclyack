@@ -11,6 +11,14 @@
 #
 # Configure real DKIM/PTR in Maddy before setting require_dkim / require_ptr in production.
 # Default image entrypoint expects /data/maddy.conf — mount your own ConfigMap/PVC for production.
+#
+# Pod Security (#338): the upstream image runs as root and has no non-root user
+# to switch to, so this pod meets `baseline` — which network-scan enforces —
+# but not `restricted`; audit/warn report it on apply. What does apply: no
+# token, RuntimeDefault seccomp, no privilege escalation, every capability
+# dropped except binding port 25. The image stays writable: which paths maddy
+# writes besides /data has not been verified for this lab-only example.
+# docs/k8s-hardening.md lists it among the exceptions.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,12 +38,23 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: maddy
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: maddy
           image: foxcpp/maddy:latest
           ports:
             - name: smtp
               containerPort: 25
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
           volumeMounts:
             - name: data
               mountPath: /data

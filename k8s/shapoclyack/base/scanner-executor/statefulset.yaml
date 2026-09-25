@@ -1,0 +1,237 @@
+# A StatefulSet for the pod names, not for storage (#338 review). Each pod is
+# one agent to the API, and its name — behind the enrollment's random prefix —
+# is the agent id it sends (OCTO_AGENT_ID below): the same agent after a
+# rollout, an eviction or a node drain. As a Deployment every pod start minted
+# a fresh agent, so a restart undid a quarantine (#308), dropped the agent's
+# group (#361) and left the old id in the fleet view as a stale ghost.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-scanner-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  # One is enough to scan; more run scans in parallel, each claiming its own job
+  # (FOR UPDATE SKIP LOCKED, docs/architecture.md). overlays/agents runs three
+  # under a VPA.
+  replicas: 1
+  # Required by the API and names the governing Service, which does not exist:
+  # nothing connects to an executor (networkpolicy.yaml refuses all ingress),
+  # so there are no per-pod DNS records to publish.
+  serviceName: shapoclyack-scanner-executor
+  # The ordinals carry identity, not order: executors do not depend on each
+  # other, so they start and stop together rather than one at a time.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: scanner-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: scanner-executor
+    spec:
+      serviceAccountName: scanner-executor
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        # RuntimeDefault still allows socket() for AF_INET/AF_INET6/AF_PACKET
+        # (containerd's profile blocks only AF_ALG and AF_VSOCK); what gates
+        # raw sockets is the capability below, not the syscall filter. The
+        # profile removes the rest of the kernel surface a scanner has no use
+        # for.
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas when there is more than one (overlays/agents); a no-op
+      # at one. ScheduleAnyway, because a scan landing on a busy node is better
+      # than a scan that never starts.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scanner-executor
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scanner-executor
+      containers:
+        - name: executor
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "agent"]
+          env:
+            # The API in network-scan, by its Service. Plain HTTP inside the
+            # cluster, as for every other client of the Service — a deviation
+            # docs/k8s-hardening.md § Traffic between the executor and the API
+            # explains. base/api-tls (the kind-dev stand uses it) switches the
+            # API to TLS and this to https with OCTO_CA_BUNDLE.
+            - name: OCTO_API_URL
+              value: http://shapoclyack-api.network-scan.svc:8080
+            # The one credential this pod holds: a tenant provisioning key,
+            # exchanged for a short-lived agent JWT on start and on expiry.
+            # A file, not an environment variable (#338 review): the worker
+            # reads it again on every exchange, so a rotated Secret is picked
+            # up without a restart, and it is not inherited by the scanner and
+            # every tool the scan starts. The key is minted by the API
+            # (POST /api/tenants/{tenant}/provisioning-keys), so it cannot ship
+            # with these manifests — docs/k8s-hardening.md § Enrolling the
+            # scanner-executor.
+            - name: OCTO_AGENT_PROVISIONING_KEY_FILE
+              value: /etc/shapoclyack/executor-key/provisioning_key
+            # The same key as a variable, for the image pinned above: its
+            # worker predates the file and exits without a key otherwise. A
+            # current worker prefers the file and starts the scan without any
+            # OCTO_AGENT_* variable. Remove with the first pin past
+            # shapoclyack-0.46-0922 (docs/k8s-hardening.md § What changes).
+            - name: OCTO_AGENT_PROVISIONING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-scanner-executor
+                  key: provisioning_key
+            # The agent id this pod keeps across restarts: its own name —
+            # shapoclyack-scanner-executor-<ordinal> — behind a random prefix
+            # generated at enrollment and kept in the Secret beside the key.
+            # The API refuses a token for an id that is quarantined or
+            # disabled, so an operator's decision outlives the pod. The prefix
+            # is what keeps the id from being guessed: agent ids are unique
+            # across the installation, and a bare pod name could be registered
+            # first by any tenant admin with a key of their own, locking the
+            # executor out (review round 2). Not a secret, and not rotated with
+            # the key — a new prefix is a new agent, i.e. a way out of a
+            # quarantine for whoever can write this Secret.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OCTO_AGENT_ID_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-scanner-executor
+                  key: agent_id_prefix
+            - name: OCTO_AGENT_ID
+              value: $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME)
+            - name: OCTO_CONFIG
+              value: scanner/config/k8s.yaml
+            - name: OCTO_OUTPUT_DIR
+              value: scanner/output
+            - name: OCTO_AGENT_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # No OCTO_NATS_URL: the executor claims over HTTP, which is a
+            # supported mode and not a degraded one (agent/worker.py polls every
+            # few seconds). Leaving NATS out keeps the broker's `agent` password
+            # out of this namespace and the NATS port closed to it
+            # (base/networkpolicy-datastores.yaml admits only the API).
+          securityContext:
+            # Deviations from `restricted`, each needed and each listed in
+            # docs/k8s-hardening.md (#338):
+            #
+            # capabilities.add NET_RAW, NET_ADMIN — naabu (SYN), pulse (SYN, OS
+            #   fingerprint), nmap -O and fping send raw packets. The image
+            #   grants these to the binaries as file capabilities
+            #   (`setcap cap_net_raw,cap_net_admin+eip`, Dockerfile.allinone).
+            #   Both have to be in the bounding set: a binary whose file
+            #   capabilities include one the bounding set lacks fails execve
+            #   with EPERM, so dropping NET_ADMIN here breaks the exec, it does
+            #   not narrow it.
+            # allowPrivilegeEscalation: true — false sets no_new_privs, under
+            #   which the kernel ignores file capabilities on exec; the
+            #   non-root process would then run naabu without raw sockets.
+            #
+            # Everything else is the restricted baseline.
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_RAW
+                - NET_ADMIN
+          # Where the API's own limits used to cap a local scan, since this is
+          # now where that scan runs.
+          #
+          # ephemeral-storage: the emptyDirs below may hold up to 31Gi between
+          # them, and `sizeLimit` only evicts once that is reached; a request is
+          # what makes the scheduler look for the disk first. 8Gi is a few runs
+          # kept on disk (the worker keeps every finished run until the pod
+          # goes); the limit covers every sizeLimit plus the container's logs.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+              ephemeral-storage: 32Gi
+          volumeMounts:
+            - name: config
+              mountPath: /app/scanner/config
+              readOnly: true
+            - name: executor-key
+              mountPath: /etc/shapoclyack/executor-key
+              readOnly: true
+            # The scanner's run directory (runtime.output_dir) and checkpoints
+            # (runtime.state_dir). The agent archives and uploads the run from
+            # here; nothing needs to survive the pod.
+            - name: output
+              mountPath: /app/scanner/output
+            - name: state
+              mountPath: /app/scanner/state
+            # The agent's per-job workdir (tempfile.TemporaryDirectory: target
+            # lists and the run archive before upload), and the browser
+            # profile of the screenshots stage.
+            - name: tmp
+              mountPath: /tmp
+            # $HOME of the image's user. nuclei, naabu and dnsx write a default
+            # ~/.config/<tool>/config.yaml on every start and exit ("Could not
+            # parse flags") when they cannot (projectdiscovery/goflags Parse).
+            - name: home
+              mountPath: /home/octo
+      volumes:
+        - name: config
+          configMap:
+            name: scanner-config
+        # Not optional: without the Secret the pod waits in ContainerCreating
+        # with a FailedMount event naming it, rather than starting and looping
+        # on "provisioning key is required". 0440: owned by root, readable by
+        # the pod's fsGroup (1000, the user the worker runs as), by nobody
+        # else, writable by no one.
+        - name: executor-key
+          secret:
+            secretName: shapoclyack-scanner-executor
+            defaultMode: 0440
+            items:
+              - key: provisioning_key
+                path: provisioning_key
+        # Sized so that a full disk evicts this pod rather than filling the
+        # node: agent/worker.py keeps each finished run under output/ until the
+        # pod goes away. A restart empties both, and a scan cut short by one
+        # goes back to the queue when its lease expires. So do the delta and
+        # report-diff baselines under state/: after a restart the next run of a
+        # target is a full one, and with several replicas each keeps its own
+        # (docs/k8s-hardening.md § What changes).
+        - name: output
+          emptyDir:
+            sizeLimit: 20Gi
+        - name: state
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

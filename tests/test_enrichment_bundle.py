@@ -780,6 +780,11 @@ def test_the_base_service_accounts_carry_the_registry_pull_secret() -> None:
     loader = _docs(K8S / "base" / "enrichment-bundle" / "serviceaccount.yaml")[0]
     assert loader["imagePullSecrets"] == [{"name": "shapoclyack-registry"}]
     assert loader["automountServiceAccountToken"] is False
+    # The scanner-executor's own account, in network-scan-executor (#338): the
+    # one pod of a default install outside network-scan pulls the same way.
+    executor = _docs(K8S / "base" / "scanner-executor" / "serviceaccount.yaml")[0]
+    assert executor["imagePullSecrets"] == [{"name": "shapoclyack-registry"}]
+    assert executor["automountServiceAccountToken"] is False
 
 
 def _loader_pod() -> dict:

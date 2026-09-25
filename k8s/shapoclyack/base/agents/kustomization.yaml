@@ -1,8 +1,15 @@
-# Optional agent Deployment + VPA (not part of default base).
+# Optional VPA for the scanner-executor (not part of default base).
 # Enable via: kubectl apply -k k8s/shapoclyack/overlays/agents
+#
+# This directory used to carry its own sensor Deployment (`shapoclyack-agent`),
+# with NET_RAW/NET_ADMIN, in whatever namespace the kubeconfig pointed at — it
+# had no namespace at all. Since #338 the in-cluster sensor is base's
+# scanner-executor, in network-scan-executor, and what is left here is the
+# autoscaler for it; it has to live in that namespace too.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+namespace: network-scan-executor
+
 resources:
-  - agent-deployment.yaml
   - agent-vpa.yaml

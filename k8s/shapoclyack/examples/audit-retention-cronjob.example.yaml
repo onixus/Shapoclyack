@@ -55,10 +55,17 @@ spec:
             app.kubernetes.io/component: audit-retention
         spec:
           restartPolicy: Never
+          # The hardened baseline of every workload in network-scan (#338,
+          # docs/k8s-hardening.md): no token, RuntimeDefault seccomp, read-only
+          # image. The sweep writes nothing to disk; /tmp is there for Python
+          # and libpq, not for anything this CLI asks of it.
+          automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
             runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: prune
               # Same image as the API — the CLI lives in the same package. Pin
@@ -92,6 +99,14 @@ spec:
                   memory: 512Mi
               securityContext:
                 allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
                 capabilities:
                   drop:
                     - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

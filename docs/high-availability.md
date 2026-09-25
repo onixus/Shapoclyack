@@ -2,10 +2,10 @@
 
 `k8s/shapoclyack/overlays/prod-ha` is the profile for an installation that must
 survive a node going away ([#335](https://github.com/onixus/Shapoclyack/issues/335)).
-It is a different overlay from `overlays/prod`, not a flag on it, because the
-two make opposite choices: `prod` pins one API replica to a scanner node so an
-RWO volume can be shared with the scan Jobs, and this one spreads replicas
-across nodes and therefore cannot.
+It is a different overlay from `overlays/prod`, not a flag on it: `prod` runs
+one API replica (it used to pin it to a scanner node, to share an RWO volume
+with the scan Jobs, until #338 moved scanning to the scanner-executor), and
+this one spreads replicas across nodes.
 
 This page is the prerequisite list and the honest boundary of what the overlay
 buys. **Rendered as-is the overlay is not appliable** — it carries three
@@ -406,15 +406,17 @@ Naming these is the point of the page.
   it is opt-in and this overlay does not enable it; the route port `:6222` has
   no TLS at all. Without that patch keep `:4222` and `:6222` on the cluster
   network.
-* **The scan Job and CronJob are unchanged, relative to `base`.** They are batch
-  work with their own retry semantics; running two of them is not availability.
-  Note that this overlay is **not** a superset of `overlays/prod`: it does not
-  carry that overlay's `hostNetwork: true` + `workload=scanner` patches for the
-  Job and CronJob. An installation moving from `prod` to `prod-ha` that scans
-  from the host network must copy `overlays/prod/job-hostnetwork-patch.yaml` and
-  `overlays/prod/cronjob-hostnetwork-patch.yaml` into `overlays/prod-ha/` and add
-  them to `patches:` — kustomize will not load a patch file from outside its
-  own root. Left out silently, the scan Jobs move to the pod network and return
+* **The scanner-executor is unchanged, relative to `base`: one replica.** A
+  scan is batch work with its own retry semantics — a job whose executor dies
+  goes back to the queue when its lease expires — so a second executor is
+  capacity, not availability; raise `replicas` for that (`overlays/agents`
+  runs three). Note that this overlay is **not** a superset of `overlays/prod`:
+  it does not carry that overlay's `hostNetwork: true` + `workload=scanner`
+  patch for the executor. An installation moving from `prod` to `prod-ha` that
+  scans from the host network must copy
+  `overlays/prod/executor-hostnetwork-patch.yaml` into `overlays/prod-ha/` and
+  add it to `patches:` — kustomize will not load a patch file from outside its
+  own root. Left out silently, the executor moves to the pod network and returns
   quieter results with no error.
 * **ClickHouse and the scan workload have no HPA.** Only the API scales.
 * **No ServiceMonitor, PrometheusRule or dashboards.** They need the Prometheus

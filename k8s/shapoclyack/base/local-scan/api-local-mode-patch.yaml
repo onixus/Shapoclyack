@@ -1,0 +1,29 @@
+# The API as it was before #338: it runs scanner.main itself, so its container
+# needs what the scanner-executor has — NET_RAW/NET_ADMIN in the bounding set
+# and allowPrivilegeEscalation: true, without which no_new_privs makes the
+# kernel ignore the file capabilities on naabu/pulse/nmap (the reasoning is in
+# base/scanner-executor/statefulset.yaml). Seccomp, the read-only image and the
+# rest of base's securityContext stay.
+#
+# And the all-in-one image: base runs the API image, which has no scanner to
+# run. overlays/api-readonly takes this component and sets its own image after
+# it, so it keeps the API image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+          env:
+            - name: OCTO_JOB_EXECUTION_MODE
+              value: local
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - NET_RAW
+                - NET_ADMIN

@@ -24,6 +24,11 @@ from scanner.pipeline.config_schema import (
     merge_pulse_config,
     resolve_service_probe_backend,
 )
+from scanner.pipeline.config_overlay import (
+    ConfigOverlayError,
+    apply_overlay as apply_config_overlay,
+    load_overlay as load_config_overlay,
+)
 from scanner.pipeline.discovery_profiles import apply_discovery_profile, resolve_discovery_profile_name
 from scanner.pipeline.contract import validate_inputs, read_promoted_domains
 from scanner.pipeline.discovery_runner import run_discovery_stage, verify_alive_without_ports
@@ -118,6 +123,17 @@ def parse_args() -> argparse.Namespace:
             "it starts; the rates, host concurrency and avoided ports in it are "
             "applied on top of --config and can only ever tighten it. Omitted for "
             "a standalone run, which then runs at whatever the config says."
+        ),
+    )
+    parser.add_argument(
+        "--config-overlay",
+        help=(
+            "Path to the job's config overlay (#338): the console's config "
+            "overrides and the scan intent's settings, sent by the API to a "
+            "remote executor. Merged onto --config before it is validated, and "
+            "held to the settings listed in scanner/pipeline/config_overlay.py; "
+            "--scan-policy is applied after it. Omitted for a local or "
+            "standalone run."
         ),
     )
     parser.add_argument(
@@ -227,17 +243,38 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         _STAGE_TIMER.reset(token)
 
 
-def _run_pipeline_body(
-    args: argparse.Namespace,
-    timer: StageTimer,
-    output_dirs: list[Path],
-) -> int:
+class _RunConfigError(Exception):
+    """The config this run was given cannot be run; the message is for stderr."""
+
+
+def _config_for_run(args: argparse.Namespace) -> tuple[AppConfig, str, str]:
+    """The config the run executes: ``(config, profile_name, discovery_preset)``.
+
+    The order is the contract, and one function holds it so a test can pin it
+    (tests/test_agent_config_overlay.py): the host's own file, then the job's
+    overlay (#338), then schema validation, the discovery preset and
+    ``--delta``, and the tenant's scan policy last (#362) — so neither the
+    console's overrides nor an intent can lift a rate above the ceiling.
+    """
     raw = load_yaml(Path(args.config))
+    overlay_path = getattr(args, "config_overlay", None)
+    if overlay_path:
+        # Refused whole rather than applied in part: a job that asked for
+        # nuclei off and ran it anyway is the defect this overlay exists to fix.
+        # The host's own file, validated first, is the limit for rates, timing,
+        # nuclei exclusions and screenshots (scanner/pipeline/config_overlay.py).
+        try:
+            host = load_config(raw)
+        except ValidationError as exc:
+            raise _RunConfigError(format_validation_error(exc)) from exc
+        try:
+            raw = apply_config_overlay(raw, load_config_overlay(Path(overlay_path)), host)
+        except ConfigOverlayError as exc:
+            raise _RunConfigError(str(exc)) from exc
     try:
         config: AppConfig = load_config(raw)
     except ValidationError as exc:
-        print(format_validation_error(exc), file=sys.stderr)
-        return exit_codes.CONFIG_ERROR
+        raise _RunConfigError(format_validation_error(exc)) from exc
 
     profile_name = args.mode or config.runtime.mode
     discovery_preset = resolve_discovery_profile_name(config.discovery, profile_name) or "custom"
@@ -259,8 +296,20 @@ def _run_pipeline_body(
         try:
             config = apply_scan_policy(config, load_scan_policy(Path(args.scan_policy)))
         except ScanPolicyError as exc:
-            print(str(exc), file=sys.stderr)
-            return exit_codes.CONFIG_ERROR
+            raise _RunConfigError(str(exc)) from exc
+    return config, profile_name, discovery_preset
+
+
+def _run_pipeline_body(
+    args: argparse.Namespace,
+    timer: StageTimer,
+    output_dirs: list[Path],
+) -> int:
+    try:
+        config, profile_name, discovery_preset = _config_for_run(args)
+    except _RunConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return exit_codes.CONFIG_ERROR
 
     profile = config.profiles[profile_name]
 

@@ -1,0 +1,33 @@
+# The API serves TLS itself, and the scanner-executor verifies it (#338 review).
+#
+#   components:
+#     - ../../base/api-tls
+#
+# Without it the executor talks to the API in plain HTTP across the cluster
+# network: the provisioning key on every exchange, the agent JWT on every call,
+# and every run's results on upload. docs/k8s-hardening.md § Traffic between
+# the executor and the API has the threat and why base does not do this by
+# default — it needs a certificate these manifests cannot ship.
+#
+# Prerequisites, both created before the apply:
+#
+#   * Secret `shapoclyack-api-tls` in network-scan (tls.crt, tls.key) — a server
+#     certificate naming shapoclyack-api.network-scan.svc. cert-manager's
+#     Certificate resource writes exactly this shape.
+#   * ConfigMap `shapoclyack-api-ca` in network-scan-executor, key `ca.crt` —
+#     the CA that issued it. A pod cannot mount a ConfigMap from another
+#     namespace, and the CA certificate is public material, so a ConfigMap
+#     rather than a Secret.
+#
+# Anything else that talks to the API Service — an ingress, a load balancer,
+# the Prometheus scrape — then has to speak HTTPS to it too (for ingress-nginx,
+# the `nginx.ingress.kubernetes.io/backend-protocol: HTTPS` annotation).
+#
+# overlays/kind-dev uses it, with the development CA scripts/dev-tls-cert.sh
+# issues.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: api-tls-patch.yaml
+  - path: executor-tls-patch.yaml
