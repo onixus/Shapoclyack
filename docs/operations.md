@@ -207,6 +207,24 @@ infer it from the fact that a scan was started.
   turn the probe into a TCP/53 connection inside the sensor's own network. The
   refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
   as `status: refused`.
+- **Only the checked address is dialled.** The probe speaks AXFR itself over
+  one TCP connection to the nameserver's first address — the IP literal that
+  passed the check above, IPv6 included — and resolves nothing. It does not go
+  through `dnsx`, whose `-axfr` looks up the zone's NS set on its own and
+  connects to addresses that were never checked, and it does not follow the NS
+  records or glue the zone hands back.
+- **Reading the result.** `status: open` means the nameserver sent zone data;
+  `records` counts the records between the opening and closing SOA, and a
+  non-null `reason` (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) marks the count as a lower bound.
+  `status: closed` is the server saying no: `rcode_refused`, `rcode_notauth`,
+  `rcode_formerr`, `rcode_notimp`, `rcode_nxdomain`, an empty answer
+  (`empty_answer`), a clean hang-up before any answer (`connection_closed`), or
+  an SOA…SOA transfer with nothing between (`soa_only`). `status: error` means
+  the nameserver could not be checked, not that it is closed: unreachable
+  (`connect_failed`, `timeout`, `connection_reset` — a reset may come from a
+  middlebox on the sensor's side), `rcode_servfail` or an unknown RCODE, or an
+  answer that started and broke off before any record past the SOA.
 - **A successful transfer is never written down.** `dns_hygiene.json` records
   only `status: open` and the number of records; the zone itself reaches neither
   the artifact directory nor `scan.log`. If you need the zone contents, transfer
@@ -626,6 +644,16 @@ Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,
 and report artifacts. Configure credentials only through secrets or environment
 injection. Test notification delivery with non-sensitive data before enabling
 production findings.
+
+## Sizing
+
+CPU, memory and volume sizes for N assets, M sensors and K scans a day — the
+model, a table for 1k / 10k / 50k assets, the measured coefficients behind it
+and how to re-measure them on your own stand — are in [sizing.md](sizing.md)
+([#337](https://github.com/onixus/Shapoclyack/issues/337)). Read it before
+choosing volume sizes: two Postgres tables grow with every scan and have no
+retention (`vulnerability_events`, `jobs`), and the JetStream volume has to
+hold what the streams *reserve*, not what they currently contain.
 
 ## Retention
 
@@ -1622,14 +1650,24 @@ readable by every local user on that host for as long as the process runs. The
 SSH push always uses it.
 
 With `--docker` it is a thin wrapper: it writes `/etc/shapoclyack/agent.env`
-(`0600`) and runs `ghcr.io/onixus/shapoclyack-scanner:latest` (override with
-`AGENT_IMAGE`) as the container `shapoclyack-agent` (`--restart always`, host
-network, `NET_RAW`/`NET_ADMIN`, `--env-file` pointing at that file, entrypoint
-`python -m agent`), then exits. The credential is in the env file rather than in `-e`
-arguments, which would be in the docker client's own argv.
+(`0600`) and runs the released scanner image, pinned as
+`ghcr.io/onixus/shapoclyack-scanner:<release tag>@sha256:<digest>` (override
+with `AGENT_IMAGE`; `--help` prints the current default), as the container
+`shapoclyack-agent` (`--restart always`, host network, `NET_RAW`/`NET_ADMIN`,
+`--env-file` pointing at that file, entrypoint `python -m agent`), then exits.
+The credential is in the env file rather than in `-e` arguments, which would be
+in the docker client's own argv. The console's `docker run`, Compose and
+Kubernetes snippets name the same pinned image (`SENSOR_IMAGE` in
+`api/services/agents.py`). Both are re-pinned with the `k8s/` manifests after
+each release is published, so an API built from a new tag keeps handing out the
+previous release's sensor until that pin lands.
 
 Without it, the native path installs Python and a virtualenv under
-`/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
+`/opt/shapoclyack-agent`, installs the sensor's Python dependencies into it from
+`requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
+with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
+not in the lock is refused, and only wheels are taken, which exist for x86_64 and
+aarch64 with glibc or musl — creates a `shapoclyack` system account, writes
 `/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
 systemd is present — installs and enables `shapoclyack-agent.service`
 (`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
@@ -1667,6 +1705,26 @@ that did nothing and exited 0 — forever, under `Restart=always`. The guard is
 there now, so both `python -m agent` and `python -m agent.worker` run the
 sensor, but the flags in an old unit are still wrong: **a sensor installed by an
 older installer needs a re-run of this one.**
+
+**A re-run keeps the sensor's ID.** An upgrade is a re-run of the installer,
+and without `--agent-id` the re-run takes `OCTO_AGENT_ID` from the existing
+`/etc/shapoclyack/agent.env` and says so (`Keeping agent ID …`), on the native
+and the `--docker` path alike. The file is parsed, never sourced: it holds the
+provisioning key and the installer runs as root. Installers before this one
+generated a fresh `agent-<host>-<random>` on every run, so every upgrade
+registered a second sensor. The old row stayed in the fleet view, went `stale`,
+was counted in `stale_agents` and was announced as `agent_offline`; its sensor
+group and any quarantine stayed with it, so the host came back as an
+ungrouped, `active` sensor that no longer took its group's jobs. Delete such
+leftovers with `DELETE /api/agents/{id}`, and leave `revoke_key` off unless you
+mean to retire that key: the sensor that replaced the row may hold the same one.
+
+Two cases do not reuse the ID. `--agent-id` always wins. An `agent.env`
+written for a different `--tenant` is ignored and a new ID is generated,
+because an ID stays bound to its tenant and revoking a key does not release it
+across tenants. A re-run with a *different provisioning key* keeps the ID and
+warns: see "Revoke before you re-provision" under
+[Sensor lifecycle](#sensor-lifecycle-disable-quarantine-deregister).
 
 ### Sensor groups: which sensor may execute which scan
 
@@ -1808,7 +1866,7 @@ they re-register.
 before this feature have `expires_at: null` and never expire** — nothing
 back-dates them, because stranding a fleet on a deadline nobody was told about
 is worse than a key that outlives its usefulness. Find them in that list,
-re-install the sensors against a fresh key, then revoke the old one.
+revoke the old one, then re-install the sensors against a fresh key.
 
 **Revoke before you re-provision, not after.** An `agent_id` is bound to the
 key it first registered with, so an exchange asking for that id under a
@@ -1816,7 +1874,11 @@ key it first registered with, so an exchange asking for that id under a
 is what stops one key's holder impersonating another key's sensor. Revoking the
 old key releases the id (and stops its live JWTs in the same move), after which
 the new key adopts the host under its own name. Re-provisioning first leaves
-the sensor unable to authenticate until you get to the revocation.
+the sensor unable to authenticate until you get to the revocation; it retries
+on its own and recovers once the old key is revoked. The installer keeps the
+sensor's ID across a re-run, so it warns when the key it is given differs from
+the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
+should register as a new sensor under the new key.
 
 ### SSH push deployment
 
@@ -2818,6 +2880,12 @@ since the API's enrichment initContainer runs the same script without the flag �
 leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
+**No egress, or only to internal mirrors?** Every feed has a `*_URL` mirror
+override, and an offline bundle (`make enrichment-bundle` on a connected host,
+loaded by the `overlays/airgap` CronJob) carries the datasets across; installed
+datasets report `origin: bundle`. The procedure — images, pull secret, mirrors,
+bundle, what stays unavailable — is [air-gap.md](air-gap.md).
+
 ## Upgrade and rollback
 
 > With `base` and `overlays/prod` there is a single API replica, so the probes
@@ -3082,6 +3150,19 @@ pod reaches all three. The datastores' kubelet probes kept passing, as the
 manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
+
+### Tenant row-level security (#311)
+
+Migration `0067_tenant_rls` creates the NOLOGIN role `shapoclyack_tenant` and a
+row-level-security policy on every tenant table; the API switches to that role
+for each transaction of a tenant-scoped request (`OCTO_TENANT_RLS=enforce`, the
+default). On the stock manifests (`octo`, a superuser) and on managed services
+whose master user has `CREATEROLE` there is nothing to do. A migration role
+without `CREATEROLE`, an API role separate from the migration role, the
+`audit_events` ownership split above, backup roles, the startup check that
+refuses a database which cannot enforce it, and how to read a denied row are in
+[tenant-isolation.md](tenant-isolation.md#operations). `OCTO_TENANT_RLS=off` and
+a restart is the kill switch; it needs no migration rollback.
 
 ## Data-plane credentials
 

@@ -110,7 +110,7 @@ The **Pulse** module is an external native binary probe engine developed in the 
    - `OCTO_SERVICE_BACKEND=nmap` (Legacy NSE fallback)
    - `OCTO_PULSE_SHADOW=1` (Shadow mode: runs both Pulse and Nmap, producing diff coverage artifact `diff_pulse_nmap.json`)
 
-Detailed usage, benchmark timings, and profile tuning are documented in [`docs/pulse-backend.md`](docs/pulse-backend.md).
+Detailed usage, benchmark timings, and profile tuning are documented in [`docs/pulse-backend.md`](docs/pulse-backend.md). Which Pulse a release ships, how its pin changes and how a customer verifies it are in [`docs/release-contract.md`](docs/release-contract.md); how Pulse is distributed at all is the proposed [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (#340).
 
 ---
 

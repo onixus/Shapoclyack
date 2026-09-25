@@ -53,6 +53,7 @@ from api.schemas import (
 from api.core import permissions as permission_catalog
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
 from api.core.security import DEFAULT_EXCHANGE_TTL_MINUTES
+from api.db import tenant_scope
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
 from api.routes._session_cookie import (
@@ -96,7 +97,15 @@ def _client_ip(request: Request, settings: Settings) -> str:
     )
 
 
-@router.post("/auth/login", response_model=LoginResponse)
+# Signing in, and everything else that establishes *who* is calling, runs
+# before there is a tenant to scope to; ``/auth/me`` then answers with every
+# tenant the caller belongs to. Declared per route rather than for the router,
+# because the tenant administration routes below resolve a tenant of their own
+# (#311).
+_AUTHENTICATION = [Depends(tenant_scope.cross_tenant("authentication"))]
+
+
+@router.post("/auth/login", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def login(
     body: LoginRequest,
     request: Request,
@@ -210,7 +219,7 @@ def login(
     )
 
 
-@router.post("/auth/refresh", response_model=LoginResponse)
+@router.post("/auth/refresh", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def refresh(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -293,7 +302,9 @@ def _refresh_refused(settings: Settings, detail: str) -> JSONResponse:
     return answer
 
 
-@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=_AUTHENTICATION
+)
 def logout(
     request: Request,
     user: Annotated[TokenUser | None, Depends(get_current_user_if_any)],
@@ -359,7 +370,11 @@ def logout(
     return answer
 
 
-@router.post("/auth/sessions/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/sessions/revoke-all",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_AUTHENTICATION,
+)
 def revoke_own_sessions(
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -415,7 +430,11 @@ def list_auth_events(
     return build_page([AuthEventInfo.model_validate(item) for item in items], total, params)
 
 
-@router.get("/auth/me", response_model=MeResponse)
+@router.get(
+    "/auth/me",
+    response_model=MeResponse,
+    dependencies=[Depends(tenant_scope.cross_tenant("the caller's own tenants"))],
+)
 def me(
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -500,7 +519,7 @@ def sso_status(settings: Annotated[Settings, Depends(get_settings)]) -> SsoStatu
     return SsoStatus.model_validate(oidc_service.public_config(settings))
 
 
-@router.get("/auth/oidc/login", response_model=OidcLoginResponse)
+@router.get("/auth/oidc/login", response_model=OidcLoginResponse, dependencies=_AUTHENTICATION)
 def oidc_login(
     settings: Annotated[Settings, Depends(get_settings)],
     redirect: Annotated[bool, Query(description="Send a 307 instead of JSON")] = True,
@@ -550,7 +569,7 @@ def _safe_next(value: str | None) -> str:
     return candidate[:512]
 
 
-@router.get("/auth/oidc/callback", response_model=LoginResponse)
+@router.get("/auth/oidc/callback", response_model=LoginResponse, dependencies=_AUTHENTICATION)
 def oidc_callback(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -702,7 +721,7 @@ def oidc_callback(
     return answer
 
 
-@router.post("/auth/agent/token", response_model=AgentTokenResponse)
+@router.post("/auth/agent/token", response_model=AgentTokenResponse, dependencies=_AUTHENTICATION)
 def agent_token(
     body: AgentTokenRequest,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -727,7 +746,7 @@ def agent_token(
     return AgentTokenResponse.model_validate(result)
 
 
-@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse)
+@router.post("/v1/auth/exchange", response_model=AuthExchangeResponse, dependencies=_AUTHENTICATION)
 def auth_exchange(
     body: AuthExchangeRequest,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -763,14 +782,18 @@ def _visible_tenants(user: TokenUser) -> list[dict]:
     the gate itself: somebody has to be able to look at, and lift, the state.
     """
     is_platform_admin = user.role == Role.admin
-    allowed = set(
-        memberships_service.tenants_for_user(
-            user.username, is_platform_admin=is_platform_admin
+    # The caller's own memberships, which span tenants by definition — the
+    # same lookup tenant resolution makes, and scoped the same way (#311).
+    with tenant_scope.system("the caller's own memberships"):
+        allowed = set(
+            memberships_service.tenants_for_user(
+                user.username, is_platform_admin=is_platform_admin
+            )
         )
-    )
+        tenants = tenants_service.list_tenants()
     return [
         tenant
-        for tenant in tenants_service.list_tenants()
+        for tenant in tenants
         if tenant["tenant_id"] in allowed
         and (is_platform_admin or tenant["status"] == "active")
     ]
@@ -793,12 +816,23 @@ def list_tenant_posture(
     user: Annotated[TokenUser, Depends(require_role(Role.operator))],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[TenantPosture]:
-    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``."""
+    """Per-tenant risk comparison for an MSSP (#139). Same tenant set as ``GET /tenants``.
+
+    The platform admin's comparison is one grouped read over the fleet. Anyone
+    else's is one read per tenant they belong to, each held to that tenant by
+    the database (#311): the grouped read filters by the membership list, and a
+    missing filter there would otherwise be every customer's posture.
+    """
     allowed = [tenant["tenant_id"] for tenant in _visible_tenants(user)]
-    return [
-        TenantPosture.model_validate(row)
-        for row in tenant_posture.list_posture(settings, tenant_ids=allowed)
-    ]
+    if user.role == Role.admin:
+        rows = tenant_posture.list_posture(settings, tenant_ids=allowed)
+    else:
+        rows = []
+        for tenant_id in allowed:
+            with tenant_scope.tenant(tenant_id):
+                rows.extend(tenant_posture.list_posture(settings, tenant_ids=[tenant_id]))
+        rows.sort(key=tenant_posture.posture_order)
+    return [TenantPosture.model_validate(row) for row in rows]
 
 
 @router.get("/tenants/{tenant_id}/members", response_model=list[MembershipInfo])

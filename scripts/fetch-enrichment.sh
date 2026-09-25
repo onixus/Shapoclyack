@@ -37,12 +37,24 @@
 # GeoIP source selection: MaxMind GeoLite2-City if MAXMIND_LICENSE_KEY is set
 # (more accurate, needs a free account), else DB-IP City Lite (no key).
 #
+# Mirrors and offline sites (#339): every feed below reads a *_URL override
+# (EPSS_URL, KEV_URL, GEOIP_URL, ASN_URL, NVD_API_URL, DEBIAN_TRACKER_URL,
+# UBUNTU_USN_URL, MSRC_CVRF_BASE_URL) and downloads through
+# scripts/feed_fetch.py, so OCTO_HTTPS_PROXY / OCTO_CA_BUNDLE apply. A site with
+# no mirror at all sets OCTO_ENRICHMENT_OFFLINE=true: no fetch is attempted, the
+# seed floor still applies, and the manifest keeps whatever origin each dataset
+# already had — typically `bundle`, from scripts/enrichment_bundle.py. Without
+# it every API rollout on an air-gapped cluster would spend its start-up on
+# connection timeouts and then demote the installed bundle to `stale`.
+# docs/air-gap.md is the whole procedure.
+#
 # Usage:
 #   ./scripts/fetch-enrichment.sh                    # → scanner/data/
 #   OCTO_ENRICHMENT_DIR=/data ./scripts/fetch-enrichment.sh
 #   MAXMIND_LICENSE_KEY=xxxx ./scripts/fetch-enrichment.sh
 #   OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 #   OCTO_NVD_CPE_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
+#   OCTO_ENRICHMENT_OFFLINE=true ./scripts/fetch-enrichment.sh   # floor + manifest only
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,6 +89,17 @@ advisory_fetch_enabled() {
 # different requests to different hosts, and an installation may allow one.
 nvd_cpe_fetch_enabled() {
   local raw="${OCTO_NVD_CPE_FETCH_ENABLED:-false}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The same parse again, for the air-gap switch (#339): no network at all.
+enrichment_offline() {
+  local raw="${OCTO_ENRICHMENT_OFFLINE:-false}"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   raw="${raw%"${raw##*[![:space:]]}"}"
   case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
@@ -149,6 +172,20 @@ for pair in \
     echo "seeded $dst from committed overlay"
   fi
 done
+
+if enrichment_offline; then
+  # Nothing is attempted, so nothing lands in `refreshed` or `failed`, and the
+  # manifest carries each dataset's origin, source and source URL forward —
+  # the same "this run did not try" case as the advisory opt-in below.
+  echo "==> OCTO_ENRICHMENT_OFFLINE: no feed is fetched; seed floor and manifest only"
+  python3 "$ROOT/scripts/enrichment_manifest.py" --dir "$DEST"
+  status=$?
+  case $status in
+    0|1) echo "Offline: the enrichment data under $DEST is what the last refresh or bundle left" ;;
+    *) echo "A required enrichment dataset under $DEST has no usable data (see the manifest above) — load a bundle (docs/air-gap.md)" >&2 ;;
+  esac
+  exit $status
+fi
 
 # Always write to the same filename regardless of provider, so
 # enrichment.geoip.database / OCTO_GEOIP_DATABASE can point at a stable path
@@ -241,9 +278,21 @@ fi
 #      data (a warning: a foreign server being down must not fail a build)
 #   2  a required dataset is missing or is a demo stub — the risk model would
 #      be scoring blind, which is what a release build has to refuse (#246)
+# The .mmdb files have no envelope to record where they came from, so the
+# mirror (or the provider's download host) is passed in; the manifest redacts it.
+geoip_origin="${GEOIP_URL:-}"
+asn_origin="${ASN_URL:-}"
+if [[ "$MMDB_PROVIDER" == "maxmind" ]]; then
+  geoip_origin="${geoip_origin:-https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City}"
+  asn_origin="${asn_origin:-https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN}"
+else
+  geoip_origin="${geoip_origin:-https://download.db-ip.com/free/}"
+  asn_origin="${asn_origin:-https://download.db-ip.com/free/}"
+fi
 python3 "$ROOT/scripts/enrichment_manifest.py" --dir "$DEST" \
   --refreshed "$refreshed" --failed "$failed" \
-  --source "geoip=$MMDB_PROVIDER" --source "asn=$MMDB_PROVIDER"
+  --source "geoip=$MMDB_PROVIDER" --source "asn=$MMDB_PROVIDER" \
+  --origin-url "geoip=$geoip_origin" --origin-url "asn=$asn_origin"
 status=$?
 
 case $status in

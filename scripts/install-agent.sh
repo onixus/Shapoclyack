@@ -16,6 +16,12 @@ USE_DOCKER=0
 KEY_FROM_STDIN=0
 NATS_URL=""
 BUNDLE_URL="${BUNDLE_URL:-}"
+# The image --docker runs: the released scanner image, pinned as tag@digest
+# like the k8s/ manifests, because the tag is a name its owner can move and
+# the container restarts for good. The release re-pins it along with them and
+# with SENSOR_IMAGE in api/services/agents.py, which the console's deployment
+# snippets print (tests/test_agent_install_pins.py keeps the two equal).
+AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922@sha256:7eb82c8dab4071517ee7af8825bb8df58d7706afac4eb6e1da6ca4759f44fa66}"
 
 log() {
     echo -e "\033[1;34m[INFO]\033[0m $*"
@@ -43,7 +49,10 @@ Required:
 
 Options:
   -t, --tenant <TENANT_ID>      Tenant ID (default: default)
-  -a, --agent-id <ID>           Explicit Agent ID (defaults to hostname-hash)
+  -a, --agent-id <ID>           Explicit Agent ID (default: the one in
+                                /etc/shapoclyack/agent.env from an earlier
+                                install for the same tenant, otherwise
+                                agent-<short hostname>-<random>)
   -d, --install-dir <PATH>      Installation root directory (default: /opt/shapoclyack-agent)
       --docker                  Deploy agent as a Docker container
       --nats-url <URL>          Optional NATS JetStream server URL
@@ -52,6 +61,10 @@ Options:
                                 is already staged in the install directory: the
                                 Shapoclyack API does not serve one.
   -h, --help                    Show this help message
+
+Environment:
+  AGENT_IMAGE                   Image --docker runs; currently
+                                ${AGENT_IMAGE}
 EOF
     exit 0
 }
@@ -124,18 +137,60 @@ fi
 
 SERVER_URL="${SERVER_URL%/}"
 
-if [[ -z "${AGENT_ID}" ]]; then
-    HOST_SHORT=$(hostname -s 2>/dev/null || echo "agent")
-    RAND_SUFFIX=$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || echo "$$")
-    AGENT_ID="agent-${HOST_SHORT}-${RAND_SUFFIX}"
-fi
-
-log "Installing Shapoclyack Agent (${AGENT_ID}) for tenant '${TENANT_ID}' connecting to ${SERVER_URL}..."
-
 # Check root privileges
+#
+# Before the agent ID is chosen, because that starts from an earlier install's
+# agent.env, which is 0600 and unreadable to anyone else.
 if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root (or via sudo)."
 fi
+
+# The last value of one variable in an existing agent.env, or nothing.
+#
+# Parsed rather than sourced: the file holds the provisioning key, the native
+# path hands it to the account the sensor runs as, and this runs as root, so
+# sourcing it would run whatever that account wrote into it.
+env_file_value() {
+    local value=""
+    if [[ -r "${CONF_DIR}/agent.env" ]]; then
+        value=$(sed -n "s/^[[:space:]]*$1=//p" "${CONF_DIR}/agent.env" 2>/dev/null | tail -n 1) || true
+    fi
+    printf '%s' "${value%$'\r'}"
+}
+
+# A re-run on a host that already has a sensor is how that sensor is upgraded,
+# so it keeps the ID it registered under. A fresh one would register a second
+# sensor, leave the first stale in the fleet view (and announced as
+# agent_offline), and drop the group an operator had put it in.
+if [[ -z "${AGENT_ID}" ]]; then
+    AGENT_ID=$(env_file_value OCTO_AGENT_ID)
+    PREVIOUS_TENANT=$(env_file_value OCTO_TENANT_ID)
+    if [[ -n "${AGENT_ID}" && -n "${PREVIOUS_TENANT}" && "${PREVIOUS_TENANT}" != "${TENANT_ID}" ]]; then
+        # An ID is bound to its tenant, and revoking a key does not release it
+        # across tenants, so keeping it would be refused until the other
+        # tenant deletes the row. Moving tenants makes a new sensor.
+        log "Not reusing agent ID ${AGENT_ID}: ${CONF_DIR}/agent.env is for tenant '${PREVIOUS_TENANT}'."
+        AGENT_ID=""
+    fi
+    if [[ -n "${AGENT_ID}" ]]; then
+        log "Keeping agent ID ${AGENT_ID} from ${CONF_DIR}/agent.env (pass --agent-id to change it)."
+        PREVIOUS_KEY=$(env_file_value OCTO_AGENT_PROVISIONING_KEY)
+        if [[ -n "${PREVIOUS_KEY}" && "${PREVIOUS_KEY}" != "${PROVISIONING_KEY}" ]]; then
+            warn "The provisioning key differs from the one ${AGENT_ID} was installed with.
+  The API refuses this ID under a new key while the previous key is active:
+  revoke that key (the sensor then authenticates on its next retry), or pass
+  --agent-id to register this host as a new sensor. See docs/operations.md,
+  'Revoke before you re-provision'."
+        fi
+        unset PREVIOUS_KEY
+    else
+        HOST_SHORT=$(hostname -s 2>/dev/null || echo "agent")
+        RAND_SUFFIX=$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || echo "$$")
+        AGENT_ID="agent-${HOST_SHORT}-${RAND_SUFFIX}"
+    fi
+fi
+
+log "Installing Shapoclyack Agent (${AGENT_ID}) for tenant '${TENANT_ID}' connecting to ${SERVER_URL}..."
 
 # Environment file
 #
@@ -164,6 +219,46 @@ EOF
     chmod 0600 "${CONF_DIR}/agent.env"
 }
 
+# The native sensor's Python dependencies: requirements-agent.lock, verbatim.
+# A copy rather than a download because `curl … | bash` brings no other file
+# to the host, and fetching one would be a second thing to trust.
+# tests/test_agent_install_pins.py runs this function and compares what it
+# writes with the lock byte for byte; after regenerating the lock (see
+# requirements-agent.txt), paste it over the text between the LOCK lines.
+write_agent_lock() {
+    cat <<'LOCK' > "$1"
+# This file was autogenerated by uv via the following command:
+#    uv pip compile --universal --no-strip-extras --generate-hashes --python-version=3.11 --output-file=requirements-agent.lock requirements-agent.txt
+nats-py==2.15.0 \
+    --hash=sha256:6622c547d9a7d2313d9c147d46c386188f4ec2c7b5c9f9a0438a4d1b55f54a93 \
+    --hash=sha256:9f8d36aa52a9926a88b8f1d70cf1fdce0ad387941479b500ee9ab3e51073cefd
+    # via -r requirements-agent.txt
+psutil==7.2.2 \
+    --hash=sha256:0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372 \
+    --hash=sha256:076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9 \
+    --hash=sha256:11fe5a4f613759764e79c65cf11ebdf26e33d6dd34336f8a337aa2996d71c841 \
+    --hash=sha256:1a571f2330c966c62aeda00dd24620425d4b0cc86881c89861fbc04549e5dc63 \
+    --hash=sha256:1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979 \
+    --hash=sha256:1fa4ecf83bcdf6e6c8f4449aff98eefb5d0604bf88cb883d7da3d8d2d909546a \
+    --hash=sha256:2edccc433cbfa046b980b0df0171cd25bcaeb3a68fe9022db0979e7aa74a826b \
+    --hash=sha256:7b6d09433a10592ce39b13d7be5a54fbac1d1228ed29abc880fb23df7cb694c9 \
+    --hash=sha256:8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee \
+    --hash=sha256:917e891983ca3c1887b4ef36447b1e0873e70c933afc831c6b6da078ba474312 \
+    --hash=sha256:ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b \
+    --hash=sha256:ae0aefdd8796a7737eccea863f80f81e468a1e4cf14d926bd9b6f5f2d5f90ca9 \
+    --hash=sha256:b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e \
+    --hash=sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc \
+    --hash=sha256:c7663d4e37f13e884d13994247449e9f8f574bc4655d509c3b95e9ec9e2b9dc1 \
+    --hash=sha256:e452c464a02e7dc7822a05d25db4cde564444a67e58539a00f929c51eddda0cf \
+    --hash=sha256:e78c8603dcd9a04c7364f1a3e670cea95d51ee865e4efb3556a3a63adef958ea \
+    --hash=sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988 \
+    --hash=sha256:ed0cace939114f62738d808fdcecd4c869222507e266e574799e9c0faa17d486 \
+    --hash=sha256:eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00 \
+    --hash=sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8
+    # via -r requirements-agent.txt
+LOCK
+}
+
 # Docker Deployment Mode
 if [[ "${USE_DOCKER}" -eq 1 ]]; then
     log "Setting up Docker-based agent deployment..."
@@ -180,7 +275,7 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
     # --env-file rather than -e: a -e assignment is an argument of the docker
     # client, so the key would be in this host's process list every time the
     # container is (re)created.
-    log "Starting Docker container '${CONTAINER_NAME}'..."
+    log "Starting Docker container '${CONTAINER_NAME}' from ${AGENT_IMAGE}..."
     docker run -d \
         --name "${CONTAINER_NAME}" \
         --restart always \
@@ -189,7 +284,7 @@ if [[ "${USE_DOCKER}" -eq 1 ]]; then
         --cap-add NET_ADMIN \
         --env-file "${CONF_DIR}/agent.env" \
         --entrypoint python \
-        "${AGENT_IMAGE:-ghcr.io/onixus/shapoclyack-scanner:latest}" \
+        "${AGENT_IMAGE}" \
         -m agent
 
     log "Docker agent container '${CONTAINER_NAME}' started successfully!"
@@ -225,12 +320,20 @@ chown -R shapoclyack:shapoclyack "${INSTALL_DIR}"
 # Create Python Virtual Environment
 log "Setting up virtual environment in ${INSTALL_DIR}/venv..."
 python3 -m venv "${INSTALL_DIR}/venv"
-"${INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet pip setuptools wheel
 
-# Fetch agent bundle or install dependencies
-log "Installing agent requirements..."
-if ! "${INSTALL_DIR}/venv/bin/pip" install --quiet fastapi httpx pydantic psutil requests; then
-    error "Failed to install agent dependencies into ${INSTALL_DIR}/venv."
+# Only what the lock names, only the files it hashes: --require-hashes refuses
+# a file whose sha256 is not listed and a dependency that is not pinned there,
+# and --only-binary stops pip building an sdist, whose build requirements it
+# would fetch with no hash check at all. pip itself stays the one the venv
+# came with; upgrading it from PyPI first would be the one unchecked install.
+log "Installing sensor dependencies from the hash-pinned lock..."
+write_agent_lock "${INSTALL_DIR}/requirements-agent.lock"
+if ! "${INSTALL_DIR}/venv/bin/pip" install --quiet --disable-pip-version-check \
+        --require-hashes --only-binary :all: \
+        -r "${INSTALL_DIR}/requirements-agent.lock"; then
+    error "Failed to install the sensor dependencies into ${INSTALL_DIR}/venv.
+  Each file is checked against ${INSTALL_DIR}/requirements-agent.lock, and
+  only wheels are accepted: x86_64 and aarch64, glibc or musl."
 fi
 
 # Obtain the agent package
@@ -330,5 +433,6 @@ fi
 log "================================================================="
 log "Shapoclyack Agent ${AGENT_ID} installed."
 log "Connecting to ${SERVER_URL}. Confirm it appears in the agent fleet view;"
-log "the host has no self-update mechanism, so upgrades are a reinstall."
+log "the host has no self-update mechanism, so upgrades are a reinstall,"
+log "which keeps this agent ID."
 log "================================================================="

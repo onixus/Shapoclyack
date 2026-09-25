@@ -6,6 +6,139 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Postgres row-level security behind every tenant predicate
+  ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
+  isolation in the database was the `WHERE tenant_id` of each query and nothing
+  else. Migration `0067_tenant_rls` puts a restrictive policy on every table
+  with a `tenant_id` (52 today, plus `asset_tags` and #325's
+  `tenant_deletion_steps`, each held to its parent row's tenant) that applies
+  to one new NOLOGIN role,
+  `shapoclyack_tenant`; every transaction of a tenant-scoped request — a console
+  user's, a **service token's** (pinned at authentication, so a `require_role`
+  route it reaches is held to its tenant too) or a **sensor's** — switches to
+  that role with `SET LOCAL` and names its tenant, so a query that forgot its
+  predicate reads only that tenant's rows and cannot write another's. Applied
+  per transaction, not per session, and transaction-local, so nothing survives a
+  commit or reaches the next user of a pooled connection. A role rather than a
+  bypass flag because the shipped manifests connect as a superuser, which
+  bypasses row security — this works on them unchanged. Workers, CLI tools,
+  authentication and platform-admin requests keep the connecting role and see
+  what they saw, and so do the tenant purge, the scrape-time metrics and the
+  login-trail prune (which keeps whatever any held tenant names) wherever they
+  are called from; a request that touches a tenant table before any guard said
+  whose it is fails loudly — including a non-admin behind a global role gate.
+  `OCTO_TENANT_RLS=enforce` is the default and refuses to start on a database
+  that cannot enforce it; `off` is the kill switch (a restart, no migration
+  rollback). The migration needs `CREATEROLE`, which the stock `octo` and
+  managed-service master users have (CloudNativePG's `app` does not: a DBA
+  creates the role first). It locks one table at a time, each in its own
+  transaction under a 5 s `lock_timeout`, so a long transaction makes it fail
+  fast and the rollout retry it rather than stall traffic; a table another role
+  owns (`audit_events` after the recommended ownership split) is left to that
+  owner with the statements logged, and `enforce` names it until they run.
+  **`GET /api/system` no longer counts endpoint devices across tenants** for
+  callers without `platform.fleet.read`: like the tenant and agent counts, they
+  are nulls. The grants for split roles, PostgreSQL 14/15, the diagnostics and
+  the reasoning are in
+  [docs/tenant-isolation.md](docs/tenant-isolation.md). A new
+  `tests/test_route_tenant_guards.py` fails for any route with neither a tenant
+  guard nor a reviewed, reasoned allowlist entry; a later migration that adds a
+  tenant table without its policy fails `tests/test_tenant_rls.py`.
+- **Release contract, a proposed Pulse distribution decision, and a customer
+  check of the Pulse binary in an image**
+  ([#340](https://github.com/onixus/Shapoclyack/issues/340)).
+  [docs/release-contract.md](docs/release-contract.md) states what a release
+  ships and the Pulse support and update policy: one pinned Pulse per release,
+  new pins only from signed GenDec releases, a bump announced as a
+  scan-semantics change, Pulse vulnerabilities reported through SECURITY.md on
+  its timelines, how a backport keeps `latest` on the current line, and no
+  silent fallback when Pulse is absent. It also says what `Jenkinsfile.publish`
+  does not enforce yet: signatures (#313), immutable tags, and `latest` on a
+  backport. [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (new
+  `docs/adr/`) compares public signed releases, a source build path and a
+  default without Pulse, and recommends the first; its status is *Proposed*
+  until the owner decides. Images now carry an install record,
+  `/usr/local/share/shapoclyack/pulse-install.txt` (written by
+  `scripts/install-pulse.sh` when `PULSE_RECORD` is set, which the Dockerfiles
+  do), naming the tarball, the check it passed and the binary's SHA-256; the
+  record is unsigned, so against deliberate tampering it is only as good as the
+  image digest that was checked. The Dockerfiles' `pulse-bin` stage now fills
+  `/out/bin` and `/out/share`, copied by one `COPY` each. New
+  `scripts/verify-pulse-image.py` (Python 3.9+) checks an image — `docker
+  create` + `cp`, never started, removed with its anonymous volumes, and named
+  by the image ID and repository digest the engine resolved — or an unpacked
+  filesystem against the pin file of its release tag. With `--tarball` it
+  checks independently: the tarball is read once, must be pinned before it is
+  parsed, and its `pulse` member is hashed in memory. It refuses symlinks and
+  ambiguous archives, and an unreadable input is exit 2, not a verdict. The
+  Jenkins smoke stage runs it inside the built image, and the Pulse version
+  drift test now also covers `.github/workflows/docker-publish.yml`. Images of
+  `shapoclyack-0.46-0922` and earlier have no record and can be checked only
+  with `--tarball`, which today needs GenDec access.
+- **Sizing model: N assets / M sensors / K scans a day → CPU, memory, volumes**
+  ([#337](https://github.com/onixus/Shapoclyack/issues/337)).
+  [docs/sizing.md](docs/sizing.md) gives requests, limits and volume sizes for
+  the API, sensors, Postgres, ClickHouse, NATS and the run artifacts at 1k /
+  10k / 50k assets, the formulas behind them and the measured coefficients.
+  `tests/fixtures/scale_measure.py` measures those by driving the product's
+  own code over the `scale_seed` estate — the report stage, the run
+  projection, the results gateway and ClickHouse transform, `python -m api`
+  under the `api_latency` probe, Lariska snapshots — and
+  `tests/fixtures/scale_sizing.py` turns them into the table, so a stand
+  re-measures and regenerates it instead of trusting the sandbox's numbers.
+  The harness refuses a database or ClickHouse that holds any other tenant's
+  data. `stage_timings.json` now also records the scan's CPU-seconds and peak
+  RSS, its own and its tools' (`resources`), which is what sizes a sensor from
+  real runs (`scale_measure runs-dir`). Measuring surfaced limits the doc
+  details: the shipped `nats.conf` (`max_file: 4G`) cannot hold the 11 GiB the
+  API's streams reserve, so the bus fails to start wherever NATS is enabled
+  with it; an ingest message over NATS's default 1 MiB `max_payload` is
+  refused, which with the measured archive sizes keeps runs of more than about
+  1 900 hosts out of ClickHouse; `vulnerability_events` and `jobs` grow with
+  every scan and have no retention; ClickHouse's `system.*_log` tables have no
+  TTL. A stand's table prints `n/m` for what it did not measure unless
+  `--fill-from-sandbox` fills it, marked; `scale_measure purge` removes the
+  harness's rows; the writing steps need `--i-own-database NAME`.
+- **Air-gapped installations: feed mirrors, an offline enrichment bundle, pull
+  secrets** ([#339](https://github.com/onixus/Shapoclyack/issues/339)). Every
+  enrichment feed can now be pointed at an internal mirror — `EPSS_URL`,
+  `KEV_URL`, `GEOIP_URL`, `ASN_URL`, `NVD_API_URL` (CVSS v4 and the NVD CPE
+  ranges), `DEBIAN_TRACKER_URL`, `UBUNTU_USN_URL`, `MSRC_CVRF_BASE_URL` (the
+  index's month URLs are rebased onto it, and a month on any other host is
+  skipped), `EXPLOITDB_CSV_URL`, `METASPLOIT_MODULES_URL`, `VULSCAN_BASE_URLS` —
+  read by the scripts and the in-process fetchers alike, and every download
+  goes through the egress settings of #359 (`OCTO_HTTPS_PROXY` /
+  `OCTO_CA_BUNDLE`), refusing an `https`→`http` redirect, holding its
+  deadline during a trickling read, never sending `NVD_API_KEY` over plain
+  `http`, and recording its source without credentials. Where there is no mirror at all, `make
+  enrichment-bundle` refreshes every feed on a connected host into one
+  deterministic tarball with a manifest (per-file sha256, size, source URL,
+  data date, schema version), and `scripts/enrichment_bundle.py install` loads
+  it: regular files at whitelisted dataset paths only, every size and hash
+  checked against the manifest, a metered stream that stops a compression bomb
+  at what it declared, content checked (a usable dataset is never replaced by
+  a stub, a `.mmdb` must open in the MaxMind reader, a bundle older than the
+  installed one needs `--allow-older` and one dated in the future is refused),
+  and an atomic, fsynced, journaled swap that a crash rolls back — or, with a
+  journal it cannot trust, stops without touching anything. An optional pin
+  (`OCTO_ENRICHMENT_BUNDLE_SHA256`, a ConfigMap in the overlay) installs only
+  the bundle with that checksum; without it, write access to the inbox is the
+  trust boundary. Installed files keep the age they had on the connected side,
+  and a dataset that was stale there stays `source_origin: stale` here. The
+  `overlays/airgap` overlay rewrites images to an internal registry, puts the
+  pull secret on every pod, and adds `base/enrichment-bundle`: a hardened
+  loader CronJob reading an inbox volume (a no-op run reads only the bundle's
+  manifest), the online refresh suspended, and the API's cold-start refresh
+  run with the new `OCTO_ENRICHMENT_OFFLINE`, which waits for an install in
+  progress. Installed datasets report `origin: bundle`, and `GET /api/system`
+  gains `enrichment_bundle` (id, built/installed times), `source_origin` and
+  the MSRC dataset. The `scanner` and `api` ServiceAccounts carry
+  `imagePullSecrets` (`shapoclyack-registry`, a placeholder). `fetch-nuclei-templates.sh` takes
+  templates from a git mirror pinned by commit (`NUCLEI_TEMPLATES_REPO` /
+  `_REF` / `_COMMIT`) without asking nuclei to update, and the scanner now runs
+  naabu and dnsx, as it already ran nuclei, with `-disable-update-check`: each
+  invocation used to attempt an update check against the internet. The
+  procedure is [docs/air-gap.md](docs/air-gap.md).
 - **Sensor fleet, connection pool, process and opt-in per-tenant series on
   `/metrics`, with Grafana dashboards and opt-in monitoring components**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). Sensor and
@@ -449,6 +582,70 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- **Re-running the sensor installer keeps the sensor's ID.**
+  `scripts/install-agent.sh` generated a fresh `agent-<host>-<random>` on
+  every run and never read the existing `/etc/shapoclyack/agent.env`, and an
+  upgrade is a re-run, so every upgrade of a native or `--docker` sensor
+  registered a second sensor. The old row stayed in the fleet view as `stale`,
+  counted in `stale_agents`, was announced as `agent_offline`, and kept the
+  sensor group and any quarantine, so the host came back ungrouped and
+  `active`. Without `--agent-id`, the installer now keeps `OCTO_AGENT_ID` from
+  that file and logs it. The file is parsed with `sed`, not sourced. It is
+  not reused when it was written for a different `--tenant`. The installer
+  warns when the provisioning key has changed, since the API refuses the ID
+  under a new key until the old key is revoked. The root check now runs
+  before the ID is chosen, because the file is `0600`. Leftover rows from
+  earlier upgrades have to be deleted by hand
+  ([docs/operations.md](docs/operations.md#sensor-installation-and-upgrade)).
+- **The sensor deployment snippets run an image that exists, and pin it.** The
+  console's `docker run`, Compose and Kubernetes snippets named
+  `ghcr.io/onixus/shapoclyack:latest`, a repository the release has never
+  published, so the pull failed. They, and the `--docker` default of
+  `scripts/install-agent.sh` (also what the SSH push deploys), now run the
+  released scanner image as `tag@sha256:…` (`SENSOR_IMAGE` in
+  `api/services/agents.py`), re-pinned with `k8s/` each release. With that
+  image the `docker run` and Compose snippets also had to replace its
+  `scanner.main` entrypoint instead of passing `python -m agent` to the scanner
+  as arguments, and all three now grant `NET_RAW`/`NET_ADMIN`: without
+  `NET_ADMIN` naabu's exec fails with EPERM, and in a Kubernetes pod with
+  `allowPrivilegeEscalation: false` it silently drops to a connect scan.
+- **The native sensor install is hash-pinned.** `install-agent.sh` without
+  `--docker` used to upgrade pip, setuptools and wheel from PyPI and install
+  `fastapi httpx pydantic psutil requests` unpinned — packages the sensor does
+  not import, while `nats-py`, which it needs for `OCTO_NATS_URL`, was missing.
+  It now installs `requirements-agent.lock` (`nats-py`, `psutil`, compiled from
+  `requirements-agent.txt`) with `--require-hashes --only-binary :all:`, from a
+  copy inside the script, and leaves the venv's own pip alone. Wheels exist
+  for x86_64 and aarch64, glibc and musl.
+- **The AXFR probe dialled addresses nobody checked, and reported refusals as
+  open zones.** With `org_profile.dns_hygiene.axfr_probe` on (off by default)
+  the probe checked a nameserver's address with `safe_http.is_public_address`
+  and then passed it to `dnsx -axfr -resolver <addr>:53`. dnsx 1.2.3 does not
+  stay on that address: it asks it for the zone's NS set, resolves those names
+  through it and attempts AXFR over TCP/53 against every answer before trying
+  the checked address itself, over UDP, which real servers refuse. The scanned
+  party writes its own NS answers, so it could steer the sensor into TCP/53
+  connections inside the sensor's network — exactly what the check exists to
+  prevent — and whatever those addresses returned was attributed to the
+  checked nameserver. Under `-json` dnsx also prints a line for a fully refused
+  transfer, which was counted as one record: practically every reachable
+  nameserver came out `open` with a critical `axfr_open` finding, and a real
+  transfer (`axfr.chain[].all` in 1.2.3) was counted as one record as well.
+  An IPv6-only nameserver was handed over as `2001:500:8f::53:53`, which dnsx
+  reads as a different IPv6 host, so it was never reached and came out
+  `closed`; bracketing it for dnsx (#474) fixed that address but none of the
+  above, and is superseded here.
+  The probe now speaks AXFR itself (RFC 5936, stdlib only) over one TCP
+  connection to the checked IP literal, IPv6 included, and counts the records
+  between the opening and closing SOA. A refusal (`REFUSED`, `NOTAUTH`,
+  `FORMERR`, `NOTIMP`, `NXDOMAIN`), an empty answer or a clean hang-up before
+  any answer is `closed` with the reason (`rcode_refused`, `empty_answer`,
+  `connection_closed`, …). A transfer cut short after zone data is still
+  `open`, with a reason (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) and the count as a lower bound.
+  An unreachable nameserver, a reset, `SERVFAIL` or an answer that broke off
+  before any record is `error`, not `closed`. `axfr_open` findings from runs
+  before this release are unreliable: re-run before acting on them.
 
 ## [0.46-0922] — 2026-09-22
 
