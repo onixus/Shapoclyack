@@ -220,7 +220,8 @@ spec:
         # Sized so that a full disk evicts this pod rather than filling the
         # node. agent/worker.py removes a run from output/ and state/ once the
         # API has its result (or declined it), so what is here is the scan in
-        # progress and any run whose upload failed; OCTO_AGENT_KEEP_RUNS=1
+        # progress and any run whose upload failed (removed before a re-queued
+        # attempt of the same run is scanned here); OCTO_AGENT_KEEP_RUNS=1
         # would keep every run until the pod goes. A restart empties both, and
         # a scan cut short by one goes back to the queue when its lease
         # expires. With the runs gone there is no local baseline either: delta

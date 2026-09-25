@@ -1181,6 +1181,14 @@ def _execute_job(
     if (beat or {}).get("cancel_requested"):
         LOG.warning("Job %s was cancelled before the scan started", job["job_id"])
         cancel_event.set()
+    # A job handed out again keeps its run id, so a run already on disk under
+    # it is an earlier attempt of this job whose upload failed here (or one
+    # kept by --keep-runs). The scanner is not resumed: it would write into
+    # that directory, and every file the new attempt does not overwrite — a
+    # stage it skips or has not reached — would go up in its archive as this
+    # attempt's result. Removed even with --keep-runs, which keeps finished
+    # runs, not a directory the same run is about to be scanned into.
+    _discard_run(output_dir, _scanner_state_dir(config), str(job["run_id"]))
     with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
         workdir = Path(tmp)
         if cancel_event.is_set():

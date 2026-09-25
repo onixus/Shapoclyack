@@ -142,7 +142,9 @@ All notable changes to Shapoclyack are documented in this file.
   in-cluster scanner-executor filled its `emptyDir` and was evicted with the
   next scan half done. The run's output and state directories are now deleted
   after the upload is accepted or answered `409` (already being ingested,
-  declined); a failed upload keeps them. The run id is held to one path
+  declined); a failed upload keeps them until the re-queued job (same run
+  id) comes back to that sensor, when they are removed before the scan so the
+  new attempt's archive cannot carry the old one's files. The run id is held to one path
   segment and a run directory that resolves outside `runs/` is left alone.
   Delta discovery and the scanner's report diff on a sensor no longer find the
   previous run, so a delta scan there covers the whole scope;

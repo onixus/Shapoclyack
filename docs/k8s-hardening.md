@@ -690,7 +690,12 @@ For an installation moving from a pre-#338 release:
   `strategy: Recreate`: unpinned, a surging rollout would schedule the new pod
   on another node, where the ReadWriteOnce `scanner-data` cannot attach while
   the old pod holds it, and stall. Every rollout of it is a short outage of the
-  console and API; executors keep scanning and retry their uploads.
+  console and API. Executors keep scanning, but an upload that meets the
+  outage is only retried twice within a few seconds: after that the run stays
+  on the executor, and the job goes back to the queue when its lease lapses
+  (`OCTO_JOB_LEASE_SECONDS`) and is scanned again — up to
+  `OCTO_JOB_MAX_ATTEMPTS` hand-outs, then it fails. Roll the API when no scan
+  is finishing, or accept the re-scan.
 - **`overlays/agents` scales the executor** instead of deploying its own
   `shapoclyack-agent` Deployment, which — having no namespace — landed in
   whatever namespace the kubeconfig pointed at. Delete the old Deployment and
@@ -712,6 +717,10 @@ For an installation moving from a pre-#338 release:
   with) after the API accepted the upload, or answered `409` — the result is
   already being ingested from an earlier copy, or was declined. A failed upload
   keeps both on disk, and the job goes back to the queue when its lease lapses.
+  The re-queued job keeps its run id, so if it comes back to the same sensor
+  the kept copy is removed before the scan starts — the scanner is not
+  resumed, and would otherwise send up the old attempt's files with the new
+  one's.
   Before this every run stayed: the executor's `output` `emptyDir` filled and
   evicted the pod with the next scan half done, and a systemd-installed sensor
   grew without bound. Two things read the previous run from that directory and
