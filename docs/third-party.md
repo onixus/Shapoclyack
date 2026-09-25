@@ -78,9 +78,11 @@ token; that image has no service-probe backend of its own and must be run with
 the run with an explicit error rather than scanning without services.
 
 Whether to publish GenDec's binary releases publicly (with the SBOM already
-being built) or to vendor the sources into this repository is an open decision,
-tracked in #340; until it is taken, a customer's supply-chain review of the
-default image ends at a repository they cannot read.
+being built) or to build the sources here is the proposed
+[ADR 0001](adr/0001-pulse-distribution-model.md) (#340), awaiting the owner's
+decision; until it is taken, a customer's supply-chain review of the default
+image ends at a repository they cannot read. What a customer can already check,
+and how, is in the [release contract](release-contract.md#what-a-customer-can-verify-and-how).
 
 **Vulscan's CVE databases no longer come from computec.ch.** Vulscan's own
 `update.sh` downloads its eight CSV databases from `www.computec.ch`, which now
