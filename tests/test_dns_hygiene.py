@@ -246,7 +246,26 @@ def test_axfr_refuses_a_nameserver_on_a_private_address(monkeypatch):
     assert probe["records"] == 0
 
 
-@pytest.mark.parametrize("address", ["127.0.0.1", "169.254.169.254", "::1", "192.168.1.1"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "169.254.169.254",
+        "::1",
+        "192.168.1.1",
+        # An NS record answering with an IPv6 address that NAT64, 6to4 or the
+        # kernel delivers to private IPv4 space is the same TCP/53 connection
+        # into the agent's network as the plain IPv4 address.
+        pytest.param("64:ff9b::a00:5", id="nat64-wkp-rfc1918"),
+        pytest.param("64:ff9b::7f00:1", id="nat64-wkp-loopback"),
+        pytest.param("64:ff9b::a9fe:a9fe", id="nat64-wkp-metadata"),
+        pytest.param("64:ff9b:1::808:808", id="nat64-local-use"),
+        pytest.param("::ffff:0:a00:5", id="siit-ipv4-translated"),
+        pytest.param("2002:a00:5::1", id="6to4-rfc1918"),
+        pytest.param("::a00:5", id="ipv4-compatible-rfc1918"),
+        pytest.param("::ffff:10.0.0.5", id="ipv4-mapped-rfc1918"),
+    ],
+)
 def test_axfr_refuses_every_non_public_address_class(monkeypatch, address: str):
     monkeypatch.setattr(
         subprocess, "run", lambda *a, **k: pytest.fail("private nameserver was dialled")

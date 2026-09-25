@@ -85,14 +85,81 @@ def test_rejects_userinfo(monkeypatch):
         safe_http.validate_url("https://user:pass@rdap.example.com/domain/example.com")
 
 
+#: IPv6 addresses that are delivered to an embedded IPv4 address. ``ipaddress``
+#: calls the NAT64 well-known and IPv4-compatible ones global, so each of those
+#: passed the gate before it learned to judge the IPv4 address behind them.
+EMBEDDED_IPV4_NON_PUBLIC = [
+    pytest.param("64:ff9b::a00:5", id="nat64-wkp-rfc1918"),
+    pytest.param("64:ff9b::7f00:1", id="nat64-wkp-loopback"),
+    pytest.param("64:ff9b::a9fe:a9fe", id="nat64-wkp-metadata"),
+    pytest.param("64:ff9b::6440:1", id="nat64-wkp-cgnat"),
+    pytest.param("64:ff9b::e000:1", id="nat64-wkp-multicast"),
+    # Local-use NAT64: the embedding depends on the operator's prefix length,
+    # so even a tail that reads as 8.8.8.8 is 10.0.0.5 behind a /48.
+    pytest.param("64:ff9b:1::808:808", id="nat64-local-use"),
+    pytest.param("64:ff9b:1:a00:0:500:808:808", id="nat64-local-use-48"),
+    pytest.param("::ffff:0:a00:5", id="siit-ipv4-translated"),
+    pytest.param("2002:808:808::1", id="6to4"),
+    pytest.param("::a00:5", id="ipv4-compatible-rfc1918"),
+    pytest.param("::7f00:1", id="ipv4-compatible-loopback"),
+    pytest.param("::808:808", id="ipv4-compatible-public"),
+    pytest.param("::ffff:10.0.0.5", id="ipv4-mapped-rfc1918"),
+]
+
+
 @pytest.mark.parametrize(
     "address",
-    ["127.0.0.1", "10.0.0.5", "169.254.169.254", "::1", "224.0.0.1"],
+    ["127.0.0.1", "10.0.0.5", "169.254.169.254", "::1", "224.0.0.1", *EMBEDDED_IPV4_NON_PUBLIC],
 )
 def test_rejects_non_public_address(monkeypatch, address: str):
     _pin_resolution(monkeypatch, {"rdap.example.com": [address]})
     with pytest.raises(UnsafeTargetError, match="non-public address"):
         safe_http.validate_url("https://rdap.example.com/domain/example.com")
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        pytest.param("64:ff9b::5db8:d822", id="nat64-wkp-public"),
+        pytest.param("::ffff:93.184.216.34", id="ipv4-mapped-public"),
+        # Only the translation prefixes are unwrapped: ordinary global IPv6 is
+        # judged as itself, whatever its low 32 bits happen to spell.
+        pytest.param("2606:4700:4700::1111", id="native-ipv6"),
+        pytest.param("2606:4700:4700::a00:5", id="native-ipv6-low-bits-rfc1918"),
+    ],
+)
+def test_embedded_public_ipv4_is_public(address: str):
+    assert safe_http.is_public_address(ipaddress.ip_address(address)) is True
+
+
+class _OldStdlibIPv6Address(ipaddress.IPv6Address):
+    """An ``ipaddress`` whose special-purpose table calls everything global."""
+
+    @property
+    def is_global(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["64:ff9b:1::808:808", "2002:a00:5::1", "::a00:5", "::ffff:10.0.0.5", "64:ff9b::a00:5"],
+)
+def test_embedded_ipv4_verdict_does_not_depend_on_the_stdlib_table(address: str):
+    # Current CPython already refuses local-use NAT64, 6to4 and private
+    # IPv4-mapped; an older patch release does not, and the gate must not care.
+    assert safe_http.is_public_address(_OldStdlibIPv6Address(address)) is False
+
+
+def test_dns64_answer_for_a_public_host_is_accepted_and_dialled(monkeypatch):
+    # An IPv6-only sensor behind DNS64 sees an IPv4-only server as its real A
+    # record plus a synthesized 64:ff9b::/96 AAAA. Refusing the prefix outright
+    # would refuse every such server, because one failing address fails the name.
+    _pin_resolution(monkeypatch, {"rdap.example.com": ["64:ff9b::5db8:d822", "93.184.216.34"]})
+    calls = _serve(monkeypatch, [_FakeResponse(200, {}, b"{}")])
+
+    safe_http.get("https://rdap.example.com/domain/example.com", timeout_seconds=5)
+
+    assert calls == [("64:ff9b::5db8:d822", "rdap.example.com", "/domain/example.com")]
 
 
 def test_rejects_when_any_address_is_private(monkeypatch):

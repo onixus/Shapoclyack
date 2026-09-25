@@ -187,9 +187,14 @@ false-negative: у домена частного лица `fn` — это имя
 `docs/api-and-rbac.md`. В `pdf_report.py`, в ClickHouse и в webhook-payload
 стадия ничего не проводит.
 
-**Исходящий HTTPS.** `safe_http.py` — второй экземпляр границы из
-`api/services/integrations/delivery.py` (`scanner/` не импортирует `api/`):
-только https, запрет userinfo, отказ, если хоть один A/AAAA не `is_global`,
+**Исходящий HTTPS.** `safe_http.py` — второй экземпляр границы вебхуков из
+`api/services/outbound_targets.py` и `api/services/integrations/delivery.py`
+(`scanner/` не импортирует `api/`): только https, запрет userinfo, отказ, если
+хоть один A/AAAA не проходит `safe_http.is_public_address`. Это `is_global`
+плюс то, чего `is_global` не видит: адрес под NAT64-префиксом `64:ff9b::/96`
+судится по IPv4 в младших 32 битах (как и IPv4-mapped), а `64:ff9b:1::/48`,
+`::ffff:0:0:0/96`, `2002::/16` и `::/96` отклоняются целиком — обоснование в
+докстринге функции. Копия правила в API эти формы пока не разбирает.
 TCP на провалидированный IP при SNI и проверке сертификата по DNS-имени,
 кап тела 256 KiB, один wall-clock дедлайн на всю цепочку, до 3 редиректов с
 повторной валидацией каждого `Location`. Проверка сертификата и пиннинг не
