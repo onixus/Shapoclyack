@@ -49,7 +49,10 @@ Required:
 
 Options:
   -t, --tenant <TENANT_ID>      Tenant ID (default: default)
-  -a, --agent-id <ID>           Explicit Agent ID (defaults to hostname-hash)
+  -a, --agent-id <ID>           Explicit Agent ID (default: the one in
+                                /etc/shapoclyack/agent.env from an earlier
+                                install for the same tenant, otherwise
+                                agent-<short hostname>-<random>)
   -d, --install-dir <PATH>      Installation root directory (default: /opt/shapoclyack-agent)
       --docker                  Deploy agent as a Docker container
       --nats-url <URL>          Optional NATS JetStream server URL
@@ -134,18 +137,60 @@ fi
 
 SERVER_URL="${SERVER_URL%/}"
 
-if [[ -z "${AGENT_ID}" ]]; then
-    HOST_SHORT=$(hostname -s 2>/dev/null || echo "agent")
-    RAND_SUFFIX=$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || echo "$$")
-    AGENT_ID="agent-${HOST_SHORT}-${RAND_SUFFIX}"
-fi
-
-log "Installing Shapoclyack Agent (${AGENT_ID}) for tenant '${TENANT_ID}' connecting to ${SERVER_URL}..."
-
 # Check root privileges
+#
+# Before the agent ID is chosen, because that starts from an earlier install's
+# agent.env, which is 0600 and unreadable to anyone else.
 if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root (or via sudo)."
 fi
+
+# The last value of one variable in an existing agent.env, or nothing.
+#
+# Parsed rather than sourced: the file holds the provisioning key, the native
+# path hands it to the account the sensor runs as, and this runs as root, so
+# sourcing it would run whatever that account wrote into it.
+env_file_value() {
+    local value=""
+    if [[ -r "${CONF_DIR}/agent.env" ]]; then
+        value=$(sed -n "s/^[[:space:]]*$1=//p" "${CONF_DIR}/agent.env" 2>/dev/null | tail -n 1) || true
+    fi
+    printf '%s' "${value%$'\r'}"
+}
+
+# A re-run on a host that already has a sensor is how that sensor is upgraded,
+# so it keeps the ID it registered under. A fresh one would register a second
+# sensor, leave the first stale in the fleet view (and announced as
+# agent_offline), and drop the group an operator had put it in.
+if [[ -z "${AGENT_ID}" ]]; then
+    AGENT_ID=$(env_file_value OCTO_AGENT_ID)
+    PREVIOUS_TENANT=$(env_file_value OCTO_TENANT_ID)
+    if [[ -n "${AGENT_ID}" && -n "${PREVIOUS_TENANT}" && "${PREVIOUS_TENANT}" != "${TENANT_ID}" ]]; then
+        # An ID is bound to its tenant, and revoking a key does not release it
+        # across tenants, so keeping it would be refused until the other
+        # tenant deletes the row. Moving tenants makes a new sensor.
+        log "Not reusing agent ID ${AGENT_ID}: ${CONF_DIR}/agent.env is for tenant '${PREVIOUS_TENANT}'."
+        AGENT_ID=""
+    fi
+    if [[ -n "${AGENT_ID}" ]]; then
+        log "Keeping agent ID ${AGENT_ID} from ${CONF_DIR}/agent.env (pass --agent-id to change it)."
+        PREVIOUS_KEY=$(env_file_value OCTO_AGENT_PROVISIONING_KEY)
+        if [[ -n "${PREVIOUS_KEY}" && "${PREVIOUS_KEY}" != "${PROVISIONING_KEY}" ]]; then
+            warn "The provisioning key differs from the one ${AGENT_ID} was installed with.
+  The API refuses this ID under a new key while the previous key is active:
+  revoke that key (the sensor then authenticates on its next retry), or pass
+  --agent-id to register this host as a new sensor. See docs/operations.md,
+  'Revoke before you re-provision'."
+        fi
+        unset PREVIOUS_KEY
+    else
+        HOST_SHORT=$(hostname -s 2>/dev/null || echo "agent")
+        RAND_SUFFIX=$(head -c 4 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || echo "$$")
+        AGENT_ID="agent-${HOST_SHORT}-${RAND_SUFFIX}"
+    fi
+fi
+
+log "Installing Shapoclyack Agent (${AGENT_ID}) for tenant '${TENANT_ID}' connecting to ${SERVER_URL}..."
 
 # Environment file
 #
@@ -388,5 +433,6 @@ fi
 log "================================================================="
 log "Shapoclyack Agent ${AGENT_ID} installed."
 log "Connecting to ${SERVER_URL}. Confirm it appears in the agent fleet view;"
-log "the host has no self-update mechanism, so upgrades are a reinstall."
+log "the host has no self-update mechanism, so upgrades are a reinstall,"
+log "which keeps this agent ID."
 log "================================================================="

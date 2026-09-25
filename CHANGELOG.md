@@ -560,6 +560,21 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- **Re-running the sensor installer keeps the sensor's ID.**
+  `scripts/install-agent.sh` generated a fresh `agent-<host>-<random>` on
+  every run and never read the existing `/etc/shapoclyack/agent.env`, and an
+  upgrade is a re-run, so every upgrade of a native or `--docker` sensor
+  registered a second sensor. The old row stayed in the fleet view as `stale`,
+  counted in `stale_agents`, was announced as `agent_offline`, and kept the
+  sensor group and any quarantine, so the host came back ungrouped and
+  `active`. Without `--agent-id`, the installer now keeps `OCTO_AGENT_ID` from
+  that file and logs it. The file is parsed with `sed`, not sourced. It is
+  not reused when it was written for a different `--tenant`. The installer
+  warns when the provisioning key has changed, since the API refuses the ID
+  under a new key until the old key is revoked. The root check now runs
+  before the ID is chosen, because the file is `0600`. Leftover rows from
+  earlier upgrades have to be deleted by hand
+  ([docs/operations.md](docs/operations.md#sensor-installation-and-upgrade)).
 - **The sensor deployment snippets run an image that exists, and pin it.** The
   console's `docker run`, Compose and Kubernetes snippets named
   `ghcr.io/onixus/shapoclyack:latest`, a repository the release has never
@@ -580,10 +595,35 @@ All notable changes to Shapoclyack are documented in this file.
   `requirements-agent.txt`) with `--require-hashes --only-binary :all:`, from a
   copy inside the script, and leaves the venv's own pip alone. Wheels exist
   for x86_64 and aarch64, glibc and musl.
-- The DNS-hygiene AXFR probe handed dnsx an IPv6-only nameserver as
-  `2001:500:8f::53:53`. dnsx reads that as a different IPv6 host on port 53,
-  not the gated address, so the probe never reached the nameserver and
-  reported it closed. IPv6 resolvers are now bracketed (`[2001:500:8f::53]:53`).
+- **The AXFR probe dialled addresses nobody checked, and reported refusals as
+  open zones.** With `org_profile.dns_hygiene.axfr_probe` on (off by default)
+  the probe checked a nameserver's address with `safe_http.is_public_address`
+  and then passed it to `dnsx -axfr -resolver <addr>:53`. dnsx 1.2.3 does not
+  stay on that address: it asks it for the zone's NS set, resolves those names
+  through it and attempts AXFR over TCP/53 against every answer before trying
+  the checked address itself, over UDP, which real servers refuse. The scanned
+  party writes its own NS answers, so it could steer the sensor into TCP/53
+  connections inside the sensor's network — exactly what the check exists to
+  prevent — and whatever those addresses returned was attributed to the
+  checked nameserver. Under `-json` dnsx also prints a line for a fully refused
+  transfer, which was counted as one record: practically every reachable
+  nameserver came out `open` with a critical `axfr_open` finding, and a real
+  transfer (`axfr.chain[].all` in 1.2.3) was counted as one record as well.
+  An IPv6-only nameserver was handed over as `2001:500:8f::53:53`, which dnsx
+  reads as a different IPv6 host, so it was never reached and came out
+  `closed`; bracketing it for dnsx (#474) fixed that address but none of the
+  above, and is superseded here.
+  The probe now speaks AXFR itself (RFC 5936, stdlib only) over one TCP
+  connection to the checked IP literal, IPv6 included, and counts the records
+  between the opening and closing SOA. A refusal (`REFUSED`, `NOTAUTH`,
+  `FORMERR`, `NOTIMP`, `NXDOMAIN`), an empty answer or a clean hang-up before
+  any answer is `closed` with the reason (`rcode_refused`, `empty_answer`,
+  `connection_closed`, …). A transfer cut short after zone data is still
+  `open`, with a reason (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) and the count as a lower bound.
+  An unreachable nameserver, a reset, `SERVFAIL` or an answer that broke off
+  before any record is `error`, not `closed`. `axfr_open` findings from runs
+  before this release are unreliable: re-run before acting on them.
 
 ## [0.46-0922] — 2026-09-22
 
