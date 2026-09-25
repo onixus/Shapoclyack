@@ -351,10 +351,6 @@ on its branch.
   to end against a local registry with the real cosign 2.6.5; nothing has yet
   been signed against ghcr.io, Fulcio or the public Rekor log. The first
   release after this change also needs the one-time key setup above.
-- **The sensor host installer and the console's deployment snippets** still
-  default to a mutable `:latest` (`scripts/install-agent.sh`,
-  `api/services/agents.py`); pinning them to the release digest belongs to the
-  release process, like the `k8s/` pins.
 - **pip's vendored copies.** The pip in the images vendors msgpack and
   setuptools versions with advisories; see `requirements-pip.txt`.
 - **Debian packages** come from Debian's signed repositories at whatever

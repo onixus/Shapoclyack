@@ -292,22 +292,17 @@ def test_the_release_builder_runs_the_pinned_buildkit():
 
 # --- script defaults and the server installer ---------------------------------
 
+# scripts/install-agent.sh included: its AGENT_IMAGE default is the sensor's
+# release pin (#476), held to the same form as every other pin.
 SCRIPT_DIRS = ["scripts", "k8s/scripts", "tests/e2e", "tests/load", "bench"]
-
-# Not a build, pipeline or manifest: the sensor host installer's default is
-# the operator's release choice, like the image the API's deployment snippets
-# print. Pinning those to the release digest is a release-process change of
-# its own, listed as a follow-up in docs/supply-chain.md.
-_NOT_BUILD_INPUTS = {"scripts/install-agent.sh"}
 
 
 def _script_files() -> list[str]:
     files = []
     for directory in SCRIPT_DIRS:
         for path in sorted((REPO_ROOT / directory).iterdir()):
-            relative = str(path.relative_to(REPO_ROOT))
-            if path.is_file() and path.suffix in {".sh", ".defaults", ""} and relative not in _NOT_BUILD_INPUTS:
-                files.append(relative)
+            if path.is_file() and path.suffix in {".sh", ".defaults", ""}:
+                files.append(str(path.relative_to(REPO_ROOT)))
     return files
 
 
