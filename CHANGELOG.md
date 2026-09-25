@@ -455,7 +455,9 @@ All notable changes to Shapoclyack are documented in this file.
   writable path an `emptyDir`/PVC, `drop: [ALL]` and no service-account token;
   ClickHouse loses `SYS_NICE` (outside `baseline`) and file logging. **Upgrade
   action required:** apply, then enroll the executor with a key and a random
-  `agent_id_prefix` (its namespace comes with the apply); give every other
+  `agent_id_prefix` (its namespace comes with the apply); on a private or
+  air-gapped registry, create the `shapoclyack-registry` pull secret (#339) in
+  `network-scan-executor` too, and mirror the API image; give every other
   tenant that scans an executor of its own; upgrade
   external sensors with the API; delete the scan Job/CronJob and
   `overlays/agents`' old `shapoclyack-agent` (apply does not prune).
