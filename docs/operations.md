@@ -207,6 +207,24 @@ infer it from the fact that a scan was started.
   turn the probe into a TCP/53 connection inside the sensor's own network. The
   refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
   as `status: refused`.
+- **Only the checked address is dialled.** The probe speaks AXFR itself over
+  one TCP connection to the nameserver's first address — the IP literal that
+  passed the check above, IPv6 included — and resolves nothing. It does not go
+  through `dnsx`, whose `-axfr` looks up the zone's NS set on its own and
+  connects to addresses that were never checked, and it does not follow the NS
+  records or glue the zone hands back.
+- **Reading the result.** `status: open` means the nameserver sent zone data;
+  `records` counts the records between the opening and closing SOA, and a
+  non-null `reason` (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) marks the count as a lower bound.
+  `status: closed` is the server saying no: `rcode_refused`, `rcode_notauth`,
+  `rcode_formerr`, `rcode_notimp`, `rcode_nxdomain`, an empty answer
+  (`empty_answer`), a clean hang-up before any answer (`connection_closed`), or
+  an SOA…SOA transfer with nothing between (`soa_only`). `status: error` means
+  the nameserver could not be checked, not that it is closed: unreachable
+  (`connect_failed`, `timeout`, `connection_reset` — a reset may come from a
+  middlebox on the sensor's side), `rcode_servfail` or an unknown RCODE, or an
+  answer that started and broke off before any record past the SOA.
 - **A successful transfer is never written down.** `dns_hygiene.json` records
   only `status: open` and the number of records; the zone itself reaches neither
   the artifact directory nor `scan.log`. If you need the zone contents, transfer

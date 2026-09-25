@@ -237,6 +237,31 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- **The AXFR probe dialled addresses nobody checked, and reported refusals as
+  open zones.** With `org_profile.dns_hygiene.axfr_probe` on (off by default)
+  the probe checked a nameserver's address with `safe_http.is_public_address`
+  and then passed it to `dnsx -axfr -resolver <addr>:53`. dnsx 1.2.3 does not
+  stay on that address: it asks it for the zone's NS set, resolves those names
+  through it and attempts AXFR over TCP/53 against every answer before trying
+  the checked address itself, over UDP, which real servers refuse. The scanned
+  party writes its own NS answers, so it could steer the sensor into TCP/53
+  connections inside the sensor's network — exactly what the check exists to
+  prevent — and whatever those addresses returned was attributed to the
+  checked nameserver. Under `-json` dnsx also prints a line for a fully refused
+  transfer, which was counted as one record: practically every reachable
+  nameserver came out `open` with a critical `axfr_open` finding, and a real
+  transfer (`axfr.chain[].all` in 1.2.3) was counted as one record as well.
+  The probe now speaks AXFR itself (RFC 5936, stdlib only) over one TCP
+  connection to the checked IP literal, IPv6 included, and counts the records
+  between the opening and closing SOA. A refusal (`REFUSED`, `NOTAUTH`,
+  `FORMERR`, `NOTIMP`, `NXDOMAIN`), an empty answer or a clean hang-up before
+  any answer is `closed` with the reason (`rcode_refused`, `empty_answer`,
+  `connection_closed`, …). A transfer cut short after zone data is still
+  `open`, with a reason (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) and the count as a lower bound.
+  An unreachable nameserver, a reset, `SERVFAIL` or an answer that broke off
+  before any record is `error`, not `closed`. `axfr_open` findings from runs
+  before this release are unreliable: re-run before acting on them.
 
 ## [0.46-0922] — 2026-09-22
 
