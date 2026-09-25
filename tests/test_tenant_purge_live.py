@@ -78,19 +78,23 @@ def _clickhouse_schema():
 
 
 def _seed_ports(client, rows: dict[str, int]) -> None:
+    """One ``INSERT``, so one part holds both tenants — as a busy table's
+    merged parts do. (Apart, a mutation that matches nothing in a part passes
+    it at once, and the victim's rows could go while the neighbour's part
+    still holds the victim's mutation back.)"""
     from api.services import ch_transform, clickhouse_client
 
     stamp = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    for tenant_id, count in rows.items():
-        clickhouse_client.insert_rows(
-            client,
-            clickhouse_client.PORTS_TABLE,
-            clickhouse_client.PORT_COLUMNS,
-            [
-                [ch_transform.tenant_to_uuid(tenant_id), f"10.0.0.{i}", 80 + i, "tcp", "r", stamp]
-                for i in range(count)
-            ],
-        )
+    clickhouse_client.insert_rows(
+        client,
+        clickhouse_client.PORTS_TABLE,
+        clickhouse_client.PORT_COLUMNS,
+        [
+            [ch_transform.tenant_to_uuid(tenant_id), f"10.0.0.{i}", 80 + i, "tcp", "r", stamp]
+            for tenant_id, count in rows.items()
+            for i in range(count)
+        ],
+    )
 
 
 def _count_ports(client, tenant_id: str) -> int:
@@ -187,7 +191,9 @@ def test_live_a_neighbours_failing_mutation_is_named_as_what_holds_the_purge(
         assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
         error = _step(settings, deletion_id, "clickhouse")["last_error"]
         assert f"mutation_id = '{blocker}'" in error and "not this tenant's" in error, error
-        assert "give up on it" not in error
+        assert "FUNCTION_THROW_IF_VALUE_IS_NON_ZERO" in error, error
+        assert "gives up on it" not in error
+        assert purge_clickhouse._tenant_uuid(NEIGHBOUR) not in error  # noqa: SLF001
         assert _count_ports(client, VICTIM) == 3
 
         client.command(

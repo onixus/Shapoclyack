@@ -25,7 +25,9 @@ then reports that mutation's reason as its own (ClickHouse 24.8). Killing the
 tenant's mutation would only have the next attempt submit it again behind the
 same one, so the step's error names the table's oldest unfinished mutation
 when it is not this tenant's, and the ``KILL MUTATION`` that would free it.
-Its id and reason only: its command may carry another tenant's values.
+Its id and the code of its error only: the command, and ClickHouse's full
+reason (which quotes the failing expression), carry the other tenant's
+values, and the journal is no place for them — ``system.mutations`` has both.
 
 **Counted before the ``ALTER``.** The rows a mutation is about to remove are
 counted and kept with the step before it is submitted, and that count is what
@@ -47,6 +49,7 @@ The account needs ``ALTER DELETE`` on the three tables and ``SELECT`` on
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -120,6 +123,18 @@ def _oldest(client: Any, table: str, tenant_uuid: str) -> tuple[str, str, bool] 
     return str(mutation_id), str(reason or ""), bool(ours)
 
 
+def _code(reason: str) -> str:
+    """``Code: 395, FUNCTION_THROW_IF_VALUE_IS_NON_ZERO`` from a ClickHouse error.
+
+    What a reason says without the rest of it: the full text quotes the failing
+    expression, and a reason lent by another tenant's mutation quotes theirs.
+    """
+    code = re.search(r"Code: (\d+)", reason)
+    name = re.search(r"\(([A-Z][A-Z0-9_]+)\)", reason)
+    parts = [f"Code: {code.group(1)}" if code else "", name.group(1) if name else ""]
+    return ", ".join(part for part in parts if part) or "an error"
+
+
 def _kill(table: str, mutation_id: str) -> str:
     database, name = table.split(".", 1)
     return (
@@ -129,24 +144,32 @@ def _kill(table: str, mutation_id: str) -> str:
 
 
 def _stuck(client: Any, table: str, tenant_uuid: str, mutation_id: str, reason: str) -> str:
-    """Why the tenant's mutation on ``table`` is not finishing, and what to do about it."""
+    """Why the tenant's mutation on ``table`` is not finishing, and what to do about it.
+
+    The instruction first: the journal keeps the first thousand characters.
+    """
+    oldest = _oldest(client, table, tenant_uuid)
+    if oldest is not None and not oldest[2]:
+        held_id, held_reason = oldest[0], oldest[1]
+        state = (
+            f"failing ({_code(held_reason)}; the full reason is in system.mutations)"
+            if held_reason
+            else "still running"
+        )
+        return (
+            f"mutation {mutation_id} on {table} is held behind mutation {held_id}, "
+            f"which is not this tenant's and is {state}. ClickHouse applies a "
+            "table's mutations in order: the purge goes on once that one finishes "
+            f"or is given up ({_kill(table, held_id)}). Killing this tenant's own "
+            "mutation does not help: the next attempt submits it again behind the "
+            "same one"
+        )
     if reason:
         what = f"mutation {mutation_id} on {table} is failing: {reason}"
     else:
         what = (
             f"mutation {mutation_id} on {table} is still running after "
             f"{int(MAX_WAIT_SECONDS)}s"
-        )
-    oldest = _oldest(client, table, tenant_uuid)
-    if oldest is not None and not oldest[2]:
-        held_id, held_reason = oldest[0], oldest[1]
-        state = f"failing: {held_reason}" if held_reason else "still running"
-        return (
-            f"{what}. It is queued behind mutation {held_id}, which is not this "
-            f"tenant's and is {state}. ClickHouse applies a table's mutations in "
-            "order: the purge goes on once that one finishes or is given up "
-            f"({_kill(table, held_id)}). Killing this tenant's own mutation does "
-            "not help: the next attempt submits it again behind the same one"
         )
     if reason:
         # The tenant's own oldest mutation is the one to give up, if any is.

@@ -1284,7 +1284,13 @@ def test_a_failing_mutation_of_another_tenant_is_named_as_what_holds_the_purge(
     neighbour = purge_clickhouse._uuid_literal(NEIGHBOUR)  # noqa: SLF001
     table = "shapoclyack.shapoclyack_open_ports"
     fake = _RecordingClickHouse({table: {victim: 2, neighbour: 1}})
-    reason = "Code: 395. DB::Exception: Value passed to 'throwIf' function is non-zero"
+    # ClickHouse 24.8's own words, which quote the neighbour's expression.
+    reason = (
+        "Code: 395. DB::Exception: Value passed to 'throwIf' function is non-zero: "
+        f"while executing 'FUNCTION if(equals(tenant_id, {neighbour}), "
+        "_CAST(toString(throwIf(1)), 'LowCardinality(String)'), protocol)'. "
+        "(FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 24.8.14.39 (official build))"
+    )
     fake.others.append(
         [
             table,
@@ -1299,11 +1305,13 @@ def test_a_failing_mutation_of_another_tenant_is_named_as_what_holds_the_purge(
     error = _step(settings, deletion_id, "clickhouse")["last_error"]
     assert "mutation_25.txt" in error and "not this tenant's" in error
     assert "mutation_id = 'mutation_25.txt'" in error
-    assert reason in error
+    assert "Code: 395, FUNCTION_THROW_IF_VALUE_IS_NON_ZERO" in error
     # Nothing tells the operator to kill the tenant's own, blocked mutation.
-    assert "give up on it" not in error
-    # Not the neighbour's command: the journal is no place for its values.
+    assert "gives up on it" not in error
+    # Not the neighbour's command or expression: the journal is no place for
+    # its values, and ClickHouse's reason quotes them.
     assert "throwIf(1)" not in error
+    assert purge_clickhouse._tenant_uuid(NEIGHBOUR) not in error  # noqa: SLF001
 
     fake.others.clear()
     _make_due(settings, deletion_id)
