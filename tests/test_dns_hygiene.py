@@ -270,6 +270,22 @@ def test_axfr_probes_a_public_nameserver(monkeypatch):
     assert "93.184.216.34:53" in calls[0]
 
 
+def test_axfr_brackets_an_ipv6_only_nameserver(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    probe = _probe_axfr("example.com", "ns1.example.com", ["2001:500:8f::53"], timeout=5)
+    assert probe["status"] == "closed"
+    # dnsx only appends ":53" to a value without a colon, and an unbracketed
+    # "2001:500:8f::53:53" is itself a valid IPv6 literal -- a different host
+    # from the one that passed the public-address gate.
+    assert calls == [["dnsx", "-axfr", "-resolver", "[2001:500:8f::53]:53", "-json", "-silent"]]
+
+
 def test_axfr_never_writes_the_zone_to_the_log_or_the_artifact(
     tmp_path: Path, monkeypatch, caplog
 ):
