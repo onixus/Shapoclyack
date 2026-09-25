@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,34 @@ from typing import Any, Callable, TypeVar
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
+
+
+def process_resources() -> dict[str, float] | None:
+    """CPU-seconds and peak memory of this scan and of the tools it ran (#337).
+
+    Per run, not per stage: stages overlap (Pulse and NSE run concurrently),
+    and a child's usage is only credited once it has been waited for, so a
+    per-stage split would be wrong in exactly the runs worth measuring. For
+    the whole pipeline it is exact, and it is what sizing a sensor needs:
+    ``scale_measure runs-dir`` fits CPU-seconds per host from it.
+
+    ``children_max_rss_mb`` is the largest *single* tool process (one nmap,
+    one nuclei), not the sum of those that ran side by side.
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - no getrusage on Windows
+        return None
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    tools = resource.getrusage(resource.RUSAGE_CHILDREN)
+    # ru_maxrss is KiB on Linux and bytes on macOS.
+    unit = 1 if sys.platform == "darwin" else 1024
+    return {
+        "cpu_sec": round(own.ru_utime + own.ru_stime, 3),
+        "children_cpu_sec": round(tools.ru_utime + tools.ru_stime, 3),
+        "max_rss_mb": round(own.ru_maxrss * unit / 2**20, 1),
+        "children_max_rss_mb": round(tools.ru_maxrss * unit / 2**20, 1),
+    }
 
 
 @dataclass
@@ -90,6 +119,7 @@ class StageTimer:
             "top_stages": [
                 {"name": r.name, "duration_sec": r.duration_sec} for r in ranked[:8]
             ],
+            "resources": process_resources(),
         }
 
     def write(self, output_dir: Path) -> Path:

@@ -627,6 +627,16 @@ and report artifacts. Configure credentials only through secrets or environment
 injection. Test notification delivery with non-sensitive data before enabling
 production findings.
 
+## Sizing
+
+CPU, memory and volume sizes for N assets, M sensors and K scans a day — the
+model, a table for 1k / 10k / 50k assets, the measured coefficients behind it
+and how to re-measure them on your own stand — are in [sizing.md](sizing.md)
+([#337](https://github.com/onixus/Shapoclyack/issues/337)). Read it before
+choosing volume sizes: two Postgres tables grow with every scan and have no
+retention (`vulnerability_events`, `jobs`), and the JetStream volume has to
+hold what the streams *reserve*, not what they currently contain.
+
 ## Retention
 
 Retention must cover all stateful layers:

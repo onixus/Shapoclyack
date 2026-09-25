@@ -136,6 +136,8 @@ def clickhouse_read_stats(url: str, tenant_id: str) -> list[dict[str, Any]]:
 
     Wall-clock is machine- and cache-dependent; read amplification is not, so
     this is the number worth recording in docs and comparing across changes.
+    Peak query memory and server CPU come from the same row: the sizing model
+    (``scale_measure.py``, #337) reads them for the ClickHouse limits.
     """
     from api.services import ch_diff, clickhouse_client as ch
 
@@ -156,7 +158,9 @@ def clickhouse_read_stats(url: str, tenant_id: str) -> list[dict[str, Any]]:
         client.command("SYSTEM FLUSH LOGS")
         rows = client.query(
             """
-            SELECT read_rows, read_bytes, query_duration_ms, result_rows
+            SELECT read_rows, read_bytes, query_duration_ms, result_rows, memory_usage,
+                   (ProfileEvents['UserTimeMicroseconds']
+                    + ProfileEvents['SystemTimeMicroseconds']) / 1e6
             FROM system.query_log
             WHERE type = 'QueryFinish'
               AND query LIKE '%shapoclyack.shapoclyack_%'
@@ -168,7 +172,7 @@ def clickhouse_read_stats(url: str, tenant_id: str) -> list[dict[str, Any]]:
             parameters={"since": since},
         ).result_rows
         if rows:
-            read_rows, read_bytes, duration, result_rows = rows[0]
+            read_rows, read_bytes, duration, result_rows, memory, cpu = rows[0]
             out.append(
                 {
                     "probe": name,
@@ -176,6 +180,8 @@ def clickhouse_read_stats(url: str, tenant_id: str) -> list[dict[str, Any]]:
                     "read_bytes": read_bytes,
                     "result_rows": result_rows,
                     "server_ms": duration,
+                    "memory_bytes": memory,
+                    "server_cpu_seconds": round(float(cpu), 4),
                 }
             )
     return out

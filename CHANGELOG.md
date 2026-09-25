@@ -6,6 +6,30 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Sizing model: N assets / M sensors / K scans a day → CPU, memory, volumes**
+  ([#337](https://github.com/onixus/Shapoclyack/issues/337)).
+  [docs/sizing.md](docs/sizing.md) gives requests, limits and volume sizes for
+  the API, sensors, Postgres, ClickHouse, NATS and the run artifacts at 1k /
+  10k / 50k assets, the formulas behind them and the measured coefficients.
+  `tests/fixtures/scale_measure.py` measures those by driving the product's
+  own code over the `scale_seed` estate — the report stage, the run
+  projection, the results gateway and ClickHouse transform, `python -m api`
+  under the `api_latency` probe, Lariska snapshots — and
+  `tests/fixtures/scale_sizing.py` turns them into the table, so a stand
+  re-measures and regenerates it instead of trusting the sandbox's numbers.
+  The harness refuses a database or ClickHouse that holds any other tenant's
+  data. `stage_timings.json` now also records the scan's CPU-seconds and peak
+  RSS, its own and its tools' (`resources`), which is what sizes a sensor from
+  real runs (`scale_measure runs-dir`). Measuring surfaced limits the doc
+  details: the shipped `nats.conf` (`max_file: 4G`) cannot hold the 11 GiB the
+  API's streams reserve, so the bus fails to start wherever NATS is enabled
+  with it; an ingest message over NATS's default 1 MiB `max_payload` is
+  refused, which with the measured archive sizes keeps runs of more than about
+  1 900 hosts out of ClickHouse; `vulnerability_events` and `jobs` grow with
+  every scan and have no retention; ClickHouse's `system.*_log` tables have no
+  TTL. A stand's table prints `n/m` for what it did not measure unless
+  `--fill-from-sandbox` fills it, marked; `scale_measure purge` removes the
+  harness's rows; the writing steps need `--i-own-database NAME`.
 - **Air-gapped installations: feed mirrors, an offline enrichment bundle, pull
   secrets** ([#339](https://github.com/onixus/Shapoclyack/issues/339)). Every
   enrichment feed can now be pointed at an internal mirror — `EPSS_URL`,
