@@ -32,10 +32,12 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .config_schema import NucleiConfig
+from .dns_resolvers import host_port, scan_resolvers
 from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
@@ -154,8 +156,14 @@ def run_nuclei_scan(
     open_ports: list[str],
     config: NucleiConfig,
     output_dir: Path,
+    resolvers: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Run nuclei against already-open web ports. Never raises."""
+    """Run nuclei against already-open web ports. Never raises.
+
+    ``resolvers`` is ``dns.resolvers`` from the scanner config. Empty means
+    the system's resolvers, never nuclei's built-in public ones (see
+    ``dns_resolvers.py``).
+    """
     result: dict[str, Any] = {
         "targets_considered": 0,
         "checked_count": 0,
@@ -196,11 +204,19 @@ def run_nuclei_scan(
     urls = [_build_url(host, port, scheme) for host, port, scheme in candidates]
     write_lines(targets_file, urls)
     jsonl_file.unlink(missing_ok=True)
+    # Written directly, not through write_lines: that sorts, and the order
+    # here is the operator's.
+    resolvers_file = output_dir / "nuclei_resolvers.txt"
+    resolver_lines = [host_port(resolver) for resolver in scan_resolvers(resolvers)]
+    resolvers_file.write_text("\n".join(resolver_lines) + "\n", encoding="utf-8")
 
     command = [
         "nuclei",
         "-list", str(targets_file),
         "-templates", str(templates_dir),
+        # Without this, nuclei's fastdialer rotates 1.1.1.1/8.8.8.8/... in
+        # with the system resolver, and its DNS client asks only those.
+        "-resolvers", str(resolvers_file),
     ]
     if config.custom_templates_dir and Path(config.custom_templates_dir).exists():
         command.extend(["-templates", str(config.custom_templates_dir)])
