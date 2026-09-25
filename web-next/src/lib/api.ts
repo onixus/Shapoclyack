@@ -927,13 +927,16 @@ export type AgentDeploymentSnippetResponse = {
 export type TenantInfo = {
   tenant_id: string;
   name: string;
-  /** `suspended` is the one non-active state, and the word is the API's:
-   * `disabled` is an account and an agent, never a tenant (#318). A suspended
-   * tenant refuses every request from a non-platform-admin, and drops out of
-   * this listing for them, so only a platform admin ever sees the value. */
-  status: "active" | "suspended";
+  /** Anything but `active` refuses every request from a non-platform-admin and
+   * drops out of this listing for them, so only a platform admin ever sees the
+   * other three. `suspended` is the API's word: `disabled` is an account and an
+   * agent, never a tenant (#318). `pending_deletion` and `deleting` are the two
+   * halves of a deletion (#325). */
+  status: TenantStatus;
   created_at: string | null;
 };
+
+export type TenantStatus = "active" | "suspended" | "pending_deletion" | "deleting";
 
 export type AssetStatus = "active" | "stale" | "decommissioned";
 
@@ -3992,6 +3995,294 @@ export async function deleteTenantQuota(tenantId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Data retention, legal hold, and data-subject requests (#332)
+// ---------------------------------------------------------------------------
+
+/** One kind of data and how long this tenant keeps it. `0` in a window means
+ * "kept until deleted by hand"; `override_days` is `null` when the tenant
+ * inherits the platform default. `min_days`/`max_days` bound an override and
+ * are platform configuration, not something this page can change.
+ * `out_of_bounds` marks an override saved before the bounds moved past it:
+ * the sweeps apply `effective_days` — the override clamped into the bounds —
+ * until the tenant saves a value within them. Absent from an older API. */
+export type RetentionCategory = {
+  category: string;
+  description: string;
+  default_days: number;
+  override_days: number | null;
+  effective_days: number;
+  min_days: number;
+  max_days: number;
+  source: "tenant" | "default";
+  out_of_bounds?: boolean;
+};
+
+/** A hold in force. `reason` and `set_by` come back `null` to anyone but a
+ * platform admin: the matter behind a hold can be one the tenant must not
+ * learn of from its own console. */
+export type LegalHold = {
+  tenant_id: string;
+  reason: string | null;
+  set_by: string | null;
+  set_at: string | null;
+};
+
+export type RetentionPolicy = {
+  tenant_id: string;
+  categories: RetentionCategory[];
+  note: string;
+  updated_at: string | null;
+  updated_by: string;
+  legal_hold: LegalHold | null;
+};
+
+/** Whole-document: a category left out, or sent as null, inherits. */
+export type RetentionPolicyUpdate = {
+  overrides: Record<string, number | null>;
+  note?: string;
+};
+
+export type UserErasureResult = {
+  username: string;
+  erased_at: string | null;
+  already_erased: boolean;
+  removed: Record<string, unknown> | null;
+};
+
+function tenantPath(tenantId: string, rest: string) {
+  return `/tenants/${encodeURIComponent(tenantId)}/${rest}`;
+}
+
+export async function fetchRetentionPolicy(tenantId: string) {
+  try {
+    const { data } = await api.get<RetentionPolicy>(tenantPath(tenantId, "retention"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function updateRetentionPolicy(tenantId: string, body: RetentionPolicyUpdate) {
+  try {
+    const { data } = await api.put<RetentionPolicy>(tenantPath(tenantId, "retention"), body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Every category back on the platform default. 204. */
+export async function resetRetentionPolicy(tenantId: string) {
+  try {
+    await api.delete(tenantPath(tenantId, "retention"));
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Platform admin only; placing a hold that exists amends its reason. */
+export async function placeLegalHold(tenantId: string, reason: string) {
+  try {
+    const { data } = await api.put<LegalHold>(tenantPath(tenantId, "legal-hold"), { reason });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function releaseLegalHold(tenantId: string) {
+  try {
+    await api.delete(tenantPath(tenantId, "legal-hold"));
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Every hold in force, oldest first, reason and author included. Platform
+ * admin only (`platform.legal_hold.manage`): it is the one view across
+ * tenants, the register an auditor asks for. */
+export async function fetchLegalHolds() {
+  try {
+    const { data } = await api.get<LegalHold[]>("/tenants/legal-holds");
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// -- Tenant lifecycle (#325) ------------------------------------------------
+
+export type TenantDeletionStepState =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "failed"
+  | "done"
+  | "skipped";
+
+/** One store of a purge, in the order the worker walks them. */
+export type TenantDeletionStep = {
+  step: string;
+  position: number;
+  state: TenantDeletionStepState;
+  attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The last failure, or why the step waits or was skipped. */
+  last_error: string | null;
+  counts: Record<string, number>;
+};
+
+export type TenantDeletionState = "pending" | "cancelled" | "purging" | "blocked" | "completed";
+
+export type TenantDeletion = {
+  deletion_id: string;
+  tenant_id: string;
+  state: TenantDeletionState;
+  reason: string;
+  requested_by: string;
+  requested_at: string | null;
+  /** End of the grace period: the purge cannot be approved before it. */
+  purge_after: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  cancelled_by: string | null;
+  cancelled_at: string | null;
+  completed_at: string | null;
+  attempts: number;
+  last_error: string | null;
+  next_attempt_at: string | null;
+  /** The tombstone of a completed purge: counts per store. */
+  outcome: Record<string, unknown> | null;
+  steps: TenantDeletionStep[];
+};
+
+/** Platform admins only: the API serves none of this to a tenant's members. */
+export type TenantLifecycle = {
+  tenant_id: string;
+  name: string | null;
+  status: TenantStatus | "deleted";
+  status_reason: string | null;
+  status_changed_at: string | null;
+  status_changed_by: string | null;
+  legal_hold: LegalHold | null;
+  deletion: TenantDeletion | null;
+  history: TenantDeletion[];
+  grace_days: number;
+  two_person: boolean;
+};
+
+/** The deletion journal (#325), newest first, tombstones included; paged. */
+export async function fetchTenantDeletions(params: { limit?: number; offset?: number } = {}) {
+  try {
+    const { data } = await api.get<TenantDeletion[]>("/tenants/deletions", { params });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function fetchTenantLifecycle(tenantId: string) {
+  try {
+    const { data } = await api.get<TenantLifecycle>(tenantPath(tenantId, "lifecycle"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function suspendTenant(
+  tenantId: string,
+  body: { reason: string; revoke_credentials: boolean },
+) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "suspend"), body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function resumeTenant(tenantId: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "resume"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Step one: suspends the tenant and starts the grace period. `confirm` is the
+ * tenant id as typed; the API compares it, not the console. */
+export async function requestTenantDeletion(
+  tenantId: string,
+  body: { confirm: string; reason: string },
+) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion"), body);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function cancelTenantDeletion(tenantId: string) {
+  try {
+    const { data } = await api.delete<TenantLifecycle>(tenantPath(tenantId, "deletion"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Step two, irreversible: starts the purge. */
+export async function approveTenantDeletion(tenantId: string, confirm: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion/approve"), {
+      confirm,
+    });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function retryTenantDeletion(tenantId: string) {
+  try {
+    const { data } = await api.post<TenantLifecycle>(tenantPath(tenantId, "deletion/retry"));
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** The account's data as one JSON document, saved rather than shown: it holds
+ * addresses and sign-in history that do not belong in a page left open. */
+export async function downloadUserDataExport(username: string) {
+  try {
+    const { data } = await api.get<Blob>(`/users/${encodeURIComponent(username)}/export`, {
+      responseType: "blob",
+    });
+    // The name is only a hint to the save dialog, but a username may hold a
+    // slash, and a file name built from one should not.
+    triggerBrowserDownload(data, `${username.replace(/[^\w.-]+/g, "_")}-personal-data.json`);
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export async function eraseUser(username: string) {
+  try {
+    const { data } = await api.post<UserErasureResult>(
+      `/users/${encodeURIComponent(username)}/erase`,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Integrations: outbound webhooks and ticket transports
 // ---------------------------------------------------------------------------
 
@@ -4218,6 +4509,10 @@ export type UserInfo = {
   email: string | null;
   email_verified: boolean;
   sso_linked: boolean;
+  /** Set on the tombstone a data-subject erasure leaves (#332): the username
+   * is kept as a pseudonym, and the API refuses every change to it. Absent
+   * on an API that predates erasure. */
+  erased_at?: string | null;
 };
 
 export type CreateUserBody = {

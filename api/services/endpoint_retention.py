@@ -16,6 +16,11 @@ submission against ``EndpointDevice.latest_snapshot_id``'s software rows, so
 pruning it would make a quiet device's next snapshot report its entire
 software list as freshly installed.
 
+Both windows are the tenant's own since #332 (``endpoint_snapshots`` and
+``endpoint_changes`` in :mod:`api.services.retention_policy`), and a tenant on
+legal hold is not swept at all. A window of 0 keeps that half, like every
+other reaper's; before #332 a 0 here meant a cutoff of *now*, i.e. everything.
+
 Deletes are tenant-scoped and batched (``endpoint_retention_batch_size``) so a
 sweep over a large installation never issues one unbounded statement.
 Structured like ``api.services.schedule_dispatcher``: a daemon thread with a
@@ -35,6 +40,7 @@ from sqlalchemy import delete, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import metrics as metrics_service
+from api.services import retention_policy
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.endpoint-retention")
@@ -59,68 +65,59 @@ def _delete_in_batches(session, model, id_column, where_clauses: list, batch_siz
             return deleted
 
 
-def sweep_tenant(settings: Settings, tenant_id: str, *, now: datetime | None = None) -> dict[str, int]:
-    """Apply the retention policy for one tenant. Returns per-table delete counts."""
+def sweep_tenant(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    now: datetime | None = None,
+    plans: tuple[retention_policy.RetentionPlan, retention_policy.RetentionPlan] | None = None,
+) -> dict[str, int]:
+    """Apply the retention policy for one tenant. Returns per-table delete counts.
+
+    ``plans`` is ``(snapshots, changes)`` when the caller already read them for
+    every tenant (:func:`sweep`); a direct call reads them itself, so no entry
+    point can sweep a tenant without asking whether it is on hold.
+    """
     now = now or _now()
-    snapshot_cutoff = now - timedelta(days=settings.endpoint_snapshot_retention_days)
-    change_cutoff = now - timedelta(days=settings.endpoint_change_retention_days)
+    if plans is None:
+        with get_session(settings.postgres_url) as session:
+            plans = (
+                retention_policy.load_plan(
+                    settings, retention_policy.ENDPOINT_SNAPSHOTS, session=session
+                ),
+                retention_policy.load_plan(
+                    settings, retention_policy.ENDPOINT_CHANGES, session=session
+                ),
+            )
+    snapshot_days = plans[0].days_for(tenant_id)
+    change_days = plans[1].days_for(tenant_id)
     batch_size = max(1, settings.endpoint_retention_batch_size)
+    empty = {"software_items_deleted": 0, "changes_deleted": 0, "snapshots_pruned": 0}
+    if snapshot_days <= 0 and change_days <= 0:
+        return empty
 
     with get_session(settings.postgres_url) as session:
-        protected = set(
-            session.execute(
-                select(models.EndpointDevice.latest_snapshot_id).where(
-                    models.EndpointDevice.tenant_id == tenant_id,
-                    models.EndpointDevice.latest_snapshot_id.is_not(None),
-                )
-            ).scalars().all()
-        )
-        expired_snapshots = session.execute(
-            select(models.EndpointInventorySnapshot.snapshot_id).where(
-                models.EndpointInventorySnapshot.tenant_id == tenant_id,
-                models.EndpointInventorySnapshot.received_at < snapshot_cutoff,
+        items_deleted, snapshots_pruned = (
+            _prune_snapshots(
+                session, tenant_id, now - timedelta(days=snapshot_days), batch_size
             )
-        ).scalars().all()
-        prunable = [sid for sid in expired_snapshots if sid not in protected]
-
-        items_deleted = 0
-        snapshots_pruned = 0
-        for start in range(0, len(prunable), batch_size):
-            chunk = prunable[start : start + batch_size]
-            # Only count snapshots that still hold software rows, so a repeat
-            # sweep over already-pruned history reports zero rather than
-            # re-counting the same snapshots every interval.
-            with_items = session.execute(
-                select(models.EndpointSoftwareItem.snapshot_id)
-                .where(
-                    models.EndpointSoftwareItem.tenant_id == tenant_id,
-                    models.EndpointSoftwareItem.snapshot_id.in_(chunk),
-                )
-                .distinct()
-            ).scalars().all()
-            if not with_items:
-                continue
-            items_deleted += _delete_in_batches(
+            if snapshot_days > 0
+            else (0, 0)
+        )
+        changes_deleted = (
+            _delete_in_batches(
                 session,
-                models.EndpointSoftwareItem,
-                models.EndpointSoftwareItem.id,
+                models.EndpointSoftwareChange,
+                models.EndpointSoftwareChange.id,
                 [
-                    models.EndpointSoftwareItem.tenant_id == tenant_id,
-                    models.EndpointSoftwareItem.snapshot_id.in_(with_items),
+                    models.EndpointSoftwareChange.tenant_id == tenant_id,
+                    models.EndpointSoftwareChange.observed_at
+                    < now - timedelta(days=change_days),
                 ],
                 batch_size,
             )
-            snapshots_pruned += len(with_items)
-
-        changes_deleted = _delete_in_batches(
-            session,
-            models.EndpointSoftwareChange,
-            models.EndpointSoftwareChange.id,
-            [
-                models.EndpointSoftwareChange.tenant_id == tenant_id,
-                models.EndpointSoftwareChange.observed_at < change_cutoff,
-            ],
-            batch_size,
+            if change_days > 0
+            else 0
         )
 
     return {
@@ -128,6 +125,57 @@ def sweep_tenant(settings: Settings, tenant_id: str, *, now: datetime | None = N
         "changes_deleted": changes_deleted,
         "snapshots_pruned": snapshots_pruned,
     }
+
+
+def _prune_snapshots(
+    session, tenant_id: str, snapshot_cutoff: datetime, batch_size: int
+) -> tuple[int, int]:
+    """Software rows of expired, non-current snapshots. ``(items, snapshots)``."""
+    protected = set(
+        session.execute(
+            select(models.EndpointDevice.latest_snapshot_id).where(
+                models.EndpointDevice.tenant_id == tenant_id,
+                models.EndpointDevice.latest_snapshot_id.is_not(None),
+            )
+        ).scalars().all()
+    )
+    expired_snapshots = session.execute(
+        select(models.EndpointInventorySnapshot.snapshot_id).where(
+            models.EndpointInventorySnapshot.tenant_id == tenant_id,
+            models.EndpointInventorySnapshot.received_at < snapshot_cutoff,
+        )
+    ).scalars().all()
+    prunable = [sid for sid in expired_snapshots if sid not in protected]
+
+    items_deleted = 0
+    snapshots_pruned = 0
+    for start in range(0, len(prunable), batch_size):
+        chunk = prunable[start : start + batch_size]
+        # Only count snapshots that still hold software rows, so a repeat
+        # sweep over already-pruned history reports zero rather than
+        # re-counting the same snapshots every interval.
+        with_items = session.execute(
+            select(models.EndpointSoftwareItem.snapshot_id)
+            .where(
+                models.EndpointSoftwareItem.tenant_id == tenant_id,
+                models.EndpointSoftwareItem.snapshot_id.in_(chunk),
+            )
+            .distinct()
+        ).scalars().all()
+        if not with_items:
+            continue
+        items_deleted += _delete_in_batches(
+            session,
+            models.EndpointSoftwareItem,
+            models.EndpointSoftwareItem.id,
+            [
+                models.EndpointSoftwareItem.tenant_id == tenant_id,
+                models.EndpointSoftwareItem.snapshot_id.in_(with_items),
+            ],
+            batch_size,
+        )
+        snapshots_pruned += len(with_items)
+    return items_deleted, snapshots_pruned
 
 
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
@@ -145,15 +193,26 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
     }
     try:
         tenant_ids = [t["tenant_id"] for t in tenants_service.list_tenants()]
+        # Once per sweep, not per tenant. Unreadable is a failed sweep, not an
+        # empty hold list (#332).
+        with get_session(settings.postgres_url) as session:
+            plans = (
+                retention_policy.load_plan(
+                    settings, retention_policy.ENDPOINT_SNAPSHOTS, session=session
+                ),
+                retention_policy.load_plan(
+                    settings, retention_policy.ENDPOINT_CHANGES, session=session
+                ),
+            )
     except Exception:  # noqa: BLE001 - a tenant-store hiccup must not kill the worker
-        LOG.exception("Endpoint retention: could not list tenants")
+        LOG.exception("Endpoint retention: could not list tenants or their windows")
         totals["errors"] += 1
         return totals
 
     for tenant_id in tenant_ids:
         totals["tenants"] += 1
         try:
-            result = sweep_tenant(settings, tenant_id, now=now)
+            result = sweep_tenant(settings, tenant_id, now=now, plans=plans)
         except Exception:  # noqa: BLE001 - keep sweeping the remaining tenants
             totals["errors"] += 1
             LOG.exception("Endpoint retention sweep failed for tenant %s", tenant_id)
@@ -168,14 +227,9 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
         totals["changes_deleted"]
     )
     metrics_service.ENDPOINT_RETENTION_RUN_DURATION_SECONDS.observe(time.perf_counter() - started)
-    try:
-        from api.services import endpoint_inventory
-
-        tallied = endpoint_inventory.device_counts()
-        metrics_service.ENDPOINT_DEVICES.labels("active").set(tallied["active"])
-        metrics_service.ENDPOINT_DEVICES.labels("stale").set(tallied["stale"])
-    except Exception:  # noqa: BLE001 - gauge refresh must not fail the sweep
-        LOG.warning("Endpoint retention: could not refresh device gauge", exc_info=True)
+    # No device gauge here any more: ``octo_endpoint_devices`` is read at
+    # scrape time (#334), where a sweep hours apart left every replica with a
+    # different, stale count.
     if totals["software_items_deleted"] or totals["changes_deleted"] or totals["errors"]:
         LOG.info("Endpoint retention sweep: %s", totals)
     return totals

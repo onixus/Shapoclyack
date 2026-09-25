@@ -214,6 +214,16 @@ Optional `--tenant-id` selects among the caller's tenants (admin can name
 counts, and the stand shape in `docs/slo.md` when you re-derive SLO 2. This
 does **not** replace `tests/load/run.sh` (scanner vs live targets).
 
+### Sizing coefficients (#337)
+
+`tests/fixtures/scale_measure.py` measures bytes, CPU-seconds and resident
+memory per asset, finding, host and request by driving the product's own code
+(report stage, run projection, ClickHouse ingest transform, `python -m api`,
+endpoint inventory) over the same fixtures; `tests/fixtures/scale_sizing.py`
+turns the coefficients into requests, limits and volumes for a workload. Both,
+and how to re-run them on a stand, are in [sizing.md](sizing.md). Point them
+at a dedicated database and ClickHouse: they write under `sizing-*` tenants.
+
 ## Kubernetes and containers
 
 Validate manifests:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from scanner.pipeline import dns_resolvers
 from scanner.pipeline.config_schema import NucleiConfig
 from scanner.pipeline.nuclei_scan import (
     _candidate_endpoints,
@@ -253,3 +255,112 @@ def test_run_nuclei_scan_passes_tags_and_custom_templates(tmp_path: Path, monkey
     assert captured_command[captured_command.index("-tags") + 1] == "cve,panel"
     assert captured_command.count("-templates") == 2
     assert str(custom_dir) in captured_command
+
+
+def _capture_nuclei(monkeypatch) -> dict:
+    """Stub nuclei; record its argv and the resolvers file as it was at launch."""
+    seen: dict = {}
+
+    def fake_run_command(command, **kwargs):
+        seen["argv"] = list(command)
+        resolvers_path = Path(command[command.index("-resolvers") + 1])
+        seen["resolvers"] = resolvers_path.read_text(encoding="utf-8").splitlines()
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        return MagicMock()
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", fake_run_command)
+    return seen
+
+
+def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: Path, monkeypatch):
+    """The whole command, so a flag cannot drop out unnoticed.
+
+    ``-resolvers`` is the one that matters here. Without it nuclei v3.11.1
+    rotates 1.1.1.1/1.0.0.1/8.8.8.8/8.8.4.4 in with the system resolver.
+    Measured on the kind stand: four lookups in five went to a public server,
+    and an internal-only name never resolved.
+    """
+    resolv_conf = tmp_path / "resolv.conf"
+    resolv_conf.write_text(
+        "search default.svc.cluster.local svc.cluster.local cluster.local\n"
+        "nameserver 10.96.0.10\n"
+        "options ndots:5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dns_resolvers, "RESOLV_CONF", resolv_conf)
+    seen = _capture_nuclei(monkeypatch)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+
+    result = run_nuclei_scan(
+        ["10.0.0.1:80/tcp"], NucleiConfig(enabled=True, templates_dir=str(templates_dir)), out
+    )
+
+    assert result["skipped_reason"] is None
+    assert seen["argv"] == [
+        "nuclei",
+        "-disable-update-check",
+        "-list", str(out / "nuclei_targets.txt"),
+        "-templates", str(templates_dir),
+        "-resolvers", str(out / "nuclei_resolvers.txt"),
+        "-severity", "critical,high,medium",
+        "-exclude-tags", "intrusive,fuzz,dos",
+        "-jsonl-export", str(out / "nuclei_raw.jsonl"),
+        "-rate-limit", "150",
+        "-concurrency", "10",
+        "-timeout", "10",
+        "-retries", "1",
+        "-silent",
+        "-no-color",
+    ]  # fmt: skip
+    assert seen["resolvers"] == ["10.96.0.10:53"]
+
+
+def test_configured_resolvers_replace_the_system_ones_in_the_given_order(
+    tmp_path: Path, monkeypatch
+):
+    resolv_conf = tmp_path / "resolv.conf"
+    resolv_conf.write_text("nameserver 10.96.0.10\n", encoding="utf-8")
+    monkeypatch.setattr(dns_resolvers, "RESOLV_CONF", resolv_conf)
+    seen = _capture_nuclei(monkeypatch)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+
+    run_nuclei_scan(
+        ["10.0.0.1:80/tcp"],
+        NucleiConfig(enabled=True, templates_dir=str(templates_dir)),
+        tmp_path,
+        resolvers=["10.20.0.53", "2001:db8::53", "[2001:db8::54]:5353", "10.20.0.54:5353"],
+    )
+
+    # Bracketed and with an explicit port: nuclei appends ":53" only to a line
+    # with no colon, so a bare IPv6 address would be read as host:port.
+    assert seen["resolvers"] == [
+        "10.20.0.53:53",
+        "[2001:db8::53]:53",
+        "[2001:db8::54]:5353",
+        "10.20.0.54:5353",
+    ]
+
+
+def test_the_pipeline_hands_nuclei_the_configured_resolvers():
+    """``scanner/main.py`` must pass ``config.dns.resolvers`` through.
+
+    Leaving it out would still use the system resolvers, not the public ones.
+    But ``dns.resolvers`` would then do nothing at all, and no run would show
+    that.
+    """
+    main_py = Path(__file__).resolve().parents[1] / "scanner" / "main.py"
+    calls = [
+        node
+        for node in ast.walk(ast.parse(main_py.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "run_nuclei_scan"
+    ]
+    assert len(calls) == 1, "expected exactly one run_nuclei_scan call in scanner/main.py"
+    passed = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords}
+    assert passed.get("resolvers") == "config.dns.resolvers"

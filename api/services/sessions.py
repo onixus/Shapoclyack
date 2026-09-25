@@ -63,6 +63,8 @@ END_REUSE = "reuse"
 END_IDLE = "idle"
 END_EXPIRED = "expired"
 END_REVOKED = "revoked"
+#: The only tenant the account could act in was suspended or deleted (#325).
+END_TENANT_CLOSED = "tenant_closed"
 
 # Bytes of randomness in a refresh token. 32 is the same width as the JWT
 # signing key: the token is a bearer credential for hours, and it is looked up
@@ -233,21 +235,35 @@ def revoke_all(settings: Settings, username: str) -> int:
     which sessions are live.
     """
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.User, username)
-        if row is None:
+        version = revoke_all_in_session(session, username, reason=END_REVOKED)
+        if version is None:
             raise LookupError(f"user '{username}' not found")
-        row.token_version = int(row.token_version or 0) + 1
-        row.updated_at = _now()
-        session.execute(
-            update(models.SessionFamily)
-            .where(
-                models.SessionFamily.username == username,
-                models.SessionFamily.revoked_at.is_(None),
-            )
-            .values(revoked_at=_now(), revoked_reason=END_REVOKED)
+        return version
+
+
+def revoke_all_in_session(session, username: str, *, reason: str) -> int | None:
+    """:func:`revoke_all` in the caller's transaction; None for an unknown account.
+
+    For a change that ends somebody's sessions as a consequence of something
+    else — suspending the tenant they belong to (#325) — and has to commit or
+    roll back with it: a suspension that rolled back must not have signed its
+    members out, and one that committed must not leave them signed in.
+    """
+    row = session.get(models.User, username)
+    if row is None:
+        return None
+    row.token_version = int(row.token_version or 0) + 1
+    row.updated_at = _now()
+    session.execute(
+        update(models.SessionFamily)
+        .where(
+            models.SessionFamily.username == username,
+            models.SessionFamily.revoked_at.is_(None),
         )
-        session.flush()
-        return int(row.token_version)
+        .values(revoked_at=_now(), revoked_reason=reason)
+    )
+    session.flush()
+    return int(row.token_version)
 
 
 def _digest(refresh_token: str) -> str:

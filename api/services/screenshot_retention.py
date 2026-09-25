@@ -14,6 +14,10 @@ answers.
 
 0 days disables the reaper. Deletes are fail-soft per file. Several API
 replicas may sweep the same tree; unlink of a missing file is a no-op.
+
+Per tenant since #332, by the same owner rule as ``run_retention``: the run's
+tenant's window, nothing at all for a tenant on legal hold, and a run whose
+owner cannot be read is left alone until it can.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from api.services import artifact_store
+from api.services import artifact_store, retention_policy
 from api.services.artifact_store import workspace
 from api.settings import Settings
 
@@ -39,11 +43,14 @@ def _now() -> datetime:
 
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
     """Delete expired PNG files. Returns counts (deleted, errors, kept)."""
+    from api.services.tenants import DEFAULT_TENANT_ID
+
     now = now or _now()
-    days = settings.screenshot_retention_days
-    if days <= 0:
+    plan = retention_policy.load_plan(settings, retention_policy.SCREENSHOTS)
+    if not plan.active:
         return {"deleted": 0, "errors": 0, "kept": 0}
-    cutoff = now.timestamp() - days * 86400.0
+    moment = now.timestamp()
+    segments = retention_policy.segment_map(plan)
     deleted = errors = kept = 0
     store = artifact_store.get_store(settings)
 
@@ -64,6 +71,21 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
             # default -- so the run's metadata is not read until there is
             # something its age could condemn.
             continue
+        days = plan.default_days
+        if plan.tenant_specific:
+            owner = retention_policy.run_owner(store, run, segments)
+            if owner is None:
+                errors += 1
+                LOG.warning(
+                    "screenshot retention: owner of run %s unreadable; left for the next tick",
+                    run.path,
+                )
+                continue
+            days = plan.days_for(owner)
+        if days <= 0:
+            kept += len(entries)
+            continue
+        cutoff = moment - days * 86400.0
         # The run's own metadata, so a *run* older than the cutoff loses its
         # screenshots even when the files themselves were written later (a
         # re-upload, a restored backup). min() of the two, as before: whichever
@@ -90,7 +112,14 @@ def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
                     "screenshot retention: could not delete %s", entry.key, exc_info=True
                 )
 
-    deleted_flat, errors_flat, kept_flat = _sweep_flat_layout(settings, cutoff)
+    # The single-run layout has no marker of its own and is the default
+    # tenant's, as every reader of it already assumes.
+    flat_days = plan.days_for(DEFAULT_TENANT_ID)
+    deleted_flat, errors_flat, kept_flat = (
+        _sweep_flat_layout(settings, moment - flat_days * 86400.0)
+        if flat_days > 0
+        else (0, 0, 0)
+    )
     return {
         "deleted": deleted + deleted_flat,
         "errors": errors + errors_flat,

@@ -26,7 +26,7 @@ Two rules run through all of it:
 | Sensor | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The sensor falls back to HTTP claim polling |
 | Sensor | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
 | Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
-| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target |
+| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei uses the host's own resolver or `dns.resolvers`. dnsx still asks public resolvers; see [DNS resolvers](#dns-resolvers) |
 | Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
 
 A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
@@ -59,6 +59,12 @@ Every one of these goes through the HTTP proxy when one is configured.
 SMTP is the exception: an HTTP proxy does not carry it, so the relay is dialed
 directly and only the CA setting applies.
 
+The enrichment refresh (the `enrichment-refresh` CronJob and the API's
+`fetch-enrichment` initContainer) reaches every feed host through the same
+proxy and CA settings, and each feed can be pointed at an internal mirror
+instead; [air-gap.md](air-gap.md#3-pointing-every-feed-at-a-mirror) lists the
+hosts and the `*_URL` variables, and how to run with no egress at all.
+
 ### Scanner → outside
 
 The scan itself goes to the tenant's own targets and is never proxied — routing
@@ -82,6 +88,49 @@ exemption to express, and honouring half the dialect would be worse than
 honouring none of it. `scanner/pipeline/egress_env.py` is where this lives,
 deliberately narrower than the API's and the sensor's (`agent/egress.py`) egress modules rather than
 a third copy of them.
+
+### DNS resolvers
+
+The scanner hands nuclei an explicit resolver list (`-resolvers`). The list is
+`dns.resolvers` from the scanner config. When that is empty, which is the
+default, it is the `nameserver` lines of `/etc/resolv.conf`, so nuclei asks the
+same servers as the rest of the host. The run leaves the list it used in
+`nuclei_resolvers.txt` next to `nuclei.json`.
+
+Without the list, nuclei v3.11.1 adds its built-in public resolvers (1.1.1.1,
+1.0.0.1, 8.8.8.8, 8.8.4.4) to the system one and picks among them round-robin.
+Its DNS-protocol templates ask those four only. Measured on the kind stand with
+the image's own binary and the scanner's own flags, against IP-only targets:
+
+- 256 of 320 lookups went to a public resolver.
+- Those lookups included the name an HTTP redirect pointed to, and query names
+  built from the scanned address itself (`http://10.x.y.z`, from the
+  JavaScript-protocol templates).
+- A template that follows a redirect to an internal-only name matched nothing,
+  because the name never resolved. With the list passed, the same template
+  matched.
+
+With the list passed, every name derived from a target went to the system
+resolver only. The exception is nuclei's interactsh client, which ignores
+`-resolvers`. It looks up the public interactsh servers (`oast.pro`,
+`oast.live`, `oast.site`, `oast.online`, `oast.fun`, `oast.me`) through the
+same public-plus-system rotation, and 160 of 312 lookups in the same run still
+went to a public resolver, all of them for those six names. Those names are
+fixed and say nothing about the targets. Whether nuclei should use a public
+interactsh server at all (`-no-interactsh`, or a self-hosted
+`-interactsh-server`) is a separate decision, and the scanner does not make it
+today.
+
+`dns.resolvers` accepts IP literals with an optional port (`10.0.0.53`,
+`[2001:db8::53]:5353`). Names are refused, because a resolver given by name
+would need a resolver first.
+
+dnsx does not read the setting yet. It runs the `resolve`, `hostnames` and
+org_profile DNS stages. Left to its defaults, dnsx v1.2.3 asks only its eight
+built-in public resolvers and never the system one. Run the way `resolve`
+runs it on the stand, dnsx sent an internal-only name to 8.8.8.8 and 1.0.0.1
+and returned nothing. With `-r` pointed at the cluster resolver, it resolved
+the name.
 
 ## Proxy and CA variables
 
