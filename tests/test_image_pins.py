@@ -20,6 +20,8 @@ import importlib.util
 import json
 import re
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -111,12 +113,45 @@ def test_every_kubernetes_image_is_pinned(path: str):
         if isinstance(doc, dict) and doc.get("kind") == "Kustomization" or path.endswith(
             "kustomization.yaml"
         ):
-            # A kustomize images: entry rewrites what the manifests pin; one
-            # with a tag and no digest would undo the pin at render time.
+            # A kustomize images: entry rewrites what the manifests pin. A
+            # newTag alone drops the digest and a digest alone drops the tag,
+            # so an entry that sets either sets both. One that only renames
+            # (newName, the air-gap overlay's registry, #339) keeps the
+            # manifests' tag@digest, which the files it renames are checked
+            # for; test_every_rendered_image_is_pinned proves it on the render.
             for entry in (doc or {}).get("images", []) or []:
+                if "newTag" not in entry and "digest" not in entry:
+                    continue
                 ref = f"{entry.get('newName', entry['name'])}:{entry.get('newTag', '')}"
                 if not _is_local(ref):
-                    assert entry.get("digest", "").startswith("sha256:"), f"{path}: {entry}"
+                    assert "newTag" in entry and entry.get("digest", "").startswith("sha256:"), f"{path}: {entry}"
+
+
+OVERLAYS = sorted(
+    p.name for p in (REPO_ROOT / "k8s/shapoclyack/overlays").iterdir() if (p / "kustomization.yaml").is_file()
+)
+
+
+@pytest.mark.skipif(shutil.which("kubectl") is None, reason="needs kubectl (kustomize)")
+@pytest.mark.parametrize("overlay", OVERLAYS)
+def test_every_rendered_image_is_pinned(overlay: str):
+    """What a cluster pulls is the render, not the files: base manifests,
+    components, patches and images: entries together."""
+    proc = subprocess.run(  # noqa: S603 - fixed argv
+        [shutil.which("kubectl"), "kustomize", str(REPO_ROOT / "k8s/shapoclyack/overlays" / overlay)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    images = [
+        value
+        for doc in yaml.safe_load_all(proc.stdout)
+        for _keys, key, value in _walk(doc)
+        if key == "image" and isinstance(value, str)
+    ]
+    assert images, f"overlays/{overlay} renders no image; the walk is broken"
+    for ref in images:
+        _assert_pinned(f"overlays/{overlay} (rendered)", ref)
 
 
 # --- GitHub workflows and actions --------------------------------------------

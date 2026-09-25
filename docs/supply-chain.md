@@ -207,7 +207,7 @@ What an air-gapped installation needs:
 Option 2 keeps every guarantee of the connected setup and is the one to aim
 for; option 3 is a documented step down, not a default. The rest of an
 offline installation — enrichment data, pull secrets for a mirror — is
-[#339](https://github.com/onixus/Shapoclyack/issues/339).
+[air-gap.md](air-gap.md) ([#339](https://github.com/onixus/Shapoclyack/issues/339)).
 
 ## Release key: one-time setup and rotation (maintainers)
 
