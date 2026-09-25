@@ -6,6 +6,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Release contract, a proposed Pulse distribution decision, and a customer
+  check of the Pulse binary in an image**
+  ([#340](https://github.com/onixus/Shapoclyack/issues/340)).
+  [docs/release-contract.md](docs/release-contract.md) states what a release
+  ships and the Pulse support and update policy: one pinned Pulse per release,
+  new pins only from signed GenDec releases, a bump announced as a
+  scan-semantics change, Pulse vulnerabilities reported through SECURITY.md on
+  its timelines, how a backport keeps `latest` on the current line, and no
+  silent fallback when Pulse is absent. It also says what `Jenkinsfile.publish`
+  does not enforce yet: signatures (#313), immutable tags, and `latest` on a
+  backport. [ADR 0001](docs/adr/0001-pulse-distribution-model.md) (new
+  `docs/adr/`) compares public signed releases, a source build path and a
+  default without Pulse, and recommends the first; its status is *Proposed*
+  until the owner decides. Images now carry an install record,
+  `/usr/local/share/shapoclyack/pulse-install.txt` (written by
+  `scripts/install-pulse.sh` when `PULSE_RECORD` is set, which the Dockerfiles
+  do), naming the tarball, the check it passed and the binary's SHA-256; the
+  record is unsigned, so against deliberate tampering it is only as good as the
+  image digest that was checked. The Dockerfiles' `pulse-bin` stage now fills
+  `/out/bin` and `/out/share`, copied by one `COPY` each. New
+  `scripts/verify-pulse-image.py` (Python 3.9+) checks an image — `docker
+  create` + `cp`, never started, removed with its anonymous volumes, and named
+  by the image ID and repository digest the engine resolved — or an unpacked
+  filesystem against the pin file of its release tag. With `--tarball` it
+  checks independently: the tarball is read once, must be pinned before it is
+  parsed, and its `pulse` member is hashed in memory. It refuses symlinks and
+  ambiguous archives, and an unreadable input is exit 2, not a verdict. The
+  Jenkins smoke stage runs it inside the built image, and the Pulse version
+  drift test now also covers `.github/workflows/docker-publish.yml`. Images of
+  `shapoclyack-0.46-0922` and earlier have no record and can be checked only
+  with `--tarball`, which today needs GenDec access.
 - **Sizing model: N assets / M sensors / K scans a day → CPU, memory, volumes**
   ([#337](https://github.com/onixus/Shapoclyack/issues/337)).
   [docs/sizing.md](docs/sizing.md) gives requests, limits and volume sizes for
