@@ -59,6 +59,12 @@ Every one of these goes through the HTTP proxy when one is configured.
 SMTP is the exception: an HTTP proxy does not carry it, so the relay is dialed
 directly and only the CA setting applies.
 
+The enrichment refresh (the `enrichment-refresh` CronJob and the API's
+`fetch-enrichment` initContainer) reaches every feed host through the same
+proxy and CA settings, and each feed can be pointed at an internal mirror
+instead; [air-gap.md](air-gap.md#3-pointing-every-feed-at-a-mirror) lists the
+hosts and the `*_URL` variables, and how to run with no egress at all.
+
 ### Scanner → outside
 
 The scan itself goes to the tenant's own targets and is never proxied — routing

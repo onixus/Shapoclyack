@@ -2818,6 +2818,12 @@ since the API's enrichment initContainer runs the same script without the flag �
 leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
+**No egress, or only to internal mirrors?** Every feed has a `*_URL` mirror
+override, and an offline bundle (`make enrichment-bundle` on a connected host,
+loaded by the `overlays/airgap` CronJob) carries the datasets across; installed
+datasets report `origin: bundle`. The procedure — images, pull secret, mirrors,
+bundle, what stays unavailable — is [air-gap.md](air-gap.md).
+
 ## Upgrade and rollback
 
 > With `base` and `overlays/prod` there is a single API replica, so the probes

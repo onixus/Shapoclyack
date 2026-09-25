@@ -1638,7 +1638,8 @@ class EnrichmentDb(BaseModel):
     # existed, or a volume with no manifest on it, reports None for each.
     source: str | None = None
     # "fetch" (this dataset was refreshed), "seed" (whatever the image shipped),
-    # "stale" (a refresh was attempted and failed), or "missing".
+    # "stale" (a refresh was attempted and failed), "bundle" (installed from an
+    # offline bundle, #339), or "missing".
     origin: str | None = None
     # The date the feed itself stamped on the data, not the file's mtime.
     updated: str | None = None
@@ -1648,6 +1649,10 @@ class EnrichmentDb(BaseModel):
     # because "present, fresh mtime, non-zero entries" describes both a real
     # feed and the committed advisory seed a fresh offline install ships.
     usable: bool | None = None
+    # With origin "bundle": what the connected side called the dataset when it
+    # built the bundle (fetch / seed / stale). A feed that was down there is
+    # stale here too; origin "bundle" alone would hide it (#339).
+    source_origin: str | None = None
 
 
 class ScanConfigSummary(BaseModel):
@@ -1702,6 +1707,21 @@ class EndpointInventoryStatus(BaseModel):
     retention_last_run_at: str | None = None
 
 
+class EnrichmentBundle(BaseModel):
+    """The offline enrichment bundle last installed on this installation (#339).
+
+    Absent (``null``) on an installation that refreshes its feeds online. The
+    dates are the bundle's: when it was built on the connected side and when it
+    was loaded here; each dataset's own data date is its ``updated`` in
+    ``enrichment``."""
+
+    bundle_id: str
+    schema_version: int | None = None
+    built_at: str | None = None
+    installed_at: str | None = None
+    datasets: list[str] = Field(default_factory=list)
+
+
 class SystemStatus(BaseModel):
     """Read-only snapshot of the running installation (Web UI System page).
     Contains no secrets — only booleans/counts derived from settings."""
@@ -1709,6 +1729,7 @@ class SystemStatus(BaseModel):
     app_version: str
     tools: list[ToolVersion]
     enrichment: list[EnrichmentDb]
+    enrichment_bundle: EnrichmentBundle | None = None
     scan_config: ScanConfigSummary
     runtime: RuntimeInfo
     inventory: InventoryCounts

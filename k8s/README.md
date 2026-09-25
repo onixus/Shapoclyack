@@ -564,6 +564,13 @@ replica puts them in object storage instead
 `overlays/prod-ha/artifacts-s3-patch.yaml` and
 [docs/high-availability.md](../docs/high-availability.md).
 
+## Air-gapped installation
+
+`overlays/airgap` is `base` + `base/enrichment` + `base/enrichment-bundle`:
+every image from an internal registry, the pull secret on every pod, and the
+enrichment data installed from an offline bundle by a CronJob instead of
+fetched. The procedure is [docs/air-gap.md](../docs/air-gap.md).
+
 ## Optional: build images yourself
 
 ```bash
