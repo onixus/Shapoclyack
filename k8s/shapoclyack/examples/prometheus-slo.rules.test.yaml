@@ -1,0 +1,301 @@
+# promtool unit tests for prometheus-slo.rules.yaml (#334).
+#
+#   promtool test rules k8s/shapoclyack/examples/prometheus-slo.rules.test.yaml
+#   (k8s/scripts/validate-prometheus-rules.sh runs it)
+#
+# They cover the pool and fleet groups — the ones whose expressions carry a
+# decision beyond a threshold: per replica or cluster-wide, which agent kind,
+# and when an empty fleet must not page — and SLO 5's consumer alerts, which
+# selected a retired consumer name and a timestamp that never ages until #334.
+rule_files:
+  - prometheus-slo.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # SLO 5 on the durable the worker really uses, read by two replicas that both
+  # keep polling: one alert for the consumer, not one per replica.
+  - interval: 1m
+    input_series:
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '1500x30'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '0+60x30'
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="b:8080",consumer="octo-ch-ingest-results"}'
+        values: '1480x30'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="b:8080",consumer="octo-ch-ingest-results"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ShapoclyackClickHouseIngestLag
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: "5"
+              consumer: octo-ch-ingest-results
+            exp_annotations:
+              summary: ClickHouse ingest consumer lag is above 1000 messages
+              description: >-
+                octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+                for 10m (SLO 5), counting only replicas that read it in the last
+                5 minutes. Absent series means ingest is not enabled — this rule
+                does not fire then.
+      - eval_time: 15m
+        alertname: ShapoclyackClickHouseIngestStale
+        exp_alerts: []
+
+  # The reviewer's case: replica a's poller stopped at 5000 pending, replica b
+  # reads the drained queue. The lag alert follows b; the stale alert names a.
+  - interval: 1m
+    input_series:
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '5000x40'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '0x40'
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="b:8080",consumer="octo-ch-ingest-results"}'
+        values: '0x40'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="b:8080",consumer="octo-ch-ingest-results"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ShapoclyackClickHouseIngestLag
+        exp_alerts: []
+
+  # The lag gauge keeps being scraped after its poller stops at minute 5; only
+  # the refresh time shows it.
+  - interval: 1m
+    input_series:
+      - series: 'octo_nats_consumer_pending{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '1500x30'
+      - series: 'octo_nats_consumer_pending_timestamp_seconds{job="shapoclyack-api",instance="a:8080",consumer="octo-ch-ingest-results"}'
+        values: '0+60x5 300x25'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ShapoclyackClickHouseIngestStale
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ShapoclyackClickHouseIngestStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: "5"
+              job: shapoclyack-api
+              instance: a:8080
+              consumer: octo-ch-ingest-results
+            exp_annotations:
+              summary: ClickHouse ingest lag gauge on a:8080 is stale
+              description: >-
+                The ingest worker has not refreshed octo_nats_consumer_pending for
+                more than 5 minutes. A stopped poller leaves a stale value rather
+                than a rising one.
+
+  # One replica holding 14 of 15 connections, the other 12 of 15: only the
+  # first crosses 90 %, and it is named by its own instance.
+  - interval: 1m
+    input_series:
+      - series: 'octo_db_pool_checked_out{job="shapoclyack-api",instance="a:8080"}'
+        values: '14x30'
+      - series: 'octo_db_pool_size{job="shapoclyack-api",instance="a:8080"}'
+        values: '5x30'
+      - series: 'octo_db_pool_max_overflow{job="shapoclyack-api",instance="a:8080"}'
+        values: '10x30'
+      - series: 'octo_db_pool_checked_out{job="shapoclyack-api",instance="b:8080"}'
+        values: '12x30'
+      - series: 'octo_db_pool_size{job="shapoclyack-api",instance="b:8080"}'
+        values: '5x30'
+      - series: 'octo_db_pool_max_overflow{job="shapoclyack-api",instance="b:8080"}'
+        values: '10x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ShapoclyackDbPoolSaturated
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ShapoclyackDbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              job: shapoclyack-api
+              instance: a:8080
+            exp_annotations:
+              summary: API replica a:8080 is holding 90 % of its database connections
+              description: >-
+                octo_db_pool_checked_out has been at 90 % of OCTO_DB_POOL_SIZE +
+                OCTO_DB_MAX_OVERFLOW for 10m. The next burst waits for a connection
+                and then fails after OCTO_DB_POOL_TIMEOUT. Size the pool against
+                the server's max_connections (docs/high-availability.md) or find
+                what holds connections (docs/observability.md § Database pool).
+
+  # One timed-out checkout at minute 3: it alerts at once and clears once the
+  # 10m window has moved past it.
+  - interval: 1m
+    input_series:
+      - series: 'octo_db_pool_checkout_timeouts_total{job="shapoclyack-api",instance="a:8080"}'
+        values: '0 0 0 1x40'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              job: shapoclyack-api
+              instance: a:8080
+            exp_annotations:
+              summary: Requests on a:8080 are failing for want of a database connection
+              description: >-
+                A checkout waited OCTO_DB_POOL_TIMEOUT for a free connection and
+                gave up, so the request behind it answered 500 without reaching
+                the database. A longer timeout only makes the wait longer; see
+                docs/observability.md § Database pool.
+      - eval_time: 30m
+        alertname: ShapoclyackDbPoolCheckoutTimeouts
+        exp_alerts: []
+
+  # Two replicas report the same fleet: two stale sensors and five sleeping
+  # endpoint agents. One alert, counting sensors once, and none for the laptops.
+  # Jobs wait with a sensor still online, so nothing pages.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="b:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '1x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="b:8080",agent_kind="scanner",state="idle"}'
+        values: '1x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="endpoint",state="stale"}'
+        values: '5x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: 2 active sensor(s) have not been heard from for longer than OCTO_AGENT_STALE_SECONDS
+              description: >-
+                Sensors that are neither disabled nor quarantined have been stale
+                for 15m, so the scans addressed to their group wait. A sensor that
+                is gone on purpose should be disabled or deleted in the Sensor
+                Fleet page rather than left to hold this alert open.
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts: []
+
+  # Every sensor stale and jobs waiting: that pages.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '2x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="busy"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="error"}'
+        values: '0x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Scans are queued and no sensor is online to take them
+              description: >-
+                Every active sensor is stale and jobs are waiting, so no scan runs
+                at all. Local-mode installations with no sensors registered do not
+                fire this. docs/observability.md § Sensors and agents.
+
+  # Local execution: jobs are queued and there are no sensors at all. Neither
+  # alert fires — an empty fleet is not a stale one.
+  - interval: 1m
+    input_series:
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '0x30'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '0x30'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ShapoclyackSensorsStale
+        exp_alerts: []
+
+  # The reviewer's case (#334 review): two replicas disagree about the queue —
+  # a still holds the 1 it counted when the scan was submitted through it, b
+  # counted the claim. The queue is empty; a sensor rebooting overnight must
+  # not page. The source no longer produces this (both replicas read the table
+  # at scrape time), and min() keeps the rule from depending on that.
+  - interval: 1m
+    input_series:
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="a:8080"}'
+        values: '1x40'
+      - series: 'octo_jobs_queued{job="shapoclyack-api",instance="b:8080"}'
+        values: '0x40'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="stale"}'
+        values: '1x40'
+      - series: 'octo_agents{job="shapoclyack-api",instance="a:8080",agent_kind="scanner",state="idle"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ShapoclyackNoSensorOnline
+        exp_alerts: []
+
+  # The fleet snapshot: one replica that can still read it keeps the alerts
+  # on it alive, so one starved replica is not an alert (#334, round 2).
+  - interval: 1m
+    input_series:
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="a:8080",snapshot="cluster"}'
+        values: '400+60x40'
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="b:8080",snapshot="cluster"}'
+        values: '10x40'
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="b:8080",snapshot="tenant"}'
+        values: '400+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ShapoclyackFleetMetricsBlind
+        exp_alerts: []
+
+  # Every replica starved (a 5 + 2 pool beside six leader locks): the alerts
+  # on the fleet are blind, and that is said — whatever the tenant snapshot,
+  # which no alert reads, is doing.
+  - interval: 1m
+    input_series:
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="a:8080",snapshot="cluster"}'
+        values: '400+60x40'
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="b:8080",snapshot="cluster"}'
+        values: '100+60x40'
+      - series: 'octo_metrics_snapshot_age_seconds{job="shapoclyack-api",instance="b:8080",snapshot="tenant"}'
+        values: '10x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ShapoclyackFleetMetricsBlind
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ShapoclyackFleetMetricsBlind
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: No API replica has read the sensor fleet and job queue for /metrics in 15 minutes
+              description: >-
+                octo_agents and octo_jobs_queued are withdrawn on every replica, so
+                ShapoclyackSensorsStale and ShapoclyackNoSensorOnline cannot fire.
+                octo_metrics_snapshot_misses_total says why: pool_busy (never two
+                connections free when it was due; raise OCTO_DB_POOL_SIZE or
+                OCTO_DB_MAX_OVERFLOW, since leader-lock workers hold one each) or
+                error (the query fails; the replicas' WARNING line names the
+                cause). docs/observability.md § Scrape-time cost.

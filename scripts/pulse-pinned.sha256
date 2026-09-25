@@ -24,7 +24,8 @@
 # signed release.
 #
 # tests/test_pulse_supply_chain.py fails if this file and the PULSE_VERSION
-# defaults in install-pulse.sh / Dockerfile / Dockerfile.allinone drift apart.
+# in install-pulse.sh / Dockerfile / Dockerfile.allinone / Jenkinsfile.publish /
+# .github/workflows/docker-publish.yml drift apart (docs/release-contract.md).
 #
 # Format: <version> <platform> <sha256>   (# and blank lines ignored)
 v1.1.0  linux-amd64   25f2f24ecd77d62640776fdcab23ff8cfd2faf2b04ed621f4695da988bf5b2c9

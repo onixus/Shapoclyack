@@ -213,3 +213,20 @@ def test_cli_requires_a_url_for_each_enabled_store(monkeypatch, capsys):
     assert "Postgres URL" in capsys.readouterr().err
     assert scale_seed.main(["--skip-postgres"]) == 2
     assert "ClickHouse URL" in capsys.readouterr().err
+
+
+def test_clickhouse_purge_can_wait_for_its_mutation(monkeypatch):
+    """A measurement taken right after a purge must not see the purged rows (#337)."""
+    from api.services import clickhouse_client as ch
+
+    calls: list[dict] = []
+
+    class Client:
+        def command(self, sql, parameters=None, settings=None):
+            calls.append({"sql": sql, "parameters": parameters, "settings": settings})
+
+    monkeypatch.setattr(ch, "get_client", lambda url: Client())
+    scale_seed.purge_clickhouse("http://ch", "scale-test")
+    scale_seed.purge_clickhouse("http://ch", "scale-test", wait=True)
+    assert [c["settings"] for c in calls] == [None, None, {"mutations_sync": 1}, {"mutations_sync": 1}]
+    assert all("DELETE WHERE tenant_id" in c["sql"] for c in calls)

@@ -41,24 +41,6 @@ hI9wUJJl/QA=
 """
 
 
-@pytest.fixture(autouse=True)
-def _clean_proxy_env(monkeypatch):
-    """No test inherits the developer's own proxy, and none leaks one."""
-    for name in (
-        "OCTO_HTTP_PROXY",
-        "OCTO_HTTPS_PROXY",
-        "OCTO_NO_PROXY",
-        "OCTO_CA_BUNDLE",
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
 # --------------------------------------------------------------------------- #
 # Which proxy a URL goes through
 # --------------------------------------------------------------------------- #

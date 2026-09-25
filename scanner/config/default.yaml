@@ -356,6 +356,22 @@ screenshots:
   https_ports: [443, 8443]
   verify_tls: false
 
+# DNS servers nuclei is told to use (written to a file and passed with
+# -resolvers). Empty = the nameserver lines of /etc/resolv.conf, i.e. whatever
+# the host itself asks, or 127.0.0.1 if the file names none. Left to its
+# defaults, nuclei v3.11.1 rotates 1.1.1.1/1.0.0.1/8.8.8.8/8.8.4.4 in with the
+# system resolver, and its DNS templates ask only those four. On the kind stand
+# four lookups in five went to a public resolver. Those lookups included
+# redirect targets and query names built from the scanned address itself, and
+# an internal-only name never resolved. Set this list where the scanner must
+# use specific servers rather than the host's. Entries are IP literals, with an
+# optional port: 10.0.0.53, 10.0.0.53:5353, 2001:db8::53, [2001:db8::53]:5353.
+# Names are refused, because a resolver given by name would need a resolver
+# first. dnsx does not read this setting yet. nuclei's interactsh client ignores
+# it too, but that client only looks up the fixed oast.* server names.
+dns:
+  resolvers: []
+
 # Nuclei template-based web vuln/misconfig scan (Phase 4.2 default ON).
 # Together with Pulse --cve + CVSS4 enrichment this replaces nmap-vulners on
 # the default Pulse path. nmap-vulners remains only in nse_profiles.vuln_legacy
