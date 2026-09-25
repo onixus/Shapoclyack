@@ -164,9 +164,10 @@ spec:
           #
           # ephemeral-storage: the emptyDirs below may hold up to 31Gi between
           # them, and `sizeLimit` only evicts once that is reached; a request is
-          # what makes the scheduler look for the disk first. 8Gi is a few runs
-          # kept on disk (the worker keeps every finished run until the pod
-          # goes); the limit covers every sizeLimit plus the container's logs.
+          # what makes the scheduler look for the disk first. 8Gi is the run in
+          # progress plus its archive, with room for one whose upload failed
+          # (the worker removes a run once the API has its result); the limit
+          # covers every sizeLimit plus the container's logs.
           resources:
             requests:
               cpu: "500m"
@@ -217,11 +218,14 @@ spec:
               - key: provisioning_key
                 path: provisioning_key
         # Sized so that a full disk evicts this pod rather than filling the
-        # node: agent/worker.py keeps each finished run under output/ until the
-        # pod goes away. A restart empties both, and a scan cut short by one
-        # goes back to the queue when its lease expires. So do the delta and
-        # report-diff baselines under state/: after a restart the next run of a
-        # target is a full one, and with several replicas each keeps its own
+        # node. agent/worker.py removes a run from output/ and state/ once the
+        # API has its result (or declined it), so what is here is the scan in
+        # progress and any run whose upload failed (removed before a re-queued
+        # attempt of the same run is scanned here); OCTO_AGENT_KEEP_RUNS=1
+        # would keep every run until the pod goes. A restart empties both, and
+        # a scan cut short by one goes back to the queue when its lease
+        # expires. With the runs gone there is no local baseline either: delta
+        # discovery scans the whole scope and the report diff is skipped
         # (docs/k8s-hardening.md § What changes).
         - name: output
           emptyDir:
