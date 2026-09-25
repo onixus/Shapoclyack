@@ -389,7 +389,11 @@ class SlaEscalationWorker:
                     models.Asset.owner_email.is_not(None),
                     models.Asset.owner_email != "",
                 )
-                .order_by(models.Vulnerability.due_at.asc())
+                # vuln_id breaks ties: under a LIMIT, equal deadlines at the
+                # edge would otherwise be picked in heap order.
+                .order_by(
+                    models.Vulnerability.due_at.asc(), models.Vulnerability.vuln_id.asc()
+                )
                 .limit(max(1, int(self._settings.sla_escalation_max_findings)))
             ).all()
             for row, owner_email in rows:
