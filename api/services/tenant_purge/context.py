@@ -158,3 +158,13 @@ class PurgeContext:
         if row is None:  # pragma: no cover
             return
         row.counts = {**dict(row.counts or {}), **values}
+
+    def take(self, session: Session, key: str) -> Any:
+        """Remove ``key`` from this step's counts and return it (None when absent)."""
+        row = session.get(models.TenantDeletionStep, (self.deletion_id, self.step))
+        if row is None:  # pragma: no cover
+            return None
+        counts = dict(row.counts or {})
+        value = counts.pop(key, None)
+        row.counts = counts
+        return value

@@ -152,13 +152,19 @@ def _finish_step(
     state: str,
     counts: dict[str, Any] | None = None,
     note: str | None = None,
-) -> None:
+) -> bool:
+    """Record the step's outcome; False when the lease is no longer ``owner``'s.
+
+    A step can return without another checkpoint after its lease went to a
+    second replica, which is running the same step now: the bookkeeping is
+    that replica's to write, and this one stops.
+    """
     with system_session(settings) as session:
         row = session.get(models.TenantDeletionStep, (deletion_id, step))
         if row is None or row.state == lifecycle.STEP_DONE:
-            return
+            return True
         if _owned(session, deletion_id, owner) is None:
-            return
+            return False
         merged: dict[str, Any] = dict(row.counts or {})
         for key, value in (counts or {}).items():
             merged[key] = int(merged.get(key) or 0) + int(value)
@@ -166,6 +172,7 @@ def _finish_step(
         row.state = state
         row.finished_at = now()
         row.last_error = note
+        return True
 
 
 def _wait(settings: Settings, deletion_id: str, step: str, owner: str, reason: str) -> None:
@@ -286,9 +293,10 @@ def drive(settings: Settings, deletion_id: str, owner: str) -> str:
         try:
             counts = STEP_FUNCTIONS[step](ctx)
         except StepSkipped as skipped:
-            _finish_step(
+            if not _finish_step(
                 settings, deletion_id, step, owner, state=lifecycle.STEP_SKIPPED, note=str(skipped)
-            )
+            ):
+                return "lease_lost"
             continue
         except StepWaiting as waiting:
             _wait(settings, deletion_id, step, owner, str(waiting))
@@ -307,7 +315,11 @@ def drive(settings: Settings, deletion_id: str, owner: str) -> str:
             LOG.exception("Deletion %s failed at %s", deletion_id, step)
             _fail(settings, deletion_id, step, owner, exc)
             return "failed"
-        _finish_step(settings, deletion_id, step, owner, state=lifecycle.STEP_DONE, counts=counts)
+        if not _finish_step(
+            settings, deletion_id, step, owner, state=lifecycle.STEP_DONE, counts=counts
+        ):
+            LOG.warning("Lost the lease on deletion %s as %s finished", deletion_id, step)
+            return "lease_lost"
     LOG.warning("Tenant %s purged (deletion %s)", tenant_id, deletion_id)
     return "completed"
 

@@ -14,15 +14,17 @@ from it — the last is checked against the live schema, not against a list.
 
 Postgres-gated. The ClickHouse and object-storage steps run here against
 precise fakes (``tests/fake_s3.py`` and a recording ClickHouse client); the
-live runs against ClickHouse 24.8, an S3 gateway and JetStream are at the end,
-each gated on its own environment variable.
+live JetStream runs are gated on ``OCTO_NATS_URL`` as well, which the
+integration gate provides with Postgres. The live ClickHouse and S3 runs are in
+``tests/test_tenant_purge_live.py``: their stores are not part of that gate, so
+a skip of theirs must not be counted against the Postgres suite.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -81,6 +83,11 @@ def _clean_store_cache():
 
 @pytest.fixture()
 def settings(tmp_path):
+    yield from purge_settings(tmp_path)
+
+
+def purge_settings(tmp_path: Path) -> Iterator[Settings]:
+    """The ``settings`` fixture's body; tests/test_tenant_purge_live.py shares it."""
     s = make_settings(
         tmp_path,
         tenant_deletion_grace_days=0,
@@ -824,6 +831,12 @@ class _RecordingClickHouse:
     ``polls`` times for it: a step that submitted and counted at once would
     find its rows still there. ``fail_reason`` makes the pending mutation
     report ``latest_fail_reason`` instead of finishing.
+
+    ``others`` are mutations on the same tables that are not this purge's —
+    another tenant's ``UPDATE``, say — older than anything the step submits,
+    and never finishing on their own. As in ClickHouse, a table applies its
+    mutations in order: while one of them is failing, every later one reports
+    the same reason and does not progress.
     """
 
     def __init__(
@@ -838,9 +851,18 @@ class _RecordingClickHouse:
         self.crash_on: str | None = None
         self.polls = polls
         self.fail_reason = ""
-        # [table, uuid literal, polls seen]
+        # [table, uuid literal, polls seen] (+ mutation id, given on first sight)
         self.pending: list[list[Any]] = []
+        # [table, command, latest_fail_reason, mutation id]
+        self.others: list[list[Any]] = []
         self.statements: list[tuple[str, dict | None]] = []
+        self._ids = 0
+
+    def _id(self, entry: list[Any]) -> str:
+        if len(entry) < 4:
+            self._ids += 1
+            entry.append(f"mutation_{self._ids}.txt")
+        return entry[3]
 
     def command(self, statement: str, settings: dict | None = None) -> Any:
         self.statements.append((statement, settings))
@@ -862,23 +884,44 @@ class _RecordingClickHouse:
     def query(self, statement: str):
         self.statements.append((statement, None))
         assert "system.mutations" in statement, statement
+        assert "is_done = 0" in statement, statement
         database = statement.split("database = '")[1].split("'")[0]
-        name = statement.split("table = '")[1].split("'")[0]
+        table = f"{database}.{statement.split('table = ')[1].split(chr(39))[1]}"
         needle = statement.split("position(command, '")[1].split("'")[0]
-        rows = []
-        for entry in list(self.pending):
-            table, key, seen = entry
-            if table != f"{database}.{name}" or needle not in key:
+        others = [entry for entry in self.others if entry[0] == table]
+        # A failing mutation holds every later one on its table.
+        held = next((reason for _t, _c, reason, _id in others if reason), "")
+        ours = [entry for entry in self.pending if entry[0] == table]
+        rows: list[tuple[Any, ...]] = []
+        if "ORDER BY" in statement:
+            # The table's oldest unfinished mutation, whoever's it is.
+            for _t, command, reason, mutation_id in others:
+                rows.append((mutation_id, reason, int(needle in command)))
+            for entry in ours:
+                rows.append((self._id(entry), self.fail_reason or held, int(needle in entry[1])))
+            limit = int(statement.split("LIMIT ")[1].split()[0])
+
+            class _Oldest:
+                result_rows = rows[:limit]
+
+            return _Oldest()
+        assert "position(command" in statement.split("WHERE")[1], statement
+        for _t, command, reason, mutation_id in others:
+            if needle in command:
+                rows.append((mutation_id, reason))
+        for entry in list(ours):
+            if needle not in entry[1]:
                 continue
-            if self.fail_reason:
-                rows.append((f"mutation_{len(self.statements)}.txt", self.fail_reason))
+            reason = self.fail_reason or held
+            if reason:
+                rows.append((self._id(entry), reason))
                 continue
-            entry[2] = seen + 1
+            entry[2] += 1
             if entry[2] >= self.polls:
-                self.rows[table].pop(key, None)
+                self.rows[table].pop(entry[1], None)
                 self.pending.remove(entry)
             else:
-                rows.append((f"mutation_{len(self.statements)}.txt", ""))
+                rows.append((self._id(entry), ""))
 
         class _Result:
             result_rows = rows
@@ -904,8 +947,10 @@ def test_the_clickhouse_step_deletes_by_mutation_and_verifies(settings, monkeypa
     assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
     step = _step(settings, deletion_id, "clickhouse")
     assert "Memory limit exceeded" in step["last_error"]
-    # The first table's delete was recorded before the second failed.
-    assert step["counts"] == {"vulnerabilities": 7}
+    # The first table's delete was recorded before the second failed, and the
+    # second's count kept from before its ALTER — which may have reached
+    # ClickHouse although the client saw an error.
+    assert step["counts"] == {"vulnerabilities": 7, "open_ports_submitted": 2}
 
     fake.fail_on = None
     _make_due(settings, deletion_id)
@@ -935,12 +980,8 @@ def test_an_unreachable_broker_fails_the_jetstream_step_rather_than_skipping_it(
 
 
 # --------------------------------------------------------------------------- #
-# Live stores, each gated on its own variable
+# Live JetStream (ClickHouse and S3: tests/test_tenant_purge_live.py)
 # --------------------------------------------------------------------------- #
-
-CLICKHOUSE_URL = os.environ.get("OCTO_TEST_CLICKHOUSE_URL", "").strip()
-S3_ENDPOINT = os.environ.get("OCTO_TEST_S3_ENDPOINT", "").strip()
-
 
 @pytest.mark.skipif(not NATS_URL, reason="OCTO_NATS_URL not set (live JetStream)")
 def test_live_jetstream_retires_the_tenants_consumers_and_subjects(settings):
@@ -993,76 +1034,6 @@ def test_live_jetstream_retires_the_tenants_consumers_and_subjects(settings):
         assert nats_bus.jobs_consumer_name(neighbour, "dmz") in names
     finally:
         nats_bus.reset_bus_for_tests()
-
-
-@pytest.mark.skipif(not CLICKHOUSE_URL, reason="OCTO_TEST_CLICKHOUSE_URL not set (live ClickHouse)")
-def test_live_clickhouse_mutation_removes_the_tenant_and_only_the_tenant(settings):
-    from api.services import ch_transform, clickhouse_client
-
-    # The schema a fresh installation boots with: the compose/k8s init script.
-    setup = clickhouse_client.get_client(CLICKHOUSE_URL, database="default")
-    init = Path(__file__).resolve().parents[1] / "k8s/shapoclyack/base/clickhouse/init-local.sql"
-    for statement in init.read_text(encoding="utf-8").split(";"):
-        body = "\n".join(
-            line for line in statement.splitlines() if not line.strip().startswith("--")
-        ).strip()
-        if body:
-            setup.command(body)
-    client = clickhouse_client.get_client(CLICKHOUSE_URL)
-    stamp = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    for tenant_id, rows in ((VICTIM, 3), (NEIGHBOUR, 2)):
-        clickhouse_client.insert_rows(
-            client,
-            clickhouse_client.PORTS_TABLE,
-            clickhouse_client.PORT_COLUMNS,
-            [
-                [ch_transform.tenant_to_uuid(tenant_id), f"10.0.0.{i}", 80 + i, "tcp", "r", stamp]
-                for i in range(rows)
-            ],
-        )
-    settings.clickhouse_url = CLICKHOUSE_URL
-    deletion_id = _approve(settings)
-    assert _run_to_end(settings)[-1] == "completed"
-
-    def count(tenant_id: str) -> int:
-        return int(
-            client.command(
-                f"SELECT count() FROM {clickhouse_client.PORTS_TABLE} "
-                f"WHERE tenant_id = {purge_clickhouse._uuid_literal(tenant_id)}"  # noqa: SLF001
-            )
-        )
-
-    assert count(VICTIM) == 0
-    assert count(NEIGHBOUR) == 2
-    assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"]["open_ports"] == 3
-    client.command(f"TRUNCATE TABLE {clickhouse_client.PORTS_TABLE}")
-
-
-@pytest.mark.skipif(not S3_ENDPOINT, reason="OCTO_TEST_S3_ENDPOINT not set (live S3 gateway)")
-def test_live_object_storage_purge_against_an_s3_gateway(settings, tmp_path):
-    import boto3
-
-    bucket = f"purge-{uuid.uuid4().hex[:8]}"
-    boto3.client(
-        "s3",
-        endpoint_url=S3_ENDPOINT,
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        region_name="us-east-1",
-    ).create_bucket(Bucket=bucket)
-    settings.artifact_backend = "s3"
-    settings.artifact_s3_bucket = bucket
-    settings.artifact_s3_endpoint_url = S3_ENDPOINT
-    settings.artifact_s3_region = "us-east-1"
-    settings.artifact_s3_access_key_id = "test"
-    settings.artifact_s3_secret_access_key = "test"
-    settings.artifact_s3_addressing_style = "path"
-    settings.artifact_cache_dir = str(tmp_path / "cache")
-    counts = _purge_artifacts(settings)
-    store = artifact_store.get_store(settings)
-    assert _run_keys(store, VICTIM) == []
-    assert len(_run_keys(store, NEIGHBOUR)) == 6
-    assert counts["run_objects"] == 2 and counts["report_objects"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -1129,11 +1100,13 @@ def test_a_store_this_replica_does_not_know_fails_its_step_rather_than_skip_it(
     settings, step
 ):
     """Skipped only on the installation's word: a replica whose configuration
-    drifted must not record another replica's store as holding nothing."""
+    drifted must not record another replica's store as holding nothing.
+    (Approved where the configuration was whole: a replica like this one
+    refuses the approval itself — tests/test_tenant_lifecycle.py.)"""
+    deletion_id = _approve(settings)
     settings.tenant_purge_unused_stores = tuple(
         store for store in ("clickhouse", "jetstream") if store != step
     )
-    deletion_id = _approve(settings)
     assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
     failed = _step(settings, deletion_id, step)
     assert failed["state"] == "failed"
@@ -1268,3 +1241,170 @@ def test_a_replica_that_loses_its_lease_mid_batch_does_not_count_what_it_removed
     monkeypatch.setattr(store, "delete_prefix", delete_then_lose_the_lease)
     assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "lease_lost"
     assert _step(settings, deletion_id, "artifacts")["counts"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2
+# --------------------------------------------------------------------------- #
+
+
+def test_another_tenants_unfinished_mutation_is_neither_waited_for_nor_resubmitted_around(
+    settings, monkeypatch
+):
+    """Only the tenant's own mutations count as "an earlier attempt's": a
+    neighbour's long ``UPDATE`` on the same table is not one to wait for
+    instead of submitting the delete."""
+    victim = purge_clickhouse._uuid_literal(VICTIM)  # noqa: SLF001
+    neighbour = purge_clickhouse._uuid_literal(NEIGHBOUR)  # noqa: SLF001
+    table = "shapoclyack.shapoclyack_vulnerabilities"
+    fake = _RecordingClickHouse({table: {victim: 5, neighbour: 3}})
+    fake.others.append(
+        [table, f"UPDATE protocol = 'udp' WHERE tenant_id = {neighbour}", "", "mutation_7.txt"]
+    )
+    _clickhouse(settings, monkeypatch, fake)
+    # Waiting on the neighbour's mutation would fail the attempt at once.
+    monkeypatch.setattr(purge_clickhouse, "MAX_WAIT_SECONDS", 0)
+    deletion_id = _approve(settings)
+    assert _run_to_end(settings)[-1] == "completed"
+    alters = [stmt for stmt, _ in fake.statements if stmt.startswith("ALTER TABLE")]
+    assert alters == [f"ALTER TABLE {table} DELETE WHERE tenant_id = {victim}"]
+    assert fake.rows[table] == {neighbour: 3}
+    assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"]["vulnerabilities"] == 5
+
+
+def test_a_failing_mutation_of_another_tenant_is_named_as_what_holds_the_purge(
+    settings, monkeypatch
+):
+    """ClickHouse 24.8 applies a table's mutations in order: a neighbour's
+    failing ``UPDATE`` holds the tenant's ``DELETE`` behind it, and the delete
+    then reports the neighbour's reason as its own. The step names the one to
+    deal with — killing the tenant's own mutation would only have it submitted
+    again behind the same wall."""
+    victim = purge_clickhouse._uuid_literal(VICTIM)  # noqa: SLF001
+    neighbour = purge_clickhouse._uuid_literal(NEIGHBOUR)  # noqa: SLF001
+    table = "shapoclyack.shapoclyack_open_ports"
+    fake = _RecordingClickHouse({table: {victim: 2, neighbour: 1}})
+    reason = "Code: 395. DB::Exception: Value passed to 'throwIf' function is non-zero"
+    fake.others.append(
+        [
+            table,
+            f"UPDATE protocol = toString(throwIf(1)) WHERE tenant_id = {neighbour}",
+            reason,
+            "mutation_25.txt",
+        ]
+    )
+    _clickhouse(settings, monkeypatch, fake)
+    deletion_id = _approve(settings)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    error = _step(settings, deletion_id, "clickhouse")["last_error"]
+    assert "mutation_25.txt" in error and "not this tenant's" in error
+    assert "mutation_id = 'mutation_25.txt'" in error
+    assert reason in error
+    # Nothing tells the operator to kill the tenant's own, blocked mutation.
+    assert "give up on it" not in error
+    # Not the neighbour's command: the journal is no place for its values.
+    assert "throwIf(1)" not in error
+
+    fake.others.clear()
+    _make_due(settings, deletion_id)
+    assert _run_to_end(settings)[-1] == "completed"
+    assert len([stmt for stmt, _ in fake.statements if stmt.startswith("ALTER TABLE")]) == 1
+    assert fake.rows[table] == {neighbour: 1}
+    assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"]["open_ports"] == 2
+
+
+def test_rows_a_mutation_removed_between_two_attempts_are_still_counted(settings, monkeypatch):
+    """The count is taken before the ``ALTER`` and kept with the step: the
+    attempt that sees the mutation finished counts nothing left to remove."""
+    victim = purge_clickhouse._uuid_literal(VICTIM)  # noqa: SLF001
+    table = "shapoclyack.shapoclyack_vulnerabilities"
+    fake = _RecordingClickHouse({table: {victim: 5}}, polls=100)
+    _clickhouse(settings, monkeypatch, fake)
+    monkeypatch.setattr(purge_clickhouse, "MAX_WAIT_SECONDS", 0)
+    deletion_id = _approve(settings)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "failed"
+    assert "still running" in _step(settings, deletion_id, "clickhouse")["last_error"]
+
+    # ClickHouse finishes it while the step waits for its backoff.
+    fake.pending.clear()
+    fake.rows[table].pop(victim)
+    _make_due(settings, deletion_id)
+    assert _run_to_end(settings)[-1] == "completed"
+    assert len([stmt for stmt, _ in fake.statements if stmt.startswith("ALTER TABLE")]) == 1
+    assert _deletion(settings, deletion_id)["outcome"]["stores"]["clickhouse"] == {
+        "vulnerabilities": 5,
+        "open_ports": 0,
+        "controls": 0,
+    }
+
+
+def test_a_step_that_returns_after_losing_its_lease_is_not_recorded_as_done(
+    settings, monkeypatch
+):
+    """A step can finish without another checkpoint after its lease went to a
+    second replica; the bookkeeping is the new owner's, not the loser's."""
+    deletion_id = _approve(settings)
+
+    def returns_after_the_lease_went(ctx):
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                update(models.TenantDeletion)
+                .where(models.TenantDeletion.deletion_id == deletion_id)
+                .values(lease_owner="replica-2")
+            )
+        return {"jobs_cancelled": 1}
+
+    monkeypatch.setitem(tenant_purge.STEP_FUNCTIONS, "quiesce", returns_after_the_lease_went)
+    assert tenant_purge.run_once(settings, owner="replica-1")["outcome"] == "lease_lost"
+    step = _step(settings, deletion_id, "quiesce")
+    assert step["state"] == "running"
+    assert step["counts"] == {}
+
+
+@pytest.mark.skipif(not NATS_URL, reason="OCTO_NATS_URL not set (live JetStream)")
+def test_live_a_legacy_copy_that_names_another_tenant_is_left_where_it_is(settings):
+    """The copy is found by its message id alone; its ``tenant_id`` header is
+    what says whose it is, and a copy naming the neighbour is not the victim's
+    to delete — whatever its id."""
+    from api.services import nats_bus
+
+    nats_bus.reset_bus_for_tests()
+    bus = nats_bus.get_bus(NATS_URL)
+    assert bus is not None
+    victim = f"acme{uuid.uuid4().hex[:6]}"
+    neighbour = f"{victim}-eu"
+    for tenant_id in (victim, neighbour):
+        tenants_service.create_tenant(name=tenant_id, tenant_id=tenant_id)
+    msg_id = f"{victim}-ingest-1"
+    assert bus.publish_json(
+        nats_bus.ingest_results_subject(victim),
+        {"tenant_id": victim, "run_id": "r1"},
+        msg_id=msg_id,
+        headers={"tenant_id": victim},
+    )
+    assert bus.publish_json(
+        nats_bus.SUBJECT_INGEST_RAW,
+        {"tenant_id": neighbour, "run_id": "r1"},
+        msg_id=f"{msg_id}-legacy",
+        headers={"tenant_id": neighbour},
+    )
+
+    def legacy_copies() -> list[str]:
+        found, seq = [], 1
+        while (message := bus.next_message(nats_bus.STREAM_INGEST, nats_bus.SUBJECT_INGEST_RAW, seq)):
+            seq = int(message.seq) + 1
+            if dict(message.headers or {}).get("Nats-Msg-Id") == f"{msg_id}-legacy":
+                found.append(dict(message.headers or {}).get("tenant_id"))
+        return found
+
+    assert legacy_copies() == [neighbour]
+    settings.nats_url = NATS_URL
+    deletion_id = _approve(settings, victim)
+    try:
+        assert _run_to_end(settings)[-1] == "completed"
+        counts = _deletion(settings, deletion_id)["outcome"]["stores"]["jetstream"]
+        assert counts["ingest_results"] == 1
+        assert counts["legacy_ingest_copies"] == 0
+        assert legacy_copies() == [neighbour]
+    finally:
+        nats_bus.reset_bus_for_tests()
