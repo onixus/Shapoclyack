@@ -14,7 +14,8 @@ All notable changes to Shapoclyack are documented in this file.
   other active tenant are signed out, the tenant's service tokens and
   provisioning keys are revoked (unless asked to keep them), agents' JWTs are
   refused on every request (a heartbeat naming a job being stopped is answered
-  with the stop and nothing else, so #360's channel still reaches the sensor),
+  with the stop and nothing else, so #360's channel still reaches the sensor —
+  unless its key was revoked before the tenant closed),
   queued scans are cancelled and running agent scans stopped, and schedules,
   SLA escalation, ticket sync,
   webhooks and notifications skip the tenant. Resuming restores what was paused
@@ -32,8 +33,11 @@ All notable changes to Shapoclyack are documented in this file.
   the console; the journal keeps a tombstone of counts per store, the audit
   trail is kept, and a deleted tenant's id is never reused. A store that is
   not configured on the replica running its step fails the step unless it is
-  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`), and the console lists
-  the deletion journal with each tombstone. See
+  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`; the k8s base declares
+  both, the patches that enable a store take it off), and an approval on a
+  replica that would fail that way is refused up front. The console lists the
+  deletion journal with each tombstone, a page at a time. Downgrading
+  migration 0066 is refused while a purge is under way or blocked. See
   [docs/tenant-lifecycle.md](docs/tenant-lifecycle.md), including how to
   re-apply deletions after restoring a backup.
 - **Per-tenant retention, legal hold, and data-subject requests for console

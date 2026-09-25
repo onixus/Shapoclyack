@@ -48,15 +48,19 @@ would otherwise outlive a status check:
 
 **How a running sensor scan is stopped.** The #360 stop travels on the
 heartbeat's answer, so that one answer still reaches a closed tenant's agent:
-a heartbeat whose JWT this installation signed and has not expired — with its
-provisioning key revoked by the suspension or not — that names a job the agent
-holds in `cancelling` is answered `200` with `cancel_requested: true` and
-nothing else (no lease renewal, no `last_seen_at`, no remote settings). The
-agent signals its scanner's process group within one heartbeat interval (30 s),
-and its upload of the partial result is refused. Every other heartbeat of the
-agent, and every other request, is a 401. A sensor whose JWT has expired, or
-that does not heartbeat before the grace reaper closes the job, is not told —
-stop the sensor host if it matters.
+a heartbeat whose JWT this installation signed and has not expired, whose
+provisioning key is live or was revoked **by the closure** (revoked at or
+after `tenants.closed_at`, the time the tenant left `active`), and that names a
+job *this* agent holds in `cancelling`, is answered `200` with
+`{"agent_id", "current_job_id", "cancel_requested": true}` and nothing else —
+not the agent row an ordinary heartbeat returns, no lease renewal, no
+`last_seen_at`, no remote settings. The agent signals its scanner's process
+group within one heartbeat interval (30 s), and its upload of the partial
+result is refused. Every other heartbeat of the agent, and every other
+request, is a 401 — including one whose key an operator had revoked before the
+tenant was closed: the closure does not revive it. A sensor whose JWT has
+expired, or that does not heartbeat before the grace reaper closes the job, is
+not told — stop the sensor host if it matters.
 
 Running *local* scans (the API's own subprocess) cannot be stopped this way or
 any other; the deletion's first step waits for them.
@@ -102,10 +106,14 @@ A tenant pending deletion is resumed by cancelling the deletion first (it stays
    typed again, after the grace period, by a platform admin **other than the
    requester** (`OCTO_TENANT_DELETION_TWO_PERSON`, on by default; 403
    otherwise — #348's rule; turn it off only on an installation with a single
-   platform admin). In one transaction: the tenant row is locked
-   (`SELECT … FOR UPDATE`, the lock `place_hold` takes), a legal hold refuses
-   with 409, and only then the tenant becomes `deleting` and the journal
-   `purging`. From here there is no way back.
+   platform admin). Refused with 409, before anything changes, on a replica
+   whose purge could not finish for want of configuration: `OCTO_CLICKHOUSE_URL`
+   or `OCTO_NATS_URL` unset and that store not declared unused
+   (`OCTO_TENANT_PURGE_UNUSED_STORES`) — the step would fail on every attempt
+   and leave the tenant `deleting`. In one transaction: the tenant row is
+   locked (`SELECT … FOR UPDATE`, the lock `place_hold` takes), a legal hold
+   refuses with 409, and only then the tenant becomes `deleting` and the
+   journal `purging`. From here there is no way back.
 
 The purge worker (`api/services/tenant_purge`, every replica,
 `OCTO_TENANT_PURGE_ENABLED`) takes it from there.
@@ -121,7 +129,7 @@ tenant is left in its store, and records what it removed:
 | `outbox` | Postgres | `nats_outbox`, `run_publications` — before JetStream, so the relay cannot republish into purged subjects |
 | `jetstream` | NATS | Durable consumers `octo-agents-{tenant}[-{group}]` (matched by **filter subject**, never by name — `acme`'s group `eu` and tenant `acme-eu` share a name); subjects `jobs.scan.{t}[.>]`, `ingest.results.{t}`, `ingest.endpoint_inventory.{t}`, `events.asset.{t}.>`, `events.workflow.{t}.>`; the tenant's copies on the deprecated shared `ingest.raw_results` subject, located by message id next to the tenant's own message and deleted by sequence. A copy not located there ages out with the stream (`OCTO_NATS_INGEST_MAX_AGE_SECONDS`) and is counted as `legacy_ingest_unlocated`. `events.audit.{t}` is kept (see §6). Skipped only when the installation declares it runs no NATS (`OCTO_TENANT_PURGE_UNUSED_STORES=jetstream`); `OCTO_NATS_URL` unset on the replica running the step otherwise **fails** it |
 | `artifacts` | volume or bucket | `runs/_tenants/{segment}/` (#427) with screenshots and staging trees; flat runs of earlier releases whose `tenant.json` names the tenant; `job_inputs/{job_id}/` for every job row; `reports/{tenant}/` and any report `storage_path` outside it; this replica's working copies. A flat run whose `tenant.json` cannot be read **fails** the step — repair or remove it and retry |
-| `clickhouse` | ClickHouse | `ALTER TABLE … DELETE WHERE tenant_id = <uuid5>` on the three analytics tables (a mutation, not a lightweight delete: the bytes go, not just a mask), submitted without waiting and then watched in `system.mutations` with the lease renewed between polls — a retry waits for this tenant's unfinished mutation rather than submitting another, and one that keeps failing fails the step with ClickHouse's `latest_fail_reason` (`KILL MUTATION` to give up on it); then a count that must be 0. Skipped only when declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES=clickhouse`); `OCTO_CLICKHOUSE_URL` unset otherwise **fails** the step |
+| `clickhouse` | ClickHouse | `ALTER TABLE … DELETE WHERE tenant_id = <uuid5>` on the three analytics tables (a mutation, not a lightweight delete: the bytes go, not just a mask), submitted without waiting and then watched in `system.mutations` with the lease renewed between polls — a retry waits for this tenant's unfinished mutation rather than submitting another, and one that keeps failing fails the step with ClickHouse's `latest_fail_reason` and the `KILL MUTATION` that gives up on it. A table applies its mutations in order, so another tenant's (or an operator's) failing mutation holds this tenant's delete behind it and lends it its reason: the step's error then names that mutation — "not this tenant's", with its own `KILL MUTATION` — since killing the tenant's own would only have the next attempt submit it again behind the same one. Then a count that must be 0. The rows are counted before each `ALTER` and that count is kept with the step (`<table>_submitted`) until the mutation is seen finished, so rows removed while the step waited for its backoff are still in the tombstone. Skipped only when declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES=clickhouse`); `OCTO_CLICKHOUSE_URL` unset otherwise **fails** the step |
 | `postgres` | Postgres | Every table that names the tenant, children before parents, in batches of `OCTO_TENANT_PURGE_BATCH_SIZE`; the list is `api/services/tenant_purge/postgres.py` and a test checks it against the live schema |
 | `finalize` | Postgres | Counts every planned table (a row a late writer slipped in sends the Postgres steps round again), disables accounts whose **only** membership was this tenant (an account with no membership would otherwise act in `default` with its global role), deletes the memberships and the tenant row, and writes the tombstone — one transaction |
 
@@ -212,8 +220,29 @@ before requesting a deletion. It also does not re-read the tenant status on an
 agent's JWT, which the default revocation of provisioning keys covers.
 
 **Set `OCTO_TENANT_PURGE_UNUSED_STORES` first** on an installation without
-ClickHouse or NATS: a purge step whose store is not configured fails until the
-store is either configured or declared unused.
+ClickHouse or NATS: the approval of a purge is refused (409) on a replica where
+a store is neither configured nor declared unused, and a purge step whose store
+is not configured on the replica running it fails until it is. The shipped
+manifests declare it: `k8s/shapoclyack/base` sets
+`OCTO_TENANT_PURGE_UNUSED_STORES=clickhouse,jetstream` next to its empty
+`OCTO_CLICKHOUSE_URL`/`OCTO_NATS_URL`, and every patch that sets a URL takes its
+store off the list (`overlays/agents` and `examples/nats-api-patch.yaml`:
+`clickhouse`; `overlays/prod-ha` and `examples/clickhouse-ingest-api-patch.yaml`:
+empty). A hand-written patch that enables a store must do the same — a
+configured URL wins over the declaration, so forgetting only costs the approval
+check its warning. `tests/test_k8s_tenant_purge_stores.py` renders every
+overlay and checks it.
+
+**`tenants.closed_at`** is set on every tenant that is already closed when
+0066 runs (to the upgrade's time), so a provisioning key revoked before the
+upgrade never counts as revoked by the closure (§2).
+
+**Downgrading 0066** is refused while any deletion is `purging` or `blocked`:
+the tenant would come back `suspended` on the previous release with part of
+its data gone, and a resume would put it into service like that. Let the purge
+finish (lift a hold and retry a blocked one) first; export
+`GET /api/tenants/deletions` if the journal is needed, since the downgrade
+drops it.
 
 **Merge order with #311 (row-level security).** #311 must merge after this
 change: its migration discovers the tables that carry a `tenant_id` when it
