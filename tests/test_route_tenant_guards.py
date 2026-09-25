@@ -10,8 +10,8 @@ This test walks the dependency tree of every route the application mounts, with
 every optional router switched on, and requires one of:
 
 * a **tenant guard** — ``require_tenant``, ``require_permission``,
-  ``require_path_tenant_permission`` (console callers) or ``require_agent``
-  (sensors) — anywhere in the tree; or
+  ``require_path_tenant_permission`` (console callers) or ``require_agent`` /
+  ``require_agent_heartbeat`` (sensors) — anywhere in the tree; or
 * an entry in :data:`CROSS_TENANT_ROUTES` below, keyed by the endpoint
   function, with the reason it may answer without one.
 
@@ -49,6 +49,9 @@ TENANT_GUARDS = frozenset(
         auth.require_permission(permission_catalog.AUDIT_READ).__qualname__,
         auth.require_path_tenant_permission(permission_catalog.AUDIT_READ).__qualname__,
         auth.require_agent.__qualname__,
+        # The heartbeat's variant (#325): the same token, the same tenant
+        # declared — it only lets a closed tenant's agent hear "stop".
+        auth.require_agent_heartbeat.__qualname__,
     }
 )
 
@@ -131,6 +134,42 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.auth:create_tenant": _PLATFORM_ADMIN,
     "api.routes.auth:set_tenant_quota": _PLATFORM_ADMIN,
     "api.routes.auth:clear_tenant_quota": _PLATFORM_ADMIN,
+    # Legal hold (#332): platform.legal_hold.manage, which no tenant role holds
+    # — a tenant that could release its own hold could let evidence age out.
+    # (A tenant's own retention routes are behind require_path_tenant_permission.)
+    "api.routes.retention:list_legal_holds": (
+        _PLATFORM_ADMIN + " (platform.legal_hold.manage): every hold in force, across tenants"
+    ),
+    "api.routes.retention:place_legal_hold": _PLATFORM_ADMIN + " (platform.legal_hold.manage)",
+    "api.routes.retention:release_legal_hold": _PLATFORM_ADMIN + " (platform.legal_hold.manage)",
+    # The tenant lifecycle (#325): platform.tenant.lifecycle, platform admin
+    # only. Suspension ends other tenants' members' sessions and revokes the
+    # tenant's credentials; the journal outlives the tenant it describes.
+    "api.routes.tenant_lifecycle:get_lifecycle": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle): one tenant's status, hold and "
+        "deletion journal, answered from the journal after the tenant is purged"
+    ),
+    "api.routes.tenant_lifecycle:suspend_tenant": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle): ends members' sessions across "
+        "their tenants, revokes the tenant's tokens and keys"
+    ),
+    "api.routes.tenant_lifecycle:resume_tenant": _PLATFORM_ADMIN + " (platform.tenant.lifecycle)",
+    "api.routes.tenant_lifecycle:request_tenant_deletion": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle)"
+    ),
+    "api.routes.tenant_lifecycle:cancel_tenant_deletion": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle)"
+    ),
+    "api.routes.tenant_lifecycle:approve_tenant_deletion": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle; a second platform admin)"
+    ),
+    "api.routes.tenant_lifecycle:retry_tenant_deletion": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle)"
+    ),
+    "api.routes.tenant_lifecycle:list_tenant_deletions": (
+        _PLATFORM_ADMIN + " (platform.tenant.lifecycle): the deletion journal of every "
+        "tenant, tombstones included"
+    ),
     "api.routes.maintenance:get_tenant_calendar": _PLATFORM_ADMIN + " (the provider's view of one customer's calendar)",
     "api.routes.config:update_config": _PLATFORM_ADMIN + " (installation-wide scanner overrides)",
     "api.routes.system:get_system_status": (
@@ -156,6 +195,10 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.users:set_user_disabled": _PLATFORM_ADMIN,
     "api.routes.users:revoke_user_sessions": _PLATFORM_ADMIN,
     "api.routes.users:delete_user": _PLATFORM_ADMIN,
+    # Data-subject requests (#332): one account's rows in every tenant it
+    # belonged to or acted in — the answer is across tenants by definition.
+    "api.routes.users:export_user_data": _PLATFORM_ADMIN + " (a data-subject access request)",
+    "api.routes.users:erase_user": _PLATFORM_ADMIN + " (a data-subject erasure request)",
     "api.routes.users:change_own_password": _ACCOUNT,
     "api.routes.mfa:mfa_status": _ACCOUNT,
     "api.routes.mfa:setup_totp": _ACCOUNT,
