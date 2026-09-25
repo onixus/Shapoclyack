@@ -8,7 +8,9 @@
 # targets an operator approved, and those are arbitrary addresses. The scope
 # check is the API's (#226), applied before a job is queued. An installation
 # that knows its target ranges can add an egress policy of its own here — DNS,
-# the API Service in network-scan, and those ranges.
+# the API Service in network-scan, and those ranges:
+# examples/networkpolicy-agent.example.yaml, whose placeholder ranges have to
+# be replaced before the sensor can scan anything.
 #
 # Inert for hostNetwork pods (overlays/prod), which a NetworkPolicy does not
 # select on most CNIs.

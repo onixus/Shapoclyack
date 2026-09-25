@@ -1,21 +1,51 @@
-# Restrict remote scanner agents: DNS + API (+ optional NATS) only.
-# Apply with the example sensor (examples/agent-deployment.example.yaml).
+# Egress for the in-cluster sensor — the scanner-executor (#338,
+# base/scanner-executor/) in namespace network-scan-executor: DNS, the API, and
+# the address ranges it is approved to scan. Nothing else.
+#
+# AS SHIPPED, THIS LETS THE SENSOR SCAN NOTHING. The last rule holds
+# documentation prefixes (RFC 5737, RFC 3849) that no network routes; until
+# they are replaced with this installation's approved ranges every probe is
+# dropped. A dropped probe looks like a host that is down, so the run does not
+# fail: it completes and reports nothing alive. After applying, scan one host
+# known to be up and check that it shows.
+#
+# An example and not part of base, for the reason
+# base/scanner-executor/networkpolicy.yaml gives: base cannot know the ranges.
+# What a job may scan is decided by the API's scope check (#226) before the job
+# is queued; this policy is a second, network-level fence around the same list,
+# and the two are kept in step by hand. A range in a tenant's scope but missing
+# here is the silent empty scan above.
+#
+# The other half — which clients may reach the API — is a policy in
+# network-scan: networkpolicy-api-ingress.example.yaml.
+#
+# Inert for hostNetwork pods (overlays/prod), which a NetworkPolicy does not
+# select on most CNIs; there, the node's own firewall is the fence.
+#
+# A sensor in a cluster other than the API's (agent-deployment.example.yaml)
+# takes the same policy with `component: agent` in both selectors, and the API
+# rule replaced by an ipBlock for the address its OCTO_API_URL resolves to,
+# port 443.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: shapoclyack-agent-egress
+  name: shapoclyack-scanner-executor-egress
+  namespace: network-scan-executor
   labels:
     app.kubernetes.io/name: shapoclyack
-    app.kubernetes.io/component: agent
+    app.kubernetes.io/component: scanner-executor
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: shapoclyack
-      app.kubernetes.io/component: agent
+      app.kubernetes.io/component: scanner-executor
   policyTypes:
     - Egress
   egress:
-    # DNS
+    # Cluster DNS: the API's Service name and every scan target. The scanner
+    # hands dnsx the pod's /etc/resolv.conf nameserver as -r, so this rule
+    # covers dnsx too. A sensor with dns.resolvers set in its scanner config
+    # asks those addresses instead and needs UDP/TCP 53 to them added here.
     - to:
         - namespaceSelector: {}
       ports:
@@ -23,47 +53,46 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Shapoclyack API (ClusterIP)
+    # The API in network-scan (OCTO_API_URL,
+    # http://shapoclyack-api.network-scan.svc:8080): token exchange, heartbeat,
+    # job claim and the results upload. One peer with both selectors, so a pod
+    # has to match both. As two list items they would mean "any pod in
+    # network-scan, or an api pod in any namespace".
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network-scan
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: api
       ports:
         - protocol: TCP
           port: 8080
-    # NATS JetStream (optional Phase 1 job pull)
+    # No NATS rule: the executor claims over HTTP, holds no NATS password, and
+    # base's NATS policy admits only the API. If you enable NATS
+    # (docs/k8s-hardening.md § NATS for the executor), add TCP 4222 to the nats
+    # pods in network-scan here in the same change.
+    #
+    # The approved target ranges. REPLACE BOTH CIDRs BEFORE APPLYING. Without
+    # a rule like this one the sensor cannot scan at all, and the placeholders
+    # match no real address, so as shipped they permit nothing.
+    #
+    # Use one ipBlock per range in the tenants' approved scan scope; `except:`
+    # carves out addresses inside a range that must never be probed. `ports`
+    # is left out on purpose. Which ports a scan opens is up to the scan
+    # profile (top_ports, nuclei, NSE), and a rule without ports also passes
+    # UDP and, on Calico and Cilium, the ICMP that fping sends.
+    #
+    # Not covered here, and needed only when a tenant enables them: stages
+    # that contact third parties instead of targets. These are ct (crt.sh,
+    # certspotter, OTX), asn, ownership (RDAP), cloud, cloudflare,
+    # related_domains, credential_leaks and mail_posture
+    # (scanner/pipeline/scan_policy.py), plus the NSE `vulners` script in the
+    # `vuln` profiles; base/config/k8s.yaml avoids it with `vuln-offline`. Each
+    # of them needs its provider's addresses added to this policy.
     - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: shapoclyack
-              app.kubernetes.io/component: nats
-      ports:
-        - protocol: TCP
-          port: 4222
----
-# API pod: allow ingress from agents + Ingress controller; egress for vulners/DD optional.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: shapoclyack-api-ingress
-  labels:
-    app.kubernetes.io/name: shapoclyack
-    app.kubernetes.io/component: api
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: shapoclyack
-      app.kubernetes.io/component: api
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: shapoclyack
-              app.kubernetes.io/component: agent
-        - namespaceSelector: {}
-      ports:
-        - protocol: TCP
-          port: 8080
+        - ipBlock:
+            cidr: 192.0.2.0/24 # REPLACE: RFC 5737 TEST-NET-1
+        - ipBlock:
+            cidr: 2001:db8::/32 # REPLACE: RFC 3849 documentation prefix

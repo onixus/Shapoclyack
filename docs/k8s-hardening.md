@@ -160,7 +160,10 @@ Everything else in the baseline applies to it: seccomp `RuntimeDefault` (which
 still allows `socket()` for `AF_INET`/`AF_INET6`/`AF_PACKET`; containerd's
 profile blocks only `AF_ALG` and `AF_VSOCK`), non-root, `drop: [ALL]` before
 the two adds, read-only image, no service-account token. A NetworkPolicy denies
-it all ingress: it listens on nothing.
+it all ingress: it listens on nothing. Egress stays open in base, because its
+destinations are the targets. `examples/networkpolicy-agent.example.yaml`
+narrows egress to DNS, the API and the approved target ranges; replace its
+placeholder ranges first, or the executor scans nothing.
 
 `allowPrivilegeEscalation: true` also lets a setuid-root binary run as uid 0,
 so from the first release built after `shapoclyack-0.46-0922` the image has

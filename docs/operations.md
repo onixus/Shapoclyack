@@ -787,6 +787,9 @@ CronJob plus the separate Secret holding that role's DSN — is
 [`k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml`](../k8s/shapoclyack/examples/audit-retention-cronjob.example.yaml);
 it is not in the base kustomization, because applying it before the GRANT layout
 above would either fail on every run or run as the API's role and prove nothing.
+It goes into `network-scan` beside Postgres. It also carries a NetworkPolicy that
+admits its pods to Postgres, which otherwise admits only the API and the backup
+job (`base/networkpolicy-datastores.yaml`).
 
 #### Recommended GRANT layout
 
@@ -919,8 +922,12 @@ python -m api.services.audit_syslog_forwarder
 ```
 
 `k8s/shapoclyack/examples/audit-syslog-forwarder.example.yaml` has the
-Deployment, the Secret and a NetworkPolicy that allows egress to the SIEM port
-and nothing else. Run one replica. Configuration is in
+Deployment and its Secret, all in `network-scan` beside the NATS credential it
+reads. It also has an egress NetworkPolicy allowing only DNS, the SIEM port and
+whichever of NATS or Postgres the source reads. Two more policies admit the
+forwarder to NATS and to Postgres, which otherwise admit only the API
+(`base/networkpolicy-datastores.yaml`); keep the one your source needs. Run one
+replica. Configuration is in
 [configuration.md](configuration.md) under `OCTO_AUDIT_SYSLOG_*`; the shape is
 `OCTO_AUDIT_SYSLOG_URL=tls://siem.example:6514` plus `_CA` (and `_CERT`/`_KEY`
 when the collector wants a client certificate). `tcp://` works and warns on
@@ -3038,14 +3045,17 @@ state that a scan cannot recreate.
 
 ### NetworkPolicy decision
 
-`k8s/shapoclyack/examples/networkpolicy-agent.example.yaml` deliberately remains
-an example instead of a base resource. NetworkPolicy enforcement and ingress
-controller labels vary by CNI/environment, and the platform can legitimately
-need environment-specific egress to DNS, S3-compatible backup storage, NATS,
-ClickHouse, webhooks, scanners, vulnerability sources, SMTP, or ticketing
-systems. Applying a guessed restrictive policy in base can silently break
-backup and integrations; applying the current example unchanged would also
-permit API ingress from any namespace.
+`k8s/shapoclyack/examples/networkpolicy-agent.example.yaml` (the sensor's egress,
+in `network-scan-executor`) and `networkpolicy-api-ingress.example.yaml` (who
+may reach the API, in `network-scan`) deliberately remain examples instead of
+base resources. NetworkPolicy enforcement and ingress controller labels vary by
+CNI/environment, and the platform can legitimately need environment-specific
+egress to DNS, S3-compatible backup storage, NATS, ClickHouse, webhooks,
+scanners, vulnerability sources, SMTP, or ticketing systems. Applying a guessed
+restrictive policy in base can silently break backup and integrations. The
+sensor example shows how that goes wrong: its target rule holds documentation
+ranges. Applied unchanged, it lets the sensor reach the API and nothing it is
+meant to scan, and the scans come back empty instead of failing.
 
 Production deployments should copy/patch the example into their overlay and use
 explicit namespace/pod selectors plus the exact external egress destinations
@@ -3078,6 +3088,12 @@ is a base resource: one `Ingress`-only policy per datastore, default-deny by
 omission, allowing exactly the pod labels above. Nothing about it is
 environment-specific, and getting it wrong fails loudly (a pod cannot reach its
 database) rather than silently, which is the opposite of the egress case.
+
+Workloads that only some installations run, such as the two audit examples
+(retention CronJob → Postgres, syslog forwarder → NATS or Postgres), are not in
+that list. Each one ships an extra ingress policy for the datastore it uses, in
+its own file. NetworkPolicies add up, so applying the example admits it and
+deleting the example takes the access away again.
 
 Two things it does not cover, both by design:
 
