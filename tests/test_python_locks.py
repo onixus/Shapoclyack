@@ -130,6 +130,59 @@ def test_every_lock_on_disk_is_one_the_script_regenerates():
     assert {p.name for p in REPO_ROOT.glob("*.lock")} == set(LOCKS)
 
 
+def _write_agent_lock(installer: Path, out: Path) -> bytes:
+    """What scripts/install-agent.sh's write_agent_lock() writes, by running it."""
+    text = installer.read_text(encoding="utf-8")
+    function = re.search(r"^write_agent_lock\(\) \{\n.*?^\}\n", text, re.M | re.S)
+    assert function, "write_agent_lock() moved in install-agent.sh"
+    subprocess.run(["bash", "-c", function.group(0) + 'write_agent_lock "$1"', "bash", str(out)], check=True)
+    return out.read_bytes()
+
+
+def test_the_script_rewrites_the_installer_copy_of_the_agent_lock(tmp_path: Path):
+    """scripts/install-agent.sh carries requirements-agent.lock inline (#476),
+    and tests/test_agent_install_pins.py holds the two byte-equal. A relock
+    that left the copy behind would fail there and wait for a hand paste; the
+    script rewrites it, and nothing else in the installer.
+
+    A stub `uv` writes a lock that differs from the committed one, so the copy
+    can only match it if the script put it there."""
+    work = tmp_path / "repo"
+    (work / "scripts").mkdir(parents=True)
+    for name in ("scripts/lock-python-deps.sh", "scripts/install-agent.sh", *LOCKS, *LOCKS.values()):
+        target = work / name
+        target.write_bytes((REPO_ROOT / name).read_bytes())
+        target.chmod((REPO_ROOT / name).stat().st_mode)
+    uv_version = re.search(r'^UV_VERSION="([^"]+)"$', LOCK_SCRIPT.read_text(encoding="utf-8"), re.M).group(1)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "uv").write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$1" == "--version" ]]; then echo "uv {uv_version}"; exit 0; fi\n'
+        'for arg; do [[ "$arg" == --output-file=* ]] && out="${arg#--output-file=}"; done\n'
+        'printf "# relocked %s\\nnats-py==9.9.9 \\\\\\n    --hash=sha256:%064d\\n" "$out" 0 > "$out"\n',
+        encoding="utf-8",
+    )
+    (bindir / "uv").chmod(0o755)
+    result = subprocess.run(
+        [str(work / "scripts" / "lock-python-deps.sh")],
+        env=dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    relocked = (work / "requirements-agent.lock").read_bytes()
+    assert relocked.startswith(b"# relocked requirements-agent.lock\n"), relocked
+    assert _write_agent_lock(work / "scripts" / "install-agent.sh", tmp_path / "written.lock") == relocked
+    # Only the heredoc's body changed: the installer around it is the committed one.
+    body = re.compile(r"(?ms)^    cat <<'LOCK' > \"\$1\"\n.*?^LOCK\n")
+    installed = (work / "scripts" / "install-agent.sh").read_text(encoding="utf-8")
+    committed = (REPO_ROOT / "scripts" / "install-agent.sh").read_text(encoding="utf-8")
+    assert body.sub("", installed) == body.sub("", committed)
+    assert (work / "scripts" / "install-agent.sh").stat().st_mode == (REPO_ROOT / "scripts" / "install-agent.sh").stat().st_mode
+
+
 @pytest.mark.parametrize("lock", sorted(LOCKS))
 def test_lock_header_is_the_command_renovate_replays(lock: str):
     text = (REPO_ROOT / lock).read_text(encoding="utf-8")

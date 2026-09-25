@@ -13,10 +13,15 @@
 #
 # One lock per install set, named for the input it is compiled from:
 #
-#   requirements-pip.lock  <- requirements-pip.txt  pip itself, upgraded first in every image
-#   requirements.lock      <- requirements.txt      scanner image (Dockerfile)
-#   requirements-api.lock  <- requirements-api.txt  api and all-in-one images
-#   requirements-dev.lock  <- requirements-dev.txt  CI (PR gate, full CI, Jenkins)
+#   requirements-pip.lock   <- requirements-pip.txt    pip itself, upgraded first in every image
+#   requirements.lock       <- requirements.txt        scanner image (Dockerfile)
+#   requirements-api.lock   <- requirements-api.txt    api and all-in-one images
+#   requirements-dev.lock   <- requirements-dev.txt    CI (PR gate, full CI, Jenkins)
+#   requirements-agent.lock <- requirements-agent.txt  native sensor hosts (scripts/install-agent.sh)
+#
+# scripts/install-agent.sh carries requirements-agent.lock inline, since
+# `curl … | bash` brings no other file to the host (#476); the script
+# rewrites that copy from the lock it has just compiled.
 #
 # --universal resolves once for every platform and Python >= 3.11 instead of
 # for the machine running this script: the images build for linux/amd64 and
@@ -57,7 +62,34 @@ LOCKS=(
   "requirements.lock:requirements.txt"
   "requirements-api.lock:requirements-api.txt"
   "requirements-dev.lock:requirements-dev.txt"
+  "requirements-agent.lock:requirements-agent.txt"
 )
+
+# The copy of requirements-agent.lock in the installer: everything between
+# its heredoc line and the LOCK terminator. tests/test_agent_install_pins.py
+# runs the heredoc and compares it with the lock byte for byte.
+AGENT_INSTALLER="scripts/install-agent.sh"
+AGENT_LOCK_START="    cat <<'LOCK' > \"\$1\""
+
+sync_agent_installer() {
+  local starts ends tmp
+  starts="$(grep -cxF -- "${AGENT_LOCK_START}" "${AGENT_INSTALLER}" || true)"
+  ends="$(grep -cx 'LOCK' "${AGENT_INSTALLER}" || true)"
+  if [[ "${starts}" != "1" || "${ends}" != "1" ]]; then
+    echo "[lock] ${AGENT_INSTALLER}: expected one '${AGENT_LOCK_START}' and one 'LOCK' line;" >&2
+    echo "[lock]   paste requirements-agent.lock between them by hand" >&2
+    exit 1
+  fi
+  tmp="$(mktemp)"
+  awk -v start="${AGENT_LOCK_START}" -v lock="requirements-agent.lock" '
+    $0 == "LOCK" { copied = 0 }
+    !copied { print }
+    $0 == start { while ((getline line < lock) > 0) print line; copied = 1 }
+  ' "${AGENT_INSTALLER}" > "${tmp}"
+  # cat, not mv: the installer keeps its mode and stays the same file.
+  cat "${tmp}" > "${AGENT_INSTALLER}"
+  rm -f "${tmp}"
+}
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "[lock] uv not found; install it with: python -m pip install uv==${UV_VERSION}" >&2
@@ -84,3 +116,5 @@ for entry in "${LOCKS[@]}"; do
     --universal --no-strip-extras --generate-hashes --python-version=3.11 \
     --output-file="${lock}" "${input}" "$@"
 done
+echo "[lock] requirements-agent.lock -> ${AGENT_INSTALLER}"
+sync_agent_installer

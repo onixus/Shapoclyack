@@ -271,6 +271,7 @@ in the test with the reason.
 | `requirements.lock` | `requirements.txt` | scanner image |
 | `requirements-api.lock` | `requirements-api.txt` | api and all-in-one images |
 | `requirements-dev.lock` | `requirements-dev.txt` | PR gate, full CI, Jenkins |
+| `requirements-agent.lock` | `requirements-agent.txt` | native sensor hosts, from the copy in `scripts/install-agent.sh` ([#476](https://github.com/onixus/Shapoclyack/pull/476)) |
 
 Installs use `pip install --require-hashes --only-binary=:all:`: every
 transitive dependency is pinned, every file checked against its sha256, and no
@@ -283,6 +284,11 @@ wheel of each pinned version. After editing a `requirements*.txt`:
 python -m pip install uv==0.12.18      # the version the script checks for
 scripts/lock-python-deps.sh            # --upgrade-package NAME to move one transitive pin
 ```
+
+`scripts/install-agent.sh` carries the agent lock inline, because `curl … |
+bash` brings no other file to a sensor host; the script rewrites that copy
+from the lock it has just compiled, and `tests/test_agent_install_pins.py`
+holds the two byte-equal.
 
 The script refuses a uv other than the one it pins, because another release
 can order or annotate the output differently and turn every relock into a
@@ -333,7 +339,11 @@ Dockerfiles and manifests.
 - Shapoclyack's own images are not touched; releases re-pin them.
 
 A PR that bumps an input without the lock (Renovate misconfigured, or a hand
-edit) fails the PR gate on `tests/test_python_locks.py`.
+edit) fails the PR gate on `tests/test_python_locks.py`. Renovate relocks
+`requirements-agent.lock` but does not write its copy in
+`scripts/install-agent.sh`: such a PR fails on
+`tests/test_agent_install_pins.py` until `scripts/lock-python-deps.sh` is run
+on its branch.
 
 ## Not covered yet
 

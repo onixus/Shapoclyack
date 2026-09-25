@@ -5,12 +5,8 @@
 # scripts/install-agent.sh does not install this file: it installs
 # requirements-agent.lock, compiled from it with hashes, and carries a copy of
 # that lock inline because `curl … | bash` brings no other file to the host.
-# Change a pin here, then regenerate the lock and its copy:
-#
-#   uv pip compile --universal --no-strip-extras --generate-hashes \
-#     --python-version=3.11 --output-file=requirements-agent.lock requirements-agent.txt
-#
-# and paste the result between the markers in scripts/install-agent.sh
+# Change a pin here, then run scripts/lock-python-deps.sh: it regenerates the
+# lock with the others and rewrites the copy in scripts/install-agent.sh
 # (tests/test_agent_install_pins.py fails until both agree).
 
 # JetStream job delivery when OCTO_NATS_URL is set. Same pin as the scanner
