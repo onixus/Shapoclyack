@@ -49,6 +49,9 @@ EXECUTORLESS = frozenset({"overlays/kind-restore"})
 # would double the stand's slowest step for a difference that only matters on
 # a cluster somebody else can reach.
 ONE_IMAGE_STANDS = frozenset({"overlays/kind-dev", "overlays/kind-enrichment", "overlays/kind-restore"})
+# Overlays that pull the same API image from a mirror (#339): renamed, with
+# the digest the release pinned.
+MIRRORED_API_IMAGE = {"overlays/airgap": "registry.internal.example/shapoclyack/shapoclyack-api"}
 
 
 def _docs(target: str) -> tuple[dict, ...]:
@@ -270,14 +273,20 @@ def test_the_api_runs_the_image_without_the_scanner_toolchain(target: str) -> No
     """The API no longer scans, so the all-in-one image's setcap'd scanners are
     attack surface in the one pod that holds every credential (#338 review).
     Dockerfile.api is the same API and web console without them. The migration
-    runs from the same image, so the two cannot disagree on the schema."""
+    runs from the same image, so the two cannot disagree on the schema.
+    overlays/airgap (#339) pulls it from the internal registry: renamed, and
+    by the digest base pins — before the rename the air-gapped API pulled
+    ghcr.io, which the air gap does not reach."""
     api = _api(target)
     if target in LOCAL_SCAN_OVERLAYS or target in ONE_IMAGE_STANDS:
         pytest.skip(f"{target} runs the all-in-one image on purpose")
+    pinned = _container(_api("base"), "api")["image"].split("@")[1]
     for name in ("api", "migrate"):
         image = _container(api, name)["image"]
-        assert image.split("@")[0].rsplit(":", 1)[0] == API_IMAGE, f"{target} {name}: {image}"
+        expected = MIRRORED_API_IMAGE.get(target, API_IMAGE)
+        assert image.split("@")[0].rsplit(":", 1)[0] == expected, f"{target} {name}: {image}"
         assert "@sha256:" in image, f"{target} {name}: not pinned by digest"
+        assert image.split("@")[1] == pinned, f"{target} {name}: not the digest base pins"
 
 
 def test_production_replaces_a_single_api_rather_than_surging_it() -> None:
