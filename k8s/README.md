@@ -23,9 +23,17 @@ together: `docker manifest inspect ghcr.io/onixus/shapoclyack-aio:<tag>` or
 crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922
 ```
 
-Never hand-edit one half. The `kind-dev` / `kind-restore` overlays override the
-whole reference with a locally built tag, so a digest in base does not get in
-the way of `scripts/dev-up.sh`.
+Never hand-edit one half. The same release pins live outside `k8s/` and are
+replaced in the same PR: the all-in-one image in `scripts/install-server.py`
+(`DEFAULT_IMAGE`), and the scanner image the sensors run, in
+`api/services/agents.py` (`SENSOR_IMAGE`, printed by the console's deployment
+snippets) and `scripts/install-agent.sh` (the `AGENT_IMAGE` default).
+`git grep -l <old digest>` finds every one; `tests/test_agent_install_pins.py`
+fails if the two sensor pins disagree.
+
+The `kind-dev` / `kind-restore` overlays override the whole reference with a
+locally built tag, so a digest in base does not get in the way of
+`scripts/dev-up.sh`.
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 

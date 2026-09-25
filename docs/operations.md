@@ -1590,14 +1590,24 @@ readable by every local user on that host for as long as the process runs. The
 SSH push always uses it.
 
 With `--docker` it is a thin wrapper: it writes `/etc/shapoclyack/agent.env`
-(`0600`) and runs `ghcr.io/onixus/shapoclyack-scanner:latest` (override with
-`AGENT_IMAGE`) as the container `shapoclyack-agent` (`--restart always`, host
-network, `NET_RAW`/`NET_ADMIN`, `--env-file` pointing at that file, entrypoint
-`python -m agent`), then exits. The credential is in the env file rather than in `-e`
-arguments, which would be in the docker client's own argv.
+(`0600`) and runs the released scanner image, pinned as
+`ghcr.io/onixus/shapoclyack-scanner:<release tag>@sha256:<digest>` (override
+with `AGENT_IMAGE`; `--help` prints the current default), as the container
+`shapoclyack-agent` (`--restart always`, host network, `NET_RAW`/`NET_ADMIN`,
+`--env-file` pointing at that file, entrypoint `python -m agent`), then exits.
+The credential is in the env file rather than in `-e` arguments, which would be
+in the docker client's own argv. The console's `docker run`, Compose and
+Kubernetes snippets name the same pinned image (`SENSOR_IMAGE` in
+`api/services/agents.py`). Both are re-pinned with the `k8s/` manifests after
+each release is published, so an API built from a new tag keeps handing out the
+previous release's sensor until that pin lands.
 
 Without it, the native path installs Python and a virtualenv under
-`/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
+`/opt/shapoclyack-agent`, installs the sensor's Python dependencies into it from
+`requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
+with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
+not in the lock is refused, and only wheels are taken, which exist for x86_64 and
+aarch64 with glibc or musl — creates a `shapoclyack` system account, writes
 `/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
 systemd is present — installs and enables `shapoclyack-agent.service`
 (`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without

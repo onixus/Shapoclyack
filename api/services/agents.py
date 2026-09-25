@@ -1049,6 +1049,19 @@ DEPLOYMENT_KEY_LABEL = "Web UI Deployment Key"
 # so it happens on POST, never as a side effect of a GET.
 DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
 
+# What the container and Kubernetes snippets run: the published scanner image,
+# the one that carries the `agent` package. There is no `shapoclyack` image —
+# the snippets used to name one, and the pull failed.
+#
+# Pinned as tag@digest for the reason the k8s/ manifests and
+# scripts/install-server.py are: the tag is a name its owner can move, and
+# these snippets end up in containers that restart for good. The release
+# re-pins it along with them, and with the AGENT_IMAGE default in
+# scripts/install-agent.sh; tests/test_agent_install_pins.py keeps the two
+# equal. Until that pin lands, an API from a new tag hands out the sensor of
+# the release before it.
+SENSOR_IMAGE = "ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922@sha256:7eb82c8dab4071517ee7af8825bb8df58d7706afac4eb6e1da6ca4759f44fa66"
+
 
 def get_deployment_snippets(
     tenant_id: str,
@@ -1066,6 +1079,13 @@ def get_deployment_snippets(
     invoke ``python -m agent`` with no arguments, so it does not end up in the
     long-lived argv of the agent process, which every local user on that host
     can read. The variable names are the ones ``agent/worker.py`` reads.
+
+    They run :data:`SENSOR_IMAGE` the way ``install-agent.sh --docker`` does.
+    Its ENTRYPOINT is ``scanner.main``, so ``python -m agent`` has to replace
+    the entrypoint: passed as a command it becomes arguments to the scanner,
+    which exits at once. And naabu carries NET_RAW+NET_ADMIN file
+    capabilities that Docker's default set does not grant, so without
+    ``--cap-add`` its exec fails with EPERM on the first scan.
     """
     key_minted = bool(provisioning_key)
     if not provisioning_key:
@@ -1079,21 +1099,25 @@ def get_deployment_snippets(
     )
     docker_run = (
         f"docker run -d --name shapoclyack-agent --restart always "
+        f"--network host --cap-add NET_RAW --cap-add NET_ADMIN "
         f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
         f"-e OCTO_TENANT_ID={tenant_id} "
-        f"ghcr.io/onixus/shapoclyack:latest python -m agent"
+        f"--entrypoint python {SENSOR_IMAGE} -m agent"
     )
-    docker_compose = f"""version: '3.8'
-services:
+    docker_compose = f"""services:
   shapoclyack-agent:
-    image: ghcr.io/onixus/shapoclyack:latest
+    image: {SENSOR_IMAGE}
     container_name: shapoclyack-agent
     restart: always
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     environment:
       - OCTO_API_URL={clean_server}
       - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
       - OCTO_TENANT_ID={tenant_id}
-    command: python -m agent
+    entrypoint: ["python", "-m", "agent"]
 """
     kubernetes_yaml = f"""apiVersion: apps/v1
 kind: Deployment
@@ -1112,7 +1136,7 @@ spec:
     spec:
       containers:
       - name: agent
-        image: ghcr.io/onixus/shapoclyack:latest
+        image: {SENSOR_IMAGE}
         env:
         - name: OCTO_API_URL
           value: "{clean_server}"
@@ -1121,6 +1145,14 @@ spec:
         - name: OCTO_TENANT_ID
           value: "{tenant_id}"
         command: ["python", "-m", "agent"]
+        securityContext:
+          # The scanners get these through file capabilities, which a
+          # no_new_privs container (allowPrivilegeEscalation: false) does not
+          # grant: naabu then falls back to a connect scan without a word.
+          allowPrivilegeEscalation: true
+          capabilities:
+            drop: ["ALL"]
+            add: ["NET_RAW", "NET_ADMIN"]
 """
     return {
         "tenant_id": tenant_id,
