@@ -854,3 +854,65 @@ def test_pre_16_hints_are_valid_sql_there() -> None:
     hint = tenant_scope._grant_hint("api", 150008)
     assert "WITH INHERIT" not in hint
     assert hint.startswith("ALTER ROLE api NOINHERIT; GRANT shapoclyack_tenant TO api")
+
+
+# --------------------------------------------------------------------------- #
+# The wave it merged with: #332 (retention, legal hold), #325 (tenant
+# lifecycle, purge), #334 (scrape-time metrics)
+# --------------------------------------------------------------------------- #
+
+
+def test_deletion_steps_are_held_to_their_deletions_tenant(enforce) -> None:
+    """``tenant_deletion_steps`` (#325) has no ``tenant_id``, like ``asset_tags``:
+    a step belongs to the deletion it is part of, and ``tenant_deletions`` is
+    itself held to the tenant — so a step is visible exactly when its deletion
+    is, and one tenant's transaction cannot read how another's purge went."""
+    ids = {tenant_id: f"rls-deletion-{tenant_id}" for tenant_id in (TENANT_A, TENANT_B)}
+    with get_session(POSTGRES_URL) as session:
+        for tenant_id, deletion_id in ids.items():
+            session.add(
+                models.TenantDeletion(
+                    deletion_id=deletion_id, tenant_id=tenant_id, state="pending",
+                    reason="rls probe", requested_by="admin", requested_at=_now(),
+                    purge_after=_now(),
+                )
+            )
+        session.flush()
+        for tenant_id, deletion_id in ids.items():
+            session.add(
+                models.TenantDeletionStep(
+                    deletion_id=deletion_id, step="postgres", position=0, last_error=tenant_id
+                )
+            )
+    try:
+        with tenant_scope.tenant(TENANT_A):
+            with get_session(POSTGRES_URL) as session:
+                seen = session.execute(
+                    select(models.TenantDeletionStep.last_error).where(
+                        models.TenantDeletionStep.deletion_id.in_(ids.values())
+                    )
+                ).scalars().all()
+                assert seen == [TENANT_A]
+                changed = session.execute(
+                    models.TenantDeletionStep.__table__.update()
+                    .where(models.TenantDeletionStep.deletion_id == ids[TENANT_B])
+                    .values(state="done")
+                )
+                assert changed.rowcount == 0
+            with pytest.raises(DBAPIError, match="row-level security"):
+                with get_session(POSTGRES_URL) as session:
+                    session.add(
+                        models.TenantDeletionStep(
+                            deletion_id=ids[TENANT_B], step="planted", position=1
+                        )
+                    )
+                    session.flush()
+    finally:
+        with get_session(POSTGRES_URL) as session:
+            # Cascades to the steps.
+            session.execute(
+                delete(models.TenantDeletion).where(
+                    models.TenantDeletion.deletion_id.in_(ids.values())
+                )
+            )
+

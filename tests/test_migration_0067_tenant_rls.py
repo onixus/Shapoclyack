@@ -29,6 +29,11 @@ from tests.conftest import POSTGRES_URL, requires_postgres
 
 pytestmark = requires_postgres
 
+# Pinned rather than "head": the test is about this revision alone (relinked
+# onto #325's 0066 at merge), with the ownership split applied just before it.
+BEFORE = "0066_tenant_lifecycle"
+REVISION = "0067_tenant_rls"
+
 
 @pytest.fixture
 def owner_database(monkeypatch: pytest.MonkeyPatch):
@@ -89,7 +94,7 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
     owner_database, capfd
 ) -> None:
     as_owner, as_admin, owner, audit_owner = owner_database
-    migrate._upgrade("0064_asset_services_retro_match")  # noqa: SLF001
+    migrate._upgrade(BEFORE)  # noqa: SLF001
     admin = create_engine(as_admin, future=True)
     holder = admin.connect()
     try:
@@ -105,7 +110,7 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
         holder.execute(text("LOCK TABLE agents IN ACCESS SHARE MODE"))
         started = time.monotonic()
         with pytest.raises(DBAPIError, match="lock timeout"):
-            migrate._upgrade("head")  # noqa: SLF001
+            migrate._upgrade(REVISION)  # noqa: SLF001
         assert time.monotonic() - started < 60
         done = _protected(as_admin)
         # Tables before it in the run were each committed on their own...
@@ -115,7 +120,7 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
         holder.rollback()
 
         # The retry finishes the rest.
-        migrate._upgrade("head")  # noqa: SLF001
+        migrate._upgrade(REVISION)  # noqa: SLF001
         done = _protected(as_admin)
         expected = set(tenant_scope.tenant_tables(models.Base.metadata))
         assert done == expected - {"audit_events"}
@@ -147,7 +152,7 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
             engine.dispose()
 
         # And the rollback, as the same role, leaves that table to its owner too.
-        migrate._downgrade("0064_asset_services_retro_match")  # noqa: SLF001
+        migrate._downgrade(BEFORE)  # noqa: SLF001
         assert _protected(as_admin) == {"audit_events"}
         assert marker in capfd.readouterr().err
     finally:

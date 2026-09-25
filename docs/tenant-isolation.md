@@ -43,15 +43,18 @@ Row security is `ENABLE`d, not `FORCE`d: the table owner and a superuser still
 bypass it, which is what keeps every worker working unchanged (below).
 
 Tenant tables are every table with a `tenant_id` column, found in the catalog
-(50 policies today: 49 such tables and `asset_tags`). Three differ:
+(54 policies today: 52 such tables, `asset_tags` and `tenant_deletion_steps`).
+Three differ:
 
 * `roles` and `role_permissions` keep the built-in rows (`tenant_id = ''`,
   every tenant's) readable; restrictive `FOR UPDATE` and `FOR DELETE` policies
   stop a tenant rewriting, taking over or removing them.
-* `asset_tags` holds tenant data without a `tenant_id` column. Its policy is
+* `asset_tags` and `tenant_deletion_steps` hold tenant data without a
+  `tenant_id` column. Their policy is that the parent row is visible —
   `EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = asset_tags.asset_id)`, and
-  the `assets` table is itself held to the tenant — so a tag is visible and
-  writable exactly when its asset is.
+  the same through `tenant_deletions` for a purge step (#325) — and the parent
+  table is itself held to the tenant, so the row is visible and writable
+  exactly when its parent is (`tenant_scope.PARENT_SCOPED_TABLES`).
 * `audit_events` is an ordinary tenant table: its platform-level rows
   (`tenant_id` NULL) are neither read nor written by a tenant-scoped
   transaction. (The ORM's `INSERT … RETURNING` reads the row back, so even a

@@ -1,7 +1,7 @@
 """Row-level security on every tenant table: the second line behind WHERE (#311)
 
 Revision ID: 0067_tenant_rls
-Revises: 0064_asset_services_retro_match
+Revises: 0066_tenant_lifecycle
 Create Date: 2026-09-24
 
 Until this revision tenant isolation in Postgres was the ``tenant_id``
@@ -52,15 +52,16 @@ Every table in the schema with a ``tenant_id`` column
     in its own migration, and ``tests/test_tenant_rls.py`` fails
     until it has them.
 
-    Four tables differ. ``roles`` and ``role_permissions`` keep the built-in
+    Five tables differ. ``roles`` and ``role_permissions`` keep the built-in
     rows (``tenant_id = ''``, every tenant's) readable, and a tenant can
     neither update, take over nor delete them (restrictive ``FOR UPDATE`` and
     ``FOR DELETE`` policies on top). ``audit_events`` is an ordinary tenant
     table here: its platform-level rows (``tenant_id`` NULL) are neither read
     nor written by a tenant-scoped transaction — a tenant request that records
-    a platform act has to do it in the system scope. ``asset_tags`` holds
-    tenant data without a ``tenant_id`` column; its policy is "the tag's asset
-    is visible", which the assets table's own policy decides.
+    a platform act has to do it in the system scope. ``asset_tags`` and
+    ``tenant_deletion_steps`` (#325) hold tenant data without a ``tenant_id``
+    column; their policy is "the parent row is visible" — the tag's asset, the
+    step's deletion — which the parent table's own policy decides.
 
 Grants
     ``SELECT, INSERT, UPDATE, DELETE`` on every table but ``alembic_version``,
@@ -103,7 +104,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0067_tenant_rls"
-down_revision: Union[str, None] = "0064_asset_services_retro_match"
+down_revision: Union[str, None] = "0066_tenant_lifecycle"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -241,7 +242,15 @@ DECLARE
     rel regclass := (quote_ident(current_schema()) || '.' || quote_ident(t))::regclass;
     q text := quote_ident(t);
     tenant_match text := 'tenant_id = shapoclyack_current_tenant()';
-    parent_match text := 'EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = asset_tags.asset_id)';
+    -- The tables of tenant_scope.PARENT_SCOPED_TABLES, each held to the
+    -- tenant through the parent row it belongs to; NULL for every other table.
+    parent_match text := CASE t
+        WHEN 'asset_tags' THEN
+            'EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = asset_tags.asset_id)'
+        WHEN 'tenant_deletion_steps' THEN
+            'EXISTS (SELECT 1 FROM tenant_deletions d'
+            || ' WHERE d.deletion_id = tenant_deletion_steps.deletion_id)'
+    END;
     statements text[] := ARRAY[]::text[];
     seq text;
     owner name;
@@ -274,10 +283,11 @@ BEGIN
             || ('CREATE POLICY shapoclyack_tenant_delete ON ' || q
                 || ' AS RESTRICTIVE FOR DELETE TO shapoclyack_tenant USING ('
                 || tenant_match || ')');
-    ELSIF t = 'asset_tags' THEN
-        -- Tenant data without a tenant_id column: a tag is its asset's, and
-        -- the assets table is itself held to the tenant, so a tag is visible
-        -- and writable exactly when its asset is.
+    ELSIF parent_match IS NOT NULL THEN
+        -- Tenant data without a tenant_id column: a tag is its asset's, a
+        -- purge step its deletion's (#325), and the parent table is itself
+        -- held to the tenant, so the row is visible and writable exactly when
+        -- its parent is.
         statements := statements
             || ('CREATE POLICY shapoclyack_tenant_isolation ON ' || q
                 || ' AS RESTRICTIVE FOR ALL TO shapoclyack_tenant USING (' || parent_match
@@ -355,15 +365,16 @@ _CALL = {
     "unprotect": "SELECT pg_temp.shapoclyack_unprotect(:t)",
 }
 
-# Every table with a tenant_id column, plus asset_tags (tenant data scoped
-# through its asset). From the catalog rather than a list, so a table an
-# earlier revision added is covered however the chain is ordered at merge.
+# Every table with a tenant_id column, plus asset_tags and tenant_deletion_steps
+# (tenant data scoped through its parent row). From the catalog rather than a
+# list, so a table an earlier revision added is covered however the chain is
+# ordered at merge.
 _TENANT_TABLES = """
 SELECT c.relname
   FROM pg_class c
  WHERE c.relnamespace = current_schema()::regnamespace
    AND c.relkind IN ('r', 'p')
-   AND (c.relname = 'asset_tags' OR EXISTS (
+   AND (c.relname IN ('asset_tags', 'tenant_deletion_steps') OR EXISTS (
         SELECT 1 FROM pg_attribute a
          WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped))
  ORDER BY c.relname

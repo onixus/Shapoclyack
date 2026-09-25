@@ -329,8 +329,9 @@ _NARROWED_PRIVILEGES = {"audit_events": ("SELECT", "INSERT")}
 _FULL_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
 #: Tenant data without a ``tenant_id`` column, held to the tenant through the
-#: parent row it belongs to (0067): a tag is visible when its asset is.
-PARENT_SCOPED_TABLES = {"asset_tags": "assets"}
+#: parent row it belongs to (0067): a tag is visible when its asset is, a purge
+#: step when its deletion is (#325).
+PARENT_SCOPED_TABLES = {"asset_tags": "assets", "tenant_deletion_steps": "tenant_deletions"}
 
 _verified: set[str] = set()
 

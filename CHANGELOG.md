@@ -10,8 +10,9 @@ All notable changes to Shapoclyack are documented in this file.
   ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
   isolation in the database was the `WHERE tenant_id` of each query and nothing
   else. Migration `0067_tenant_rls` puts a restrictive policy on every table
-  with a `tenant_id` (49 today, plus `asset_tags`, held to its asset's tenant)
-  that applies to one new NOLOGIN role,
+  with a `tenant_id` (52 today, plus `asset_tags` and #325's
+  `tenant_deletion_steps`, each held to its parent row's tenant) that applies
+  to one new NOLOGIN role,
   `shapoclyack_tenant`; every transaction of a tenant-scoped request — a console
   user's, a **service token's** (pinned at authentication, so a `require_role`
   route it reaches is held to its tenant too) or a **sensor's** — switches to
