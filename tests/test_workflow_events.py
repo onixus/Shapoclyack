@@ -208,7 +208,15 @@ def _queued(settings: Settings, kind: str | None = None) -> list[models.WebhookD
     read the column.
     """
     with get_session(settings.postgres_url) as session:
-        rows = session.query(models.WebhookDelivery).all()
+        # Enqueue order, not heap order: see ``_queued`` in test_sla_escalation.
+        rows = (
+            session.query(models.WebhookDelivery)
+            .order_by(
+                models.WebhookDelivery.created_at.asc(),
+                models.WebhookDelivery.delivery_id.asc(),
+            )
+            .all()
+        )
         return [
             row.payload for row in rows if kind is None or row.event_kind == kind
         ]

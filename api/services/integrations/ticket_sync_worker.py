@@ -91,6 +91,7 @@ def subscriptions(settings: Settings) -> list[dict[str, Any]]:
 
     Credentials are decrypted here, once per tick, and never logged.
     """
+    from api.services import tenants as tenants_service
     from api.services.integrations import webhooks as webhooks_service
 
     endpoints: dict[tuple[str, str], dict[str, Any]] = {}
@@ -100,6 +101,9 @@ def subscriptions(settings: Settings) -> list[dict[str, Any]]:
             .where(
                 models.WebhookSubscription.enabled.is_(True),
                 models.WebhookSubscription.transport.in_(TICKET_TRANSPORTS),
+                # A suspended tenant's tracker is not polled (#325): what it
+                # reads back would be written into findings nobody may see.
+                models.WebhookSubscription.tenant_id.in_(tenants_service.active_tenant_ids()),
             )
             .order_by(models.WebhookSubscription.created_at.desc())
         ).all()

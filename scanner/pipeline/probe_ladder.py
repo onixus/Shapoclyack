@@ -63,6 +63,7 @@ def build_naabu_sn_command(
         # to start as soon as any probe flag is named.
         "-wn",
         "-silent",
+        "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
         "-rate",
         str(rate),
         "-retries",
@@ -151,6 +152,7 @@ def tcp_port_probe(
             "-p",
             port_arg,
             "-silent",
+            "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
             "-rate",
             str(rate),
             "-retries",
