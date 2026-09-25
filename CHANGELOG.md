@@ -497,6 +497,28 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The scanner's SSRF gate judges the IPv4 address behind NAT64.**
+  `safe_http.is_public_address`, the check behind every `safe_http.get`
+  (RDAP, MTA-STS, DNS-over-HTTPS) and the DNS-hygiene AXFR probe, took
+  `ipaddress`'s word that
+  `64:ff9b::a00:5` is global. On a sensor whose IPv6-only egress goes through
+  NAT64 that address is 10.0.0.5, so a redirect, a bootstrap entry or an NS
+  record written by the scanned party could point the sensor at its own
+  network. An address under the well-known prefix `64:ff9b::/96` is now judged
+  by the IPv4 address in its low 32 bits, as an IPv4-mapped one already was:
+  DNS64 answers for public hosts still work, `64:ff9b::a9fe:a9fe` does not.
+  Refused outright, whatever the interpreter's special-purpose table says:
+  the local-use NAT64 prefix `64:ff9b:1::/48` (where the IPv4 address sits
+  depends on the operator's prefix length), 6to4 `2002::/16`, and the
+  retired IPv4-translated `::ffff:0:0:0/96` and IPv4-compatible `::/96`,
+  which `ipaddress` also calls global (`::7f00:1` passed). Python 3.9 passed
+  the local-use prefix and 6to4 as well. A network-specific NAT64
+  prefix chosen by the sensor's operator is still indistinguishable from
+  ordinary global space. The API's webhook boundary
+  (`api/services/outbound_targets.check_addresses`, used by
+  `integrations/delivery.py`) has the same gap for `64:ff9b::/96`,
+  `::ffff:0:0:0/96` and `::/96` and is not changed here; the SSH deployer's
+  policy already refuses all three as reserved.
 - **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
   route matched — every 404 on an API without the console build, every CORS
