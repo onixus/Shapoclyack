@@ -227,7 +227,13 @@ class SlaEscalationWorker:
         self._prune(now)
 
         try:
-            tenant_ids = [tenant["tenant_id"] for tenant in tenants_service.list_tenants()]
+            # Active tenants only (#325): a suspended customer's on-call is not
+            # paged, and a tenant being purged is not written markers for.
+            tenant_ids = [
+                tenant["tenant_id"]
+                for tenant in tenants_service.list_tenants()
+                if tenant["status"] == tenants_service.STATUS_ACTIVE
+            ]
         except Exception:  # noqa: BLE001 - a tenant-store hiccup must not kill the thread
             self._stats["errors"] += 1
             LOG.exception("SLA escalation: could not list tenants")
@@ -524,6 +530,8 @@ class SlaEscalationWorker:
         neither, so the budget that bounds every other fan-out did not bound
         this one.
         """
+        from api.services import tenants as tenants_service
+
         limit = max(1, int(self._settings.sla_escalation_max_findings))
         naive_now = _naive(now)
         cutoff = naive_now - timedelta(seconds=self._settings.agent_stale_seconds)
@@ -537,6 +545,10 @@ class SlaEscalationWorker:
             # measure and its own window -- endpoint-device staleness at
             # ``OCTO_ENDPOINT_STALE_HOURS``, hours rather than minutes.
             models.Agent.agent_kind == agents_service.KIND_SCANNER,
+            # A suspended tenant's agents are silent because the suspension
+            # refuses them (#325); announcing that as an outage, once per agent,
+            # is the platform paging the customer about its own decision.
+            models.Agent.tenant_id.in_(tenants_service.active_tenant_ids()),
         )
         if self._agent_cursor is not None:
             query = query.where(

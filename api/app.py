@@ -36,6 +36,8 @@ from api.routes import usage as usage_routes
 from api.routes import compliance as compliance_routes
 from api.routes import config as config_routes
 from api.routes import reports as reports_routes
+from api.routes import retention as retention_routes
+from api.routes import tenant_lifecycle as tenant_lifecycle_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import service_tokens as service_tokens_routes
@@ -57,6 +59,7 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_agent_mgmt
 from api.services import endpoint_retention
 from api.services import health as health_service
+from api.services import retention_policy
 from api.services import screenshot_retention
 from api.services import sla_escalation
 from api.services import software_match_worker
@@ -80,6 +83,7 @@ from api.services.reports import dispatcher as report_dispatcher
 from api.services import service_tokens as service_tokens_service
 from api.services import schedule_dispatcher
 from api.services import tracing as tracing_service
+from api.services import tenant_purge
 from api.services import tenants as tenants_service
 from api.services import users as users_service
 from api.services import wordlists as wordlists_service
@@ -141,9 +145,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # back takes no per-row claim, so every replica would poll the same tenant's
     # tickets and write the same lifecycle events (#347).
     ticket_sync_worker.start_worker(settings)
+    # Every replica, like the run publisher: an approved deletion is claimed
+    # with FOR UPDATE SKIP LOCKED and held on a lease its batches renew (#325).
+    tenant_purge.start_worker(settings)
     try:
         yield
     finally:
+        tenant_purge.stop_worker()
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
         run_publisher.stop_worker()
@@ -189,6 +197,10 @@ def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Before anything else: a retention floor the operator configured and the
+    # platform cannot apply must stop the API, not be discovered by the first
+    # tenant admin whose PUT it would have refused (#332).
+    retention_policy.validate_configuration(settings)
     # Before the tenant store opens the first session: the engine is a lazy
     # singleton keyed by URL, so pool sizing that arrives after something has
     # already built it would apply to nobody (#335).
@@ -370,6 +382,8 @@ def create_app() -> FastAPI:
     app.include_router(passkeys_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
     app.include_router(rbac_routes.router, prefix="/api")
+    app.include_router(retention_routes.router, prefix="/api")
+    app.include_router(tenant_lifecycle_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")

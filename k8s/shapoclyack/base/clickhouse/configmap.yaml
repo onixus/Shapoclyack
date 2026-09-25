@@ -67,9 +67,11 @@ data:
           </networks>
           <profile>default</profile>
           <quota>default</quota>
-          <!-- 0, not 1: the API only reads and inserts. With access_management
-               on, anyone reaching 8123 with this account could CREATE USER and
-               keep access across a password rotation. -->
+          <!-- 0, not 1: the API reads, inserts, and deletes one tenant's rows
+               when a tenant is purged (ALTER DELETE, #325) — none of which
+               needs user management. With access_management on, anyone
+               reaching 8123 with this account could CREATE USER and keep access
+               across a password rotation. -->
           <access_management>0</access_management>
         </default>
         <!-- The backup CronJob's account (#333), so that pod does not hold the

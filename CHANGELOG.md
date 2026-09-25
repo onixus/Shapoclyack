@@ -44,6 +44,74 @@ All notable changes to Shapoclyack are documented in this file.
   a local stack, the scripts under busybox as in the pod; recorded at 10k
   assets (off-cluster, shared 4 vCPU): console-path RTO 4.7–6.6 s, all stores
   7.0–10.6 s.
+- **Suspending, resuming and deleting a tenant, with a journaled purge
+  ([#325](https://github.com/onixus/Shapoclyack/issues/325)).** `suspended` was a
+  status every gate refused and nothing could set. `POST /api/tenants/{id}/suspend`
+  and `…/resume` (new permission `platform.tenant.lifecycle`, platform admins,
+  step-up, audited with a reason) now cut every path in at once: members with no
+  other active tenant are signed out, the tenant's service tokens and
+  provisioning keys are revoked (unless asked to keep them), agents' JWTs are
+  refused on every request (a heartbeat naming a job being stopped is answered
+  with the stop and nothing else, so #360's channel still reaches the sensor —
+  unless its key was revoked before the tenant closed),
+  queued scans are cancelled and running agent scans stopped, and schedules,
+  SLA escalation, ticket sync,
+  webhooks and notifications skip the tenant. Resuming restores what was paused
+  but not what was revoked, and moves overdue schedules to their next
+  occurrence instead of firing a burst. Deletion is two steps and, by default,
+  two people: a request with the tenant id typed (the tenant is suspended, a
+  grace period of `OCTO_TENANT_DELETION_GRACE_DAYS` starts, cancellable), then
+  an approval after it by another platform admin. A new worker purges the
+  tenant from JetStream (consumers matched by filter subject, subjects, the
+  legacy ingest copies), the artifact store (tenant-scoped and legacy flat runs,
+  job inputs, reports), ClickHouse (mutations, verified by count) and every
+  Postgres table in batches, re-checking the legal hold (#332) under the tenant
+  row lock before each batch; a hold stops it and leaves it `blocked`. Each
+  step is resumable after a crash, retried with backoff and visible per store in
+  the console; the journal keeps a tombstone of counts per store, the audit
+  trail is kept, and a deleted tenant's id is never reused. A store that is
+  not configured on the replica running its step fails the step unless it is
+  declared unused (`OCTO_TENANT_PURGE_UNUSED_STORES`; the k8s base declares
+  both, the patches that enable a store take it off), and an approval on a
+  replica that would fail that way is refused up front. The console lists the
+  deletion journal with each tombstone, a page at a time. Downgrading
+  migration 0066 is refused while a purge is under way or blocked. See
+  [docs/tenant-lifecycle.md](docs/tenant-lifecycle.md), including how to
+  re-apply deletions after restoring a backup.
+- **Per-tenant retention, legal hold, and data-subject requests for console
+  accounts ([#332](https://github.com/onixus/Shapoclyack/issues/332)).** Every
+  reaper used to apply one global window to every tenant. A tenant admin can now
+  set each category's window — scan runs, screenshots, reports, endpoint
+  software lists and change history, risk history, webhook deliveries, workflow
+  markers, audit trail — within bounds the platform configures
+  (`OCTO_RETENTION_BOUNDS`; the audit trail's floor defaults to a year, so a
+  tenant cannot shorten the record of what it did), through
+  `GET/PUT/DELETE /api/tenants/{id}/retention` (`tenant.retention.read` /
+  `.manage`, step-up) and the new console page `/retention`. A platform admin
+  can place a tenant on **legal hold** (`PUT/DELETE /api/tenants/{id}/legal-hold`,
+  `platform.legal_hold.manage`, step-up): while it stands no sweep deletes any
+  of the tenant's data, the audit trail's prune functions skip it inside the
+  database, and the tenant cannot be deleted — the hold's foreign key is
+  `RESTRICT`. `api/services/legal_hold.py` is the contract tenant offboarding
+  (#325) builds on. `GET /api/users/{u}/export` returns one account's data as
+  JSON (step-up); `POST /api/users/{u}/erase` removes the address,
+  identity-provider link, second factors, sessions, memberships, the address on
+  report schedules and email notification channels, and revokes the service
+  tokens the account minted, and keeps the username as a tombstone, so the
+  append-only audit trail keeps pointing at a pseudonym that can never be
+  reissued. Both are audited (`user.export`, `user.erase`); erasure refuses the
+  requester's own account, the last admin, and an account that belongs to,
+  belonged to or acted in a tenant on hold. `GET /api/tenants/legal-holds` is
+  the platform admin's register of holds. Migration `0065`
+  (`tenant_retention_policies`, `tenant_legal_holds`, `users.erased_at`, three
+  permissions, and a replaced `audit_events_prune` plus a new
+  `audit_events_prune_tenant`, both with a pinned `search_path`). **On an
+  installation with the audit GRANT layout, `0065` must run as the prune
+  function's owner or be handed it first** — the migration stops with the
+  statements to run, and the retention job then needs four more statements
+  ([data-retention.md, section 7](docs/data-retention.md#7-operating-it)). The
+  migration's downgrade refuses while a hold or an erased account exists. The
+  annex a DPA can cite is [docs/data-retention.md](docs/data-retention.md).
 
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
@@ -174,6 +242,21 @@ All notable changes to Shapoclyack are documented in this file.
   permissions and commands whole.
 
 ### Changed
+
+- **Breaking: a retention window of `0` means "keep" everywhere, and a tenant's
+  own window is still applied
+  ([#332](https://github.com/onixus/Shapoclyack/issues/332)).**
+  `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS=0` and
+  `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS=0` used to put the cutoff at
+  the moment of the sweep and delete every superseded software list or every
+  change event; they now keep them, like `0` for every other category. And
+  for all of them `0` is now the platform *default* rather than a switch: a
+  tenant with a window of its own is still swept on it. To stop a sweep, use
+  its `OCTO_*_RETENTION_ENABLED` switch, or for reports, webhook deliveries and
+  workflow markers its worker's
+  ([data-retention.md, section 2](docs/data-retention.md#2-per-tenant-retention)).
+  Deleting a generated report or a webhook subscription of a tenant on legal
+  hold answers `409`.
 
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key

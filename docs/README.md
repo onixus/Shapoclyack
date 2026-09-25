@@ -62,6 +62,8 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, safe overrides |
 | [Web interface](ui.md) | Current UI routes, tenant context, workflows, screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
+| [Data retention](data-retention.md) | What is kept and for how long, per-tenant windows, legal hold, console users' data export and erasure — the DPA annex |
+| [Tenant lifecycle](tenant-lifecycle.md) | Suspending and resuming a tenant, two-step deletion, the store-by-store purge, its journal and tombstones, re-applying deletions after a restore |
 | [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
 | [Disaster recovery](disaster-recovery.md) | Backup and restore of PostgreSQL, ClickHouse, artifacts and JetStream; restore order, reconciling restore points, RPO/RTO, the drill |
 | [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |

@@ -62,6 +62,7 @@ describe("TenantsPage", () => {
     vi.restoreAllMocks();
     vi.spyOn(apiModule, "fetchTenants").mockResolvedValue([tenant()]);
     vi.spyOn(apiModule, "fetchTenantPosture").mockResolvedValue([]);
+    vi.spyOn(apiModule, "fetchTenantDeletions").mockResolvedValue([]);
   });
 
   // This is the one page in the console that must **not** read the membership
@@ -90,5 +91,15 @@ describe("TenantsPage", () => {
 
     expect(await screen.findByText("Default")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Create New Tenant/i })).toBeInTheDocument();
+    // The deletion journal is the platform admin's (#325).
+    expect(await screen.findByText("Deleted and deleting tenants")).toBeInTheDocument();
+    expect(apiModule.fetchTenantDeletions).toHaveBeenCalled();
+  });
+
+  it("does not ask an operator's session for the deletion journal", async () => {
+    renderPage(principal("operator", "viewer", []));
+    expect(await screen.findByText("Default")).toBeInTheDocument();
+    expect(screen.queryByText("Deleted and deleting tenants")).not.toBeInTheDocument();
+    expect(apiModule.fetchTenantDeletions).not.toHaveBeenCalled();
   });
 });
