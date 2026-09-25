@@ -120,6 +120,13 @@ the previous copy instead of publishing an empty one.
 | KEV | `kev/kev-overlay.json` | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | US government work, public domain | The list of CVE ids in the catalog |
 | Exploit maturity | `exploit/exploit-overlay.json` | Exploit-DB `files_exploits.csv`; Metasploit `modules_metadata_base.json` | GPL-2.0 (Exploit-DB), BSD-3-Clause (Metasploit Framework) | CVE ids only — which CVEs have public exploit code or a packaged module. No exploit code, titles or descriptions are copied |
 
+One more dataset ships with the code rather than under `scanner/data/`, because
+it must not be shadowed by an enrichment volume mounted there:
+
+| Dataset | Path | Source | Terms | What is extracted |
+|---------|------|--------|-------|-------------------|
+| Public Suffix List | `scanner/pipeline/public_suffix_list.dat` | [publicsuffix.org](https://publicsuffix.org/list/) | MPL-2.0; committed unmodified with its licence header, so the file is its own source form | The whole list, as published — used to derive registrable (seed) domains and to refuse AXFR against a public suffix. Refresh with `scripts/fetch-public-suffix-list.sh` |
+
 **Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. Any
 redistribution of this repository or its images carries that obligation; keep
 this notice with it.

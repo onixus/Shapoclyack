@@ -192,7 +192,7 @@ discovery:
   ct:
     enabled: false
     providers: [crtsh]        # crtsh | certspotter | otx (AlienVault OTX passive DNS, keyless)
-    domains: []               # empty = base domains from input FQDNs
+    domains: []               # empty = registrable domains of input FQDNs (PSL)
     max_subdomains: 5000
     timeout_seconds: 45
     brute_force:
@@ -206,7 +206,7 @@ discovery:
   # since one ASN can span far more than one org's infrastructure.
   asn:
     enabled: false
-    domains: []               # empty = base domains from input FQDNs
+    domains: []               # empty = registrable domains of input FQDNs (PSL)
     max_total_ips: 4096
     timeout_seconds: 15
   # Phase 8.3 — Cloud storage bucket enumeration (opt-in). Seed org token(s)
@@ -216,7 +216,7 @@ discovery:
   # and concurrency cap the probe burst against third-party cloud infra.
   cloud:
     enabled: false
-    domains: []               # empty = base domains from input FQDNs
+    domains: []               # empty = registrable domains of input FQDNs (PSL)
     providers: [s3, gcs]      # s3 | gcs | azure (azure is best-effort -- two-level namespace)
     wordlist_file: ""         # empty = built-in scanner/data/wordlists/bucket-names-small.txt
     concurrency: 10
@@ -232,7 +232,7 @@ discovery:
   # pattern + non-resolution only -- never confirms an actual takeover).
   domain_monitor:
     enabled: false
-    domains: []               # empty = base domains from input FQDNs
+    domains: []               # empty = registrable domains of input FQDNs (PSL)
     typosquat_enabled: true
     dangling_cname_enabled: true
     max_candidates: 150
@@ -436,11 +436,11 @@ tls_posture:
 # statuses/DNSSEC/NS — the raw RDAP contact block never reaches disk — and
 # ownership.json is an operator-only artifact in the API. max_domains and
 # deadline_seconds cap the registry query burst (the default seed set is every
-# base domain in scope); past either cap the run is flagged truncated.
+# registrable domain in scope); past either cap the run is flagged truncated.
 org_profile:
   ownership:
     enabled: false
-    domains: []             # empty = base domains from input FQDNs
+    domains: []             # empty = registrable domains of input FQDNs (PSL)
     max_domains: 50
     timeout_seconds: 15
     deadline_seconds: 300
@@ -448,7 +448,7 @@ org_profile:
   # (cert_san, ct_org, reverse_ns, reverse_mx). merge_into_scope: false by default.
   related_domains:
     enabled: false
-    domains: []             # empty = base domains from input FQDNs
+    domains: []             # empty = registrable domains of input FQDNs (PSL)
     sources: [cert_san, ct_org, reverse_ns, reverse_mx]
     excluded_ns_providers: [
       cloudflare.com, awsdns, googledomains, azure-dns,
@@ -477,10 +477,11 @@ org_profile:
   # transfer, which the target's nameserver logs as such. Enable it only for
   # domains you are authorized to test — see docs/operations.md. It lives only
   # here on purpose: not in the API config overrides (installation-wide, not
-  # per-tenant) and not in the start-scan request.
+  # per-tenant) and not in the start-scan request. A public suffix (co.uk,
+  # com.ru, github.io) is never probed, even when listed in domains below.
   dns_hygiene:
     enabled: false
-    domains: []             # empty = base domains from input FQDNs
+    domains: []             # empty = registrable domains of input FQDNs (PSL)
     max_domains: 50
     timeout_seconds: 15
     retries: 1
@@ -497,7 +498,7 @@ org_profile:
   # as "this domain has no DKIM".
   mail_posture:
     enabled: false
-    domains: []             # empty = base domains from input FQDNs
+    domains: []             # empty = registrable domains of input FQDNs (PSL)
     max_domains: 50
     timeout_seconds: 15
     retries: 1
@@ -512,7 +513,7 @@ org_profile:
     enabled: false
     provider: hibp
     api_key: ""             # prefer env OCTO_HIBP_API_KEY
-    domains: []             # empty = base domains from input FQDNs
+    domains: []             # empty = registrable domains of input FQDNs (PSL)
     max_domains: 50
     timeout_seconds: 15
     deadline_seconds: 300

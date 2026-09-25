@@ -234,6 +234,76 @@ def test_axfr_is_off_by_default(tmp_path: Path, monkeypatch):
     assert result["axfr_probe"] is False
 
 
+@pytest.mark.parametrize("suffix", ["co.uk", "com.ru", "github.io", "uk"])
+def test_axfr_never_targets_a_public_suffix(tmp_path: Path, monkeypatch, suffix: str):
+    # Named explicitly in org_profile.dns_hygiene.domains on purpose: the
+    # nameservers of a public suffix belong to a registry or a hosting
+    # platform, never to the party being scanned, so no configuration makes
+    # that zone ours to probe. The NS set answers and passes the address gate,
+    # so only the suffix gate stands between this test and a transfer attempt.
+    def explode(*args, **kwargs):
+        raise AssertionError(f"AXFR attempted against public suffix {suffix}")
+
+    _patch_dnsx(
+        monkeypatch,
+        ns={suffix: {"ns": ["ns1.registry.example", "ns2.registry.example"]}},
+        addresses={
+            "ns1.registry.example": {"a": ["93.184.216.34"]},
+            "ns2.registry.example": {"a": ["8.8.8.8"]},
+        },
+    )
+    monkeypatch.setattr(dns_hygiene, "_probe_axfr", explode)
+
+    result = check_dns_hygiene(
+        [], DnsHygieneConfig(enabled=True, axfr_probe=True, domains=[suffix]), tmp_path
+    )
+    axfr = result["domains"][suffix]["axfr"]
+    assert axfr == {"status": "refused", "reason": "public_suffix", "nameservers": []}
+    assert "axfr_open" not in _kinds(result)
+
+
+def test_axfr_refuses_a_seed_that_is_not_a_domain_name(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        dns_hygiene, "_probe_axfr", lambda *a, **k: pytest.fail("AXFR against an IP literal")
+    )
+    _patch_dnsx(
+        monkeypatch,
+        ns={"198.51.100.7": {"ns": ["ns1.a.example"]}},
+        addresses={"ns1.a.example": {"a": ["93.184.216.34"]}},
+    )
+    result = check_dns_hygiene(
+        [], DnsHygieneConfig(enabled=True, axfr_probe=True, domains=["198.51.100.7"]), tmp_path
+    )
+    assert result["domains"]["198.51.100.7"]["axfr"]["reason"] == "not_a_domain_name"
+
+
+def test_axfr_still_probes_registrable_domains(tmp_path: Path, monkeypatch):
+    # The suffix gate must not swallow the zones it exists to protect:
+    # bbc.co.uk sits under a two-label suffix and is still somebody's domain.
+    probed: list[tuple[str, str]] = []
+
+    def fake_probe(domain, nameserver, addresses, *, timeout):
+        probed.append((domain, nameserver))
+        return {"nameserver": nameserver, "status": "closed", "reason": None, "records": 0}
+
+    _patch_dnsx(
+        monkeypatch,
+        ns={
+            "bbc.co.uk": {"ns": ["ns1.bbc.example"]},
+            "example.com": {"ns": ["ns1.a.example"]},
+        },
+        addresses={
+            "ns1.bbc.example": {"a": ["93.184.216.34"]},
+            "ns1.a.example": {"a": ["8.8.8.8"]},
+        },
+    )
+    monkeypatch.setattr(dns_hygiene, "_probe_axfr", fake_probe)
+    check_dns_hygiene(
+        ["bbc.co.uk", "example.com"], DnsHygieneConfig(enabled=True, axfr_probe=True), tmp_path
+    )
+    assert probed == [("bbc.co.uk", "ns1.bbc.example"), ("example.com", "ns1.a.example")]
+
+
 def test_axfr_refuses_a_nameserver_on_a_private_address(monkeypatch):
     def explode(*args, **kwargs):
         raise AssertionError("no zone transfer may be attempted against a private address")
