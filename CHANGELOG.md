@@ -704,13 +704,17 @@ All notable changes to Shapoclyack are documented in this file.
   hash-pinned locks (`requirements*.lock`, `scripts/lock-python-deps.sh`,
   extras kept) with `pip install --require-hashes --only-binary=:all:` in
   every image and pipeline; pip's own
-  version moved from `ARG PIP_VERSION` to `requirements-pip.txt`. Every
+  version moved from `ARG PIP_VERSION` to `requirements-pip.txt`. The script
+  also relocks the native sensor's `requirements-agent.lock`
+  ([#476](https://github.com/onixus/Shapoclyack/pull/476)) and rewrites its
+  copy inside `scripts/install-agent.sh`. Every
   remaining mutable image reference — the `golang`, `debian` and `node` build
   stages, the Postgres/NATS/ClickHouse/aws-cli manifests, Jenkins' stage
   images, Trivy/Syft/Semgrep (previously `:latest`), the BuildKit daemon, the
   e2e targets — is pinned by digest, and `tests/test_image_pins.py` fails on a
-  new one. Renovate (`.github/renovate.json5`) proposes the updates, grouped
-  and rate-limited, regenerating the locks with each bump. See
+  new one, in the files and in every rendered overlay. Renovate
+  (`.github/renovate.json5`) proposes the updates, grouped and rate-limited,
+  regenerating the locks with each bump. See
   [docs/supply-chain.md](docs/supply-chain.md).
 
 ## [0.46-0922] — 2026-09-22
