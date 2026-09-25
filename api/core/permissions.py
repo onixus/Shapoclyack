@@ -109,6 +109,21 @@ PLATFORM_TENANT_MANAGE = "platform.tenant.manage"
 #: totals in ``GET /api/system``, which told a single-tenant viewer how many
 #: other customers this installation has.
 PLATFORM_FLEET_READ = "platform.fleet.read"
+#: Read how long this tenant's data is kept, and whether it is on legal hold
+#: (``GET /api/tenants/{tenant_id}/retention``, #332). The tenant's admin and
+#: auditor hold it: "how long do you keep our scan evidence" is a question a
+#: customer's DPO asks, and the answer is not a platform secret.
+TENANT_RETENTION_READ = "tenant.retention.read"
+#: Set the tenant's own retention windows (``PUT …/retention``, #332) — only
+#: within the bounds the platform configured (``OCTO_RETENTION_BOUNDS``), which
+#: is what lets the tenant's own ``admin`` hold it: the audit floor is not a
+#: number this permission can reach below.
+TENANT_RETENTION_MANAGE = "tenant.retention.manage"
+#: Place and release a legal hold (``PUT/DELETE …/legal-hold``, #332).
+#: Platform-only, for the reason the quota is: a tenant admin who could release
+#: their own hold could let evidence age out mid-litigation, and one who could
+#: place it could keep data past what the platform agreed to store.
+PLATFORM_LEGAL_HOLD_MANAGE = "platform.legal_hold.manage"
 #: Approve or reject a requested risk acceptance on a finding
 #: (``POST /api/vulnerabilities/{id}/exception/{approve,reject}``, #348).
 #: Holding it is necessary and not sufficient: the service refuses the person
@@ -138,6 +153,9 @@ PERMISSIONS: dict[str, str] = {
     PLATFORM_TENANT_MANAGE: "Create tenants",
     PLATFORM_FLEET_READ: "Read installation-wide counters across tenants",
     VULNERABILITY_EXCEPTION_APPROVE: "Approve an accepted risk on a finding",
+    TENANT_RETENTION_READ: "Read the tenant's data retention policy and legal hold",
+    TENANT_RETENTION_MANAGE: "Set the tenant's retention windows within the platform bounds",
+    PLATFORM_LEGAL_HOLD_MANAGE: "Place and release a legal hold on any tenant",
 }
 
 
@@ -196,6 +214,8 @@ _TENANT_ADMIN_PERMISSIONS = (
     SCAN_POLICY_MANAGE,
     ENDPOINT_AGENT_MANAGE,
     TENANT_QUOTA_READ,
+    TENANT_RETENTION_READ,
+    TENANT_RETENTION_MANAGE,
 )
 
 BUILTIN_ROLES: dict[str, RoleDefinition] = {
@@ -227,6 +247,7 @@ BUILTIN_ROLES: dict[str, RoleDefinition] = {
         CONFIG_READ,
         SCAN_SCOPE_READ,
         TENANT_QUOTA_READ,
+        TENANT_RETENTION_READ,
     ),
     ROLE_SCAN_OPERATOR: _role(
         ROLE_SCAN_OPERATOR,

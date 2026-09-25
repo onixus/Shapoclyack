@@ -6,6 +6,41 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Per-tenant retention, legal hold, and data-subject requests for console
+  accounts ([#332](https://github.com/onixus/Shapoclyack/issues/332)).** Every
+  reaper used to apply one global window to every tenant. A tenant admin can now
+  set each category's window — scan runs, screenshots, reports, endpoint
+  software lists and change history, risk history, webhook deliveries, workflow
+  markers, audit trail — within bounds the platform configures
+  (`OCTO_RETENTION_BOUNDS`; the audit trail's floor defaults to a year, so a
+  tenant cannot shorten the record of what it did), through
+  `GET/PUT/DELETE /api/tenants/{id}/retention` (`tenant.retention.read` /
+  `.manage`, step-up) and the new console page `/retention`. A platform admin
+  can place a tenant on **legal hold** (`PUT/DELETE /api/tenants/{id}/legal-hold`,
+  `platform.legal_hold.manage`, step-up): while it stands no sweep deletes any
+  of the tenant's data, the audit trail's prune functions skip it inside the
+  database, and the tenant cannot be deleted — the hold's foreign key is
+  `RESTRICT`. `api/services/legal_hold.py` is the contract tenant offboarding
+  (#325) builds on. `GET /api/users/{u}/export` returns one account's data as
+  JSON (step-up); `POST /api/users/{u}/erase` removes the address,
+  identity-provider link, second factors, sessions, memberships, the address on
+  report schedules and email notification channels, and revokes the service
+  tokens the account minted, and keeps the username as a tombstone, so the
+  append-only audit trail keeps pointing at a pseudonym that can never be
+  reissued. Both are audited (`user.export`, `user.erase`); erasure refuses the
+  requester's own account, the last admin, and an account that belongs to,
+  belonged to or acted in a tenant on hold. `GET /api/tenants/legal-holds` is
+  the platform admin's register of holds. Migration `0065`
+  (`tenant_retention_policies`, `tenant_legal_holds`, `users.erased_at`, three
+  permissions, and a replaced `audit_events_prune` plus a new
+  `audit_events_prune_tenant`, both with a pinned `search_path`). **On an
+  installation with the audit GRANT layout, `0065` must run as the prune
+  function's owner or be handed it first** — the migration stops with the
+  statements to run, and the retention job then needs four more statements
+  ([data-retention.md, section 7](docs/data-retention.md#7-operating-it)). The
+  migration's downgrade refuses while a hold or an erased account exists. The
+  annex a DPA can cite is [docs/data-retention.md](docs/data-retention.md).
+
 - **Retro CVE matching of stored service fingerprints.** CVEs for network hosts
   used to come only from checks that run during a scan (Pulse `--cve`, Nuclei,
   NSE), so a CVE published after the scan was invisible until the next one.
@@ -135,6 +170,21 @@ All notable changes to Shapoclyack are documented in this file.
   permissions and commands whole.
 
 ### Changed
+
+- **Breaking: a retention window of `0` means "keep" everywhere, and a tenant's
+  own window is still applied
+  ([#332](https://github.com/onixus/Shapoclyack/issues/332)).**
+  `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS=0` and
+  `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS=0` used to put the cutoff at
+  the moment of the sweep and delete every superseded software list or every
+  change event; they now keep them, like `0` for every other category. And
+  for all of them `0` is now the platform *default* rather than a switch: a
+  tenant with a window of its own is still swept on it. To stop a sweep, use
+  its `OCTO_*_RETENTION_ENABLED` switch, or for reports, webhook deliveries and
+  workflow markers its worker's
+  ([data-retention.md, section 2](docs/data-retention.md#2-per-tenant-retention)).
+  Deleting a generated report or a webhook subscription of a tenant on legal
+  hold answers `409`.
 
 - **A refused second factor on a step-up is `403`, not `401`.**
   `POST /api/auth/mfa/verify` with a bearer token and a wrong code or key

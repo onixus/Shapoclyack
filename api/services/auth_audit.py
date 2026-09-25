@@ -559,9 +559,29 @@ def _maybe_prune(settings: Settings) -> None:
     cutoff = now - keep_for
     try:
         with get_session(settings.postgres_url) as session:
-            session.execute(delete(models.AuthEvent).where(models.AuthEvent.occurred_at < cutoff))
+            session.execute(
+                delete(models.AuthEvent).where(
+                    models.AuthEvent.occurred_at < cutoff, _not_held_member()
+                )
+            )
     except Exception:  # pragma: no cover - defensive
         logger.exception("Failed to prune auth_events")
+
+
+def _not_held_member():
+    """Rows whose username no held tenant's record names (#332).
+
+    The login trail has no tenant of its own — an attempt is recorded before
+    anyone knows which tenant it is for — so the hold reaches it through the
+    people: members now, members once, and whoever acted in the tenant, the
+    same set the erasure guard reads (``legal_hold.custodian_names``). Current
+    members alone missed the likeliest subject of a matter, the insider whose
+    access was revoked when it began (review round 1).
+    """
+    from api.services import legal_hold
+
+    custodians = legal_hold.custodian_names()
+    return models.AuthEvent.username.not_in(select(custodians.c[0]))
 
 
 def reset_for_tests() -> None:

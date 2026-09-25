@@ -203,6 +203,11 @@ def reset_for_tests() -> None:
         session.query(models.ProvisioningKey).delete()
         session.query(models.ServiceToken).delete()
         session.query(models.TenantQuota).delete()
+        session.query(models.TenantRetentionPolicy).delete()
+        # Not optional: the hold's foreign key is RESTRICT (migration 0065), so
+        # a hold one test left would make the next line fail for every test
+        # after it.
+        session.query(models.TenantLegalHold).delete()
         session.query(models.Tenant).delete()
 
 

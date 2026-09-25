@@ -143,6 +143,12 @@ class User(Base):
     # timestamp — "which of my codes are gone" is a question the console
     # answers, and deleting the row would delete the answer.
     mfa_recovery_codes: Mapped[list] = mapped_column(JSON, default=list)
+    # Erased under a data-subject request (migration 0065, #332). The row is
+    # kept as a tombstone holding nothing but the username: the append-only
+    # audit trail names actors by username, so the name must stay a stable
+    # pseudonym and can never be issued to somebody else. See
+    # api/services/data_subject.py for what erasure removes.
+    erased_at: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
@@ -2429,6 +2435,68 @@ class TenantQuota(Base):
     note: Mapped[str] = mapped_column(default="", server_default="")
     updated_at: Mapped[datetime]
     updated_by: Mapped[str] = mapped_column(default="", server_default="")
+
+
+class TenantRetentionPolicy(Base):
+    """How long one tenant's data is kept, category by category (#332).
+
+    Every reaper used to read one window from ``Settings`` for the whole
+    installation. A row here overrides it per category for one tenant; ``NULL``
+    in a column is "inherit the platform default", and a tenant with no row at
+    all is swept exactly as before this table existed.
+
+    The bounds a value has to sit within are deliberately **not** columns: they
+    are platform configuration (``OCTO_RETENTION_BOUNDS`` over the defaults in
+    ``api/services/retention_policy.py``). A floor stored on the tenant's row
+    would be a floor the tenant's admin could edit — and the audit floor exists
+    precisely so that they cannot shorten their own trail.
+    """
+
+    __tablename__ = "tenant_retention_policies"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    # Days, NULL = inherit. One per category in retention_policy.CATEGORIES.
+    run_days: Mapped[int | None] = mapped_column(default=None)
+    screenshot_days: Mapped[int | None] = mapped_column(default=None)
+    report_days: Mapped[int | None] = mapped_column(default=None)
+    endpoint_snapshot_days: Mapped[int | None] = mapped_column(default=None)
+    endpoint_change_days: Mapped[int | None] = mapped_column(default=None)
+    risk_snapshot_days: Mapped[int | None] = mapped_column(default=None)
+    webhook_delivery_days: Mapped[int | None] = mapped_column(default=None)
+    workflow_marker_days: Mapped[int | None] = mapped_column(default=None)
+    audit_event_days: Mapped[int | None] = mapped_column(default=None)
+    # Why this tenant keeps what it keeps — a contract clause, a DPA annex.
+    note: Mapped[str] = mapped_column(default="", server_default="")
+    updated_at: Mapped[datetime]
+    updated_by: Mapped[str] = mapped_column(default="", server_default="")
+
+
+class TenantLegalHold(Base):
+    """A tenant whose data nothing may delete until the hold is released (#332).
+
+    One row per tenant on hold, and the row's existence is the whole state: no
+    reaper deletes the tenant's data while it is here, and ``audit_events_prune``
+    skips the tenant in the database itself (migration 0065). A hold covers
+    every category at once — the platform cannot know which of a tenant's data
+    a claim will turn on, and a hold that lets some of it age out is one that
+    fails exactly when it is tested.
+
+    The foreign key is **RESTRICT**: a tenant on hold cannot be deleted, by any
+    code path, until the hold is released. Releasing deletes the row; who placed
+    it, when and why stays in the audit trail.
+    """
+
+    __tablename__ = "tenant_legal_holds"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), primary_key=True
+    )
+    # Required: a hold nobody can explain is one nobody dares release.
+    reason: Mapped[str]
+    set_by: Mapped[str]
+    set_at: Mapped[datetime]
 
 
 class SlaEscalationPolicy(Base):
