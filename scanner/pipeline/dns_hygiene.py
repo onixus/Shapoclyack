@@ -23,7 +23,13 @@ gates, all mandatory:
    role that starts a scan rather than the one that authorizes the target).
 2. **Scope.** Only domains from this run's own seed/scope are probed, never an
    attribution candidate from M4: an active query against a wrongly attributed
-   domain is an active query against somebody else's infrastructure.
+   domain is an active query against somebody else's infrastructure. The same
+   holds for a seed that is a public suffix (``co.uk``, ``com.ru``,
+   ``github.io``): its nameservers are a registry's or a hosting platform's,
+   so it is refused even when named explicitly in ``domains``. The derived
+   seed stops at the registrable domain (``hostnames.base_domains_from_fqdns``
+   over ``public_suffix.py``); this check is what holds if a suffix gets in
+   anyway.
 3. **Address.** Every address of a nameserver must pass
    ``safe_http.is_public_address``. An NS record is written by the scanned
    party, so ``ns1.target.example -> 10.0.0.5`` would turn the probe into a
@@ -68,7 +74,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import safe_http
+from . import public_suffix, safe_http
 from .config_schema import DnsHygieneConfig
 from .dnsx import DnsxError, query as dnsx_query
 from .utils import load_json, save_json, write_lines
@@ -734,6 +740,8 @@ def check_dns_hygiene(
         "domains": {},
         "findings": [],
         "axfr_probe": bool(config.axfr_probe),
+        # Which snapshot decided what counts as a public suffix (gate 2).
+        "public_suffix_list": public_suffix.snapshot_version(),
         "truncated": False,
         "skipped_reason": None,
     }
@@ -896,6 +904,12 @@ def _axfr_for_domain(
     """The AXFR block for one domain, honouring the config gate and deadline."""
     if not config.axfr_probe:
         return {"status": "disabled", "reason": "axfr_probe.disabled", "nameservers": []}
+    if not public_suffix.registrable_domain(domain):
+        # Gate 2: a suffix, an IP literal or a bare label is nobody's zone to
+        # transfer. Checked before the NS set, so no nameserver is ever dialled.
+        reason = "public_suffix" if public_suffix.is_public_suffix(domain) else "not_a_domain_name"
+        LOG.warning("dns_hygiene: refusing AXFR for %s (%s)", domain, reason)
+        return {"status": "refused", "reason": reason, "nameservers": []}
     if not nameservers:
         return {"status": "not_checked", "reason": "no_nameservers", "nameservers": []}
 

@@ -554,6 +554,35 @@ All notable changes to Shapoclyack are documented in this file.
   place rather than cleared and rebuilt, so a scrape can no longer catch it
   empty.
 
+### Security
+
+- **Seed domains stop at the registrable domain, and AXFR is never sent to a
+  public suffix.** Every stage whose `domains` list is left empty — `ct`, `asn`,
+  `cloud`, `domain_monitor`, `org_profile.ownership`, `dns_hygiene`,
+  `mail_posture`, `credential_leaks` — took its seed from
+  `base_domains_from_fqdns`, which kept the last two labels: `www.bbc.co.uk`,
+  `shop.example.com.ru` and `x.github.io` became `co.uk`, `com.ru` and
+  `github.io`. With `org_profile.dns_hygiene.axfr_probe: true` that was a
+  zone-transfer attempt against the nameservers of a registry, a registrar or
+  GitHub Pages — somebody else's infrastructure, which the module's own scope
+  gate forbids — and CT asked crt.sh for `%.co.uk`. Seeds now come from a
+  bundled [Public Suffix List](https://publicsuffix.org/) snapshot
+  (`scanner/pipeline/public_suffix_list.dat`, ICANN and private sections,
+  read from disk only and never fetched at run time), so they are
+  `bbc.co.uk`, `example.com.ru` and `x.github.io`; a name that is itself a
+  suffix, an IP literal or a bare label contributes no seed at all (an IP used
+  to become e.g. `3.4`). Independently of the seed, the AXFR probe refuses a
+  public suffix even when it is listed explicitly in
+  `org_profile.dns_hygiene.domains` (`axfr.status: refused`,
+  `reason: public_suffix`, before any nameserver is dialled), and
+  `dns_hygiene.json` records which snapshot decided (`public_suffix_list`).
+  `asset_identity.registrable_domain` — console clustering by domain, the
+  related-domains stage and credential-leak canonicalisation — uses the same
+  list in place of its twelve-entry stand-in, so names under a hosting
+  platform's suffix (`*.herokuapp.com`, `ec2-….compute-1.amazonaws.com`) no
+  longer cluster under the platform as if it owned them. No new Python
+  dependency; refresh the snapshot with `scripts/fetch-public-suffix-list.sh`.
+
 ### Fixed
 
 - **The scanner's SSRF gate judges the IPv4 address behind NAT64.**
