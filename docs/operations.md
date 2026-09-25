@@ -207,6 +207,24 @@ infer it from the fact that a scan was started.
   turn the probe into a TCP/53 connection inside the sensor's own network. The
   refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
   as `status: refused`.
+- **Only the checked address is dialled.** The probe speaks AXFR itself over
+  one TCP connection to the nameserver's first address — the IP literal that
+  passed the check above, IPv6 included — and resolves nothing. It does not go
+  through `dnsx`, whose `-axfr` looks up the zone's NS set on its own and
+  connects to addresses that were never checked, and it does not follow the NS
+  records or glue the zone hands back.
+- **Reading the result.** `status: open` means the nameserver sent zone data;
+  `records` counts the records between the opening and closing SOA, and a
+  non-null `reason` (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) marks the count as a lower bound.
+  `status: closed` is the server saying no: `rcode_refused`, `rcode_notauth`,
+  `rcode_formerr`, `rcode_notimp`, `rcode_nxdomain`, an empty answer
+  (`empty_answer`), a clean hang-up before any answer (`connection_closed`), or
+  an SOA…SOA transfer with nothing between (`soa_only`). `status: error` means
+  the nameserver could not be checked, not that it is closed: unreachable
+  (`connect_failed`, `timeout`, `connection_reset` — a reset may come from a
+  middlebox on the sensor's side), `rcode_servfail` or an unknown RCODE, or an
+  answer that started and broke off before any record past the SOA.
 - **A successful transfer is never written down.** `dns_hygiene.json` records
   only `status: open` and the number of records; the zone itself reaches neither
   the artifact directory nor `scan.log`. If you need the zone contents, transfer
@@ -1707,6 +1725,26 @@ there now, so both `python -m agent` and `python -m agent.worker` run the
 sensor, but the flags in an old unit are still wrong: **a sensor installed by an
 older installer needs a re-run of this one.**
 
+**A re-run keeps the sensor's ID.** An upgrade is a re-run of the installer,
+and without `--agent-id` the re-run takes `OCTO_AGENT_ID` from the existing
+`/etc/shapoclyack/agent.env` and says so (`Keeping agent ID …`), on the native
+and the `--docker` path alike. The file is parsed, never sourced: it holds the
+provisioning key and the installer runs as root. Installers before this one
+generated a fresh `agent-<host>-<random>` on every run, so every upgrade
+registered a second sensor. The old row stayed in the fleet view, went `stale`,
+was counted in `stale_agents` and was announced as `agent_offline`; its sensor
+group and any quarantine stayed with it, so the host came back as an
+ungrouped, `active` sensor that no longer took its group's jobs. Delete such
+leftovers with `DELETE /api/agents/{id}`, and leave `revoke_key` off unless you
+mean to retire that key: the sensor that replaced the row may hold the same one.
+
+Two cases do not reuse the ID. `--agent-id` always wins. An `agent.env`
+written for a different `--tenant` is ignored and a new ID is generated,
+because an ID stays bound to its tenant and revoking a key does not release it
+across tenants. A re-run with a *different provisioning key* keeps the ID and
+warns: see "Revoke before you re-provision" under
+[Sensor lifecycle](#sensor-lifecycle-disable-quarantine-deregister).
+
 ### Sensor groups: which sensor may execute which scan
 
 Until [#361](https://github.com/onixus/Shapoclyack/issues/361) a sensor job was
@@ -1847,7 +1885,7 @@ they re-register.
 before this feature have `expires_at: null` and never expire** — nothing
 back-dates them, because stranding a fleet on a deadline nobody was told about
 is worse than a key that outlives its usefulness. Find them in that list,
-re-install the sensors against a fresh key, then revoke the old one.
+revoke the old one, then re-install the sensors against a fresh key.
 
 **Revoke before you re-provision, not after.** An `agent_id` is bound to the
 key it first registered with, so an exchange asking for that id under a
@@ -1855,7 +1893,11 @@ key it first registered with, so an exchange asking for that id under a
 is what stops one key's holder impersonating another key's sensor. Revoking the
 old key releases the id (and stops its live JWTs in the same move), after which
 the new key adopts the host under its own name. Re-provisioning first leaves
-the sensor unable to authenticate until you get to the revocation.
+the sensor unable to authenticate until you get to the revocation; it retries
+on its own and recovers once the old key is revoked. The installer keeps the
+sensor's ID across a re-run, so it warns when the key it is given differs from
+the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
+should register as a new sensor under the new key.
 
 ### SSH push deployment
 
