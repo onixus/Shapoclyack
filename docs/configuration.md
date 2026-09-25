@@ -47,6 +47,7 @@ value on the System page rather than assuming the file was applied.
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
 | `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
+| `dns` | Resolvers nuclei is told to use (`-resolvers`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
 | `nuclei` | Nuclei stage: template directory, severities, caps, rate limit | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate expiry, hostname mismatch and TLS findings | [Pulse backend](pulse-backend.md) |
 | `org_profile` | Organization profile: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls | [Модуль «Профиль организации»](org-profile-module.ru.md) (RU) |

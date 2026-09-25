@@ -560,6 +560,10 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- The DNS-hygiene AXFR probe handed dnsx an IPv6-only nameserver as
+  `2001:500:8f::53:53`. dnsx reads that as a different IPv6 host on port 53,
+  not the gated address, so the probe never reached the nameserver and
+  reported it closed. IPv6 resolvers are now bracketed (`[2001:500:8f::53]:53`).
 
 ## [0.46-0922] — 2026-09-22
 
