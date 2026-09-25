@@ -916,3 +916,85 @@ def test_deletion_steps_are_held_to_their_deletions_tenant(enforce) -> None:
                 )
             )
 
+
+def test_the_purge_opens_every_session_in_the_system_scope(enforce) -> None:
+    """``tenant_purge.context.system_session`` is the one way the purge (#325)
+    reaches the database: it reads every tenant's journal and deletes one
+    tenant's rows on nobody's request. From the worker thread that is the
+    process scope anyway; this pins that it stays so wherever it is called
+    from — an undeclared request included, where a tenant table would fail."""
+    from api.services.tenant_purge.context import system_session
+
+    token = tenant_scope.bind_request()
+    try:
+        with system_session(enforce) as session:
+            assert _group_names(session) == {"alpha", "bravo"}
+        # And a request that acts for one tenant does not narrow it either.
+        tenant_scope.declare_tenant(TENANT_A)
+        with system_session(enforce) as session:
+            assert _group_names(session) == {"alpha", "bravo"}
+    finally:
+        tenant_scope.reset_request(token)
+
+
+def test_the_scrape_session_reads_across_tenants_wherever_it_opens(enforce) -> None:
+    """``metrics_sources.scrape_session`` (#334) is how every scrape-time series
+    reads the database: cluster-wide aggregates, by design. ``/metrics``
+    declares the cross-tenant scope for its request; the session itself is
+    system-scoped too, so a collector run from anywhere else counts the fleet
+    instead of failing on the undeclared scope and dropping its series."""
+    from api.services import metrics_sources
+
+    token = tenant_scope.bind_request()
+    try:
+        with metrics_sources.scrape_session(enforce) as session:
+            assert _group_names(session) == {"alpha", "bravo"}
+    finally:
+        tenant_scope.reset_request(token)
+
+
+def test_the_login_trail_prune_keeps_whom_another_tenants_hold_names(enforce, tmp_path) -> None:
+    """``auth_audit._maybe_prune`` rides along with a sign-in and deletes from
+    ``auth_events`` — a table with no tenant — every old row whose username no
+    held tenant's record names (#332). Those names come from three tenant
+    tables, so in a tenant scope they would be that tenant's alone, and the
+    delete would take the trail of the person another tenant's hold is about:
+    row security narrowing a *keep* set widens the delete. The prune reads them
+    in the system scope wherever it runs, not only because sign-in happens to."""
+    from datetime import timedelta
+
+    from api.services import auth_audit
+
+    username = "rls-custodian"
+    with get_session(POSTGRES_URL) as session:
+        session.add(models.User(username=username, created_at=_now(), updated_at=_now()))
+        session.flush()
+        session.add(models.UserTenant(username=username, tenant_id=TENANT_B, created_at=_now()))
+        session.add(
+            models.TenantLegalHold(
+                tenant_id=TENANT_B, reason="matter 2026-311", set_by="admin", set_at=_now()
+            )
+        )
+        session.add(
+            models.AuthEvent(
+                occurred_at=_now() - timedelta(days=400), username=username, outcome="success"
+            )
+        )
+    auth_audit._last_prune = None  # noqa: SLF001 - at most once an hour otherwise
+    try:
+        with tenant_scope.tenant(TENANT_A):
+            auth_audit._maybe_prune(make_settings(tmp_path, auth_event_retention_days=30))  # noqa: SLF001
+        with get_session(POSTGRES_URL) as session:
+            kept = session.execute(
+                select(models.AuthEvent.id).where(models.AuthEvent.username == username)
+            ).all()
+        assert len(kept) == 1
+    finally:
+        auth_audit._last_prune = None  # noqa: SLF001
+        with get_session(POSTGRES_URL) as session:
+            session.execute(
+                delete(models.TenantLegalHold).where(models.TenantLegalHold.tenant_id == TENANT_B)
+            )
+            session.execute(delete(models.AuthEvent).where(models.AuthEvent.username == username))
+            # Cascades to the membership.
+            session.execute(delete(models.User).where(models.User.username == username))

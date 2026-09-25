@@ -23,7 +23,9 @@ All notable changes to Shapoclyack are documented in this file.
   bypass flag because the shipped manifests connect as a superuser, which
   bypasses row security — this works on them unchanged. Workers, CLI tools,
   authentication and platform-admin requests keep the connecting role and see
-  what they saw; a request that touches a tenant table before any guard said
+  what they saw, and so do the tenant purge, the scrape-time metrics and the
+  login-trail prune (which keeps whatever any held tenant names) wherever they
+  are called from; a request that touches a tenant table before any guard said
   whose it is fails loudly — including a non-admin behind a global role gate.
   `OCTO_TENANT_RLS=enforce` is the default and refuses to start on a database
   that cannot enforce it; `off` is the kill switch (a restart, no migration

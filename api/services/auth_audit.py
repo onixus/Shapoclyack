@@ -39,7 +39,7 @@ from typing import Any, Callable, Iterator
 
 from sqlalchemy import delete, func, or_, select, text
 
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.services import metrics as metrics_service
 from api.settings import Settings
@@ -558,12 +558,17 @@ def _maybe_prune(settings: Settings) -> None:
     )
     cutoff = now - keep_for
     try:
-        with get_session(settings.postgres_url) as session:
-            session.execute(
-                delete(models.AuthEvent).where(
-                    models.AuthEvent.occurred_at < cutoff, _not_held_member()
+        # Across tenants whatever request it rides along with (#311): the rows
+        # it keeps are named by every held tenant's record, and a tenant scope
+        # would narrow that keep set to one tenant's — deleting the trail of
+        # somebody another tenant's hold is about.
+        with tenant_scope.system("auth_events retention: every held tenant's custodians"):
+            with get_session(settings.postgres_url) as session:
+                session.execute(
+                    delete(models.AuthEvent).where(
+                        models.AuthEvent.occurred_at < cutoff, _not_held_member()
+                    )
                 )
-            )
     except Exception:  # pragma: no cover - defensive
         logger.exception("Failed to prune auth_events")
 

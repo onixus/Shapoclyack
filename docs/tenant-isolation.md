@@ -116,7 +116,13 @@ Details that matter:
   and `/tenants/posture`; and the two ownership checks on ids a client chooses —
   `agents.register_agent` (`agent_id`) and `endpoint_inventory.ingest_snapshot`
   (`snapshot_id`) — which must see another tenant's row to refuse it by name
-  rather than die on the primary key. Keep it greppable and rare.
+  rather than die on the primary key. Three more make work that is cross-tenant
+  by design say so itself, whatever calls it: every session of the tenant purge
+  (`tenant_purge.context.system_session`, #325), the scrape-time reads behind
+  `/metrics` (`metrics_sources.scrape_session`, #334), and the login-trail
+  prune that rides along with a sign-in (`auth_audit._maybe_prune`, #332) —
+  whose *keep* set is every held tenant's custodians, so a tenant scope would
+  narrow it and widen the delete. Keep it greppable and rare.
 * **Its narrowing twin** is `with tenant_scope.tenant(t):`. A non-admin's
   `GET /api/tenants/posture` reads each of the caller's tenants inside one, so a
   grouped read that forgot its membership filter still sees one tenant.
@@ -162,9 +168,10 @@ decided whose it is has a bug worth a 500 with a message that names it.
 
 **Why workers need no change.** They run outside any request, so their scope is
 `system` and their transactions never switch role; the permissive policy keeps a
-non-owner connecting role seeing every row. Retention reapers, SLA escalation,
-the ticket poller, the NATS outbox, retro matching, the schedulers and the
-publication worker are all this case.
+non-owner connecting role seeing every row. Retention reapers (the per-tenant
+windows and legal holds of #332 included), SLA escalation, the ticket poller,
+the NATS outbox, retro matching, the schedulers, the publication worker and the
+tenant purge (#325) are all this case.
 
 ## Rollout: `OCTO_TENANT_RLS`
 
