@@ -420,10 +420,10 @@ The job paths that used to set the queue gauges now expire the cluster
 snapshot instead, so the replica that changed the queue re-reads it on its next
 scrape; the others follow within the TTL.
 
-**Merge note (#311).** Row-level security puts every request in a tenant scope;
-these are cluster-wide aggregates by design, so `scrape_session` has to enter
-#311's system scope. Whichever of the two lands second makes that one-line
-change; the scrape tests fail until it does.
+**Row-level security (#311).** Row-level security puts every request in a
+tenant scope; these are cluster-wide aggregates by design, so `scrape_session`
+enters #311's system scope, wherever the collector runs — `/metrics` declares
+the cross-tenant scope for its own request as well.
 
 ## Sensors and agents
 

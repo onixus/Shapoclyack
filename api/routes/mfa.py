@@ -44,6 +44,7 @@ from api.auth import (
     require_role,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
+from api.db import tenant_scope
 from api.routes._audit import AuditDep
 from api.routes._session_cookie import issue_session, set_refresh_cookie
 from api.schemas import (
@@ -62,7 +63,13 @@ from api.services import passkeys as passkeys_service
 from api.services import users as users_service
 from api.settings import Settings
 
-router = APIRouter(tags=["auth"])
+# An account's own second factors belong to the account, not to any tenant it is a
+# member of, and signing in with one happens before there is a tenant at
+# all (#311).
+router = APIRouter(
+    tags=["auth"],
+    dependencies=[Depends(tenant_scope.cross_tenant("account second factors"))],
+)
 
 #: Fallback label for the ``otpauth://`` issuer when the installation has no
 #: public URL configured. An authenticator lists accounts by it, so an operator

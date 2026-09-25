@@ -3151,6 +3151,19 @@ manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
 
+### Tenant row-level security (#311)
+
+Migration `0067_tenant_rls` creates the NOLOGIN role `shapoclyack_tenant` and a
+row-level-security policy on every tenant table; the API switches to that role
+for each transaction of a tenant-scoped request (`OCTO_TENANT_RLS=enforce`, the
+default). On the stock manifests (`octo`, a superuser) and on managed services
+whose master user has `CREATEROLE` there is nothing to do. A migration role
+without `CREATEROLE`, an API role separate from the migration role, the
+`audit_events` ownership split above, backup roles, the startup check that
+refuses a database which cannot enforce it, and how to read a denied row are in
+[tenant-isolation.md](tenant-isolation.md#operations). `OCTO_TENANT_RLS=off` and
+a restart is the kill switch; it needs no migration rollback.
+
 ## Data-plane credentials
 
 The control plane (JWT, RBAC, tenant scoping) has always been authenticated.

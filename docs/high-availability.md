@@ -122,7 +122,15 @@ replica, no failover, no automatic restore. Bring your own:
 
 What the API needs on the other end: a `shapoclyack` database, a role with
 `CREATE` on it (the `migrate` init container runs Alembic on every rollout),
-and the URL in a Secret:
+and the URL in a Secret. Since migration `0067` (tenant row security,
+[#311](https://github.com/onixus/Shapoclyack/issues/311)) that role also needs
+`CREATEROLE` — RDS, Cloud SQL and Yandex master users have it, none of them is a
+superuser, which is fine — or a DBA runs `CREATE ROLE shapoclyack_tenant
+NOLOGIN; GRANT shapoclyack_tenant TO <role> WITH INHERIT FALSE;` once before the
+upgrade. CloudNativePG's generated `app` owner has no `CREATEROLE`: use the
+second path, as the `postgres` superuser. PostgreSQL 16 is what this is tested
+on; see [tenant-isolation.md § Operations](tenant-isolation.md#operations) for
+14/15 and for split API/migration roles.
 
 ```bash
 kubectl -n network-scan create secret generic shapoclyack-postgres-external \
