@@ -137,6 +137,22 @@ batching:
   # Single IPs and small nets are grouped into batches of this many targets.
   max_targets_per_batch: 1024
 
+# Resolvers for every dnsx run: resolve, discover-hostnames, domain_monitor,
+# dns_hygiene, mail_posture. Empty = what libc would ask on this sensor: the
+# first nameserver in /etc/resolv.conf (the first three with "options rotate"),
+# or 127.0.0.1 if it lists none. dnsx itself never reads that file: left to
+# itself it asks 1.1.1.1, 8.8.8.8, 9.9.9.9 and other public resolvers, which
+# cannot see internal names and learn every target name. Entries are IP
+# addresses, optionally with a port ("10.0.0.53", "[fd00::53]:5353"). dnsx
+# spreads queries round-robin over all of them -- not a primary/fallback list,
+# so do not mix an internal resolver with a public one. The org_profile stages
+# and domain_monitor judge public posture from what this resolver answers: on a
+# split-horizon network they see the internal view of the org's zones, and a
+# resolver that rewrites NXDOMAIN makes every typosquat candidate "resolve".
+# Config file only; not editable through the API.
+dns:
+  resolvers: []
+
 discovery:
   source: naabu
   profile: auto              # auto | fast | balanced | thorough | custom

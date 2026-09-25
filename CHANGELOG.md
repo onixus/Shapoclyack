@@ -196,6 +196,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **dnsx asks the sensor's resolver, not Cloudflare and Google.** The scanner
+  ran dnsx without `-r`, and dnsx 1.2.3 does not read `/etc/resolv.conf`: it
+  asked eight public resolvers (1.1.1.1, 8.8.8.8, 9.9.9.9, OpenDNS, …)
+  directly. Split-horizon names never resolved; where outbound UDP 53 is
+  blocked — most corporate networks, and a kind cluster — the `resolve`,
+  `discover-hostnames`, `domain_monitor`, `dns_hygiene` and `mail_posture`
+  lookups found nothing while dnsx still exited 0, so a scan of names came back
+  empty without an error; and every target name went to those operators. Every
+  dnsx run now gets `-r`: the new scanner config key `dns.resolvers` (IP
+  addresses, optional port; config file only), or, when that is empty as
+  shipped, the resolver libc would ask — the first `nameserver` in
+  `/etc/resolv.conf` (three under `options rotate`), 127.0.0.1 if none. Backup
+  nameservers are not passed on, because dnsx rotates over its list instead
+  of falling back. **Behaviour change:**
+  the org_profile stages and `domain_monitor` now see what the sensor's
+  resolver answers — on a split-horizon network, the internal view of the
+  org's zones; set `dns.resolvers` if that is not the view you want judged.
+  The `resolve` stage logs when no resolver answered at all. The AXFR probe
+  keeps dialling the zone's own nameserver.
 - **Requeue and discard cannot start a second live publication.** A row goes
   `dead` when one attempt gives up, and another attempt that took it while the
   first one's hold lapsed may still be uploading; the old lease stopped

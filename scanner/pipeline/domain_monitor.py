@@ -37,10 +37,12 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .config_schema import DomainMonitorConfig
+from .dnsx import command as dnsx_command
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.domain-monitor")
@@ -178,6 +180,7 @@ def _run_dnsx_a_aaaa(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, list[str]]]:
     """Resolve A/AAAA records for a list of candidate domains via dnsx."""
     if not domains:
@@ -190,17 +193,7 @@ def _run_dnsx_a_aaaa(
     write_lines(targets_file, sorted(set(domains)))
 
     run_command(
-        [
-            "dnsx",
-            "-l",
-            str(targets_file),
-            "-a",
-            "-aaaa",
-            "-json",
-            "-silent",
-            "-o",
-            str(json_out),
-        ],
+        dnsx_command(targets_file, ["-a", "-aaaa"], json_out, resolvers=resolvers),
         timeout=timeout,
         retries=retries,
     )
@@ -228,6 +221,7 @@ def _run_dnsx_cname(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """Resolve CNAME chains (plus A/AAAA) for the org's own FQDNs via dnsx."""
     if not fqdns:
@@ -240,17 +234,7 @@ def _run_dnsx_cname(
     write_lines(targets_file, sorted(set(fqdns)))
 
     run_command(
-        [
-            "dnsx",
-            "-l",
-            str(targets_file),
-            "-cname",
-            "-resp",
-            "-json",
-            "-silent",
-            "-o",
-            str(json_out),
-        ],
+        dnsx_command(targets_file, ["-cname", "-resp"], json_out, resolvers=resolvers),
         timeout=timeout,
         retries=retries,
     )
@@ -321,6 +305,8 @@ def monitor_domains(
     scope_fqdns: list[str],
     config: DomainMonitorConfig,
     output_dir: Path,
+    *,
+    resolvers: Sequence[str],
 ) -> dict[str, Any]:
     """Sync entry point: typosquat candidate resolution + dangling-CNAME
     heuristic over the org's seed domains / in-scope FQDNs."""
@@ -354,6 +340,7 @@ def monitor_domains(
             output_dir,
             timeout=config.timeout_seconds,
             retries=config.retries,
+            resolvers=resolvers,
         )
         findings = []
         for candidate, seed in candidate_seed_pairs:
@@ -375,6 +362,7 @@ def monitor_domains(
             output_dir,
             timeout=config.timeout_seconds,
             retries=config.retries,
+            resolvers=resolvers,
         )
         findings = []
         for fqdn in fqdns:

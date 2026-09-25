@@ -62,6 +62,7 @@ import re
 import secrets
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -103,10 +104,18 @@ def _run_dnsx_ns(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """NS records for each domain."""
     return dnsx_query(
-        domains, output_dir, stage=STAGE, kind="ns", flags=["-ns"], timeout=timeout, retries=retries
+        domains,
+        output_dir,
+        stage=STAGE,
+        kind="ns",
+        flags=["-ns"],
+        timeout=timeout,
+        retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -116,6 +125,7 @@ def _run_dnsx_soa(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """SOA records for each domain."""
     return dnsx_query(
@@ -126,6 +136,7 @@ def _run_dnsx_soa(
         flags=["-soa"],
         timeout=timeout,
         retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -135,6 +146,7 @@ def _run_dnsx_caa(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """CAA records for each domain."""
     return dnsx_query(
@@ -145,6 +157,7 @@ def _run_dnsx_caa(
         flags=["-caa"],
         timeout=timeout,
         retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -155,6 +168,7 @@ def _run_dnsx_a_aaaa(
     kind: str,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """A/AAAA for nameserver names and for the wildcard probe labels.
 
@@ -169,6 +183,7 @@ def _run_dnsx_a_aaaa(
         flags=["-a", "-aaaa"],
         timeout=timeout,
         retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -534,6 +549,8 @@ def check_dns_hygiene(
     domains: list[str],
     config: DnsHygieneConfig,
     output_dir: Path,
+    *,
+    resolvers: Sequence[str],
 ) -> dict[str, Any]:
     """Zone hygiene for the seed domains, capped by max_domains/deadline."""
     result: dict[str, Any] = {
@@ -572,9 +589,15 @@ def check_dns_hygiene(
     deadline = time.perf_counter() + float(config.deadline_seconds)
 
     try:
-        ns_records = _run_dnsx_ns(seeds, output_dir, timeout=timeout, retries=retries)
-        soa_records = _run_dnsx_soa(seeds, output_dir, timeout=timeout, retries=retries)
-        caa_records = _run_dnsx_caa(seeds, output_dir, timeout=timeout, retries=retries)
+        ns_records = _run_dnsx_ns(
+            seeds, output_dir, timeout=timeout, retries=retries, resolvers=resolvers
+        )
+        soa_records = _run_dnsx_soa(
+            seeds, output_dir, timeout=timeout, retries=retries, resolvers=resolvers
+        )
+        caa_records = _run_dnsx_caa(
+            seeds, output_dir, timeout=timeout, retries=retries, resolvers=resolvers
+        )
     except DnsxError as exc:
         # Fail-soft: the control reports error, the run keeps going.
         LOG.warning("dns_hygiene: DNS lookups failed: %s", exc)
@@ -609,6 +632,7 @@ def check_dns_hygiene(
             kind="ns_addresses",
             timeout=timeout,
             retries=retries,
+            resolvers=resolvers,
         )
         wildcard_records = _run_dnsx_a_aaaa(
             sorted({name for names in probe_names.values() for name in names}),
@@ -616,6 +640,7 @@ def check_dns_hygiene(
             kind="wildcard",
             timeout=timeout,
             retries=retries,
+            resolvers=resolvers,
         )
     except DnsxError as exc:
         LOG.warning("dns_hygiene: address lookups failed: %s", exc)

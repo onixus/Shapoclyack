@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,6 +11,37 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 #: One DNS label. Guards config values that are interpolated into a query name
 #: and handed to an external tool (currently mail_posture.dkim_selectors).
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
+
+
+def normalize_resolver(value: str) -> str:
+    """One DNS resolver in the form dnsx's ``-r`` takes: ``ip:port``.
+
+    Accepts an IP literal with or without a port (``10.0.0.53``,
+    ``10.0.0.53:5353``, ``fd00::53``, ``[fd00::53]:5353``); the port defaults
+    to 53. IPv6 always comes back bracketed: dnsx appends ``:53`` only to a
+    value without a colon, so a bare IPv6 literal would reach it unported and
+    ambiguous. Names are refused -- a resolver that has to be resolved first
+    needs a resolver of its own.
+    """
+    raw = str(value).strip()
+    host, port_text = raw, None
+    if raw.startswith("["):
+        host, sep, rest = raw[1:].partition("]")
+        if not sep or (rest and not rest.startswith(":")):
+            raise ValueError(f"malformed resolver {value!r}")
+        if rest:
+            port_text = rest[1:]
+    elif raw.count(":") == 1:
+        host, _, port_text = raw.partition(":")
+    address = ipaddress.ip_address(host)
+    port = 53
+    if port_text is not None:
+        if not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
+            raise ValueError(f"resolver {value!r} has an invalid port")
+        port = int(port_text)
+    if address.version == 6:
+        return f"[{address}]:{port}"
+    return f"{address}:{port}"
 
 
 class RuntimeConfig(BaseModel):
@@ -44,6 +76,45 @@ class RuntimeConfig(BaseModel):
         if not self.logs_dir:
             self.logs_dir = f"{self.output_dir}/logs"
         return self
+
+
+class DnsConfig(BaseModel):
+    """The resolvers every dnsx run asks: resolve, discover-hostnames,
+    domain_monitor, dns_hygiene and mail_posture (the AXFR probe dials the
+    zone's own nameserver and is the one exception).
+
+    Empty means what libc would ask, read from ``/etc/resolv.conf`` at each
+    dnsx run: the first ``nameserver`` (the first three under ``options
+    rotate``), or 127.0.0.1 when there is none -- see
+    ``dnsx.system_resolvers``. That has to be spelled out: dnsx 1.2.3 never
+    reads ``/etc/resolv.conf`` and, without ``-r``, asks eight public resolvers
+    (Cloudflare, Google, Quad9, OpenDNS) directly, which misses split-horizon
+    names, finds nothing where outbound UDP 53 is blocked, and hands every
+    target name to those operators.
+
+    dnsx spreads its queries round-robin over every entry; this is not a
+    primary/fallback list, so list only resolvers that give the same answers.
+    Config file only, like ``org_profile.dns_hygiene.axfr_probe``: which
+    resolver can see which names is a fact about the sensor's network, and the
+    API's overrides are installation-wide.
+    """
+
+    resolvers: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("resolvers")
+    @classmethod
+    def validate_resolvers(cls, resolvers: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in resolvers:
+            try:
+                value = normalize_resolver(raw)
+            except ValueError as exc:
+                raise ValueError(
+                    f"dns.resolvers entry {raw!r} is not an IP address with an optional port"
+                ) from exc
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
 
 
 class ProfilePulseConfig(BaseModel):
@@ -1074,6 +1145,7 @@ class AppConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     profiles: dict[str, ProfileConfig]
     batching: BatchingConfig = Field(default_factory=BatchingConfig)
+    dns: DnsConfig = Field(default_factory=DnsConfig)
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     nse_profiles: dict[str, NseProfileConfig]

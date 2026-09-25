@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -80,10 +81,18 @@ def _run_dnsx_mx(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """MX records for each domain."""
     return dnsx_query(
-        domains, output_dir, stage=STAGE, kind="mx", flags=["-mx"], timeout=timeout, retries=retries
+        domains,
+        output_dir,
+        stage=STAGE,
+        kind="mx",
+        flags=["-mx"],
+        timeout=timeout,
+        retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -94,11 +103,19 @@ def _run_dnsx_txt(
     kind: str,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """TXT records for a batch of names (policy names, DKIM selectors, SPF
     includes). ``kind`` keeps each batch in its own target/output file."""
     return dnsx_query(
-        names, output_dir, stage=STAGE, kind=kind, flags=["-txt"], timeout=timeout, retries=retries
+        names,
+        output_dir,
+        stage=STAGE,
+        kind=kind,
+        flags=["-txt"],
+        timeout=timeout,
+        retries=retries,
+        resolvers=resolvers,
     )
 
 
@@ -181,6 +198,7 @@ def _evaluate_spf(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, Any]:
     """Walk ``include:``/``redirect=`` and count the DNS-querying terms.
 
@@ -238,7 +256,12 @@ def _evaluate_spf(
             break
         try:
             records = _run_dnsx_txt(
-                next_names, output_dir, kind="spf_include", timeout=timeout, retries=retries
+                next_names,
+                output_dir,
+                kind="spf_include",
+                timeout=timeout,
+                retries=retries,
+                resolvers=resolvers,
             )
         except DnsxError as exc:
             LOG.warning("mail_posture: SPF include lookup failed for %s: %s", domain, exc)
@@ -528,6 +551,8 @@ def check_mail_posture(
     domains: list[str],
     config: MailPostureConfig,
     output_dir: Path,
+    *,
+    resolvers: Sequence[str],
 ) -> dict[str, Any]:
     """Mail authentication posture for the seed domains."""
     result: dict[str, Any] = {
@@ -589,9 +614,16 @@ def check_mail_posture(
     ]
 
     try:
-        mx_records = _run_dnsx_mx(seeds, output_dir, timeout=timeout, retries=retries)
+        mx_records = _run_dnsx_mx(
+            seeds, output_dir, timeout=timeout, retries=retries, resolvers=resolvers
+        )
         txt_records = _run_dnsx_txt(
-            policy_names, output_dir, kind="policy", timeout=timeout, retries=retries
+            policy_names,
+            output_dir,
+            kind="policy",
+            timeout=timeout,
+            retries=retries,
+            resolvers=resolvers,
         )
     except DnsxError as exc:
         LOG.warning("mail_posture: DNS lookups failed: %s", exc)
@@ -604,7 +636,12 @@ def check_mail_posture(
 
     try:
         dkim_records = _run_dnsx_txt(
-            dkim_names, output_dir, kind="dkim", timeout=timeout, retries=retries
+            dkim_names,
+            output_dir,
+            kind="dkim",
+            timeout=timeout,
+            retries=retries,
+            resolvers=resolvers,
         )
         dkim_unqueried_reason = "selector_budget_exhausted"
     except DnsxError as exc:
@@ -638,7 +675,12 @@ def check_mail_posture(
         evaluation = None
         if spf_records and time.perf_counter() < deadline:
             evaluation = _evaluate_spf(
-                domain, spf_records[0], output_dir, timeout=timeout, retries=retries
+                domain,
+                spf_records[0],
+                output_dir,
+                timeout=timeout,
+                retries=retries,
+                resolvers=resolvers,
             )
         spf, spf_findings = _classify_spf(domain, spf_records, evaluation)
         domain_findings.extend(spf_findings)

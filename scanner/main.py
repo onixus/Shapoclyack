@@ -562,7 +562,13 @@ def _run_pipeline_body(
     else:
         resolved_ips = _run_stage(
             "resolve",
-            lambda: resolve_fqdns(scope_fqdns, paths.output_dir, timeout=timeout, retries=retries),
+            lambda: resolve_fqdns(
+                scope_fqdns,
+                paths.output_dir,
+                timeout=timeout,
+                retries=retries,
+                resolvers=config.dns.resolvers,
+            ),
         )
         checkpoint.mark_done("resolve")
 
@@ -592,7 +598,13 @@ def _run_pipeline_body(
         dm_domains = dm_config.domains or base_domains_from_fqdns(scope_fqdns)
         _run_stage(
             "domain_monitor",
-            lambda: monitor_domains(dm_domains, scope_fqdns, dm_config, paths.output_dir),
+            lambda: monitor_domains(
+                dm_domains,
+                scope_fqdns,
+                dm_config,
+                paths.output_dir,
+                resolvers=config.dns.resolvers,
+            ),
         )
         checkpoint.mark_done("domain_monitor")
 
@@ -611,6 +623,7 @@ def _run_pipeline_body(
                 dns_hygiene_domains,
                 dns_hygiene_config,
                 paths.output_dir,
+                resolvers=config.dns.resolvers,
             ),
         )
         checkpoint.mark_done("dns_hygiene")
@@ -626,6 +639,7 @@ def _run_pipeline_body(
                 mail_posture_domains,
                 mail_posture_config,
                 paths.output_dir,
+                resolvers=config.dns.resolvers,
             ),
         )
         checkpoint.mark_done("mail_posture")
@@ -716,6 +730,7 @@ def _run_pipeline_body(
                 config.discovery,
                 timeout=timeout,
                 retries=retries,
+                resolvers=config.dns.resolvers,
             ),
         )
         checkpoint.mark_done("discover-hostnames")
