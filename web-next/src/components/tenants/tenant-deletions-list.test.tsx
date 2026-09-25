@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TenantDeletionsList } from "@/components/tenants/tenant-deletions-list";
 import * as apiModule from "@/lib/api";
@@ -66,7 +67,7 @@ describe("TenantDeletionsList", () => {
     renderList();
 
     const table = await screen.findByRole("table", { name: "Deleted and deleting tenants" });
-    expect(fetch).toHaveBeenCalledWith({ limit: 100 });
+    expect(fetch).toHaveBeenCalledWith({ limit: 50, offset: 0 });
     const acme = within(table).getByText("acme").closest("tr") as HTMLElement;
     // Totals per store, the empty one left out, and the store that was skipped.
     expect(within(acme).getByText("postgres 1230 · artifacts 56")).toBeInTheDocument();
@@ -80,5 +81,27 @@ describe("TenantDeletionsList", () => {
     vi.spyOn(apiModule, "fetchTenantDeletions").mockResolvedValue([]);
     renderList();
     expect(await screen.findByText("No tenant has been deleted.")).toBeInTheDocument();
+  });
+
+  it("pages through a journal longer than one page instead of cutting it off", async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        deletion({ deletion_id: `del_${from + i}`, tenant_id: `tenant-${from + i}` }),
+      );
+    const fetch = vi
+      .spyOn(apiModule, "fetchTenantDeletions")
+      .mockImplementation(async ({ offset = 0 } = {}) =>
+        offset === 0 ? page(0, 50) : page(offset, 3),
+      );
+    renderList();
+
+    const table = await screen.findByRole("table", { name: "Deleted and deleting tenants" });
+    expect(within(table).getAllByRole("row")).toHaveLength(1 + 50);
+    await userEvent.click(screen.getByRole("button", { name: "Show earlier deletions" }));
+    expect(await within(table).findByText("tenant-52")).toBeInTheDocument();
+    expect(fetch).toHaveBeenLastCalledWith({ limit: 50, offset: 50 });
+    expect(within(table).getAllByRole("row")).toHaveLength(1 + 53);
+    // A short page is the last one.
+    expect(screen.queryByRole("button", { name: "Show earlier deletions" })).toBeNull();
   });
 });

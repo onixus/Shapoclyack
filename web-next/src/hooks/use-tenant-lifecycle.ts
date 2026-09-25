@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   approveTenantDeletion,
@@ -26,11 +26,19 @@ export function useTenantLifecycle(tenantId: string, enabled: boolean) {
   });
 }
 
-/** The last hundred deletions, tombstones included (#325). Platform admins only. */
+/** Deletions per page of the journal listing. */
+export const TENANT_DELETIONS_PAGE = 50;
+
+/** The deletion journal, newest first, tombstones included (#325), a page at a
+ * time: a short page is the last one. Platform admins only. */
 export function useTenantDeletions(enabled: boolean) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: queryKeys.tenantDeletions,
-    queryFn: () => fetchTenantDeletions({ limit: 100 }),
+    queryFn: ({ pageParam }) =>
+      fetchTenantDeletions({ limit: TENANT_DELETIONS_PAGE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.length < TENANT_DELETIONS_PAGE ? undefined : pages.length * TENANT_DELETIONS_PAGE,
     enabled,
   });
 }

@@ -35,7 +35,16 @@ export function outcomeSummary(deletion: TenantDeletion): { removed: string; ski
 export function TenantDeletionsList() {
   const t = useT();
   const when = useAbsoluteTime();
-  const { data, isLoading, error } = useTenantDeletions(true);
+  const { data: pages, isLoading, error, hasNextPage, fetchNextPage, isFetchingNextPage } =
+    useTenantDeletions(true);
+  // Offsets over a list that grows at the top: a deletion requested between
+  // two pages shows up again at the start of the next one, so keep the first.
+  const seen = new Set<string>();
+  const data = pages?.pages.flat().filter((deletion) => {
+    if (seen.has(deletion.deletion_id)) return false;
+    seen.add(deletion.deletion_id);
+    return true;
+  });
 
   return (
     <section className="space-y-2">
@@ -102,6 +111,16 @@ export function TenantDeletionsList() {
           </tbody>
         </table>
       )}
+      {hasNextPage ? (
+        <button
+          type="button"
+          className="text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
+          onClick={() => void fetchNextPage()}
+          disabled={isFetchingNextPage}
+        >
+          {t("deletions.more")}
+        </button>
+      ) : null}
     </section>
   );
 }
