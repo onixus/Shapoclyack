@@ -14,13 +14,15 @@ and then the purge itself, whose store-by-store behaviour is
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 
+from api.core import security as core_security
 from api.db import models
-from api.db.engine import get_session
+from api.db.engine import get_engine, get_session
 from api.services import legal_hold
 from api.services import tenant_lifecycle as lifecycle
 from api.services import scan_schedules
@@ -866,3 +868,142 @@ def test_the_unused_stores_setting_refuses_a_name_it_does_not_know(monkeypatch):
     monkeypatch.setenv("OCTO_TENANT_PURGE_UNUSED_STORES", "clickhouse,minio")
     with pytest.raises(ValueError, match="minio"):
         load_settings()
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2
+# --------------------------------------------------------------------------- #
+
+
+def test_the_purge_is_not_approved_on_a_replica_that_could_not_finish_it(env):
+    """A store neither configured here nor declared unused would stop the purge
+    after the point of no return; the approval refuses before it instead."""
+    client, settings, admin = env
+    settings.tenant_purge_unused_stores = ("jetstream",)
+    assert _request(client, admin).status_code == 202
+    refused = _approve(client, admin)
+    assert refused.status_code == 409, refused.text
+    assert "OCTO_CLICKHOUSE_URL" in refused.json()["detail"]
+    assert "OCTO_TENANT_PURGE_UNUSED_STORES" in refused.json()["detail"]
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.Tenant, ACME).status == "pending_deletion"
+    settings.tenant_purge_unused_stores = ("clickhouse", "jetstream")
+    assert _approve(client, admin).status_code == 200
+
+
+def test_a_suspension_racing_the_insert_cannot_leave_the_job_queued(env):
+    """The FOR SHARE itself, not the re-read: a suspension that starts between
+    the insert's status read and its INSERT must wait for the insert, then
+    cancel the job it finds. Without the lock the suspension commits first,
+    finds nothing to cancel, and the job is queued for the resume."""
+    client, settings, admin = env
+    engine = get_engine(settings.postgres_url)
+    racer: dict[str, threading.Thread] = {}
+
+    def race_the_insert(conn, cursor, statement, parameters, context, executemany):
+        if racer or not statement.lstrip().upper().startswith("INSERT INTO JOBS"):
+            return
+        racer["t"] = threading.Thread(
+            target=lifecycle.suspend,
+            args=(settings, ACME),
+            kwargs={"reason": "race", "actor": "root"},
+        )
+        racer["t"].start()
+        # Long enough for an unblocked suspension to commit; a blocked one
+        # waits for this INSERT's transaction.
+        racer["t"].join(timeout=3)
+
+    event.listen(engine, "before_cursor_execute", race_the_insert)
+    try:
+        response = client.post(
+            f"/api/jobs?tenant_id={ACME}",
+            headers=admin,
+            json={"mode": "safe", "skip_nse": True, "ranges": "127.0.0.1\n", "ports": "80\n"},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", race_the_insert)
+    racer["t"].join(timeout=30)
+    assert not racer["t"].is_alive()
+    assert response.status_code == 202, response.text
+    assert _job_status(settings, response.json()["job_id"]) == "cancelled"
+
+
+def _stopping(client, admin, *, agent_id: str = "edge-1"):
+    """An agent running a job of ACME, and ACME suspended: the job is cancelling."""
+    agent = _agent(client, _key(client, admin), agent_id)
+    running = _queue(client, admin)
+    assert client.post(f"/api/agent/jobs/claim?agent_id={agent_id}", headers=agent).status_code == 200
+    assert _heartbeat(client, agent, agent_id=agent_id, job_id=running).status_code == 200
+    _suspend(client, admin)
+    return agent, running
+
+
+def test_the_stop_only_answer_is_the_stop_and_nothing_else(env):
+    client, _settings, admin = env
+    agent, running = _stopping(client, admin)
+    answer = _heartbeat(client, agent, job_id=running)
+    assert answer.status_code == 200, answer.text
+    # Not the agent row: no hostname, labels, versions, group, settings.
+    assert answer.json() == {
+        "agent_id": "edge-1",
+        "current_job_id": running,
+        "cancel_requested": True,
+    }
+
+
+def test_the_stop_only_answer_never_names_another_agents_job(env):
+    client, _settings, admin = env
+    key = _key(client, admin)
+    other = _agent(client, key, agent_id="edge-2")
+    mine = _agent(client, key, agent_id="edge-1")
+    running = _queue(client, admin)
+    assert client.post("/api/agent/jobs/claim?agent_id=edge-2", headers=other).status_code == 200
+    assert _heartbeat(client, other, agent_id="edge-2", job_id=running).status_code == 200
+    _suspend(client, admin)
+    assert _heartbeat(client, mine, agent_id="edge-1", job_id=running).status_code == 401
+    assert _heartbeat(client, other, agent_id="edge-2", job_id=running).json()["cancel_requested"]
+
+
+def test_a_job_that_is_not_being_stopped_gets_no_stop(env):
+    client, settings, admin = env
+    agent, running = _stopping(client, admin)
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Job, running).status = "running"
+    assert _heartbeat(client, agent, job_id=running).status_code == 401
+
+
+def test_an_expired_or_foreign_signed_token_gets_no_stop(env):
+    client, settings, admin = env
+    _agent_token, running = _stopping(client, admin)
+    expired = core_security.create_agent_exchange_token(
+        tenant_id=ACME,
+        agent_id="edge-1",
+        expires_minutes=-5,
+        secret=settings.agent_signing_secret(),
+    )
+    foreign = core_security.create_agent_exchange_token(
+        tenant_id=ACME, agent_id="edge-1", secret="not-this-installation-" * 3
+    )
+    for token in (expired, foreign):
+        assert _heartbeat(client, bearer(token), job_id=running).status_code == 401
+
+
+def test_a_key_revoked_before_the_closure_stays_revoked_after_it(env):
+    """Only the closure's own revocation is looked past: a key an operator
+    revoked while the tenant was active is not revived by suspending it."""
+    client, _settings, admin = env
+    minted = client.post(
+        f"/api/tenants/{ACME}/provisioning-keys", headers=admin, json={"label": "edge"}
+    ).json()
+    agent = _agent(client, minted["key"])
+    running = _queue(client, admin)
+    assert client.post("/api/agent/jobs/claim?agent_id=edge-1", headers=agent).status_code == 200
+    revoked = client.post(
+        f"/api/tenants/{ACME}/provisioning-keys/{minted['key_id']}/revoke", headers=admin
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert _heartbeat(client, agent, job_id=running).status_code == 401
+    _suspend(client, admin, revoke_credentials=False)
+    after = _heartbeat(client, agent, job_id=running)
+    assert after.status_code == 401, after.text
+    assert "revoked" in after.json()["detail"]

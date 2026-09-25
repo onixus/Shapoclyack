@@ -18,6 +18,16 @@ the lifecycle needs to be recorded rather than remembered.
     period, with suspension's semantics) and ``deleting`` (the purge is
     running); no CHECK constraint, like the column never had one.
 
+``tenants.closed_at``
+    When the tenant last left ``active``; NULL while it is active. Moving
+    between the closed states (suspended, pending deletion, deleting) keeps
+    it. What it is for: an agent of a closed tenant is still told to stop the
+    scan it is running, even with its key revoked — but only when the key was
+    revoked *by* the closure (``revoked_at >= closed_at``), not one an operator
+    had revoked before it (``api/services/agents.py``, ``check_credential``).
+    Set to the upgrade's time on every tenant that is already closed, so a key
+    revoked before this revision is never taken for one the closure revoked.
+
 ``tenant_deletions``
     The journal: one row per deletion *request*, whatever became of it. No
     foreign key to ``tenants`` — the row has to outlive the tenant, because a
@@ -45,11 +55,15 @@ rollout before requesting a deletion. The old replica also does not re-read the
 tenant's status on an agent's JWT; suspension revokes the tenant's provisioning
 keys by default, which that replica does check.
 
-**Downgrade** drops the journal, the three columns and the permission rows, and
-turns ``pending_deletion``/``deleting`` into ``suspended`` — a status 0065 can
-serialise, and one every gate still refuses. Lossy: a purge that was under way
-stops where it was, and its journal (the tombstones included) is gone with the
-table, so export ``GET /api/tenants/deletions`` first if you need the list.
+**Downgrade** drops the journal, the four columns and the permission rows, and
+turns ``pending_deletion`` into ``suspended`` — a status 0065 can serialise,
+and one every gate still refuses. It refuses to run while a purge is under way
+or stopped by a legal hold (a deletion ``purging`` or ``blocked``): its tenant is
+``deleting`` with part of its data gone, and as ``suspended`` on 0065 a resume
+would put it back into service half-empty. Let the purge finish (lift the hold
+and retry it, if that is what stopped it) and downgrade then. The journal —
+the tombstones included — is gone with the table, so export
+``GET /api/tenants/deletions`` first if you need the list.
 """
 from __future__ import annotations
 
@@ -78,6 +92,13 @@ def upgrade() -> None:
     op.add_column("tenants", sa.Column("status_reason", sa.String(), nullable=True))
     op.add_column("tenants", sa.Column("status_changed_at", sa.DateTime(), nullable=True))
     op.add_column("tenants", sa.Column("status_changed_by", sa.String(), nullable=True))
+    op.add_column("tenants", sa.Column("closed_at", sa.DateTime(), nullable=True))
+    # Naive UTC like every timestamp column here, whatever the session's zone.
+    op.execute(
+        sa.text(
+            "UPDATE tenants SET closed_at = timezone('utc', now()) WHERE status <> 'active'"
+        )
+    )
 
     op.create_table(
         "tenant_deletions",
@@ -162,6 +183,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    half_purged = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT tenant_id, state FROM tenant_deletions "
+                "WHERE state IN ('purging', 'blocked') ORDER BY tenant_id"
+            )
+        )
+        .all()
+    )
+    if half_purged:
+        listed = ", ".join(f"{tenant_id} ({state})" for tenant_id, state in half_purged)
+        raise RuntimeError(
+            f"refusing to downgrade 0066: tenants being purged: {listed}. As "
+            "'suspended' on 0065 a resume would put a half-purged tenant back into "
+            "service. Let each purge finish (lift a legal hold and retry a blocked "
+            "one) and downgrade then."
+        )
     op.execute(
         sa.text(
             "DELETE FROM role_permissions WHERE permission_key = 'platform.tenant.lifecycle'"
@@ -183,6 +222,7 @@ def downgrade() -> None:
     op.drop_index("ix_tenant_deletions_due", table_name="tenant_deletions")
     op.drop_index("ix_tenant_deletions_tenant", table_name="tenant_deletions")
     op.drop_table("tenant_deletions")
+    op.drop_column("tenants", "closed_at")
     op.drop_column("tenants", "status_changed_by")
     op.drop_column("tenants", "status_changed_at")
     op.drop_column("tenants", "status_reason")

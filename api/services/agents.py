@@ -434,6 +434,25 @@ class TenantClosed(AgentCredentialRevoked):
         self.status = status
 
 
+def _cut_off_by_the_closure(session: Any, key_id: str, closed_at: datetime | None) -> bool:
+    """Whether a closed tenant's key is still live, or was revoked by the closure.
+
+    ``revoked_at >= closed_at``: the suspension (or the deletion request)
+    revokes the tenant's keys after setting ``closed_at`` in the same
+    transaction, and a later suspension that asks for the keys it had kept
+    revokes them later still. A tenant closed before ``closed_at`` existed has
+    it set to the upgrade's time (migration 0066), so no key revoked before
+    that counts.
+    """
+    state = tenants_service.provisioning_key_state_in_session(session, key_id)
+    if state == "active":
+        return True
+    if state != "revoked" or closed_at is None:
+        return False
+    row = session.get(models.ProvisioningKey, key_id)
+    return row is not None and row.revoked_at is not None and row.revoked_at >= closed_at
+
+
 def check_credential(
     *,
     agent_id: str | None,
@@ -462,11 +481,22 @@ def check_credential(
         # 401 is to re-exchange its key, which the exchange refuses for a
         # tenant that is not active, and the agent's backoff on *that* keeps a
         # suspended fleet from polling at full rate (agent/worker.py).
-        tenant_status = session.execute(
-            select(models.Tenant.status).where(models.Tenant.tenant_id == tenant_id)
-        ).scalar_one_or_none()
-        if tenant_status is not None and tenant_status != tenants_service.STATUS_ACTIVE:
-            raise TenantClosed(tenant_id, tenant_status)
+        tenant = session.execute(
+            select(models.Tenant.status, models.Tenant.closed_at).where(
+                models.Tenant.tenant_id == tenant_id
+            )
+        ).one_or_none()
+        if tenant is not None and tenant.status != tenants_service.STATUS_ACTIVE:
+            # Only an agent the closure itself cut off: a key an operator
+            # revoked (or that expired) before the tenant closed was refused
+            # the day before, and the closure is no reason to hear from it now.
+            if key_id and not _cut_off_by_the_closure(session, key_id, tenant.closed_at):
+                state = tenants_service.provisioning_key_state_in_session(session, key_id)
+                raise AgentCredentialRevoked(
+                    f"The provisioning key behind this agent token is {state}; "
+                    "re-provision the agent with a current key"
+                )
+            raise TenantClosed(tenant_id, tenant.status)
         if key_id:
             state = tenants_service.provisioning_key_state_in_session(
                 session, key_id

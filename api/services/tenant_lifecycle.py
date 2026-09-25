@@ -176,9 +176,17 @@ def _lock_tenant(session: Session, tenant_id: str) -> models.Tenant:
 
 
 def _set_status(tenant: models.Tenant, status: str, *, reason: str | None, actor: str) -> None:
+    moment = _now()
+    if status == tenants_service.STATUS_ACTIVE:
+        tenant.closed_at = None
+    elif tenant.status == tenants_service.STATUS_ACTIVE or tenant.closed_at is None:
+        # Leaving ``active``; a move between two closed states keeps the time
+        # it closed. Set before the closure revokes anything, so what it revokes
+        # carries ``revoked_at >= closed_at`` (agents.check_credential).
+        tenant.closed_at = moment
     tenant.status = status
     tenant.status_reason = reason
-    tenant.status_changed_at = _now()
+    tenant.status_changed_at = moment
     tenant.status_changed_by = actor
 
 
@@ -642,6 +650,28 @@ def cancel_deletion(
     return described
 
 
+def unconfigured_stores(settings: Settings) -> list[str]:
+    """What this replica's purge would fail on for want of configuration alone.
+
+    The ClickHouse and JetStream steps fail on a replica where the store's URL
+    is unset and the installation has not declared the store unused
+    (``OCTO_TENANT_PURGE_UNUSED_STORES``): the tenant's data may be in a store
+    this replica cannot reach, and recording it as holding nothing would be a
+    guess. Checked by :func:`approve_deletion`, so that the misconfiguration
+    stops the approval — before the point of no return — rather than leaving a
+    tenant ``deleting`` behind a step that can never succeed.
+    """
+    unused = set(settings.tenant_purge_unused_stores)
+    missing: list[str] = []
+    for store, variable, url in (
+        ("clickhouse", "OCTO_CLICKHOUSE_URL", settings.clickhouse_url),
+        ("jetstream", "OCTO_NATS_URL", settings.nats_url),
+    ):
+        if not (url or "").strip() and store not in unused:
+            missing.append(f"{variable} (or '{store}' in OCTO_TENANT_PURGE_UNUSED_STORES)")
+    return missing
+
+
 def approve_deletion(
     settings: Settings,
     tenant_id: str,
@@ -657,8 +687,22 @@ def approve_deletion(
     tenant row, refuse a held tenant, and only then mark it ``deleting``. From
     the commit on, the purge worker owns it; every batch it deletes re-checks
     the hold under the same lock.
+
+    Refused with :class:`LifecycleConflict` on a replica whose configuration
+    would fail a store's step (:func:`unconfigured_stores`): an approved purge
+    cannot be taken back, and one that cannot finish leaves the tenant
+    ``deleting`` until someone fixes the configuration.
     """
     _confirm(tenant_id, confirm)
+    missing = unconfigured_stores(settings)
+    if missing:
+        raise LifecycleConflict(
+            "this installation's purge could not finish: set "
+            + " and ".join(missing)
+            + " on the API replicas before approving it — the purge runs on "
+            "every replica, and a store none of them can reach is not one it "
+            "may record as empty"
+        )
     moment = now or _now()
     with get_session(settings.postgres_url) as session:
         tenant = _lock_tenant(session, tenant_id)

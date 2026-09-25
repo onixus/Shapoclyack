@@ -70,6 +70,8 @@ class Tenant(Base):
     # members'.
     status_reason: Mapped[str | None] = mapped_column(default=None)
     status_changed_at: Mapped[datetime | None] = mapped_column(default=None)
+    # When the tenant last left ``active`` (#325, 0066); NULL while active.
+    closed_at: Mapped[datetime | None] = mapped_column(default=None)
     status_changed_by: Mapped[str | None] = mapped_column(default=None)
     # Change freeze (#352). Distinct from ``status``: a frozen tenant is fully
     # operational — its console works, its findings are readable — it has

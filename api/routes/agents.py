@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from api.auth import (
     AGENT_TENANT_CLOSED_ATTR,
@@ -185,7 +185,7 @@ def _stop_only(
     body: AgentHeartbeatRequest,
     principal: AgentPrincipal,
     settings: Settings,
-) -> AgentHeartbeatResponse | None:
+) -> JSONResponse | None:
     """The whole answer to an agent whose tenant is closed (#325), or None.
 
     Suspension moves the jobs an agent is running to ``cancelling`` (#360),
@@ -194,6 +194,12 @@ def _stop_only(
     the job it names and nothing else: no lease renewal, no promotion, no
     ``last_seen_at``, no remote settings. Any other heartbeat of such an agent
     gets the same 401 as every other request it makes.
+
+    *Nothing else* includes the body: ``agent_id``, ``current_job_id`` and
+    ``cancel_requested`` — not the agent row an ordinary heartbeat returns
+    (hostname, labels, versions, group, the other agents on its key). The
+    agent reads ``cancel_requested`` and nothing more from a busy heartbeat
+    (``agent/worker.py``), so the short body is all it needs.
     """
     closed = getattr(request.state, AGENT_TENANT_CLOSED_ATTR, None)
     if closed is None:
@@ -209,7 +215,9 @@ def _stop_only(
         )
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(closed))
-    return AgentHeartbeatResponse(**info.model_dump(), cancel_requested=True)
+    return JSONResponse(
+        {"agent_id": body.agent_id, "current_job_id": job_id, "cancel_requested": True}
+    )
 
 
 @router.post("/agent/heartbeat", response_model=AgentHeartbeatResponse)
@@ -218,7 +226,7 @@ def heartbeat(
     body: AgentHeartbeatRequest,
     principal: Annotated[AgentPrincipal, Depends(require_agent_heartbeat)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> AgentHeartbeatResponse:
+) -> AgentHeartbeatResponse | JSONResponse:
     """Accepted even from a disabled or quarantined agent, on purpose (#308).
 
     The response carries ``lifecycle_status`` and ``lifecycle_message``, which

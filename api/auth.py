@@ -1241,11 +1241,13 @@ def require_agent_heartbeat(
 
     The same verification — a JWT signed by this installation and inside its
     ``exp`` — but a token whose *tenant* is closed is not refused here: it is
-    marked on ``request.state`` (:data:`AGENT_TENANT_CLOSED_ATTR`) whatever
-    its provisioning key's state, since the suspension is usually what revoked
-    the key. The route then answers the one thing that must still reach such
-    an agent — "stop the job you are running" — and refuses everything else
-    with the 401 every other route gives.
+    marked on ``request.state`` (:data:`AGENT_TENANT_CLOSED_ATTR`) when its
+    provisioning key is live or was revoked by the closure itself, since the
+    suspension is usually what revoked the key; a key revoked before the
+    closure is refused as before (``agents.check_credential``). The route then
+    answers the one thing that must still reach such an agent — "stop the job
+    you are running" — and refuses everything else with the 401 every other
+    route gives.
     """
     return _authenticate_agent(request, credentials, settings, allow_closed_tenant=True)
 
