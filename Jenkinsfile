@@ -312,12 +312,18 @@ pipeline {
 
         stage('Smoke') {
           steps {
+            // verify-pulse-image.py --rootfs / сверяет pulse в собранном образе
+            // с записью об установке и с пинами внутри того же образа (#340).
+            // Это проверка сборки (запись есть, бинарь тот, что установлен из
+            // запиненного tarball), а не проверка для заказчика: ему нужен свой
+            // checkout тега — docs/release-contract.md.
             sh """
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh ${IMAGE_TAG} -c '
                 set -e
                 naabu -version
                 dnsx -version
                 pulse --version
+                python scripts/verify-pulse-image.py --rootfs /
                 ! command -v nmap
                 python -m compileall scanner
               '

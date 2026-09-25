@@ -146,12 +146,8 @@ def scan_failure_event(row: models.Job) -> dict[str, Any]:
     }
 
 
-def refresh_job_gauges(settings: Settings) -> None:
-    """Publish queued/running counts.
-
-    These are now counted in the shared table rather than per-process, so two
-    replicas no longer report two different queue depths for the same queue —
-    one of the known gaps called out in docs/slo.md.
+def job_counts(session: Any) -> tuple[int, int]:
+    """``(queued, running)`` across every tenant, from the shared table.
 
     ``claimed`` (P1.3) counts as running: the job is out with a worker and no
     longer waiting, so folding it into the queue depth would read as a backlog
@@ -159,21 +155,29 @@ def refresh_job_gauges(settings: Settings) -> None:
     same reason — the agent is still busy with it until it confirms — even
     though it is deliberately outside ``IN_FLIGHT``, which is the lease set.
     """
-    with get_session(settings.postgres_url) as session:
-        counts = dict(
-            session.execute(
-                select(models.Job.status, func.count())
-                .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
-                .group_by(models.Job.status)
-            ).all()
-        )
-    metrics_service.JOBS_QUEUED.set(counts.get(job_states.QUEUED, 0))
-    metrics_service.JOBS_RUNNING.set(
-        sum(
-            counts.get(state, 0)
-            for state in (*job_states.IN_FLIGHT, job_states.CANCELLING)
-        )
+    counts = dict(
+        session.execute(
+            select(models.Job.status, func.count())
+            .where(models.Job.status.in_(tuple(job_states.ACTIVE)))
+            .group_by(models.Job.status)
+        ).all()
     )
+    running = sum(counts.get(state, 0) for state in (*job_states.IN_FLIGHT, job_states.CANCELLING))
+    return counts.get(job_states.QUEUED, 0), running
+
+
+def refresh_job_gauges(settings: Settings) -> None:
+    """Have this replica's next scrape read the queue afresh.
+
+    ``octo_jobs_queued``/``octo_jobs_running`` are read from the table at
+    scrape time (#334, :func:`job_counts`), so every replica reports the queue
+    the table holds within one snapshot TTL. They used to be *set* here, by
+    whichever replica handled the job's last event, and a replica that never
+    heard of the claim kept reporting the job as queued for the rest of its
+    life. The replica that did change the queue just skips the TTL. The
+    parameter stays for the nine call sites; the snapshot needs none.
+    """
+    metrics_service.CLUSTER_COLLECTOR.expire()
 
 
 def record_job_metrics(

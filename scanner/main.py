@@ -1087,7 +1087,9 @@ def _run_pipeline_body(
         nuclei_cfg = merge_nuclei_config(config.nuclei, profile.nuclei)
         nuclei_result = _run_stage(
             "nuclei",
-            lambda: run_nuclei_scan(open_ports, nuclei_cfg, paths.output_dir),
+            lambda: run_nuclei_scan(
+                open_ports, nuclei_cfg, paths.output_dir, resolvers=config.dns.resolvers
+            ),
         )
         checkpoint.mark_done("nuclei")
     nuclei_cve_findings = nuclei_result.get("cve_findings") or []

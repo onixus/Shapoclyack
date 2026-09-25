@@ -1,0 +1,36 @@
+# ServiceMonitor for the Shapoclyack API (#334) — the component's copy of
+# examples/servicemonitor.example.yaml, less its namespaceSelector: here the
+# object is rendered into the API's own namespace, which is where a
+# ServiceMonitor looks by default, so an overlay that moves the namespace is
+# followed rather than contradicted.
+#
+# /metrics is open unless OCTO_METRICS_TOKEN is set on the API (#319). With the
+# token set, create the Secret below in this namespace with the same value and
+# add `bearerTokenSecret` to the endpoint with a patch in your overlay:
+#
+#   kubectl -n network-scan create secret generic shapoclyack-metrics \
+#     --from-literal=token="$OCTO_METRICS_TOKEN"
+#
+#   bearerTokenSecret: {name: shapoclyack-metrics, key: token}
+#
+# Scraping the API through both this and the pod annotations of
+# base/api-deployment.yaml collects every series twice, under two `job` values
+# (the dashboards pick one job for that reason). Drop the annotation-based
+# scrape job, or keep it away from this namespace, when this is enabled.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: shapoclyack-api
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http          # named port on Service shapoclyack-api (8080)
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

@@ -1,10 +1,10 @@
 # Ingress to the three stateful services. Base resource, not an example —
 # unlike egress, the set of legitimate clients here is known exactly and does
 # not vary by environment: Postgres is reached by the API (and its migrate init
-# container) plus the backup CronJob, ClickHouse by the API only, NATS by the
-# API (and by sensors outside the cluster, below). See docs/operations.md
-# § NetworkPolicy decision
-# for why the egress half of that decision still stands.
+# container) plus the backup CronJob, ClickHouse by the API plus its own backup
+# CronJob, NATS by the API (and by sensors outside the cluster, below). See
+# docs/operations.md § NetworkPolicy decision for why the egress half of that
+# decision still stands.
 #
 # Each policy is default-deny-by-omission: naming a pod in `podSelector` with
 # policyTypes: [Ingress] drops everything not matched by an `ingress` rule.
@@ -80,6 +80,18 @@ spec:
       ports:
         - protocol: TCP
           port: 8123
+        - protocol: TCP
+          port: 9000
+    # The backup CronJob's clickhouse-client (#333), native port only. Its own
+    # component label rather than Postgres's `backup`, so neither dump job can
+    # reach the other's datastore. The upload to S3 is the server's egress,
+    # not this pod's.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: clickhouse-backup
+      ports:
         - protocol: TCP
           port: 9000
 ---

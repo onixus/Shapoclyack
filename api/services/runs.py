@@ -10,6 +10,7 @@ from api.schemas import AliveHostItem, PortAggregateItem, RunDetail, RunSummary,
 from api.services import artifact_store
 from api.services import pagination
 from api.services import promoted_domains as promoted_service
+from api.services import retention_policy
 from api.services import tenants as tenants_service
 from api.services.artifact_store import keys as artifact_keys
 from api.services.artifact_store import workspace
@@ -1009,13 +1010,18 @@ def list_screenshots(
     run_dir = get_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
         return None
+    # The window the reaper applies to *this run's owner* (#332), 0 while the
+    # owner is on legal hold — which the console words as "kept".
+    retention_days = retention_policy.effective_days(
+        settings, tenant_id or read_run_tenant(run_dir), retention_policy.SCREENSHOTS
+    )
     raw = _load_json(run_dir / "screenshots.json")
     empty: dict[str, Any] = {
         "skipped_reason": None,
         "captured_count": 0,
         "redacted_fields": 0,
         "truncated": False,
-        "retention_days": settings.screenshot_retention_days,
+        "retention_days": retention_days,
         "items": [],
     }
     if not isinstance(raw, dict):
@@ -1046,7 +1052,7 @@ def list_screenshots(
         "captured_count": int(raw.get("captured_count") or 0),
         "redacted_fields": int(raw.get("redacted_fields") or 0),
         "truncated": bool(raw.get("truncated")),
-        "retention_days": settings.screenshot_retention_days,
+        "retention_days": retention_days,
         "items": items,
     }
 

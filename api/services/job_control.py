@@ -372,6 +372,26 @@ def mark_running(settings: Settings, job_id: str, *, agent_id: str) -> bool:
     return False
 
 
+def stop_requested(
+    settings: Settings, job_id: str, *, agent_id: str, tenant_id: str
+) -> bool:
+    """Whether ``agent_id`` holds ``job_id`` and has been asked to stop it. Reads only.
+
+    The heartbeat of an agent whose tenant is closed (#325) is answered with
+    this and nothing else: no lease renewal, no promotion to running, no
+    ``last_seen_at`` — the tenant is refused, and the one thing still worth
+    telling its agent is to put down a scan it should no longer be running.
+    """
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job_id)
+        return (
+            row is not None
+            and row.assigned_agent_id == agent_id
+            and row.tenant_id == tenant_id
+            and row.status == job_states.CANCELLING
+        )
+
+
 def _stalled_ingest(settings: Settings, row: models.Job) -> bool:
     """Whether this row's open ingest has outlived the stop it is holding.
 

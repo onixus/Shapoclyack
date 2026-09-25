@@ -24,6 +24,7 @@ stage timings: pipeline_wall=…s stages_sum=…s top=[nuclei=…, ports=…, �
 | `stages_sum_sec` | Sum of timed stages (can **exceed** wall when pulse+nse run concurrently) |
 | `stages[]` | Ordered list with `duration_sec` and `status` (`ok` / `skipped` / `error`) |
 | `top_stages` | Slowest successful stages |
+| `resources` | Whole-run `cpu_sec` and peak `max_rss_mb` of the scan process, and `children_cpu_sec` / `children_max_rss_mb` of the tools it waited for (the largest single tool, not a sum); `null` without `getrusage`. Sizes a sensor (`scale_measure runs-dir`, [sizing.md](sizing.md#sensors)) |
 
 Use this file before changing rates or concurrency. The usual ranking on
 web-heavy scopes is **nuclei ≫ ports / pulse ≫ discover**.

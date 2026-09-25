@@ -91,6 +91,12 @@ function formatMoment(value: string | null | undefined) {
  * a viewer who reaches this route by hand still gets nothing but their own
  * password form, which is the one account operation their role owns.
  */
+/** The status column's value: an erased account is its own state (#332). */
+function accountStatus(account: UserInfo): "active" | "disabled" | "erased" {
+  if (account.erased_at) return "erased";
+  return account.disabled ? "disabled" : "active";
+}
+
 export default function UsersPage() {
   const t = useT();
   const { user } = useAuthStore();
@@ -460,14 +466,11 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
       },
       {
         id: "status",
-        accessorFn: (account) => (account.disabled ? "disabled" : "active"),
+        accessorFn: (account) => accountStatus(account),
         header: t("users.col.status"),
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
-            <StatusBadge
-              value={row.original.disabled ? "disabled" : "active"}
-              map={ACCOUNT_STATUS}
-            />
+            <StatusBadge value={accountStatus(row.original)} map={ACCOUNT_STATUS} />
             {row.original.has_password ? null : (
               <span className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400">
                 {t("users.noPassword")}
@@ -492,6 +495,11 @@ function UsersTab({ t, signedInAs }: { t: Translate; signedInAs: string }) {
         cell: ({ row }) => {
           const account = row.original;
           const isSelf = account.username === signedInAs;
+          if (account.erased_at) {
+            // Every write to a tombstone is refused (#332); offering buttons
+            // whose only outcome is that refusal would be worse than none.
+            return <span className="text-xs text-muted-foreground">{t("users.erasedHint")}</span>;
+          }
           return (
             <div className="flex flex-wrap items-center gap-1.5">
               <Button variant="ghost" size="sm" onClick={() => setResetTarget(account)}>
