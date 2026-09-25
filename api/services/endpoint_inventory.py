@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 
 from api.db import models, tenant_scope
 from api.db.engine import get_session
@@ -555,10 +555,30 @@ def list_devices(
     return items
 
 
+def device_state_counts(session: Any, *, now: datetime, stale_hours: int) -> dict[str, int]:
+    """``{"active": n, "stale": m}`` over every tenant, in one aggregate (#334).
+
+    What ``octo_endpoint_devices`` reports, read at scrape time. The rule is
+    :func:`device_status` in SQL — never submitted, or last submitted more
+    than ``stale_hours`` ago, is stale — counted by the database rather than
+    by loading one timestamp per device, which is what :func:`device_counts`
+    does for the System page.
+    """
+    last = models.EndpointDevice.last_inventory_at
+    stale_before = now - timedelta(hours=stale_hours)
+    total, stale = session.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(case((or_(last.is_(None), last < stale_before), 1), else_=0)), 0),
+        ).select_from(models.EndpointDevice)
+    ).one()
+    return {"active": int(total) - int(stale), "stale": int(stale)}
+
+
 def device_counts(tenant_id: str | None = None) -> dict[str, int]:
     """Total / stale endpoint-device counts, optionally scoped to one tenant.
 
-    Feeds the System page and the ``octo_endpoint_devices`` gauge (S9 / §15).
+    Feeds the System page (S9 / §15).
     """
     settings = _require_settings()
     now = _now()

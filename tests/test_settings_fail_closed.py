@@ -19,6 +19,7 @@ from api.settings import (
     DEFAULT_JWT_SECRET,
     ENV_DEV,
     ENV_PROD,
+    MAX_METRICS_TENANT_TOP_N,
     InsecureConfigurationError,
     load_settings,
 )
@@ -58,6 +59,8 @@ _DECIDING_VARS = (
     "OCTO_ACCESS_TOKEN_EXPIRE_MINUTES",
     "OCTO_SESSION_IDLE_MINUTES",
     "OCTO_REFRESH_COOKIE_SECURE",
+    "OCTO_METRICS_TOKEN",
+    "OCTO_METRICS_TENANT_TOP_N",
 )
 
 
@@ -655,6 +658,36 @@ def test_db_pool_leaves_room_for_the_leader_locks(clean_env: pytest.MonkeyPatch)
     clean_env.setenv("OCTO_DB_MAX_OVERFLOW", "0")
     untouched = load_settings()
     assert (untouched.db_pool_size, untouched.db_max_overflow) == (4, 0)
+
+
+def test_tenant_series_are_off_by_default_and_capped(clean_env: pytest.MonkeyPatch) -> None:
+    """OCTO_METRICS_TENANT_TOP_N is the only way a tenant id reaches /metrics,
+    and its ceiling is what bounds the series count, whatever is asked (#334)."""
+    _configure_prod(clean_env)
+    assert load_settings().metrics_tenant_top_n == 0
+
+    clean_env.setenv("OCTO_METRICS_TOKEN", "a-scraper-token")
+    clean_env.setenv("OCTO_METRICS_TENANT_TOP_N", "10")
+    assert load_settings().metrics_tenant_top_n == 10
+    clean_env.setenv("OCTO_METRICS_TENANT_TOP_N", "5000")
+    assert load_settings().metrics_tenant_top_n == MAX_METRICS_TENANT_TOP_N
+    clean_env.setenv("OCTO_METRICS_TENANT_TOP_N", "-3")
+    assert load_settings().metrics_tenant_top_n == 0
+
+
+def test_tenant_series_need_the_metrics_token_in_prod(clean_env: pytest.MonkeyPatch) -> None:
+    """An open /metrics is only warned about; per-tenant series on it would be
+    the customer list and each customer's breached findings for anyone who can
+    reach the port, so that combination refuses to start."""
+    _configure_prod(clean_env)
+    clean_env.setenv("OCTO_METRICS_TENANT_TOP_N", "5")
+    with pytest.raises(InsecureConfigurationError) as refused:
+        load_settings()
+    assert "OCTO_METRICS_TENANT_TOP_N" in str(refused.value)
+    assert "OCTO_METRICS_TOKEN" in str(refused.value)
+
+    clean_env.setenv("OCTO_METRICS_TOKEN", "a-scraper-token")
+    assert load_settings().metrics_tenant_top_n == 5
 
 
 def test_session_lifetimes_default_to_a_short_token_in_a_long_session(

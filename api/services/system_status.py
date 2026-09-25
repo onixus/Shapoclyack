@@ -112,9 +112,13 @@ def _load_config(settings: Settings) -> dict[str, Any]:
 def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
     """Origin fields for one dataset, from its manifest record.
 
-    Always the same five keys so the payload shape does not depend on whether a
+    Always the same keys so the payload shape does not depend on whether a
     manifest was found — a missing one reports ``None`` everywhere, exactly like
     an image built before #246.
+
+    ``source_origin`` is set for ``origin: bundle`` only: what the connected
+    side called the dataset when it built the offline bundle (#339) — ``stale``
+    there is stale here, and ``origin: bundle`` alone would launder it.
 
     ``usable`` is the manifest's own verdict on whether the file holds a corpus
     or a placeholder, and it is here because ``entries`` alone does not carry
@@ -132,6 +136,7 @@ def _provenance(record: dict[str, Any] | None) -> dict[str, Any]:
         "updated": str(record.get("updated")) if record.get("updated") else None,
         "entries": entries if isinstance(entries, int) else None,
         "usable": usable if isinstance(usable, bool) else None,
+        "source_origin": record.get("source_origin") if isinstance(record.get("source_origin"), str) else None,
     }
 
 
@@ -145,13 +150,52 @@ def enrichment_manifest() -> dict[str, Any]:
     Fail-soft like every other panel here — no manifest just means the origin
     fields report ``None``.
     """
-    path = Path(os.environ.get("OCTO_ENRICHMENT_MANIFEST") or _DEFAULT_MANIFEST_PATH)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_manifest_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     datasets = payload.get("datasets") if isinstance(payload, dict) else None
     return datasets if isinstance(datasets, dict) else {}
+
+
+def _manifest_path() -> Path:
+    return Path(os.environ.get("OCTO_ENRICHMENT_MANIFEST") or _DEFAULT_MANIFEST_PATH)
+
+
+# Written beside the manifest by scripts/enrichment_bundle.py when an offline
+# bundle is installed (#339). Not configurable on its own: it describes the
+# directory the manifest describes, so it lives wherever that one does.
+_BUNDLE_RECORD = "enrichment-bundle.json"
+
+
+def enrichment_bundle() -> dict[str, Any] | None:
+    """The offline bundle this installation's enrichment data came from, if any.
+
+    ``None`` on an installation that refreshes online (or has never loaded a
+    bundle) — the normal case, not an error. The per-dataset data dates are in
+    ``enrichment`` already, where ``origin: bundle`` marks the datasets this
+    bundle installed; this is the bundle-level answer to "how old is what we
+    loaded, and when did we load it". Fail-soft like the manifest.
+    """
+    try:
+        payload = json.loads((_manifest_path().parent / _BUNDLE_RECORD).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("bundle_id"), str):
+        return None
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    datasets = sorted(
+        {str(entry["dataset"]) for entry in files if isinstance(entry, dict) and entry.get("dataset")}
+    )
+    return {
+        "bundle_id": payload["bundle_id"],
+        "schema_version": payload.get("schema_version")
+        if isinstance(payload.get("schema_version"), int)
+        else None,
+        "built_at": payload.get("built_at") or None,
+        "installed_at": payload.get("installed_at") or None,
+        "datasets": datasets,
+    }
 
 
 def _stat_db(name: str, path_str: str, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -208,6 +252,11 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
         or "scanner/data/advisories/debian-advisories.json",
         "advisories_ubuntu": os.environ.get("OCTO_UBUNTU_ADVISORY_DATABASE")
         or "scanner/data/advisories/ubuntu-advisories.json",
+        # Microsoft's Security Update Guide (#358). Listed with the other two
+        # now that an offline bundle carries it (#339): a site that loads one
+        # has to be able to see the date it loaded, like every other dataset.
+        "advisories_msrc": os.environ.get("OCTO_MSRC_DATABASE")
+        or "scanner/data/advisories/msrc-advisories.json",
         # NVD CPE ranges behind retro CVE matching. Same question as above: a
         # retro matcher on a stale range file silently misses every CVE
         # published since, and says nothing about it.
@@ -300,9 +349,10 @@ def endpoint_inventory_status(
     """Endpoint-inventory footprint, staleness, and retention posture (S9).
 
     Fail-soft like every other panel here: an unconfigured Postgres or a
-    disabled feature degrades to ``None`` counts rather than raising. Also
-    refreshes the ``octo_endpoint_devices`` gauge, which otherwise only moves
-    on a retention sweep.
+    disabled feature degrades to ``None`` counts rather than raising. The
+    ``octo_endpoint_devices`` gauge is no longer refreshed here: it is read at
+    scrape time since #334, so it does not depend on which replica served the
+    last System page view.
 
     The device counts are installation-wide, like the tenant and agent counts
     in :func:`inventory_counts`, and follow the same rule (#311): without
@@ -314,12 +364,9 @@ def endpoint_inventory_status(
     if settings.endpoint_inventory_enabled and include_fleet_counts:
         try:
             from api.services import endpoint_inventory as endpoint_inventory_service
-            from api.services import metrics as metrics_service
 
             tallied = endpoint_inventory_service.device_counts()
             counts = {"devices_total": tallied["total"], "devices_stale": tallied["stale"]}
-            metrics_service.ENDPOINT_DEVICES.labels("active").set(tallied["active"])
-            metrics_service.ENDPOINT_DEVICES.labels("stale").set(tallied["stale"])
         except Exception:  # noqa: BLE001 - fail-soft status view
             LOG.warning("system_status: could not count endpoint devices", exc_info=True)
 
@@ -375,6 +422,7 @@ def build_status(settings: Settings, *, include_fleet_counts: bool = True) -> di
         "app_version": __version__,
         "tools": tool_versions(),
         "enrichment": enrichment_status(config),
+        "enrichment_bundle": enrichment_bundle(),
         "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),
         "inventory": inventory_counts(include_fleet_counts=include_fleet_counts),

@@ -12,7 +12,7 @@ oversight at one call site.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -26,8 +26,11 @@ from api.schemas import (
     SetUserEmailRequest,
     SetUserPasswordRequest,
     SetUserRoleRequest,
+    UserErasureResult,
     UserInfo,
 )
+from api.services import data_subject
+from api.services import legal_hold
 from api.services import sessions as sessions_service
 from api.services import users as users_service
 from api.settings import Settings
@@ -39,6 +42,12 @@ def _not_found(username: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND, detail=f"user '{username}' not found"
     )
+
+
+def _erased(exc: Exception) -> HTTPException:
+    """Every write to an erased account's tombstone is one refusal (#332): a
+    conflict with the account's state, not a malformed request."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
 @router.get("/users", response_model=list[UserInfo])
@@ -93,6 +102,8 @@ def set_user_password(
     """
     try:
         updated = users_service.set_password(username, body.password, audit=audit)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -119,6 +130,8 @@ def set_user_role(
         )
     try:
         updated = users_service.set_role(username, body.role, audit=audit)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -151,6 +164,8 @@ def set_user_email(
     """
     try:
         updated = users_service.set_email(username, body.email, verified=body.verified)
+    except users_service.AccountErased as exc:
+        raise _erased(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -173,7 +188,10 @@ def set_user_disabled(
             status_code=status.HTTP_409_CONFLICT,
             detail="cannot disable the last active admin — create another admin first",
         )
-    updated = users_service.set_disabled(username, body.disabled, audit=audit)
+    try:
+        updated = users_service.set_disabled(username, body.disabled, audit=audit)
+    except users_service.AccountErased as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if updated is None:
         raise _not_found(username)
     return UserInfo.model_validate(updated)
@@ -219,8 +237,69 @@ def delete_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="cannot delete the last active admin — create another admin first",
         )
-    if not users_service.delete_user(username, audit=audit):
+    try:
+        deleted = users_service.delete_user(username, audit=audit)
+    except users_service.AccountErased as exc:
+        # The tombstone is what keeps the name from being reissued (#332).
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if not deleted:
         raise _not_found(username)
+
+
+@router.get("/users/{username}/export")
+def export_user_data(
+    username: str,
+    _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # A bulk copy of somebody else's addresses, IdP identity and sign-in
+    # history: not what an eight-hour-old session should be enough for.
+    __: StepUpDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Everything the platform holds about one account, as JSON (#332).
+
+    The answer to a data-subject access request: the account, its memberships,
+    security keys, sessions, sign-in history, what it did and what was done to
+    it, and a count of the records elsewhere that name it — see
+    ``api/services/data_subject.py`` for what each section holds and what is
+    left out on purpose. Recorded as ``user.export``. 503 when a statement runs
+    past the export's timeout.
+    """
+    try:
+        return data_subject.export_user(settings, username, audit=audit)
+    except LookupError as exc:
+        raise _not_found(username) from exc
+    except data_subject.ExportTooSlow as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/users/{username}/erase", response_model=UserErasureResult)
+def erase_user(
+    username: str,
+    admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Irreversible, and it removes a second factor and every credential the
+    # account had — the same class of act as a password reset (#315).
+    _: StepUpDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> UserErasureResult:
+    """Erase one account's personal data, keeping its username as a pseudonym (#332).
+
+    409 for the caller's own account, for the last active admin, and while a
+    tenant the account belongs to or acted in is on legal hold. Erasing an
+    account that is already erased answers 200 with ``already_erased``.
+    """
+    try:
+        result = data_subject.erase_user(
+            settings, username, requested_by=admin.username, audit=audit
+        )
+    except LookupError as exc:
+        raise _not_found(username) from exc
+    except (data_subject.ErasureRefused, legal_hold.LegalHoldActive) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except data_subject.ExportTooSlow as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return UserErasureResult.model_validate(result)
 
 
 @router.post(
