@@ -353,7 +353,7 @@ falls back to an existing `scanner/state/octo_man.db` when the new
 - Admin: `POST /api/tenants`, `POST /api/tenants/{id}/provisioning-keys`
 - Sensor (or Agent, Lariska): `POST /api/auth/agent/token` with provisioning key → short-lived agent JWT
 - Env: `OCTO_AGENT_PROVISIONING_KEY` (preferred) or legacy `OCTO_AGENT_TOKEN` (`tenant_id=default`)
-- Examples: `networkpolicy-agent.example.yaml`, `externalsecret.example.yaml`
+- Examples: `networkpolicy-agent.example.yaml` (sensor egress; replace its placeholder target ranges), `networkpolicy-api-ingress.example.yaml`, `externalsecret.example.yaml`
 
 ## Quick start (pull release images)
 

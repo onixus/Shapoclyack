@@ -11,12 +11,17 @@
 # Apply the GRANT layout first (docs/operations.md, "Audit trail: immutability
 # and retention"), create the Secret below with the retention role's DSN, then
 # `kubectl apply -f` this file.
+#
+# Everything here goes into network-scan, beside Postgres: the DSN names
+# shapoclyack-postgres-client, which only resolves from that namespace. The
+# last object is the one NetworkPolicy the sweep needs — Postgres admits only
+# the API and the backup CronJob (base/networkpolicy-datastores.yaml).
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: shapoclyack-audit-retention
-  namespace: shapoclyack
+  namespace: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: audit-retention
@@ -32,7 +37,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: shapoclyack-audit-retention
-  namespace: shapoclyack
+  namespace: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: audit-retention
@@ -105,3 +110,34 @@ spec:
             - name: tmp
               emptyDir:
                 sizeLimit: 64Mi
+---
+# Postgres admits the API and the backup CronJob and nothing else
+# (base/networkpolicy-datastores.yaml), so under a CNI that enforces
+# NetworkPolicy the sweep would time out on its connect every week — and the
+# alert for a failed Job is one an installation may not have. A second policy
+# on the same pods adds to that list rather than replacing it, and
+# `kubectl delete -f` on this file takes the permission away with the CronJob.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-postgres-ingress-audit-retention
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-retention
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: audit-retention
+      ports:
+        - protocol: TCP
+          port: 5432

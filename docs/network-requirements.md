@@ -31,7 +31,15 @@ Two rules run through all of it:
 
 A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
 first row — HTTPS to the API — for `POST /api/endpoint/inventory`. `k8s/shapoclyack/examples/networkpolicy-agent.example.yaml`
-is the in-cluster expression of the same list.
+is the in-cluster expression of the same list for the scanner-executor: DNS,
+the API, and a target-range rule that ships with documentation prefixes and
+has to be replaced with the approved scope before the sensor can scan
+anything. Two things that list does not show. First, `dnsx` asks the pod's
+own resolver — the cluster DNS, from `/etc/resolv.conf` — unless the scanner
+config sets `dns.resolvers`, and then it needs UDP/TCP 53 to those instead.
+Second, stages that query third
+parties (CT logs, RDAP, …) need their providers' addresses. The example says
+which.
 
 ### Inside the cluster
 
