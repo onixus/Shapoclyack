@@ -522,6 +522,21 @@ All notable changes to Shapoclyack are documented in this file.
   as `octo_run_publication_stale_notes_total`. A `claims` a previous release
   reset below `claims_base` restarts the base on the next claim, and the API
   never reports a negative count.
+- **Re-running the sensor installer keeps the sensor's ID.**
+  `scripts/install-agent.sh` generated a fresh `agent-<host>-<random>` on
+  every run and never read the existing `/etc/shapoclyack/agent.env`, and an
+  upgrade is a re-run, so every upgrade of a native or `--docker` sensor
+  registered a second sensor. The old row stayed in the fleet view as `stale`,
+  counted in `stale_agents`, was announced as `agent_offline`, and kept the
+  sensor group and any quarantine, so the host came back ungrouped and
+  `active`. Without `--agent-id`, the installer now keeps `OCTO_AGENT_ID` from
+  that file and logs it. The file is parsed with `sed`, not sourced. It is
+  not reused when it was written for a different `--tenant`. The installer
+  warns when the provisioning key has changed, since the API refuses the ID
+  under a new key until the old key is revoked. The root check now runs
+  before the ID is chosen, because the file is `0600`. Leftover rows from
+  earlier upgrades have to be deleted by hand
+  ([docs/operations.md](docs/operations.md#sensor-installation-and-upgrade)).
 - **The sensor deployment snippets run an image that exists, and pin it.** The
   console's `docker run`, Compose and Kubernetes snippets named
   `ghcr.io/onixus/shapoclyack:latest`, a repository the release has never
