@@ -302,6 +302,7 @@ def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: 
     assert result["skipped_reason"] is None
     assert seen["argv"] == [
         "nuclei",
+        "-disable-update-check",
         "-list", str(out / "nuclei_targets.txt"),
         "-templates", str(templates_dir),
         "-resolvers", str(out / "nuclei_resolvers.txt"),
@@ -312,7 +313,6 @@ def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: 
         "-concurrency", "10",
         "-timeout", "10",
         "-retries", "1",
-        "-disable-update-check",
         "-silent",
         "-no-color",
     ]  # fmt: skip
