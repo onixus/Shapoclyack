@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import secrets
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -334,10 +335,15 @@ def test_the_sqlite_fallback_is_untouched(tmp_path) -> None:
 def login_role():
     """A throwaway LOGIN role that owns nothing, like a separate API role."""
     name = f"rls_probe_{uuid.uuid4().hex[:8]}"
+    password = secrets.token_hex(24)
     admin = create_engine(POSTGRES_URL, future=True, isolation_level="AUTOCOMMIT")
     with admin.connect() as connection:
-        connection.execute(text(f'CREATE ROLE "{name}" LOGIN'))
-    url = make_url(POSTGRES_URL).set(username=name, password=None).render_as_string(hide_password=False)
+        connection.execute(text(f"CREATE ROLE \"{name}\" LOGIN PASSWORD '{password}'"))
+    url = (
+        make_url(POSTGRES_URL)
+        .set(username=name, password=password)
+        .render_as_string(hide_password=False)
+    )
     try:
         yield name, url
     finally:
