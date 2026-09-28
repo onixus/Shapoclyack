@@ -22,9 +22,10 @@ LABEL_LIMIT = 256
 MAX_ARTIFACT_REFS = 8
 _CVE = re.compile(r"CVE-\d{4}-\d{3,7}", re.IGNORECASE)
 _SECRET_LINE = re.compile(r"(?im)\b(authorization|proxy-authorization|cookie|set-cookie)\s*:[^\r\n]*")
-_SECRET_VALUE = re.compile(
-    r'''(?i)(["']?\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|session[_-]?id)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&]+)'''
+_SECRET_FIELD = re.compile(
+    r'''(?i)["']?\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|session[_-]?id)["']?\s*[:=]\s*'''
 )
+_BARE_SECRET_END = re.compile(r"[\s,;&]")
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -36,6 +37,44 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _redact_secret_values(text: str) -> str:
+    """Consume complete quoted values, including escaped quotes/backslashes.
+
+    Scan each value once rather than backtracking over an untrusted long string.
+    An unterminated quote or an ambiguous suffix hides the rest of the preview;
+    truncating or falling back to a bare token there could reveal a secret tail.
+    """
+    parts: list[str] = []
+    cursor = 0
+    while match := _SECRET_FIELD.search(text, cursor):
+        start = end = match.end()
+        if start < len(text) and text[start] in {"\"", "'"}:
+            quote = text[start]
+            end += 1
+            while end < len(text):
+                if text[end] == "\\":
+                    end += 2
+                elif text[end] == quote:
+                    end += 1
+                    # A quote immediately followed by value text is ambiguous.
+                    if end < len(text) and not (text[end].isspace() or text[end] in ",;}&]"):
+                        end = len(text)
+                    break
+                else:
+                    end += 1
+            end = min(end, len(text))
+        elif start < len(text) and text[start] in "{[":
+            # Structured secret values have no safe scalar boundary here.
+            end = len(text)
+        else:
+            delimiter = _BARE_SECRET_END.search(text, start)
+            end = delimiter.start() if delimiter else len(text)
+        parts.extend((text[cursor:start], "[REDACTED]"))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 def safe_text(value: Any, limit: int = PREVIEW_LIMIT) -> str:
     """Redact known credential fields before truncation; never pass HTTP bodies.
 
@@ -44,7 +83,7 @@ def safe_text(value: Any, limit: int = PREVIEW_LIMIT) -> str:
     """
     text = value if isinstance(value, str) else ""
     text = _SECRET_LINE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
-    text = _SECRET_VALUE.sub(lambda m: m.group(1) + "[REDACTED]", text)
+    text = _redact_secret_values(text)
     # URLs in free text may contain credentials anywhere, including the path.
     text = _URL.sub("[URL omitted; see source artifact]", text)
     text = "".join(c for c in text if c >= " " or c in "\n\t")
@@ -122,9 +161,13 @@ def subject(row: dict[str, Any]) -> dict[str, Any]:
             if embedded_port is None or (port is not None and embedded_port != port):
                 raise ValueError("conflicting endpoint ports") from None
             host, port = _host(parsed.hostname or ""), embedded_port
-        explicit_object = row.get("affected_object")
-        if isinstance(explicit_object, str) and explicit_object:
-            object_id = "object:" + digest(explicit_object)
+    explicit_object = row.get("affected_object")
+    if isinstance(explicit_object, str) and explicit_object:
+        # Preserve both identities: an object qualifier must not erase the URL,
+        # and HTTP must not discard an explicit affected object. Keep the old
+        # URL-only and non-HTTP hashes when no new distinction is needed.
+        object_id = ("url-object:" + digest([object_id, explicit_object])
+                     if object_id is not None else "object:" + digest(explicit_object))
     # SNI is explicit evidence, not inferred from a TLS service name or an IP.
     sni = _host(row["sni"]) if isinstance(row.get("sni"), str) and row["sni"] else None
     return {"host": host, "port": port, "protocol": protocol,
@@ -224,8 +267,14 @@ def aggregate(observations: list[dict[str, Any]]) -> dict[str, Any]:
         group = groups.setdefault(key, {"evidence_id": key, "identity": identity, "observations": {}})
         seen = group["observations"]
         oid = item["observation_id"]
+        was_truncated = item.get("artifact_refs_truncated", False)
+        if not isinstance(was_truncated, bool):
+            raise ValueError("invalid artifact reference completeness")
         if oid not in seen:
-            seen[oid] = {**item, "artifact_refs": {}}
+            seen[oid] = {**item, "artifact_refs": {}, "artifact_refs_truncated": False}
+        # Lost references cannot become complete merely by reloading a sidecar.
+        # Union the flag too, including when a complete copy arrived first.
+        seen[oid]["artifact_refs_truncated"] |= was_truncated
         for ref in item["artifact_refs"]:
             ref = _reference(ref)
             seen[oid]["artifact_refs"][canonical_json(ref)] = dict(ref)
@@ -236,7 +285,7 @@ def aggregate(observations: list[dict[str, Any]]) -> dict[str, Any]:
         for oid, item in sorted(group["observations"].items()):
             refs = [ref for _, ref in sorted(item["artifact_refs"].items())]
             rows.append({**item, "artifact_refs": refs[:MAX_ARTIFACT_REFS],
-                         "artifact_refs_truncated": len(refs) > MAX_ARTIFACT_REFS})
+                         "artifact_refs_truncated": item["artifact_refs_truncated"] or len(refs) > MAX_ARTIFACT_REFS})
         dated = [item["observed_at"] for item in rows if item["observed_at"]]
         latest = max(dated, default=None)
         by_field = defaultdict(set)

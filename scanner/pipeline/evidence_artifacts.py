@@ -131,7 +131,10 @@ class EvidenceReader:
         if loaded is None:
             return
         text, sha = loaded
-        for index, line in enumerate(text.splitlines(), 1):
+        # JSONL records end at LF (CRLF leaves JSON whitespace before the LF).
+        # splitlines() also splits legal Unicode characters inside JSON strings,
+        # dropping observations and shifting their physical source-line locators.
+        for index, line in enumerate(text.split("\n"), 1):
             if not line.strip():
                 continue
             try:

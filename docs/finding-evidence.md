@@ -14,7 +14,7 @@ From a checkout with the repository's Python dependencies installed:
 ```bash
 python scripts/build-finding-evidence.py scanner/output/runs/example \
   --tenant-id example-tenant --run-id example
-python -m pytest -q tests/test_finding_evidence.py
+python -m pytest -q tests/test_finding_evidence.py tests/test_finding_evidence_regressions.py
 ```
 
 The directory must already exist. The command reads `pulse/raw.json`,
@@ -71,6 +71,13 @@ path case, percent escapes, query order and duplicate query parameters remain
 significant; query-value changes may therefore create different shadow groups.
 Do not silently copy that policy into long-lived tracker identity.
 
+An explicit non-empty `affected_object` is also part of HTTP identity: its
+opaque digest is combined with the normalized URL-derived object ID, rather
+than replacing the URL or being ignored. Two qualifiers on one URL and one
+qualifier on two URLs remain distinct. Missing/empty qualifiers keep the
+existing URL-only hashes; non-HTTP object hashes are unchanged. No object text
+is copied into the projection.
+
 ## Evidence and temporal interpretation
 
 Pulse classes map to version match, keyword hypothesis, exposure and TLS
@@ -80,6 +87,12 @@ values are not copied. Extracted values affect a digest so distinct evidence is
 not erased. NSE CVE mentions remain unverified script reports; raw output is
 hashed/referenced but its free-text preview is omitted. This module is not a new
 NSE vulnerability detector and does not interpret prose as a verification result.
+
+JSONL records are delimited by LF; CRLF and a final record without a newline
+are supported. Blank physical lines still count toward `line:N` references.
+Literal U+0085/U+2028/U+2029 inside JSON strings are data, not record boundaries,
+including in response bodies which are not projected. Malformed physical
+records remain explicit errors without shifting later locators.
 
 No source-name ranking is used. The projection keeps older and newer evidence,
 reports differing fields, identifies the latest dated cohort and separately
@@ -100,17 +113,35 @@ Inputs are bounded at 16 MiB per file, 64 MiB total, 10,000 projected observatio
 rows and 128 Nmap XML files. Limits are reported rather than turned into a clean
 empty result. Each observation keeps at most eight sorted artifact references,
 with an explicit truncation flag; the referenced original artifact is unchanged.
+The flag is monotonic across re-aggregation: any input copy marked truncated
+keeps the merged observation truncated, regardless of order or current length.
+A missing flag is accepted for fresh observations; an explicit flag must be a
+JSON boolean. Replaying a sidecar cannot reconstruct references already lost.
 Previews are capped at 512 characters and labels at 256. Full rule digests keep
 long labels from collapsing distinct non-CVE rules after display truncation.
 
 Known authorization/cookie headers and password/token/key fields are redacted
-before preview truncation. URLs in free text are omitted. This is not a general
+before preview truncation. Quoted values are scanned with escape-aware quote
+and backslash handling. Unterminated quotes, ambiguous trailing value text and
+structured secret values suppress the remaining preview instead of exposing a
+suffix. URLs in free text are omitted. This is not a general
 secret detector: even labels and Pulse evidence may contain arbitrary sensitive
 text. Treat the sidecar as a restricted run artifact, not as publishable data.
 Nmap XML uses the repository's existing `defusedxml` dependency. Paths escaping
 the selected directory and direct input symlinks are refused; these checks do
 not replace the archive validation/publication boundary in #366 or provide a
 transactional snapshot against concurrent filesystem mutation.
+
+## Pre-release shadow compatibility
+
+Regenerate sidecars made with the initial PR #493 revision from their original
+raw artifacts. They may contain partially redacted credential values, collapsed
+explicit HTTP objects or missing Unicode-containing JSONL observations. Existing
+copies are not automatically rewritten by a code update. Corrected previews and
+HTTP object identities can change shadow IDs; they never change persisted tracker
+keys. The schema is still the unreleased stage-1 v1 contract, not a migration of
+production findings. Re-aggregation alone cannot recover already discarded
+objects, records or references.
 
 ## Remaining stages of #449
 
