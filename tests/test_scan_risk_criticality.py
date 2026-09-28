@@ -63,9 +63,8 @@ def context(tmp_path, monkeypatch):
     _write_run(settings, "first")
     assets.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id="first")
     with get_session(settings.postgres_url) as session:
-        asset = session.scalars(
-            select(models.Asset).where(models.Asset.tenant_id == tenant_id)
-        ).one()
+        asset = vulns._asset_for_finding(session, tenant_id=tenant_id, host=HOST)
+        assert asset is not None
         asset.exposure_level = "internet"
         asset_id = asset.asset_id
     try:
