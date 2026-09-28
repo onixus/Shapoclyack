@@ -1,0 +1,68 @@
+# Ingress to the API: the network-scan half of networkpolicy-agent.example.yaml.
+# Three sources may open 8080:
+#   - the in-cluster sensor (the scanner-executor in network-scan-executor);
+#   - the Ingress controller, which carries everything from outside the
+#     cluster: the console's users, sensors in other clusters, and Agents
+#     (Lariska);
+#   - Prometheus, for /metrics (servicemonitor.example.yaml).
+# All other traffic to the API pods is dropped.
+#
+# An example and not part of base because two of those sources live in
+# namespaces this installation chooses. The names below, `ingress-nginx` and
+# `monitoring`, are the usual ones for ingress-nginx and kube-prometheus-stack;
+# change them to yours. A wrong name fails loudly (the console stops answering
+# through the Ingress), unlike a mistake in an egress policy.
+#
+# An Ingress controller on hostNetwork, which is common on bare metal, connects
+# from node addresses. No namespaceSelector matches those, so use an ipBlock
+# for the node CIDR instead of its rule below.
+#
+# Kubelet probes (/livez, /readyz) also come from the node and match no rule
+# here. Calico and Cilium let host traffic through by default;
+# base/networkpolicy-datastores.yaml explains what to check if the API goes
+# NotReady right after this is applied.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-api-ingress
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    # The scanner-executor. Both selectors are in one peer, so a pod has to
+    # match both: a pod in that namespace that is not the executor is refused.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network-scan-executor
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: scanner-executor
+      ports:
+        - protocol: TCP
+          port: 8080
+    # The Ingress controller.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Prometheus. Drop this rule if nothing scrapes the API.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
