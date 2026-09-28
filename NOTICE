@@ -41,6 +41,14 @@ Derived from Exploit-DB (GPL-2.0) and the Metasploit Framework (BSD-3-Clause).
 Only CVE identifiers and a maturity rung are extracted — no exploit code,
 titles or descriptions are copied. See docs/third-party.md for the reasoning.
 
+Public Suffix List
+------------------
+
+This product includes the Public Suffix List (https://publicsuffix.org/),
+subject to the Mozilla Public License, v. 2.0 (https://mozilla.org/MPL/2.0/).
+It is bundled unmodified, licence header included, at
+scanner/pipeline/public_suffix_list.dat; that file is its own source form.
+
 LGPL components
 ---------------
 

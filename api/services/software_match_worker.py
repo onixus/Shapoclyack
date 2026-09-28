@@ -169,7 +169,14 @@ def sweep(settings: Settings) -> dict[str, Any]:
 
     totals: dict[str, Any] = {"tenants": 0, "devices": 0, "created": 0, "closed": 0, "errors": 0}
     try:
-        tenant_ids = [t["tenant_id"] for t in tenants_service.list_tenants()]
+        # Active tenants only (#325): a suspended tenant's findings are not
+        # announced, and a tenant being purged must not have rows written for
+        # it while its tables are emptied.
+        tenant_ids = [
+            t["tenant_id"]
+            for t in tenants_service.list_tenants()
+            if t["status"] == tenants_service.STATUS_ACTIVE
+        ]
     except Exception:  # noqa: BLE001 - a tenant-store hiccup must not kill the worker
         LOG.exception("Software match: could not list tenants")
         totals["errors"] += 1

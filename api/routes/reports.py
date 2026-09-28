@@ -38,6 +38,7 @@ from api.schemas import (
     TenantBrandingRequest,
 )
 from api.services import audit as audit_service
+from api.services import legal_hold
 from api.services.reports import branding as branding_service
 from api.services.reports import store
 from api.settings import Settings
@@ -304,5 +305,10 @@ def delete_report(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
     settings: SettingsDep,
 ) -> None:
-    if not store.delete_report(settings, report_id, tenant_id=principal.tenant_id):
+    try:
+        deleted = store.delete_report(settings, report_id, tenant_id=principal.tenant_id)
+    except legal_hold.LegalHoldActive as exc:
+        # A generated report is one of the categories a hold preserves (#332).
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.public_detail) from exc
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")

@@ -1,4 +1,5 @@
 import {
+  Archive,
   BookText,
   Building2,
   CircleGauge,
@@ -227,6 +228,16 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         labelKey: "nav.audit",
         icon: ScrollText,
         hintKey: "nav.hint.audit",
+      },
+      {
+        // A permission in the active tenant (#332): the tenant's admin and
+        // auditor hold `tenant.retention.read`, and gating on the global role
+        // would hide the page from both of them.
+        href: "/retention",
+        labelKey: "nav.retention",
+        icon: Archive,
+        permission: "tenant.retention.read",
+        hintKey: "nav.hint.retention",
       },
       {
         href: "/integrations",

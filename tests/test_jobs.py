@@ -264,16 +264,29 @@ def test_claimed_jobs_count_as_running_in_the_queue_gauges(settings):
     """A claimed job is out with a worker, not waiting — counting it as queued
     would read as a backlog nothing is working on (docs/slo.md)."""
     from api.services import metrics as metrics_service
+    from api.services import metrics_sources
+
+    # Read from the table at scrape time since #334; each job event below
+    # expires the snapshot, so every scrape here reads afresh.
+    metrics_sources.configure(settings)
+
+    def gauge(name: str) -> float:
+        return next(
+            sample.value
+            for family in metrics_service.CLUSTER_COLLECTOR.collect()
+            for sample in family.samples
+            if sample.name == name
+        )
 
     job = _start_agent_job(settings)
-    assert metrics_service.JOBS_QUEUED._value.get() == 1  # noqa: SLF001
+    assert gauge("octo_jobs_queued") == 1
 
     jobs_service.claim_job(settings, "agent-1")
-    assert metrics_service.JOBS_QUEUED._value.get() == 0  # noqa: SLF001
-    assert metrics_service.JOBS_RUNNING._value.get() == 1  # noqa: SLF001
+    assert gauge("octo_jobs_queued") == 0
+    assert gauge("octo_jobs_running") == 1
 
     jobs_service.complete_job(settings, job.job_id, agent_id="agent-1", exit_code=0)
-    assert metrics_service.JOBS_RUNNING._value.get() == 0  # noqa: SLF001
+    assert gauge("octo_jobs_running") == 0
 
 
 def test_local_run_is_tagged_with_the_jobs_tenant(settings, monkeypatch):

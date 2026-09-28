@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from api.services import agent_deployer
-from api.services.agents import LATEST_AGENT_VERSION
+from api.services.agents import LATEST_AGENT_VERSION, SENSOR_IMAGE
 from tests.conftest import (
     approve_scan_scope,
     auth_headers,
@@ -350,6 +350,10 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert sh_resp.status_code == 200
     assert "#!/usr/bin/env bash" in sh_resp.text
     assert "Shapoclyack Remote Agent Universal Installer" in sh_resp.text
+    # What the host actually downloads carries the pinned default; the details
+    # are in tests/test_agent_install_pins.py.
+    assert f'AGENT_IMAGE="${{AGENT_IMAGE:-{SENSOR_IMAGE}}}"' in sh_resp.text
+    assert "--require-hashes" in sh_resp.text
 
     # 2. Get Deployment Snippets — read-only, so no key is minted
     snip_resp = client.get("/api/agent/deployment-command", headers=admin_hdrs)
@@ -361,6 +365,8 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert "curl -sSL" in snips["systemd_oneliner"]
     assert "docker run -d --name shapoclyack-agent" in snips["docker_run"]
     assert "apiVersion: apps/v1" in snips["kubernetes_yaml"]
+    for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
+        assert SENSOR_IMAGE in snips[name], name
 
     # 3. Minting is an explicit POST, and only then is a plaintext key returned
     mint_resp = client.post("/api/agent/deployment-command", json={}, headers=admin_hdrs)

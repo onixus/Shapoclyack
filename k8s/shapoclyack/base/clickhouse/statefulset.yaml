@@ -50,6 +50,14 @@ spec:
                 secretKeyRef:
                   name: shapoclyack-clickhouse
                   key: password
+            # The backup CronJob's user (users.xml, #333). Not optional, on
+            # purpose: an unset from_env variable is an empty password, so a
+            # missing Secret must stop the pod rather than open the account.
+            - name: CLICKHOUSE_BACKUP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shapoclyack-clickhouse-backup
+                  key: password
             # The entrypoint's generated users.d/default-user.xml is merged
             # before ours (alphabetical order in users.d), so users.xml wins
             # either way; keeping this at 0 means the two files agree instead
