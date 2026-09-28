@@ -29,7 +29,7 @@ def test_typosquat_finding_present(tmp_path: Path, monkeypatch):
     assert candidates
     picked = candidates[0]
 
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
         return {picked.lower(): {"a": ["1.2.3.4"], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
@@ -50,7 +50,7 @@ def test_typosquat_finding_present(tmp_path: Path, monkeypatch):
 
 
 def test_typosquat_no_finding_when_not_resolved(tmp_path: Path, monkeypatch):
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
         return {}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
@@ -65,7 +65,7 @@ def test_typosquat_no_finding_when_not_resolved(tmp_path: Path, monkeypatch):
 
 
 def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_cname", fake_cname)
@@ -86,7 +86,7 @@ def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
 
 
 def test_dangling_cname_no_finding_when_a_present(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         return {
             "staging.example.com": {
                 "cname": ["abandoned.github.io"],
@@ -107,7 +107,7 @@ def test_dangling_cname_no_finding_when_a_present(tmp_path: Path, monkeypatch):
 
 
 def test_dangling_cname_no_finding_when_no_suffix_match(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         return {
             "staging.example.com": {
                 "cname": ["internal-lb.example-corp.net"],
@@ -160,10 +160,10 @@ def test_persisted_files_reflect_both_findings(tmp_path: Path, monkeypatch):
     candidates = _generate_typosquat_candidates("example.com", max_candidates=50)
     picked = candidates[0]
 
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
         return {picked.lower(): {"a": ["1.2.3.4"], "aaaa": []}}
 
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)

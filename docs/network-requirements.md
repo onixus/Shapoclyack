@@ -26,7 +26,7 @@ Two rules run through all of it:
 | Sensor | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The sensor falls back to HTTP claim polling |
 | Sensor | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
 | Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
-| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei uses the host's own resolver or `dns.resolvers`. dnsx still asks public resolvers; see [DNS resolvers](#dns-resolvers) |
+| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei and dnsx resolve target names through the host's own resolver or `dns.resolvers`; [DNS resolvers](#dns-resolvers) lists what still goes elsewhere |
 | Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
 
 A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
@@ -91,11 +91,13 @@ a third copy of them.
 
 ### DNS resolvers
 
-The scanner hands nuclei an explicit resolver list (`-resolvers`). The list is
+The scanner hands nuclei and every dnsx run an explicit resolver list: nuclei
+as a file (`-resolvers`), dnsx as a comma-separated `-r`. The list is
 `dns.resolvers` from the scanner config. When that is empty, which is the
-default, it is the `nameserver` lines of `/etc/resolv.conf`, so nuclei asks the
-same servers as the rest of the host. The run leaves the list it used in
-`nuclei_resolvers.txt` next to `nuclei.json`.
+default, it is the `nameserver` lines of `/etc/resolv.conf`, so both tools ask
+the same servers as the rest of the host. The run leaves the list nuclei used
+in `nuclei_resolvers.txt` next to `nuclei.json`; each dnsx command line,
+`-r` included, is in the run log.
 
 Without the list, nuclei v3.11.1 adds its built-in public resolvers (1.1.1.1,
 1.0.0.1, 8.8.8.8, 8.8.4.4) to the system one and picks among them round-robin.
@@ -125,12 +127,55 @@ today.
 `[2001:db8::53]:5353`). Names are refused, because a resolver given by name
 would need a resolver first.
 
-dnsx does not read the setting yet. It runs the `resolve`, `hostnames` and
-org_profile DNS stages. Left to its defaults, dnsx v1.2.3 asks only its eight
-built-in public resolvers and never the system one. Run the way `resolve`
-runs it on the stand, dnsx sent an internal-only name to 8.8.8.8 and 1.0.0.1
-and returned nothing. With `-r` pointed at the cluster resolver, it resolved
-the name.
+dnsx runs the `resolve` stage, the PTR half of `hostnames`, `domain_monitor`,
+and the org_profile `dns_hygiene` and `mail_posture` stages. Left to its
+defaults, dnsx v1.2.3 asks only its eight built-in public resolvers
+(Cloudflare, Google, Quad9, OpenDNS) and never the system one. `-r` replaces
+all eight and adds nothing back. Measured on the kind stand with the image's
+own binary, running those five stages' own code against cluster names:
+
+- Without `-r`, 52 packets carried a target name, and all 52 went to a public
+  resolver. They carried the in-scope names, the PTR names of internal
+  addresses (`1.0.96.10.in-addr.arpa`), typosquat candidates, wildcard probe
+  labels and mail policy names. Nothing resolved: `resolve` returned no
+  address, PTR found no name, and `dns_hygiene` reported the zone
+  `not_checked`.
+- With `-r`, 51 packets carried a target name, and all 51 went to the cluster
+  resolver. `resolve` returned both service addresses, PTR found both names,
+  and `dns_hygiene` read the zone's NS and SOA. With `dns.resolvers` set to one
+  CoreDNS pod, all 51 went to that pod.
+
+Two kinds of lookup still go their own way:
+
+- The AXFR probe in `dns_hygiene` does not go through a resolver at all: it
+  opens TCP/53 to the zone's own nameserver address, on purpose. Only looking
+  up that nameserver's address goes through `-r`.
+- Lookups the scanner makes in Python rather than through a tool (the CT
+  brute force, the MTA-STS policy fetch, the services in the table above) do
+  not read `dns.resolvers`. They go through the host's resolver, or through
+  the proxy where one is in the path.
+
+Two consequences to know before relying on the default:
+
+- **Every listed server gets a share of the queries.** The C library tries
+  `nameserver` lines in order and moves on only when one does not answer.
+  dnsx (and nuclei's DNS client) rotate through the whole list instead, and
+  dnsx treats an empty answer or NXDOMAIN as a reason to try the next server,
+  for two attempts by default. If `/etc/resolv.conf` lists a public server
+  after an internal one, an internal-only name can land on the public server
+  both times and come back empty, so that host is never scanned. On such a
+  host, set `dns.resolvers` to the internal servers only.
+- **The org_profile DNS checks see the zone the resolver sees.**
+  `dns_hygiene`, `mail_posture` and the typosquat half of `domain_monitor`
+  describe how a domain looks from the internet, but they now ask the same
+  resolver as `resolve`. On a split-horizon network that is the internal
+  view: an internal copy of the zone without the public SPF or DMARC records
+  produces `spf_missing` and `dmarc_missing`, an AD-integrated zone's SOA
+  timers produce `soa_timers_out_of_range`, and a filtering resolver answers
+  blocked look-alike domains with NXDOMAIN or a block-page address. There is
+  no separate resolver list for these checks yet. Each record in the stage's
+  `*_records.jsonl` lists the resolvers dnsx asked for it (`resolver`), the
+  last one being the one that answered.
 
 ## Proxy and CA variables
 

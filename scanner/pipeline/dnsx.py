@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from .dns_resolvers import dnsx_resolver_args
 from .utils import run_command, write_lines
 
 LOG = logging.getLogger("shapoclyack.dnsx")
@@ -45,12 +47,16 @@ def query(
     flags: list[str],
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """Resolve ``names`` with one dnsx run and return ``host -> parsed record``.
 
     ``kind`` names the pair of files written under ``output_dir/<stage>/``, so
     two record types of the same stage never share a target list or an output
-    file.
+    file. ``resolvers`` is ``dns.resolvers``; empty means the system's, never
+    dnsx's built-in public ones (see ``dns_resolvers.py``). It has no default,
+    so a stage that forgets to pass it fails loudly instead of quietly
+    ignoring the setting.
     """
     if not names:
         return {}
@@ -68,6 +74,7 @@ def query(
                 "-l",
                 str(targets_file),
                 *flags,
+                *dnsx_resolver_args(resolvers),
                 "-json",
                 "-silent",
                 "-disable-update-check",  # no phone-home from an air-gapped scan (#339)

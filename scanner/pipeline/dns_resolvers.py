@@ -36,6 +36,25 @@ public. All of them were for the six interactsh server names
 (``oast.pro``, ``oast.live``, ...), which are fixed public names and not
 derived from any target. Stopping those is a matter of ``-no-interactsh`` or a
 self-hosted ``-interactsh-server``, not of resolvers.
+
+dnsx left to its defaults is worse still. v1.2.3 without ``-r`` asks only its
+eight built-in public resolvers (``DefaultResolvers`` in ``libs/dnsx/dnsx.go``:
+Cloudflare, Google, Quad9, OpenDNS) and never reads resolv.conf. On the stand,
+the five dnsx stages sent every target name they looked up (in-scope names,
+PTR names of internal addresses, typosquat candidates, mail policy names) to
+those servers, and none of them resolved. ``-r`` replaces the eight outright,
+with no system resolver added back, so every dnsx run gets the same list
+nuclei gets, as a comma-separated ``host:port`` value
+(:func:`dnsx_resolver_args`). Rerun with it, every target name went to the
+listed resolver only. The AXFR probe in ``dns_hygiene.py`` does not use dnsx
+or a resolver: it speaks AXFR to the zone's own nameserver address directly.
+
+Both tools rotate through the list instead of failing over in order the way
+the C library does, so every entry gets a share of the queries, and dnsx
+retries an empty answer on the next entry only once. That matters where
+resolv.conf puts a public server after an internal one, and on a split-horizon
+network the org_profile checks see the internal view of the zone.
+``docs/network-requirements.md`` ("DNS resolvers") covers both.
 """
 
 from __future__ import annotations
@@ -124,3 +143,15 @@ def system_resolvers(path: Path | None = None) -> list[str]:
 def scan_resolvers(configured: Sequence[str]) -> list[str]:
     """``dns.resolvers`` when it is set, otherwise the system's resolvers."""
     return list(configured) if configured else system_resolvers()
+
+
+def dnsx_resolver_args(configured: Sequence[str]) -> list[str]:
+    """``["-r", "host:port,..."]`` for one dnsx run, from :func:`scan_resolvers`.
+
+    Never empty: without ``-r`` dnsx falls back to its public resolvers.
+    Every entry carries its port, for the same reason as :func:`host_port`:
+    dnsx appends ``:53`` only to an entry with no colon in it, and retryabledns
+    then splits host and port with ``net.SplitHostPort``, which needs IPv6 in
+    brackets.
+    """
+    return ["-r", ",".join(host_port(resolver) for resolver in scan_resolvers(configured))]

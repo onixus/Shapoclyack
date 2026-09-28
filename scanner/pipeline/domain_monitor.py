@@ -37,10 +37,12 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .config_schema import DomainMonitorConfig
+from .dns_resolvers import dnsx_resolver_args
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.domain-monitor")
@@ -178,6 +180,7 @@ def _run_dnsx_a_aaaa(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, list[str]]]:
     """Resolve A/AAAA records for a list of candidate domains via dnsx."""
     if not domains:
@@ -196,6 +199,7 @@ def _run_dnsx_a_aaaa(
             str(targets_file),
             "-a",
             "-aaaa",
+            *dnsx_resolver_args(resolvers),
             "-json",
             "-silent",
             "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
@@ -229,6 +233,7 @@ def _run_dnsx_cname(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """Resolve CNAME chains (plus A/AAAA) for the org's own FQDNs via dnsx."""
     if not fqdns:
@@ -247,6 +252,7 @@ def _run_dnsx_cname(
             str(targets_file),
             "-cname",
             "-resp",
+            *dnsx_resolver_args(resolvers),
             "-json",
             "-silent",
             "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
@@ -323,9 +329,14 @@ def monitor_domains(
     scope_fqdns: list[str],
     config: DomainMonitorConfig,
     output_dir: Path,
+    *,
+    resolvers: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Sync entry point: typosquat candidate resolution + dangling-CNAME
-    heuristic over the org's seed domains / in-scope FQDNs."""
+    heuristic over the org's seed domains / in-scope FQDNs.
+
+    ``resolvers`` is ``dns.resolvers``; empty means the system's resolvers,
+    never dnsx's built-in public ones (see ``dns_resolvers.py``)."""
     result: dict[str, Any] = {
         "seed_domains": [],
         "typosquat": None,
@@ -356,6 +367,7 @@ def monitor_domains(
             output_dir,
             timeout=config.timeout_seconds,
             retries=config.retries,
+            resolvers=resolvers,
         )
         findings = []
         for candidate, seed in candidate_seed_pairs:
@@ -377,6 +389,7 @@ def monitor_domains(
             output_dir,
             timeout=config.timeout_seconds,
             retries=config.retries,
+            resolvers=resolvers,
         )
         findings = []
         for fqdn in fqdns:

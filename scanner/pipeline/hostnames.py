@@ -7,10 +7,12 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .config_schema import BruteForceSubdomainConfig, CertificateTransparencyConfig, DiscoveryConfig
+from .dns_resolvers import dnsx_resolver_args
 from .utils import load_json, run_command, save_json, write_lines
 
 DEFAULT_WORDLIST_PATH = Path(__file__).resolve().parents[2] / "scanner" / "data" / "wordlists" / "subdomains-small.txt"
@@ -43,8 +45,14 @@ def reverse_map_from_ptr(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str],
 ) -> dict[str, list[str]]:
-    """Run dnsx PTR lookup for alive IPs. Returns ip -> PTR names."""
+    """Run dnsx PTR lookup for alive IPs. Returns ip -> PTR names.
+
+    ``resolvers`` is ``dns.resolvers``; empty means the system's resolvers.
+    Left to its defaults, dnsx would ask its public resolvers for the PTR of
+    every internal address.
+    """
     if not hosts:
         return {}
 
@@ -60,6 +68,7 @@ def reverse_map_from_ptr(
             "-l",
             str(input_file),
             "-ptr",
+            *dnsx_resolver_args(resolvers),
             "-json",
             "-silent",
             "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
@@ -142,8 +151,12 @@ def enrich_discovery_hostnames(
     *,
     timeout: int,
     retries: int,
+    resolvers: Sequence[str] = (),
 ) -> dict[str, dict[str, list[str] | str]]:
-    """Resolve forward (input FQDNs) and/or reverse (PTR) names for alive hosts."""
+    """Resolve forward (input FQDNs) and/or reverse (PTR) names for alive hosts.
+
+    ``resolvers`` is ``dns.resolvers``, for the PTR lookup.
+    """
     hostnames_cfg = discovery.hostnames
     if not hostnames_cfg.forward and not hostnames_cfg.reverse:
         save_json(output_dir / "hostnames.json", {})
@@ -169,6 +182,7 @@ def enrich_discovery_hostnames(
             output_dir,
             timeout=timeout,
             retries=retries,
+            resolvers=resolvers,
         )
         logging.info("discovery hostnames: PTR resolved for %s IP(s)", len(reverse))
 

@@ -719,12 +719,14 @@ class ScreenshotConfig(BaseModel):
 
 
 class DnsConfig(BaseModel):
-    """DNS servers the scanner hands to nuclei with ``-resolvers``.
+    """DNS servers the scanner hands to nuclei (``-resolvers``) and to every dnsx run (``-r``).
 
     Empty (the default) means the ``nameserver`` lines of ``/etc/resolv.conf``,
     i.e. whatever the host itself asks. Without an explicit list nuclei mixes
     its built-in public resolvers (1.1.1.1, 8.8.8.8, ...) into the rotation,
-    so internal names leak and split-horizon names fail to resolve. See
+    and dnsx asks nothing but its own eight public ones, so internal names
+    leak and split-horizon names fail to resolve. The AXFR probe is the
+    one exception: it asks the zone's own nameserver. See
     ``scanner/pipeline/dns_resolvers.py``. Entries are address literals, with
     an optional port: ``10.0.0.53``, ``10.0.0.53:5353``, ``2001:db8::53``,
     ``[2001:db8::53]:5353``.

@@ -175,16 +175,16 @@ def _patch_dnsx(
     changed signature fails the test instead of silently passing.
     """
 
-    def fake_ns(domains, output_dir, *, timeout, retries):
+    def fake_ns(domains, output_dir, *, timeout, retries, resolvers):
         return dict(ns or {})
 
-    def fake_soa(domains, output_dir, *, timeout, retries):
+    def fake_soa(domains, output_dir, *, timeout, retries, resolvers):
         return dict(soa or {})
 
-    def fake_caa(domains, output_dir, *, timeout, retries):
+    def fake_caa(domains, output_dir, *, timeout, retries, resolvers):
         return dict(caa or {})
 
-    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries):
+    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries, resolvers):
         return {name: dict((addresses or {}).get(name, {})) for name in names}
 
     monkeypatch.setattr(dns_hygiene, "_run_dnsx_ns", fake_ns)
@@ -318,7 +318,7 @@ def test_dnssec_is_not_checked_without_ownership(tmp_path: Path, monkeypatch):
 def test_wildcard_needs_every_probe_to_resolve(tmp_path: Path, monkeypatch):
     resolved: dict[str, dict] = {}
 
-    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries):
+    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries, resolvers):
         if kind != "wildcard":
             return {}
         # Only the first probe label answers -- that is a name collision, not
@@ -331,7 +331,7 @@ def test_wildcard_needs_every_probe_to_resolve(tmp_path: Path, monkeypatch):
     assert result["domains"]["example.com"]["wildcard"]["present"] is False
     assert "wildcard_a_record" not in _kinds(result)
 
-    def fake_all(names, output_dir, *, kind, timeout, retries):
+    def fake_all(names, output_dir, *, kind, timeout, retries, resolvers):
         return {name: {"a": ["203.0.113.5"]} for name in names} if kind == "wildcard" else {}
 
     monkeypatch.setattr(dns_hygiene, "_run_dnsx_a_aaaa", fake_all)

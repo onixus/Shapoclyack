@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
+from .dns_resolvers import dnsx_resolver_args
 from .utils import run_command, save_json, write_lines
 
 
@@ -11,7 +13,14 @@ def resolve_fqdns(
     output_dir: Path,
     timeout: int,
     retries: int,
+    *,
+    resolvers: Sequence[str] = (),
 ) -> list[str]:
+    """A/AAAA for ``fqdns`` with dnsx.
+
+    ``resolvers`` is ``dns.resolvers``. Empty means the system's resolvers,
+    never dnsx's built-in public ones (see ``dns_resolvers.py``).
+    """
     if not fqdns:
         write_lines(output_dir / "resolved_ips.txt", [])
         save_json(output_dir / "dns_resolution.json", {"records": []})
@@ -29,6 +38,7 @@ def resolve_fqdns(
             str(input_file),
             "-a",
             "-aaaa",
+            *dnsx_resolver_args(resolvers),
             "-json",
             "-silent",
             "-disable-update-check",  # no phone-home from an air-gapped scan (#339)

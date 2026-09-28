@@ -34,10 +34,10 @@ def _patch_dnsx(monkeypatch, *, mx: dict | None = None, txt: dict | None = None)
     """
     kinds: list[str] = []
 
-    def fake_mx(domains, output_dir, *, timeout, retries):
+    def fake_mx(domains, output_dir, *, timeout, retries, resolvers):
         return {domain: dict((mx or {}).get(domain, {})) for domain in domains}
 
-    def fake_txt(names, output_dir, *, kind, timeout, retries):
+    def fake_txt(names, output_dir, *, kind, timeout, retries, resolvers):
         kinds.append(kind)
         return {name: dict((txt or {}).get(name, {})) for name in names if name in (txt or {})}
 
@@ -220,7 +220,7 @@ def test_spf_include_cycle_stops_and_is_reported(tmp_path: Path, monkeypatch):
 def test_spf_lookup_limit_is_a_finding(tmp_path: Path, monkeypatch):
     record = "v=spf1 " + " ".join(f"include:i{index}.example" for index in range(12)) + " -all"
     evaluation = mail_posture._evaluate_spf(
-        "example.com", record, tmp_path, timeout=5, retries=0
+        "example.com", record, tmp_path, timeout=5, retries=0, resolvers=()
     )
     assert evaluation["lookup_limit_exceeded"] is True
     _, findings = _classify_spf("example.com", [record], evaluation)
@@ -402,6 +402,7 @@ def test_spf_diamond_include_is_not_a_cycle():
             Path("."),
             timeout=5,
             retries=0,
+            resolvers=(),
         )
     assert result["cycles"] == []
     assert "shared.example" in result["visited"]
@@ -417,6 +418,7 @@ def test_spf_self_reference_is_still_a_cycle():
             Path("."),
             timeout=5,
             retries=0,
+            resolvers=(),
         )
     assert result["cycles"] == ["loop.example->seed.example"]
 
