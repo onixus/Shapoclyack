@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import shlex
 import time
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
+from api.db import models
+from api.db.engine import get_session
 from api.services import agent_deployer
+from api.services import agents as agents_service
+from api.services import auth as auth_service
 from api.services.agents import LATEST_AGENT_VERSION, SENSOR_IMAGE
 from tests.conftest import (
     approve_scan_scope,
@@ -1459,3 +1468,673 @@ def test_the_remote_install_command_does_not_depend_on_the_login_shell():
         agent_id="agent-1",
     )
     assert "sudo" not in shlex.split(as_root)[2]
+
+
+# --------------------------------------------------------------------------
+# Redeploying a host that already runs a sensor
+# --------------------------------------------------------------------------
+#
+# Every SSH push used to mint a key and pass a fresh --agent-id, so pushing to
+# a host that already ran a sensor registered a second one: the old row went
+# stale, was announced as agent_offline, and kept the operator's group and any
+# quarantine. These tests drive the whole run against a fake target whose
+# sensor exchanges its key through the real service, so the API's identity
+# check -- not the fake -- decides whether the redeployed sensor comes up.
+
+TARGET_HOSTNAME = "target-50"
+
+
+class _Target:
+    """The deployment target: its ``agent.env`` and the sensor running on it.
+
+    Answers the remote commands the deployer sends. The installer half follows
+    ``scripts/install-agent.sh``: ``--agent-id`` wins, otherwise the ID in
+    ``agent.env`` is kept unless the file is for another tenant (#477), and
+    ``--keep-key`` takes the key from ``agent.env`` instead of stdin and
+    refuses a file written for another sensor. ``sudo_prompts`` stands for an
+    account whose sudo asks for a password: everything but the connectivity
+    check (which runs without sudo) then fails the way ``sudo -n`` does.
+    """
+
+    def __init__(
+        self,
+        settings,
+        env: dict[str, str] | None = None,
+        *,
+        sudo_prompts: bool = False,
+        during_install=None,
+        sensor_starts: bool = True,
+    ):
+        self.settings = settings
+        self.env = dict(env) if env is not None else None
+        self.sudo_prompts = sudo_prompts
+        self.during_install = during_install
+        self.sensor_starts = sensor_starts
+        self.commands: list[dict] = []
+        # The sensor the last install started: (agent_id, key) until its
+        # exchange succeeds, then its agent_id, which heartbeats on every tick.
+        self.sensor: tuple[str, str] | None = None
+        self.running: str | None = None
+        self.refusals: list[str] = []
+
+    def ssh(self, req, cmd, *, host_key, timeout=120, stdin_data=None):
+        self.commands.append({"command": cmd, "stdin": stdin_data})
+        if "uname" in cmd:
+            return 0, "Linux x86_64 0\n", ""
+        if self.sudo_prompts:
+            return 1, "", "sudo: a password is required\n"
+        if "install.sh" in cmd:
+            return self._install(cmd, stdin_data)
+        if "agent.env" in cmd:
+            return 0, self._probe(), ""
+        return 127, "", f"unexpected command: {cmd}"
+
+    def installs(self) -> list[dict]:
+        return [call for call in self.commands if "install.sh" in call["command"]]
+
+    def _probe(self) -> str:
+        if self.env is None:
+            return ""
+        lines = [
+            f"agent_id={self.env.get('OCTO_AGENT_ID', '')}",
+            f"tenant_id={self.env.get('OCTO_TENANT_ID', '')}",
+        ]
+        key = self.env.get("OCTO_AGENT_PROVISIONING_KEY", "")
+        if key:
+            lines.append("key_lookup=" + hashlib.sha256(key.encode()).hexdigest()[:16])
+        return "\n".join(lines) + "\n"
+
+    def _install(self, cmd: str, stdin_data: str | None):
+        if self.during_install is not None:
+            self.during_install()
+        script = shlex.split(cmd)[2]
+        args = shlex.split(script.split('bash "$INSTALLER"', 1)[1])
+
+        def value(flag: str) -> str:
+            return args[args.index(flag) + 1] if flag in args else ""
+
+        tenant = value("--tenant") or "default"
+        agent_id = value("--agent-id")
+        previous = self.env or {}
+        same_tenant = (previous.get("OCTO_TENANT_ID") or tenant) == tenant
+        if "--keep-key" in args:
+            key = previous.get("OCTO_AGENT_PROVISIONING_KEY", "")
+            if not key or not same_tenant or previous.get("OCTO_AGENT_ID") != (
+                agent_id or previous.get("OCTO_AGENT_ID")
+            ):
+                return 1, "", "[ERROR] --keep-key: agent.env is not this sensor's\n"
+            agent_id = agent_id or previous["OCTO_AGENT_ID"]
+        else:
+            key = (stdin_data or "").strip()
+            if not agent_id and same_tenant:
+                agent_id = previous.get("OCTO_AGENT_ID", "")
+            agent_id = agent_id or f"agent-{TARGET_HOSTNAME}-{uuid.uuid4().hex[:8]}"
+        self.env = {
+            "OCTO_AGENT_ID": agent_id,
+            "OCTO_TENANT_ID": tenant,
+            "OCTO_AGENT_PROVISIONING_KEY": key,
+        }
+        # The installer restarts the service, so the sensor that ran before
+        # is gone whether or not the new one comes up.
+        self.running = None
+        if self.sensor_starts:
+            self.sensor = (agent_id, key)
+            self.retry()
+        return 0, f"[INFO] Shapoclyack Agent {agent_id} installed.\n", ""
+
+    def retry(self) -> None:
+        """One poll of the sensor: its start-up exchange, or its next heartbeat."""
+        if self.running is not None:
+            agents_service.heartbeat(self.running)
+            return
+        if self.sensor is None:
+            return
+        agent_id, key = self.sensor
+        try:
+            token = auth_service.exchange_provisioning_key(self.settings, key, agent_id=agent_id)
+            agents_service.register_agent(
+                agent_id=str(token["agent_id"]),
+                hostname=TARGET_HOSTNAME,
+                tenant_id=str(token["tenant_id"]),
+                provisioning_key_id=str(token["key_id"]),
+            )
+        except (PermissionError, agents_service.AgentIdentityConflict) as exc:
+            self.refusals.append(str(exc))
+            return
+        self.sensor = None
+        self.running = agent_id
+
+
+def _drive(monkeypatch, target: _Target) -> None:
+    """Route the deployer's SSH to ``target`` and let its sensor retry.
+
+    The sensor retries its exchange between the deployer's heartbeat polls, as
+    the real one does every few seconds, so a key revoked after the install is
+    what lets it in -- and a key left active is what keeps it out.
+    """
+    monkeypatch.setattr("api.services.agent_deployer._execute_ssh_command", target.ssh)
+    monkeypatch.setattr("api.services.agent_deployer._VERIFY_ATTEMPTS", 3)
+    monkeypatch.setattr("api.services.agent_deployer._VERIFY_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        agent_deployer,
+        "time",
+        SimpleNamespace(sleep=lambda _seconds: target.retry(), monotonic=time.monotonic),
+    )
+
+
+def _sensor(
+    client, admin_hdrs, agent_id: str, *, key: dict | None = None, tenant_id: str = "default"
+) -> dict:
+    """A sensor the way an installer leaves one: exchanged and registered with ``key``."""
+    if key is None:
+        created = client.post(
+            f"/api/tenants/{tenant_id}/provisioning-keys",
+            headers=admin_hdrs,
+            json={"label": f"install of {agent_id}"},
+        )
+        assert created.status_code == 201, created.text
+        key = created.json()
+    token = client.post(
+        "/api/auth/agent/token",
+        json={"provisioning_key": key["key"], "agent_id": agent_id},
+    )
+    assert token.status_code == 200, token.text
+    registered = client.post(
+        "/api/agent/register",
+        headers={"Authorization": f"Bearer {token.json()['access_token']}"},
+        json={"hostname": TARGET_HOSTNAME},
+    )
+    assert registered.status_code == 200, registered.text
+    return key
+
+
+def _env_of(agent_id: str, key: dict, tenant_id: str = "default") -> dict[str, str]:
+    return {
+        "OCTO_AGENT_ID": agent_id,
+        "OCTO_TENANT_ID": tenant_id,
+        "OCTO_AGENT_PROVISIONING_KEY": key["key"],
+    }
+
+
+def _go_offline(settings, agent_id: str) -> None:
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        row.last_seen_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            seconds=settings.agent_stale_seconds + 60
+        )
+
+
+def _keys(client, admin_hdrs) -> dict[str, dict]:
+    listed = client.get("/api/tenants/default/provisioning-keys", headers=admin_hdrs)
+    assert listed.status_code == 200, listed.text
+    return {key["key_id"]: key for key in listed.json()}
+
+
+def _key_states(client, admin_hdrs) -> dict[str, str | None]:
+    """Which keys exist and when each was revoked -- not when it was last used,
+    which the redeployed sensor's own exchange moves."""
+    return {key_id: key["revoked_at"] for key_id, key in _keys(client, admin_hdrs).items()}
+
+
+def _fleet(client, admin_hdrs) -> dict[str, dict]:
+    listed = client.get("/api/agents", headers=admin_hdrs)
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    items = body["items"] if isinstance(body, dict) else body
+    return {agent["agent_id"]: agent for agent in items}
+
+
+def _bound_key(settings, agent_id: str) -> str | None:
+    with get_session(settings.postgres_url) as session:
+        return session.get(models.Agent, agent_id).provisioning_key_id
+
+
+def _push(client, admin_hdrs, **overrides) -> dict:
+    started = client.post(
+        "/api/agent/deploy/ssh", json=_deploy_payload(**overrides), headers=admin_hdrs
+    )
+    assert started.status_code == 200, started.text
+    return _wait_for_deploy(client, admin_hdrs, started.json()["deploy_id"])
+
+
+def _log(run: dict) -> str:
+    return "\n".join(run["logs"])
+
+
+def test_redeploying_a_host_keeps_the_sensor_it_already_runs(tmp_path: Path, monkeypatch):
+    """The bug itself: a push to a host with a sensor must not make a second one.
+
+    No ``agent_id`` in the request, which is what the console's Deploy dialog
+    sends. The host already runs ``agent-edge-50`` in the ``pci`` group with a
+    key of its own, and after the push it is still that sensor, still in that
+    group, still on that key -- and no key was minted for the occasion.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    key = _sensor(client, admin_hdrs, "agent-edge-50")
+    assert client.post(
+        "/api/agent-groups", headers=admin_hdrs, json={"name": "pci"}
+    ).status_code == 201
+    assert client.put(
+        "/api/agents/agent-edge-50/group", headers=admin_hdrs, json={"group": "pci"}
+    ).status_code == 200
+    target = _Target(settings, _env_of("agent-edge-50", key))
+    _drive(monkeypatch, target)
+    keys_before = _key_states(client, admin_hdrs)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    assert run["agent_id"] == "agent-edge-50"
+    fleet = _fleet(client, admin_hdrs)
+    assert list(fleet) == ["agent-edge-50"]
+    assert fleet["agent-edge-50"]["agent_group"] == "pci"
+    assert fleet["agent-edge-50"]["online"] is True
+    # The host's own key was kept rather than replaced: nothing minted, nothing
+    # revoked, and the key travelled nowhere -- not even on stdin.
+    assert _key_states(client, admin_hdrs) == keys_before
+    assert _bound_key(settings, "agent-edge-50") == key["key_id"]
+    [install] = target.installs()
+    assert "--agent-id agent-edge-50" in install["command"]
+    assert "--keep-key" in install["command"]
+    assert "--key-stdin" not in install["command"]
+    assert install["stdin"] is None
+    assert target.refusals == []
+    assert "agent-edge-50, which this host already runs" in _log(run)
+
+
+def test_naming_a_sensor_whose_host_was_rebuilt_moves_it_and_revokes_its_old_key(
+    tmp_path: Path, monkeypatch
+):
+    """The host lost its ``agent.env``; the request names the sensor it was.
+
+    The old key is still active and bound to that sensor, so a new key alone is
+    refused the ID (#308). The deployer revokes the old key -- nobody else
+    holds it and its sensor is offline -- once the installer has succeeded, and
+    the reinstalled sensor comes up as itself under the new key.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    old_key = _sensor(client, admin_hdrs, "agent-edge-50")
+    _go_offline(settings, "agent-edge-50")
+    target = _Target(settings, env=None)
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id="agent-edge-50")
+
+    assert run["status"] == "completed", _log(run)
+    assert run["agent_id"] == "agent-edge-50"
+    fleet = _fleet(client, admin_hdrs)
+    assert list(fleet) == ["agent-edge-50"]
+    assert fleet["agent-edge-50"]["online"] is True
+    keys = _keys(client, admin_hdrs)
+    assert keys[old_key["key_id"]]["revoked_at"] is not None
+    [new_key_id] = [key_id for key_id in keys if key_id != old_key["key_id"]]
+    assert keys[new_key_id]["revoked_at"] is None
+    assert _bound_key(settings, "agent-edge-50") == new_key_id
+    [install] = target.installs()
+    assert "--agent-id agent-edge-50" in install["command"]
+    assert "--key-stdin" in install["command"]
+    assert "--keep-key" not in install["command"]
+    assert f"Revoked provisioning key {old_key['key_id']}" in _log(run)
+    # A deliberate act, so it is the admin's in the trail and not "system".
+    revoked = client.get(
+        "/api/audit", headers=admin_hdrs, params={"action": "provisioning_key.revoke"}
+    ).json()["items"]
+    assert [(event["resource_id"], event["actor"]) for event in revoked] == [
+        (old_key["key_id"], "admin")
+    ]
+
+
+def test_a_sensor_that_is_online_elsewhere_is_not_taken_over(tmp_path: Path, monkeypatch):
+    """Naming a live sensor for a host that does not run it is refused.
+
+    Going ahead would revoke the key that sensor is using and move its identity
+    here. Refused before a key is minted or anything runs as root.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    key = _sensor(client, admin_hdrs, "agent-edge-50")
+    target = _Target(settings, env=None)
+    _drive(monkeypatch, target)
+    keys_before = _key_states(client, admin_hdrs)
+
+    run = _push(client, admin_hdrs, agent_id="agent-edge-50")
+
+    assert run["status"] == "failed", _log(run)
+    assert "agent-edge-50 is online" in run["error"]
+    assert target.installs() == []
+    assert _key_states(client, admin_hdrs) == keys_before
+    assert _keys(client, admin_hdrs)[key["key_id"]]["revoked_at"] is None
+
+
+def test_a_key_other_sensors_hold_is_not_revoked_to_move_one_of_them(
+    tmp_path: Path, monkeypatch
+):
+    """One key commonly provisions a fleet; revoking it would stop all of them."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    fleet_key = _sensor(client, admin_hdrs, "agent-edge-50")
+    _sensor(client, admin_hdrs, "agent-edge-51", key=fleet_key)
+    _go_offline(settings, "agent-edge-50")
+    target = _Target(settings, env=None)
+    _drive(monkeypatch, target)
+    keys_before = _key_states(client, admin_hdrs)
+
+    run = _push(client, admin_hdrs, agent_id="agent-edge-50")
+
+    assert run["status"] == "failed", _log(run)
+    assert "1 other sensor" in run["error"]
+    assert target.installs() == []
+    assert _key_states(client, admin_hdrs) == keys_before
+
+
+def test_a_sensor_whose_key_was_revoked_is_redeployed_under_a_new_one(
+    tmp_path: Path, monkeypatch
+):
+    """Rotation: revoke first, then redeploy. The ID is free for the new key."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    old_key = _sensor(client, admin_hdrs, "agent-edge-50")
+    assert client.post(
+        f"/api/tenants/default/provisioning-keys/{old_key['key_id']}/revoke",
+        headers=admin_hdrs,
+    ).status_code == 200
+    target = _Target(settings, _env_of("agent-edge-50", old_key))
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    assert list(_fleet(client, admin_hdrs)) == ["agent-edge-50"]
+    [install] = target.installs()
+    assert "--agent-id agent-edge-50" in install["command"]
+    assert "--key-stdin" in install["command"]
+    assert install["stdin"].strip() != old_key["key"]
+    assert _bound_key(settings, "agent-edge-50") != old_key["key_id"]
+    assert "Revoked provisioning key" not in _log(run)
+
+
+def test_a_quarantined_sensor_stays_quarantined_through_a_redeploy(
+    tmp_path: Path, monkeypatch
+):
+    """A reinstall must not be the way out of quarantine (#308)."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    key = _sensor(client, admin_hdrs, "agent-edge-50")
+    assert client.patch(
+        "/api/agents/agent-edge-50",
+        headers=admin_hdrs,
+        json={"status": "quarantined", "reason": "suspected compromise"},
+    ).status_code == 200
+    target = _Target(settings, _env_of("agent-edge-50", key))
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    fleet = _fleet(client, admin_hdrs)
+    assert list(fleet) == ["agent-edge-50"]
+    assert fleet["agent-edge-50"]["lifecycle_status"] == "quarantined"
+    assert "--keep-key" in target.installs()[0]["command"]
+    assert "agent-edge-50 is quarantined" in _log(run)
+
+
+def test_a_host_configured_for_another_tenant_becomes_a_new_sensor(
+    tmp_path: Path, monkeypatch
+):
+    """An ID stays in its tenant, so the host's old one cannot be reused here."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    target = _Target(
+        settings,
+        {
+            "OCTO_AGENT_ID": "agent-elsewhere",
+            "OCTO_TENANT_ID": "ten_other",
+            "OCTO_AGENT_PROVISIONING_KEY": "octo-pk-not-this-tenants",
+        },
+    )
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    assert run["agent_id"] not in (None, "agent-elsewhere")
+    assert "for another tenant" in _log(run)
+    assert "ten_other" not in _log(run)
+    [install] = target.installs()
+    assert f"--agent-id {run['agent_id']}" in install["command"]
+    assert "--key-stdin" in install["command"]
+
+
+def test_naming_a_new_id_says_the_hosts_previous_sensor_stays(tmp_path: Path, monkeypatch):
+    """``agent_id`` still wins, as ``--agent-id`` does -- and the log says what it cost."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    key = _sensor(client, admin_hdrs, "agent-edge-50")
+    target = _Target(settings, _env_of("agent-edge-50", key))
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id="agent-edge-50-b")
+
+    assert run["status"] == "completed", _log(run)
+    assert sorted(_fleet(client, admin_hdrs)) == ["agent-edge-50", "agent-edge-50-b"]
+    assert "agent-edge-50 stays in the fleet" in _log(run)
+    assert _keys(client, admin_hdrs)[key["key_id"]]["revoked_at"] is None
+
+
+def test_a_host_whose_sudo_prompts_fails_before_a_key_is_minted(tmp_path: Path, monkeypatch):
+    """Reading ``agent.env`` needs root, so the refusal now comes before the key."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    target = _Target(settings, env=None, sudo_prompts=True)
+    _drive(monkeypatch, target)
+    keys_before = _key_states(client, admin_hdrs)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "failed"
+    assert "sudo: a password is required" in _log(run)
+    assert _key_states(client, admin_hdrs) == keys_before
+    assert target.installs() == []
+
+
+def test_the_host_probe_reads_agent_env_the_way_the_installer_does(tmp_path: Path):
+    """The real probe script, run by ``sh`` against a real file.
+
+    The same parsing as the installer's ``env_file_value``: last assignment
+    wins, a trailing CR is dropped, and the file is read, never sourced. Only a
+    digest of the key leaves the host -- the one ``key_lookup`` is made of.
+    """
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from api.schemas import AgentDeploySSHRequest
+
+    if not shutil.which("sha256sum"):
+        pytest.skip("sha256sum is not installed here")
+    marker = tmp_path / "pwned"
+    env = tmp_path / "agent.env"
+    # Sourcing this file would run the command substitution; parsing it
+    # reads it as text, and the later assignment wins anyway.
+    env.write_bytes(
+        b"OCTO_API_URL=http://api\r\n"
+        b"OCTO_AGENT_ID=agent-old\r\n"
+        b"OCTO_AGENT_PROVISIONING_KEY=octo-pk-first\r\n"
+        + f"OCTO_TENANT_ID=$(touch {marker})\r\n".encode()
+        + b"OCTO_AGENT_ID=agent-edge-50\r\n"
+        b"  OCTO_TENANT_ID=default\r\n"
+        b"OCTO_AGENT_PROVISIONING_KEY=octo-pk-second\r\n"
+    )
+    request = AgentDeploySSHRequest(host="10.0.0.5", username="root")
+
+    def probe(path: Path):
+        command = agent_deployer._probe_command(request, env_path=str(path))
+        done = subprocess.run(
+            shlex.split(command), capture_output=True, text=True, check=True, timeout=20
+        )
+        return agent_deployer._parse_probe(done.stdout)
+
+    found = probe(env)
+    assert found == agent_deployer.HostSensor(
+        agent_id="agent-edge-50",
+        tenant_id="default",
+        has_key=True,
+        key_lookup=hashlib.sha256(b"octo-pk-second").hexdigest()[:16],
+    )
+    assert not marker.exists()
+    assert probe(tmp_path / "missing.env") is None
+    # A file with an ID and no key: nothing to keep, so a key gets minted.
+    keyless = tmp_path / "keyless.env"
+    keyless.write_text("OCTO_AGENT_ID=agent-edge-50\nOCTO_AGENT_PROVISIONING_KEY=\n")
+    assert probe(keyless) == agent_deployer.HostSensor(
+        agent_id="agent-edge-50", tenant_id="", has_key=False, key_lookup=""
+    )
+    # A non-root account reads it through sudo -n, like the installer.
+    assert "sudo -n" in agent_deployer._probe_command(
+        AgentDeploySSHRequest(host="10.0.0.5", username="deploy")
+    )
+
+
+def test_a_host_holding_another_key_for_its_sensor_is_given_one_that_works(
+    tmp_path: Path, monkeypatch
+):
+    """The state a hand re-run with a new key leaves behind (#477 warns about it).
+
+    ``agent.env`` names the sensor, but holds a key other than the one the
+    sensor is bound to, so the exchange refuses it and the sensor is offline.
+    Keeping that key would reinstall the refusal. The run mints a key and
+    revokes the bound one instead -- it was compared, not assumed.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    bound = _sensor(client, admin_hdrs, "agent-edge-50")
+    _go_offline(settings, "agent-edge-50")
+    stray = client.post(
+        "/api/tenants/default/provisioning-keys", headers=admin_hdrs, json={"label": "re-run"}
+    ).json()
+    target = _Target(settings, _env_of("agent-edge-50", stray))
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    [install] = target.installs()
+    assert "--keep-key" not in install["command"]
+    assert "--agent-id agent-edge-50" in install["command"]
+    assert _key_states(client, admin_hdrs)[bound["key_id"]] is not None
+    assert _fleet(client, admin_hdrs)["agent-edge-50"]["online"] is True
+
+
+def test_a_sensor_that_comes_back_during_the_install_keeps_its_key(
+    tmp_path: Path, monkeypatch
+):
+    """The revocation is re-checked after the install, not trusted from before it.
+
+    The installer takes minutes; the sensor whose ID is being moved can come
+    back in that time. Revoking its key then would cut off a running sensor,
+    so the run leaves the key alone and says the new one is refused until it
+    is revoked.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    old_key = _sensor(client, admin_hdrs, "agent-edge-50")
+    _go_offline(settings, "agent-edge-50")
+    target = _Target(
+        settings,
+        env=None,
+        during_install=lambda: agents_service.heartbeat("agent-edge-50"),
+    )
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id="agent-edge-50")
+
+    assert run["status"] == "completed", _log(run)
+    assert _key_states(client, admin_hdrs)[old_key["key_id"]] is None
+    assert f"Did not revoke provisioning key {old_key['key_id']}" in _log(run)
+    assert "came back online" in _log(run)
+
+
+def test_an_unusable_agent_id_on_the_host_is_not_reused():
+    """The host's file is written by whoever has root there; its ID is checked."""
+    from api.schemas import AgentDeploySSHRequest
+
+    request = AgentDeploySSHRequest(host="10.0.0.5", username="root")
+    for bad in ("agent edge", "agent-\x1b[31m-red", "a" * 129):
+        identity = agent_deployer._choose_identity(
+            request, agent_deployer.HostSensor(agent_id=bad, tenant_id="default")
+        )
+        assert identity.agent_id != bad
+        assert identity.redeploy is False
+        assert any("cannot be reused" in note for note in identity.notes)
+
+
+def test_an_agent_id_registered_in_another_tenant_is_refused(tmp_path: Path, monkeypatch):
+    """The exchange would refuse that ID forever, so nothing is installed under it."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    assert client.post(
+        "/api/tenants", json={"name": "Other", "tenant_id": "ten_other"}, headers=admin_hdrs
+    ).status_code == 201
+    _sensor(client, admin_hdrs, "agent-theirs", tenant_id="ten_other")
+    target = _Target(settings, env=None)
+    _drive(monkeypatch, target)
+    keys_before = _key_states(client, admin_hdrs)
+
+    run = _push(client, admin_hdrs, agent_id="agent-theirs")
+
+    assert run["status"] == "failed", _log(run)
+    assert "registered in another tenant" in run["error"]
+    assert "ten_other" not in _log(run)
+    assert target.installs() == []
+    assert _key_states(client, admin_hdrs) == keys_before
+
+
+def test_a_redeployed_sensor_is_not_reported_online_on_the_old_ones_heartbeat(
+    tmp_path: Path, monkeypatch
+):
+    """The row was online before the install; that is not the new sensor.
+
+    With a fresh ID every time, "online" could only mean the new sensor. A
+    redeploy keeps the ID, so a sensor that never came back must still be
+    reported as not having answered, not as ONLINE on its predecessor's beat.
+    """
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin_hdrs = auth_headers(client, username="admin")
+    _stub_host_key(monkeypatch)
+    key = _sensor(client, admin_hdrs, "agent-edge-50")
+    target = _Target(settings, _env_of("agent-edge-50", key), sensor_starts=False)
+    _drive(monkeypatch, target)
+
+    run = _push(client, admin_hdrs, agent_id=None)
+
+    assert run["status"] == "completed", _log(run)
+    assert "is ONLINE" not in _log(run)
+    assert "heartbeat verification timed out" in _log(run)

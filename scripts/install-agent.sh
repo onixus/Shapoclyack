@@ -14,6 +14,7 @@ INSTALL_DIR="/opt/shapoclyack-agent"
 CONF_DIR="/etc/shapoclyack"
 USE_DOCKER=0
 KEY_FROM_STDIN=0
+KEEP_KEY=0
 NATS_URL=""
 BUNDLE_URL="${BUNDLE_URL:-}"
 # The image --docker runs: the released scanner image, pinned as tag@digest
@@ -38,7 +39,7 @@ error() {
 
 usage() {
     cat <<EOF
-Usage: $0 --server <URL> --key <PROVISIONING_KEY> [OPTIONS]
+Usage: $0 --server <URL> (--key <PROVISIONING_KEY> | --key-stdin | --keep-key) [OPTIONS]
 
 Required:
   -s, --server <URL>            Shapoclyack server base URL (e.g. http://192.168.1.100:8000)
@@ -46,6 +47,12 @@ Required:
       --key-stdin               Read the provisioning key from stdin instead.
                                 Prefer this: an argument is visible to every
                                 local user in this host's process list.
+      --keep-key                Or keep the key already in
+                                /etc/shapoclyack/agent.env, to reinstall the
+                                sensor configured there. Refused unless that
+                                file holds an agent ID and a key, is for the
+                                same --tenant, and names the same agent ID as
+                                --agent-id (when given).
 
 Options:
   -t, --tenant <TENANT_ID>      Tenant ID (default: default)
@@ -81,6 +88,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --key-stdin)
             KEY_FROM_STDIN=1
+            shift
+            ;;
+        --keep-key)
+            KEEP_KEY=1
             shift
             ;;
         -t|--tenant)
@@ -120,19 +131,26 @@ if [[ -z "${SERVER_URL}" ]]; then
     error "Missing required argument: --server <URL>"
 fi
 
-# Read before the check below, so --key-stdin satisfies the same requirement.
-# One line, so whatever follows it on the channel (nothing, today) is left for
-# the caller rather than swallowed into the credential.
-if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
-    IFS= read -r PROVISIONING_KEY || true
-    PROVISIONING_KEY="${PROVISIONING_KEY%$'\r'}"
-fi
-
-if [[ -z "${PROVISIONING_KEY}" ]]; then
-    if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
-        error "--key-stdin was given but no provisioning key arrived on stdin."
+# --keep-key reads the key from agent.env further down, once root is checked.
+if [[ "${KEEP_KEY}" -eq 1 ]]; then
+    if [[ -n "${PROVISIONING_KEY}" || "${KEY_FROM_STDIN}" -eq 1 ]]; then
+        error "--keep-key takes the key from ${CONF_DIR}/agent.env; do not combine it with --key or --key-stdin."
     fi
-    error "Missing required argument: --key <KEY>"
+else
+    # Read before the check below, so --key-stdin satisfies the same requirement.
+    # One line, so whatever follows it on the channel (nothing, today) is left for
+    # the caller rather than swallowed into the credential.
+    if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
+        IFS= read -r PROVISIONING_KEY || true
+        PROVISIONING_KEY="${PROVISIONING_KEY%$'\r'}"
+    fi
+
+    if [[ -z "${PROVISIONING_KEY}" ]]; then
+        if [[ "${KEY_FROM_STDIN}" -eq 1 ]]; then
+            error "--key-stdin was given but no provisioning key arrived on stdin."
+        fi
+        error "Missing required argument: --key <KEY> (or --key-stdin, or --keep-key)"
+    fi
 fi
 
 SERVER_URL="${SERVER_URL%/}"
@@ -157,6 +175,28 @@ env_file_value() {
     fi
     printf '%s' "${value%$'\r'}"
 }
+
+# Reinstalling the sensor that agent.env describes, with the key it already
+# holds -- what the SSH push does for a host that already runs one, so no key
+# has to be minted and none revoked. Each check below refuses a file that is
+# not that sensor's: its key would be refused the ID, or register it elsewhere.
+if [[ "${KEEP_KEY}" -eq 1 ]]; then
+    PROVISIONING_KEY=$(env_file_value OCTO_AGENT_PROVISIONING_KEY)
+    PREVIOUS_ID=$(env_file_value OCTO_AGENT_ID)
+    PREVIOUS_TENANT=$(env_file_value OCTO_TENANT_ID)
+    if [[ -z "${PROVISIONING_KEY}" || -z "${PREVIOUS_ID}" ]]; then
+        error "--keep-key needs an agent ID and a provisioning key in ${CONF_DIR}/agent.env, and it has no such pair."
+    fi
+    if [[ -n "${PREVIOUS_TENANT}" && "${PREVIOUS_TENANT}" != "${TENANT_ID}" ]]; then
+        error "--keep-key: ${CONF_DIR}/agent.env is for tenant '${PREVIOUS_TENANT}', not '${TENANT_ID}'."
+    fi
+    if [[ -n "${AGENT_ID}" && "${AGENT_ID}" != "${PREVIOUS_ID}" ]]; then
+        error "--keep-key: ${CONF_DIR}/agent.env is for agent ${PREVIOUS_ID}, not ${AGENT_ID}; its key is not this sensor's."
+    fi
+    AGENT_ID="${PREVIOUS_ID}"
+    log "Keeping agent ID ${AGENT_ID} and its provisioning key from ${CONF_DIR}/agent.env."
+    unset PREVIOUS_ID
+fi
 
 # A re-run on a host that already has a sensor is how that sensor is upgraded,
 # so it keeps the ID it registered under. A fresh one would register a second

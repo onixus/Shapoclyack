@@ -36,6 +36,16 @@ Run state lives in ``agent_deployments`` rather than in this process (#223).
 The previous in-memory registry meant the status poll only answered on the
 replica that started the run, so a successful deployment answered 404 as soon
 as there was more than one API pod.
+
+**Which sensor a run installs.** Every run used to mint a key and pass a
+fresh ``--agent-id``, so a push to a host that already ran a sensor registered
+a second one; the first went stale, was announced as ``agent_offline``, and
+kept its group and any quarantine. The run now reads the host's
+``agent.env`` before anything is minted (:func:`_probe_command`) and settles
+the identity in :func:`_choose_identity`: a sensor this host already runs is
+reinstalled as itself with the key it already holds, and moving a registered
+sensor's ID onto a host that does not hold its key revokes that key, which is
+refused when the key has other holders or its sensor is still online.
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -63,6 +74,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.schemas import AgentDeploySSHRequest, AgentDeployStatusResponse, AgentSSHHostKeyInfo
 from api.services import agents as agents_service
+from api.services import audit as audit_service
 from api.services import auth_audit
 from api.services import legal_hold
 from api.services import outbound_targets
@@ -117,6 +129,16 @@ _VERIFY_INTERVAL_SECONDS = 2.0
 # Log lines kept on one run. An installer that talks for an hour must not turn
 # a single row into an unbounded document.
 _MAX_LOG_LINES = 500
+
+# Where scripts/install-agent.sh keeps a sensor's configuration (its CONF_DIR is
+# not an option), and so where a host that already runs one says which.
+AGENT_ENV_PATH = "/etc/shapoclyack/agent.env"
+
+# What an agent ID read off a host must look like before this run reuses it:
+# the file belongs to whoever has root there, and the value goes into the
+# deployment log and the installer's argv.
+_REUSABLE_AGENT_ID = re.compile(r"[\x21-\x7e]{1,128}")
+_KEY_LOOKUP = re.compile(r"[0-9a-f]{16}")
 
 # What ssh-keyscan is asked for. Its -t vocabulary is the short family name,
 # not the algorithm name that appears in known_hosts — the two lists below are
@@ -889,12 +911,295 @@ def _prune_history(session: Any, tenant_id: str) -> None:
 # --------------------------------------------------------------------------
 
 
+def _sudo_prefix(req: AgentDeploySSHRequest) -> str:
+    return "" if req.username == "root" else "sudo -n "
+
+
+# Reads the three things a redeployment has to know from an existing
+# agent.env, the way the installer's env_file_value does: parsed with sed and
+# never sourced (the file is writable by the sensor's account, and this runs as
+# root), last assignment wins, CR dropped. The key itself stays on the host;
+# only the sha256 prefix the API indexes keys by is printed.
+_PROBE_SCRIPT = r"""f=$1
+[ -f "$f" ] || exit 0
+v() { sed -n "s/^[[:space:]]*$1=//p" "$f" | tail -n 1 | tr -d '\r'; }
+printf 'agent_id=%s\n' "$(v OCTO_AGENT_ID)"
+printf 'tenant_id=%s\n' "$(v OCTO_TENANT_ID)"
+k=$(v OCTO_AGENT_PROVISIONING_KEY)
+[ -z "$k" ] || printf 'key_lookup=%s\n' "$(printf '%s' "$k" | sha256sum 2>/dev/null | cut -c1-16)"
+"""
+
+
+def _probe_command(req: AgentDeploySSHRequest, *, env_path: str = AGENT_ENV_PATH) -> str:
+    """The remote command that reports which sensor, if any, the host runs.
+
+    Through ``sudo -n`` like the installer, because ``agent.env`` is ``0600``;
+    a host whose sudo would prompt fails here, before a key has been minted,
+    rather than at the install. Wrapped in ``sh -c`` for the reason
+    :func:`_install_command` is.
+    """
+    inner = f"{_sudo_prefix(req)}sh -c {shlex.quote(_PROBE_SCRIPT)} sh {shlex.quote(env_path)}"
+    return f"sh -c {shlex.quote(inner)}"
+
+
+@dataclass(frozen=True)
+class HostSensor:
+    """What the target's ``agent.env`` says about the sensor installed there."""
+
+    agent_id: str
+    tenant_id: str
+    # Whether the file holds a provisioning key at all, and the key's lookup
+    # prefix -- empty when the host could not compute it (no ``sha256sum``).
+    has_key: bool = False
+    key_lookup: str = ""
+
+
+def _parse_probe(output: str) -> HostSensor | None:
+    """The probe's answer, or ``None`` for a host with no sensor configured."""
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name in ("agent_id", "tenant_id", "key_lookup"):
+            fields[name] = value
+    if not fields.get("agent_id"):
+        return None
+    lookup = fields.get("key_lookup", "")
+    return HostSensor(
+        agent_id=fields["agent_id"],
+        tenant_id=fields.get("tenant_id", ""),
+        has_key="key_lookup" in fields,
+        key_lookup=lookup if _KEY_LOOKUP.fullmatch(lookup) else "",
+    )
+
+
+class IdentityRefused(RuntimeError):
+    """This run would take an agent ID it must not take. Nothing was installed."""
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Which sensor a run installs, and what happens to the keys around it."""
+
+    agent_id: str
+    # A sensor already registered in this tenant, reinstalled as itself.
+    redeploy: bool
+    # Reinstall with the key already in the host's agent.env (--keep-key)
+    # instead of minting one: the host already holds this sensor's key.
+    keep_key: bool = False
+    # The key the sensor is bound to, revoked once the installer has
+    # succeeded, because the exchange refuses the ID to a new key while it is
+    # active (agents.check_exchange_identity).
+    release_key_id: str | None = None
+    # The lifecycle state an operator put the sensor in, when not active. It
+    # survives the redeploy, and the sensor is refused a token until it is
+    # lifted, so there is no heartbeat to wait for.
+    lifecycle_status: str | None = None
+    lifecycle_reason: str | None = None
+    notes: tuple[str, ...] = ()
+
+
+def _generated_agent_id(host: str) -> str:
+    return f"agent-{host.replace('.', '-').replace(':', '-')}-{uuid.uuid4().hex[:6]}"
+
+
+def _choose_identity(req: AgentDeploySSHRequest, found: HostSensor | None) -> Identity:
+    """Settle the agent ID and the key handling before anything is minted.
+
+    The installer, since #477, keeps the ID in ``agent.env`` on a re-run --
+    but only without ``--agent-id``, and this run always passes one because it
+    has to know which heartbeat to wait for. So the same choice is made here,
+    against the registry as well as the host:
+
+    * ``agent_id`` in the request wins, as ``--agent-id`` does; otherwise the
+      host's own sensor is kept, unless its file is for another tenant;
+    * a sensor already registered in this tenant is redeployed as itself. When
+      the host holds the key it is bound to, the installer keeps that key and
+      nothing is minted. When its key is revoked or expired, a new key takes
+      the ID over. When its key is active and the host does not hold it, the
+      key is revoked after the install -- refused while the sensor is online
+      (that would take the ID from a running sensor) or while other sensors
+      hold the key (revoking it would stop them);
+    * anything else registers as a new sensor.
+
+    Raises :class:`IdentityRefused` for the refusals, and for an ``agent_id``
+    registered in another tenant, which the exchange would refuse forever.
+    """
+    notes: list[str] = []
+    host_id: str | None = None
+    if found is not None:
+        if not _REUSABLE_AGENT_ID.fullmatch(found.agent_id):
+            notes.append(
+                f"The host's {AGENT_ENV_PATH} holds an agent ID that cannot be reused "
+                "(not a printable token of at most 128 characters)."
+            )
+        elif found.tenant_id and found.tenant_id != req.tenant_id:
+            notes.append(
+                f"The host's {AGENT_ENV_PATH} is for another tenant; "
+                "its sensor is not reused."
+            )
+        else:
+            host_id = found.agent_id
+
+    requested = (req.agent_id or "").strip() or None
+    wanted = requested or host_id
+    binding = agents_service.key_binding(wanted) if wanted else None
+    if binding is not None and binding.tenant_id != req.tenant_id:
+        if requested:
+            raise IdentityRefused(
+                f"agent_id {wanted} is registered in another tenant and cannot be "
+                "used in this one. Nothing was installed."
+            )
+        notes.append(
+            f"The agent ID in the host's {AGENT_ENV_PATH} is registered in another "
+            "tenant; its sensor is not reused."
+        )
+        wanted, binding = None, None
+
+    if requested and host_id and host_id != requested:
+        previous = agents_service.key_binding(host_id)
+        if previous is not None and previous.tenant_id == req.tenant_id:
+            notes.append(
+                f"This host was running sensor {host_id}; it registers as {requested} "
+                f"from now on, as requested. {host_id} stays in the fleet until you "
+                "delete it."
+            )
+
+    if wanted is None:
+        agent_id = _generated_agent_id(req.host)
+        notes.append(f"No sensor of this tenant runs on this host; registering a new sensor as {agent_id}.")
+        return Identity(agent_id=agent_id, redeploy=False, notes=tuple(notes))
+
+    if binding is None:
+        notes.append(
+            f"Registering a new sensor as {wanted}, as requested."
+            if requested
+            else f"Keeping agent ID {wanted} from the host's {AGENT_ENV_PATH}; no sensor "
+            "is registered under it in this tenant, so it registers as a new one."
+        )
+        return Identity(agent_id=wanted, redeploy=False, notes=tuple(notes))
+
+    inactive = binding.lifecycle_status != agents_service.LIFECYCLE_ACTIVE
+    lifecycle = {
+        "lifecycle_status": binding.lifecycle_status if inactive else None,
+        "lifecycle_reason": binding.lifecycle_reason if inactive else None,
+    }
+    key_active = binding.key_id is not None and binding.key_state == "active"
+    on_host = found is not None and host_id == wanted
+    if key_active and on_host and found.has_key and found.key_lookup in ("", binding.key_lookup):
+        notes.append(
+            f"Redeploying sensor {wanted}, which this host already runs: keeping its "
+            f"agent ID and its provisioning key {binding.key_id}; no new key is minted."
+            + (
+                ""
+                if found.key_lookup
+                else " (The host could not digest its key, so it was not compared.)"
+            )
+        )
+        return Identity(
+            agent_id=wanted, redeploy=True, keep_key=True, notes=tuple(notes), **lifecycle
+        )
+
+    if not key_active:
+        why = (
+            "has no provisioning key on record"
+            if binding.key_id is None
+            else f"provisioning key {binding.key_id} is {binding.key_state}"
+        )
+        notes.append(
+            f"Redeploying sensor {wanted}: its {why}, so a new key can take the ID "
+            "over; nothing to revoke."
+        )
+        return Identity(agent_id=wanted, redeploy=True, notes=tuple(notes), **lifecycle)
+
+    # The sensor's key is active and this host does not hold it.
+    where = "this host does not hold its provisioning key " + binding.key_id
+    if binding.online:
+        raise IdentityRefused(
+            f"Sensor {wanted} is online (last heartbeat {binding.last_seen_at}) and "
+            f"{where}. Deploying it here would revoke the key that sensor is using. "
+            "Stop it first, or send a new agent_id to register this host as a new "
+            "sensor. Nothing was installed."
+        )
+    if binding.other_agents_on_key:
+        others = binding.other_agents_on_key
+        raise IdentityRefused(
+            f"Sensor {wanted} is registered with provisioning key {binding.key_id}, "
+            f"which {others} other sensor{'s' if others != 1 else ''} also "
+            f"hold{'' if others != 1 else 's'}, and {where}. Revoking that key to move "
+            f"{wanted} here would stop them too. Revoke it yourself if that is "
+            "intended (the next deployment then mints a new key), or send a new "
+            "agent_id to register this host as a new sensor. Nothing was installed."
+        )
+    notes.append(
+        f"Redeploying sensor {wanted}; {where}. Minting a new key, and revoking "
+        f"{binding.key_id} once the installer succeeds: no other sensor holds it and "
+        f"{wanted} is offline."
+    )
+    return Identity(
+        agent_id=wanted,
+        redeploy=True,
+        release_key_id=binding.key_id,
+        notes=tuple(notes),
+        **lifecycle,
+    )
+
+
+def _release_key(
+    deploy_id: str,
+    identity: Identity,
+    *,
+    tenant_id: str,
+    audit: audit_service.AuditContext | None,
+) -> None:
+    """Revoke the key a moved sensor was bound to, now that its install succeeded.
+
+    Not before the install: a failed install would then leave the sensor with
+    no key that works. Re-checked here rather than trusted from the decision,
+    because the minutes the installer took are long enough for the sensor to
+    come back or for another one to register with the same key.
+    """
+    key_id = identity.release_key_id
+    agent_id = identity.agent_id
+    binding = agents_service.key_binding(agent_id)
+    if (
+        binding is None
+        or binding.tenant_id != tenant_id
+        or binding.key_id != key_id
+        or binding.key_state != "active"
+    ):
+        _append_log(
+            deploy_id,
+            f"Provisioning key {key_id} is no longer {agent_id}'s active key; "
+            "nothing to revoke.",
+        )
+        return
+    if binding.online or binding.other_agents_on_key:
+        why = (
+            f"{agent_id} came back online meanwhile"
+            if binding.online
+            else f"{binding.other_agents_on_key} other sensor(s) registered with it meanwhile"
+        )
+        _append_log(
+            deploy_id,
+            f"[WARN] Did not revoke provisioning key {key_id}: {why}. The reinstalled "
+            f"sensor is refused its ID under the new key until {key_id} is revoked.",
+        )
+        return
+    tenants_service.revoke_provisioning_key(key_id, audit=audit)
+    _append_log(
+        deploy_id,
+        f"Revoked provisioning key {key_id}, which {agent_id} was registered with; "
+        "the reinstalled sensor authenticates with the new key on its next retry.",
+    )
+
+
 def _install_command(
     req: AgentDeploySSHRequest,
     *,
     server_url: str,
     install_url: str,
     agent_id: str,
+    keep_key: bool = False,
 ) -> str:
     """The remote command line — with no secret anywhere in it.
 
@@ -902,11 +1207,12 @@ def _install_command(
     because the whole command string becomes the argv of the remote shell and
     is therefore readable by every local user on the target. ``sudo -n`` for
     the same reason: a sudo that decides to prompt would consume the
-    provisioning key as its password guess.
+    provisioning key as its password guess. With ``keep_key`` no key travels
+    at all: ``--keep-key`` reinstalls with the one already in ``agent.env``.
     """
-    sudo_prefix = "" if req.username == "root" else "sudo -n "
+    sudo_prefix = _sudo_prefix(req)
     args = [
-        "--key-stdin",
+        "--keep-key" if keep_key else "--key-stdin",
         "--server", server_url,
         "--tenant", req.tenant_id,
         "--agent-id", agent_id,
@@ -940,6 +1246,7 @@ def _deploy_worker(
     req: AgentDeploySSHRequest,
     server_url: str,
     host_key: HostKey,
+    audit: audit_service.AuditContext | None = None,
 ) -> None:
     try:
         _update_stage(deploy_id, status="connecting", stage="Connecting to remote host", progress_percent=15)
@@ -963,16 +1270,44 @@ def _deploy_worker(
         remote_info = out.strip().replace("\n", " ")
         _append_log(deploy_id, f"Connected to host successfully: {remote_info}")
 
-        # Provisioning Key
-        _update_stage(deploy_id, status="installing", stage="Minting provisioning credentials", progress_percent=30)
-        _append_log(deploy_id, f"Generating provisioning key for tenant '{req.tenant_id}'...")
-        key_res = tenants_service.create_provisioning_key(
-            tenant_id=req.tenant_id,
-            label=f"SSH Remote Deploy on {req.host}",
+        # Which sensor this is, settled before a key exists: minting one first
+        # and deciding afterwards is how every redeploy became a new sensor.
+        _update_stage(deploy_id, status="installing", stage="Checking the host for an existing sensor", progress_percent=22)
+        code, out, err = _execute_ssh_command(
+            req, _probe_command(req), host_key=host_key, timeout=30
         )
-        provisioning_key = key_res["key"]
-        agent_id = req.agent_id or f"agent-{req.host.replace('.', '-').replace(':', '-')}-{uuid.uuid4().hex[:6]}"
-        _append_log(deploy_id, f"Provisioned agent_id: {agent_id}")
+        if code != 0:
+            err_msg = (
+                f"Could not read {AGENT_ENV_PATH} on the host (exit code {code}): "
+                f"{err.strip() or out.strip()}"
+            )
+            _append_log(deploy_id, f"[ERROR] {err_msg}")
+            _update_stage(deploy_id, status="failed", stage="Host check failed", error=err_msg)
+            return
+        try:
+            identity = _choose_identity(req, _parse_probe(out))
+        except IdentityRefused as exc:
+            _append_log(deploy_id, f"[ERROR] {exc}")
+            _update_stage(deploy_id, status="failed", stage="Refused: sensor identity", error=str(exc))
+            return
+        agent_id = identity.agent_id
+        for note in identity.notes:
+            _append_log(deploy_id, note)
+        _update_stage(deploy_id, agent_id=agent_id)
+
+        provisioning_key: str | None = None
+        if identity.keep_key:
+            _update_stage(deploy_id, status="installing", stage="Keeping the host's provisioning credentials", progress_percent=30)
+        else:
+            _update_stage(deploy_id, status="installing", stage="Minting provisioning credentials", progress_percent=30)
+            _append_log(deploy_id, f"Generating provisioning key for tenant '{req.tenant_id}'...")
+            key_res = tenants_service.create_provisioning_key(
+                tenant_id=req.tenant_id,
+                label=f"SSH Remote Deploy on {req.host}",
+                audit=audit,
+            )
+            provisioning_key = key_res["key"]
+            _append_log(deploy_id, f"Minted provisioning key {key_res['key_id']} for {agent_id}.")
 
         # Run remote installer
         _update_stage(deploy_id, status="installing", stage="Running remote agent installation", progress_percent=55)
@@ -981,7 +1316,11 @@ def _deploy_worker(
         _append_log(deploy_id, f"Fetching installer script from {install_url}...")
 
         install_cmd = _install_command(
-            req, server_url=clean_server, install_url=install_url, agent_id=agent_id
+            req,
+            server_url=clean_server,
+            install_url=install_url,
+            agent_id=agent_id,
+            keep_key=identity.keep_key,
         )
 
         _append_log(deploy_id, "Executing installation payload on remote host...")
@@ -992,7 +1331,7 @@ def _deploy_worker(
             timeout=300,
             # Never in the command line: the target's process list is world
             # readable, and the key registers agents into this tenant.
-            stdin_data=f"{provisioning_key}\n",
+            stdin_data=f"{provisioning_key}\n" if provisioning_key else None,
         )
 
         # Log lines from remote output
@@ -1009,21 +1348,39 @@ def _deploy_worker(
             _update_stage(deploy_id, status="failed", stage="Installation failed", error=err_msg)
             return
 
+        if identity.release_key_id:
+            _release_key(deploy_id, identity, tenant_id=req.tenant_id, audit=audit)
+
+        # A redeployed sensor was online before the install, so "online" on its
+        # own says nothing about the reinstalled one. What does is a heartbeat
+        # newer than the last one seen now: the installer has restarted the
+        # service or the container, so the process that sent that one is gone.
+        before = agents_service.get_agent(agent_id, tenant_id=req.tenant_id)
+        seen_before = before.last_seen_at if before is not None else None
+
         # Verification step
         _update_stage(deploy_id, status="verifying", stage="Verifying agent heartbeat registration", progress_percent=85)
-        _append_log(deploy_id, f"Waiting for agent {agent_id} to send initial heartbeat...")
+        if identity.lifecycle_status:
+            reason = f" ({identity.lifecycle_reason})" if identity.lifecycle_reason else ""
+            _append_log(
+                deploy_id,
+                f"[WARN] Sensor {agent_id} is {identity.lifecycle_status} by an operator"
+                f"{reason}. The redeploy keeps that state, and the sensor is refused a "
+                "token until an admin re-activates it, so no heartbeat is awaited.",
+            )
+        else:
+            _append_log(deploy_id, f"Waiting for agent {agent_id} to send initial heartbeat...")
+            registered = False
+            for _ in range(_VERIFY_ATTEMPTS):
+                time.sleep(_VERIFY_INTERVAL_SECONDS)
+                info = agents_service.get_agent(agent_id, tenant_id=req.tenant_id)
+                if info and info.online and info.last_seen_at != seen_before:
+                    registered = True
+                    _append_log(deploy_id, f"Agent {agent_id} is ONLINE! Version: {info.version}, Hostname: {info.hostname}")
+                    break
 
-        registered = False
-        for _ in range(_VERIFY_ATTEMPTS):
-            time.sleep(_VERIFY_INTERVAL_SECONDS)
-            info = agents_service.get_agent(agent_id, tenant_id=req.tenant_id)
-            if info and info.online:
-                registered = True
-                _append_log(deploy_id, f"Agent {agent_id} is ONLINE! Version: {info.version}, Hostname: {info.hostname}")
-                break
-
-        if not registered:
-            _append_log(deploy_id, "[WARN] Agent service started, but heartbeat verification timed out (agent may take a moment).")
+            if not registered:
+                _append_log(deploy_id, "[WARN] Agent service started, but heartbeat verification timed out (agent may take a moment).")
 
         _update_stage(
             deploy_id,
@@ -1032,7 +1389,12 @@ def _deploy_worker(
             progress_percent=100,
             agent_id=agent_id,
         )
-        _append_log(deploy_id, f"Deployment completed successfully for agent {agent_id}.")
+        _append_log(
+            deploy_id,
+            f"Deployment completed: sensor {agent_id} redeployed with its identity kept."
+            if identity.redeploy
+            else f"Deployment completed: new sensor {agent_id}.",
+        )
 
     except Exception as exc:
         LOG.exception("Unexpected error in agent SSH deployer")
@@ -1041,13 +1403,22 @@ def _deploy_worker(
         _update_stage(deploy_id, status="failed", stage="Fatal error", error=err_msg)
 
 
-def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str, *, actor: str) -> str:
+def start_ssh_deployment(
+    req: AgentDeploySSHRequest,
+    server_url: str,
+    *,
+    actor: str,
+    audit: audit_service.AuditContext | None = None,
+) -> str:
     """Verify the target's host key, then queue the push deployment.
 
     The host key is resolved **before** the run row exists, and synchronously,
     so an unverifiable target is a refusal the caller reads directly rather
     than a deployment that fails somewhere in a log. Nothing has been sent to
     the target at that point — the probe authenticates to nothing.
+
+    ``audit`` is the operator's, carried into the run so the key it mints and
+    any key it revokes are theirs in the trail rather than ``system``'s.
     """
     settings = _require_settings()
     host_key, newly_pinned = resolve_host_key(
@@ -1091,7 +1462,7 @@ def start_ssh_deployment(req: AgentDeploySSHRequest, server_url: str, *, actor: 
 
     thread = threading.Thread(
         target=_deploy_worker,
-        args=(deploy_id, req, server_url, host_key),
+        args=(deploy_id, req, server_url, host_key, audit),
         daemon=True,
         name=f"agent-deploy-{deploy_id}",
     )

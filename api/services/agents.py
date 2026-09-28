@@ -610,6 +610,67 @@ def check_exchange_identity(*, agent_id: str | None, tenant_id: str, key_id: str
         )
 
 
+@dataclass(frozen=True)
+class KeyBinding:
+    """An agent row and the key it is bound to, as a redeployment needs them.
+
+    Everything :func:`check_exchange_identity` will weigh when the reinstalled
+    agent asks for its ID back, read in one transaction so the SSH deployer
+    decides against one state of the row and the key rather than two.
+    """
+
+    agent_id: str
+    tenant_id: str
+    online: bool
+    last_seen_at: str | None
+    lifecycle_status: str
+    lifecycle_reason: str | None
+    key_id: str | None
+    # ``active`` | ``revoked`` | ``expired`` | ``unknown``; None with no key on
+    # record, which the exchange treats like a key that is not active.
+    key_state: str | None
+    # sha256(plaintext)[:16] of that key -- the non-secret prefix
+    # ``tenants.resolve_provisioning_key`` finds it by. Lets the deployer ask
+    # whether a host holds this key without the key leaving the host.
+    key_lookup: str | None
+    other_agents_on_key: int
+
+
+def key_binding(agent_id: str) -> KeyBinding | None:
+    """The row for ``agent_id`` and its key, in whichever tenant it is.
+
+    Unscoped, unlike :func:`get_agent`, because the question is whether the ID
+    can be taken at all, and an ID registered in another tenant cannot: the
+    exchange refuses it. The caller compares ``tenant_id`` and must not repeat
+    it to anyone outside that tenant.
+    """
+    settings = _require_settings()
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Agent, agent_id)
+        if row is None:
+            return None
+        key_id = row.provisioning_key_id
+        key = session.get(models.ProvisioningKey, key_id) if key_id else None
+        return KeyBinding(
+            agent_id=row.agent_id,
+            tenant_id=row.tenant_id,
+            online=_is_online(row.last_seen_at),
+            last_seen_at=_iso(row.last_seen_at),
+            lifecycle_status=row.lifecycle_status or LIFECYCLE_ACTIVE,
+            lifecycle_reason=row.lifecycle_reason,
+            key_id=key_id,
+            key_state=(
+                tenants_service.provisioning_key_state_in_session(session, key_id)
+                if key_id
+                else None
+            ),
+            key_lookup=key.key_lookup if key is not None else None,
+            other_agents_on_key=_count_other_agents_on_key(
+                session, key_id=key_id, agent_id=row.agent_id
+            ),
+        )
+
+
 def require_active_info(agent: AgentInfo | None) -> None:
     """Apply the lifecycle gate to an already-read request snapshot."""
     if agent is None:

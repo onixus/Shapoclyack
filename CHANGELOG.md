@@ -706,6 +706,24 @@ All notable changes to Shapoclyack are documented in this file.
   before the ID is chosen, because the file is `0600`. Leftover rows from
   earlier upgrades have to be deleted by hand
   ([docs/operations.md](docs/operations.md#sensor-installation-and-upgrade)).
+- **An SSH push to a host that already runs a sensor keeps that sensor.**
+  `POST /api/agent/deploy/ssh` minted a key and passed a fresh `--agent-id` on
+  every run, so a redeploy registered a second sensor, with the same stale
+  leftover, `agent_offline` alert and lost group as above. The run now reads
+  the host's `agent.env` (`sudo -n`, before any key is minted). Only the ID,
+  the tenant and a SHA-256 prefix of the key leave the host. A sensor the host
+  already runs, with the key it is bound to, is reinstalled with the new
+  installer option `--keep-key`: same ID, same key, nothing minted. When the
+  sensor's key is revoked or expired, a new key takes the ID over. When the
+  key is active and the host does not hold it (a rebuilt host named in
+  `agent_id`), the old key is revoked after the installer succeeds. That is
+  refused while the sensor is online or while other sensors hold the key. An
+  `agent_id` registered in another tenant is refused. A quarantined or
+  disabled sensor keeps its state, and the run does not wait for its
+  heartbeat. The run's log says which case happened. Keys the run mints or
+  revokes are audited under the admin who started it, not `system`. A host
+  whose sudo prompts now fails before a key is minted, not after
+  ([docs/operations.md](docs/operations.md#ssh-push-deployment)).
 - **The sensor deployment snippets run an image that exists, and pin it.** The
   console's `docker run`, Compose and Kubernetes snippets named
   `ghcr.io/onixus/shapoclyack:latest`, a repository the release has never
