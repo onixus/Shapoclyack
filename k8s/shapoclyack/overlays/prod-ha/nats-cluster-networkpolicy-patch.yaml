@@ -20,16 +20,13 @@ metadata:
   name: shapoclyack-nats-ingress
 spec:
   ingress:
-    # Copied from base: API clients and in-cluster agents on the client port.
+    # Copied from base: the API on the client port (#338 dropped the
+    # in-cluster agent rule there, and so here).
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: api
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: shapoclyack
-              app.kubernetes.io/component: agent
       ports:
         - protocol: TCP
           port: 4222

@@ -104,7 +104,7 @@ def _scan(
 
     asked: list[str] = []
 
-    def _fake_resolve(fqdns, output_dir, *, timeout, retries):  # noqa: ANN001
+    def _fake_resolve(fqdns, output_dir, *, timeout, retries, resolvers):  # noqa: ANN001
         asked.extend(fqdns)
         return sorted(set(resolves_to)) if fqdns else []
 

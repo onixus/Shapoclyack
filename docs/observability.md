@@ -75,10 +75,12 @@ so that a cluster with Grafana and without the operator can take them alone.
 
 `overlays/prod-ha-monitoring` is `prod-ha` plus both components and renders in
 CI (`k8s/scripts/validate-kustomize.sh`). Any other overlay takes them with the
-same two lines — **and sets its own `namespace:`**:
+same two lines — **and names its own namespace**, with a copy of
+`overlays/prod-ha-monitoring/namespace-transformer.yaml`:
 
 ```yaml
-namespace: network-scan              # or wherever your installation lives
+transformers:
+  - namespace-transformer.yaml     # unsetOnly, network-scan or wherever your installation lives
 components:
   - ../../base/monitoring          # ServiceMonitor + PrometheusRule (needs the CRDs)
   - ../../base/grafana-dashboards  # three ConfigMaps for the Grafana sidecar
@@ -88,8 +90,12 @@ The components carry no namespace of their own on purpose: a component's
 namespace transformer applies to everything the including kustomization
 renders, not only to what the component adds, so a component that said
 `network-scan` moved a whole installation living elsewhere into `network-scan`.
-Without a `namespace:` in the including overlay, the component objects land in
-kubectl's current namespace.
+The same holds for the including overlay since the scanner-executor got a
+namespace of its own ([#338](https://github.com/onixus/Shapoclyack/issues/338)):
+a plain `namespace:` there moves the executor out of `network-scan-executor`
+and fails the render, while an `unsetOnly` transformer names only the objects
+that have no namespace yet — the ones these components add. Without either, the
+component objects land in kubectl's current namespace.
 
 Then give the two operator objects the label your Prometheus selects on. The
 narrow way is a patch on the `monitoring.coreos.com` group only (commented out,

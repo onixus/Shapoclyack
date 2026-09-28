@@ -33,6 +33,19 @@ A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
 first row — HTTPS to the API — for `POST /api/endpoint/inventory`. `k8s/shapoclyack/examples/networkpolicy-agent.example.yaml`
 is the in-cluster expression of the same list.
 
+The DNS row means the sensor's own resolver, not port 53 to the internet.
+`dnsx`, which runs the scanner's DNS stages (target resolution, PTR names,
+domain monitoring, zone and mail posture), is handed as `-r` the resolver libc
+would ask — the first `nameserver` in `/etc/resolv.conf`, the first three under
+`options rotate`, 127.0.0.1 when there is none — or the scanner config's
+`dns.resolvers` when that is set, and then those addresses need the rule
+instead. A backup `nameserver` is not passed on: dnsx would rotate over it
+rather than fall back to it. Its built-in public resolvers (1.1.1.1, 8.8.8.8,
+…) are never used, so internal names resolve and target names go only to the
+resolver the network already trusts. Where that resolver cannot be reached
+dnsx still exits 0; the `resolve` stage logs that no resolver answered, and a
+run of names only ends with no targets.
+
 ### Inside the cluster
 
 | From | To | Port | Protocol | Required |

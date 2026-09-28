@@ -25,6 +25,8 @@ from scanner.pipeline.dns_hygiene import (
     check_dns_hygiene,
 )
 
+RESOLVERS = ["192.0.2.53:53"]
+
 _TYPE_A, _TYPE_NS, _TYPE_SOA, _TYPE_TXT, _TYPE_AXFR = 1, 2, 6, 16, 252
 
 #: Compression pointer to the question name, right after the 12-byte header.
@@ -175,16 +177,20 @@ def _patch_dnsx(
     changed signature fails the test instead of silently passing.
     """
 
-    def fake_ns(domains, output_dir, *, timeout, retries):
+    def fake_ns(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return dict(ns or {})
 
-    def fake_soa(domains, output_dir, *, timeout, retries):
+    def fake_soa(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return dict(soa or {})
 
-    def fake_caa(domains, output_dir, *, timeout, retries):
+    def fake_caa(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return dict(caa or {})
 
-    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries):
+    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {name: dict((addresses or {}).get(name, {})) for name in names}
 
     monkeypatch.setattr(dns_hygiene, "_run_dnsx_ns", fake_ns)
@@ -198,14 +204,16 @@ def _kinds(result: dict) -> set[str]:
 
 
 def test_dns_hygiene_disabled(tmp_path: Path):
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=False), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=False), tmp_path, resolvers=RESOLVERS
+    )
     assert result["skipped_reason"] == "dns_hygiene.disabled"
     assert (tmp_path / "dns_hygiene.json").exists()
     assert (tmp_path / "dns_hygiene_findings.txt").exists()
 
 
 def test_dns_hygiene_no_domains(tmp_path: Path):
-    result = check_dns_hygiene([], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene([], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS)
     assert result["skipped_reason"] == "no_domains"
     assert (tmp_path / "dns_hygiene.json").exists()
 
@@ -216,6 +224,7 @@ def test_dns_hygiene_truncates_at_max_domains(tmp_path: Path, monkeypatch):
         ["a.example", "b.example"],
         DnsHygieneConfig(enabled=True, max_domains=1),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["truncated"] is True
     assert result["seed_domains"] == ["a.example"]
@@ -225,7 +234,9 @@ def test_dns_hygiene_truncates_at_max_domains(tmp_path: Path, monkeypatch):
 def test_ns_set_is_capped_per_domain(tmp_path: Path, monkeypatch):
     many = [f"ns{index}.provider.example" for index in range(dns_hygiene.MAX_NS_PER_DOMAIN + 5)]
     _patch_dnsx(monkeypatch, ns={"example.com": {"ns": many}})
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     record = result["domains"]["example.com"]
     assert len(record["nameservers"]) == dns_hygiene.MAX_NS_PER_DOMAIN
     assert record["nameservers_truncated"] is True
@@ -294,7 +305,9 @@ def test_dnssec_source_is_the_rdap_flag(tmp_path: Path, monkeypatch):
         json.dumps({"domains": {"example.com": {"dnssec": False}}}), encoding="utf-8"
     )
     _patch_dnsx(monkeypatch, ns={"example.com": {"ns": ["ns1.a.example", "ns2.b.example"]}})
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     dnssec = result["domains"]["example.com"]["dnssec"]
     assert dnssec == {
         "status": "absent",
@@ -307,7 +320,9 @@ def test_dnssec_source_is_the_rdap_flag(tmp_path: Path, monkeypatch):
 
 def test_dnssec_is_not_checked_without_ownership(tmp_path: Path, monkeypatch):
     _patch_dnsx(monkeypatch, ns={"example.com": {"ns": ["ns1.a.example", "ns2.b.example"]}})
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     dnssec = result["domains"]["example.com"]["dnssec"]
     # No data must never turn into "ok" and never into a finding either.
     assert dnssec["status"] == "not_checked"
@@ -318,7 +333,8 @@ def test_dnssec_is_not_checked_without_ownership(tmp_path: Path, monkeypatch):
 def test_wildcard_needs_every_probe_to_resolve(tmp_path: Path, monkeypatch):
     resolved: dict[str, dict] = {}
 
-    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries):
+    def fake_a_aaaa(names, output_dir, *, kind, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         if kind != "wildcard":
             return {}
         # Only the first probe label answers -- that is a name collision, not
@@ -327,15 +343,20 @@ def test_wildcard_needs_every_probe_to_resolve(tmp_path: Path, monkeypatch):
 
     _patch_dnsx(monkeypatch)
     monkeypatch.setattr(dns_hygiene, "_run_dnsx_a_aaaa", fake_a_aaaa)
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     assert result["domains"]["example.com"]["wildcard"]["present"] is False
     assert "wildcard_a_record" not in _kinds(result)
 
-    def fake_all(names, output_dir, *, kind, timeout, retries):
+    def fake_all(names, output_dir, *, kind, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {name: {"a": ["203.0.113.5"]} for name in names} if kind == "wildcard" else {}
 
     monkeypatch.setattr(dns_hygiene, "_run_dnsx_a_aaaa", fake_all)
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     assert result["domains"]["example.com"]["wildcard"]["present"] is True
     assert "wildcard_a_record" in _kinds(result)
 
@@ -354,7 +375,7 @@ def test_axfr_is_off_by_default(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(dns_hygiene, "_probe_axfr", explode)
 
-    result = check_dns_hygiene(["example.com"], config, tmp_path)
+    result = check_dns_hygiene(["example.com"], config, tmp_path, resolvers=RESOLVERS)
     axfr = result["domains"]["example.com"]["axfr"]
     assert axfr == {"status": "disabled", "reason": "axfr_probe.disabled", "nameservers": []}
     assert result["axfr_probe"] is False
@@ -382,7 +403,7 @@ def test_axfr_never_targets_a_public_suffix(tmp_path: Path, monkeypatch, suffix:
 
     result = check_dns_hygiene(
         [], DnsHygieneConfig(enabled=True, axfr_probe=True, domains=[suffix]), tmp_path
-    )
+    , resolvers=RESOLVERS)
     axfr = result["domains"][suffix]["axfr"]
     assert axfr == {"status": "refused", "reason": "public_suffix", "nameservers": []}
     assert "axfr_open" not in _kinds(result)
@@ -399,7 +420,7 @@ def test_axfr_refuses_a_seed_that_is_not_a_domain_name(tmp_path: Path, monkeypat
     )
     result = check_dns_hygiene(
         [], DnsHygieneConfig(enabled=True, axfr_probe=True, domains=["198.51.100.7"]), tmp_path
-    )
+    , resolvers=RESOLVERS)
     assert result["domains"]["198.51.100.7"]["axfr"]["reason"] == "not_a_domain_name"
 
 
@@ -426,7 +447,7 @@ def test_axfr_still_probes_registrable_domains(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(dns_hygiene, "_probe_axfr", fake_probe)
     check_dns_hygiene(
         ["bbc.co.uk", "example.com"], DnsHygieneConfig(enabled=True, axfr_probe=True), tmp_path
-    )
+    , resolvers=RESOLVERS)
     assert probed == [("bbc.co.uk", "ns1.bbc.example"), ("example.com", "ns1.a.example")]
 
 
@@ -542,7 +563,7 @@ def test_axfr_refused_transfer_is_closed_not_open(
     )
     result = check_dns_hygiene(
         ["example.com"], DnsHygieneConfig(enabled=True, axfr_probe=True), tmp_path
-    )
+    , resolvers=RESOLVERS)
     probe = result["domains"]["example.com"]["axfr"]["nameservers"][0]
     assert probe == {"nameserver": "ns1.a.example", "status": "closed", "reason": reason, "records": 0}
     assert "axfr_open" not in _kinds(result)
@@ -769,6 +790,7 @@ def test_axfr_never_writes_the_zone_to_the_log_or_the_artifact(
             ["example.com"],
             DnsHygieneConfig(enabled=True, axfr_probe=True),
             tmp_path,
+            resolvers=RESOLVERS,
         )
 
     logged = "\n".join(record.getMessage() for record in caplog.records)
@@ -785,7 +807,9 @@ def test_axfr_never_writes_the_zone_to_the_log_or_the_artifact(
 
 def test_domain_with_no_dns_answer_is_not_checked(tmp_path: Path, monkeypatch):
     _patch_dnsx(monkeypatch)
-    result = check_dns_hygiene(["example.com"], DnsHygieneConfig(enabled=True), tmp_path)
+    result = check_dns_hygiene(
+        ["example.com"], DnsHygieneConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     record = result["domains"]["example.com"]
     assert record["status"] == "not_checked"
     assert record["reason"] == "no_dns_answer"

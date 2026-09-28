@@ -992,6 +992,7 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
                 <th className="py-2 pr-4">{t("users.keys.label")}</th>
                 <th className="py-2 pr-4">{t("users.keys.created")}</th>
                 <th className="py-2 pr-4">{t("users.keys.lastUsed")}</th>
+                <th className="py-2 pr-4">{t("users.keys.expires")}</th>
                 <th className="py-2 pr-4">{t("users.keys.status")}</th>
                 <th className="py-2" />
               </tr>
@@ -1007,6 +1008,17 @@ function ProvisioningKeysTab({ t, tenantId }: { t: Translate; tenantId: string }
                   </td>
                   <td className="py-2 pr-4 tabular-nums">{formatMoment(key.created_at)}</td>
                   <td className="py-2 pr-4 tabular-nums">{formatMoment(key.last_used_at)}</td>
+                  <td className="py-2 pr-4 tabular-nums">
+                    {/* An executor's key is exchanged again every time its token
+                        is refreshed, so the day it expires is the day that
+                        executor stops taking scans (#338). */}
+                    {key.expires_at ? formatMoment(key.expires_at) : t("users.keys.neverExpires")}
+                    {key.expires_soon ? (
+                      <span className="ml-2 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-300">
+                        {t("users.keys.expiresSoon")}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="py-2 pr-4">
                     <StatusBadge
                       value={key.revoked_at ? "revoked" : "active"}

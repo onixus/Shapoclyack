@@ -38,7 +38,7 @@ flowchart TD
     D --> X["External receiver"]
 ```
 
-In local execution mode (`OCTO_JOB_EXECUTION_MODE=local`, the default), the API launches the scanner without the NATS job path. In agent mode (`OCTO_JOB_EXECUTION_MODE=agent`), a sensor claims the tenant-scoped job — pulled from NATS JetStream or polled over `POST /api/agent/jobs/claim` — and reports completion through the API.
+In local execution mode (`OCTO_JOB_EXECUTION_MODE=local`, the setting's default), the API launches the scanner without the NATS job path. In agent mode (`OCTO_JOB_EXECUTION_MODE=agent`), a sensor claims the tenant-scoped job — pulled from NATS JetStream or polled over `POST /api/agent/jobs/claim` — and reports completion through the API. The Kubernetes manifests run agent mode, with the in-cluster sensor (the scanner-executor) in a namespace of its own, so that the API pod needs no raw-socket capability ([Kubernetes hardening](k8s-hardening.md)).
 
 ## Control-plane state
 

@@ -1,0 +1,9 @@
+# Companion to delete-executor-deployment.yaml. The namespace is what tells
+# this copy of scanner-config from network-scan's, which the API and the scan
+# Jobs still mount.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scanner-config
+  namespace: network-scan-executor
+$patch: delete

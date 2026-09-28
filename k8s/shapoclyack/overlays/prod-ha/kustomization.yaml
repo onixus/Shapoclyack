@@ -1,7 +1,7 @@
 # Production HA profile (#335).
 #
-# What overlays/prod is not: it runs ONE API replica pinned to a scanner node,
-# with the in-cluster single-pod Postgres, no NATS and no ClickHouse. That is a
+# What overlays/prod is not: it runs ONE API replica, with the in-cluster
+# single-pod Postgres, no NATS and no ClickHouse. That is a
 # working install, not a highly available one — every node drain is an outage
 # and the database has no failover.
 #
@@ -35,13 +35,12 @@
 # base/monitoring and base/grafana-dashboards (docs/observability.md, #334).
 #
 # This is NOT a superset of overlays/prod. It deliberately does not carry that
-# overlay's `hostNetwork: true` + `workload=scanner` patches for the scan Job
-# and CronJob: those are a scanning-topology choice, orthogonal to availability,
-# and pinning the API to one node pool is the opposite of what this overlay is
-# for. An installation migrating from `prod` that needs them copies
-# ../prod/job-hostnetwork-patch.yaml and ../prod/cronjob-hostnetwork-patch.yaml
-# into this directory and adds them below — kustomize will not load a patch from
-# outside its own root.
+# overlay's `hostNetwork: true` + `workload=scanner` patch for the
+# scanner-executor (#338; before that, for the scan Job and CronJob): it is a
+# scanning-topology choice, orthogonal to availability. An installation
+# migrating from `prod` that needs it copies
+# ../prod/executor-hostnetwork-patch.yaml into this directory and adds it below
+# — kustomize will not load a patch from outside its own root.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -52,7 +51,12 @@ kind: Kustomization
 # in `default`, never finds `Deployment/shapoclyack-api`, and sits in
 # FailedGetScale forever — reporting `<unknown>` exactly the way a cluster with
 # no metrics-server does.
-namespace: network-scan
+#
+# An unsetOnly transformer rather than `namespace:` (#338): the plain field
+# would also move base's scanner-executor out of network-scan-executor and into
+# a namespace whose Pod Security level refuses it. See namespace-transformer.yaml.
+transformers:
+  - namespace-transformer.yaml
 
 labels:
   - pairs:

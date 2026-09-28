@@ -1,0 +1,11 @@
+# network-scan for the objects this overlay adds itself (api-hpa.yaml,
+# nats-pdb.yaml). A copy of base/namespace-transformer.yaml, because an overlay
+# may not load a file from outside its directory; unsetOnly for the reason
+# given there (#338) — this transformer runs over everything the overlay
+# renders, the scanner-executor in network-scan-executor included.
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true

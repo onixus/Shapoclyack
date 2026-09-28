@@ -27,6 +27,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Operate, monitor, back up, and recover the platform | [Operations](operations.md) |
 | Run a profile that survives a node loss | [High availability](high-availability.md) |
 | Recover from losing a datastore or the whole cluster | [Disaster recovery](disaster-recovery.md) |
+| Harden the Kubernetes deployment: Pod Security levels, the scanner-executor exception, Kyverno/Gatekeeper | [Kubernetes hardening](k8s-hardening.md) |
 | Use the Web UI | [Web interface](ui.md) |
 | Diagnose failures | [Troubleshooting](troubleshooting.md) |
 | Integrate with the API and understand tenant/RBAC rules | [API and RBAC](api-and-rbac.md) |

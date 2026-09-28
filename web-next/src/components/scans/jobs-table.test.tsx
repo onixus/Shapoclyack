@@ -197,6 +197,25 @@ describe("JobsTable", () => {
     expect(drawer).toHaveTextContent("no sensor online in this group");
   });
 
+  it("marks a queued job that no sensor of its tenant can take", async () => {
+    // Addressed to no group, so the group badge above never spoke for it: an
+    // upgrade applied before the executor was enrolled read as a busy queue.
+    renderTable([job({ status: "queued", sensor_unavailable: true, finished_at: null, exit_code: null })]);
+    expect(screen.getByLabelText("no sensor online for this tenant")).toBeInTheDocument();
+  });
+
+  it("says why in the drawer", async () => {
+    vi.spyOn(apiModule, "fetchJob").mockResolvedValue(
+      job({ status: "queued", sensor_unavailable: true }),
+    );
+    renderTable([job()]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "abc123def456" }));
+    const drawer = await screen.findByRole("dialog");
+    await waitFor(() => expect(drawer).toHaveTextContent("no sensor online for this tenant"));
+    expect(drawer).toHaveTextContent("provisioning key has expired");
+  });
+
   it("opens the full record from the job id", async () => {
     vi.spyOn(apiModule, "fetchJob").mockResolvedValue(job({ attempts: 2 }));
     renderTable([job()]);

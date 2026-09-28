@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanOperations } from "@/components/scans/scan-operations";
-import type { Me } from "@/lib/api";
+import * as apiModule from "@/lib/api";
+import type { AgentFleetSummary, Me, SystemStatus } from "@/lib/api";
+import { useAppearanceStore } from "@/lib/appearance";
 import { useAuthStore } from "@/lib/auth-store";
 import { canOperate as canOperateIn } from "@/lib/authz";
 
@@ -77,5 +79,70 @@ describe("ScanOperations access", () => {
     useAuthStore.setState({ user: tenantAdmin, canOperate: canOperateIn(tenantAdmin) });
     renderPage();
     expect(screen.queryByRole("link", { name: /Manage scope/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("ScanOperations with no sensor", () => {
+  const operator = member("operator", ["config.read", "scan.cancel"], "operator");
+
+  function agentMode(): SystemStatus {
+    return {
+      app_version: "0.46",
+      tools: [],
+      enrichment: [],
+      scan_config: { profiles: [], nse_profiles: [], stages: {} },
+      runtime: { allow_scan_start: true, job_execution_mode: "agent" },
+      inventory: { tenants: 1, agents_total: 0, agents_online: 0 },
+      endpoint_inventory: {
+        enabled: false,
+        devices_total: null,
+        devices_stale: null,
+        stale_hours: 24,
+        retention_enabled: false,
+        snapshot_retention_days: 30,
+        change_retention_days: 90,
+        retention_interval_seconds: 3600,
+        retention_last_run_at: null,
+      },
+    } as unknown as SystemStatus;
+  }
+
+  function fleet(ready: number): AgentFleetSummary {
+    return {
+      total_agents: ready,
+      online_agents: ready,
+      scan_ready_agents: ready,
+      busy_agents: 0,
+      stale_agents: 0,
+      error_agents: 0,
+      outdated_agents: 0,
+      latest_version: "",
+      by_tenant: {},
+    } as AgentFleetSummary;
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    useAuthStore.setState({ user: operator, canOperate: canOperateIn(operator) });
+    vi.spyOn(apiModule, "fetchSystemStatus").mockResolvedValue(agentMode());
+  });
+
+  // Agent mode accepts and queues a scan whether or not anything can run it.
+  // Before an executor is enrolled — or for a tenant whose key it does not
+  // hold, or after that key expires — the page used to look exactly like a
+  // busy queue (#338).
+  it("says so above the launcher", async () => {
+    vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(0));
+    renderPage();
+    expect(await screen.findByText(/No sensor of this tenant is online/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Sensor Fleet" })).toHaveAttribute("href", "/agents");
+  });
+
+  it("says nothing once one is online", async () => {
+    const summary = vi.spyOn(apiModule, "fetchAgentSummary").mockResolvedValue(fleet(1));
+    renderPage();
+    await waitFor(() => expect(summary).toHaveBeenCalled());
+    expect(screen.queryByText(/No sensor of this tenant is online/)).toBeNull();
   });
 });

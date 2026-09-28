@@ -20,11 +20,15 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+          # Undoes base/local-scan's api-local-mode-patch.yaml, which this
+          # overlay takes in only for the Job/CronJob (#338). `add: null`
+          # deletes the list a strategic merge would otherwise keep.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+              add: null
           volumeMounts:
             - name: data
               mountPath: /app/scanner/output

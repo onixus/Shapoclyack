@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-scan-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/part-of: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+    # `privileged`, i.e. not enforced, and the only such namespace this
+    # repository creates (#338). Not a preference: SYN and ICMP discovery need
+    # NET_RAW, the file capabilities on naabu/pulse/nmap also carry NET_ADMIN,
+    # and Pod Security `baseline` allows neither (its capability allow-list is
+    # AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD,
+    # NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT). There is
+    # no per-pod exemption in built-in Pod Security Admission, so the exception
+    # is a namespace — this one — that holds nothing else.
+    #
+    # audit and warn stay at `restricted`: every apply prints the deviations
+    # docs/k8s-hardening.md lists for this pod, and the audit log records every
+    # pod admitted with them. Anything else that lands here shows up the same
+    # way. Kyverno / Gatekeeper exceptions scoped to this namespace are in the
+    # same document.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

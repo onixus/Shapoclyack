@@ -46,3 +46,5 @@ cosign.key
 # Jenkinsfile.publish: its own revision's signing tooling, and buildx metadata.
 .release-tooling/
 .publish/
+# Manifests rendered for the k8s contract tests (OCTO_K8S_RENDER_DIR, #338)
+.k8s-render/

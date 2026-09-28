@@ -9,9 +9,17 @@ data:
   # Keep defaults; override paths for StatefulSet PVC mounts.
   config.xml: |
     <clickhouse>
+      <!-- Console only (#338). The image's config.xml also writes
+           /var/log/clickhouse-server/*.log, rotated at 10 x 1000M: up to 20 GB
+           on the container's own filesystem, lost on restart, and a write
+           the read-only root filesystem refuses. `remove` drops both
+           elements from the merged config, which also stops the entrypoint
+           from creating the directory; kubectl logs has the same lines. -->
       <logger>
         <level>information</level>
         <console>true</console>
+        <log remove="remove"/>
+        <errorlog remove="remove"/>
       </logger>
       <path>/var/lib/clickhouse/</path>
       <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>

@@ -253,7 +253,7 @@ cd Shapoclyack
 scripts/dev-up.sh
 ```
 
-The script initializes a local `kind` cluster, builds the all-in-one image, loads it into the cluster, and applies the `k8s/shapoclyack/overlays/kind-dev` overlay (FastAPI control plane, Next.js console, PostgreSQL, NATS, ClickHouse, and scanner Job/CronJob).
+The script initializes a local `kind` cluster, builds the all-in-one image, loads it into the cluster, and applies the `k8s/shapoclyack/overlays/kind-dev` overlay (FastAPI control plane, Next.js console, PostgreSQL, NATS, ClickHouse, and the scanner-executor — the in-cluster sensor, in a namespace of its own; see [Kubernetes hardening](docs/k8s-hardening.md)).
 
 Open your browser at **<http://127.0.0.1:8080>** and authenticate:
 

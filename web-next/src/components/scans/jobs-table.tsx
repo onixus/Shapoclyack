@@ -145,6 +145,15 @@ export function JobsTable({
                 <UserX className="h-3.5 w-3.5 shrink-0 text-amber-500" />
               </span>
             ) : null}
+            {row.original.sensor_unavailable ? (
+              <span
+                role="img"
+                aria-label={t("jobs.sensorUnavailable")}
+                title={t("jobs.sensorUnavailableHint")}
+              >
+                <UserX className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              </span>
+            ) : null}
             {row.original.attempts && row.original.attempts > 1 ? (
               <span
                 className="font-mono text-[10px] text-amber-600 dark:text-amber-300"

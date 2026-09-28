@@ -1,7 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: network-scan
+# network-scan for everything that does not name its own namespace — which is
+# everything except scanner-executor/. Not the plain `namespace:` field: that
+# one would move the executor into network-scan too, see the file (#338).
+transformers:
+  - namespace-transformer.yaml
 
 labels:
   - pairs:
@@ -25,15 +29,26 @@ resources:
   - postgres/statefulset.yaml
   - postgres/service.yaml
   - backup
-  - job.yaml
-  - cronjob.yaml
   - api-deployment.yaml
   - api-service.yaml
   - api-pdb.yaml
   - networkpolicy-datastores.yaml
+  # Where scans run (#338): the sensor process, in its own namespace, holding
+  # the raw-socket capabilities the API no longer has. The scan Job/CronJob
+  # that used to be listed here need the same capabilities *inside*
+  # network-scan (they share the scanner-data PVC with the API), which a
+  # baseline namespace refuses; they moved to the opt-in local-scan/ component.
+  - scanner-executor
 
 configMapGenerator:
   - name: scanner-config
+    files:
+      - k8s.yaml=config/k8s.yaml
+  # The same scanner config, for the executor: a pod mounts ConfigMaps from its
+  # own namespace only. One source file for both, so the config the API
+  # validates jobs against and the one the executor scans with cannot drift.
+  - name: scanner-config
+    namespace: network-scan-executor
     files:
       - k8s.yaml=config/k8s.yaml
 

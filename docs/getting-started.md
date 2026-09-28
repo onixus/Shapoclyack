@@ -25,7 +25,9 @@ local development and builds an image.
 - explicit authorization for every target.
 
 Raw socket capabilities are required by some discovery modes. The Kubernetes
-manifests add `NET_RAW` and `NET_ADMIN` to the scanner container (see the
+manifests give `NET_RAW` and `NET_ADMIN` to one pod only, the scanner-executor,
+in a namespace of its own; the API does not scan and holds none (see
+[Kubernetes hardening](k8s-hardening.md) for why, and the
 [Kubernetes guide](../k8s/README.md) for the capabilities/`allowPrivilegeEscalation`
 detail).
 
@@ -95,8 +97,9 @@ The addresses above are documentation ranges. Replace them with authorized
 targets.
 
 The Web UI's on-demand job submission (below) takes targets directly in the
-request. The scheduled Job/CronJob path instead reads them from a `scan-targets`
-Kubernetes Secret built from these files — see step 4.
+request, and so do schedules. Only the scan Job/CronJob of
+`overlays/local-scan` reads them from a `scan-targets` Kubernetes Secret built
+from these files — see step 4.
 
 ## 3. Validate scanner configuration
 
@@ -115,15 +118,22 @@ scripts/dev-up.sh
 This creates a local `kind` cluster, builds and loads the all-in-one image,
 and applies `k8s/shapoclyack/overlays/kind-dev` — PostgreSQL, NATS, and
 ClickHouse are included (NATS/ClickHouse client wiring is opt-in via env vars,
-off by default). Tear down with `scripts/dev-down.sh`.
+off by default). Scans run in the scanner-executor (namespace
+`network-scan-executor`), which starts once it holds a provisioning key: the
+script mints one with the demo admin account the first time and stores it as
+Secret `shapoclyack-scanner-executor`; later runs keep it. If that step warns,
+enroll it by hand ([Kubernetes hardening](k8s-hardening.md#enrolling-the-scanner-executor)).
+Tear down with `scripts/dev-down.sh`.
 
 For real GeoIP/ASN/EPSS/KEV/CVSS4 data instead of the seed files, run it as
 `OVERLAY=kind-enrichment scripts/dev-up.sh`. Once that PVC exists the script
 re-selects it on later runs unless `OVERLAY` says otherwise, so rebuilding
 cannot quietly drop the API back to the image's seed data.
 
-The scheduled Job/CronJob require a `scan-targets` Secret built from the files
-in step 2:
+Recurring scans are schedules (**Schedules** in the UI, `POST /api/schedules`).
+The scan Job/CronJob exist only in `overlays/local-scan` — the topology where
+the API and those jobs scan from the control-plane namespace — and require a
+`scan-targets` Secret built from the files in step 2:
 
 ```bash
 kubectl create secret generic scan-targets -n network-scan \

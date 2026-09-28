@@ -1,13 +1,13 @@
-# Serve the stand over TLS.
+# Serve the API over TLS (moved here from overlays/kind-dev, #338 review).
 #
 # The API terminates it itself (`OCTO_API_TLS_CERT`/`_KEY`, api/__main__.py)
-# rather than behind an ingress: kind has no ingress controller, and a stand
-# that needs one to speak HTTPS is a stand nobody turns on.
+# rather than behind an ingress: the scanner-executor dials the Service, not
+# the ingress, and on kind there is no ingress controller at all.
 #
-# The port does not change. Reusing 8080 keeps the cluster's single
-# extraPortMapping, and changing that in k8s/kind-config.yaml would mean
-# recreating the cluster — which discards the Postgres volume, and with it the
-# endpoint inventory the stand exists to hold.
+# The port does not change. On the kind stand that keeps the cluster's single
+# extraPortMapping (changing k8s/kind-config.yaml means recreating the
+# cluster, which discards the Postgres volume); everywhere else it keeps every
+# client's port.
 #
 # The probes move to HTTPS with it. They would otherwise speak plaintext to a
 # TLS listener and fail, and kubelet does not verify the certificate for an
