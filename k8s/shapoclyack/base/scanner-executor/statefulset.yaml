@@ -165,8 +165,8 @@ spec:
           # ephemeral-storage: the emptyDirs below may hold up to 31Gi between
           # them, and `sizeLimit` only evicts once that is reached; a request is
           # what makes the scheduler look for the disk first. 8Gi is a few runs
-          # kept on disk (the worker keeps every finished run until the pod
-          # goes); the limit covers every sizeLimit plus the container's logs.
+          # retained on disk (the worker sweeps finished runs but preserves
+          # the baseline); the limit covers sizeLimits and container logs.
           resources:
             requests:
               cpu: "500m"
@@ -217,8 +217,8 @@ spec:
               - key: provisioning_key
                 path: provisioning_key
         # Sized so that a full disk evicts this pod rather than filling the
-        # node: agent/worker.py keeps each finished run under output/ until the
-        # pod goes away. A restart empties both, and a scan cut short by one
+        # node. Retention sweeps finished runs but keeps the diff baseline.
+        # Replacing the pod empties both; a scan cut short by replacement
         # goes back to the queue when its lease expires. So do the delta and
         # report-diff baselines under state/: after a restart the next run of a
         # target is a full one, and with several replicas each keeps its own

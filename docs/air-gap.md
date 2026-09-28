@@ -471,6 +471,11 @@ to it). Measured with the release binaries in a network namespace with no
 route, fresh `$HOME`, `strace -e connect`: without the flag, one naabu or dnsx
 invocation made 12 DNS connection attempts for its update check, and one nuclei
 invocation 105 plus an attempt to install templates into `$HOME`; with it, none.
+nuclei also runs with `-no-interactsh` unless `nuclei.interactsh_server` names
+an interactsh server of your own. Otherwise it would register with
+ProjectDiscovery's public OAST servers (`oast.pro` and five more) and wait on
+their DNS. See
+[network-requirements.md](network-requirements.md#out-of-band-testing-interactsh).
 
 **vulscan** (only for the legacy nmap `vuln-offline` NSE profile):
 `VULSCAN_BASE_URLS=https://mirror.internal.example/vulscan

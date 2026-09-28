@@ -48,7 +48,7 @@ value on the System page rather than assuming the file was applied.
 | `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
 | `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
 | `dns` | Resolvers nuclei is told to use (`-resolvers`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
-| `nuclei` | Nuclei stage: template directory, severities, caps, rate limit | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
+| `nuclei` | Nuclei stage: template directory, severities, caps, rate limit, OAST server | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate expiry, hostname mismatch and TLS findings | [Pulse backend](pulse-backend.md) |
 | `org_profile` | Organization profile: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls | [Модуль «Профиль организации»](org-profile-module.ru.md) (RU) |
 | `alerts` | Slack, Telegram and SMTP run summaries (`--notify`) | [Operations](operations.md) |
@@ -158,6 +158,13 @@ authorized targets and a suitable maintenance window.
 
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
+
+Out-of-band (OAST) templates are off by default: nuclei runs with
+`-no-interactsh` and skips every template that needs an interactsh callback
+URL. `nuclei.interactsh_server` turns them on against an interactsh server you
+run, with its token in `OCTO_INTERACTSH_TOKEN`. What that server and the
+scanned hosts then need to reach is in
+[network requirements](network-requirements.md#out-of-band-testing-interactsh).
 
 ## Web screenshots
 

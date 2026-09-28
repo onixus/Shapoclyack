@@ -338,13 +338,18 @@ pipeline {
             // образе нет. pytest ставится в --user, чтобы прогон шёл от
             // непривилегированного 'scanner' — ровно как в E2E и в проде, где
             // права даёт только file capability на бинаре.
+            // test_pd_flags_live.py — то же для dnsx и nuclei: флаги, которые
+            // собирает код (-disable-update-check, -no-interactsh, -config с
+            // токеном interactsh), на настоящих бинарях. Сеть не нужна: цель —
+            // локальный HTTP-сервер, interactsh-сервер отказывает в соединении.
             sh """
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
                 -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
-                -e OCTO_NAABU_LIVE=1 --entrypoint sh ${IMAGE_TAG} -c '
+                -v "\$WORKSPACE/tests/test_pd_flags_live.py":/app/test_pd_flags_live.py:ro \
+                -e OCTO_NAABU_LIVE=1 -e OCTO_PD_LIVE=1 --entrypoint sh ${IMAGE_TAG} -c '
                   set -e
                   pip install --quiet --no-cache-dir --user pytest
-                  python -m pytest -p no:cacheprovider test_naabu_live.py -q
+                  python -m pytest -p no:cacheprovider test_naabu_live.py test_pd_flags_live.py -q
                 '
             """
           }

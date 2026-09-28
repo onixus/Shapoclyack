@@ -784,7 +784,14 @@ def deploy_agent_ssh(
     principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
+    audit: AuditDep,
 ) -> AgentDeployStatusResponse:
+    """Push a sensor onto a Linux host over SSH.
+
+    A host that already runs one of this tenant's sensors gets that sensor
+    back, with its ID and its key; the run's log says which case it was
+    (docs/operations.md, "SSH push deployment").
+    """
     # Ensure tenant alignment
     tenant_id = principal.tenant_id if not principal.is_platform_admin else (body.tenant_id or principal.tenant_id)
     body.tenant_id = tenant_id
@@ -792,7 +799,7 @@ def deploy_agent_ssh(
     server_url = _server_url(settings, request)
     try:
         deploy_id = agent_deployer.start_ssh_deployment(
-            body, server_url=server_url, actor=principal.username
+            body, server_url=server_url, actor=principal.username, audit=audit
         )
     except agent_deployer.DeployTargetDenied as exc:
         # 403, not 422: the request is well-formed, this tenant is simply not

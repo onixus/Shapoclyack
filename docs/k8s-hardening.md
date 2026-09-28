@@ -685,6 +685,11 @@ For an installation moving from a pre-#338 release:
   before upgrading**: they used to stop at the API in agent mode, and now reach
   every tenant's remote sensors — bounded by each sensor's own rates, timing,
   nuclei exclusions and screenshot setting, but otherwise as written.
+- **Finished runs are swept by sensor retention.** Acknowledged results are
+  removed once they are no longer the baseline; unacknowledged results default
+  to 72 hours, with a 5 GiB budget. Active scans and recently cancelled partial
+  results stay protected. See `OCTO_AGENT_RUN_RETENTION_HOURS` and
+  `OCTO_AGENT_RUN_MAX_BYTES` in docs/configuration.md.
 - **Delta and report-diff baselines live in the executor's `emptyDir`**: a
   restart makes the next delta run a full one, and each replica keeps its own.
 - **Queued jobs are claimed oldest first, per tenant**, whatever built up while
@@ -704,7 +709,8 @@ For an installation moving from a pre-#338 release:
   `strategy: Recreate`: unpinned, a surging rollout would schedule the new pod
   on another node, where the ReadWriteOnce `scanner-data` cannot attach while
   the old pod holds it, and stall. Every rollout of it is a short outage of the
-  console and API; executors keep scanning and retry their uploads.
+  console and API; executors keep scanning and retry uploads twice within
+  seconds. If those attempts fail, lease expiry requeues the job for a new scan.
 - **`overlays/agents` scales the executor** instead of deploying its own
   `shapoclyack-agent` Deployment, which — having no namespace — landed in
   whatever namespace the kubeconfig pointed at. Delete the old Deployment and
