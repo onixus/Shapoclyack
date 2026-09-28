@@ -190,8 +190,9 @@ def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) ->
     rule can tell from any other global IPv6 address.
 
     The API keeps its own copy of this rule for webhooks
-    (``api/services/outbound_targets.check_addresses``); the scanner cannot
+    (``api/services/outbound_targets.is_public_address``); the scanner cannot
     import it, so a change to what counts as public here belongs there too.
+    ``tests/test_outbound_targets.py`` fails when the two verdicts differ.
     """
     if isinstance(address, ipaddress.IPv6Address):
         if any(address in network for network in _EMBEDDED_IPV4_REFUSED):
