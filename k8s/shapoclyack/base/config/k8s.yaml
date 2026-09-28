@@ -92,6 +92,12 @@ batching:
   max_ipv6_batches: 4096
   max_targets_per_batch: 1024
 
+# Resolvers for every dnsx run. Empty = the pod's /etc/resolv.conf, i.e. the
+# cluster DNS, the only resolver examples/networkpolicy-agent.example.yaml
+# lets a sensor reach. See scanner/config/default.yaml before setting it.
+dns:
+  resolvers: []
+
 discovery:
   source: naabu
   profile: auto
