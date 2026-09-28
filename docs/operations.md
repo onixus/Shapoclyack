@@ -202,19 +202,66 @@ infer it from the fact that a scan was started.
 - **Only this run's own seed domains** are probed. Attribution candidates from
   the related-domains stage are never probed: a wrongly attributed domain would
   mean an active request against a third party's infrastructure.
+- **A public suffix is never probed**, not even when it is listed in
+  `org_profile.dns_hygiene.domains`. The nameservers of `co.uk`, `com.ru` or
+  `github.io` belong to a registry, a registrar or a hosting platform, not to
+  anyone under them. The seed derived from scope already stops at the
+  registrable domain (see below); this refusal is what holds if a suffix gets
+  in anyway. It happens before any nameserver is contacted and is recorded as
+  `axfr.status: refused`, `reason: public_suffix` (or `not_a_domain_name` for
+  an IP literal or similar), with a `refusing AXFR for <domain>` warning in the
+  log.
 - **A nameserver on a non-public address is refused**, not dialled. NS records
   are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
   turn the probe into a TCP/53 connection inside the sensor's own network. The
   refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
   as `status: refused`.
+- **Only the checked address is dialled.** The probe speaks AXFR itself over
+  one TCP connection to the nameserver's first address — the IP literal that
+  passed the check above, IPv6 included — and resolves nothing. It does not go
+  through `dnsx`, whose `-axfr` looks up the zone's NS set on its own and
+  connects to addresses that were never checked, and it does not follow the NS
+  records or glue the zone hands back.
+- **Reading the result.** `status: open` means the nameserver sent zone data;
+  `records` counts the records between the opening and closing SOA, and a
+  non-null `reason` (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) marks the count as a lower bound.
+  `status: closed` is the server saying no: `rcode_refused`, `rcode_notauth`,
+  `rcode_formerr`, `rcode_notimp`, `rcode_nxdomain`, an empty answer
+  (`empty_answer`), a clean hang-up before any answer (`connection_closed`), or
+  an SOA…SOA transfer with nothing between (`soa_only`). `status: error` means
+  the nameserver could not be checked, not that it is closed: unreachable
+  (`connect_failed`, `timeout`, `connection_reset` — a reset may come from a
+  middlebox on the sensor's side), `rcode_servfail` or an unknown RCODE, or an
+  answer that started and broke off before any record past the SOA.
 - **A successful transfer is never written down.** `dns_hygiene.json` records
   only `status: open` and the number of records; the zone itself reaches neither
   the artifact directory nor `scan.log`. If you need the zone contents, transfer
   it yourself with `dig axfr` — the scanner will not keep a copy for you.
 
 Before switching `axfr_probe` on, confirm the engagement covers active testing
-of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
-run derives from its scope, when that list is empty).
+of the domains in `org_profile.dns_hygiene.domains` (or of every registrable
+domain the run derives from its scope, when that list is empty).
+
+**How the seed is derived.** When a stage's `domains` list is empty, its seed
+is the registrable domain of each in-scope name, taken from the Public Suffix
+List: `www.bbc.co.uk` gives `bbc.co.uk`, `shop.example.com.ru` gives
+`example.com.ru`, `x.github.io` gives `x.github.io` itself. The list is a
+snapshot committed at `scanner/pipeline/public_suffix_list.dat` and read from
+disk only — a sensor in a restricted network never fetches it — and
+`dns_hygiene.json` names the snapshot in `public_suffix_list`. Both sections
+of the list are used; the private one is what keeps hosting platforms
+(`github.io`, `herokuapp.com`) from becoming seeds. Two consequences worth
+knowing:
+
+- a stale snapshot does not know a suffix added upstream since, and derives
+  the last two labels for it — the pre-list behaviour. Refresh with
+  `scripts/fetch-public-suffix-list.sh`, review the diff and ship it like any
+  other change; the script refuses a truncated download;
+- an organisation whose own domain is listed in the private section (a
+  platform scanning its own `*.platform.example`) gets per-customer seeds, not
+  the platform domain. Name the platform domain in `domains` explicitly — and
+  note that AXFR will still refuse it, because it is a public suffix.
 
 ## Approved scan scope per tenant
 
@@ -1649,12 +1696,31 @@ Without it, the native path installs Python and a virtualenv under
 `requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
 with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
 not in the lock is refused, and only wheels are taken, which exist for x86_64 and
-aarch64 with glibc or musl — creates a `shapoclyack` system account, writes
-`/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
-systemd is present — installs and enables `shapoclyack-agent.service`
-(`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
-systemd the sensor is started with `nohup` and is **not** restarted on boot; on
-such a host, supervise it yourself.
+aarch64 with glibc or musl — creates a `shapoclyack` system account in a
+`shapoclyack` group, writes `/etc/shapoclyack/agent.env` (`0600`, owned by that
+account), and — where systemd is present — installs and enables
+`shapoclyack-agent.service` (`Restart=always`,
+`EnvironmentFile=/etc/shapoclyack/agent.env`). Without systemd (Alpine with
+OpenRC, containers) the sensor is started in the background with `nohup` as
+that account (`runuser`, or BusyBox `su`; `sudo` is not needed). It logs to
+`/opt/shapoclyack-agent/agent.log` and is **not** restarted on boot or after a
+crash, so supervise it yourself on such a host. The installer fails if that
+process has exited three seconds after start. A re-run stops the process the
+previous run started before it starts the new one.
+
+**The sensor needs Python 3.11 or newer.** The installer uses `python3` when it
+is new enough. If it is older, the installer installs `python3.12` or
+`python3.11` from the distribution: AppStream on RHEL/Rocky/Alma 9, whose
+`python3` is 3.9, and universe on Ubuntu 22.04, whose `python3` is 3.10. Where
+no such package exists (Ubuntu 20.04, Debian 11), it stops before creating the
+account and names the version it found. Install a 3.11+ interpreter with its
+`venv` module yourself, or use `--docker`. A virtualenv left by an earlier run
+on an older interpreter is rebuilt.
+
+**If the `shapoclyack` account already exists**, its primary group must be
+`shapoclyack`, or the installer stops and says so. Installers before this fix
+created it in `nogroup` on Alpine and then failed at `chown`. Remove that
+account (`deluser shapoclyack`) and re-run.
 
 **The native path does not ship the sensor source.** The API serves no sensor
 bundle, so the package has to come from somewhere explicit: pass
@@ -1687,6 +1753,26 @@ that did nothing and exited 0 — forever, under `Restart=always`. The guard is
 there now, so both `python -m agent` and `python -m agent.worker` run the
 sensor, but the flags in an old unit are still wrong: **a sensor installed by an
 older installer needs a re-run of this one.**
+
+**A re-run keeps the sensor's ID.** An upgrade is a re-run of the installer,
+and without `--agent-id` the re-run takes `OCTO_AGENT_ID` from the existing
+`/etc/shapoclyack/agent.env` and says so (`Keeping agent ID …`), on the native
+and the `--docker` path alike. The file is parsed, never sourced: it holds the
+provisioning key and the installer runs as root. Installers before this one
+generated a fresh `agent-<host>-<random>` on every run, so every upgrade
+registered a second sensor. The old row stayed in the fleet view, went `stale`,
+was counted in `stale_agents` and was announced as `agent_offline`; its sensor
+group and any quarantine stayed with it, so the host came back as an
+ungrouped, `active` sensor that no longer took its group's jobs. Delete such
+leftovers with `DELETE /api/agents/{id}`, and leave `revoke_key` off unless you
+mean to retire that key: the sensor that replaced the row may hold the same one.
+
+Two cases do not reuse the ID. `--agent-id` always wins. An `agent.env`
+written for a different `--tenant` is ignored and a new ID is generated,
+because an ID stays bound to its tenant and revoking a key does not release it
+across tenants. A re-run with a *different provisioning key* keeps the ID and
+warns: see "Revoke before you re-provision" under
+[Sensor lifecycle](#sensor-lifecycle-disable-quarantine-deregister).
 
 ### Sensor groups: which sensor may execute which scan
 
@@ -1828,7 +1914,7 @@ they re-register.
 before this feature have `expires_at: null` and never expire** — nothing
 back-dates them, because stranding a fleet on a deadline nobody was told about
 is worse than a key that outlives its usefulness. Find them in that list,
-re-install the sensors against a fresh key, then revoke the old one.
+revoke the old one, then re-install the sensors against a fresh key.
 
 **Revoke before you re-provision, not after.** An `agent_id` is bound to the
 key it first registered with, so an exchange asking for that id under a
@@ -1836,7 +1922,11 @@ key it first registered with, so an exchange asking for that id under a
 is what stops one key's holder impersonating another key's sensor. Revoking the
 old key releases the id (and stops its live JWTs in the same move), after which
 the new key adopts the host under its own name. Re-provisioning first leaves
-the sensor unable to authenticate until you get to the revocation.
+the sensor unable to authenticate until you get to the revocation; it retries
+on its own and recovers once the old key is revoked. The installer keeps the
+sensor's ID across a re-run, so it warns when the key it is given differs from
+the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
+should register as a new sensor under the new key.
 
 ### SSH push deployment
 
@@ -3108,6 +3198,19 @@ pod reaches all three. The datastores' kubelet probes kept passing, as the
 manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
+
+### Tenant row-level security (#311)
+
+Migration `0067_tenant_rls` creates the NOLOGIN role `shapoclyack_tenant` and a
+row-level-security policy on every tenant table; the API switches to that role
+for each transaction of a tenant-scoped request (`OCTO_TENANT_RLS=enforce`, the
+default). On the stock manifests (`octo`, a superuser) and on managed services
+whose master user has `CREATEROLE` there is nothing to do. A migration role
+without `CREATEROLE`, an API role separate from the migration role, the
+`audit_events` ownership split above, backup roles, the startup check that
+refuses a database which cannot enforce it, and how to read a denied row are in
+[tenant-isolation.md](tenant-isolation.md#operations). `OCTO_TENANT_RLS=off` and
+a restart is the kill switch; it needs no migration rollback.
 
 ## Data-plane credentials
 

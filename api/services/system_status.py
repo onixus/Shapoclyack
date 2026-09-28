@@ -343,7 +343,9 @@ def runtime_info(settings: Settings) -> dict[str, Any]:
     }
 
 
-def endpoint_inventory_status(settings: Settings) -> dict[str, Any]:
+def endpoint_inventory_status(
+    settings: Settings, *, include_fleet_counts: bool = True
+) -> dict[str, Any]:
     """Endpoint-inventory footprint, staleness, and retention posture (S9).
 
     Fail-soft like every other panel here: an unconfigured Postgres or a
@@ -351,9 +353,15 @@ def endpoint_inventory_status(settings: Settings) -> dict[str, Any]:
     ``octo_endpoint_devices`` gauge is no longer refreshed here: it is read at
     scrape time since #334, so it does not depend on which replica served the
     last System page view.
+
+    The device counts are installation-wide, like the tenant and agent counts
+    in :func:`inventory_counts`, and follow the same rule (#311): without
+    ``platform.fleet.read`` they come back as nulls. They were counted for
+    every viewer, which told one customer how many devices every other
+    customer enrols.
     """
     counts: dict[str, int | None] = {"devices_total": None, "devices_stale": None}
-    if settings.endpoint_inventory_enabled:
+    if settings.endpoint_inventory_enabled and include_fleet_counts:
         try:
             from api.services import endpoint_inventory as endpoint_inventory_service
 
@@ -418,5 +426,7 @@ def build_status(settings: Settings, *, include_fleet_counts: bool = True) -> di
         "scan_config": scan_config_summary(config, _effective_overrides(settings)),
         "runtime": runtime_info(settings),
         "inventory": inventory_counts(include_fleet_counts=include_fleet_counts),
-        "endpoint_inventory": endpoint_inventory_status(settings),
+        "endpoint_inventory": endpoint_inventory_status(
+            settings, include_fleet_counts=include_fleet_counts
+        ),
     }
