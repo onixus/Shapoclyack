@@ -47,7 +47,8 @@ value on the System page rather than assuming the file was applied.
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
 | `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
-| `nuclei` | Nuclei stage: template directory, severities, caps, rate limit | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
+| `dns` | Resolvers nuclei is told to use (`-resolvers`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
+| `nuclei` | Nuclei stage: template directory, severities, caps, rate limit, OAST server | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate expiry, hostname mismatch and TLS findings | [Pulse backend](pulse-backend.md) |
 | `org_profile` | Organization profile: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls | [Модуль «Профиль организации»](org-profile-module.ru.md) (RU) |
 | `alerts` | Slack, Telegram and SMTP run summaries (`--notify`) | [Operations](operations.md) |
@@ -157,6 +158,13 @@ authorized targets and a suitable maintenance window.
 
 Nuclei is an optional stage. Template version, severity filters, concurrency,
 and rate limits should be pinned in production.
+
+Out-of-band (OAST) templates are off by default: nuclei runs with
+`-no-interactsh` and skips every template that needs an interactsh callback
+URL. `nuclei.interactsh_server` turns them on against an interactsh server you
+run, with its token in `OCTO_INTERACTSH_TOKEN`. What that server and the
+scanned hosts then need to reach is in
+[network requirements](network-requirements.md#out-of-band-testing-interactsh).
 
 ## Web screenshots
 
@@ -382,9 +390,11 @@ dataset's floor (`usable`), and — the field that matters — `origin`:
 | `seed` | The committed baseline, never replaced by a fetch |
 | `stale` | A fetch was attempted and failed; the previous data is still in place |
 | `missing` | No data at this path at all |
+| `bundle` | Installed from an offline bundle ([air-gap.md](air-gap.md)); `GET /api/system`'s `enrichment_bundle` says which and when, and `source_origin` what the connected side called the dataset (`stale` there is degraded here too) |
 
-A run that did not *attempt* a dataset — the advisory opt-in being off is the
-only way that happens — is a fourth case, and it writes none of these: it keeps
+A run that did not *attempt* a dataset — the advisory opt-in being off, or
+`OCTO_ENRICHMENT_OFFLINE=true` on an air-gapped installation, which skips every
+fetch — is a further case, and it writes none of these: it keeps
 whatever the previous run recorded. That matters because the API pod's
 enrichment initContainer runs the same script without the opt-in, so every API
 rollout re-inspects datasets the nightly CronJob filled. Rewriting them to
@@ -592,6 +602,7 @@ OCTO_LOGIN_RATE_LIMIT_ENABLED
 OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS
+OCTO_METRICS_TENANT_TOP_N
 OCTO_METRICS_TOKEN
 OCTO_MFA_PHISHING_RESISTANT_ROLES
 OCTO_MFA_REQUIRED_ROLES
@@ -647,6 +658,7 @@ OCTO_REPORT_SMTP_STARTTLS
 OCTO_REPORT_SMTP_TIMEOUT_SECONDS
 OCTO_REPORT_SMTP_USERNAME
 OCTO_REPORT_SMTP_VERIFY_TLS
+OCTO_RETENTION_BOUNDS
 OCTO_RETRO_MATCH_BATCH_SIZE
 OCTO_RETRO_MATCH_ENABLED
 OCTO_RETRO_MATCH_INTERVAL_SECONDS
@@ -684,6 +696,13 @@ OCTO_SOFTWARE_MATCH_ENABLED
 OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS
 OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS
 OCTO_STATE_DIR
+OCTO_TENANT_DELETION_GRACE_DAYS
+OCTO_TENANT_DELETION_TWO_PERSON
+OCTO_TENANT_PURGE_BATCH_SIZE
+OCTO_TENANT_PURGE_ENABLED
+OCTO_TENANT_PURGE_INTERVAL_SECONDS
+OCTO_TENANT_PURGE_UNUSED_STORES
+OCTO_TENANT_RLS
 OCTO_TICKET_SYNC_BATCH_SIZE
 OCTO_TICKET_SYNC_ENABLED
 OCTO_TICKET_SYNC_INTERVAL_SECONDS
@@ -746,6 +765,7 @@ Core deployment variables:
 | `OCTO_DB_POOL_SIZE` | Connections the SQLAlchemy pool keeps open to Postgres, per API process (default `5`). This is **per replica**: `max_connections` on the server is one shared budget, so a profile that scales the API multiplies this by the replica count — see [high-availability.md](high-availability.md#connection-pool-sizing) ([#335](https://github.com/onixus/Shapoclyack/issues/335)). Floored at 1, and `OCTO_DB_POOL_SIZE + OCTO_DB_MAX_OVERFLOW` is floored at 4 — three connections are held for the life of the process by the leader locks of the schedule dispatcher, the report dispatcher and the software-match worker, so a smaller pool leaves a worker unable to become leader at all. Ignored by the `dev` SQLite fallback, which has no connection queue |
 | `OCTO_DB_MAX_OVERFLOW` | Extra connections the pool may open above `OCTO_DB_POOL_SIZE` under load, closed again when returned (default `10`). Counts against the same server budget |
 | `OCTO_DB_POOL_TIMEOUT` | Seconds a request waits for a free pooled connection before failing (default `30`, floored at 1). Without a bound, a saturated pool is a request that never returns instead of one that fails with a cause |
+| `OCTO_TENANT_RLS` | Postgres row-level security as the second line of tenant isolation ([#311](https://github.com/onixus/Shapoclyack/issues/311)). `enforce` (default, every environment): every transaction of a tenant-scoped request assumes the `shapoclyack_tenant` role and names its tenant, so a query that forgot its `WHERE tenant_id` still sees only that tenant's rows, and a request that reads a tenant table before any guard declared its tenant fails; startup **refuses** when the database cannot enforce it (role missing or not assumable, a tenant table without its policy). `off`: no transaction switches role — the behaviour before migration `0067`, logged as a warning on every `prod` start; the kill switch, needing no migration rollback. Any other value refuses startup. Workers, CLI tools and platform-admin requests are unaffected either way — see [tenant-isolation.md](tenant-isolation.md) |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS — and on a network whose only egress is an HTTP proxy, empty is the right value: no proxy carries NATS, and the sensor then polls the HTTP claim instead ([network-requirements.md](network-requirements.md#nats-and-proxies)). `tls://` selects TLS; `wss://` is NATS over WebSocket on 443, which needs `aiohttp` on the agent host. Job offers go to `jobs.scan.{tenant}` and each tenant has its own durable consumer `octo-agents-{tenant}` — see [operations.md](operations.md#per-tenant-job-stream) |
 | `OCTO_NATS_TLS_CA` | PEM bundle used to verify the NATS server. Only needed for a privately issued certificate (cert-manager with an in-cluster issuer); a publicly issued one is verified against the system trust store with no variable at all |
 | `OCTO_NATS_TLS_CERT` | Client certificate presented to NATS (mTLS). Requires `verify_and_map: true` server-side, with the certificate CN equal to the NATS username |
@@ -763,6 +783,8 @@ Core deployment variables:
 | `OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS` | Shape the sensor's results upload to this many KiB/s (default `0` — no limit, [#359](https://github.com/onixus/Shapoclyack/issues/359)). Read by the **sensor** (`agent/worker.py`), not the API. The archive is throttled as it is read off disk, so this bounds the wire rate; the bucket holds one second's worth, so a burst up to the rate leaves immediately and only a sustained stream is held back. On a branch office's uplink an unshaped run archive is what makes the site's voice traffic stutter after every scan |
 | `OCTO_AGENT_PROVISIONING_KEY_FILE` | Path of a file holding the sensor's provisioning key, read again on every exchange (or `--provisioning-key-file`; wins over `OCTO_AGENT_PROVISIONING_KEY`). Read by the **sensor** (`agent/worker.py`), not the API. What the Kubernetes scanner-executor uses ([#338](https://github.com/onixus/Shapoclyack/issues/338)): a rotated Secret reaches the next exchange without a restart, and the key is not in the environment the scanner and its tools inherit — the worker starts the scan without its own `OCTO_AGENT_*`/`OCTO_NATS_*` variables either way. [k8s-hardening.md § Key expiry and rotation](k8s-hardening.md#key-expiry-and-rotation) |
 | `OCTO_AGENT_UPLOAD_TIMEOUT` | How long the sensor waits for the API's answer to a results upload, in seconds (default `900`). Read by the **sensor** (`agent/worker.py`), not the API. Separate from `--timeout` because the API answers this one call when it has finished *ingesting*, not when the bytes are in: at the ordinary 60s socket timeout every ingest longer than a minute read as a dead connection, and the client answered it by sending the whole archive again — the site's uplink spent twice over to be told the first copy is still being processed. Keep it at or above the API's `OCTO_JOB_INGEST_LEASE_SECONDS` |
+| `OCTO_AGENT_RUN_RETENTION_HOURS` | How long the sensor keeps a run directory (`<OCTO_OUTPUT_DIR>/runs/<run_id>`) that the API did **not** acknowledge — the scan failed and sent no archive, the upload failed, or the API refused the result — before removing it (default `72`; `0` = no age limit). Read by the **sensor** (`agent/worker.py`, `agent/run_retention.py`), not the API; unrelated to the API's own `OCTO_RUN_RETENTION_DAYS`. A run whose archive the API acknowledged is removed at the end of its job regardless of this setting, together with its `<state_dir>/runs/<run_id>`. Three kinds of run are never removed by any limit: the run in progress; the partial results of a cancelled scan the API has not acknowledged yet, for an hour ([#360](https://github.com/onixus/Shapoclyack/issues/360) — the API still takes them late); and the run the scanner's `latest_run.json` names, which the next scan diffs against (its `diff.json` is where asset events and their webhooks come from, and `--delta` reads it), so one acknowledged run stays on disk until the next replaces it. The sweep runs at startup (before the sensor reaches the API), after every job and every 15 minutes while idle. Where `runs/_tenants` exists the directory is shared with an API's local artifact store, and only runs this sensor executed are removed |
+| `OCTO_AGENT_RUN_MAX_BYTES` | Size budget for `<OCTO_OUTPUT_DIR>/runs` on the sensor, in bytes of file content (default `5368709120` — 5 GiB; `0` = no size limit). Past it the oldest removable runs are removed first until the total is under it again. The three protected kinds above are not removed to meet it, so the directory can exceed the budget by the run in progress, the baseline and owed partial results; that is logged. On Kubernetes keep it below the sensor volume's `emptyDir` `sizeLimit` with room for one full run |
 | `OCTO_AGENT_RESULTS_MAX_BODY_BYTES` | Hard request-body cap on `POST /api/agent/jobs/{job_id}/results`, read from `Content-Length` before the multipart body is buffered (default `134217728` — 128 MiB). A length-less upload is answered `411` |
 | `OCTO_AGENT_RESULTS_MAX_CONCURRENT_INGESTS` | Result uploads this replica ingests at the same time (default `4`). Ingestion — SQL, the NATS publish, archive extraction, artifact writes, projection updates — is synchronous and runs on a worker thread; this is the ceiling on those threads, and with them on database connections and simultaneous extractions. Raising it past `OCTO_DB_POOL_SIZE` + `OCTO_DB_MAX_OVERFLOW` buys nothing: the extra ingests queue on the connection pool instead |
 | `OCTO_AGENT_RESULTS_INGEST_MAX_WAITING` | Uploads allowed to queue for one of those slots (default `8`). This is a **memory** bound, not a fairness knob: a waiting upload is holding its whole archive in RAM, so the worst case in flight is `(concurrent + waiting) × OCTO_AGENT_RESULTS_MAX_BODY_BYTES` — 1.5 GiB at the defaults, if every sensor sent a maximum-size archive at once. Beyond the ceiling an upload is answered `503` with `Retry-After` rather than buffered |
@@ -775,6 +797,7 @@ Core deployment variables:
 | `OCTO_CA_BUNDLE` | PEM file **added to** the system trust store — for outgoing HTTPS, the SMTP relay and the NATS connection alike. This is what a TLS-inspecting proxy's internal root goes in; verification is never turned off, and public receivers reached without the inspector keep verifying. A path that does not exist, or a file that is not a PEM bundle, is a hard error rather than a silent fallback to the system store. Read by API and sensor |
 | `OCTO_HSTS_ENABLED` | Send `Strict-Transport-Security` on every response. Defaults to on under `OCTO_ENV=prod` and off under `dev`, since a browser that picks the header up from `http://localhost` pins itself to HTTPS for a year |
 | `OCTO_API_DOCS` | `enabled` or `disabled` — whether `/docs`, `/redoc` and `/openapi.json` are mounted ([#319](https://github.com/onixus/Shapoclyack/issues/319)). Defaults to `disabled` under `OCTO_ENV=prod` and `enabled` under `dev`: the schema names every route, its parameters and every field an answer carries, which is a map of the installation for anyone who can reach it. Disabled means the routes do not exist, so they answer `404` — or, where the console bundle is served from the same process, its own 404 page. An unrecognised value warns and reads as `disabled` |
+| `OCTO_METRICS_TENANT_TOP_N` | Per-tenant series on `/metrics` (`octo_tenant_open_findings`, `octo_tenant_sla_breached_findings`, `octo_tenant_scans_finished_24h`), default `0` = none. The N active tenants with the most open findings when the hour began keep their id as the `tenant` label — so every replica names the same ones and the set changes only on the hour; all others are summed into `_other`. Capped at 50 (a larger value is clamped, with a warning), which bounds the label at 51 values. Under `prod` it requires `OCTO_METRICS_TOKEN` — the series name tenants — and the start is refused without it. See [observability.md](observability.md#per-tenant-series) |
 | `OCTO_METRICS_TOKEN` | Bearer token `GET /metrics` demands when set; unset leaves the endpoint open. The series name every route, the queue depth and login outcomes, so an installation whose `/metrics` is reachable from outside the cluster should set it — a `prod` start without it logs a warning rather than refusing, since most scrapers run inside. The scraper sends `Authorization: Bearer <token>`; for the Prometheus Operator that is `bearerTokenSecret` in `k8s/shapoclyack/examples/servicemonitor.example.yaml`. The comparison is constant-time |
 | `OCTO_INSTANCE_ID` | Identity of this API replica in the shared job queue; defaults to the hostname. Only local-mode jobs owned by this identity are failed as orphans on startup |
 | `OCTO_ALLOW_SCAN_START` | Permit job creation from API/UI |
@@ -820,7 +843,7 @@ Outbound webhooks (see
 | `OCTO_WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-request timeout. A receiver needing longer is doing work in the request instead of queueing it |
 | `OCTO_WEBHOOK_DISPATCH_INTERVAL_SECONDS` | `5` | How often the due end of the queue is drained |
 | `OCTO_WEBHOOK_DISPATCH_BATCH_SIZE` | `50` | Deliveries claimed per tick |
-| `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Age past which delivered/dead rows are pruned; `0` keeps the audit trail forever. Pending rows are never pruned |
+| `OCTO_WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | Platform default: age past which delivered/dead rows are pruned; `0` keeps them for tenants without an override of their own (#332 — a tenant's window is still applied). Pending rows are never pruned. Swept by the dispatcher, so it has no switch of its own |
 | `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Allow webhook URLs resolving to loopback/private/link-local addresses. Needed for an on-cluster receiver; it also removes the SSRF guard, so scope it to installations where operators are trusted with internal reachability |
 | `OCTO_WEBHOOK_MAX_SUBSCRIPTIONS_PER_TENANT` | `20` | Bound on how much fan-out one event can cause |
 
@@ -933,7 +956,7 @@ send anything anywhere:
 | `OCTO_SLA_ESCALATION_ENABLED` | `true` | Run the worker that derives `sla_due_soon`, `sla_breached`, `exception_expiring` and `agent_offline`. Leader-locked, so it is safe to leave on in every replica. Set it to `false` **before** an upgrade if the installation would rather not have its whole existing breach backlog announced by the first tick |
 | `OCTO_SLA_ESCALATION_INTERVAL_SECONDS` | `900` | Worker tick (floored at 30). An SLA is measured in days, so a tighter tick buys nothing; a longer one delays a notification rather than losing it, because the marker table decides what has already been said |
 | `OCTO_SLA_ESCALATION_MAX_FINDINGS` | `500` | Findings one tenant's tick may announce, oldest deadline first. A tenant that imports a backlog of overdue findings must not turn one tick into that many webhook deliveries. A **window**, not a ceiling: the worker keeps a cursor per tenant and the next tick continues after the last deadline this one reached, so a backlog of 600 findings at the default is drained in two ticks (30 minutes) rather than stopping at 500. The same budget and the same cursor now bound the fleet-wide `agent_offline` sweep, which had neither: a site outage that silenced eight hundred sensors announced all eight hundred in one tick |
-| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` disables both the sweep and the re-announcement. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
+| `OCTO_WORKFLOW_MARKER_RETENTION_DAYS` | `365` | Age past which an "already announced" marker is deleted. Deleting one **re-arms its event**, so this is also the period after which a still-breached finding is raised a second time; `0` keeps the markers — and so stops the re-announcement — for tenants without an override of their own (#332; a tenant's window is still applied). Swept by the SLA worker, so it has no switch of its own. A claim taken for a fan-out that then failed is released immediately rather than waiting for this sweep, so a database hiccup delays a notification by one tick |
 
 The owner digest uses the report relay (`OCTO_REPORT_SMTP_*` below): with no
 relay configured the digest is skipped with a logged reason and the webhook
@@ -970,7 +993,7 @@ goes to an operations channel and a report goes to a customer.
 | `OCTO_REPORTS_ENABLED` | `true` | Register `/api/reports`. Off means no report API at all |
 | `OCTO_REPORT_DISPATCH_ENABLED` | `true` | Run the scheduled-report loop in *this* replica; leader-locked, so only one replica ever sends |
 | `OCTO_REPORT_DISPATCH_INTERVAL_SECONDS` | `60` | Poll interval for due schedules (floored at 5) |
-| `OCTO_REPORT_RETENTION_DAYS` | `365` | Age past which generated reports and their files are pruned; `0` keeps them |
+| `OCTO_REPORT_RETENTION_DAYS` | `365` | Platform default: age past which generated reports and their files are pruned; `0` keeps them for tenants without an override of their own (#332 — a tenant's window is still applied). Swept by the dispatcher, so it has no switch of its own |
 | `OCTO_REPORT_SMTP_HOST` | *(empty)* | Relay for emailed reports. Empty means email recipients are recorded as `skipped`, with the reason, rather than silently dropped |
 | `OCTO_REPORT_SMTP_PORT` | `25` | Relay port |
 | `OCTO_REPORT_SMTP_FROM` | *(empty)* | Envelope sender; required alongside the host |
@@ -1143,9 +1166,9 @@ inventory agent; `agent_kind = endpoint`):
 | `OCTO_ENDPOINT_INVENTORY_MAX_FUTURE_SKEW_SECONDS` | `300` | Tolerated clock skew on `collected_at` |
 | `OCTO_ENDPOINT_INVENTORY_RATE_LIMIT_PER_HOUR` | `12` | Accepted submissions per Agent per hour |
 | `OCTO_ENDPOINT_STALE_HOURS` | `48` | Age after which a device reports `status: "stale"` |
-| `OCTO_ENDPOINT_RETENTION_ENABLED` | `true` | Run the in-process retention sweep |
-| `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which a snapshot's software rows are pruned |
-| `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Age after which software change events are deleted |
+| `OCTO_ENDPOINT_RETENTION_ENABLED` | `true` | Run the in-process retention sweep (both categories below, every tenant) |
+| `OCTO_ENDPOINT_INVENTORY_SNAPSHOT_RETENTION_DAYS` | `90` | Platform default: age after which a snapshot's software rows are pruned. `0` keeps them for tenants without an override of their own; before #332 it deleted every superseded list |
+| `OCTO_ENDPOINT_INVENTORY_CHANGE_RETENTION_DAYS` | `365` | Platform default: age after which software change events are deleted. `0` keeps them for tenants without an override of their own; before #332 it deleted all of them |
 | `OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval |
 | `OCTO_ENDPOINT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement |
 
@@ -1210,7 +1233,7 @@ Web screenshots (ROADMAP P4.4 / Phase 9.3):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_SCREENSHOT_RETENTION_ENABLED` | `true` | Run the in-process PNG reaper. Safe in every replica; deletes are idempotent |
-| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is deleted, from the artifact store. `0` disables the reaper. `screenshots.json` is never deleted by this worker |
+| `OCTO_SCREENSHOT_RETENTION_DAYS` | `14` | Age after which `runs/*/screenshots/*.png` is deleted, from the artifact store. Platform default: `0` keeps them for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_SCREENSHOT_RETENTION_ENABLED=false` is the switch). `screenshots.json` is never deleted by this worker |
 | `OCTO_SCREENSHOT_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Scan run artifact retention (ROADMAP #187):
@@ -1218,7 +1241,7 @@ Scan run artifact retention (ROADMAP #187):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RUN_RETENTION_ENABLED` | `true` | Run the in-process scan artifact reaper. Safe in every replica; directory removals are idempotent |
-| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which a run is deleted — from the artifact store, so the same setting bounds a volume and a bucket. `0` disables the reaper. Do **not** add a bucket lifecycle rule as well: it would expire runs the console still lists |
+| `OCTO_RUN_RETENTION_DAYS` | `30` | Age after which a run is deleted — from the artifact store, so the same setting bounds a volume and a bucket. Platform default: `0` keeps runs for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_RUN_RETENTION_ENABLED=false` is the switch). Do **not** add a bucket lifecycle rule as well: it would expire runs the console still lists |
 | `OCTO_RUN_RETENTION_INTERVAL_SECONDS` | `3600` | Sweep interval (floored at 60) |
 
 Risk snapshot retention (#229):
@@ -1226,8 +1249,29 @@ Risk snapshot retention (#229):
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED` | `true` | Run the in-process `risk_score_snapshots` sweep. Safe in every replica; the delete is a range delete |
-| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Age after which risk snapshots are deleted. `0` disables the sweep. Keep at or above the window the trend chart requests |
+| `OCTO_RISK_SNAPSHOT_RETENTION_DAYS` | `90` | Platform default: age after which risk snapshots are deleted. `0` keeps them for tenants without an override of their own (#332; a tenant's window is still applied — `OCTO_RISK_SNAPSHOT_RETENTION_ENABLED=false` is the switch). Keep at or above the window the trend chart requests |
 | `OCTO_RISK_SNAPSHOT_RETENTION_INTERVAL_SECONDS` | `21600` | Sweep interval (floored at 60) |
+
+Per-tenant retention (#332). Every `OCTO_*_RETENTION_DAYS` above is the
+platform *default*; a tenant admin may override each category within bounds,
+and a platform admin may place a tenant on legal hold. See
+[data-retention.md](data-retention.md):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RETENTION_BOUNDS` | empty (compiled bounds) | JSON object `{"category": {"min": days, "max": days}}` merged over the per-category bounds in [data-retention.md](data-retention.md#11-data-deleted-on-a-retention-window) — e.g. `{"audit_events": {"min": 1095}}` for a three-year audit floor. Bounds constrain tenant overrides only, never the inherited default. A bound changed after a tenant saved an override binds it from the next sweep: the stored value is clamped into the new bounds and flagged `out_of_bounds`. Give the audit retention CronJob the same value. A malformed value, an unknown category, a `min` below 1 or a `max` above 3650 refuses to start |
+
+Tenant suspension and deletion (#325). See
+[tenant-lifecycle.md](tenant-lifecycle.md):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_TENANT_DELETION_GRACE_DAYS` | `7` | Days between a deletion request and the earliest moment its purge may be approved. The tenant is suspended for the whole period and the request can be cancelled with nothing lost. `0` allows approving at once |
+| `OCTO_TENANT_DELETION_TWO_PERSON` | `true` | The platform admin who approves a purge must not be the one who requested the deletion. Only `false`, `0`, `no` or `off` turn it off — anything else, a typo included, keeps it on. Turn off only on an installation with a single platform admin |
+| `OCTO_TENANT_PURGE_ENABLED` | `true` | Run the purge worker. Safe in every replica: a deletion is claimed with `FOR UPDATE SKIP LOCKED` and held on a lease renewed between batches |
+| `OCTO_TENANT_PURGE_INTERVAL_SECONDS` | `30` | How often the worker looks for an approved deletion (floored at 5) |
+| `OCTO_TENANT_PURGE_BATCH_SIZE` | `1000` | Rows per `DELETE` in the Postgres steps. Every batch re-checks the legal hold under the tenant row lock |
+| `OCTO_TENANT_PURGE_UNUSED_STORES` | empty | Comma-separated stores this installation does not run: `clickhouse`, `jetstream`. The purge skips a store only when it is named here; a store not configured on the replica running the step (`OCTO_CLICKHOUSE_URL`/`OCTO_NATS_URL` unset) and not named here **fails** the step, so a replica with drifted configuration cannot record another replica's data as absent, and the approval of a purge is refused (409) on a replica where it would fail that way. An unknown name refuses to start. Set it before deleting a tenant on an installation without ClickHouse or NATS; the k8s base declares both (`clickhouse,jetstream`) and each patch that sets a URL takes its store off (docs/tenant-lifecycle.md §8) |
 
 
 Never commit real URLs containing credentials. Supply them through the platform

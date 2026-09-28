@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -7,9 +8,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from .dns_resolvers import parse_resolver
+
 #: One DNS label. Guards config values that are interpolated into a query name
 #: and handed to an external tool (currently mail_posture.dkim_selectors).
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
+
+#: ``nuclei.interactsh_server``: a hostname with an optional http(s) scheme
+#: and an optional trailing slash, nothing more (see NucleiConfig).
+_INTERACTSH_SERVER_RE = re.compile(
+    r"(?:(?P<scheme>https?)://)?"
+    r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)"
+    r"/?",
+    re.IGNORECASE,
+)
 
 
 class RuntimeConfig(BaseModel):
@@ -716,6 +729,28 @@ class ScreenshotConfig(BaseModel):
         return ports
 
 
+class DnsConfig(BaseModel):
+    """DNS servers the scanner hands to nuclei with ``-resolvers``.
+
+    Empty (the default) means the ``nameserver`` lines of ``/etc/resolv.conf``,
+    i.e. whatever the host itself asks. Without an explicit list nuclei mixes
+    its built-in public resolvers (1.1.1.1, 8.8.8.8, ...) into the rotation,
+    so internal names leak and split-horizon names fail to resolve. See
+    ``scanner/pipeline/dns_resolvers.py``. Entries are address literals, with
+    an optional port: ``10.0.0.53``, ``10.0.0.53:5353``, ``2001:db8::53``,
+    ``[2001:db8::53]:5353``.
+    """
+
+    resolvers: list[str] = Field(default_factory=list)
+
+    @field_validator("resolvers")
+    @classmethod
+    def validate_resolvers(cls, resolvers: list[str]) -> list[str]:
+        for resolver in resolvers:
+            parse_resolver(resolver)
+        return [resolver.strip() for resolver in resolvers]
+
+
 class NucleiConfig(BaseModel):
     """Nuclei template-based vulnerability/misconfig scanning.
 
@@ -738,6 +773,14 @@ class NucleiConfig(BaseModel):
     ``nuclei.json`` only. ``max_targets`` caps how many endpoints get probed
     per run -- past the cap, remaining endpoints are skipped and the run is
     flagged "truncated".
+
+    ``interactsh_server`` decides out-of-band (OAST) testing. Empty, the
+    default, runs nuclei with ``-no-interactsh``: no interactsh server is
+    contacted and the templates that need one are not run. Left to itself
+    nuclei registers with ProjectDiscovery's public servers (``oast.pro`` and
+    five more) and has every scanned host call back to them, so the default
+    is off and the only way to turn it on is to name a server the operator
+    runs. See ``docs/network-requirements.md``.
     """
 
     enabled: bool = True
@@ -757,6 +800,7 @@ class NucleiConfig(BaseModel):
     overall_timeout_seconds: int = Field(default=1800, ge=60, le=7200)
     http_ports: list[int] = Field(default_factory=lambda: [80, 8080, 8000, 8008, 8888])
     https_ports: list[int] = Field(default_factory=lambda: [443, 8443])
+    interactsh_server: str = ""
 
     @field_validator("http_ports", "https_ports")
     @classmethod
@@ -765,6 +809,40 @@ class NucleiConfig(BaseModel):
             if port < 1 or port > 65535:
                 raise ValueError(f"invalid nuclei port: {port}")
         return ports
+
+    @field_validator("interactsh_server")
+    @classmethod
+    def validate_interactsh_server(cls, value: str) -> str:
+        """One domain, optionally with an ``http(s)://`` scheme, nothing else.
+
+        The interactsh client builds every payload as
+        ``<correlation-id><nonce>.<server host>``, host taken verbatim from the
+        URL. A port would end up inside the hostname a target is asked to
+        resolve, and an IP literal would make that hostname meaningless, so
+        both are refused here rather than producing OAST templates that can
+        never match. A comma list, which nuclei would accept, is refused too:
+        the client picks one at random, and "which server did this run use"
+        should have one answer.
+        """
+        value = value.strip()
+        if not value:
+            return ""
+        if "," in value:
+            raise ValueError("interactsh_server takes one server, not a list")
+        match = _INTERACTSH_SERVER_RE.fullmatch(value)
+        if match is None:
+            raise ValueError(
+                "interactsh_server must be a domain, optionally with http:// or https:// "
+                "in front, and nothing else (no port, path or credentials)"
+            )
+        scheme, host = match.group("scheme"), match.group("host")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            # The trailing "/" is dropped because the client appends
+            # "/register" and "/poll" to the URL as written.
+            return f"{scheme.lower()}://{host}" if scheme else host
+        raise ValueError("interactsh_server must be a domain name: payloads are subdomains of it")
 
 
 class TlsPostureConfig(BaseModel):
@@ -1083,6 +1161,7 @@ class AppConfig(BaseModel):
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
+    dns: DnsConfig = Field(default_factory=DnsConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)

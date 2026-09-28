@@ -15,6 +15,7 @@ import ipaddress
 import pytest
 
 from api.services import outbound_targets
+from scanner.pipeline import safe_http
 
 
 def _addresses(*values: str) -> list:
@@ -50,11 +51,140 @@ def test_the_deployer_accepts_the_private_space_the_webhook_boundary_refuses(add
         # An IPv4-mapped loopback is 127.0.0.1 wearing a hat, and is judged as
         # the address it is rather than as the notation it arrived in.
         ("::ffff:127.0.0.1", "loopback"),
+        # So is a NAT64 well-known address: behind the translator it is the
+        # IPv4 address in its low 32 bits, and the refusal says which one.
+        pytest.param("64:ff9b::7f00:1", "loopback", id="nat64-wkp-loopback"),
+        pytest.param("64:ff9b::a9fe:a9fe", "link-local", id="nat64-wkp-metadata"),
+        pytest.param("64:ff9b::e000:1", "multicast", id="nat64-wkp-multicast"),
     ],
 )
 def test_neither_policy_lets_the_platform_probe_its_own_reflection(address, reason):
     with pytest.raises(outbound_targets.OutboundTargetError, match=reason):
         outbound_targets.check_addresses(address, tuple(_addresses(address)), policy=DEPLOY)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        pytest.param("64:ff9b::a00:5", id="nat64-wkp-rfc1918"),
+        pytest.param("64:ff9b::5db8:d822", id="nat64-wkp-public"),
+        pytest.param("64:ff9b:1::a00:5", id="nat64-local-use"),
+        pytest.param("::ffff:0:a00:5", id="siit-ipv4-translated"),
+        pytest.param("::a00:5", id="ipv4-compatible-rfc1918"),
+    ],
+)
+def test_the_deployer_still_refuses_translated_ipv6_it_refused_before(address):
+    """Unwrapping NAT64 for a better refusal must not turn into acceptance.
+
+    The deployer refused every one of these as reserved space before the
+    well-known prefix was unwrapped; ``64:ff9b::a00:5`` reads as 10.0.0.5,
+    which this policy otherwise accepts.
+    """
+    with pytest.raises(outbound_targets.OutboundTargetError, match="reserved"):
+        outbound_targets.check_addresses(address, tuple(_addresses(address)), policy=DEPLOY)
+
+
+#: IPv6 addresses that are delivered to an embedded IPv4 address. ``ipaddress``
+#: calls the NAT64 well-known, SIIT and IPv4-compatible ones global, so each of
+#: those passed the webhook boundary before it judged the IPv4 address behind
+#: them. On an API pod whose IPv6-only egress goes through NAT64,
+#: ``64:ff9b::a9fe:a9fe`` is the cloud metadata service.
+EMBEDDED_IPV4_NON_PUBLIC = [
+    pytest.param("64:ff9b::a00:5", id="nat64-wkp-rfc1918"),
+    pytest.param("64:ff9b::7f00:1", id="nat64-wkp-loopback"),
+    pytest.param("64:ff9b::a9fe:a9fe", id="nat64-wkp-metadata"),
+    pytest.param("64:ff9b::6440:1", id="nat64-wkp-cgnat"),
+    pytest.param("64:ff9b::e000:1", id="nat64-wkp-multicast"),
+    # Local-use NAT64: the embedding depends on the operator's prefix length,
+    # so even a tail that reads as 8.8.8.8 is 10.0.0.5 behind a /48.
+    pytest.param("64:ff9b:1::808:808", id="nat64-local-use"),
+    pytest.param("64:ff9b:1:a00:0:500:808:808", id="nat64-local-use-48"),
+    pytest.param("::ffff:0:a00:5", id="siit-ipv4-translated"),
+    pytest.param("2002:808:808::1", id="6to4"),
+    pytest.param("::a00:5", id="ipv4-compatible-rfc1918"),
+    pytest.param("::127.0.0.1", id="ipv4-compatible-loopback"),
+    pytest.param("::808:808", id="ipv4-compatible-public"),
+    pytest.param("::ffff:10.0.0.5", id="ipv4-mapped-rfc1918"),
+]
+
+#: Global addresses the webhook boundary must keep accepting.
+PUBLIC = [
+    pytest.param("93.184.216.34", id="ipv4"),
+    # What DNS64 synthesizes for an IPv4-only receiver on an IPv6-only pod.
+    # Refusing the prefix outright would refuse every such receiver, because
+    # one failing address fails the whole name.
+    pytest.param("64:ff9b::5db8:d822", id="nat64-wkp-public"),
+    pytest.param("::ffff:93.184.216.34", id="ipv4-mapped-public"),
+    # Only the translation prefixes are unwrapped: ordinary global IPv6 is
+    # judged as itself, whatever its low 32 bits happen to spell.
+    pytest.param("2606:4700:4700::1111", id="native-ipv6"),
+    pytest.param("2606:4700:4700::a00:5", id="native-ipv6-low-bits-rfc1918"),
+]
+
+
+@pytest.mark.parametrize("address", EMBEDDED_IPV4_NON_PUBLIC)
+def test_the_webhook_policy_judges_the_ipv4_address_behind_ipv6(address):
+    with pytest.raises(outbound_targets.OutboundTargetError, match="non-public"):
+        outbound_targets.check_addresses(address, tuple(_addresses(address)), policy=WEBHOOK)
+
+
+@pytest.mark.parametrize("address", PUBLIC)
+def test_the_webhook_policy_accepts_public_ipv4_behind_ipv6(address):
+    outbound_targets.check_addresses(address, tuple(_addresses(address)), policy=WEBHOOK)
+
+
+class _OldStdlibIPv6Address(ipaddress.IPv6Address):
+    """An ``ipaddress`` whose special-purpose table calls everything global."""
+
+    @property
+    def is_global(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["64:ff9b:1::808:808", "2002:a00:5::1", "::a00:5", "::ffff:10.0.0.5", "64:ff9b::a00:5"],
+)
+def test_the_webhook_verdict_does_not_depend_on_the_stdlib_table(address):
+    # Current CPython already refuses local-use NAT64, 6to4 and private
+    # IPv4-mapped; Python 3.9 does not, and the boundary must not care.
+    assert outbound_targets.is_public_address(_OldStdlibIPv6Address(address)) is False
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        *EMBEDDED_IPV4_NON_PUBLIC,
+        *PUBLIC,
+        "10.0.0.5",
+        "127.0.0.1",
+        "169.254.169.254",
+        "224.0.0.1",
+        "::1",
+        "fe80::1",
+        "fc00::1",
+        "ff02::1",
+        "::",
+        "64:ff9b::",
+        "::ffff:0:0",
+    ],
+)
+def test_the_api_and_scanner_copies_of_the_public_rule_agree(address):
+    """Two copies of one rule, because ``scanner/`` cannot import ``api/``.
+
+    A change to what counts as public on one side and not the other is the
+    drift this pins. The old-stdlib stand-in compares the explicit lists too:
+    the current interpreter would agree with both copies on half of them even
+    if one side dropped its list.
+    """
+    parsed = ipaddress.ip_address(address)
+    candidates = [parsed]
+    if parsed.version == 6:
+        candidates.append(_OldStdlibIPv6Address(address))
+    for candidate in candidates:
+        assert outbound_targets.is_public_address(candidate) == safe_http.is_public_address(
+            candidate
+        ), candidate
 
 
 def test_a_private_deployment_target_on_a_foreign_port_is_still_refused():

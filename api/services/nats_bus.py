@@ -738,6 +738,108 @@ class NatsBus:
         )
 
 
+    # -- stream management, for the tenant purge (#325) ------------------------
+    #
+    # Small, synchronous primitives: api/services/tenant_purge/jetstream.py
+    # composes them, with a legal-hold check between calls, which a single
+    # coroutine running on this loop could not make.
+
+    def consumers(self, stream: str) -> list[tuple[str, tuple[str, ...]]]:
+        """``(name, filter subjects)`` of every consumer on ``stream``; [] when it is absent."""
+
+        async def _list() -> list[tuple[str, tuple[str, ...]]]:
+            from nats.js.errors import NotFoundError
+
+            assert self._js is not None
+            found: dict[str, tuple[str, ...]] = {}
+            offset = 0
+            while True:
+                try:
+                    page = await self._js.consumers_info(stream, offset=offset)
+                except NotFoundError:
+                    return []
+                fresh = [info for info in page if info.name not in found]
+                if not fresh:
+                    break
+                for info in fresh:
+                    config = info.config
+                    subjects = [config.filter_subject or ""] + list(config.filter_subjects or [])
+                    found[info.name] = tuple(subject for subject in subjects if subject)
+                offset += len(page)
+            return sorted(found.items())
+
+        return self._call(_list())
+
+    def delete_consumer(self, stream: str, name: str) -> bool:
+        async def _delete() -> bool:
+            from nats.js.errors import NotFoundError
+
+            assert self._js is not None
+            try:
+                return bool(await self._js.delete_consumer(stream, name))
+            except NotFoundError:
+                return False
+
+        return self._call(_delete())
+
+    def forget_jobs_consumers(self, tenant_id: str) -> None:
+        """Drop this process's note that ``tenant_id``'s consumers exist."""
+        prefix = f"{tenant_id}\x00"
+        with self._jobs_consumers_lock:
+            self._jobs_consumers = {
+                key for key in self._jobs_consumers if not key.startswith(prefix)
+            }
+
+    def subject_count(self, stream: str, subject: str) -> int:
+        """Messages on ``subject`` (wildcards allowed) in ``stream``; 0 when it is absent."""
+
+        async def _count() -> int:
+            from nats.js.errors import NotFoundError
+
+            assert self._js is not None
+            try:
+                info = await self._js.stream_info(stream, subjects_filter=subject)
+            except NotFoundError:
+                return 0
+            return int(sum((info.state.subjects or {}).values()))
+
+        return self._call(_count())
+
+    def purge_subject(self, stream: str, subject: str) -> int:
+        """Remove every message on ``subject`` from ``stream``; return how many there were."""
+        count = self.subject_count(stream, subject)
+        if count:
+            assert self._js is not None
+            self._call(self._js.purge_stream(stream, subject=subject))
+        return count
+
+    def next_message(self, stream: str, subject: str, seq: int) -> Any | None:
+        """The first message on ``subject`` at or after ``seq``, or None."""
+
+        async def _get() -> Any | None:
+            from nats.js.errors import NotFoundError
+
+            assert self._js is not None
+            try:
+                return await self._js.get_msg(stream, seq=seq, subject=subject, next=True)
+            except NotFoundError:
+                return None
+
+        return self._call(_get())
+
+    def delete_message(self, stream: str, seq: int) -> bool:
+        async def _delete() -> bool:
+            from nats.js.errors import NotFoundError
+
+            assert self._js is not None
+            try:
+                return bool(await self._js.delete_msg(stream, seq))
+            except NotFoundError:
+                return False
+
+        return self._call(_delete())
+
+
 _BUS: NatsBus | None = None
 _BUS_LOCK = threading.Lock()
 

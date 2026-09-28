@@ -76,6 +76,12 @@ secretGenerator:
     literals:
       - api_password=shapoclyack-dev-nats-api-change-me
       - agent_password=shapoclyack-dev-nats-agent-change-me
+  # ClickHouse's `shapoclyack_backup` user (#333), read by the StatefulSet and
+  # the backup CronJob. Generated like the three above so it always exists: the
+  # server would otherwise define the user with an empty password.
+  - name: shapoclyack-clickhouse-backup
+    literals:
+      - password=shapoclyack-dev-clickhouse-backup-change-me
 
 generatorOptions:
   disableNameSuffixHash: true

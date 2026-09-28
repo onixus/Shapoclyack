@@ -29,6 +29,11 @@
 # ClickHouse stays a single StatefulSet pod here — see docs/high-availability.md
 # § What this overlay does not give you.
 #
+# No ServiceMonitor/PrometheusRule/dashboards: they need the Prometheus
+# Operator's CRDs, and with them here this overlay would fail to apply on every
+# cluster without the operator. overlays/prod-ha-monitoring is this overlay plus
+# base/monitoring and base/grafana-dashboards (docs/observability.md, #334).
+#
 # This is NOT a superset of overlays/prod. It deliberately does not carry that
 # overlay's `hostNetwork: true` + `workload=scanner` patch for the
 # scanner-executor (#338; before that, for the scan Job and CronJob): it is a

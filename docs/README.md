@@ -26,6 +26,7 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Deploy or upgrade Kubernetes workloads | [Kubernetes deployment](../k8s/README.md) |
 | Operate, monitor, back up, and recover the platform | [Operations](operations.md) |
 | Run a profile that survives a node loss | [High availability](high-availability.md) |
+| Recover from losing a datastore or the whole cluster | [Disaster recovery](disaster-recovery.md) |
 | Harden the Kubernetes deployment: Pod Security levels, the scanner-executor exception, Kyverno/Gatekeeper | [Kubernetes hardening](k8s-hardening.md) |
 | Use the Web UI | [Web interface](ui.md) |
 | Diagnose failures | [Troubleshooting](troubleshooting.md) |
@@ -62,9 +63,15 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Configuration](configuration.md) | Profiles, stages, protocols, rates, enrichment, safe overrides |
 | [Web interface](ui.md) | Current UI routes, tenant context, workflows, screenshot maintenance |
 | [Operations](operations.md) | Scheduling, artifacts, retention, resume, alerts, metrics, backups |
+| [Data retention](data-retention.md) | What is kept and for how long, per-tenant windows, legal hold, console users' data export and erasure — the DPA annex |
+| [Tenant lifecycle](tenant-lifecycle.md) | Suspending and resuming a tenant, two-step deletion, the store-by-store purge, its journal and tombstones, re-applying deletions after a restore |
 | [High availability](high-availability.md) | The `prod-ha` overlay: multi-replica API, NATS cluster, external PostgreSQL — its prerequisites and its limits |
+| [Sizing](sizing.md) | CPU, memory and volumes for N assets / M sensors / K scans a day: the model, measured coefficients, and re-measuring them on your stand |
+| [Disaster recovery](disaster-recovery.md) | Backup and restore of PostgreSQL, ClickHouse, artifacts and JetStream; restore order, reconciling restore points, RPO/RTO, the drill |
 | [Network requirements](network-requirements.md) | Ports and directions for sensors, the cluster and the API; proxies, CA bundles, NATS on 443, upload shaping |
+| [Air-gapped installation](air-gap.md) | Images by digest from an internal registry, pull secrets, feed mirrors, the offline enrichment bundle, and what stays unavailable offline |
 | [Service level objectives](slo.md) | SLIs, targets, error budgets, measurement gaps |
+| [Observability](observability.md) | Metrics catalogue and label bounds, Grafana dashboards, opt-in ServiceMonitor/PrometheusRule components, pool and sensor alerts |
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
@@ -80,14 +87,17 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 |---|---|
 | [Architecture](architecture.md) | Components, control-plane behavior, trust boundaries, storage, messaging |
 | [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, endpoint groups |
+| [Tenant isolation in the database](tenant-isolation.md) | Row-level security as the second line behind every tenant predicate, `OCTO_TENANT_RLS`, grants, diagnostics |
 | [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, redistribution notes |
 | [Security policy](../.github/SECURITY.md) | Supported versions, disclosure, release controls, operator baseline |
+| [Release contract](release-contract.md) | What a release ships, the Pulse support and update policy, and how a customer verifies the images |
 
 ## Engineering and planning documentation
 
 | Guide | Scope |
 |---|---|
 | [Development](development.md) | Toolchains, local setup, tests, builds, review checklist |
+| [Architecture decision records](adr/README.md) | Cross-component decisions and their status — currently the proposed Pulse distribution model |
 | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
@@ -118,6 +128,7 @@ Avoid repeating the same operational truth in several documents. When documents 
 | Planned work | `ROADMAP.md` and linked GitHub issues |
 | Release-specific behavior | `CHANGELOG.md` and GitHub Releases |
 | Security support/disclosure | `.github/SECURITY.md` |
+| Release artifacts, Pulse policy, customer verification | `docs/release-contract.md` |
 
 If prose disagrees with executable code, generated OpenAPI, or rendered manifests, treat that as a documentation defect and fix the prose rather than inventing a second truth.
 

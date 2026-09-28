@@ -37,6 +37,7 @@ from api.services.artifact_store import workspace as artifact_workspace
 from api.services import scan_admission
 from api.services import scan_intents
 from api.services import scan_surface
+from api.services import tenants as tenants_service
 from api.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -483,6 +484,20 @@ def start_scan(
     )
     try:
         with get_session(settings.postgres_url) as session:
+            # Admission read the tenant's status in a transaction of its own,
+            # well before this one: a suspension committed in between found no
+            # job to cancel, and this one would then sit queued until the
+            # resume (#325). Re-read here under FOR SHARE, which conflicts with
+            # the FOR UPDATE a status change takes — so either the suspension
+            # waits for this insert and cancels the job, or this waits for the
+            # suspension and refuses.
+            tenant_status = session.execute(
+                select(models.Tenant.status)
+                .where(models.Tenant.tenant_id == tenant_id)
+                .with_for_update(read=True)
+            ).scalar_one_or_none()
+            if tenant_status is not None and tenant_status != tenants_service.STATUS_ACTIVE:
+                raise ValueError(f"Tenant is not active: {tenant_id}")
             if agent_group:
                 if not agent_groups_service.lock_existing_names(
                     session,

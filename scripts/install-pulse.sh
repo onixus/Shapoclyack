@@ -6,7 +6,7 @@
 # same script, so a change here reaches host installs and images alike.
 #
 # Default: the GenDec GitHub Release tarball for this platform, checked
-# against the release's checksums.txt (no cargo required).
+# against the digest pinned for it below (no cargo required).
 #   scripts/install-pulse.sh
 #   PULSE_VERSION=v1.1.0 scripts/install-pulse.sh
 #   GITHUB_TOKEN=… scripts/install-pulse.sh      # private GenDec (GH_TOKEN also works)
@@ -20,6 +20,11 @@
 # one-off tag someone is trying out) falls back to the release's own
 # checksums.txt, which is the weaker, download-integrity-only check.
 #   PULSE_PINS=/path/to/pins scripts/install-pulse.sh  # override the pin file
+#
+# The images also ask for an install record (#340), which names the tarball,
+# the check it passed and the digest of the binary that came out of it:
+#   PULSE_RECORD=/usr/local/share/shapoclyack/pulse-install.txt scripts/install-pulse.sh
+# scripts/verify-pulse-image.py reads it back out of a published image.
 #
 # Fallback: build from a local clone or from git.
 #   PULSE_REPO=/path/to/GenDec scripts/install-pulse.sh
@@ -38,6 +43,15 @@ TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 # Ships next to this script; the image stage copies both into the same dir.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PINS="${PULSE_PINS:-${SCRIPT_DIR}/pulse-pinned.sha256}"
+# "" writes no record, which is what a host install gets unless it asks.
+RECORD="${PULSE_RECORD:-}"
+
+# Shared with scripts/pulse-pin.sh: resolving an asset on a private release is
+# fiddly enough (API indirection, 404-vs-error) that two copies would drift.
+# Sourced this early because the source-build path below needs sha256_of for
+# its install record too; the helpers read REPO/VERSION/TOKEN/tmp when called.
+# shellcheck source=scripts/pulse-release-lib.sh
+. "${SCRIPT_DIR}/pulse-release-lib.sh"
 
 install_bin() {
   local bin="$1"
@@ -52,11 +66,36 @@ install_bin() {
   fi
 }
 
+# The image keeps the binary, not the tarball, and the tarball's digest is the
+# only one scripts/pulse-pinned.sha256 holds. This record is what ties the two
+# together afterwards: which tarball, which check it passed, and what the
+# installed binary hashes to. It is unsigned and sits in the same image as the
+# binary: it catches a binary replaced without it (a later layer, a patched
+# image), but whoever can rewrite one can rewrite both, so against deliberate
+# tampering it is only as good as the image digest that was verified.
+# scripts/verify-pulse-image.py --tarball is the check that does not rest on it.
+write_record() {  # write_record <verified: pin|checksums|none|source> [<tarball> <sha256>]
+  [[ -n "$RECORD" ]] || return 0
+  mkdir -p "$(dirname "$RECORD")"
+  {
+    echo "# Pulse install record, written by scripts/install-pulse.sh (#340)."
+    echo "# Checked by scripts/verify-pulse-image.py; see docs/release-contract.md."
+    printf 'version=%s\n' "$VERSION"
+    printf 'platform=%s\n' "${asset:-}"
+    printf 'verified=%s\n' "$1"
+    printf 'tarball=%s\n' "${2:-}"
+    printf 'tarball_sha256=%s\n' "${3:-}"
+    printf 'binary_sha256=%s\n' "$(sha256_of "$DEST")"
+  } > "$RECORD"
+  echo "==> install record: $RECORD"
+}
+
 if [[ -n "$LOCAL_REPO" || "$FROM_SOURCE" == "1" ]]; then
   if [[ -n "$LOCAL_REPO" ]]; then
     echo "==> building Pulse from $LOCAL_REPO"
     (cd "$LOCAL_REPO" && cargo build --release)
     install_bin "$LOCAL_REPO/target/release/pulse"
+    write_record source
     exit 0
   fi
   TMP="$(mktemp -d)"
@@ -67,6 +106,7 @@ if [[ -n "$LOCAL_REPO" || "$FROM_SOURCE" == "1" ]]; then
     || git clone --depth 1 "$REPO_URL" "$TMP/pulse"
   (cd "$TMP/pulse" && cargo build --release)
   install_bin "$TMP/pulse/target/release/pulse"
+  write_record source
   exit 0
 fi
 
@@ -93,11 +133,6 @@ fi
 name="pulse-${VERSION}-${asset}.tar.gz"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-
-# Shared with scripts/pulse-pin.sh: resolving an asset on a private release is
-# fiddly enough (API indirection, 404-vs-error) that two copies would drift.
-# shellcheck source=scripts/pulse-release-lib.sh
-. "${SCRIPT_DIR}/pulse-release-lib.sh"
 
 # checksums.txt lines look like "<sha256>  dist/<asset>" (the release job hashes
 # from its dist/ directory); match on the basename so either form works.
@@ -181,9 +216,14 @@ fi
 
 if [[ -n "$PIN" ]]; then
   verify_pin "${tmp}/${name}" "$PIN"
+  verified=pin
 elif [[ "${PULSE_SKIP_CHECKSUM:-0}" != "1" ]]; then
   verify_checksum "${tmp}/${name}" "${tmp}/checksums.txt"
+  verified=checksums
+else
+  verified=none
 fi
 
 tar -xzf "${tmp}/${name}" -C "$tmp"
 install_bin "${tmp}/pulse"
+write_record "$verified" "$name" "$(sha256_of "${tmp}/${name}")"

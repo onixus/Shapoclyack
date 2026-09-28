@@ -32,6 +32,7 @@ from sqlalchemy import delete, func, or_, select
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.services import asset_events, audit_events, metrics, pagination, workflow_events
+from api.services import retention_policy
 from api.services import tenants as tenants_service
 from api.services import vulnerabilities as vulns_service
 from api.services.crypto import envelope as crypto
@@ -501,6 +502,11 @@ def delete_subscription(subscription_id: str) -> bool:
         row = session.get(models.WebhookSubscription, subscription_id)
         if row is None:
             return False
+        # Not while the tenant is on legal hold (#332): the delete below takes
+        # the whole delivery log with it, which is exactly what a hold keeps.
+        from api.services import legal_hold
+
+        legal_hold.assert_not_on_hold(session, row.tenant_id, action="webhook.delete")
         # Deliveries cascade with the subscription: the audit trail is "what did
         # we send to this endpoint", and the endpoint is gone. A tenant-level
         # export before deletion is a reporting feature, not a retention one.
@@ -1023,25 +1029,36 @@ def queue_depth() -> dict[str, int]:
 
 
 def prune_deliveries(*, now: datetime | None = None) -> int:
-    """Delete terminal deliveries past the retention window. 0 days disables it.
+    """Delete terminal deliveries past their tenant's window. 0 days disables it.
+
+    ``webhook_delivery_retention_days`` is the platform default; since #332 a
+    tenant may set its own, and a tenant on legal hold keeps every delivery —
+    the payloads are what this installation told a third party, which is
+    exactly what a dispute asks about.
 
     Pending rows are never pruned regardless of age: one still due is work, and
     one stuck due to a clock jump is a bug worth seeing rather than tidying
     away.
     """
     settings = _require_settings()
-    days = settings.webhook_delivery_retention_days
-    if days <= 0:
-        return 0
-    cutoff = (now or _now()) - timedelta(days=days)
     with get_session(settings.postgres_url) as session:
+        plan = retention_policy.load_plan(
+            settings, retention_policy.WEBHOOK_DELIVERIES, session=session
+        )
+        clause = retention_policy.expired_clause(
+            plan,
+            tenant_column=models.WebhookDelivery.tenant_id,
+            time_column=models.WebhookDelivery.updated_at,
+            now=now or _now(),
+        )
+        if clause is None:
+            return 0
         result = session.execute(
             delete(models.WebhookDelivery).where(
-                models.WebhookDelivery.status.in_(("delivered", "dead")),
-                models.WebhookDelivery.updated_at < cutoff,
+                models.WebhookDelivery.status.in_(("delivered", "dead")), clause
             )
         )
     deleted = int(result.rowcount or 0)
     if deleted:
-        LOG.info("Pruned %s webhook deliveries older than %s days", deleted, days)
+        LOG.info("Pruned %s webhook deliveries past their retention window", deleted)
     return deleted

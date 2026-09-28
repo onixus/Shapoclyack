@@ -26,7 +26,7 @@ Two rules run through all of it:
 | Sensor | NATS broker | 4222 | TLS over TCP (`tls://`) | No | Job *push*. The sensor falls back to HTTP claim polling |
 | Sensor | NATS broker | 443 | TLS over TCP through a stream ingress | No | Alternative to 4222 where the firewall only passes 443 |
 | Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
-| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target |
+| Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei uses the host's own resolver or `dns.resolvers`. dnsx still asks public resolvers; see [DNS resolvers](#dns-resolvers) |
 | Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
 
 A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
@@ -67,6 +67,12 @@ Every one of these goes through the HTTP proxy when one is configured.
 SMTP is the exception: an HTTP proxy does not carry it, so the relay is dialed
 directly and only the CA setting applies.
 
+The enrichment refresh (the `enrichment-refresh` CronJob and the API's
+`fetch-enrichment` initContainer) reaches every feed host through the same
+proxy and CA settings, and each feed can be pointed at an internal mirror
+instead; [air-gap.md](air-gap.md#3-pointing-every-feed-at-a-mirror) lists the
+hosts and the `*_URL` variables, and how to run with no egress at all.
+
 ### Scanner → outside
 
 The scan itself goes to the tenant's own targets and is never proxied — routing
@@ -83,6 +89,7 @@ that fail.
 | `ownership` | `data.iana.org`, `rdap.org` and the registry it redirects to | 443 | RDAP registration data | No — `safe_http` pins the address it validated, and a proxy would resolve the name a second time |
 | `alerts` | `cloudflare-dns.com`, Slack, Telegram | 443 | DoH lookup, run notifications | No — same pinning, and the webhook host is operator-supplied |
 | `fingerprint`, `nuclei`, port scan | scan targets | as scoped | The scan | No, deliberately |
+| `nuclei`, only when `nuclei.interactsh_server` is set | your interactsh server | 443, or 80 for an `http://` server | OAST registration, a poll every 5 s, deregistration | No. See [Out-of-band testing](#out-of-band-testing-interactsh) |
 
 `OCTO_NO_PROXY` is not consulted by the two stages that do honour the proxy:
 RIPEstat and the three object stores are never on the inside, so there is no
@@ -90,6 +97,131 @@ exemption to express, and honouring half the dialect would be worse than
 honouring none of it. `scanner/pipeline/egress_env.py` is where this lives,
 deliberately narrower than the API's and the sensor's (`agent/egress.py`) egress modules rather than
 a third copy of them.
+
+### DNS resolvers
+
+The scanner hands nuclei an explicit resolver list (`-resolvers`). The list is
+`dns.resolvers` from the scanner config. When that is empty, which is the
+default, it is the `nameserver` lines of `/etc/resolv.conf`, so nuclei asks the
+same servers as the rest of the host. The run leaves the list it used in
+`nuclei_resolvers.txt` next to `nuclei.json`.
+
+Without the list, nuclei v3.11.1 adds its built-in public resolvers (1.1.1.1,
+1.0.0.1, 8.8.8.8, 8.8.4.4) to the system one and picks among them round-robin.
+Its DNS-protocol templates ask those four only. Measured on the kind stand with
+the image's own binary and the scanner's own flags, against IP-only targets:
+
+- 256 of 320 lookups went to a public resolver.
+- Those lookups included the name an HTTP redirect pointed to, and query names
+  built from the scanned address itself (`http://10.x.y.z`, from the
+  JavaScript-protocol templates).
+- A template that follows a redirect to an internal-only name matched nothing,
+  because the name never resolved. With the list passed, the same template
+  matched.
+
+With the list passed, every name derived from a target went to the system
+resolver only. The exception is nuclei's interactsh client, which ignores
+`-resolvers`. It looks up the public interactsh servers (`oast.pro`,
+`oast.live`, `oast.site`, `oast.online`, `oast.fun`, `oast.me`) through the
+same public-plus-system rotation, and 160 of 312 lookups in the same run still
+went to a public resolver, all of them for those six names. Those names are
+fixed and say nothing about the targets. The scanner now runs nuclei with
+`-no-interactsh` by default, so those lookups are gone. See
+[Out-of-band testing](#out-of-band-testing-interactsh).
+
+`dns.resolvers` accepts IP literals with an optional port (`10.0.0.53`,
+`[2001:db8::53]:5353`). Names are refused, because a resolver given by name
+would need a resolver first.
+
+dnsx does not read the setting yet. It runs the `resolve`, `hostnames` and
+org_profile DNS stages. Left to its defaults, dnsx v1.2.3 asks only its eight
+built-in public resolvers and never the system one. Run the way `resolve`
+runs it on the stand, dnsx sent an internal-only name to 8.8.8.8 and 1.0.0.1
+and returned nothing. With `-r` pointed at the cluster resolver, it resolved
+the name.
+
+### Out-of-band testing (interactsh)
+
+Some nuclei templates prove a blind vulnerability (SSRF, command injection,
+Log4Shell-style lookups) by planting a unique hostname in the request and
+waiting for the target to call it back. nuclei learns about the callback from
+an interactsh server. Left to its defaults, nuclei registers with
+ProjectDiscovery's public servers (`oast.pro`, `oast.live`, `oast.site`,
+`oast.online`, `oast.fun`, `oast.me`), and the scanned hosts call back to those
+public servers. The scanner does not allow that. It runs nuclei with
+`-no-interactsh` unless `nuclei.interactsh_server` names a server you run.
+Together with `-disable-update-check` on every naabu, dnsx and nuclei command
+([air-gap.md](air-gap.md)), this means no scan contacts ProjectDiscovery.
+
+Why not the public default:
+
+- **It sends scan data to a third party.** Every callback from a scanned host
+  is received by a server someone else operates. That includes the host's
+  address and the request that reached it.
+- **It makes internal hosts contact the internet.** The callback comes from the
+  target, not from the sensor, so the traffic comes from inside the estate.
+  `oast.*` lookups are also a common IDS signature.
+- **It leaks lookups even where nothing else does.** As measured above, the
+  interactsh client resolves the server names through public resolvers and
+  ignores `-resolvers`. In a run on the kind stand with the image's nuclei and
+  templates, 200 of 280 lookups were for those six names, spread over the four
+  public resolvers and the cluster one.
+
+With `-no-interactsh` the same run made no `oast.*` lookup, and it took 96 s
+instead of 252 s. Part of that is the skipped templates. Part is that the
+stand cannot reach public DNS, so the interactsh client spent its time waiting
+on resolvers that never answered. The cost is the OAST templates themselves.
+341 templates in nuclei-templates v9.9.4 ask for an interactsh URL, and 304 of
+them pass the default severity and tag filters (counted with `nuclei -tl`).
+nuclei still loads them but does not run them: two of them, tried against a
+stub target, sent it nothing and failed with "interactsh client not
+initialized". Each run records the choice in `nuclei.json` as
+`"interactsh": "disabled"`, or as the server name.
+
+To turn OAST on, run [interactsh-server](https://github.com/projectdiscovery/interactsh)
+on a domain you control and set `nuclei.interactsh_server` to that domain:
+`oast.corp.example` or `https://oast.corp.example` for HTTPS, or
+`http://oast.corp.example` for plain HTTP. Ports, paths, IP literals and lists
+are refused, because every payload is `<id>.<that host>` verbatim. If the
+server was started with `-auth`, put its token in `OCTO_INTERACTSH_TOKEN` on the
+sensor, not in the config file. The scanner passes the token to nuclei in a
+temporary 0600 `-config` file, not on the command line, because the command
+line is written to `scan.log`, which is uploaded with the run.
+
+What that needs from the network:
+
+| From | To | Port | Why |
+|---|---|---|---|
+| Sensor | interactsh server | 443 (bare name, `https://`) or 80 (`http://`) | Registration, polling, deregistration. A bare name means HTTPS only, because nuclei does not fall back to HTTP |
+| Scanned hosts | interactsh server | 80, 443, and whichever of SMTP, LDAP, FTP and SMB the server is started with | The callbacks themselves |
+| Scanned hosts' resolvers | interactsh server | 53 | DNS callbacks. The server must be authoritative for its domain, and your internal DNS must delegate the domain to it |
+
+Measured against a stub interactsh server on the kind stand, with the two OAST
+templates above:
+
+- **The server name has to resolve without public DNS.** The interactsh
+  client looked up an in-cluster-only server name through the same rotation of
+  public resolvers plus the system resolver: 30 of 37 lookups went to a public
+  resolver. None of those answered, and registration gave up after 30 s. Every
+  OAST template was then skipped. With the name pinned in the sensor's
+  `/etc/hosts`, registration made no DNS lookup at all and both templates
+  matched. In Kubernetes, use `hostAliases`. With Docker, use `--add-host`. Pin
+  the name even where public DNS is reachable, or the server name leaks to the
+  public resolvers.
+- **A failed registration is silent in nuclei.** Under `-silent` it printed
+  nothing and exited 0. Only `-v` shows it, and `-v` logs every request. So
+  with a server configured the scanner drops `-silent` and looks for the line
+  nuclei prints once it has registered. `nuclei.json` records the result as
+  `"interactsh_registered": true` or `false`, and `false` also logs a warning.
+  `false` can also mean that no OAST template reached a live target.
+- **The server's certificate is not verified.** A self-signed certificate was
+  accepted. Setting `INTERACTSH_TLS_VERIFY=true`, which the interactsh client
+  documents for this, changed nothing in this build. The token and the polled
+  interactions therefore rely on the path between the sensor and the server
+  being one you trust. Treat `http://` as cleartext.
+- The client uses Go's `http.ProxyFromEnvironment`, so it follows an ambient
+  `HTTPS_PROXY`/`NO_PROXY` and ignores the `OCTO_` names. This is from its
+  source and was not measured.
 
 ## Proxy and CA variables
 

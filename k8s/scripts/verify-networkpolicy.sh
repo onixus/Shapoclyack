@@ -14,6 +14,8 @@
 #   unlabeled pod  → postgres:5432, clickhouse:8123/9000, nats:4222   REFUSED
 #   unlabeled pod  → nats:8222 (monitoring rule, any source)          ALLOWED
 #   component=backup → postgres:5432                                  ALLOWED
+#   component=clickhouse-backup → clickhouse:9000 ALLOWED,
+#                                 clickhouse:8123, postgres:5432      REFUSED
 #   component=agent  → nats:4222, postgres:5432 REFUSED (no in-cluster agent
 #                      is admitted to NATS any more, #338)
 #   scanner-executor pod (network-scan-executor) → all three          REFUSED
@@ -126,10 +128,17 @@ done
 report ALLOWED "$(grep -o "^${NATS_MON}=.*" <<<"${OUT}" | cut -d= -f2)" "anon → ${NATS_MON} (monitoring rule)"
 
 echo "[netpol] pod labeled as the backup CronJob"
-OUT="$(probe netpol-backup "app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=backup" "${PG} ${CH_HTTP} ${NATS}")"
+OUT="$(probe netpol-backup "app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=backup" "${PG} ${CH_HTTP} ${CH_NATIVE} ${NATS}")"
 report ALLOWED "$(grep -o "^${PG}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${PG}"
 report REFUSED "$(grep -o "^${CH_HTTP}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${CH_HTTP}"
+report REFUSED "$(grep -o "^${CH_NATIVE}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${CH_NATIVE}"
 report REFUSED "$(grep -o "^${NATS}=.*" <<<"${OUT}" | cut -d= -f2)" "backup → ${NATS}"
+
+echo "[netpol] pod labeled as the ClickHouse backup CronJob (#333)"
+OUT="$(probe netpol-ch-backup "app.kubernetes.io/name=shapoclyack,app.kubernetes.io/component=clickhouse-backup" "${CH_NATIVE} ${CH_HTTP} ${PG}")"
+report ALLOWED "$(grep -o "^${CH_NATIVE}=.*" <<<"${OUT}" | cut -d= -f2)" "clickhouse-backup → ${CH_NATIVE}"
+report REFUSED "$(grep -o "^${CH_HTTP}=.*" <<<"${OUT}" | cut -d= -f2)" "clickhouse-backup → ${CH_HTTP}"
+report REFUSED "$(grep -o "^${PG}=.*" <<<"${OUT}" | cut -d= -f2)" "clickhouse-backup → ${PG}"
 
 # The label the old in-cluster agent Deployment carried. NATS admitted it until
 # #338 moved the in-cluster sensor out of this namespace; a pod that claims the

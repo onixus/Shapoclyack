@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -705,3 +706,32 @@ def test_every_exception_is_documented() -> None:
     text = HARDENING_DOC.read_text(encoding="utf-8")
     missing = sorted({exc.name for exc in EXCEPTIONS if f"`{exc.name}`" not in text})
     assert not missing, f"not named in {HARDENING_DOC.relative_to(REPO_ROOT)}: {missing}"
+
+
+_WORKLOAD_REF = re.compile(r"`((?:%s)/[a-z0-9-]+)`" % "|".join(sorted(WORKLOAD_KINDS)))
+
+
+def _documented_workloads() -> set[str]:
+    text = HARDENING_DOC.read_text(encoding="utf-8")
+    table = text[text.index("\n## Workloads\n") : text.index("\n## Deviations from restricted\n")]
+    return set(_WORKLOAD_REF.findall(table))
+
+
+@requires_kustomize
+def test_every_workload_is_in_the_documented_table() -> None:
+    """docs/k8s-hardening.md § Workloads says it is the whole list: where each
+    pod runs, as whom, and every path it may write. The checks above hold a
+    workload another branch adds to the baseline the day it renders (#333's
+    ClickHouse backup, #339's bundle loader and inbox pod came in that way);
+    this one makes it also say what it writes. Both directions: a row whose
+    workload is gone describes a pod nobody runs."""
+    rendered: set[str] = set()
+    for target in RENDER_TARGETS:
+        rendered |= {f"{w.kind}/{w.name}" for w in _workloads(_render(target), target)}
+    for path in STATIC_MANIFESTS:
+        source = str(path.relative_to(K8S))
+        rendered |= {f"{w.kind}/{w.name}" for w in _workloads(_load(path), source)}
+    documented = _documented_workloads()
+    doc = HARDENING_DOC.relative_to(REPO_ROOT)
+    assert not sorted(rendered - documented), f"not in {doc} § Workloads: {sorted(rendered - documented)}"
+    assert not sorted(documented - rendered), f"in {doc} § Workloads, rendered nowhere: {sorted(documented - rendered)}"

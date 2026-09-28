@@ -62,6 +62,11 @@ def main() -> None:
         host=host,
         port=port,
         reload=False,
+        # One process per replica, whatever WEB_CONCURRENCY says: uvicorn reads
+        # it when ``workers`` is left out, and N workers behind one port would
+        # each answer a scrape with their own counters — different numbers on
+        # every scrape, under one ``instance`` (#334). Scale with replicas.
+        workers=1,
         # Without this uvicorn installs its own colourised formatters, so
         # `uvicorn.access` ended up in a different shape from every other line
         # and never met the redaction filter — which is what masks a `?token=`

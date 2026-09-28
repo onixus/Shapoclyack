@@ -23,9 +23,17 @@ together: `docker manifest inspect ghcr.io/onixus/shapoclyack-aio:<tag>` or
 crane digest ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922
 ```
 
-Never hand-edit one half. The `kind-dev` / `kind-restore` overlays override the
-whole reference with a locally built tag, so a digest in base does not get in
-the way of `scripts/dev-up.sh`.
+Never hand-edit one half. The same release pins live outside `k8s/` and are
+replaced in the same PR: the all-in-one image in `scripts/install-server.py`
+(`DEFAULT_IMAGE`), and the scanner image the sensors run, in
+`api/services/agents.py` (`SENSOR_IMAGE`, printed by the console's deployment
+snippets) and `scripts/install-agent.sh` (the `AGENT_IMAGE` default).
+`git grep -l <old digest>` finds every one; `tests/test_agent_install_pins.py`
+fails if the two sensor pins disagree.
+
+The `kind-dev` / `kind-restore` overlays override the whole reference with a
+locally built tag, so a digest in base does not get in the way of
+`scripts/dev-up.sh`.
 
 Also see root [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -36,12 +44,13 @@ enrichment data; with `OVERLAY` unset the script keeps whatever the cluster
 already runs, so a rebuild cannot silently strip enrichment from the API.
 Tear down with `scripts/dev-down.sh`.
 
-A PostgreSQL restore drill uses a second namespace, not the source lab:
+A restore drill uses a second namespace, not the source lab:
 `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` then
-`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …`
-(see [docs/operations.md](../docs/operations.md) § Backup and disaster recovery).
-The overlay is Postgres + API only (no NodePort, so it does not steal
-`http://127.0.0.1:8080`).
+`scripts/restore-postgres.sh --namespace shapoclyack-restore --backup …` and
+`scripts/restore-clickhouse.sh --namespace shapoclyack-restore --backup-url …`
+(see [docs/disaster-recovery.md](../docs/disaster-recovery.md)).
+The overlay is Postgres + API + ClickHouse, with no NATS, no backup CronJobs
+and no NodePort (so it does not steal `http://127.0.0.1:8080`).
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
@@ -102,14 +111,18 @@ k8s/shapoclyack/
 ├── base/scanner-executor/ # the in-cluster sensor, in network-scan-executor (PSA privileged): where scans run
 ├── base/nats/            # JetStream StatefulSet + Services + ConfigMap
 ├── base/clickhouse/      # Analytics StatefulSet + Services + ConfigMap (50Gi PVC)
+├── base/backup/          # daily pg_dump and ClickHouse BACKUP CronJobs to S3 (docs/disaster-recovery.md)
 ├── base/config/k8s.yaml  # scanner ConfigMap source (one copy per namespace)
 ├── base/networkpolicy-datastores.yaml # ingress to Postgres/ClickHouse/NATS: API (+backup) only
 ├── base/agents/          # optional VPA for the scanner-executor (not in default base)
 ├── base/local-scan/      # opt-in component: API-local scanning + scan Job/CronJob, network-scan privileged
 ├── base/enrichment/      # optional GeoIP/EPSS/KEV/CVSS4 component: RWX PVC + daily refresh CronJob + patch
+├── base/monitoring/      # optional component: ServiceMonitor + PrometheusRule (needs Prometheus Operator CRDs)
+├── base/grafana-dashboards/ # optional component: Platform, Product and Tenants dashboards as Grafana sidecar ConfigMaps
 ├── overlays/dev/         # smaller API, OCTO_ENV=dev
 ├── overlays/prod/        # scanner-executor on hostNetwork + scanner node pool
 ├── overlays/prod-ha/     # HA profile: API >=2 replicas + HPA + PDB, 3-node NATS, external Postgres
+├── overlays/prod-ha-monitoring/ # prod-ha + base/monitoring + base/grafana-dashboards
 ├── overlays/api-readonly/# thin shapoclyack-api image, OCTO_ALLOW_SCAN_START=false, scan Job/CronJob
 ├── overlays/agents/      # 3 scanner-executors (topology spread + VPA) + API NATS dispatch
 ├── overlays/local-scan/  # base + base/local-scan: the pre-#338 topology, a documented exception
@@ -277,6 +290,13 @@ The ServiceMonitor lives in `examples/` because it needs the
 `monitoring.coreos.com/v1` CRDs, which base does not install; applying base on a
 cluster without the operator must not fail. The pod annotations are inert when
 nothing scrapes them.
+
+For kustomize-managed installs the same ServiceMonitor, the alert rules as a
+PrometheusRule, and three Grafana dashboards (as sidecar ConfigMaps) ship as the
+opt-in components `base/monitoring` and `base/grafana-dashboards`;
+`overlays/prod-ha-monitoring` is `prod-ha` with both. Why they are not in
+`prod-ha` itself, and how to label them for your Prometheus and Grafana:
+[docs/observability.md](../docs/observability.md) (#334).
 
 Bare `scrape_configs` instead of either of the above:
 
@@ -584,6 +604,13 @@ replica puts them in object storage instead
 ([#336](https://github.com/onixus/Shapoclyack/issues/336)): see
 `overlays/prod-ha/artifacts-s3-patch.yaml` and
 [docs/high-availability.md](../docs/high-availability.md).
+
+## Air-gapped installation
+
+`overlays/airgap` is `base` + `base/enrichment` + `base/enrichment-bundle`:
+every image from an internal registry, the pull secret on every pod, and the
+enrichment data installed from an offline bundle by a CronJob instead of
+fetched. The procedure is [docs/air-gap.md](../docs/air-gap.md).
 
 ## Optional: build images yourself
 

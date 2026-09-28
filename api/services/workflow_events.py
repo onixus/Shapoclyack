@@ -60,14 +60,14 @@ import hashlib
 import logging
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select
 
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
-from api.services import metrics, nats_bus
+from api.services import metrics, nats_bus, retention_policy
 from api.settings import Settings
 
 LOG = logging.getLogger("shapoclyack.workflow_events")
@@ -514,17 +514,24 @@ def prune_markers(settings: Settings, *, now: datetime | None = None) -> int:
     breached a year after it was announced is worth raising a second time. It
     also keeps the table from growing without bound in an installation whose
     findings outlive their assets. ``0`` days disables the sweep.
+
+    Per tenant since #332: the window is also how often an unresolved breach is
+    raised again, which is a tenant's call within the platform bounds, and a
+    tenant on legal hold keeps its markers like the rest of its data.
     """
-    days = int(settings.workflow_marker_retention_days or 0)
-    if days <= 0:
-        return 0
-    cutoff = (now or _now()).replace(tzinfo=None) - timedelta(days=days)
     with get_session(settings.postgres_url) as session:
-        result = session.execute(
-            delete(models.WorkflowEventMarker).where(
-                models.WorkflowEventMarker.created_at < cutoff
-            )
+        plan = retention_policy.load_plan(
+            settings, retention_policy.WORKFLOW_MARKERS, session=session
         )
+        clause = retention_policy.expired_clause(
+            plan,
+            tenant_column=models.WorkflowEventMarker.tenant_id,
+            time_column=models.WorkflowEventMarker.created_at,
+            now=(now or _now()).replace(tzinfo=None),
+        )
+        if clause is None:
+            return 0
+        result = session.execute(delete(models.WorkflowEventMarker).where(clause))
     return int(result.rowcount or 0)
 
 

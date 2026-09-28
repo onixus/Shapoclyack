@@ -107,11 +107,14 @@ root filesystem is read-only everywhere except where noted.
 | `StatefulSet/shapoclyack-nats` | `network-scan` | 1000:1000 | `/data` (JetStream store, PVC). The entrypoint only rewrites argv. | yes |
 | `StatefulSet/shapoclyack-clickhouse` | `network-scan` | 101:101 | `/var/lib/clickhouse` (PVC: data, tmp, preprocessed configs); `/tmp` (the entrypoint copies users.xml there to diff it); `/etc/clickhouse-server/users.d` (it generates `default-user.xml`). File logging is removed from the config (console only), so `/var/log/clickhouse-server` is not written. | yes |
 | `CronJob/shapoclyack-postgres-backup` | `network-scan` | 1000:1000 | `/backup` (emptyDir handed from `pg_dump` to the uploader); `/tmp` (the AWS CLI's `HOME`) | yes |
+| `CronJob/shapoclyack-clickhouse-backup` ([#333](https://github.com/onixus/Shapoclyack/issues/333)) | `network-scan` | 101:101 | `/tmp` (16Mi in memory: `clickhouse-client`'s `HOME`/`TMPDIR` and the script's `mktemp -d` for query output; the server itself uploads the backup, so nothing is staged here) | yes |
 | `CronJob/enrichment-refresh` (base/enrichment) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`); `/tmp` (the geoip/asn/epss/kev fetchers download into `mktemp -d`) | yes |
+| `CronJob/enrichment-bundle-load` (base/enrichment-bundle, [#339](https://github.com/onixus/Shapoclyack/issues/339)) | `network-scan` | 1000:1000 | `scanner/data` (PVC `enrichment-data`: the bundle is staged and installed there, so the swap is a rename on one filesystem); `/tmp`; the inbox PVC is mounted read-only | yes |
 | `StatefulSet/shapoclyack-scanner-executor` | `network-scan-executor` | 1000:1000 | `scanner/output`, `scanner/state` (the run and its checkpoints); `/tmp` (the sensor's per-job workdir: target lists and the run archive before upload; the screenshot stage's browser profile); `/home/octo` (nuclei, naabu and dnsx write `~/.config/<tool>/config.yaml` on every start and exit when they cannot — projectdiscovery/goflags) | **no** — see below |
 | `Job/network-scan`, `CronJob/network-scan-scheduled`, `Job/network-scan-resume` (base/local-scan only) | `network-scan` | 1000:1000 | as the executor, with `scanner/output`/`state` on the `scanner-data` PVC | **no** — see below |
 | `StatefulSet/shapoclyack-agent` (examples, a sensor in another cluster) | yours, not `network-scan` | 1000:1000 | as the executor | **no** — see below |
 | `CronJob/shapoclyack-audit-retention`, `Deployment/shapoclyack-audit-syslog-forwarder` (examples) | `network-scan` | 1000:1000 | `/tmp` (retention only) | yes |
+| `Pod/enrichment-bundle-inbox` (examples, #339: applied for one copy, then deleted) | `network-scan` | 1000:1000 | `/inbox` (PVC `enrichment-bundle-inbox`, what `kubectl cp` writes); `/tmp` | yes |
 | `Deployment/shapoclyack-maddy` (examples, lab only) | `network-scan` | root | not read-only | **no** — see below |
 
 `PYTHONDONTWRITEBYTECODE=1` is set in every Shapoclyack image, so Python does
@@ -331,7 +334,10 @@ with another name and Secret, enrolled with that tenant's key) or gives each
 tenant its own sensor. A tenant with no executor online is not refused scans:
 its jobs are accepted and wait, flagged `sensor_unavailable` in the job list,
 with a banner above the launcher and the System page's scan-execution tile
-reading "no sensor online".
+reading "no sensor online". When a tenant is deleted
+([#325](https://github.com/onixus/Shapoclyack/issues/325)), delete its
+executor and Secret as well: the purge reaches the API's stores, not the run
+directories in the executor's `emptyDir`s, which go only with the pod.
 
 **Scan state lives with the pod.** The delta baseline (`--delta` / the `delta`
 intent) and the previous run the report diff compares against are under
@@ -525,6 +531,14 @@ To rotate, before the old key expires:
 Revoking before the Secret is updated makes the executor retry with the revoked
 key until the file changes; nothing is lost, the jobs wait.
 
+**After a tenant is suspended and resumed**
+([tenant lifecycle](tenant-lifecycle.md), [#325](https://github.com/onixus/Shapoclyack/issues/325)): a suspension
+revokes the tenant's provisioning keys unless it was asked to keep them, and a
+resume does not bring them back. The executor holding that tenant's key keeps
+retrying it after the resume, and the tenant's scans queue `sensor_unavailable`,
+until it has a new one: mint a key and replace it as in step 2, keeping the
+prefix.
+
 ## Kyverno and Gatekeeper
 
 Both are cluster-wide policy engines that know nothing of the namespace labels
@@ -674,6 +688,11 @@ For an installation moving from a pre-#338 release:
   before upgrading**: they used to stop at the API in agent mode, and now reach
   every tenant's remote sensors — bounded by each sensor's own rates, timing,
   nuclei exclusions and screenshot setting, but otherwise as written.
+- **Finished runs are swept by sensor retention.** Acknowledged results are
+  removed once they are no longer the baseline; unacknowledged results default
+  to 72 hours, with a 5 GiB budget. Active scans and recently cancelled partial
+  results stay protected. See `OCTO_AGENT_RUN_RETENTION_HOURS` and
+  `OCTO_AGENT_RUN_MAX_BYTES` in docs/configuration.md.
 - **Delta and report-diff baselines live in the executor's `emptyDir`**: a
   restart makes the next delta run a full one, and each replica keeps its own.
 - **Queued jobs are claimed oldest first, per tenant**, whatever built up while
@@ -693,7 +712,8 @@ For an installation moving from a pre-#338 release:
   `strategy: Recreate`: unpinned, a surging rollout would schedule the new pod
   on another node, where the ReadWriteOnce `scanner-data` cannot attach while
   the old pod holds it, and stall. Every rollout of it is a short outage of the
-  console and API; executors keep scanning and retry their uploads.
+  console and API; executors keep scanning and retry uploads twice within
+  seconds. If those attempts fail, lease expiry requeues the job for a new scan.
 - **`overlays/agents` scales the executor** instead of deploying its own
   `shapoclyack-agent` Deployment, which — having no namespace — landed in
   whatever namespace the kubeconfig pointed at. Delete the old Deployment and
@@ -739,7 +759,11 @@ kubectl apply -k k8s/shapoclyack/overlays/<yours>
 #    exists. The pod waits until then; scans started meanwhile queue.
 #    See "Enrolling the scanner-executor". A Secret made from an earlier
 #    draft of these docs lacks agent_id_prefix: add it, or the pod waits in
-#    CreateContainerConfigError naming the key.
+#    CreateContainerConfigError naming the key. Pulling from a private or
+#    air-gapped registry, the pull secret is needed here too — a Secret is
+#    namespaced (docs/air-gap.md, "The pull secret"):
+#      kubectl -n network-scan-executor create secret docker-registry shapoclyack-registry \
+#        --docker-server=<registry> --docker-username=<user> --docker-password=<token>
 
 # 3. What apply does not prune.
 kubectl -n network-scan delete cronjob/network-scan-scheduled job/network-scan --ignore-not-found
@@ -833,7 +857,10 @@ seccomp, the upload through the API's `/tmp`, and ingest.
   alone, in `network-scan-executor`; a writable `/tmp` (and `$HOME` where the
   scanner's tools run) for every Shapoclyack container. The examples and
   `job-resume.yaml`, which nothing renders, are checked as files, and
-  `examples/*-patch.yaml` may not loosen anything they patch.
+  `examples/*-patch.yaml` may not loosen anything they patch. Every workload
+  any of them renders has a row in [Workloads](#workloads), and every row a
+  workload — so one added later (the ClickHouse backup of #333, the bundle
+  loader and inbox pod of #339) is documented as well as held to the baseline.
 - `tests/test_k8s_topology.py` holds the renders to their wiring: an API in
   agent mode has an executor to hand work to; the executor dials the API's
   Service in the API's namespace, over `https` exactly when the API serves TLS

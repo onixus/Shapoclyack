@@ -1,0 +1,10 @@
+# No egress, so the online refresh can only fail — and a failed refresh records
+# every dataset it tried as `stale`, over the bundle that is actually there.
+# Suspended rather than deleted: an installation that later gets a mirror
+# un-suspends it and sets the *_URL variables (docs/air-gap.md).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enrichment-refresh
+spec:
+  suspend: true

@@ -806,6 +806,10 @@ it is only supposed to approve.
 | `scan_policy.manage` | tenant `admin`, platform admin. Reading a policy needs only `scan_scope.read`: whoever may see what a tenant is allowed to scan may see how hard |
 | `endpoint_agent.manage` | tenant `admin`, platform admin. Covers both halves of managing an Agent (Lariska) remotely (#358): its collection settings and the build it should be running. The version half is the authority to replace a binary on every endpoint in the tenant, which is why it is an administrator's |
 | `tenant.quota.read` | `auditor`, tenant `admin`, platform admin |
+| `tenant.retention.read` | `auditor`, tenant `admin`, platform admin. The tenant's retention windows and whether it is on legal hold — not who placed a hold or why ([data-retention.md](data-retention.md)) |
+| `tenant.retention.manage` | tenant `admin`, platform admin. Within the bounds the platform configured (`OCTO_RETENTION_BOUNDS`); the audit floor is not a number it can reach below |
+| `platform.legal_hold.manage` | platform admin. A tenant that could release its own hold could let evidence age out |
+| `platform.tenant.lifecycle` | platform admin. Suspend and resume a tenant, request, cancel, approve and retry its deletion (`/api/tenants/{id}/suspend`, `…/resume`, `…/deletion[/approve|/retry]`, `GET …/lifecycle`, `GET /api/tenants/deletions`); every change behind a step-up. See [tenant-lifecycle.md](tenant-lifecycle.md) |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
@@ -1299,7 +1303,7 @@ retry that crosses the upgrade still replays instead of re-applying its batch.
 | `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
 | `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
 | `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
-| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side. The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side, unless the host already runs one of the tenant's sensors: that one is reinstalled as itself with the key it holds, and a sensor moved to a host that lacks its key has that key revoked (refused while the sensor is online or the key has other holders; the run's log says which case, see operations.md, "SSH push deployment"). The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
 | `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
@@ -1691,6 +1695,17 @@ curl http://localhost:8080/openapi.json
 - Asset and endpoint-inventory queries require tenant context.
 - Do not accept a tenant identifier from a client without server-side
   authorization against the principal.
+
+Behind these rules the database holds a second line
+([#311](https://github.com/onixus/Shapoclyack/issues/311)): every transaction of
+a tenant-scoped request — console user, service token or sensor — runs as the
+`shapoclyack_tenant` role with its tenant named, and Postgres row-level security
+drops every other tenant's rows from what it reads and refuses them in what it
+writes, so a query that forgot its `WHERE tenant_id` fails safe. Platform-admin
+requests, authentication and background workers are not narrowed. Every route
+must have a tenant guard or a reviewed entry in
+`tests/test_route_tenant_guards.py`. Design, rollout (`OCTO_TENANT_RLS`) and
+diagnostics: [tenant-isolation.md](tenant-isolation.md).
 
 ## Console accounts
 

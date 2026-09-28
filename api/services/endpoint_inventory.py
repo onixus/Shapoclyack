@@ -19,9 +19,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.schemas import EndpointInventorySnapshotRequest
 from api.services import metrics as metrics_service
@@ -264,6 +264,20 @@ def ingest_snapshot(
     digest = _canonical_digest(request)
     collected_at = _parse_dt(request.collected_at)
     now = _now()
+
+    # ``snapshot_id`` is the collector's choice and the table's key, so whether
+    # another tenant already used it is asked across tenants (#311), as in
+    # ``agents.register_agent``; in the agent's own scope the row would be
+    # invisible and the conflict a duplicate-key error at the insert.
+    with tenant_scope.system("inventory ingest: is this snapshot id another tenant's"):
+        with get_session(settings.postgres_url) as session:
+            owner = session.execute(
+                select(models.EndpointInventorySnapshot.tenant_id).where(
+                    models.EndpointInventorySnapshot.snapshot_id == request.snapshot_id
+                )
+            ).scalar_one_or_none()
+    if owner is not None and owner != tenant_id:
+        raise ConflictError("snapshot_id already used by a different tenant")
 
     with get_session(settings.postgres_url) as session:
         existing_snapshot = session.get(models.EndpointInventorySnapshot, request.snapshot_id)
@@ -541,10 +555,30 @@ def list_devices(
     return items
 
 
+def device_state_counts(session: Any, *, now: datetime, stale_hours: int) -> dict[str, int]:
+    """``{"active": n, "stale": m}`` over every tenant, in one aggregate (#334).
+
+    What ``octo_endpoint_devices`` reports, read at scrape time. The rule is
+    :func:`device_status` in SQL — never submitted, or last submitted more
+    than ``stale_hours`` ago, is stale — counted by the database rather than
+    by loading one timestamp per device, which is what :func:`device_counts`
+    does for the System page.
+    """
+    last = models.EndpointDevice.last_inventory_at
+    stale_before = now - timedelta(hours=stale_hours)
+    total, stale = session.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(case((or_(last.is_(None), last < stale_before), 1), else_=0)), 0),
+        ).select_from(models.EndpointDevice)
+    ).one()
+    return {"active": int(total) - int(stale), "stale": int(stale)}
+
+
 def device_counts(tenant_id: str | None = None) -> dict[str, int]:
     """Total / stale endpoint-device counts, optionally scoped to one tenant.
 
-    Feeds the System page and the ``octo_endpoint_devices`` gauge (S9 / §15).
+    Feeds the System page (S9 / §15).
     """
     settings = _require_settings()
     now = _now()

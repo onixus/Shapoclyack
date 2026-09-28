@@ -25,6 +25,9 @@ Either way the download lands on a staging path beside the destination and is
 promoted by a rename only once it passes, and a harvest with a failed page is
 never published.
 
+``NVD_API_URL`` points the harvest at a mirror of the CVE API (the same variable
+``fetch-cvss4-db.py`` reads; docs/air-gap.md, #339).
+
 Exit codes (the same contract as fetch-advisories.py):
 
   0  the dataset was refreshed

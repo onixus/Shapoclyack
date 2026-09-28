@@ -140,6 +140,12 @@ spec:
             # http://default:$(CLICKHOUSE_PASSWORD)@shapoclyack-clickhouse-client:8123
             - name: OCTO_CLICKHOUSE_URL
               value: ""
+            # A tenant purge (#325) fails the step of a store this replica has
+            # no URL for, unless the store is declared unused here, and the
+            # approval refuses up front. Both URLs above are empty, so both are
+            # declared; a patch that sets a URL takes its store off this list.
+            - name: OCTO_TENANT_PURGE_UNUSED_STORES
+              value: "clickhouse,jetstream"
             - name: OCTO_CH_INGEST_ENABLED
               value: "true"
             # Required — the tenant store is Postgres-backed (Phase 7), unlike

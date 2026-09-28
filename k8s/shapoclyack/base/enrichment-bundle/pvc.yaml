@@ -1,0 +1,24 @@
+# Where an operator drops the bundle (`enrichment-bundle.tar.gz` at its root),
+# via the helper pod in examples/enrichment-bundle-inbox.example.yaml or any
+# storage-side copy. The loader mounts it read-only.
+#
+# ReadWriteOnce, unlike enrichment-data: only one pod at a time uses it, and an
+# RWO class is available on every cluster. The cost is that the helper pod and
+# the loader cannot run on different nodes at once — delete the helper after
+# the copy, as docs/air-gap.md says.
+#
+# Sized like enrichment-data (2Gi): a bundle is that volume's datasets,
+# compressed, so the claim holds the next bundle alongside the current one.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: enrichment-bundle-inbox
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-bundle
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

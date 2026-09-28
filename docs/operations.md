@@ -202,19 +202,66 @@ infer it from the fact that a scan was started.
 - **Only this run's own seed domains** are probed. Attribution candidates from
   the related-domains stage are never probed: a wrongly attributed domain would
   mean an active request against a third party's infrastructure.
+- **A public suffix is never probed**, not even when it is listed in
+  `org_profile.dns_hygiene.domains`. The nameservers of `co.uk`, `com.ru` or
+  `github.io` belong to a registry, a registrar or a hosting platform, not to
+  anyone under them. The seed derived from scope already stops at the
+  registrable domain (see below); this refusal is what holds if a suffix gets
+  in anyway. It happens before any nameserver is contacted and is recorded as
+  `axfr.status: refused`, `reason: public_suffix` (or `not_a_domain_name` for
+  an IP literal or similar), with a `refusing AXFR for <domain>` warning in the
+  log.
 - **A nameserver on a non-public address is refused**, not dialled. NS records
   are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
   turn the probe into a TCP/53 connection inside the sensor's own network. The
   refusal is logged as `refusing AXFR against <ns>` and recorded in the artifact
   as `status: refused`.
+- **Only the checked address is dialled.** The probe speaks AXFR itself over
+  one TCP connection to the nameserver's first address — the IP literal that
+  passed the check above, IPv6 included — and resolves nothing. It does not go
+  through `dnsx`, whose `-axfr` looks up the zone's NS set on its own and
+  connects to addresses that were never checked, and it does not follow the NS
+  records or glue the zone hands back.
+- **Reading the result.** `status: open` means the nameserver sent zone data;
+  `records` counts the records between the opening and closing SOA, and a
+  non-null `reason` (`transfer_incomplete`, `transfer_capped` at 16 MiB,
+  `malformed_response`, `connection_error`) marks the count as a lower bound.
+  `status: closed` is the server saying no: `rcode_refused`, `rcode_notauth`,
+  `rcode_formerr`, `rcode_notimp`, `rcode_nxdomain`, an empty answer
+  (`empty_answer`), a clean hang-up before any answer (`connection_closed`), or
+  an SOA…SOA transfer with nothing between (`soa_only`). `status: error` means
+  the nameserver could not be checked, not that it is closed: unreachable
+  (`connect_failed`, `timeout`, `connection_reset` — a reset may come from a
+  middlebox on the sensor's side), `rcode_servfail` or an unknown RCODE, or an
+  answer that started and broke off before any record past the SOA.
 - **A successful transfer is never written down.** `dns_hygiene.json` records
   only `status: open` and the number of records; the zone itself reaches neither
   the artifact directory nor `scan.log`. If you need the zone contents, transfer
   it yourself with `dig axfr` — the scanner will not keep a copy for you.
 
 Before switching `axfr_probe` on, confirm the engagement covers active testing
-of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
-run derives from its scope, when that list is empty).
+of the domains in `org_profile.dns_hygiene.domains` (or of every registrable
+domain the run derives from its scope, when that list is empty).
+
+**How the seed is derived.** When a stage's `domains` list is empty, its seed
+is the registrable domain of each in-scope name, taken from the Public Suffix
+List: `www.bbc.co.uk` gives `bbc.co.uk`, `shop.example.com.ru` gives
+`example.com.ru`, `x.github.io` gives `x.github.io` itself. The list is a
+snapshot committed at `scanner/pipeline/public_suffix_list.dat` and read from
+disk only — a sensor in a restricted network never fetches it — and
+`dns_hygiene.json` names the snapshot in `public_suffix_list`. Both sections
+of the list are used; the private one is what keeps hosting platforms
+(`github.io`, `herokuapp.com`) from becoming seeds. Two consequences worth
+knowing:
+
+- a stale snapshot does not know a suffix added upstream since, and derives
+  the last two labels for it — the pre-list behaviour. Refresh with
+  `scripts/fetch-public-suffix-list.sh`, review the diff and ship it like any
+  other change; the script refuses a truncated download;
+- an organisation whose own domain is listed in the private section (a
+  platform scanning its own `*.platform.example`) gets per-customer seeds, not
+  the platform domain. Name the platform domain in `domains` explicitly — and
+  note that AXFR will still refuse it, because it is a public suffix.
 
 ## Approved scan scope per tenant
 
@@ -627,6 +674,16 @@ and report artifacts. Configure credentials only through secrets or environment
 injection. Test notification delivery with non-sensitive data before enabling
 production findings.
 
+## Sizing
+
+CPU, memory and volume sizes for N assets, M sensors and K scans a day — the
+model, a table for 1k / 10k / 50k assets, the measured coefficients behind it
+and how to re-measure them on your own stand — are in [sizing.md](sizing.md)
+([#337](https://github.com/onixus/Shapoclyack/issues/337)). Read it before
+choosing volume sizes: two Postgres tables grow with every scan and have no
+retention (`vulnerability_events`, `jobs`), and the JetStream volume has to
+hold what the streams *reserve*, not what they currently contain.
+
 ## Retention
 
 Retention must cover all stateful layers:
@@ -641,6 +698,23 @@ Retention must cover all stateful layers:
 Set retention according to legal, operational, and privacy requirements. Scan
 artifacts can contain internal hostnames, IPs, software versions, and
 vulnerability evidence.
+
+Every window below is the platform default. Since #332 a tenant may keep each
+category longer or shorter within bounds the platform configures, a platform
+admin may place a tenant on **legal hold** (no sweep deletes its data, and the
+tenant cannot be deleted), and console users' personal data can be exported
+and erased with the username kept as a pseudonym. What is kept, for how long,
+by which mechanism, and what the DPA annex should say about it:
+[data-retention.md](data-retention.md).
+
+Offboarding a customer is not a retention window: a platform admin suspends a
+tenant (its members' sessions, its tokens, keys and agents cut at once, its
+running agent scans told to stop), or deletes it
+in two steps with a grace period, after which a worker purges it from
+Postgres, ClickHouse, the artifact store and JetStream and keeps a tombstone.
+A restore from a backup taken before the purge brings the tenant back; the
+deletion journal is what to re-apply:
+[tenant-lifecycle.md](tenant-lifecycle.md).
 
 ### ClickHouse analytical data retention (ROADMAP #187)
 
@@ -832,6 +906,21 @@ GRANT EXECUTE ON FUNCTION audit_events_prune(timestamp without time zone)
 The migration initContainer runs as the API's role in the shipped manifests, so
 re-run the ownership statements after any future migration that recreates the
 table or the functions.
+
+Migration `0065` (#332) adds a second function, `audit_events_prune_tenant`,
+for tenants with an audit window of their own, and makes both skip a tenant on
+legal hold; the retention role then also needs `SELECT` on the policy and hold
+tables. The four extra statements are in
+[data-retention.md](data-retention.md#7-operating-it).
+
+**Before upgrading to `0065` with this layout applied:** the migration
+replaces `audit_events_prune`, which only its owner may do, and the migration
+role is no longer it. `0065` checks first and stops without changing anything,
+naming the statement to run. Run that one upgrade as a superuser or a member of
+`shapoclyack_audit_owner`, or hand the function to the migration role
+beforehand (`ALTER FUNCTION audit_events_prune(timestamp without time zone)
+OWNER TO shapoclyack_api;`) and give both functions back afterwards with the
+statements in [data-retention.md, section 7](data-retention.md#7-operating-it).
 
 A superuser can still do anything at all; what this layout buys is that the
 credential in the API's Secret is not enough.
@@ -1588,8 +1677,8 @@ curl -sSL https://<api-host>/api/agent/install.sh | sudo bash -s -- --server htt
 ```
 
 `scripts/install-agent.sh` covers Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine
-and Arch, and takes `--agent-id`, `--install-dir`, `--docker`, `--nats-url` and
-`--key-stdin` as options (`--help` lists them).
+and Arch, and takes `--agent-id`, `--install-dir`, `--docker`, `--nats-url`,
+`--key-stdin` and `--keep-key` as options (`--help` lists them).
 
 `--key-stdin` reads the provisioning key from standard input instead of taking
 it as `--key`. Prefer it wherever the caller can write to stdin — an argument is
@@ -1597,19 +1686,48 @@ readable by every local user on that host for as long as the process runs. The
 SSH push always uses it.
 
 With `--docker` it is a thin wrapper: it writes `/etc/shapoclyack/agent.env`
-(`0600`) and runs `ghcr.io/onixus/shapoclyack-scanner:latest` (override with
-`AGENT_IMAGE`) as the container `shapoclyack-agent` (`--restart always`, host
-network, `NET_RAW`/`NET_ADMIN`, `--env-file` pointing at that file, entrypoint
-`python -m agent`), then exits. The credential is in the env file rather than in `-e`
-arguments, which would be in the docker client's own argv.
+(`0600`) and runs the released scanner image, pinned as
+`ghcr.io/onixus/shapoclyack-scanner:<release tag>@sha256:<digest>` (override
+with `AGENT_IMAGE`; `--help` prints the current default), as the container
+`shapoclyack-agent` (`--restart always`, host network, `NET_RAW`/`NET_ADMIN`,
+`--env-file` pointing at that file, entrypoint `python -m agent`), then exits.
+The credential is in the env file rather than in `-e` arguments, which would be
+in the docker client's own argv. The console's `docker run`, Compose and
+Kubernetes snippets name the same pinned image (`SENSOR_IMAGE` in
+`api/services/agents.py`). Both are re-pinned with the `k8s/` manifests after
+each release is published, so an API built from a new tag keeps handing out the
+previous release's sensor until that pin lands.
 
 Without it, the native path installs Python and a virtualenv under
-`/opt/shapoclyack-agent`, creates a `shapoclyack` system account, writes
-`/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
-systemd is present — installs and enables `shapoclyack-agent.service`
-(`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
-systemd the sensor is started with `nohup` and is **not** restarted on boot; on
-such a host, supervise it yourself.
+`/opt/shapoclyack-agent`, installs the sensor's Python dependencies into it from
+`requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
+with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
+not in the lock is refused, and only wheels are taken, which exist for x86_64 and
+aarch64 with glibc or musl — creates a `shapoclyack` system account in a
+`shapoclyack` group, writes `/etc/shapoclyack/agent.env` (`0600`, owned by that
+account), and — where systemd is present — installs and enables
+`shapoclyack-agent.service` (`Restart=always`,
+`EnvironmentFile=/etc/shapoclyack/agent.env`). Without systemd (Alpine with
+OpenRC, containers) the sensor is started in the background with `nohup` as
+that account (`runuser`, or BusyBox `su`; `sudo` is not needed). It logs to
+`/opt/shapoclyack-agent/agent.log` and is **not** restarted on boot or after a
+crash, so supervise it yourself on such a host. The installer fails if that
+process has exited three seconds after start. A re-run stops the process the
+previous run started before it starts the new one.
+
+**The sensor needs Python 3.11 or newer.** The installer uses `python3` when it
+is new enough. If it is older, the installer installs `python3.12` or
+`python3.11` from the distribution: AppStream on RHEL/Rocky/Alma 9, whose
+`python3` is 3.9, and universe on Ubuntu 22.04, whose `python3` is 3.10. Where
+no such package exists (Ubuntu 20.04, Debian 11), it stops before creating the
+account and names the version it found. Install a 3.11+ interpreter with its
+`venv` module yourself, or use `--docker`. A virtualenv left by an earlier run
+on an older interpreter is rebuilt.
+
+**If the `shapoclyack` account already exists**, its primary group must be
+`shapoclyack`, or the installer stops and says so. Installers before this fix
+created it in `nogroup` on Alpine and then failed at `chown`. Remove that
+account (`deluser shapoclyack`) and re-run.
 
 **The native path does not ship the sensor source.** The API serves no sensor
 bundle, so the package has to come from somewhere explicit: pass
@@ -1646,6 +1764,33 @@ that did nothing and exited 0 — forever, under `Restart=always`. The guard is
 there now, so both `python -m agent` and `python -m agent.worker` run the
 sensor, but the flags in an old unit are still wrong: **a sensor installed by an
 older installer needs a re-run of this one.**
+
+**A re-run keeps the sensor's ID.** An upgrade is a re-run of the installer,
+and without `--agent-id` the re-run takes `OCTO_AGENT_ID` from the existing
+`/etc/shapoclyack/agent.env` and says so (`Keeping agent ID …`), on the native
+and the `--docker` path alike. The file is parsed, never sourced: it holds the
+provisioning key and the installer runs as root. Installers before this one
+generated a fresh `agent-<host>-<random>` on every run, so every upgrade
+registered a second sensor. The old row stayed in the fleet view, went `stale`,
+was counted in `stale_agents` and was announced as `agent_offline`; its sensor
+group and any quarantine stayed with it, so the host came back as an
+ungrouped, `active` sensor that no longer took its group's jobs. Delete such
+leftovers with `DELETE /api/agents/{id}`, and leave `revoke_key` off unless you
+mean to retire that key: the sensor that replaced the row may hold the same one.
+
+Two cases do not reuse the ID. `--agent-id` always wins. An `agent.env`
+written for a different `--tenant` is ignored and a new ID is generated,
+because an ID stays bound to its tenant and revoking a key does not release it
+across tenants. A re-run with a *different provisioning key* keeps the ID and
+warns: see "Revoke before you re-provision" under
+[Sensor lifecycle](#sensor-lifecycle-disable-quarantine-deregister).
+
+`--keep-key`, in place of `--key` or `--key-stdin`, reinstalls the sensor that
+`agent.env` describes with the key it already holds, so no key is needed. It is
+refused unless the file has both an agent ID and a key, was written for the
+same `--tenant`, and names the same ID as `--agent-id` when that is given: a
+key that is not the sensor's own would be refused its ID. The SSH push uses it
+for a host that already runs one of the tenant's sensors.
 
 ### Sensor groups: which sensor may execute which scan
 
@@ -1803,7 +1948,7 @@ they re-register.
 before this feature have `expires_at: null` and never expire** — nothing
 back-dates them, because stranding a fleet on a deadline nobody was told about
 is worse than a key that outlives its usefulness. Find them in that list,
-re-install the sensors against a fresh key, then revoke the old one.
+revoke the old one, then re-install the sensors against a fresh key.
 
 **Revoke before you re-provision, not after.** An `agent_id` is bound to the
 key it first registered with, so an exchange asking for that id under a
@@ -1811,16 +1956,25 @@ key it first registered with, so an exchange asking for that id under a
 is what stops one key's holder impersonating another key's sensor. Revoking the
 old key releases the id (and stops its live JWTs in the same move), after which
 the new key adopts the host under its own name. Re-provisioning first leaves
-the sensor unable to authenticate until you get to the revocation.
+the sensor unable to authenticate until you get to the revocation; it retries
+on its own and recovers once the old key is revoked. The installer keeps the
+sensor's ID across a re-run, so it warns when the key it is given differs from
+the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
+should register as a new sensor under the new key. The SSH push handles this
+order itself, and refuses where revoking would stop other sensors; see
+[SSH push deployment](#ssh-push-deployment).
 
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
 [#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
-the API: verify the target's host key → connect → mint a tenant provisioning
-key → run the installer on the target, feeding it the key on stdin → wait up
-to 30 s for the sensor's first heartbeat. The API runs the OpenSSH client (`ssh`,
+the API: verify the target's host key → connect → read the target's
+`/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
+mint a tenant provisioning key, unless the host keeps the one it has → run the
+installer on the target, feeding it the new key, if any, on stdin → revoke the sensor's
+previous key if the run moved it (below) → wait up to 30 s for the sensor's
+first heartbeat. The API runs the OpenSSH client (`ssh`,
 `ssh-keyscan`); the `api` and `aio` images install `openssh-client` for it.
 Images before `0.43-0828` inclusive shipped no SSH client at all, and every
 deployment from them failed at the host-key probe with `HostKeyUnavailable`.
@@ -1835,9 +1989,10 @@ declared dependency and the images do not carry it.
   (Before that wrapper the first live run exited 127 under fish.)
 - A non-root user needs **passwordless sudo** (`sudo -n`). A sudo that prompts
   would consume the provisioning key arriving on stdin as its password guess,
-  so the deployer never lets it prompt; on a host where `sudo` asks, the run
-  fails at `Installation failed` with `sudo: a password is required` in the
-  remote log. Root over SSH needs no sudo.
+  so the deployer never lets it prompt. Reading `agent.env` (`0600`) is the
+  first thing that needs root, so on a host where `sudo` asks, the run fails at
+  `Host check failed` with `sudo: a password is required`, before any key has
+  been minted. Root over SSH needs no sudo.
 - The installer needs a sensor package (the `agent` Python package). The API
   serves none, so a native
   (systemd) install through this route ends with `No agent package available`
@@ -1845,6 +2000,40 @@ declared dependency and the images do not carry it.
   `use_docker: true` avoids that by running the published
   `shapoclyack-scanner` image (`AGENT_IMAGE` overrides it), which is the
   shape this route can complete unattended today.
+
+**Redeploying a host that already runs a sensor.** Every push used to mint a
+key and pass a fresh `--agent-id`, so a second push to the same host registered
+a second sensor. The first went `stale`, was counted in `stale_agents`, was
+announced as `agent_offline`, and kept its sensor group and any quarantine,
+while the host came back ungrouped and `active`. Now the run reads the host's
+`agent.env` through `sudo -n` before anything is minted. It reads the agent ID,
+the tenant, and a SHA-256 prefix of the key. The key itself stays on the host.
+The prefix is the non-secret `key_lookup` the API indexes keys by, so the API
+can tell whether the host holds the key the sensor is bound to. Then:
+
+| The host, and the request's `agent_id` | What the run does |
+|---|---|
+| Runs sensor X of this tenant and holds the key X is bound to; `agent_id` empty or X | Reinstalls X with `--keep-key`. Same ID and same key, nothing minted or revoked, and group and lifecycle state stay. This is the Deploy dialog's case, since it sends no `agent_id` |
+| X is registered, but its key is revoked or expired, or none is on record | Mints a key, and X takes it over on registration. Nothing to revoke. To rotate a sensor's key through the push, revoke the old key first |
+| X is registered with an active key the host does not hold (a rebuilt host named in `agent_id`, or a hand re-run that left another key behind) | Mints a key and, **once the installer has succeeded**, revokes X's previous key, because the exchange refuses the ID to a new key while that one is active. This is re-checked just before revoking |
+| … and X is online | **Refused** before anything is minted or installed. Revoking would take the ID from a running sensor. Stop it first, or send a new `agent_id` |
+| … and other sensors hold X's key | **Refused**. Revoking a fleet key would stop them all. Revoke it yourself if you mean to (the next push then mints a key), or send a new `agent_id` |
+| No `agent.env`, no `agent_id` | New sensor `agent-<host>-<random>` with a new key |
+| `agent.env` is for another tenant, or its ID is not a printable token of at most 128 characters | Not reused. New sensor, new key |
+| `agent_id` names no registered sensor | New sensor under that ID. If the host ran another sensor, that one stays in the fleet until you delete it, and the log says so |
+| `agent_id` is registered in another tenant | **Refused**. The exchange would refuse it forever |
+
+The run's log says which of these happened, before the key step, and ends
+with either `sensor X redeployed with its identity kept` or `new sensor X`. A
+revocation gets its own line. A `disabled` or `quarantined` sensor keeps that
+state. The reinstalled sensor is refused a token until an admin re-activates
+it, so the run says so and does not wait for a heartbeat. The key the run mints
+and any key it revokes are recorded in the audit trail under the admin who
+started it. Before this change they were recorded as `system`.
+
+Sensors that earlier pushes duplicated are not merged. Delete the stale rows
+with `DELETE /api/agents/{id}`, and leave `revoke_key` off: the sensor that
+replaced a row may hold the same key.
 
 **Host key verification.** The first deployment to a host is refused unless the
 request names the fingerprint you expect:
@@ -1916,7 +2105,11 @@ Operational limits worth knowing before relying on it:
   accepted and silently ignored, which is worse than not offering it;
 - a heartbeat that has not arrived within the verification window is reported as
   a warning, not a failure: the install may still be fine, so check the Agents
-  page (sensors; route `/agents`).
+  page (sensors; route `/agents`);
+- a run that fails at the installer leaves the key it minted active and unused
+  (label `SSH Remote Deploy on <host>`). Revoke it from the key list. A
+  previous key that was due to be revoked is left alone, so the sensor that
+  holds it keeps working.
 
 ### Upgrade
 
@@ -2287,6 +2480,11 @@ kubectl -n network-scan get pods,jobs,cronjobs
 kubectl -n network-scan logs deployment/shapoclyack-api --tail=200
 ```
 
+The catalogue of every series with the bound on each of its labels, the
+Grafana dashboards, the sensor-heartbeat and connection-pool series, and the
+opt-in ServiceMonitor / PrometheusRule / dashboard components are in
+[observability.md](observability.md) (#334).
+
 `GET /metrics` exposes the Prometheus series used by the dashboards and alerts
 referenced above. It answers anyone who can reach the API unless
 `OCTO_METRICS_TOKEN` is set, in which case the scraper sends
@@ -2308,6 +2506,12 @@ no agent, device, asset, tenant, or product names):
 
 ## Backup and disaster recovery
 
+The full runbook — every store, the order of restore, how restore points of
+Postgres, artifacts and ClickHouse are reconciled, the RPO/RTO table and the
+drill that measured it — is [disaster-recovery.md](disaster-recovery.md)
+([#333](https://github.com/onixus/Shapoclyack/issues/333)). This section keeps
+the PostgreSQL backup and its restore script.
+
 > **`overlays/prod-ha` moves this out of the cluster.** That overlay deletes the
 > in-cluster PostgreSQL StatefulSet and the `pg_dump` CronJob below along with
 > it, because the database is expected to be a managed one (RDS, Cloud SQL,
@@ -2322,8 +2526,9 @@ The base deployment takes a logical PostgreSQL backup every day at 02:15 UTC.
 That schedule gives a **design RPO of at most 24 hours** for PostgreSQL, assuming
 the scheduled backup succeeds and is uploaded. The **RTO target is 60 minutes**
 for restoring Postgres + API into an isolated namespace (the path
-`scripts/restore-postgres.sh` implements). ClickHouse and the artifact PVC have
-no in-repo snapshot object — see below.
+`scripts/restore-postgres.sh` implements). ClickHouse, the artifacts and
+JetStream have their own rows in
+[disaster-recovery.md § Recovery objectives](disaster-recovery.md#recovery-objectives).
 
 | Measure | Target | Last measured |
 |---|---:|---:|
@@ -2334,10 +2539,10 @@ no in-repo snapshot object — see below.
 
 Namespace `shapoclyack-restore`, overlay `k8s/shapoclyack/overlays/kind-restore`.
 Row counts after restore matched the source. JetStream was **not** replayed —
-Postgres is the durable store; see [NATS / JetStream recovery](#nats--jetstream-recovery).
+Postgres is the durable store; see [disaster-recovery.md § JetStream](disaster-recovery.md#jetstream).
 ClickHouse and `scanner-data` were not snapshotted (kind `local-path` has no
-`VolumeSnapshotClass`); that remains an install-specific choice, not an unmeasured
-Postgres drill.
+`VolumeSnapshotClass`); the 10k-asset drill of all stores is in
+[disaster-recovery.md § Drill](disaster-recovery.md#drill).
 
 ### PostgreSQL scheduled backup
 
@@ -2377,7 +2582,8 @@ restore script refuses the base `network-scan` namespace unless
 1. Create an isolated namespace and deploy the same Shapoclyack Postgres + API
    version that will consume the backup. On the kind lab that is
    `kubectl apply -k k8s/shapoclyack/overlays/kind-restore` (namespace
-   `shapoclyack-restore`, no NodePort, no NATS/ClickHouse/scan Jobs). Elsewhere:
+   `shapoclyack-restore`, no NodePort, no NATS, no scan Jobs or backup
+   CronJobs; ClickHouse stays, as the target of `scripts/restore-clickhouse.sh`). Elsewhere:
    same image tag as the source, Postgres and API secrets present, ingress and
    external integrations disabled. Wait until Postgres is Ready and the API has
    rolled out once — the restore script then replaces that empty schema.
@@ -2411,64 +2617,18 @@ reproduce the calculation.
 A restore that completes `pg_restore` but cannot start the current API image is
 a failed drill, not a successful database restore.
 
-### Artifact PVC recovery
+### ClickHouse, artifacts and JetStream
 
-`scanner-data` contains reports, raw scan artifacts, checkpoints, and other run
-state. The base PVC intentionally does not assume a storage vendor or a
-`VolumeSnapshotClass`, so the repository cannot safely provide one universal
-snapshot object.
-
-For production, configure CSI `VolumeSnapshot` or the storage provider's native
-snapshot/backup mechanism for `scanner-data`. Restore the snapshot to a **new
-PVC in the isolated namespace** and mount that PVC into the recovery deployment
-before validating reports or attempting resume. Do not overwrite the production
-PVC during a drill.
-
-Snapshot cadence must be chosen so artifact retention is compatible with the
-PostgreSQL RPO. If PostgreSQL is restored to time T but the artifact PVC is much
-older, runs referenced by the database may have missing files.
-
-### ClickHouse recovery
-
-The base ClickHouse StatefulSet is single-replica and stores data under
-`clickhouse-data`. Production installations must choose one of these recovery
-methods and test it with the PostgreSQL drill:
-
-- ClickHouse native `BACKUP`/`RESTORE` to configured external object storage; or
-- a CSI/storage-provider snapshot of `clickhouse-data`, taken while writes are
-  quiesced or using a storage mechanism documented as application-consistent.
-
-Restore ClickHouse into the isolated namespace before enabling the ingest
-worker. Validate `/ping`, expected tables, and representative historical
-queries. Do not infer ClickHouse consistency merely because a PVC snapshot
-object exists.
-
-### NATS / JetStream recovery
-
-JetStream is an operational queue, not the source of truth for assets or scan
-history. Recover durable stores first. Only then decide whether a JetStream
-snapshot is required for messages that were accepted but not durably processed.
-
-Shapoclyack publishes with stable `Nats-Msg-Id` values and uses idempotent
-result/event identifiers. The EVENTS stream also has a duplicate window. A
-restored stream can nevertheless contain messages whose effects already exist
-in PostgreSQL or ClickHouse, especially when the queue snapshot and database
-backup were taken at different times.
-
-Recovery order:
-
-1. restore and validate PostgreSQL, artifact PVC, and ClickHouse;
-2. keep API/worker consumers that mutate durable state paused while inspecting
-   the JetStream snapshot boundary;
-3. identify queued messages newer than the durable recovery point and preserve
-   their original `Nats-Msg-Id` / idempotency identifiers;
-4. restore/replay only the required range;
-5. re-enable consumers and verify duplicate/idempotency counters and durable
-   record counts before exposing the recovered stack.
-
-Never replay a restored stream by republishing every message with new message
-IDs. That defeats the deduplication mechanisms the recovery procedure relies
-on.
+These used to be described here in prose only. They now have a backup
+CronJob (`base/backup/clickhouse-cronjob.yaml`), a restore script with a
+verification step (`scripts/restore-clickhouse.sh`), a CSI snapshot example for
+`scanner-data` (`examples/pvc-snapshot.example.yaml`), and a runbook that says
+which store wins when their restore points disagree:
+[disaster-recovery.md](disaster-recovery.md) —
+[ClickHouse](disaster-recovery.md#clickhouse),
+[artifacts](disaster-recovery.md#artifacts),
+[JetStream](disaster-recovery.md#jetstream),
+[reconciling restore points](disaster-recovery.md#reconciling-restore-points).
 
 ### NATS outbox
 
@@ -2846,6 +3006,12 @@ since the API's enrichment initContainer runs the same script without the flag �
 leaves the origin alone. So `origin: fetch` on a dataset the CronJob refreshed
 last night survives a rollout, and `seed` stays a statement worth acting on.
 
+**No egress, or only to internal mirrors?** Every feed has a `*_URL` mirror
+override, and an offline bundle (`make enrichment-bundle` on a connected host,
+loaded by the `overlays/airgap` CronJob) carries the datasets across; installed
+datasets report `origin: bundle`. The procedure — images, pull secret, mirrors,
+bundle, what stays unavailable — is [air-gap.md](air-gap.md).
+
 ## Upgrade and rollback
 
 > With `base` and `overlays/prod` there is a single API replica, so the probes
@@ -3080,7 +3246,7 @@ manifests themselves:
 | Service | Port | Legitimate clients |
 |---------|------|--------------------|
 | Postgres | 5432 | API (incl. its `migrate` init container), backup CronJob |
-| ClickHouse | 8123 / 9000 | API |
+| ClickHouse | 8123 / 9000 | API; 9000 also the ClickHouse backup CronJob (#333) |
 | NATS | 4222 | API; sensors outside the cluster (the in-cluster scanner-executor claims over HTTP, [#338](https://github.com/onixus/Shapoclyack/issues/338)) |
 
 That is a closed list, so `k8s/shapoclyack/base/networkpolicy-datastores.yaml`
@@ -3122,6 +3288,19 @@ manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
 
+### Tenant row-level security (#311)
+
+Migration `0067_tenant_rls` creates the NOLOGIN role `shapoclyack_tenant` and a
+row-level-security policy on every tenant table; the API switches to that role
+for each transaction of a tenant-scoped request (`OCTO_TENANT_RLS=enforce`, the
+default). On the stock manifests (`octo`, a superuser) and on managed services
+whose master user has `CREATEROLE` there is nothing to do. A migration role
+without `CREATEROLE`, an API role separate from the migration role, the
+`audit_events` ownership split above, backup roles, the startup check that
+refuses a database which cannot enforce it, and how to read a denied row are in
+[tenant-isolation.md](tenant-isolation.md#operations). `OCTO_TENANT_RLS=off` and
+a restart is the kill switch; it needs no migration rollback.
+
 ## Data-plane credentials
 
 The control plane (JWT, RBAC, tenant scoping) has always been authenticated.
@@ -3138,9 +3317,10 @@ publish forged `jobs.scan` offers. Since #225 all three require credentials.
 |--------|------|-------------|
 | `shapoclyack-postgres` | `password` | Postgres, API, backup CronJob |
 | `shapoclyack-clickhouse` | `password` | ClickHouse StatefulSet, API |
+| `shapoclyack-clickhouse-backup` | `password` | ClickHouse StatefulSet (user `shapoclyack_backup`), ClickHouse backup CronJob ([#333](https://github.com/onixus/Shapoclyack/issues/333)) |
 | `shapoclyack-nats` | `api_password`, `agent_password` | NATS StatefulSet, API, sensors |
 
-`base/kustomization.yaml` generates dev placeholders for all three, the same
+`base/kustomization.yaml` generates dev placeholders for all of these, the same
 way it always has for Postgres — a fresh `kubectl apply -k` comes up without
 any manual step. The placeholders are published in this repository. Override
 them with `examples/api-secrets.example.yaml` (or

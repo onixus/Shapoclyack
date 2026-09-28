@@ -1,0 +1,49 @@
+# Offline enrichment for an air-gapped cluster (#339) — see docs/air-gap.md.
+#
+# Layer it on top of base/enrichment, which owns the shared `enrichment-data`
+# volume this installs into:
+#
+#   kubectl apply -k k8s/shapoclyack/overlays/airgap
+#
+# What it changes, and why each piece belongs with the others:
+#
+#   - A loader CronJob that installs whatever bundle is in the inbox volume
+#     (scripts/enrichment_bundle.py install --missing-ok). Every run verifies
+#     the whole archive before it touches the data, and a bundle that is
+#     already installed is a no-op, so running it on a schedule is cheap and
+#     "copy the file in" is the entire operator procedure.
+#   - The inbox PVC that bundle is copied into, mounted read-only by the loader.
+#   - The online refresh CronJob is suspended. With no egress every feed would
+#     fail, and the manifest would record each bundle-installed dataset as
+#     `stale` every night.
+#   - The API's cold-start initContainer runs the same refresh script with
+#     OCTO_ENRICHMENT_OFFLINE=true: seed floor and manifest only, no connection
+#     attempts — otherwise every rollout would spend its start-up on timeouts
+#     and then demote the bundle's provenance the same way.
+#
+# Why a Job reading a volume rather than an upload endpoint on the API: the API
+# keeps its read-only mount of the data and grows no multi-hundred-megabyte
+# upload surface; the loader runs with no Kubernetes API token and no network
+# it needs; the same command works on a host without Kubernetes; and who put
+# which file in the inbox is in the cluster's own audit log. docs/air-gap.md
+# has the longer version.
+#
+# network-scan for this component's own objects, through an unsetOnly
+# NamespaceTransformer rather than `namespace:`: a component's transformer runs
+# over everything the overlay has accumulated, and `namespace:` would move
+# objects that already belong elsewhere (a scanner-executor namespace, #338)
+# into network-scan and collide. unsetOnly fills in only what has none.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+transformers:
+  - namespace-transformer.yaml
+
+resources:
+  - serviceaccount.yaml
+  - pvc.yaml
+  - cronjob.yaml
+
+patches:
+  - path: cronjob-refresh-suspend-patch.yaml
+  - path: api-offline-patch.yaml
