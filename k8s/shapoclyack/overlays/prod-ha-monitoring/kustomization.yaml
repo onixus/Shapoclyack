@@ -22,8 +22,15 @@ kind: Kustomization
 # The components carry no namespace of their own — a component's transformer
 # would move everything rendered here, not only what it adds — so the overlay
 # that includes them names it. An installation in another namespace sets its
-# own here.
-namespace: network-scan
+# own in namespace-transformer.yaml.
+#
+# An unsetOnly transformer rather than `namespace:` (#338): the plain field
+# moves every namespaced object, the scanner-executor in network-scan-executor
+# included, and renames both Namespace objects to network-scan — kustomize
+# refuses the render. unsetOnly names only what has no namespace yet: the
+# ServiceMonitor, the PrometheusRule and the dashboard ConfigMaps.
+transformers:
+  - namespace-transformer.yaml
 
 # Repeated for the same reason as in prod-ha: base's label transformer applies
 # to base's own resources, not to the objects the components add here.

@@ -82,6 +82,19 @@ if command -v kubectl >/dev/null 2>&1 && kubectl get namespace "${NAMESPACE}" >/
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 fi
 
+# The scanner-executor verifies this certificate too (#338), from its own
+# namespace, where it cannot read the Secret above and has no business holding
+# the key. It gets the CA certificate only, as a ConfigMap
+# (k8s/shapoclyack/base/api-tls/executor-tls-patch.yaml mounts it; overlays/kind-dev takes that component).
+EXECUTOR_NAMESPACE="${EXECUTOR_NAMESPACE:-network-scan-executor}"
+if command -v kubectl >/dev/null 2>&1 && kubectl get namespace "${EXECUTOR_NAMESPACE}" >/dev/null 2>&1; then
+  echo "==> Putting the CA certificate in ${EXECUTOR_NAMESPACE}/shapoclyack-api-ca"
+  kubectl create configmap shapoclyack-api-ca \
+    --namespace "${EXECUTOR_NAMESPACE}" \
+    --from-file=ca.crt="${CERT_DIR}/ca.crt" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
+
 echo
 echo "CA for agents and clients: ${CERT_DIR}/ca.crt"
 if [ -n "${LAN_IP}" ]; then

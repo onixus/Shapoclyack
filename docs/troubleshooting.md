@@ -60,6 +60,10 @@ into a denied range — `OCTO_SCAN_SCOPE_RESOLVE_CHECK`.
 ## Jobs remain queued
 
 - check `OCTO_JOB_EXECUTION_MODE`;
+- on Kubernetes (agent mode since #338), check the scanner-executor:
+  `kubectl -n network-scan-executor get pods` — `CreateContainerConfigError`
+  means its provisioning-key Secret is missing
+  ([Kubernetes hardening](k8s-hardening.md#enrolling-the-scanner-executor));
 - in local mode, confirm scan start is allowed and the AIO image includes tools;
 - in `agent` execution mode, confirm NATS/API connectivity and at least one
   online sensor (API resource `agents`, `agent_kind = scanner`);
@@ -114,6 +118,7 @@ Check the `scan-targets` Secret first:
 kubectl -n network-scan get secret scan-targets
 ```
 
+The scan Job and CronJob exist only with `overlays/local-scan` (#338).
 `job.yaml`, `job-resume.yaml`, and `cronjob.yaml` mount it as a **required**
 volume (unlike the API Deployment, where it is optional). When it is missing the
 kubelet cannot create the pod at all — it stays in `ContainerCreating` until

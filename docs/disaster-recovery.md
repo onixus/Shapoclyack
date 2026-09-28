@@ -112,7 +112,11 @@ restored stack — users, sensors, integrations — until reconciliation is done
    in the API's environment and **no Ingress/NodePort** — nothing may submit a
    scan, and no sensor may claim a queued one, until step 10. `overlays/kind-restore`
    is that overlay for the lab. The existing `scanner-data` claim is left as it
-   is by the apply.
+   is by the apply. Leave the in-cluster scanner-executor out, as
+   `kind-restore` does (or scale it to zero): it claims through the API's
+   Service, which no Ingress rule governs
+   ([#338](https://github.com/onixus/Shapoclyack/issues/338),
+   [k8s-hardening.md](k8s-hardening.md#the-scanner-executor)).
 4. **PostgreSQL** to `T_pg`: `scripts/restore-postgres.sh --namespace "$NS" …`
    ([operations.md § PostgreSQL restore drill](operations.md#postgresql-restore-drill)),
    or the provider's PITR for `prod-ha`.
@@ -134,7 +138,8 @@ restored stack — users, sensors, integrations — until reconciliation is done
    survived, [replay it](#closing-the-gap-from-ingest).
 10. **Verify** — § Verification checklist — **then open the doors**:
     Ingress/DNS to the restored API, and `OCTO_ALLOW_SCAN_START=true`. Sensors
-    reconnect by themselves.
+    reconnect by themselves; the scanner-executor comes back with the
+    installation's own overlay (or its replicas).
 
 ## Reconciling restore points
 

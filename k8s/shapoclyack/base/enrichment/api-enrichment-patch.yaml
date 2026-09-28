@@ -50,14 +50,19 @@ spec:
             # neither refreshed nor failed. scripts/enrichment_manifest.py keeps
             # the origin they already had for exactly that case -- it must not
             # rewrite a CronJob-fetched corpus to `seed` on every rollout.
+          # Same writable paths as the enrichment-refresh CronJob (#338); /tmp
+          # is the API pod's own emptyDir, from base/api-deployment.yaml.
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
           volumeMounts:
             - name: enrichment-data
               mountPath: /app/scanner/data
+            - name: tmp
+              mountPath: /tmp
       containers:
         - name: api
           env:

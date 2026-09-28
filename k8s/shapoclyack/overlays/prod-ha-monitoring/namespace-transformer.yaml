@@ -1,0 +1,11 @@
+# network-scan for what base/monitoring and base/grafana-dashboards add, which
+# carry no namespace of their own. A copy of base/namespace-transformer.yaml,
+# because an overlay may not load a file from outside its directory; unsetOnly
+# for the reason given there (#338) — this transformer runs over everything the
+# overlay renders, the scanner-executor in network-scan-executor included.
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: network-scan-namespace
+  namespace: network-scan
+unsetOnly: true

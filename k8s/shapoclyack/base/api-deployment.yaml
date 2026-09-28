@@ -34,15 +34,24 @@ spec:
         prometheus.io/path: /metrics
     spec:
       serviceAccountName: api
+      # Nothing in the API calls the Kubernetes API (#338).
+      automountServiceAccountToken: false
       # Longer than the default 30s and paired with the preStop sleep below: the
       # API runs in-process scan work and background workers, and SIGTERM while
       # kube-proxy still lists the pod as an endpoint drops requests that were
       # already on their way (#331).
       terminationGracePeriodSeconds: 45
+      # Pod Security `restricted`, all of it (#338): the API no longer runs a
+      # scanner, so it needs no capability, no privilege escalation and no
+      # writable image. tests/test_k8s_pod_security.py holds every overlay's
+      # API pod to this.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       # Runs Alembic migrations before any API replica starts — Postgres is a
       # hard dependency (tenant store lives there), and migrations aren't
       # safely idempotent across N replicas starting concurrently the way
@@ -57,7 +66,7 @@ spec:
       # migration fails the pod with a cause instead of hanging at Init:0/1.
       initContainers:
         - name: migrate
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.46-0922@sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "api.db.migrate"]
           env:
@@ -70,12 +79,22 @@ spec:
               value: postgresql+psycopg://octo:$(POSTGRES_PASSWORD)@shapoclyack-postgres-client:5432/shapoclyack
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
       containers:
         - name: api
-          image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+          # The API image (Dockerfile.api): the API and the web console, and
+          # none of the scanner toolchain (#338 review). This pod no longer
+          # scans, so naabu, nmap and pulse with their file capabilities were
+          # attack surface in the one pod holding every credential. The
+          # migration above runs from the same image, so the two cannot
+          # disagree on the schema; base/local-scan puts the all-in-one back.
+          image: ghcr.io/onixus/shapoclyack-api:shapoclyack-0.46-0922@sha256:05f8a602511b5b0c6e04b29c503e5b77a793f4ea7abfc742044b08fd55357f2d
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -91,8 +110,12 @@ spec:
               value: web/dist
             - name: OCTO_ALLOW_SCAN_START
               value: "true"
+            # Jobs are queued for the scanner-executor (scanner-executor/) to
+            # claim, not run in this container (#338). `local` needs raw-socket
+            # capabilities here and a namespace that allows them — that is
+            # overlays/local-scan, see docs/k8s-hardening.md.
             - name: OCTO_JOB_EXECUTION_MODE
-              value: local
+              value: agent
             # Declared here, ahead of the two URLs below, even though base
             # leaves both URLs empty: $(VAR) in an env value only expands
             # against variables defined EARLIER in the same container's list,
@@ -198,21 +221,20 @@ spec:
             limits:
               cpu: "4"
               memory: 4Gi
+          # This container used to hold NET_RAW+NET_ADMIN and
+          # allowPrivilegeEscalation: true, for the scans it ran itself. Those
+          # moved to the scanner-executor with the capabilities (#338). One
+          # visible side effect: GET /api/system probes the scanner binaries
+          # baked into this image, and the ones carrying file capabilities
+          # (naabu, pulse, nmap) now fail execve with EPERM here — correctly,
+          # since nothing here may run them; in agent mode the System page
+          # lists them as not required of this container.
           securityContext:
-            # Local scans run inside this container by default
-            # (OCTO_ALLOW_SCAN_START=true) — nmap -O / naabu need the
-            # NET_RAW+NET_ADMIN file capabilities set on them at build time
-            # (Dockerfile setcap) to actually take effect for the non-root
-            # user; allowPrivilegeEscalation:false sets no_new_privs, which
-            # blocks that file-capability grant on exec regardless of what's
-            # listed below (matches job.yaml/cronjob.yaml's working config).
-            allowPrivilegeEscalation: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
-              add:
-                - NET_RAW
-                - NET_ADMIN
           volumeMounts:
             - name: data
               mountPath: /app/scanner/output
@@ -226,6 +248,16 @@ spec:
             - name: config
               mountPath: /app/scanner/config
               readOnly: true
+            # With the two PVC paths above, the whole list of places this
+            # container writes (#338). /tmp takes the request bodies Starlette
+            # spools to disk — a sensor's run archive among them — and the SSH
+            # deployer's key and known_hosts files. $HOME is where nuclei and
+            # dnsx, run for GET /api/system, write a config file they exit
+            # without.
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/octo
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -237,3 +269,14 @@ spec:
         - name: config
           configMap:
             name: scanner-config
+        # One spooled file per upload in flight, each up to
+        # OCTO_AGENT_RESULTS_MAX_BODY_BYTES (128 MiB). The ingest gate turns
+        # away uploads beyond its concurrent + waiting slots (12 at the
+        # defaults), so 2Gi is that plus the ones still arriving; raise it
+        # with either setting. Exceeding it evicts the pod.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 64Mi
