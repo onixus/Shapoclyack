@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enrichment-bundle-load
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-bundle
+spec:
+  # Every 15 minutes: a bundle copied into the inbox is live within one period
+  # without anyone creating a Job. A run with nothing new reads only the
+  # bundle's first member (its manifest), finds that bundle installed and exits
+  # — nothing is unpacked or written. To load at once:
+  #   kubectl -n network-scan create job --from=cronjob/enrichment-bundle-load load-now
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  # Kept longer than successes: a rejected bundle's reason is in that pod's log.
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # A bundle refused once is refused again; retrying only buries the log.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 604800
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shapoclyack
+            app.kubernetes.io/component: enrichment-bundle
+        spec:
+          restartPolicy: Never
+          serviceAccountName: enrichment-bundle
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: load-bundle
+              image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+              imagePullPolicy: IfNotPresent
+              command:
+                - python3
+                - scripts/enrichment_bundle.py
+                - install
+                - /inbox/enrichment-bundle.tar.gz
+                - --dir
+                - /app/scanner/data
+                - --missing-ok
+              env:
+                # Read-only root filesystem: no __pycache__ to write.
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                # The trust root, when there is one: the sha256 of the one
+                # bundle file this installation accepts, from a ConfigMap the
+                # operator creates per bundle (docs/air-gap.md, "Trust").
+                # Without it, write access to the inbox volume is what decides
+                # which data is installed.
+                - name: OCTO_ENRICHMENT_BUNDLE_SHA256
+                  valueFrom:
+                    configMapKeyRef:
+                      name: shapoclyack-enrichment-bundle
+                      key: sha256
+                      optional: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  # The archive is streamed, but each staged JSON dataset is
+                  # parsed whole to check it is a dataset and clears its floor
+                  # — the Debian tracker and NVD CPE ranges are the large ones.
+                  # The same ceiling the advisory and NVD CPE refreshes take.
+                  memory: 2Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: enrichment-data
+                  mountPath: /app/scanner/data
+                - name: inbox
+                  mountPath: /inbox
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: enrichment-data
+              persistentVolumeClaim:
+                claimName: enrichment-data
+            - name: inbox
+              persistentVolumeClaim:
+                claimName: enrichment-bundle-inbox
+                readOnly: true
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

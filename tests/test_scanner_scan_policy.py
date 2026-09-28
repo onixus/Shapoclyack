@@ -848,6 +848,7 @@ def test_the_last_ladder_step_builds_a_command_naabu_will_start_on(
         "-sn",
         "-wn",
         "-silent",
+        "-disable-update-check",
         "-rate",
         "25",
         "-retries",

@@ -141,7 +141,7 @@ M2/M3, когда появится агрегатор, читающий чужи
 | Параметр | Дефолт | Смысл |
 | --- | --- | --- |
 | `enabled` | `false` | стадия opt-in, как все стадии модуля |
-| `domains` | `[]` | пусто = базовые домены из входных FQDN (`base_domains_from_fqdns`) |
+| `domains` | `[]` | пусто = регистрируемые домены входных FQDN по Public Suffix List (`base_domains_from_fqdns`) |
 | `max_domains` | `50` | кап на число доменов, которым уйдёт RDAP-запрос |
 | `timeout_seconds` | `15` | таймаут одного запроса (весь бюджет hop'а, включая редиректы) |
 | `deadline_seconds` | `300` | общий дедлайн стадии — проверяется и между доменами, и перед каждой попыткой запроса, и таймаут одного запроса им подрезается |
@@ -356,7 +356,7 @@ RDAP-сервер реестра не подхватился бы никогда
 | Параметр | Дефолт | Смысл |
 | --- | --- | --- |
 | `dns_hygiene.enabled` | `false` | стадия opt-in |
-| `dns_hygiene.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `dns_hygiene.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope (регистрируемые домены по PSL) |
 | `dns_hygiene.max_domains` | `50` | кап на число доменов стадии |
 | `dns_hygiene.timeout_seconds` | `15` | таймаут одного вызова dnsx |
 | `dns_hygiene.retries` | `1` | ретраи вызова dnsx |
@@ -364,7 +364,7 @@ RDAP-сервер реестра не подхватился бы никогда
 | `dns_hygiene.axfr_probe` | `false` | **активная** проверка, см. ниже |
 | `dns_hygiene.axfr_timeout_seconds` | `10` | таймаут одной попытки трансфера |
 | `mail_posture.enabled` | `false` | стадия opt-in |
-| `mail_posture.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `mail_posture.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope (регистрируемые домены по PSL) |
 | `mail_posture.max_domains` | `50` | кап на число доменов стадии |
 | `mail_posture.timeout_seconds` | `15` | таймаут одного вызова dnsx |
 | `mail_posture.retries` | `1` | ретраи вызова dnsx |
@@ -401,6 +401,7 @@ RDAP-сервер реестра не подхватился бы никогда
 | DNSSEC | RDAP-объект домена из `ownership.json` (M1) | `dnssec.source: "rdap_registry"` |
 | Концентрация NS | родительский домен NS + префикс адреса | `ns_diversity.source: "ns_parent_domain_and_ip_prefix"` |
 | NS, SOA, CAA, MX, TXT, wildcard | `dnsx` | — |
+| AXFR | собственный клиент RFC 5936 (stdlib), одно TCP-соединение на проверенный адрес NS | `axfr.nameservers[]` |
 | Политика MTA-STS | HTTPS через `safe_http.py` | `mta_sts.policy` |
 
 Если `ownership` выключен, DNSSEC — это `not_checked` с
@@ -416,19 +417,46 @@ RDAP-сервер реестра не подхватился бы никогда
    что это перенесло бы решение об активной проверке на роль `operator`,
    которая запускает скан, а не отвечает за авторизацию цели;
 2. **runtime по scope:** пробуются только домены сид/scope самого run'а
-   (`base_domains_from_fqdns`), никогда — кандидаты атрибуции из M4;
+   (`base_domains_from_fqdns`), никогда — кандидаты атрибуции из M4. Сид
+   обрезается до регистрируемого домена по вшитому снапшоту Public Suffix
+   List (`scanner/pipeline/public_suffix.py`): `www.bbc.co.uk` → `bbc.co.uk`,
+   а не `co.uk`. Публичный суффикс (`co.uk`, `com.ru`, `github.io`) не
+   пробуется никогда — даже явно указанный в `dns_hygiene.domains`: его NS
+   принадлежат регистратуре или хостинг-платформе. Отказ — до обращения к
+   любому NS, в артефакте `axfr.status: refused`, `reason: public_suffix`;
 3. **по адресу NS:** каждый адрес NS обязан пройти
    `safe_http.is_public_address`. NS-запись пишет сканируемая сторона, поэтому
    `ns1.target.example → 10.0.0.5` превращает пробу в TCP/53-коннект по
    внутренней сети сенсора (узла, на котором выполняется скан). Проверка одна на весь сканер — та же функция, что
    валидирует адреса исходящего HTTPS.
 
-**Зона не попадает ни в лог, ни в артефакт.** `utils.run_command` логирует
-командную строку и stdout ребёнка в общий лог run'а, а stdout успешного
-трансфера — это вся зона цели; `scan.log` переживает артефакты и не входит в
-класс ограниченного доступа. Поэтому проба ходит в `subprocess` напрямую, без
-`-o`, держит вывод в памяти и записывает только факт трансфера и число записей
-(`{"nameserver": …, "status": "open", "records": N}`).
+   Гейт имеет смысл, только если набирается ровно проверенный адрес. Поэтому
+   AXFR идёт не через `dnsx`, а собственным клиентом по одному TCP-соединению
+   на IP-литерал, прошедший проверку (IPv6 — тем же адресом). `dnsx -axfr
+   -resolver X` (1.2.3) сам спрашивает у X NS-набор зоны, резолвит его через X
+   и делает AXFR по TCP/53 на каждый полученный адрес — мимо гейта, — а к
+   самому X идёт по UDP, где AXFR отвергают. Проба не следует ни NS-записям,
+   ни glue из ответа зоны и ничего не резолвит.
+
+**Как читать результат пробы** (`axfr.nameservers[]`):
+
+| `status` | `reason` | Смысл |
+| --- | --- | --- |
+| `open` | `null` | трансфер завершён; `records` — число RR между открывающей и закрывающей SOA |
+| `open` | `transfer_incomplete` / `transfer_capped` / `malformed_response` / `connection_error` | зона пошла, но поток оборвался, упёрся в кап 16 МиБ, дальше пришёл мусор или сокет отказал; `records` — нижняя граница |
+| `closed` | `rcode_refused` / `rcode_notauth` / `rcode_formerr` / `rcode_notimp` / `rcode_nxdomain` | сервер ответил отказом |
+| `closed` | `empty_answer` / `connection_closed` / `soa_only` | NOERROR без записей; сервер закрыл соединение (FIN), не прислав ни байта; SOA…SOA без записей между ними |
+| `error` | `connect_failed` / `timeout` / `connection_reset` / `connection_error` | до сервера не достучались или сброс (RST) до ответа — сброс может прийти и от промежуточного узла |
+| `error` | `rcode_servfail` / `rcode_<N>` | сервер не смог ответить (SERVFAIL) или ответил неизвестным кодом — о политике трансфера это ничего не говорит |
+| `error` | `transfer_incomplete` / `transfer_capped` / `malformed_response` | ответ начался, но оборвался (в т.ч. посреди первого сообщения) или не разобрался, а записей после SOA не пришло |
+| `refused` | `ns_address_not_public` | адрес NS не прошёл гейт, соединения не было |
+| `skipped` | `ns_unresolved` / `deadline_exceeded` / `invalid_domain` | проба не запускалась |
+
+**Зона не попадает ни в лог, ни в артефакт.** `scan.log` переживает артефакты
+и не входит в класс ограниченного доступа, а успешный трансфер — это вся зона
+цели. Ответ разбирается в памяти: имена владельцев сравниваются с апексом и
+отбрасываются, RDATA не декодируется вовсе, записывается только факт трансфера
+и число записей (`{"nameserver": …, "status": "open", "records": N}`).
 
 **MTA-STS — единственный HTTP в M2.** `https://mta-sts.<domain>/.well-known/mta-sts.txt`
 запрашивается только через `safe_http.py`: адрес валидируется и пиннится,

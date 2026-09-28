@@ -21,6 +21,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -59,12 +60,15 @@ def _parse_pins(text: str) -> dict[tuple[str, str], str]:
 
 
 def _default_arg(path: Path, name: str) -> str:
-    """The default of `ARG <name>=…` / `<name>="${<name>:-…}"` in a build file."""
+    """The value of `<name>` in a build file: `ARG <name>=…`,
+    `<name>="${<name>:-…}"`, `def <name> = '…'`, or an indented `<name>=v…`
+    line of a workflow's `build-args` block."""
     text = path.read_text()
     for pattern in (
         rf"^ARG {name}=(\S+)$",
         rf'^\w+="\$\{{{name}:-(v?[0-9][^}}"]*)\}}"',
         rf"^def {name} = '([^']+)'$",
+        rf"^\s+{name}=(v\S+)$",
     ):
         match = re.search(pattern, text, re.MULTILINE)
         if match:
@@ -86,6 +90,11 @@ def test_pinned_version_matches_every_build_file():
         ),
         "Jenkinsfile.publish": _default_arg(
             REPO_ROOT / "Jenkinsfile.publish", "PULSE_VERSION"
+        ),
+        # Disabled for automatic triggers, but still runnable by hand with
+        # push: true, and it hardcodes the version (review round 1, #4).
+        ".github/workflows/docker-publish.yml": _default_arg(
+            REPO_ROOT / ".github" / "workflows" / "docker-publish.yml", "PULSE_VERSION"
         ),
     }
     assert len(set(declared.values())) == 1, declared
@@ -167,7 +176,11 @@ def fake_release(tmp_path: Path):
         skip_checksum: bool = False,
         corrupt: bool = False,
         checksums: bool = True,
+        image_layout: bool = False,
     ):
+        """``image_layout`` installs the way the Dockerfiles' pulse-bin stage
+        does -- binary and install record under one prefix that the final
+        stage copies to /usr/local -- into ``tmp_path/rootfs``."""
         name, digest = _tarball(version)
         served = digest
         if corrupt:
@@ -180,20 +193,24 @@ def fake_release(tmp_path: Path):
             served = hashlib.sha256(path.read_bytes()).hexdigest()
         if checksums:
             (release / "checksums.txt").write_text(f"{served}  dist/{name}\n")
-        dest = tmp_path / "out" / "pulse"
+        prefix = tmp_path / "rootfs" / "usr" / "local" if image_layout else tmp_path / "out"
+        dest = prefix / "bin" / "pulse" if image_layout else prefix / "pulse"
         dest.unlink(missing_ok=True)
         pin_file = tmp_path / "pins"
         pin_file.write_text(pins if pins is not None else "")
         env = dict(os.environ)
         env.update(
             PATH=f"{bindir}{os.pathsep}{env['PATH']}",
-            PULSE_DEST=str(tmp_path / "out" / "pulse"),
+            PULSE_DEST=str(dest),
             PULSE_VERSION=version,
             PULSE_PINS=str(pin_file),
             PULSE_SKIP_CHECKSUM="1" if skip_checksum else "0",
         )
         env.pop("GITHUB_TOKEN", None)
         env.pop("GH_TOKEN", None)
+        env.pop("PULSE_RECORD", None)
+        if image_layout:
+            env["PULSE_RECORD"] = str(prefix / "share" / "shapoclyack" / "pulse-install.txt")
         proc = subprocess.run(
             ["bash", str(INSTALLER)],
             env=env,
@@ -204,6 +221,9 @@ def fake_release(tmp_path: Path):
         return proc, digest, dest
 
     run.asset = asset  # type: ignore[attr-defined]
+    run.release = release  # type: ignore[attr-defined]
+    run.rootfs = tmp_path / "rootfs"  # type: ignore[attr-defined]
+    run.pins = tmp_path / "pins"  # type: ignore[attr-defined]
     return run
 
 
@@ -268,6 +288,96 @@ def test_unpinned_version_without_checksums_txt_still_refuses(fake_release):
     assert proc.returncode != 0
     assert "refusing to install an unverified binary" in proc.stderr
     assert not dest.exists()
+
+
+# --- the install record: what ties the image's binary back to the pin (#340) --
+#
+# The image keeps the binary; the pin is a digest of the tarball. The record the
+# installer writes in the image layout, and scripts/verify-pulse-image.py reads
+# back, is the bridge. These drive both real scripts against each other.
+
+VERIFIER = REPO_ROOT / "scripts" / "verify-pulse-image.py"
+
+
+def _read_record(rootfs: Path) -> dict[str, str]:
+    text = (rootfs / "usr/local/share/shapoclyack/pulse-install.txt").read_text()
+    return dict(
+        line.split("=", 1) for line in text.splitlines() if line and not line.startswith("#")
+    )
+
+
+def _verify(fake_release, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(VERIFIER), "--rootfs", str(fake_release.rootfs),
+         "--pins", str(fake_release.pins), *extra],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_install_record_ties_the_binary_to_the_pin(fake_release):
+    asset = fake_release.asset
+    _proc, digest, _dest = fake_release("v9.9.9", pins=None)
+    proc, _digest, dest = fake_release(
+        "v9.9.9", pins=f"v9.9.9 {asset} {digest}", image_layout=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    # `COPY scripts /app/scripts` puts the build's own pins next to the record.
+    image_pins = fake_release.rootfs / "app" / "scripts" / "pulse-pinned.sha256"
+    image_pins.parent.mkdir(parents=True)
+    image_pins.write_text(fake_release.pins.read_text())
+    record = _read_record(fake_release.rootfs)
+    assert record == {
+        "version": "v9.9.9",
+        "platform": asset,
+        "verified": "pin",
+        "tarball": f"pulse-v9.9.9-{asset}.tar.gz",
+        "tarball_sha256": digest,
+        "binary_sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
+    }
+
+    verified = _verify(fake_release)
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    tarball = fake_release.release / f"pulse-v9.9.9-{asset}.tar.gz"
+    both = _verify(fake_release, "--tarball", str(tarball))
+    assert both.returncode == 0, both.stdout + both.stderr
+    assert "install record and pinned tarball" in both.stdout
+
+    # The binary is swapped after the install -- a later layer, a patched image.
+    dest.write_bytes(dest.read_bytes() + b"# not what was installed\n")
+    tampered = _verify(fake_release)
+    assert tampered.returncode == 1
+    assert "changed after the install" in tampered.stdout
+
+
+@pytest.mark.parametrize(
+    ("skip_checksum", "verified"), [(False, "checksums"), (True, "none")]
+)
+def test_the_install_record_says_when_the_release_was_not_pinned(
+    fake_release, skip_checksum, verified
+):
+    proc, digest, _dest = fake_release(
+        "v9.9.9", pins=None, skip_checksum=skip_checksum, image_layout=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    record = _read_record(fake_release.rootfs)
+    assert record["verified"] == verified
+    # What was actually installed, even though nothing pinned it: that is the
+    # digest a reviewer needs in order to pin it, or to reject it.
+    assert record["tarball_sha256"] == digest
+    result = _verify(fake_release)
+    assert result.returncode == 1
+    assert f"verified={verified}" in result.stdout
+
+
+def test_a_host_install_writes_no_record_unless_asked(fake_release, tmp_path):
+    asset = fake_release.asset
+    _proc, digest, _dest = fake_release("v9.9.9", pins=None)
+    proc, _digest, dest = fake_release("v9.9.9", pins=f"v9.9.9 {asset} {digest}")
+    assert proc.returncode == 0, proc.stderr
+    assert dest.exists()
+    assert not list(tmp_path.rglob("pulse-install.txt"))
 
 
 # --- the pin helper: where the signature actually gates something ------------

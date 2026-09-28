@@ -35,7 +35,7 @@ from typing import Any, Iterator
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.services import legal_hold
 from api.settings import Settings
@@ -80,12 +80,14 @@ def system_session(settings: Settings) -> Iterator[Session]:
     """Every database session the purge worker opens.
 
     The purge is a cross-tenant system path: it reads the journal of every
-    tenant and deletes one tenant's rows on nobody's request. When row-level
-    security lands (#311), this is the one function to wrap in its system scope
-    — nothing in the purge opens a session any other way.
+    tenant and deletes one tenant's rows on nobody's request. So every session
+    here is in the system scope of row-level security (#311) — the worker's
+    thread would be anyway, and this keeps it so wherever the purge is driven
+    from; nothing in the purge opens a session any other way.
     """
-    with get_session(settings.postgres_url) as session:
-        yield session
+    with tenant_scope.system("tenant purge"):
+        with get_session(settings.postgres_url) as session:
+            yield session
 
 
 class PurgeContext:

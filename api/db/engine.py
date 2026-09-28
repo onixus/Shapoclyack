@@ -13,12 +13,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from sqlalchemy import Column, Engine, MetaData, create_engine, inspect
+from sqlalchemy import Column, Engine, MetaData, create_engine, event, inspect
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry, QueuePool
 
+from api.db import tenant_scope
 from api.services import metrics as metrics_service
 from api.settings import Settings
 
@@ -188,6 +189,13 @@ def get_engine(url: str) -> Engine:
             )
             _engine_url = url
             _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
+            if _engine.dialect.name == "postgresql":
+                # Every transaction of every session this factory makes is
+                # scoped to its tenant when it begins — not once per session:
+                # ``SET LOCAL`` ends with the commit, and a handler that
+                # commits twice would run its second transaction unscoped
+                # (#311). Postgres only; the SQLite fallback has no roles.
+                event.listen(_SessionLocal, "after_begin", tenant_scope.after_begin)
             _create_schema_if_unmanaged(_engine)
         return _engine
 

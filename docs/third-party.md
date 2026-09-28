@@ -78,9 +78,11 @@ token; that image has no service-probe backend of its own and must be run with
 the run with an explicit error rather than scanning without services.
 
 Whether to publish GenDec's binary releases publicly (with the SBOM already
-being built) or to vendor the sources into this repository is an open decision,
-tracked in #340; until it is taken, a customer's supply-chain review of the
-default image ends at a repository they cannot read.
+being built) or to build the sources here is the proposed
+[ADR 0001](adr/0001-pulse-distribution-model.md) (#340), awaiting the owner's
+decision; until it is taken, a customer's supply-chain review of the default
+image ends at a repository they cannot read. What a customer can already check,
+and how, is in the [release contract](release-contract.md#what-a-customer-can-verify-and-how).
 
 **Vulscan's CVE databases no longer come from computec.ch.** Vulscan's own
 `update.sh` downloads its eight CSV databases from `www.computec.ch`, which now
@@ -119,6 +121,13 @@ the previous copy instead of publishing an empty one.
 | EPSS | `epss/epss-overlay.json` | [FIRST.org](https://www.first.org/epss/) | **CC BY 4.0 — attribution required** | Exploit-prediction score and percentile per CVE |
 | KEV | `kev/kev-overlay.json` | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | US government work, public domain | The list of CVE ids in the catalog |
 | Exploit maturity | `exploit/exploit-overlay.json` | Exploit-DB `files_exploits.csv`; Metasploit `modules_metadata_base.json` | GPL-2.0 (Exploit-DB), BSD-3-Clause (Metasploit Framework) | CVE ids only — which CVEs have public exploit code or a packaged module. No exploit code, titles or descriptions are copied |
+
+One more dataset ships with the code rather than under `scanner/data/`, because
+it must not be shadowed by an enrichment volume mounted there:
+
+| Dataset | Path | Source | Terms | What is extracted |
+|---------|------|--------|-------|-------------------|
+| Public Suffix List | `scanner/pipeline/public_suffix_list.dat` | [publicsuffix.org](https://publicsuffix.org/list/) | MPL-2.0; committed unmodified with its licence header, so the file is its own source form | The whole list, as published — used to derive registrable (seed) domains and to refuse AXFR against a public suffix. Refresh with `scripts/fetch-public-suffix-list.sh` |
 
 **Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. Any
 redistribution of this repository or its images carries that obligation; keep

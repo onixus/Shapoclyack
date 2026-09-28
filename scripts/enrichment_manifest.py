@@ -28,9 +28,16 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
+import fcntl
 import json
+import os
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 # Datasets the risk model and the software->CVE matcher read, with the path each
 # one lives at under the enrichment directory, the floor that separates a real
@@ -84,6 +91,16 @@ _BINARY_DATASETS: dict[str, str] = {
 
 MANIFEST_NAME = "enrichment-manifest.json"
 
+#: One lock per enrichment directory, taken by every writer of the manifest:
+#: the refresh (online or ``OCTO_ENRICHMENT_OFFLINE``) and the offline bundle
+#: installer. Without it the API's initContainer, rewriting the manifest on a
+#: rollout, could interleave with a bundle commit and write the pre-install
+#: origins back over it (review of #339).
+LOCK_NAME = ".enrichment-bundle.lock"
+#: How long a manifest writer waits for an install in progress. An install is
+#: bounded by the loader Job's activeDeadlineSeconds (1800).
+DEFAULT_LOCK_TIMEOUT = 1800.0
+
 # Exit codes, consumed by fetch-enrichment.sh and in turn by the Dockerfiles.
 EXIT_OK = 0
 EXIT_DEGRADED = 1  # a source was unreachable; existing data is still usable
@@ -105,6 +122,22 @@ def _count_entries(payload: object) -> int | None:
     return None
 
 
+def _origin_urls(payload: dict) -> list[str]:
+    """Where a dataset's bytes were fetched from, as the fetcher recorded it.
+
+    Every fetch script writes ``origin_url`` into the envelope (the exploit
+    overlay, being two feeds, writes ``origin_urls``), already redacted (#339).
+    This is what the offline bundle's manifest carries as each file's source,
+    so a site that never saw the internet can still say where its data came
+    from. Absent for the committed seeds, which predate the field.
+    """
+    urls = payload.get("origin_urls")
+    if isinstance(urls, list):
+        return [str(url) for url in urls if isinstance(url, str) and url]
+    url = payload.get("origin_url")
+    return [url] if isinstance(url, str) and url else []
+
+
 def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     """Provenance and usability of one JSON overlay.
 
@@ -117,6 +150,7 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
         "usable": False,
         "source": None,
         "updated": None,
+        "origin_urls": [],
         "entries": None,
         "min_entries": min_entries,
         "error": None,
@@ -129,15 +163,20 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     except OSError as exc:
         record["error"] = f"unreadable: {exc}"
         return record
-    except json.JSONDecodeError as exc:
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError is
+    # a document nested past the parser's limit. Both arrive from files nobody
+    # here wrote — an offline bundle (#339) — and are "not a dataset", not a
+    # traceback.
+    except (ValueError, RecursionError) as exc:
         record["present"] = True
-        record["error"] = f"invalid JSON: {exc}"
+        record["error"] = f"invalid JSON: {type(exc).__name__}: {str(exc)[:200]}"
         return record
 
     record["present"] = True
     if isinstance(payload, dict):
         record["source"] = payload.get("source") or None
         record["updated"] = str(payload.get("updated") or "") or None
+        record["origin_urls"] = _origin_urls(payload)
     count = _count_entries(payload)
     record["entries"] = count
     if count is None:
@@ -149,13 +188,56 @@ def inspect_json_dataset(path: Path, min_entries: int) -> dict:
     return record
 
 
+def _mmdb_build_date(path: Path) -> str | None:
+    """The date the database's publisher built it, from the .mmdb metadata.
+
+    A MaxMind DB has no JSON envelope to stamp an ``updated`` on, but it does
+    carry ``build_epoch``, which is the honest "data date" an offline site needs
+    to see (#339). Optional: ``maxminddb`` ships with ``geoip2`` in the images,
+    and anything that goes wrong here costs the date, never the manifest.
+    """
+    try:
+        import maxminddb  # noqa: PLC0415 - optional dependency, see docstring
+
+        with maxminddb.open_database(str(path)) as reader:
+            epoch = int(reader.metadata().build_epoch)
+    except Exception:  # noqa: BLE001 - see docstring
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).date().isoformat()
+
+
 def inspect_binary_dataset(path: Path, source: str | None) -> dict:
     """Presence of one .mmdb database. Never required — see _BINARY_DATASETS."""
     try:
         size = path.stat().st_size
     except OSError:
-        return {"present": False, "usable": False, "source": source, "size_bytes": None}
-    return {"present": True, "usable": size > 0, "source": source, "size_bytes": size}
+        return {
+            "present": False,
+            "usable": False,
+            "source": source,
+            "size_bytes": None,
+            "updated": None,
+            "origin_urls": [],
+        }
+    return {
+        "present": True,
+        "usable": size > 0,
+        "source": source,
+        "size_bytes": size,
+        "updated": _mmdb_build_date(path) if size > 0 else None,
+        "origin_urls": [],
+    }
+
+
+def _previous_datasets(data_dir: Path) -> dict[str, dict]:
+    try:
+        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    datasets = payload.get("datasets") if isinstance(payload, dict) else None
+    if not isinstance(datasets, dict):
+        return {}
+    return {name: record for name, record in datasets.items() if isinstance(record, dict)}
 
 
 def previous_origins(data_dir: Path) -> dict[str, str]:
@@ -166,17 +248,10 @@ def previous_origins(data_dir: Path) -> dict[str, str]:
     JSON is simply no previous run: this is provenance, and guessing at it is
     the thing the module exists to stop.
     """
-    try:
-        payload = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    datasets = payload.get("datasets") if isinstance(payload, dict) else None
-    if not isinstance(datasets, dict):
-        return {}
     return {
         name: record["origin"]
-        for name, record in datasets.items()
-        if isinstance(record, dict) and isinstance(record.get("origin"), str)
+        for name, record in _previous_datasets(data_dir).items()
+        if isinstance(record.get("origin"), str)
     }
 
 
@@ -186,6 +261,9 @@ def build_manifest(
     refreshed: set[str],
     failed: set[str],
     sources: dict[str, str] | None = None,
+    bundled: set[str] | frozenset[str] = frozenset(),
+    origin_urls: dict[str, list[str]] | None = None,
+    source_origins: dict[str, str] | None = None,
 ) -> dict:
     """Inspect every dataset under ``data_dir`` and describe what is there.
 
@@ -202,8 +280,26 @@ def build_manifest(
     it ``seed`` would demote a fetched corpus on every restart and make
     ``GET /api/system`` contradict itself (``origin: seed`` over four hundred
     thousand entries), sending an operator to a build log with nothing in it.
+
+    ``bundled`` is the fourth: datasets an offline bundle just installed
+    (``scripts/enrichment_bundle.py``, #339). They were fetched, just not here
+    and not now, and ``origin: bundle`` says exactly that; the bundle's own
+    record (``enrichment-bundle.json``) says when and where. What the
+    connected side itself called each of them — ``fetch``, ``seed``, or
+    ``stale`` for a feed that was down when the bundle was built — comes in as
+    ``source_origins`` and is kept as ``source_origin``: across the gap a stale
+    dataset must stay recognisably stale (review of #339), and it is carried
+    forward with ``origin: bundle`` by every run that does not replace it.
+
+    ``origin_urls`` is for the .mmdb datasets, which have no envelope to record
+    their source URL in; the JSON datasets carry theirs in the file itself.
+    Both it and a binary dataset's ``source`` label are carried forward from
+    the previous manifest, like the origin, when this run does not say.
     """
     sources = sources or {}
+    origin_urls = origin_urls or {}
+    source_origins = source_origins or {}
+    previous = _previous_datasets(data_dir)
     carried = previous_origins(data_dir)
     datasets: dict[str, dict] = {}
     for name, (relative, min_entries, required) in _JSON_DATASETS.items():
@@ -215,12 +311,27 @@ def build_manifest(
         record = inspect_binary_dataset(data_dir / relative, sources.get(name))
         record["required"] = False
         record["path"] = str(data_dir / relative)
+        written = name in refreshed or name in bundled
+        before = previous.get(name) or {}
+        if not written and record["present"]:
+            # Nothing on a .mmdb says which provider wrote it or from where; a
+            # run that did not replace it (did not try, or tried and failed)
+            # has no better answer than the run that did.
+            record["source"] = record["source"] or before.get("source") or None
+            if isinstance(before.get("origin_urls"), list):
+                record["origin_urls"] = [str(u) for u in before["origin_urls"] if u]
+        elif origin_urls.get(name):
+            record["origin_urls"] = list(origin_urls[name])
         datasets[name] = record
 
     for name, record in datasets.items():
         if sources.get(name):
             record["source"] = sources[name]
-        if name in refreshed:
+        record["source_origin"] = None
+        if name in bundled:
+            record["origin"] = "bundle" if record["present"] else "missing"
+            record["source_origin"] = source_origins.get(name)
+        elif name in refreshed:
             record["origin"] = "fetch"
         elif name in failed:
             # The fetch was attempted and failed, so whatever is on disk is the
@@ -229,11 +340,13 @@ def build_manifest(
             record["origin"] = "stale" if record["present"] else "missing"
         elif not record["present"]:
             record["origin"] = "missing"
-        elif carried.get(name) in ("fetch", "stale", "seed"):
+        elif carried.get(name) in ("fetch", "stale", "seed", "bundle"):
             # This run did not try; the last one did. ``missing`` is not carried
             # forward — the seed floor in fetch-enrichment.sh may have put the
             # file there since, and it would be a seed now.
             record["origin"] = carried[name]
+            if carried[name] == "bundle":
+                record["source_origin"] = (previous.get(name) or {}).get("source_origin")
         else:
             record["origin"] = "seed"
 
@@ -270,18 +383,103 @@ def verdict(manifest: dict) -> int:
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED
+    # A bundle carries the connected side's verdict across the gap: a feed that
+    # was down when the bundle was built is exactly as degraded here.
+    if any(
+        rec.get("origin") == "bundle" and rec.get("source_origin") == "stale"
+        for rec in datasets.values()
+    ):
+        return EXIT_DEGRADED
     # A refresh that *succeeded* and still landed under the floor is the quietest
     # of the failures and the one this used to miss entirely: the feed answered,
     # so the origin is ``fetch``, which is neither ``stale`` nor ``missing``, and
     # for a not-required dataset nothing else looked at ``usable``. That is a
     # truncated document published over a corpus, and a green job over it is the
     # exact silence #246 exists to break.
+    # A bundle is a fetch that happened elsewhere; the same holds for it.
     if any(
-        rec.get("origin") == "fetch" and rec.get("usable") is False
+        rec.get("origin") in ("fetch", "bundle") and rec.get("usable") is False
         for rec in datasets.values()
     ):
         return EXIT_DEGRADED
     return EXIT_OK
+
+
+@contextlib.contextmanager
+def locked(data_dir: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> Iterator[None]:
+    """Hold the enrichment directory's writer lock, waiting up to ``timeout``.
+
+    ``flock`` on a file inside the directory, so it holds across every pod that
+    mounts the same volume (on filesystems whose flock is cluster-wide: local,
+    NFSv4, CephFS). Raises ``TimeoutError`` rather than proceeding unlocked.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(data_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+    try:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"{data_dir / LOCK_NAME} is held by another writer") from exc
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(fd)
+
+
+def fsync_dir(path: Path) -> None:
+    """Make a rename in ``path`` durable. Best effort: not every filesystem
+    lets a directory be opened for fsync."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_json_durably(path: Path, payload: dict) -> None:
+    """Write-then-rename, with the contents and the rename both on disk
+    before this returns — the API polls the directory and must never read half
+    a file, and a power loss must not leave a renamed but empty one."""
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(path)
+    fsync_dir(path.parent)
+
+
+def write_manifest(
+    data_dir: Path,
+    *,
+    refreshed: set[str],
+    failed: set[str],
+    sources: dict[str, str] | None = None,
+    origin_urls: dict[str, list[str]] | None = None,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
+) -> dict:
+    """Describe ``data_dir`` and write the manifest, under the writer lock.
+
+    The previous manifest is read *inside* the lock, so a run that carries
+    origins forward carries the ones a bundle install just committed.
+    """
+    with locked(data_dir, timeout=lock_timeout):
+        manifest = build_manifest(
+            data_dir, refreshed=refreshed, failed=failed, sources=sources, origin_urls=origin_urls
+        )
+        write_json_durably(data_dir / MANIFEST_NAME, manifest)
+    return manifest
 
 
 def _summarize(manifest: dict) -> list[str]:
@@ -302,6 +500,20 @@ def _summarize(manifest: dict) -> list[str]:
     return lines
 
 
+def redact_url(url: str) -> str:
+    """Userinfo dropped, credential query values blanked — see scripts/feed_fetch.py.
+
+    Imported lazily so this module stays importable on its own (the tests load
+    it as ``scripts.enrichment_manifest``, the fetch scripts as a sibling).
+    """
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from feed_fetch import redact_url as _redact  # noqa: PLC0415 - see docstring
+
+    return _redact(url)
+
+
 def _split(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
@@ -318,6 +530,14 @@ def main() -> int:
         metavar="NAME=LABEL",
         help="Override the recorded source label for a dataset (repeatable)",
     )
+    parser.add_argument(
+        "--origin-url",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="Where a dataset without an envelope (the .mmdb files) was fetched from; "
+        "recorded redacted (repeatable)",
+    )
     args = parser.parse_args()
 
     sources: dict[str, str] = {}
@@ -325,20 +545,26 @@ def main() -> int:
         name, _, label = item.partition("=")
         if name.strip() and label.strip():
             sources[name.strip()] = label.strip()
+    urls: dict[str, list[str]] = {}
+    for item in args.origin_url:
+        name, _, url = item.partition("=")
+        if name.strip() and url.strip():
+            urls.setdefault(name.strip(), []).append(redact_url(url.strip()))
 
-    manifest = build_manifest(
-        args.dir,
-        refreshed=_split(args.refreshed),
-        failed=_split(args.failed),
-        sources=sources,
-    )
     out = args.dir / MANIFEST_NAME
-    out.parent.mkdir(parents=True, exist_ok=True)
-    # Write-then-rename, like fetch-cvss4-db.py: the API polls this directory
-    # and must never read a half-written manifest.
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(out)
+    try:
+        manifest = write_manifest(
+            args.dir,
+            refreshed=_split(args.refreshed),
+            failed=_split(args.failed),
+            sources=sources,
+            origin_urls=urls,
+        )
+    except TimeoutError as exc:
+        # Not rewritten: whoever holds the lock (a bundle install) writes a
+        # manifest of its own, and a stale rewrite is the thing to avoid.
+        print(f"warning: {exc}; {out} left as it is", file=sys.stderr)
+        return EXIT_DEGRADED
 
     print(f"==> enrichment manifest → {out}")
     for line in _summarize(manifest):

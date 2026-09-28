@@ -47,6 +47,7 @@ value on the System page rather than assuming the file was applied.
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
 | `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
 | `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
+| `dns` | Resolvers nuclei is told to use (`-resolvers`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
 | `nuclei` | Nuclei stage: template directory, severities, caps, rate limit | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |
 | `tls_posture` | Certificate expiry, hostname mismatch and TLS findings | [Pulse backend](pulse-backend.md) |
 | `org_profile` | Organization profile: ownership, related domains, DNS hygiene, mail posture, credential leaks, controls | [Модуль «Профиль организации»](org-profile-module.ru.md) (RU) |
@@ -382,9 +383,11 @@ dataset's floor (`usable`), and — the field that matters — `origin`:
 | `seed` | The committed baseline, never replaced by a fetch |
 | `stale` | A fetch was attempted and failed; the previous data is still in place |
 | `missing` | No data at this path at all |
+| `bundle` | Installed from an offline bundle ([air-gap.md](air-gap.md)); `GET /api/system`'s `enrichment_bundle` says which and when, and `source_origin` what the connected side called the dataset (`stale` there is degraded here too) |
 
-A run that did not *attempt* a dataset — the advisory opt-in being off is the
-only way that happens — is a fourth case, and it writes none of these: it keeps
+A run that did not *attempt* a dataset — the advisory opt-in being off, or
+`OCTO_ENRICHMENT_OFFLINE=true` on an air-gapped installation, which skips every
+fetch — is a further case, and it writes none of these: it keeps
 whatever the previous run recorded. That matters because the API pod's
 enrichment initContainer runs the same script without the opt-in, so every API
 rollout re-inspects datasets the nightly CronJob filled. Rewriting them to
@@ -692,6 +695,7 @@ OCTO_TENANT_PURGE_BATCH_SIZE
 OCTO_TENANT_PURGE_ENABLED
 OCTO_TENANT_PURGE_INTERVAL_SECONDS
 OCTO_TENANT_PURGE_UNUSED_STORES
+OCTO_TENANT_RLS
 OCTO_TICKET_SYNC_BATCH_SIZE
 OCTO_TICKET_SYNC_ENABLED
 OCTO_TICKET_SYNC_INTERVAL_SECONDS
@@ -754,6 +758,7 @@ Core deployment variables:
 | `OCTO_DB_POOL_SIZE` | Connections the SQLAlchemy pool keeps open to Postgres, per API process (default `5`). This is **per replica**: `max_connections` on the server is one shared budget, so a profile that scales the API multiplies this by the replica count — see [high-availability.md](high-availability.md#connection-pool-sizing) ([#335](https://github.com/onixus/Shapoclyack/issues/335)). Floored at 1, and `OCTO_DB_POOL_SIZE + OCTO_DB_MAX_OVERFLOW` is floored at 4 — three connections are held for the life of the process by the leader locks of the schedule dispatcher, the report dispatcher and the software-match worker, so a smaller pool leaves a worker unable to become leader at all. Ignored by the `dev` SQLite fallback, which has no connection queue |
 | `OCTO_DB_MAX_OVERFLOW` | Extra connections the pool may open above `OCTO_DB_POOL_SIZE` under load, closed again when returned (default `10`). Counts against the same server budget |
 | `OCTO_DB_POOL_TIMEOUT` | Seconds a request waits for a free pooled connection before failing (default `30`, floored at 1). Without a bound, a saturated pool is a request that never returns instead of one that fails with a cause |
+| `OCTO_TENANT_RLS` | Postgres row-level security as the second line of tenant isolation ([#311](https://github.com/onixus/Shapoclyack/issues/311)). `enforce` (default, every environment): every transaction of a tenant-scoped request assumes the `shapoclyack_tenant` role and names its tenant, so a query that forgot its `WHERE tenant_id` still sees only that tenant's rows, and a request that reads a tenant table before any guard declared its tenant fails; startup **refuses** when the database cannot enforce it (role missing or not assumable, a tenant table without its policy). `off`: no transaction switches role — the behaviour before migration `0067`, logged as a warning on every `prod` start; the kill switch, needing no migration rollback. Any other value refuses startup. Workers, CLI tools and platform-admin requests are unaffected either way — see [tenant-isolation.md](tenant-isolation.md) |
 | `OCTO_NATS_URL` | JetStream connection; empty disables NATS — and on a network whose only egress is an HTTP proxy, empty is the right value: no proxy carries NATS, and the sensor then polls the HTTP claim instead ([network-requirements.md](network-requirements.md#nats-and-proxies)). `tls://` selects TLS; `wss://` is NATS over WebSocket on 443, which needs `aiohttp` on the agent host. Job offers go to `jobs.scan.{tenant}` and each tenant has its own durable consumer `octo-agents-{tenant}` — see [operations.md](operations.md#per-tenant-job-stream) |
 | `OCTO_NATS_TLS_CA` | PEM bundle used to verify the NATS server. Only needed for a privately issued certificate (cert-manager with an in-cluster issuer); a publicly issued one is verified against the system trust store with no variable at all |
 | `OCTO_NATS_TLS_CERT` | Client certificate presented to NATS (mTLS). Requires `verify_and_map: true` server-side, with the certificate CN equal to the NATS username |

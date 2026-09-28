@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +15,7 @@ from starlette.routing import Mount
 from api import __version__
 from api.auth import get_settings
 from api.db import engine as db_engine
+from api.db import tenant_scope
 from api.middleware import (
     BodySizeLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -248,7 +249,13 @@ def create_app() -> FastAPI:
     # singleton keyed by URL, so pool sizing that arrives after something has
     # already built it would apply to nobody (#335).
     db_engine.configure(settings)
+    tenant_scope.configure(settings)
     tenants_service.load_tenants(settings)
+    # Right after the first thing that proves the database is there: a replica
+    # told to enforce tenant row security on a database that cannot — no role,
+    # a table without its policy — refuses here, before it serves a request
+    # that would either 500 or, worse, be answered as if it were enforced (#311).
+    tenant_scope.verify_database(settings)
     # After the tenant store (it shares the session factory), and before any
     # router is mounted: a prod install with no console account refuses here
     # rather than serving a login form nobody can get through (#156).
@@ -337,7 +344,15 @@ def create_app() -> FastAPI:
         metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(method, path).observe(duration)
         return response
 
-    @app.get("/metrics", include_in_schema=False)
+    # Installation-wide gauges (#311). Nothing here reads a table today, but a
+    # collector that counts rows at scrape time counts every tenant's, and in
+    # the undeclared scope every such read would fail — silently, as series
+    # that stop appearing.
+    @app.get(
+        "/metrics",
+        include_in_schema=False,
+        dependencies=[Depends(tenant_scope.cross_tenant("installation-wide gauges"))],
+    )
     def metrics_endpoint(request: Request) -> Response:
         # Open unless a token is configured: that is the Prometheus shape most
         # installations scrape with, and making the token mandatory would break
@@ -363,7 +378,11 @@ def create_app() -> FastAPI:
         # allowed to know about dependencies.
         return {"status": "ok"}
 
-    @app.get("/readyz", include_in_schema=False)
+    # The two probes count every tenant's unpublished backlog, which is the
+    # installation's state and no tenant's (#311).
+    probe_scope = [Depends(tenant_scope.cross_tenant("readiness counts every tenant's backlog"))]
+
+    @app.get("/readyz", include_in_schema=False, dependencies=probe_scope)
     def readyz() -> JSONResponse:
         report = health_service.check_readiness(get_settings())
         # The status code and the body answer different questions: 503 means
@@ -379,7 +398,9 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/api/health", response_model=HealthResponse, tags=["health"])
+    @app.get(
+        "/api/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
+    )
     def health() -> HealthResponse:
         settings = get_settings()
         # The same sweep /readyz runs, reported in this endpoint's older shape:
