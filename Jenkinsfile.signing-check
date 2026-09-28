@@ -1,0 +1,28 @@
+// Exercise the release signing identity and production signing script against
+// a disposable loopback registry. Never publishes a release to GHCR.
+pipeline {
+  agent any
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+    timeout(time: 30, unit: 'MINUTES')
+  }
+  stages {
+    stage('Signing and provenance round trip') {
+      steps {
+        withCredentials([
+          file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
+          string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
+        ]) {
+          sh 'scripts/ci-signing-check.sh'
+        }
+      }
+    }
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'signing-check-result.json', allowEmptyArchive: true
+    }
+  }
+}

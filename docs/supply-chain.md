@@ -356,3 +356,18 @@ on its branch.
 - **Debian packages** come from Debian's signed repositories at whatever
   version the pinned base image's sources resolve; they are not pinned
   individually.
+
+### Jenkins signing validation
+
+The initial release public key is `cosign.pub`; its PEM-file SHA-256 is
+`bd52a05fde287c680283afc9e170f06c32af55be19e47b92cb31745cdfed83c8`.
+
+`Jenkinsfile.signing-check` runs `scripts/ci-signing-check.sh` on the local
+Jenkins controller with the same two release credentials. It rejects an
+unrelated public key, builds a synthetic amd64/arm64 scratch image with SLSA v1
+provenance, then runs the production signing script against a disposable
+loopback registry. Signatures and attestations are recorded in public Rekor;
+no release image or tag is published to GHCR. The registry and builder are
+removed afterwards, and `signing-check-result.json` is archived. This check
+proves credential binding and the signing path; it does not replace the full
+application build or a real release run.
