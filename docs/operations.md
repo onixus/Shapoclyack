@@ -1581,8 +1581,8 @@ curl -sSL https://<api-host>/api/agent/install.sh | sudo bash -s -- --server htt
 ```
 
 `scripts/install-agent.sh` covers Ubuntu/Debian, RHEL/Rocky/Alma/Fedora, Alpine
-and Arch, and takes `--agent-id`, `--install-dir`, `--docker`, `--nats-url` and
-`--key-stdin` as options (`--help` lists them).
+and Arch, and takes `--agent-id`, `--install-dir`, `--docker`, `--nats-url`,
+`--key-stdin` and `--keep-key` as options (`--help` lists them).
 
 `--key-stdin` reads the provisioning key from standard input instead of taking
 it as `--key`. Prefer it wherever the caller can write to stdin — an argument is
@@ -1655,6 +1655,13 @@ because an ID stays bound to its tenant and revoking a key does not release it
 across tenants. A re-run with a *different provisioning key* keeps the ID and
 warns: see "Revoke before you re-provision" under
 [Sensor lifecycle](#sensor-lifecycle-disable-quarantine-deregister).
+
+`--keep-key`, in place of `--key` or `--key-stdin`, reinstalls the sensor that
+`agent.env` describes with the key it already holds, so no key is needed. It is
+refused unless the file has both an agent ID and a key, was written for the
+same `--tenant`, and names the same ID as `--agent-id` when that is given: a
+key that is not the sensor's own would be refused its ID. The SSH push uses it
+for a host that already runs one of the tenant's sensors.
 
 ### Sensor groups: which sensor may execute which scan
 
@@ -1808,16 +1815,21 @@ the sensor unable to authenticate until you get to the revocation; it retries
 on its own and recovers once the old key is revoked. The installer keeps the
 sensor's ID across a re-run, so it warns when the key it is given differs from
 the one in `agent.env`. Pass `--agent-id` with a new value instead if the host
-should register as a new sensor under the new key.
+should register as a new sensor under the new key. The SSH push handles this
+order itself, and refuses where revoking would stop other sensors; see
+[SSH push deployment](#ssh-push-deployment).
 
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
 [#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
-the API: verify the target's host key → connect → mint a tenant provisioning
-key → run the installer on the target, feeding it the key on stdin → wait up
-to 30 s for the sensor's first heartbeat. The API runs the OpenSSH client (`ssh`,
+the API: verify the target's host key → connect → read the target's
+`/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
+mint a tenant provisioning key, unless the host keeps the one it has → run the
+installer on the target, feeding it the new key, if any, on stdin → revoke the sensor's
+previous key if the run moved it (below) → wait up to 30 s for the sensor's
+first heartbeat. The API runs the OpenSSH client (`ssh`,
 `ssh-keyscan`); the `api` and `aio` images install `openssh-client` for it.
 Images before `0.43-0828` inclusive shipped no SSH client at all, and every
 deployment from them failed at the host-key probe with `HostKeyUnavailable`.
@@ -1832,9 +1844,10 @@ declared dependency and the images do not carry it.
   (Before that wrapper the first live run exited 127 under fish.)
 - A non-root user needs **passwordless sudo** (`sudo -n`). A sudo that prompts
   would consume the provisioning key arriving on stdin as its password guess,
-  so the deployer never lets it prompt; on a host where `sudo` asks, the run
-  fails at `Installation failed` with `sudo: a password is required` in the
-  remote log. Root over SSH needs no sudo.
+  so the deployer never lets it prompt. Reading `agent.env` (`0600`) is the
+  first thing that needs root, so on a host where `sudo` asks, the run fails at
+  `Host check failed` with `sudo: a password is required`, before any key has
+  been minted. Root over SSH needs no sudo.
 - The installer needs a sensor package (the `agent` Python package). The API
   serves none, so a native
   (systemd) install through this route ends with `No agent package available`
@@ -1842,6 +1855,40 @@ declared dependency and the images do not carry it.
   `use_docker: true` avoids that by running the published
   `shapoclyack-scanner` image (`AGENT_IMAGE` overrides it), which is the
   shape this route can complete unattended today.
+
+**Redeploying a host that already runs a sensor.** Every push used to mint a
+key and pass a fresh `--agent-id`, so a second push to the same host registered
+a second sensor. The first went `stale`, was counted in `stale_agents`, was
+announced as `agent_offline`, and kept its sensor group and any quarantine,
+while the host came back ungrouped and `active`. Now the run reads the host's
+`agent.env` through `sudo -n` before anything is minted. It reads the agent ID,
+the tenant, and a SHA-256 prefix of the key. The key itself stays on the host.
+The prefix is the non-secret `key_lookup` the API indexes keys by, so the API
+can tell whether the host holds the key the sensor is bound to. Then:
+
+| The host, and the request's `agent_id` | What the run does |
+|---|---|
+| Runs sensor X of this tenant and holds the key X is bound to; `agent_id` empty or X | Reinstalls X with `--keep-key`. Same ID and same key, nothing minted or revoked, and group and lifecycle state stay. This is the Deploy dialog's case, since it sends no `agent_id` |
+| X is registered, but its key is revoked or expired, or none is on record | Mints a key, and X takes it over on registration. Nothing to revoke. To rotate a sensor's key through the push, revoke the old key first |
+| X is registered with an active key the host does not hold (a rebuilt host named in `agent_id`, or a hand re-run that left another key behind) | Mints a key and, **once the installer has succeeded**, revokes X's previous key, because the exchange refuses the ID to a new key while that one is active. This is re-checked just before revoking |
+| … and X is online | **Refused** before anything is minted or installed. Revoking would take the ID from a running sensor. Stop it first, or send a new `agent_id` |
+| … and other sensors hold X's key | **Refused**. Revoking a fleet key would stop them all. Revoke it yourself if you mean to (the next push then mints a key), or send a new `agent_id` |
+| No `agent.env`, no `agent_id` | New sensor `agent-<host>-<random>` with a new key |
+| `agent.env` is for another tenant, or its ID is not a printable token of at most 128 characters | Not reused. New sensor, new key |
+| `agent_id` names no registered sensor | New sensor under that ID. If the host ran another sensor, that one stays in the fleet until you delete it, and the log says so |
+| `agent_id` is registered in another tenant | **Refused**. The exchange would refuse it forever |
+
+The run's log says which of these happened, before the key step, and ends
+with either `sensor X redeployed with its identity kept` or `new sensor X`. A
+revocation gets its own line. A `disabled` or `quarantined` sensor keeps that
+state. The reinstalled sensor is refused a token until an admin re-activates
+it, so the run says so and does not wait for a heartbeat. The key the run mints
+and any key it revokes are recorded in the audit trail under the admin who
+started it. Before this change they were recorded as `system`.
+
+Sensors that earlier pushes duplicated are not merged. Delete the stale rows
+with `DELETE /api/agents/{id}`, and leave `revoke_key` off: the sensor that
+replaced a row may hold the same key.
 
 **Host key verification.** The first deployment to a host is refused unless the
 request names the fingerprint you expect:
@@ -1913,7 +1960,11 @@ Operational limits worth knowing before relying on it:
   accepted and silently ignored, which is worse than not offering it;
 - a heartbeat that has not arrived within the verification window is reported as
   a warning, not a failure: the install may still be fine, so check the Agents
-  page (sensors; route `/agents`).
+  page (sensors; route `/agents`);
+- a run that fails at the installer leaves the key it minted active and unused
+  (label `SSH Remote Deploy on <host>`). Revoke it from the key list. A
+  previous key that was due to be revoked is left alone, so the sensor that
+  holds it keeps working.
 
 ### Upgrade
 
