@@ -4,6 +4,11 @@ Results of ROADMAP P3.8: the query paths that grow with asset count, measured
 over the P3.7 fixtures (`tests/fixtures/scale_seed.py`). Reproduce with
 `tests/fixtures/scale_profile.py` — see [development.md](development.md#scale-fixtures).
 
+This file answers *how fast*. *How much* — CPU, memory and volume per asset,
+finding and scan, and the requests/limits that follow — is
+[sizing.md](sizing.md) ([#337](https://github.com/onixus/Shapoclyack/issues/337)),
+measured over the same fixtures.
+
 ## What these numbers are
 
 Wall-clock medians measured **in-process against a local server** (Postgres 16,
@@ -169,6 +174,11 @@ rediscovering it.
   Concurrent HTTP is the #185 probe, not this script.
 - **No UI measurement.** The `web-next` tables were not profiled; finding 1 was
   reached by counting statements on the endpoint they call.
-- **No ingest path.** `ch_ingest_worker` throughput at scale is untested.
+- **No ingest path.** Partly closed by
+  [#337](https://github.com/onixus/Shapoclyack/issues/337): the run projection
+  and the ClickHouse transform are measured per host in
+  [sizing.md](sizing.md#measured-coefficients), with the size limits that keep
+  large runs out of ClickHouse. `ch_ingest_worker` throughput under concurrent
+  consumers is still untested.
 - **One synthetic tenant.** Everything here is single-tenant; cross-tenant
   interference in shared tables is unmeasured.

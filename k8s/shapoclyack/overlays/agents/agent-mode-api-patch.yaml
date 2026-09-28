@@ -22,3 +22,7 @@ spec:
                   key: api_password
             - name: OCTO_NATS_URL
               value: nats://api:$(NATS_PASSWORD)@shapoclyack-nats-client:4222
+            # NATS is configured now, so only ClickHouse stays declared unused
+            # for the tenant purge (#325; base/api-deployment.yaml).
+            - name: OCTO_TENANT_PURGE_UNUSED_STORES
+              value: "clickhouse"

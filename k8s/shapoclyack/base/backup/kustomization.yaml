@@ -3,3 +3,22 @@ kind: Kustomization
 
 resources:
   - postgres-cronjob.yaml
+  - clickhouse-cronjob.yaml
+
+# The script the ClickHouse job runs (#333). A file of its own, not an inline
+# `command`, so scripts/dr-drill.py and tests/test_disaster_recovery.py run the
+# exact bytes the CronJob mounts.
+configMapGenerator:
+  - name: shapoclyack-clickhouse-backup-script
+    files:
+      - clickhouse-backup.sh
+    options:
+      labels:
+        app.kubernetes.io/name: shapoclyack
+        app.kubernetes.io/component: clickhouse-backup
+
+# Same as base: a fixed name an overlay can delete by name. Each run is a new
+# pod, which mounts whatever the ConfigMap holds at that moment, so a hash
+# suffix would buy no rollout.
+generatorOptions:
+  disableNameSuffixHash: true

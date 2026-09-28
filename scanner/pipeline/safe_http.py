@@ -9,10 +9,13 @@ bootstrap file names the registry server, and ``rdap.org`` answers with a 302 to
 one -- so the address has to be validated on this side of the wire.
 
 This is a deliberate *second* implementation of the boundary that already lives
-in ``api/services/integrations/delivery.py`` (``_parse_target``, ``_resolve``,
-``_PinnedHTTPSConnection``, ``_read_error_excerpt``), which is the original and
-stays authoritative for webhook delivery. It is copied rather than imported
-because ``scanner/`` does not import ``api/`` -- the scanner ships as its own
+in the API for webhook delivery -- the address rule in
+``api/services/outbound_targets.py`` (``resolve``, ``check_addresses``,
+``parse_url``; moved there from ``delivery.py`` by #240), the transport in
+``api/services/integrations/delivery.py`` (``_PinnedHTTPSConnection``,
+``_read_error_excerpt``) -- which stays authoritative for webhooks. It is
+copied rather than imported because ``scanner/`` does not import ``api/`` --
+the scanner ships as its own
 container without the API package, and adding that dependency to reuse ~80
 lines would couple the two deployables far more than it saves.
 
@@ -120,6 +123,20 @@ def _resolve(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Addres
     return addresses
 
 
+#: RFC 6052 well-known NAT64 prefix. It is a /96, so the IPv4 destination is
+#: exactly the low 32 bits: no operator-chosen length, no u-octet to skip.
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+
+#: IPv6 ranges that deliver to an embedded IPv4 address this code cannot
+#: judge, refused outright. See :func:`is_public_address` for each one.
+_EMBEDDED_IPV4_REFUSED = (
+    ipaddress.IPv6Network("64:ff9b:1::/48"),  # RFC 8215 local-use NAT64
+    ipaddress.IPv6Network("::ffff:0:0:0/96"),  # RFC 2765 SIIT, replaced by RFC 6052
+    ipaddress.IPv6Network("2002::/16"),  # RFC 3056 6to4
+    ipaddress.IPv6Network("::/96"),  # RFC 4291 IPv4-compatible, deprecated
+)
+
+
 def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Whether one address is a legal scanner destination.
 
@@ -129,7 +146,60 @@ def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) ->
     zone-transfer attempt into a TCP/53 connection inside the agent's own
     network. Same boundary, different transport -- and a second copy of the
     rule is a second place for it to drift.
+
+    An IPv6 address that is really an IPv4 destination in transit is judged by
+    the IPv4 address it is delivered to, not by the prefix it travels under.
+    ``ipaddress`` calls ``64:ff9b::a00:5`` global -- IANA lists the NAT64
+    well-known prefix as globally reachable -- but on a sensor whose IPv6-only
+    egress goes through NAT64 that address *is* 10.0.0.5.
+
+    - ``::ffff:0:0/96`` (IPv4-mapped) and ``64:ff9b::/96`` (NAT64 well-known)
+      carry the IPv4 address in their low 32 bits, fixed by the RFC, so it is
+      extracted and put through the same rule. Extracted rather than refused
+      because both are ordinary on a working sensor: DNS64 answers every
+      IPv4-only name with a synthesized ``64:ff9b::/96`` AAAA, and
+      :func:`_parse_target` refuses a name if *any* of its addresses fails, so
+      refusing the prefix would refuse every IPv4-only server on an IPv6-only
+      sensor. Nothing legitimate is lost: RFC 6052 section 3.1 forbids the
+      well-known prefix for non-global IPv4, so a conforming DNS64 never
+      synthesizes an address this rejects.
+    - ``64:ff9b:1::/48`` (RFC 8215 local-use NAT64) is refused outright. The
+      operator picks the RFC 6052 prefix length inside it, so where the IPv4
+      address sits cannot be read off the address --
+      ``64:ff9b:1:a00:0:500:808:808`` is 8.8.8.8 read as a /96 and 10.0.0.5
+      read as a /48 -- and translating to private IPv4 is what the prefix
+      exists for.
+    - ``::ffff:0:0:0/96`` (IPv4-translated, the SIIT prefix RFC 6052
+      replaced) and ``::/96`` (IPv4-compatible, deprecated by RFC 4291) are
+      refused outright: both are retired, no destination lives there, and a
+      translator or ``sit0`` still configured for them delivers straight to the
+      embedded IPv4 address.
+    - ``2002::/16`` (6to4) is refused outright too, as current CPython already
+      does. A host with a 6to4 interface sends it as protocol 41 to the IPv4
+      address in bits 16-47, so it belongs to this family; it is refused
+      rather than unwrapped because IANA does not call the prefix globally
+      reachable and RFC 7526 already retired its anycast relays, so unwrapping
+      would loosen the stdlib's verdict for no destination a scanner is likely
+      to need.
+
+    Recent CPython already unwraps IPv4-mapped and already refuses the
+    local-use prefix and 6to4; they are spelled out anyway so the verdict does
+    not move with the interpreter's patch level (3.9.6 passes both prefixes).
+    Still out of reach: a network-specific NAT64 prefix (RFC 6052 section 2.2)
+    carved from the sensor operator's own global space, which no address-only
+    rule can tell from any other global IPv6 address.
+
+    The API keeps its own copy of this rule for webhooks
+    (``api/services/outbound_targets.check_addresses``); the scanner cannot
+    import it, so a change to what counts as public here belongs there too.
     """
+    if isinstance(address, ipaddress.IPv6Address):
+        if any(address in network for network in _EMBEDDED_IPV4_REFUSED):
+            return False
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        elif address in _NAT64_WELL_KNOWN:
+            address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return bool(address.is_global) and not address.is_multicast
 
 

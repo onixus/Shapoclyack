@@ -106,8 +106,21 @@ groups:
 
   - name: shapoclyack.slo.ingest
     rules:
+      # The durable is octo-ch-ingest-results since the filter was narrowed to
+      # ingest.results.>; the retired name selects nothing, so both rules below
+      # matched no series and could not fire until #334.
+      #
+      # One alert per consumer, from the replicas whose reading is fresh: every
+      # replica polls the same durable, and a replica whose poller stopped keeps
+      # its last count — which held this alert open after the queue drained.
+      # ShapoclyackClickHouseIngestStale names that replica instead.
       - alert: ShapoclyackClickHouseIngestLag
-        expr: octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+        expr: |
+          max by (consumer) (
+            octo_nats_consumer_pending{consumer="octo-ch-ingest-results"}
+            and on (instance, consumer)
+            ((time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) < 300)
+          ) > 1000
         for: 10m
         labels:
           severity: ticket
@@ -115,19 +128,23 @@ groups:
         annotations:
           summary: ClickHouse ingest consumer lag is above 1000 messages
           description: >-
-            octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000 for 10m
-            (SLO 5). Absent series means ingest is not enabled — this rule
+            octo_nats_consumer_pending{consumer="octo-ch-ingest-results"} > 1000
+            for 10m (SLO 5), counting only replicas that read it in the last
+            5 minutes. Absent series means ingest is not enabled — this rule
             does not fire then.
 
+      # Not timestamp(octo_nats_consumer_pending): the client library exports
+      # no sample timestamps, so Prometheus stamps each sample with the scrape
+      # time and that difference never exceeds a scrape interval.
       - alert: ShapoclyackClickHouseIngestStale
         expr: |
-          (time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+          (time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) > 300
         for: 5m
         labels:
           severity: ticket
           slo: "5"
         annotations:
-          summary: ClickHouse ingest lag gauge is stale
+          summary: ClickHouse ingest lag gauge on {{ $labels.instance }} is stale
           description: >-
             The ingest worker has not refreshed octo_nats_consumer_pending for
             more than 5 minutes. A stopped poller leaves a stale value rather
@@ -313,3 +330,98 @@ groups:
           description: >-
             Recurring scans are not being dispatched. count()>0 so this does
             not fire when the series is simply not scraped.
+
+  # Per replica: every API process has its own pool (#334). Leader locks hold
+  # one connection each for as long as they lead, so checked_out never idles
+  # at zero; 90 % of size + max_overflow still leaves a request or two of room.
+  - name: shapoclyack.db
+    rules:
+      - alert: ShapoclyackDbPoolSaturated
+        expr: |
+          (
+            octo_db_pool_checked_out
+            /
+            (octo_db_pool_size + octo_db_pool_max_overflow)
+          ) >= 0.9
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: API replica {{ $labels.instance }} is holding 90 % of its database connections
+          description: >-
+            octo_db_pool_checked_out has been at 90 % of OCTO_DB_POOL_SIZE +
+            OCTO_DB_MAX_OVERFLOW for 10m. The next burst waits for a connection
+            and then fails after OCTO_DB_POOL_TIMEOUT. Size the pool against
+            the server's max_connections (docs/high-availability.md) or find
+            what holds connections (docs/observability.md § Database pool).
+
+      - alert: ShapoclyackDbPoolCheckoutTimeouts
+        expr: sum by (job, instance) (increase(octo_db_pool_checkout_timeouts_total[10m])) > 0
+        for: 0s
+        labels:
+          severity: ticket
+        annotations:
+          summary: Requests on {{ $labels.instance }} are failing for want of a database connection
+          description: >-
+            A checkout waited OCTO_DB_POOL_TIMEOUT for a free connection and
+            gave up, so the request behind it answered 500 without reaching
+            the database. A longer timeout only makes the wait longer; see
+            docs/observability.md § Database pool.
+
+  # Cluster-wide: every replica reports the same agents table (#334), hence
+  # max(). Endpoint agents are deliberately not alerted on — a laptop that is
+  # asleep is not an incident; the Platform dashboard shows them.
+  - name: shapoclyack.agents
+    rules:
+      - alert: ShapoclyackSensorsStale
+        expr: max(octo_agents{agent_kind="scanner",state="stale"}) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $value }} active sensor(s) have not been heard from for longer than OCTO_AGENT_STALE_SECONDS'
+          description: >-
+            Sensors that are neither disabled nor quarantined have been stale
+            for 15m, so the scans addressed to their group wait. A sensor that
+            is gone on purpose should be disabled or deleted in the Sensor
+            Fleet page rather than left to hold this alert open.
+
+      # min(), not max(), for the queue: every replica reads the jobs table at
+      # scrape time, so they agree — and a page must not depend on that. The
+      # queue used to be set by whichever replica handled the job's last event,
+      # and one replica's stale 1 paged over an empty queue (review of #334).
+      - alert: ShapoclyackNoSensorOnline
+        expr: |
+          min(octo_jobs_queued) > 0
+          and
+          sum(max by (state) (octo_agents{agent_kind="scanner",state=~"idle|busy|error"})) == 0
+          and
+          max(octo_agents{agent_kind="scanner",state="stale"}) > 0
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: Scans are queued and no sensor is online to take them
+          description: >-
+            Every active sensor is stale and jobs are waiting, so no scan runs
+            at all. Local-mode installations with no sensors registered do not
+            fire this. docs/observability.md § Sensors and agents.
+
+      # The two alerts above read series that exist only while some replica
+      # can read the agents and jobs tables at scrape time. Per replica, hence
+      # min(): one replica that still can is enough for them to work.
+      - alert: ShapoclyackFleetMetricsBlind
+        expr: min(octo_metrics_snapshot_age_seconds{snapshot="cluster"}) > 300
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: No API replica has read the sensor fleet and job queue for /metrics in 15 minutes
+          description: >-
+            octo_agents and octo_jobs_queued are withdrawn on every replica, so
+            ShapoclyackSensorsStale and ShapoclyackNoSensorOnline cannot fire.
+            octo_metrics_snapshot_misses_total says why: pool_busy (never two
+            connections free when it was due; raise OCTO_DB_POOL_SIZE or
+            OCTO_DB_MAX_OVERFLOW, since leader-lock workers hold one each) or
+            error (the query fails; the replicas' WARNING line names the
+            cause). docs/observability.md § Scrape-time cost.

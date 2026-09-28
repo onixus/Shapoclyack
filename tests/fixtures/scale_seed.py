@@ -404,12 +404,14 @@ def seed_clickhouse(
     return vulns, ports
 
 
-def purge_clickhouse(url: str, tenant_id: str) -> None:
+def purge_clickhouse(url: str, tenant_id: str, *, wait: bool = False) -> None:
     """Delete a tenant's rows from both analytics tables.
 
     ``ALTER TABLE … DELETE`` is an asynchronous mutation: it returns before the
     parts are rewritten, so a ``SELECT count()`` immediately afterwards can
-    still see rows. Poll ``system.mutations`` if you need to block on it.
+    still see rows. ``wait`` blocks until the mutation has finished on this
+    server (``mutations_sync``), which a measurement taken right after the
+    purge needs (``scale_measure.py``, #337).
     """
     from api.services import clickhouse_client as ch
     from api.services.ch_transform import tenant_to_uuid
@@ -420,6 +422,7 @@ def purge_clickhouse(url: str, tenant_id: str) -> None:
         client.command(
             f"ALTER TABLE {table} DELETE WHERE tenant_id = {{tid:UUID}}",
             parameters={"tid": tid},
+            settings={"mutations_sync": 1} if wait else None,
         )
 
 

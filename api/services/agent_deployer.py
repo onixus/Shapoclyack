@@ -76,6 +76,7 @@ from api.schemas import AgentDeploySSHRequest, AgentDeployStatusResponse, AgentS
 from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import auth_audit
+from api.services import legal_hold
 from api.services import outbound_targets
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
@@ -888,6 +889,11 @@ def _update_stage(
 
 
 def _prune_history(session: Any, tenant_id: str) -> None:
+    # A cap is disposition as much as an age window is, so a tenant on legal
+    # hold keeps its whole journal (#332) — the host, the account and the log
+    # of every push are what a dispute about an install would ask for.
+    if legal_hold.is_on_legal_hold(session, tenant_id):
+        return
     stale = session.execute(
         select(models.AgentDeployment.deploy_id)
         .where(models.AgentDeployment.tenant_id == tenant_id)

@@ -6,14 +6,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 from api import __version__
 from api.auth import get_settings
 from api.db import engine as db_engine
+from api.db import tenant_scope
 from api.middleware import (
     BodySizeLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -36,6 +38,8 @@ from api.routes import usage as usage_routes
 from api.routes import compliance as compliance_routes
 from api.routes import config as config_routes
 from api.routes import reports as reports_routes
+from api.routes import retention as retention_routes
+from api.routes import tenant_lifecycle as tenant_lifecycle_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
 from api.routes import service_tokens as service_tokens_routes
@@ -57,6 +61,7 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_agent_mgmt
 from api.services import endpoint_retention
 from api.services import health as health_service
+from api.services import retention_policy
 from api.services import screenshot_retention
 from api.services import sla_escalation
 from api.services import software_match_worker
@@ -72,6 +77,7 @@ from api.services.integrations import webhooks as webhooks_service
 from api.services import jobs as jobs_service
 from api.services import memberships as memberships_service
 from api.services import metrics as metrics_service
+from api.services import metrics_sources
 from api.services import nats_bus
 from api.services import nats_outbox
 from api.services import oidc as oidc_service
@@ -80,6 +86,7 @@ from api.services.reports import dispatcher as report_dispatcher
 from api.services import service_tokens as service_tokens_service
 from api.services import schedule_dispatcher
 from api.services import tracing as tracing_service
+from api.services import tenant_purge
 from api.services import tenants as tenants_service
 from api.services import users as users_service
 from api.services import wordlists as wordlists_service
@@ -141,9 +148,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # back takes no per-row claim, so every replica would poll the same tenant's
     # tickets and write the same lifecycle events (#347).
     ticket_sync_worker.start_worker(settings)
+    # Every replica, like the run publisher: an approved deletion is claimed
+    # with FOR UPDATE SKIP LOCKED and held on a lease its batches renew (#325).
+    tenant_purge.start_worker(settings)
     try:
         yield
     finally:
+        tenant_purge.stop_worker()
         ticket_sync_worker.stop_worker()
         webhook_worker.stop_worker()
         run_publisher.stop_worker()
@@ -176,6 +187,47 @@ def _bearer_matches(request: Request, expected: str) -> bool:
     return hmac.compare_digest(presented.strip(), expected)
 
 
+#: The methods the HTTP series name as themselves; anything else is ``OTHER``.
+_METRIC_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+#: ``path`` of a request no route matched. Not a path, so it cannot collide
+#: with a route template, which always starts with ``/``.
+UNMATCHED_PATH_LABEL = "<unmatched>"
+
+
+def _http_metric_labels(request: Request) -> tuple[str, str]:
+    """``(method, path)`` labels for the HTTP series, both from a fixed set (#334).
+
+    ``path`` is the matched route's template, which is what makes it a bounded
+    label. A request that matched nothing — a 404 on an API serving no console
+    build, a CORS preflight the middleware answers before routing — has no
+    template, and its raw URL used to stand in: every path a scanner probed
+    became one more series on every replica, kept until the process restarted.
+    The method is the client's to choose in the same way.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or _mount_template(request) or UNMATCHED_PATH_LABEL
+    method = request.method if request.method in _METRIC_METHODS else "OTHER"
+    return method, path
+
+
+def _mount_template(request: Request) -> str | None:
+    """``/_next/*`` for a request a ``Mount`` handled (the console's static files).
+
+    A mount never sets ``scope["route"]``, so every file the console build
+    served used to be ``<unmatched>``, next to the probes. It does leave the
+    mounted app as ``scope["endpoint"]``; the label is the mount's own path from
+    the app's route table, never the request's.
+    """
+    endpoint = request.scope.get("endpoint")
+    app = request.scope.get("app")
+    if endpoint is None or app is None:
+        return None
+    for candidate in app.router.routes:
+        if isinstance(candidate, Mount) and candidate.app is endpoint:
+            return f"{candidate.path}/*"
+    return None
+
+
 def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
     """One readiness check as ``HealthResponse``'s tri-state field.
 
@@ -189,11 +241,21 @@ def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Before anything else: a retention floor the operator configured and the
+    # platform cannot apply must stop the API, not be discovered by the first
+    # tenant admin whose PUT it would have refused (#332).
+    retention_policy.validate_configuration(settings)
     # Before the tenant store opens the first session: the engine is a lazy
     # singleton keyed by URL, so pool sizing that arrives after something has
     # already built it would apply to nobody (#335).
     db_engine.configure(settings)
+    tenant_scope.configure(settings)
     tenants_service.load_tenants(settings)
+    # Right after the first thing that proves the database is there: a replica
+    # told to enforce tenant row security on a database that cannot — no role,
+    # a table without its policy — refuses here, before it serves a request
+    # that would either 500 or, worse, be answered as if it were enforced (#311).
+    tenant_scope.verify_database(settings)
     # After the tenant store (it shares the session factory), and before any
     # router is mounted: a prod install with no console account refuses here
     # rather than serving a login form nobody can get through (#156).
@@ -204,6 +266,9 @@ def create_app() -> FastAPI:
     crypto_startup.bootstrap(settings)
     jobs_service.load_jobs(settings)
     agents_service.load_agents(settings)
+    # What /metrics reads at scrape time: the fleet, the queue, the endpoint
+    # devices and the opt-in per-tenant series (#334).
+    metrics_sources.configure(settings)
     agent_deployer.configure(settings)
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
@@ -274,13 +339,20 @@ def create_app() -> FastAPI:
         start = time.perf_counter()
         response = await call_next(request)
         duration = time.perf_counter() - start
-        route = request.scope.get("route")
-        path = route.path if route is not None else request.url.path
-        metrics_service.HTTP_REQUESTS_TOTAL.labels(request.method, path, str(response.status_code)).inc()
-        metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
+        method, path = _http_metric_labels(request)
+        metrics_service.HTTP_REQUESTS_TOTAL.labels(method, path, str(response.status_code)).inc()
+        metrics_service.HTTP_REQUEST_DURATION_SECONDS.labels(method, path).observe(duration)
         return response
 
-    @app.get("/metrics", include_in_schema=False)
+    # Installation-wide gauges (#311). Nothing here reads a table today, but a
+    # collector that counts rows at scrape time counts every tenant's, and in
+    # the undeclared scope every such read would fail — silently, as series
+    # that stop appearing.
+    @app.get(
+        "/metrics",
+        include_in_schema=False,
+        dependencies=[Depends(tenant_scope.cross_tenant("installation-wide gauges"))],
+    )
     def metrics_endpoint(request: Request) -> Response:
         # Open unless a token is configured: that is the Prometheus shape most
         # installations scrape with, and making the token mandatory would break
@@ -306,7 +378,11 @@ def create_app() -> FastAPI:
         # allowed to know about dependencies.
         return {"status": "ok"}
 
-    @app.get("/readyz", include_in_schema=False)
+    # The two probes count every tenant's unpublished backlog, which is the
+    # installation's state and no tenant's (#311).
+    probe_scope = [Depends(tenant_scope.cross_tenant("readiness counts every tenant's backlog"))]
+
+    @app.get("/readyz", include_in_schema=False, dependencies=probe_scope)
     def readyz() -> JSONResponse:
         report = health_service.check_readiness(get_settings())
         # The status code and the body answer different questions: 503 means
@@ -322,7 +398,9 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/api/health", response_model=HealthResponse, tags=["health"])
+    @app.get(
+        "/api/health", response_model=HealthResponse, tags=["health"], dependencies=probe_scope
+    )
     def health() -> HealthResponse:
         settings = get_settings()
         # The same sweep /readyz runs, reported in this endpoint's older shape:
@@ -370,6 +448,8 @@ def create_app() -> FastAPI:
     app.include_router(passkeys_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
     app.include_router(rbac_routes.router, prefix="/api")
+    app.include_router(retention_routes.router, prefix="/api")
+    app.include_router(tenant_lifecycle_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
     app.include_router(vulnerabilities_routes.router, prefix="/api")

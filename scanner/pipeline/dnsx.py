@@ -1,9 +1,9 @@
 """One dnsx JSONL invocation, shared by the org_profile DNS stages (M2, #182).
 
-``dns_hygiene.py`` and ``mail_posture.py`` need seven record types between
-them (NS, SOA, CAA, A/AAAA, MX, TXT and the AXFR probe). ``domain_monitor.py``
+``dns_hygiene.py`` and ``mail_posture.py`` need six record types between
+them (NS, SOA, CAA, A/AAAA, MX and TXT). ``domain_monitor.py``
 spells its two out as two near-identical functions, which is the right shape
-for two and the wrong shape for seven -- so the batch mechanics live here once
+for two and the wrong shape for six -- so the batch mechanics live here once
 and each stage keeps its own thin, named wrapper on top. Those wrappers are
 what the tests monkeypatch, exactly as ``test_domain_monitor.py`` patches
 ``_run_dnsx_a_aaaa``; nothing in this module resolves anything by itself.
@@ -15,7 +15,9 @@ any exception into ``StageFailureError`` and the run exits with
 could not be evaluated reports ``not_checked``/``error``, it does not take the
 scan down with it.
 
-AXFR does **not** go through here on purpose; see ``dns_hygiene._probe_axfr``.
+AXFR does **not** use dnsx at all: ``dnsx -axfr`` chases the zone's NS set on
+its own and dials addresses the caller never checked. See
+``dns_hygiene._probe_axfr``.
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ def query(
                 *flags,
                 "-json",
                 "-silent",
+                "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
                 "-o",
                 str(json_out),
             ],

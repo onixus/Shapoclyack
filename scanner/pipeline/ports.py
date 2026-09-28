@@ -221,6 +221,7 @@ def _run_naabu(
         "-list",
         str(input_file),
         "-silent",
+        "-disable-update-check",  # no phone-home from an air-gapped scan (#339)
         "-Pn",
         "-rate",
         str(rate),

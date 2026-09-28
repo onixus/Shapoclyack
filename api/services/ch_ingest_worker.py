@@ -175,6 +175,9 @@ class ClickHouseIngestWorker:
             metrics_service.NATS_CONSUMER_PENDING.labels(consumer=CONSUMER_CH_INGEST).set(
                 info.num_pending
             )
+            metrics_service.NATS_CONSUMER_PENDING_TIMESTAMP.labels(
+                consumer=CONSUMER_CH_INGEST
+            ).set_to_current_time()
         except Exception:  # noqa: BLE001
             pass
 

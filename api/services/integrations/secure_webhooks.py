@@ -98,6 +98,8 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
     lease expires mid-batch on a large one and hands a row still being sent to
     the next replica (#255).
     """
+    from api.services import tenants as tenants_service
+
     settings = _base._require_settings()
     rows = session.execute(
         select(models.WebhookDelivery)
@@ -109,6 +111,11 @@ def _claim_due(session: Any, *, now: datetime, limit: int) -> list[models.Webhoo
             models.WebhookDelivery.status == "pending",
             models.WebhookDelivery.next_attempt_at <= now,
             models.WebhookSubscription.enabled.is_(True),
+            # Held, not dropped, while the tenant is not active (#325): a
+            # suspended customer's findings do not leave the platform, and the
+            # deliveries go out as they were queued if it is resumed. A purge
+            # deletes them with the tenant's other rows.
+            models.WebhookSubscription.tenant_id.in_(tenants_service.active_tenant_ids()),
         )
         .order_by(models.WebhookDelivery.next_attempt_at)
         .limit(limit)

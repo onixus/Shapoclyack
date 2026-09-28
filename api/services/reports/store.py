@@ -23,14 +23,14 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import artifact_store, workflow_events
+from api.services import artifact_store, legal_hold, retention_policy, workflow_events
 from api.services.compliance import frameworks as catalog
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
@@ -430,15 +430,40 @@ def delete_schedule(
 
 
 def due_schedules(settings: Settings, now: datetime) -> list[dict[str, Any]]:
+    from api.services import tenants as tenants_service
+
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.ReportSchedule).where(
                 models.ReportSchedule.enabled.is_(True),
                 models.ReportSchedule.next_run_at.is_not(None),
                 models.ReportSchedule.next_run_at <= now,
+                # Paused while the tenant is not active (#325): a suspended
+                # customer's report is still a customer's data mailed out.
+                models.ReportSchedule.tenant_id.in_(tenants_service.active_tenant_ids()),
             )
         ).scalars().all()
         return [_schedule_dict(row) for row in rows]
+
+
+def reanchor_overdue(session, tenant_id: str, *, now: datetime) -> int:
+    """Move a resumed tenant's overdue report schedules past ``now`` (#325).
+
+    The report half of ``scan_schedules.reanchor_overdue``, for the same
+    reason: one report per schedule on its next occurrence, not every missed
+    one at the moment of the resume. In the caller's session.
+    """
+    rows = session.execute(
+        select(models.ReportSchedule).where(
+            models.ReportSchedule.tenant_id == tenant_id,
+            models.ReportSchedule.enabled.is_(True),
+            models.ReportSchedule.next_run_at.is_not(None),
+            models.ReportSchedule.next_run_at <= now,
+        )
+    ).scalars().all()
+    for row in rows:
+        row.next_run_at = next_cron_time(row.cron, after=now)
+    return len(rows)
 
 
 def record_dispatch(
@@ -677,6 +702,12 @@ def delete_report(
     row = get_report(settings, report_id, tenant_id=tenant_id)
     if row is None:
         return False
+    # Before the bytes go (#332): a generated report is one of the categories a
+    # legal hold preserves, and the object store has no transaction to roll back.
+    with get_session(settings.postgres_url) as session:
+        legal_hold.assert_not_on_hold(
+            session, row["tenant_id"], action="report.delete"
+        )
     try:
         key = _report_key(settings, row["tenant_id"], row["report_id"], row["format"])
         artifact_store.get_store(settings).delete(key)
@@ -708,22 +739,30 @@ def record_delivery(settings: Settings, report_id: str, entries: list[dict[str, 
 
 
 def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
-    """Delete generated reports past ``report_retention_days``, files included.
+    """Delete generated reports past their tenant's window, files included.
+
+    ``report_retention_days`` is the platform default; a tenant may keep its
+    reports longer or shorter, and a tenant on legal hold keeps all of them
+    (#332).
 
     Rows and files are removed together, in that order per report, so a crash
     between the two leaves an orphaned file rather than a row pointing at
     nothing — an operator finding an extra PDF on disk is a smaller problem
     than a console listing a report that 404s on download."""
 
-    if settings.report_retention_days <= 0:
-        return {"deleted": 0, "errors": 0}
-    cutoff = (now or _now()) - timedelta(days=settings.report_retention_days)
     deleted = 0
     errors = 0
     with get_session(settings.postgres_url) as session:
-        rows = session.execute(
-            select(models.GeneratedReport).where(models.GeneratedReport.generated_at < cutoff)
-        ).scalars().all()
+        plan = retention_policy.load_plan(settings, retention_policy.REPORTS, session=session)
+        clause = retention_policy.expired_clause(
+            plan,
+            tenant_column=models.GeneratedReport.tenant_id,
+            time_column=models.GeneratedReport.generated_at,
+            now=now or _now(),
+        )
+        if clause is None:
+            return {"deleted": 0, "errors": 0}
+        rows = session.execute(select(models.GeneratedReport).where(clause)).scalars().all()
         for row in rows:
             try:
                 key = _report_key(settings, row.tenant_id, row.report_id, row.fmt)
@@ -734,5 +773,5 @@ def prune_reports(settings: Settings, *, now: datetime | None = None) -> dict[st
             deleted += 1
         session.commit()
     if deleted:
-        LOG.info("Pruned %d generated reports older than %s", deleted, cutoff.isoformat())
+        LOG.info("Pruned %d generated reports past their retention window", deleted)
     return {"deleted": deleted, "errors": errors}

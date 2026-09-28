@@ -280,6 +280,14 @@ def mark_running(
     return job_control.mark_running(settings, job_id, agent_id=agent_id)
 
 
+def stop_requested(
+    settings: Settings, job_id: str, *, agent_id: str, tenant_id: str
+) -> bool:
+    return job_control.stop_requested(
+        settings, job_id, agent_id=agent_id, tenant_id=tenant_id
+    )
+
+
 def cancel_job(
     settings: Settings,
     job_id: str,

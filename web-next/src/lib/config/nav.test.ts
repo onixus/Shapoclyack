@@ -164,10 +164,25 @@ describe("role gating", () => {
   });
 
   it("shows an admin everything and drops empty groups for others", () => {
-    const admin = menu(principal("admin", "admin", ["tenant.credential.manage"]));
+    const admin = menu(
+      principal("admin", "admin", ["tenant.credential.manage", "tenant.retention.read"]),
+    );
     expect(admin).toEqual(NAV.map((i) => i.href));
     expect(canSee({ globalMinRole: "admin" }, undefined)).toBe(false);
     expect(canSee({}, undefined)).toBe(true);
+  });
+});
+
+describe("data retention (#332)", () => {
+  it("is shown to whoever may read the tenant's policy, whatever the global role", () => {
+    // An auditor membership is globally a viewer; the permission is the door.
+    expect(menu(principal("viewer", "auditor", ["tenant.retention.read"]))).toContain(
+      "/retention",
+    );
+    expect(menu(principal("viewer", "viewer", []))).not.toContain("/retention");
+    expect(menu(principal("operator", "operator", ["config.read"]))).not.toContain(
+      "/retention",
+    );
   });
 });
 
