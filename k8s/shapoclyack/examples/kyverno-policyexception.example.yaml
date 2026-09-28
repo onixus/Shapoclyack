@@ -1,0 +1,59 @@
+# Kyverno exceptions for the scanner-executor (#338), against the upstream
+# pod-security policy set (github.com/kyverno/policies, pod-security/baseline
+# and pod-security/restricted). Nothing else Shapoclyack ships needs one: every
+# other pod passes those policies at `restricted` (docs/k8s-hardening.md).
+#
+#   kubectl apply -f k8s/shapoclyack/examples/kyverno-policyexception.example.yaml
+#
+# Scoped three ways at once — policy + rule, namespace, and name — so the
+# exception covers the executor's pods and nothing that is later put beside
+# them. The `autogen-` rule names are the ones Kyverno generates for the
+# StatefulSet; listing only the Pod rule would admit the pod and block the
+# StatefulSet that creates it.
+#
+# overlays/prod also runs the executor on the host network: that exception is
+# kyverno-policyexception-prod-hostnetwork.example.yaml, a file of its own so
+# it is applied only where that overlay is.
+#
+# Kyverno >= 1.13 (kyverno.io/v2). On 1.11/1.12 use kyverno.io/v2beta1; on any
+# version, PolicyExceptions must be enabled (--enablePolicyException), and if
+# --exceptionNamespace is set, apply this into that namespace instead.
+#
+# Checked with `kyverno apply` 1.13.4 against the upstream set and every
+# overlay's render: without this file the executor fails the three rules below
+# and nothing else fails; with it, nothing fails — except overlays/prod, whose
+# host network is the other file's.
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: shapoclyack-scanner-executor
+  namespace: network-scan-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  exceptions:
+    # capabilities.add: NET_RAW, NET_ADMIN — baseline and restricted.
+    - policyName: disallow-capabilities
+      ruleNames:
+        - adding-capabilities
+        - autogen-adding-capabilities
+    - policyName: disallow-capabilities-strict
+      ruleNames:
+        - adding-capabilities-strict
+        - autogen-adding-capabilities-strict
+    # allowPrivilegeEscalation: true — restricted.
+    - policyName: disallow-privilege-escalation
+      ruleNames:
+        - privilege-escalation
+        - autogen-privilege-escalation
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+            - StatefulSet
+          namespaces:
+            - network-scan-executor
+          names:
+            - shapoclyack-scanner-executor*

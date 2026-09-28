@@ -705,6 +705,9 @@ export type JobInfo = {
   /** True when that group had no active agent with a recent heartbeat at the
    * moment the scan was queued — the job is accepted but nothing is listening. */
   agent_group_unavailable?: boolean;
+  /** Queued for agent execution, addressed to no group, and the tenant has no
+   *  scanner agent online: nothing will claim it until one enrolls (#338). */
+  sensor_unavailable?: boolean;
 };
 
 /** One accepted run the installation still owes its visible copy (#425) —
@@ -865,6 +868,8 @@ export type AgentInfo = {
 export type AgentFleetSummary = {
   total_agents: number;
   online_agents: number;
+  /** Online, active, scanner-kind: the agents that can take a scan (#338). */
+  scan_ready_agents?: number;
   busy_agents: number;
   stale_agents: number;
   error_agents: number;
@@ -1278,6 +1283,10 @@ export type ProvisioningKeyInfo = {
   created_at: string | null;
   revoked_at: string | null;
   last_used_at: string | null;
+  /** null: the key never expires (minted before #308, or with a TTL of 0). */
+  expires_at?: string | null;
+  /** Within 14 days of expiring, and neither expired nor revoked yet. */
+  expires_soon?: boolean;
   key?: string | null;
 };
 

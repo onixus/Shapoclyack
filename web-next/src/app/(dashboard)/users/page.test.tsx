@@ -217,6 +217,44 @@ describe("UsersPage", () => {
     await waitFor(() => expect(grant).toHaveBeenCalledWith("acme", "newbie", "operator"));
   });
 
+  it("shows when each provisioning key stops being exchangeable", async () => {
+    // An executor re-exchanges its key every time it refreshes its token, so
+    // the expiry is the day it stops taking scans; the API reported the date
+    // and the console did not show it (#338).
+    vi.spyOn(apiModule, "fetchUsers").mockResolvedValue([account()]);
+    vi.spyOn(apiModule, "fetchProvisioningKeys").mockResolvedValue([
+      {
+        key_id: "pk_exec",
+        tenant_id: "acme",
+        label: "scanner-executor",
+        created_at: "2026-07-01T10:00:00Z",
+        revoked_at: null,
+        last_used_at: "2026-09-20T10:00:00Z",
+        expires_at: "2026-09-29T10:00:00Z",
+        expires_soon: true,
+      },
+      {
+        key_id: "pk_old",
+        tenant_id: "acme",
+        label: "legacy",
+        created_at: "2026-01-01T10:00:00Z",
+        revoked_at: null,
+        last_used_at: null,
+        expires_at: null,
+        expires_soon: false,
+      },
+    ]);
+    signIn();
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Provisioning keys" }));
+    const soon = (await screen.findByText("scanner-executor")).closest("tr") as HTMLElement;
+    expect(within(soon).getByText("expires soon")).toBeInTheDocument();
+    const perpetual = screen.getByText("legacy").closest("tr") as HTMLElement;
+    expect(within(perpetual).getByText("never")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Expires" })).toBeInTheDocument();
+  });
+
   it("offers the roles the API publishes, not three it remembers", async () => {
     // The defect: `viewer | operator | admin` was a literal in this file, so
     // the five roles #318 added — and migration 0049 seeded, and the docs

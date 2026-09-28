@@ -13,6 +13,7 @@ from api.db.engine import get_session
 from api.schemas import AgentClaimResponse, AgentInfo, JobInfo
 from api.services import agents as agents_service
 from api.services import audit as audit_service
+from api.services import config_override
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import job_repository
@@ -166,8 +167,22 @@ def claim_job(
         raise LookupError("Unknown agent_id; register first")
     effective_tenant = tenant_id or agent.tenant_id
 
+    # What this agent cannot run, as scan_options keys (#362, #338). Filtered
+    # out of the claim rather than refused at the head of the queue: a sensor
+    # that predates the config overlay used to be handed the oldest job, refuse
+    # it, and never reach the plain jobs queued behind it (review round 2).
+    capabilities = set(agent.capabilities or [])
+    unsupported = [
+        key
+        for key, capability in (
+            ("scan_policy", scan_policy.AGENT_CAPABILITY),
+            ("config_overlay", config_override.AGENT_CAPABILITY),
+        )
+        if capability not in capabilities
+    ]
+
     with get_session(settings.postgres_url) as session:
-        query = (
+        eligible = (
             select(models.Job)
             .where(
                 models.Job.execution == "agent",
@@ -188,14 +203,32 @@ def claim_job(
                 ),
             )
             .order_by(models.Job.queued_at, models.Job.job_id)
-            .limit(1)
-            .with_for_update(skip_locked=True)
         )
         if job_id:
-            query = query.where(models.Job.job_id == job_id)
-        row = session.execute(query).scalars().first()
+            eligible = eligible.where(models.Job.job_id == job_id)
+        # ``->>`` is NULL for an absent key and for a NULL document alike.
+        runnable = [models.Job.scan_options[key].as_string().is_(None) for key in unsupported]
+        row = (
+            session.execute(
+                eligible.where(*runnable).limit(1).with_for_update(skip_locked=True)
+            )
+            .scalars()
+            .first()
+        )
         if row is None:
-            return None
+            # Nothing this agent can run. If something it cannot run is
+            # waiting, say so (426, below) instead of a quiet 204: that line in
+            # the agent's journal is how its operator learns to upgrade.
+            # Only jobs it cannot run: a runnable one seen here is one another
+            # claim holds the lock on, and must not be handed out twice.
+            blocked = [models.Job.scan_options[key].as_string().is_not(None) for key in unsupported]
+            row = (
+                session.execute(eligible.where(or_(*blocked)).limit(1)).scalars().first()
+                if blocked
+                else None
+            )
+            if row is None:
+                return None
 
         # A job whose tenant has a scan policy may only be handed to a worker
         # that can honour it (#362). The policy is applied by the executor —
@@ -204,12 +237,13 @@ def claim_job(
         # whatever its local ``default.yaml`` says, which on a fragile estate
         # is the failure the policy exists to prevent.
         #
-        # Refused rather than skipped over: skipping would leave the operator
-        # with a queue that does not move and an agent that reports itself
-        # healthy, while a 426 lands in that agent's own journal, keeps it
-        # visible in the fleet view and names the upgrade — the same shape
-        # #363 gives an agent below the version floor. The job stays queued
-        # for a worker that can take it.
+        # Reached only when nothing this agent can run is waiting (the query
+        # above hands those out first). Refused rather than answered 204: a
+        # quiet empty queue would leave the operator with jobs that do not
+        # move and an agent that reports itself healthy, while a 426 lands in
+        # that agent's own journal, keeps it visible in the fleet view and
+        # names the upgrade — the same shape #363 gives an agent below the
+        # version floor. The job stays queued for a worker that can take it.
         if (row.scan_options or {}).get("scan_policy") and (
             scan_policy.AGENT_CAPABILITY not in (agent.capabilities or [])
         ):
@@ -224,6 +258,26 @@ def claim_job(
                 f"agent {agent_id} does not support tenant scan policies "
                 f"(capability {scan_policy.AGENT_CAPABILITY}); upgrade the agent — "
                 "its jobs carry rate limits it cannot currently apply"
+            )
+        # The same rule for the job's config overlay (#338 review): an agent
+        # that predates it would run the scan on its own config alone — nuclei
+        # on for an ``inventory`` job, the ConfigMap's rate instead of the
+        # console's — while the job record says otherwise.
+        if (row.scan_options or {}).get("config_overlay") and (
+            config_override.AGENT_CAPABILITY not in (agent.capabilities or [])
+        ):
+            scan_policy.note_refusal("config_overlay_unsupported")
+            _log.warning(
+                "Agent %s asked for job %s with a config overlay but lacks %s",
+                agent_id,
+                row.job_id,
+                config_override.AGENT_CAPABILITY,
+            )
+            raise config_override.AgentOverlayUnsupported(
+                f"agent {agent_id} cannot apply the job's config overlay "
+                f"(capability {config_override.AGENT_CAPABILITY}); upgrade the "
+                "agent — its jobs carry the scan intent and the console's config "
+                "overrides, which it would currently ignore"
             )
 
         # ``claimed``, not ``running`` (P1.3): the agent owns the job but has

@@ -137,9 +137,10 @@ upload is read whole and base64'd into the ingest message, hence the
 `1 + 4/3` archive copies per concurrent ingest.
 
 These rows are for **agent mode** (`OCTO_JOB_EXECUTION_MODE=agent`): sensors
-scan, the API only ingests. In local mode — the default of `main`'s overlays
-today, which #338 is changing — the scanner runs as a subprocess of the API
-pod, and the pod needs the sensor's footprint on top: at least the report
+scan, the API only ingests. In local mode — `overlays/local-scan` only, since
+#338 moved the other overlays to a scanner-executor — the scanner runs as a
+subprocess of the API pod, and the pod needs the sensor's footprint on top: at
+least the report
 stage's peak (126 MiB for a 1 000-host run, 444 MiB for 10 000, § 6) plus the
 scanning tools, which are not measured here. That is what the shipped 4-core
 / 4 GiB limit is for; the model does not size it.
@@ -487,14 +488,16 @@ so six replicas put at most about 1.2 cores of projection load on Postgres
 from: 1.9 cores at the table's two replicas, 5.8 at six with headroom.
 
 For the kind PoC ([implementation plan](wiki/implementation-plan.md)): the
-`kind-dev` overlay requests 1.1 CPU / 3.1 GiB for the long-running services plus
-1 CPU / 1 GiB per scan Job, and its claims add up to 85 GiB (local-path does not
-enforce them). Of the plan's 4 vCPU / 8 GB / 50 GB, only the disk is supported
-by these measurements: a 1k-asset PoC writes ~16 GiB of Postgres, ClickHouse
-and artifacts in a year (the 1k column), which 50 GB holds. The CPU and memory
-are not: `kind-dev` scans in local mode and leaves NATS and ClickHouse
-disabled in the API, so neither the agent-mode API rows nor the ingest path
-measured here describe it, and the scan itself is unmeasured.
+`kind-dev` overlay requests 1.6 CPU / 4.1 GiB for the long-running services —
+the scanner-executor's 500m / 1 GiB among them, which since #338 takes the place
+of the 1 CPU / 1 GiB per scan Job — plus 8 GiB of ephemeral storage for the
+executor's run directories, and its claims add up to 85 GiB (local-path does
+not enforce them). Of the plan's 4 vCPU / 8 GB / 50 GB, only the disk is
+supported by these measurements: a 1k-asset PoC writes ~16 GiB of Postgres,
+ClickHouse and artifacts in a year (the 1k column), which 50 GB holds. The CPU
+and memory are not: `kind-dev`'s API runs in agent mode, but with NATS and
+ClickHouse disabled, so neither the API rows nor the ingest path measured here
+describe it, and the scan itself is unmeasured.
 
 ## Re-measuring on a stand
 
@@ -622,8 +625,8 @@ node — of which only the unconsumed messages matter.
   sensor peak memory and the raw tool output in a run directory (nmap XML,
   nuclei JSONL, `pipeline.log`, the PDF, `diff.json`) come from `runs-dir` on a
   stand. Until then the sensor rows print `n/m`, the artifact volume is a
-  floor, and the shipped sensor values (500m/512Mi request, 2/2Gi limit, VPA
-  in `base/agents`) stand unconfirmed.
+  floor, and the shipped sensor values (the scanner-executor's 500m/1Gi
+  request and 4/4Gi limit since #338, VPA in `base/agents`) stand unconfirmed.
 - **Real data.** Hosts, ports and CVEs are the `scale_seed` estate: three
   findings and four ports per asset, a 2 000-CVE pool, no banners, no CPEs.
   Row sizes in Postgres depend little on content; ClickHouse's compressed

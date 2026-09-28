@@ -5,3 +5,18 @@ metadata:
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/part-of: shapoclyack
+    # Pod Security Admission (#338). Enforce `baseline`: the API server itself
+    # refuses a pod here that asks for a host namespace, a privileged container
+    # or a capability outside the default set — NET_RAW included, which is why
+    # nothing that scans runs in this namespace (see scanner-executor/).
+    #
+    # Everything this repository ships into network-scan also meets
+    # `restricted`, and tests/test_k8s_pod_security.py keeps it that way; audit
+    # and warn at `restricted` report anything added later that does not. The
+    # enforce level stays one below so that an installation's own additions
+    # (a sidecar, a third-party exporter) are warned about instead of refused
+    # on the first apply. docs/k8s-hardening.md says how to raise it, and why
+    # overlays/local-scan lowers it.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

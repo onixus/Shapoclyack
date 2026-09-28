@@ -2,8 +2,9 @@
 # unlike egress, the set of legitimate clients here is known exactly and does
 # not vary by environment: Postgres is reached by the API (and its migrate init
 # container) plus the backup CronJob, ClickHouse by the API plus its own backup
-# CronJob, NATS by the API and by scanner agents. See docs/operations.md §
-# NetworkPolicy decision for why the egress half of that decision still stands.
+# CronJob, NATS by the API (and by sensors outside the cluster, below). See
+# docs/operations.md § NetworkPolicy decision for why the egress half of that
+# decision still stands.
 #
 # Each policy is default-deny-by-omission: naming a pod in `podSelector` with
 # policyTypes: [Ingress] drops everything not matched by an `ingress` rule.
@@ -109,21 +110,21 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # The API only. The in-cluster sensor used to be admitted here too; since
+    # #338 it is the scanner-executor, which lives in network-scan-executor
+    # and claims over HTTP, so it never opens 4222. Giving it NATS means a
+    # rule with a namespaceSelector for that namespace, plus the `agent`
+    # password copied into it — docs/k8s-hardening.md § NATS for the executor.
+    # Sensors that run OUTSIDE the cluster are not covered by any pod
+    # selector: an installation that exposes 4222 through an Ingress,
+    # LoadBalancer or NodePort must add its own rule for that source — see
+    # docs/operations.md § NetworkPolicy decision. Their authentication is the
+    # `agent` user in nats/configmap.yaml either way.
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: api
-        # In-cluster agents (base/agents, overlays/agents) pull jobs.scan over
-        # 4222. Agents that run OUTSIDE the cluster are not covered by any pod
-        # selector: an installation that exposes 4222 through an Ingress,
-        # LoadBalancer or NodePort must add its own rule for that source — see
-        # docs/operations.md § NetworkPolicy decision. Their authentication is
-        # the `agent` user in nats/configmap.yaml either way.
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: shapoclyack
-              app.kubernetes.io/component: agent
       ports:
         - protocol: TCP
           port: 4222

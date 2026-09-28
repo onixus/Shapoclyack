@@ -18,10 +18,14 @@ spec:
         app.kubernetes.io/name: shapoclyack
         app.kubernetes.io/component: nats
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nats
           image: nats:2.10.24-alpine
@@ -93,8 +97,12 @@ spec:
             limits:
               cpu: "500m"
               memory: 512Mi
+          # The image's entrypoint only rewrites argv, and nats-server writes
+          # nothing but the JetStream store_dir (/data, the PVC) unless a pid
+          # or ports file is configured, which nats.conf does not (#338).
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL

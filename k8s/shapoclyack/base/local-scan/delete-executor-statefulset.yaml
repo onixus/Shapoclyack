@@ -1,0 +1,8 @@
+# The API runs its own jobs in local mode; an executor would have nothing to
+# claim and no key to claim it with.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-scanner-executor
+  namespace: network-scan-executor
+$patch: delete

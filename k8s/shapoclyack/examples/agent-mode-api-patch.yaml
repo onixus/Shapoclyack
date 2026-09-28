@@ -1,5 +1,10 @@
-# Switch the default aio API Deployment to remote-agent execution mode.
-# Workers claim jobs and upload run archives (see agent-deployment.example.yaml).
+# Agent execution mode with the LEGACY shared agent token.
+#
+# Agent mode itself is base's default since #338 and needs nothing from this
+# file: sensors, the in-cluster scanner-executor included, authenticate with
+# per-tenant provisioning keys. What is left here is OCTO_AGENT_TOKEN, which is
+# deprecated and refused in prod from 2027-03-01 (docs/configuration.md) — use
+# it only while migrating a fleet that still holds it.
 #
 # Required:
 #   OCTO_JOB_EXECUTION_MODE=agent

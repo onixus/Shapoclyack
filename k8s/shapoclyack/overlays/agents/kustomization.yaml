@@ -1,10 +1,14 @@
-# Optional overlay: deploy remote agents with topology spread + VPA.
+# Optional overlay: more scanner-executors, spread across zones/nodes, under a
+# VPA, with the API publishing job offers on NATS.
 #
 #   kubectl apply -k k8s/shapoclyack/overlays/agents
 #
+# Since #338 base already runs the API in agent mode and one scanner-executor;
+# this overlay is the fleet version of that, not the switch to it.
+#
 # Prerequisites:
-#   - Secret shapoclyack-agent (provisioning key and/or OCTO_AGENT_TOKEN)
-#   - API in agent mode (patched below)
+#   - Secret shapoclyack-scanner-executor in network-scan-executor (the
+#     provisioning key; docs/k8s-hardening.md § Enrolling the scanner-executor)
 #   - VPA CRDs installed in the cluster
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

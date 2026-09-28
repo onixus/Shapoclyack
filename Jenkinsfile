@@ -82,6 +82,14 @@ pipeline {
       // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
       agent any
       steps {
+        // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
+        // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
+        // python:slim нет kubectl — 79 из них годами тихо пропускались,
+        // и восемь мутаций манифестов прошли ревью #338. kubectl есть на
+        // самом узле (им пользуется стадия Kustomize): рендерим здесь и
+        // отдаём каталог в контейнер через OCTO_K8S_RENDER_DIR. Под
+        // OCTO_REQUIRE_INTEGRATION=1 без рендера эти тесты теперь падают.
+        sh 'rm -rf .k8s-render && OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh'
         script {
           for (PY in ['3.11', '3.12']) {
             try {
@@ -120,6 +128,9 @@ pipeline {
                         // отчего падал не тот тест, который что-то проверяет.
                         'OCTO_NATS_INGEST_MAX_BYTES=268435456',
                         'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
+                        // Отрендерено выше, до контейнера; путь — от корня
+                        // репозитория, который смонтирован тем же путём.
+                        'OCTO_K8S_RENDER_DIR=.k8s-render',
                       ]) {
                         sh '''
                           set -eu

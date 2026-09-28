@@ -18,12 +18,14 @@ from api.services import scan_scopes
 from api.services.targets import ParsedTargets
 from api.services import wordlists as wordlists_service
 from api.settings import Settings
+from scanner.pipeline import config_overlay
 
 _log = logging.getLogger(__name__)
 
 SCAN_SCOPE_INPUT = "scan_scope.json"
 PROMOTED_DOMAINS_INPUT = "promoted_domains.txt"
 SCAN_POLICY_INPUT = "scan_policy.json"
+CONFIG_OVERLAY_INPUT = config_overlay.INPUT_NAME
 JOB_INPUT_FILES = (
     "ranges.txt",
     "domains.txt",
@@ -32,6 +34,7 @@ JOB_INPUT_FILES = (
     SCAN_SCOPE_INPUT,
     PROMOTED_DOMAINS_INPUT,
     SCAN_POLICY_INPUT,
+    CONFIG_OVERLAY_INPUT,
 )
 
 
@@ -135,6 +138,26 @@ def write_policy_input(inputs_dir: Path, policy: dict[str, Any]) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def write_config_overlay_input(
+    settings: Settings, job_id: str, overlay: dict[str, Any]
+) -> list[str]:
+    """Write the agent job's config overlay; return the scanner arguments.
+
+    ``to_document`` checks every path against the scanner's own allow-list, so
+    a setting an executor would refuse fails this request rather than the
+    scan, on a host the operator may not be able to read the log of.
+    """
+    document = config_overlay.to_document(overlay)
+    inputs_dir = job_inputs_dir(settings, job_id)
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    path = inputs_dir / CONFIG_OVERLAY_INPUT
+    path.write_text(
+        json.dumps(document, indent=2, ensure_ascii=True, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return ["--config-overlay", str(path)]
 
 
 def publish(settings: Settings, job_id: str) -> None:
