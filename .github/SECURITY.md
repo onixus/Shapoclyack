@@ -62,7 +62,10 @@ issues. Actual timelines depend on severity, exploitability, and release risk.
   boundaries;
 - unsafe defaults that expose the scanner host, operator credentials, tenant
   data, scan artifacts, or control-plane services;
-- packaging or release weaknesses in official GHCR images.
+- packaging or release weaknesses in official GHCR images;
+- the Pulse binary those images ship: its source repository is private and has
+  no public reporting channel, so report it here — see the
+  [release contract](../docs/release-contract.md#security-fixes-in-pulse).
 
 ### Out of scope
 
@@ -71,7 +74,8 @@ issues. Actual timelines depend on severity, exploitability, and release risk.
 - denial of service caused solely by intentionally aggressive scan settings
   against third-party targets;
 - upstream vulnerabilities when Shapoclyack does not introduce an unsafe
-  integration and a fixed supported upstream release is not yet available;
+  integration and a fixed supported upstream release is not yet available —
+  except Pulse, which is not upstream in this sense (see *In scope*);
 - findings that require already-compromised cluster-admin or host-root access
   without crossing an additional documented trust boundary.
 

@@ -1,0 +1,20 @@
+# What a native sensor host installs into its virtualenv: the third-party
+# modules the `agent` package itself imports, and nothing else. The container
+# sensor gets its dependencies from the scanner image (requirements.txt).
+#
+# scripts/install-agent.sh does not install this file: it installs
+# requirements-agent.lock, compiled from it with hashes, and carries a copy of
+# that lock inline because `curl … | bash` brings no other file to the host.
+# Change a pin here, then regenerate the lock and its copy:
+#
+#   uv pip compile --universal --no-strip-extras --generate-hashes \
+#     --python-version=3.11 --output-file=requirements-agent.lock requirements-agent.txt
+#
+# and paste the result between the markers in scripts/install-agent.sh
+# (tests/test_agent_install_pins.py fails until both agree).
+
+# JetStream job delivery when OCTO_NATS_URL is set. Same pin as the scanner
+# image, so a native sensor speaks to NATS with the client the image does.
+nats-py==2.15.0
+# CPU/memory/disk in the heartbeat; the worker reports none without it.
+psutil==7.2.2

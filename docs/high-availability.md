@@ -122,7 +122,15 @@ replica, no failover, no automatic restore. Bring your own:
 
 What the API needs on the other end: a `shapoclyack` database, a role with
 `CREATE` on it (the `migrate` init container runs Alembic on every rollout),
-and the URL in a Secret:
+and the URL in a Secret. Since migration `0067` (tenant row security,
+[#311](https://github.com/onixus/Shapoclyack/issues/311)) that role also needs
+`CREATEROLE` — RDS, Cloud SQL and Yandex master users have it, none of them is a
+superuser, which is fine — or a DBA runs `CREATE ROLE shapoclyack_tenant
+NOLOGIN; GRANT shapoclyack_tenant TO <role> WITH INHERIT FALSE;` once before the
+upgrade. CloudNativePG's generated `app` owner has no `CREATEROLE`: use the
+second path, as the `postgres` superuser. PostgreSQL 16 is what this is tested
+on; see [tenant-isolation.md § Operations](tenant-isolation.md#operations) for
+14/15 and for split API/migration roles.
 
 ```bash
 kubectl -n network-scan create secret generic shapoclyack-postgres-external \
@@ -232,7 +240,9 @@ leadership end the instant the leader does. So the useful width of the pool is
 and a total that small leaves a worker unable to take its lock at all — it
 would simply never run, in every replica, with nothing in the logs.
 `api/settings.py` floors the total at four (`MIN_DB_CONNECTIONS`) for that
-reason; size it well above the floor, not at it.
+reason; size it well above the floor, not at it. `octo_db_pool_checked_out`
+against `octo_db_pool_size` + `octo_db_pool_max_overflow`, per replica, shows
+how much of it is left ([observability.md](observability.md#database-pool)).
 
 The values are read in `api/settings.py` and applied in `api/db/engine.py`,
 which `create_app()` configures before the first session is opened — the engine
@@ -377,11 +387,14 @@ Naming these is the point of the page.
   flat `runs/<run_id>` keys and are still read from there, so a bucket policy
   scoped to a tenant's prefix does not yet cover all of that tenant's runs
   ([operations.md](operations.md#run-directories)).
-* **Disaster recovery beyond Postgres is unproven.**
-  [#333](https://github.com/onixus/Shapoclyack/issues/333) tracks a rehearsed
-  restore of ClickHouse, artifacts and JetStream state. Only the Postgres drill
-  in [operations.md](operations.md#backup-and-disaster-recovery) has been run —
-  and this overlay hands even that to the managed provider.
+* **Disaster recovery beyond Postgres is rehearsed off-cluster only.**
+  ClickHouse has a backup CronJob (kept by this overlay) and a verifying
+  restore script, the artifacts a snapshot example — the S3 backend needs
+  none — and JetStream is recreated rather than restored:
+  [disaster-recovery.md](disaster-recovery.md)
+  ([#333](https://github.com/onixus/Shapoclyack/issues/333)). Its 10k-asset
+  drill ran on a local stack; the same drill on a cluster has not been run,
+  and this overlay hands the Postgres half to the managed provider.
 * **No multi-cluster or multi-region story.** Zone spread is best-effort
   (`whenUnsatisfiable: ScheduleAnyway`) because a single-zone cluster would
   otherwise leave every pod after the first unschedulable.
@@ -404,6 +417,10 @@ Naming these is the point of the page.
   own root. Left out silently, the scan Jobs move to the pod network and return
   quieter results with no error.
 * **ClickHouse and the scan workload have no HPA.** Only the API scales.
+* **No ServiceMonitor, PrometheusRule or dashboards.** They need the Prometheus
+  Operator's CRDs, without which this overlay would not apply at all;
+  `overlays/prod-ha-monitoring` adds them
+  ([observability.md](observability.md#why-prod-ha-does-not-include-the-monitoring-objects)).
 
 ## Migrating an existing install
 
@@ -504,6 +521,9 @@ kubectl -n network-scan get pods -l app.kubernetes.io/component=api \
 kubectl -n network-scan exec sts/shapoclyack-nats -- \
   wget -qO- 'http://127.0.0.1:8222/jsz?streams=1'
 #    Expect "cluster" with three peers, and every stream's "replicas": 3.
+#    A stream missing here was refused its reservation: INGEST + EVENTS
+#    max_bytes must fit max_file on every peer, which the shipped 4G does
+#    not (docs/sizing.md, "What the measurements exposed", 1).
 #    For the CLI's own output, run it from a box image instead:
 kubectl -n network-scan run natsbox --rm -it --restart=Never \
   --image=natsio/nats-box:latest -- \

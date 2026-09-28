@@ -1,4 +1,4 @@
-# Optional Prometheus Operator rules for the PostgreSQL backup CronJob.
+# Optional Prometheus Operator rules for the PostgreSQL and ClickHouse backup CronJobs.
 # Requires kube-state-metrics and Prometheus Operator. Adjust namespace/thresholds
 # in overlays if the base namespace or backup schedule is changed.
 apiVersion: monitoring.coreos.com/v1
@@ -39,3 +39,34 @@ spec:
           annotations:
             summary: Shapoclyack PostgreSQL backup job failed
             description: At least one PostgreSQL backup Job is currently reported failed.
+        # ClickHouse (#333). Same shape and thresholds as the Postgres pair: the
+        # CronJob runs daily, so 26 hours is one missed run plus slack. Warning
+        # rather than critical for staleness, because ClickHouse is a projection
+        # that can be replayed or rebuilt (docs/disaster-recovery.md) — a stale
+        # backup lengthens its recovery, it does not lose the source of truth.
+        - alert: ShapoclyackClickHouseBackupStale
+          expr: |
+            time() - kube_cronjob_status_last_successful_time{
+              namespace="network-scan",
+              cronjob="shapoclyack-clickhouse-backup"
+            } > 93600
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Shapoclyack ClickHouse backup is stale
+            description: The last successful ClickHouse backup is older than 26 hours.
+        - alert: ShapoclyackClickHouseBackupJobFailed
+          expr: |
+            max by (namespace) (
+              kube_job_status_failed{
+                namespace="network-scan",
+                job_name=~"shapoclyack-clickhouse-backup-.*"
+              }
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Shapoclyack ClickHouse backup job failed
+            description: At least one ClickHouse backup Job is currently reported failed.

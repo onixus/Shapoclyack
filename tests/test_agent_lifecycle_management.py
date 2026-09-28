@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from api.services import agent_deployer
-from api.services.agents import LATEST_AGENT_VERSION
+from api.services.agents import LATEST_AGENT_VERSION, SENSOR_IMAGE
 from tests.conftest import (
     approve_scan_scope,
     auth_headers,
@@ -352,6 +352,10 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert sh_resp.status_code == 200
     assert "#!/usr/bin/env bash" in sh_resp.text
     assert "Shapoclyack Remote Agent Universal Installer" in sh_resp.text
+    # What the host actually downloads carries the pinned default; the details
+    # are in tests/test_agent_install_pins.py.
+    assert f'AGENT_IMAGE="${{AGENT_IMAGE:-{SENSOR_IMAGE}}}"' in sh_resp.text
+    assert "--require-hashes" in sh_resp.text
 
     # 2. Get Deployment Snippets — read-only, so no key is minted
     snip_resp = client.get("/api/agent/deployment-command", headers=admin_hdrs)
@@ -364,6 +368,9 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert "docker run -d --name shapoclyack-agent" in snips["docker_run"]
     _assert_hardened_k8s_sensor(snips, key="<PROVISIONING_KEY>")
     _assert_container_snippets_can_scan(snips)
+    assert "apiVersion: apps/v1" in snips["kubernetes_yaml"]
+    for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
+        assert SENSOR_IMAGE in snips[name], name
 
     # 3. Minting is an explicit POST, and only then is a plaintext key returned
     mint_resp = client.post("/api/agent/deployment-command", json={}, headers=admin_hdrs)
@@ -419,7 +426,7 @@ def _assert_hardened_k8s_sensor(snips: dict, *, key: str) -> None:
 
     (container,) = pod["containers"]
     image = container["image"]
-    assert image == f"ghcr.io/onixus/shapoclyack-aio:shapoclyack-{LATEST_AGENT_VERSION}"
+    assert image == SENSOR_IMAGE
     assert container["command"] == ["python", "-m", "agent"]
     sc = container["securityContext"]
     assert sc["capabilities"]["drop"] == ["ALL"]
@@ -463,7 +470,7 @@ def _assert_hardened_k8s_sensor(snips: dict, *, key: str) -> None:
     # Same image repository and the same two deviations as the reference.
     example = yaml.safe_load(_EXAMPLE_SENSOR.read_text(encoding="utf-8"))
     (ref,) = example["spec"]["template"]["spec"]["containers"]
-    assert image.split(":", 1)[0] == ref["image"].split(":", 1)[0]
+    assert container["command"] == ref["command"]
     assert sc["capabilities"] == ref["securityContext"]["capabilities"]
     assert sc["allowPrivilegeEscalation"] == ref["securityContext"]["allowPrivilegeEscalation"]
 
@@ -474,12 +481,13 @@ def _assert_container_snippets_can_scan(snips: dict) -> None:
     Docker's default set has NET_RAW but not NET_ADMIN, and an exec whose file
     capabilities exceed the bounding set fails with EPERM.
     """
-    image = f"ghcr.io/onixus/shapoclyack-aio:shapoclyack-{LATEST_AGENT_VERSION}"
+    image = SENSOR_IMAGE
     for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
         assert "ghcr.io/onixus/shapoclyack:" not in snips[name], name
 
     run = snips["docker_run"].split()
-    assert run[run.index(image) + 1 :] == ["python", "-m", "agent"]
+    assert run[run.index(image) + 1 :] == ["-m", "agent"]
+    assert run[run.index("--entrypoint") + 1] == "python"
     caps = {run[i + 1] for i, arg in enumerate(run) if arg == "--cap-add"}
     assert caps == {"NET_RAW", "NET_ADMIN"}
 

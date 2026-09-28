@@ -82,6 +82,9 @@ def _to_dict(row: models.User) -> dict[str, Any]:
         # tenant and bypasses the membership table entirely, which is why
         # ``tenants`` below is usually empty for one.
         "is_platform_admin": row.role == "admin",
+        # A tombstone left by a data-subject erasure (#332): the username is
+        # kept as a pseudonym and nothing else is.
+        "erased_at": _iso(row.erased_at),
     }
 
 
@@ -114,6 +117,23 @@ def _with_tenants(session, row: models.User) -> dict[str, Any]:
     result = _to_dict(row)
     result["tenants"] = _tenant_ids(session, [row.username]).get(row.username, [])
     return result
+
+
+class AccountErased(ValueError):
+    """A change to an account erased under a data-subject request (#332).
+
+    The tombstone holds nothing but the username, and that name is the
+    pseudonym the append-only audit trail still attributes history to. Giving
+    it a password, a role, an address or a membership would hand that history
+    to whoever holds the new credential; deleting it would free the name to be
+    issued to somebody else. So every write refuses it. A ``ValueError``, so
+    the routes that already answer one with 422 refuse this too.
+    """
+
+
+def _refuse_erased(row: models.User) -> None:
+    if row.erased_at is not None:
+        raise AccountErased(f"user '{row.username}' was erased and cannot be changed")
 
 
 def _validate_role(role: str) -> str:
@@ -295,6 +315,7 @@ def set_password(
         row = session.get(models.User, username)
         if row is None:
             return None
+        _refuse_erased(row)
         previous_changed_at = _iso(row.password_changed_at)
         row.password_hash = hash_password(password)
         row.password_changed_at = _now()
@@ -346,6 +367,7 @@ def set_role(
         row = session.get(models.User, username)
         if row is None:
             return None
+        _refuse_erased(row)
         previous = row.role
         changed = row.role != role
         row.role = role
@@ -386,6 +408,7 @@ def set_disabled(
         row = session.get(models.User, username)
         if row is None:
             return None
+        _refuse_erased(row)
         was_disabled = row.disabled_at is not None
         changed = was_disabled != disabled
         row.disabled_at = _now() if disabled else None
@@ -584,6 +607,7 @@ def set_email(username: str, email: str | None, *, verified: bool = False) -> di
         row = session.get(models.User, username)
         if row is None:
             return None
+        _refuse_erased(row)
         if cleaned is not None:
             clash = session.execute(
                 select(models.User).where(
@@ -624,6 +648,7 @@ def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = N
         row = session.get(models.User, username)
         if row is None:
             return False
+        _refuse_erased(row)
         # Snapshot before the delete: this row is the only remaining answer to
         # "what did the account we deleted have", including the tenants whose
         # membership rows go with it.
@@ -631,6 +656,11 @@ def delete_user(username: str, *, audit: "audit_service.AuditContext | None" = N
         # Memberships cascade (FK from migration 0013), so no orphan grant
         # survives to be silently re-attached if the name is recreated later.
         session.delete(row)
+        # The tokens it minted do not cascade — they belong to a tenant — but a
+        # credential nobody can answer for any more is a leaver's key (#332).
+        from api.services import service_tokens as service_tokens_service
+
+        service_tokens_service.revoke_created_by(session, username, audit=audit)
         audit_service.record(
             session,
             audit,

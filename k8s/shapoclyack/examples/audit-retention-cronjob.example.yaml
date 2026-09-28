@@ -78,6 +78,11 @@ spec:
                     secretKeyRef:
                       name: shapoclyack-audit-retention
                       key: postgres_url
+                # The same bounds the API runs with (#332). A tenant's own
+                # audit window is held to the floor in force, and a job that
+                # did not know a raised floor would prune on the compiled one.
+                - name: OCTO_RETENTION_BOUNDS
+                  value: ""
               resources:
                 requests:
                   cpu: "50m"

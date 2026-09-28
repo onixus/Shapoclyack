@@ -182,20 +182,31 @@ installation from your own p95 after a month, and split by `execution`
 ### 5. Ingest freshness
 
 ```promql
-octo_nats_consumer_pending{consumer="octo-ch-ingest"}
+octo_nats_consumer_pending{consumer="octo-ch-ingest-results"}
 ```
 
 Only exported when NATS **and** the ClickHouse ingest worker are both enabled
 (`OCTO_NATS_URL`, `OCTO_CLICKHOUSE_URL`, `OCTO_CH_INGEST_ENABLED`) — on a
 default install the series is simply absent, and this SLO does not apply. The
 gauge is refreshed on each consumer poll, so a worker that has stopped polling
-leaves a *stale* value rather than a rising one; alert on staleness too:
+leaves a *stale* value rather than a rising one; alert on staleness too. The
+staleness half reads the refresh time the worker exports next to the count —
+`timestamp()` of the count itself is the scrape time and never ages (#334):
 
 ```promql
-octo_nats_consumer_pending{consumer="octo-ch-ingest"} > 1000
+max by (consumer) (
+  octo_nats_consumer_pending{consumer="octo-ch-ingest-results"}
+  and on (instance, consumer)
+  ((time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) < 300)
+) > 1000
 or
-(time() - timestamp(octo_nats_consumer_pending{consumer="octo-ch-ingest"})) > 300
+(time() - octo_nats_consumer_pending_timestamp_seconds{consumer="octo-ch-ingest-results"}) > 300
 ```
+
+The lag half counts only replicas that read the durable in the last five
+minutes, once per consumer: every replica polls the same durable, and a replica
+whose poller stopped keeps its last count after the queue drains. The
+staleness half names that replica ([observability.md](observability.md#nats-and-the-outbox)).
 
 This is queue depth, not end-to-end latency. There is no scan-finished →
 row-queryable timer today; add one before promising a freshness number in a
@@ -312,6 +323,9 @@ Each of these limits what can honestly be claimed today:
 - ~~**Single-process gauges.**~~ Closed by ROADMAP P1.2: `octo_jobs_queued` /
   `octo_jobs_running` are now counted in the shared `jobs` table, so every
   replica reports the same queue depth and a restart no longer resets them.
+  Only since #334, in fact: until then the count was *set* by whichever
+  replica handled the job's last event, so a replica that never heard of a
+  claim kept the job queued; it is read at scrape time now.
   Because every replica publishes the *same* cluster-wide number, aggregate
   across replicas with `max()`, not `sum()`.
 - ~~**Jobs can be lost silently.**~~ Closed by ROADMAP P1.4: an abandoned job
@@ -324,8 +338,11 @@ Each of these limits what can honestly be claimed today:
   `ShapoclyackSchedulerNoLeader` (`sum == 0`, `for: 10m`) in
   `prometheus-slo.rules.yaml`. Both require the series to exist so a missing
   scrape does not page.
-- **No per-tenant SLIs.** No metric carries a tenant label (deliberate —
+- **No per-tenant SLIs.** No SLI series carries a tenant label (deliberate —
   cardinality), so per-customer objectives are not derivable from `/metrics`.
+  The opt-in per-tenant product series of #334 (open and breached findings,
+  scans per day, top N tenants plus `_other`) are figures to watch, not
+  objectives ([observability.md](observability.md#per-tenant-series)).
 - **Tracing is opt-in.** Set `OCTO_OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP
   HTTP traces URL; empty means no TracerProvider. API request spans do not
   replace Prometheus SLIs, and they are not scan observations. Scanner

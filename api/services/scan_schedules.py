@@ -341,9 +341,42 @@ def due_schedules(now: datetime) -> list[dict[str, Any]]:
         stmt = select(models.ScanSchedule).where(
             models.ScanSchedule.enabled.is_(True),
             (models.ScanSchedule.next_run_at.is_(None)) | (models.ScanSchedule.next_run_at <= now),
+            # A suspended tenant's schedules are paused, not failed (#325):
+            # admission would refuse the scan anyway, but as an error on every
+            # tick for as long as the suspension lasts. ``enabled`` is left
+            # alone, so resuming the tenant restores exactly the schedules its
+            # operators had switched on — see :func:`reanchor_overdue`.
+            models.ScanSchedule.tenant_id.in_(tenants_service.active_tenant_ids()),
         )
         rows = session.execute(stmt).scalars().all()
     return [_to_dict(row) for row in rows]
+
+
+def reanchor_overdue(session, tenant_id: str, *, now: datetime) -> int:
+    """Move a resumed tenant's overdue schedules to their next tick after ``now`` (#325).
+
+    A schedule is paused by the tenant's status, not by its own row, so its
+    ``next_run_at`` stayed where the suspension found it. Left there, every
+    schedule the tenant has would be due the moment it resumed — a nightly
+    sweep, a weekly one and a monthly one all starting in the same second, for
+    ticks nobody wanted any more. Each is moved to its cadence's next
+    occurrence instead, which is what it would have been had the tenant never
+    been away.
+
+    In the caller's session, so the resume and this commit together. Returns
+    how many schedules moved.
+    """
+    rows = session.execute(
+        select(models.ScanSchedule).where(
+            models.ScanSchedule.tenant_id == tenant_id,
+            models.ScanSchedule.enabled.is_(True),
+            (models.ScanSchedule.next_run_at.is_(None))
+            | (models.ScanSchedule.next_run_at <= now),
+        )
+    ).scalars().all()
+    for row in rows:
+        row.next_run_at = _compute_next_run(row.cron, row.interval_seconds, after=now)
+    return len(rows)
 
 
 def record_skipped_dispatch(schedule_id: str, *, ran_at: datetime) -> dict[str, Any] | None:

@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import retention_policy
 from api.services import vulnerabilities as vulns_service
 from api.settings import Settings
 
@@ -140,21 +141,42 @@ def prune_snapshots(
     settings: Settings,
     *,
     tenant_id: str | None = None,
-    retention_days: int = 90,
+    retention_days: int | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Delete snapshots older than the configured retention threshold."""
-    cutoff = (now or _now()) - timedelta(days=retention_days)
-    filters: list[Any] = [models.RiskScoreSnapshot.recorded_at < cutoff]
-    if tenant_id:
-        filters.append(models.RiskScoreSnapshot.tenant_id == tenant_id)
+    """Delete snapshots past their tenant's window (#229; per tenant since #332).
 
+    One statement for every tenant: the platform default for those without a
+    window of their own, each override for its tenant, nothing for a tenant on
+    legal hold. See :func:`api.services.retention_policy.expired_clause`.
+
+    ``retention_days`` forces one window on everybody instead — and
+    ``tenant_id`` narrows the delete to one tenant — but never past a hold:
+    the held tenants come from the same plan either way.
+    """
     with get_session(settings.postgres_url) as session:
-        result = session.execute(delete(models.RiskScoreSnapshot).where(*filters))
-        session.commit()
+        plan = retention_policy.load_plan(
+            settings, retention_policy.RISK_SNAPSHOTS, session=session
+        )
+        if retention_days is not None:
+            plan = retention_policy.RetentionPlan(
+                category=plan.category, default_days=retention_days, held=plan.held
+            )
+        clause = retention_policy.expired_clause(
+            plan,
+            tenant_column=models.RiskScoreSnapshot.tenant_id,
+            time_column=models.RiskScoreSnapshot.recorded_at,
+            now=now or _now(),
+        )
+        if clause is None:
+            return 0
+        conditions = [clause]
+        if tenant_id:
+            conditions.append(models.RiskScoreSnapshot.tenant_id == tenant_id)
+        result = session.execute(delete(models.RiskScoreSnapshot).where(*conditions))
         deleted = int(result.rowcount or 0)
         if deleted:
-            LOG.info("Pruned %s risk snapshots older than %s days", deleted, retention_days)
+            LOG.info("Pruned %s risk snapshots past their retention window", deleted)
         return deleted
 
 
@@ -172,12 +194,12 @@ _worker: RiskSnapshotRetentionWorker | None = None
 
 
 def sweep(settings: Settings, *, now: datetime | None = None) -> dict[str, int]:
-    """Prune expired snapshots across all tenants. Returns counts (deleted)."""
-    days = settings.risk_snapshot_retention_days
-    if days <= 0:
-        return {"deleted": 0}
-    deleted = prune_snapshots(settings, retention_days=days, now=now)
-    return {"deleted": deleted}
+    """Prune expired snapshots across all tenants. Returns counts (deleted).
+
+    0 days disables the platform default; a tenant with a window of its own is
+    still swept on it (#332).
+    """
+    return {"deleted": prune_snapshots(settings, now=now)}
 
 
 class RiskSnapshotRetentionWorker:

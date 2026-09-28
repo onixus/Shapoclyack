@@ -1,0 +1,48 @@
+# Optional Prometheus Operator wiring (#334): a ServiceMonitor for the API and
+# the alert rules as a PrometheusRule.
+#
+#   components:
+#     - ../../base/monitoring
+#
+# (overlays/prod-ha-monitoring is prod-ha with this and base/grafana-dashboards.)
+#
+# Opt-in, and deliberately NOT part of base or of overlays/prod-ha:
+#
+#   * Both kinds come from the monitoring.coreos.com/v1 CRDs, which nothing in
+#     this repository installs. Where they are missing `kubectl apply -k` stops
+#     with "no matches for kind" and exits non-zero; with them in prod-ha, every
+#     installation without the operator would have a profile whose apply always
+#     fails.
+#   * Prometheus only picks either object up through its serviceMonitorSelector /
+#     ruleSelector, and the label those select on is the installation's own
+#     (kube-prometheus-stack: `release: <helm release name>`). Add it in the
+#     overlay that includes this component, e.g.
+#
+#       labels:
+#         - pairs: {release: kube-prometheus-stack}
+#           includeSelectors: false
+#
+#     ...which labels every object the overlay renders; a patch on the two
+#     objects here is the narrower alternative.
+#   * Without the operator nothing is lost: the pod annotations in
+#     base/api-deployment.yaml already get the API scraped, and
+#     examples/prometheus-slo.rules.yaml loads through `rule_files`.
+#
+# prometheusrule-slo.yaml is GENERATED from examples/prometheus-slo.rules.yaml by
+# k8s/scripts/render-prometheusrule-slo.py; tests/test_prometheus_slo_rules.py
+# fails if they drift.
+#
+# No `namespace:` here, unlike base/enrichment, and on purpose: a component's
+# namespace transformer applies to everything the including kustomization
+# renders, not only to what the component adds, so one that said network-scan
+# moved a whole installation that lives elsewhere into network-scan — a second
+# installation on apply (review of #334). THE OVERLAY THAT INCLUDES THIS SETS
+# THE NAMESPACE (overlays/prod-ha-monitoring does); without one the two objects
+# land in kubectl's current namespace, where the ServiceMonitor finds no
+# Service to scrape.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - servicemonitor.yaml
+  - prometheusrule-slo.yaml

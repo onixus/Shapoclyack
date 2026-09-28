@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
@@ -73,12 +74,24 @@ def _subscribe(kinds: list[str]) -> None:
 
 
 def _queued(settings: Settings, kind: str) -> list[dict]:
+    """The payloads queued for ``kind``, in the order they were enqueued.
+
+    Ordered explicitly: several tests compare the list against the order the
+    worker announced things in, and without ``ORDER BY`` Postgres hands rows
+    back in heap order, which a delete elsewhere in the session reshuffles.
+    ``delivery_id`` is random, so it only breaks a ``created_at`` tie.
+    """
     with get_session(settings.postgres_url) as session:
-        return [
-            row.payload
-            for row in session.query(models.WebhookDelivery).all()
-            if row.event_kind == kind
-        ]
+        return list(
+            session.scalars(
+                select(models.WebhookDelivery.payload)
+                .where(models.WebhookDelivery.event_kind == kind)
+                .order_by(
+                    models.WebhookDelivery.created_at.asc(),
+                    models.WebhookDelivery.delivery_id.asc(),
+                )
+            )
+        )
 
 
 def _seed_finding(settings: Settings, *, owner_email: str | None = None) -> str:

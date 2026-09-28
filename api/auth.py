@@ -14,6 +14,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 from api.core import permissions as permission_catalog
+from api.db import tenant_scope
 from api.settings import Settings, load_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -690,7 +691,10 @@ def _authenticate_service_token(request: Request, settings: Settings, token: str
     """
     from api.services import service_tokens
 
-    principal = service_tokens.verify_token(settings, token)
+    # Across tenants: the token's hash is what says which tenant it belongs
+    # to, so the lookup cannot be scoped to one yet (#311).
+    with tenant_scope.system("authentication: service token"):
+        principal = service_tokens.verify_token(settings, token)
     if principal is None:
         # One message for unknown, revoked and expired alike — the presenter of
         # a guessed token learns nothing about which half was wrong.
@@ -713,6 +717,12 @@ def _authenticate_service_token(request: Request, settings: Settings, token: str
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid role"
         ) from exc
+    # A service token is issued *for* one tenant and is never the platform
+    # admin, so the database is told so here, before any route decides what
+    # else the request is (#311). That includes the routes behind
+    # ``require_role``, which answer about the installation and let a token in
+    # on its role alone: whatever they read, they read as this tenant.
+    tenant_scope.declare_tenant(principal.tenant_id)
     setattr(request.state, SERVICE_TOKEN_STATE_ATTR, principal)
     return TokenUser(username=principal.username, role=role)
 
@@ -852,13 +862,48 @@ def get_current_user_if_any(
         raise
 
 
+def is_platform_admin(request: Request, user: TokenUser) -> bool:
+    """The console account with global role ``admin`` — never a service token.
+
+    A service token carries a role but administers the tenant it was issued
+    for, not the installation; the same rule ``resolve_tenant_principal``
+    applies.
+    """
+    return user.role == Role.admin and getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is None
+
+
+def _declare_platform_scope(request: Request, user: TokenUser, reason: str) -> None:
+    """A global gate widens the database scope for the platform admin only (#311).
+
+    Everyone else who passes it — an operator reading ``GET /api/tenants``, a
+    viewer reading ``GET /api/system`` — stays undeclared, so a query behind
+    the gate that forgot its tenant predicate fails instead of reading every
+    tenant. A route that serves such callers across their own tenants says so
+    itself, with a reason (``tenant_scope.system`` / ``tenant_scope.tenant``).
+    A service token was pinned to its tenant at authentication.
+    """
+    if is_platform_admin(request, user):
+        tenant_scope.declare_system(reason)
+
+
 def require_role(minimum: Role):
-    def _checker(user: Annotated[TokenUser, Depends(get_current_user)]) -> TokenUser:
+    """A gate on the caller's *global* role, with no tenant in it.
+
+    The routes behind it answer about the installation — the tenant list,
+    account administration, ``GET /api/system`` — and filter what a non-admin
+    sees in their own code. Only the platform admin's requests are widened to
+    the system scope here; see :func:`_declare_platform_scope`.
+    """
+
+    def _checker(
+        request: Request, user: Annotated[TokenUser, Depends(get_current_user)]
+    ) -> TokenUser:
         if ROLE_RANK[user.role] < ROLE_RANK[minimum]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Role '{minimum.value}' or higher required",
             )
+        _declare_platform_scope(request, user, f"platform admin: global role gate {minimum.value}")
         return user
 
     return _checker
@@ -955,6 +1000,24 @@ def resolve_tenant_principal(
     ``/tenants/{tenant_id}/…`` administration ones. Either way it can only
     select among the tenants the caller is already entitled to.
     """
+    with tenant_scope.system("authentication: tenant resolution"):
+        principal = _resolve_tenant_principal(request, user, requested_tenant)
+    # The one place a request's tenant is decided, so the one place the
+    # database is told (#311). A platform admin is authorized in every tenant
+    # — the cross-tenant listings and writes in the routes are built on that —
+    # so its requests keep the connecting role; everyone else's transactions
+    # from here on can only see and write rows of this tenant.
+    if principal.is_platform_admin:
+        tenant_scope.declare_system("platform admin")
+    else:
+        tenant_scope.declare_tenant(principal.tenant_id)
+    return principal
+
+
+def _resolve_tenant_principal(
+    request: Request, user: TokenUser, requested_tenant: str | None
+) -> TenantPrincipal:
+    """:func:`resolve_tenant_principal`'s lookups, run before the tenant is known."""
     from api.services import memberships as memberships_service
     from api.services import tenants as tenants_service
 
@@ -1145,12 +1208,8 @@ def platform_permissions(request: Request, user: TokenUser) -> frozenset[str]:
     inferred from the role, because an admin-role token administers the tenant
     it was issued for and not the installation.
     """
-    is_platform_admin = (
-        user.role == Role.admin
-        and getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is None
-    )
     return permission_catalog.permissions_for(
-        user.role.value, is_platform_admin=is_platform_admin
+        user.role.value, is_platform_admin=is_platform_admin(request, user)
     )
 
 
@@ -1170,12 +1229,24 @@ def require_platform_permission(permission: str):
     ) -> TokenUser:
         if permission not in platform_permissions(request, user):
             raise _refuse(permission)
+        _declare_platform_scope(request, user, f"platform admin: {permission}")
         return user
 
     return _checker
 
 
-def _revalidate_agent_credential(principal: AgentPrincipal) -> Any | None:
+#: Where :func:`require_agent_heartbeat` leaves the ``agents.TenantClosed`` it
+#: let through (#325). Set on no other route: every other agent request of a
+#: closed tenant is a 401.
+AGENT_TENANT_CLOSED_ATTR = "agent_tenant_closed"
+
+
+def _revalidate_agent_credential(
+    principal: AgentPrincipal,
+    request: Request | None = None,
+    *,
+    allow_closed_tenant: bool = False,
+) -> Any | None:
     """Re-check a verified agent JWT and return its detached row snapshot."""
     from api.services import agents as agents_service
 
@@ -1185,6 +1256,13 @@ def _revalidate_agent_credential(principal: AgentPrincipal) -> Any | None:
             tenant_id=principal.tenant_id,
             key_id=principal.key_id,
         )
+    except agents_service.TenantClosed as exc:
+        if allow_closed_tenant and request is not None:
+            setattr(request.state, AGENT_TENANT_CLOSED_ATTR, exc)
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
     except agents_service.AgentCredentialRevoked as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
@@ -1209,6 +1287,38 @@ def require_agent(
     issuing their own ``get_agent``/``require_active`` queries (#384).
     Legacy shared tokens remain unbound and therefore uncached.
     """
+    return _authenticate_agent(request, credentials, settings, allow_closed_tenant=False)
+
+
+def require_agent_heartbeat(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """:func:`require_agent` for ``POST /agent/heartbeat`` alone (#325).
+
+    The same verification — a JWT signed by this installation and inside its
+    ``exp`` — but a token whose *tenant* is closed is not refused here: it is
+    marked on ``request.state`` (:data:`AGENT_TENANT_CLOSED_ATTR`) when its
+    provisioning key is live or was revoked by the closure itself, since the
+    suspension is usually what revoked the key; a key revoked before the
+    closure is refused as before (``agents.check_credential``). The route then
+    answers the one thing that must still reach such an agent — "stop the job
+    you are running" — and refuses everything else with the 401 every other
+    route gives.
+    """
+    return _authenticate_agent(request, credentials, settings, allow_closed_tenant=True)
+
+
+def _authenticate_agent(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    settings: Settings,
+    *,
+    allow_closed_tenant: bool,
+) -> AgentPrincipal:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1228,7 +1338,17 @@ def require_agent(
 
     if unverified.get("typ") == AGENT_TOKEN_TYP:
         principal = decode_agent_token(settings, token)
-        info = _revalidate_agent_credential(principal)
+        # Across tenants, like the console's tenant resolution: the check is
+        # what proves the agent and key rows are the token's tenant's (#311).
+        with tenant_scope.system("authentication: agent credential"):
+            info = _revalidate_agent_credential(
+                principal, request, allow_closed_tenant=allow_closed_tenant
+            )
+        closed = getattr(request.state, AGENT_TENANT_CLOSED_ATTR, None) is not None
+        # A sensor acts for exactly one tenant, the one its signed token names
+        # — a closed tenant's heartbeat included: all it may still read is
+        # that tenant's own job.
+        tenant_scope.declare_tenant(principal.tenant_id)
         setattr(
             request.state,
             AGENT_REQUEST_STATE_ATTR,
@@ -1236,7 +1356,9 @@ def require_agent(
                 # The id check_credential looked up, verbatim.
                 agent_id=principal.agent_id or None,
                 info=info,
-                loaded=bool(principal.agent_id),
+                # Nothing was loaded for a closed tenant's token: the check
+                # stopped at the tenant, before the agent row.
+                loaded=bool(principal.agent_id) and not closed,
             ),
         )
         return principal
@@ -1250,6 +1372,7 @@ def require_agent(
                 AGENT_REQUEST_STATE_ATTR,
                 AgentRequestState(agent_id=None, info=None, loaded=False),
             )
+            tenant_scope.declare_tenant(LEGACY_AGENT_TENANT_ID)
             return AgentPrincipal(
                 tenant_id=LEGACY_AGENT_TENANT_ID,
                 key_id=None,

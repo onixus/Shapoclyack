@@ -52,6 +52,16 @@ def test_registrable_domain_is_etld_plus_one():
     assert registrable_domain("localhost") == ""
 
 
+def test_registrable_domain_uses_the_public_suffix_list():
+    # Each of these fell outside the old twelve-entry stand-in list.
+    assert registrable_domain("shop.example.com.ru") == "example.com.ru"
+    assert registrable_domain("app.example.co.za") == "example.co.za"
+    assert registrable_domain("demo.herokuapp.com") == "demo.herokuapp.com"
+    # A suffix is not a domain anyone registered, so it clusters nothing.
+    assert registrable_domain("co.uk") == ""
+    assert registrable_domain("github.io") == ""
+
+
 def test_bare_fqdn_host_is_not_stored_as_an_ip():
     candidates = identity_candidates_for_host("ten_a", host_ip="app.example.com")
     assert [(c.identifier_type, c.identifier_value) for c in candidates] == [
