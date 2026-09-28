@@ -86,6 +86,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 |---|---|
 | [Architecture](architecture.md) | Components, control-plane behavior, trust boundaries, storage, messaging |
 | [API and RBAC](api-and-rbac.md) | Authentication, roles, tenant isolation, principals, endpoint groups |
+| [Tenant isolation in the database](tenant-isolation.md) | Row-level security as the second line behind every tenant predicate, `OCTO_TENANT_RLS`, grants, diagnostics |
 | [Third-party components](third-party.md) | Runtime dependencies, data sources, licenses, redistribution notes |
 | [Security policy](../.github/SECURITY.md) | Supported versions, disclosure, release controls, operator baseline |
 | [Release contract](release-contract.md) | What a release ships, the Pulse support and update policy, and how a customer verifies the images |

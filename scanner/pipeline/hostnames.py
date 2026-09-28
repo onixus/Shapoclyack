@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_schema import BruteForceSubdomainConfig, CertificateTransparencyConfig, DiscoveryConfig
+from .public_suffix import registrable_domain
 from .utils import load_json, run_command, save_json, write_lines
 
 DEFAULT_WORDLIST_PATH = Path(__file__).resolve().parents[2] / "scanner" / "data" / "wordlists" / "subdomains-small.txt"
@@ -338,16 +339,21 @@ async def brute_force_subdomains(domain: str, config: BruteForceSubdomainConfig)
 
 
 def base_domains_from_fqdns(fqdns: list[str]) -> list[str]:
-    """Reduce FQDNs to registrable-ish base domains (last two labels)."""
+    """Reduce FQDNs to their registrable domains (Public Suffix List eTLD+1).
+
+    This is the seed for every stage whose ``domains`` list is left empty, the
+    AXFR probe among them, so ``www.bbc.co.uk`` must give ``bbc.co.uk`` and
+    never ``co.uk``. A name with no registrable domain -- a public suffix, an
+    IP literal, a bare label -- contributes nothing. See ``public_suffix.py``.
+    """
     bases: list[str] = []
     seen: set[str] = set()
     for fqdn in fqdns:
         name = _normalize_name(fqdn)
-        if not name or "." not in name:
-            continue
-        parts = name.split(".")
-        base = ".".join(parts[-2:]) if len(parts) >= 2 else name
-        if base not in seen:
+        if name.startswith("*."):
+            name = name[2:]
+        base = registrable_domain(name)
+        if base and base not in seen:
             seen.add(base)
             bases.append(base)
     return bases

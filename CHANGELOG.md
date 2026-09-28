@@ -6,6 +6,44 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Postgres row-level security behind every tenant predicate
+  ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
+  isolation in the database was the `WHERE tenant_id` of each query and nothing
+  else. Migration `0067_tenant_rls` puts a restrictive policy on every table
+  with a `tenant_id` (52 today, plus `asset_tags` and #325's
+  `tenant_deletion_steps`, each held to its parent row's tenant) that applies
+  to one new NOLOGIN role,
+  `shapoclyack_tenant`; every transaction of a tenant-scoped request — a console
+  user's, a **service token's** (pinned at authentication, so a `require_role`
+  route it reaches is held to its tenant too) or a **sensor's** — switches to
+  that role with `SET LOCAL` and names its tenant, so a query that forgot its
+  predicate reads only that tenant's rows and cannot write another's. Applied
+  per transaction, not per session, and transaction-local, so nothing survives a
+  commit or reaches the next user of a pooled connection. A role rather than a
+  bypass flag because the shipped manifests connect as a superuser, which
+  bypasses row security — this works on them unchanged. Workers, CLI tools,
+  authentication and platform-admin requests keep the connecting role and see
+  what they saw, and so do the tenant purge, the scrape-time metrics and the
+  login-trail prune (which keeps whatever any held tenant names) wherever they
+  are called from; a request that touches a tenant table before any guard said
+  whose it is fails loudly — including a non-admin behind a global role gate.
+  `OCTO_TENANT_RLS=enforce` is the default and refuses to start on a database
+  that cannot enforce it; `off` is the kill switch (a restart, no migration
+  rollback). The migration needs `CREATEROLE`, which the stock `octo` and
+  managed-service master users have (CloudNativePG's `app` does not: a DBA
+  creates the role first). It locks one table at a time, each in its own
+  transaction under a 5 s `lock_timeout`, so a long transaction makes it fail
+  fast and the rollout retry it rather than stall traffic; a table another role
+  owns (`audit_events` after the recommended ownership split) is left to that
+  owner with the statements logged, and `enforce` names it until they run.
+  **`GET /api/system` no longer counts endpoint devices across tenants** for
+  callers without `platform.fleet.read`: like the tenant and agent counts, they
+  are nulls. The grants for split roles, PostgreSQL 14/15, the diagnostics and
+  the reasoning are in
+  [docs/tenant-isolation.md](docs/tenant-isolation.md). A new
+  `tests/test_route_tenant_guards.py` fails for any route with neither a tenant
+  guard nor a reviewed, reasoned allowlist entry; a later migration that adds a
+  tenant table without its policy fails `tests/test_tenant_rls.py`.
 - **Release contract, a proposed Pulse distribution decision, and a customer
   check of the Pulse binary in an image**
   ([#340](https://github.com/onixus/Shapoclyack/issues/340)).
@@ -469,8 +507,74 @@ All notable changes to Shapoclyack are documented in this file.
   place rather than cleared and rebuilt, so a scrape can no longer catch it
   empty.
 
+### Security
+
+- **Seed domains stop at the registrable domain, and AXFR is never sent to a
+  public suffix.** Every stage whose `domains` list is left empty — `ct`, `asn`,
+  `cloud`, `domain_monitor`, `org_profile.ownership`, `dns_hygiene`,
+  `mail_posture`, `credential_leaks` — took its seed from
+  `base_domains_from_fqdns`, which kept the last two labels: `www.bbc.co.uk`,
+  `shop.example.com.ru` and `x.github.io` became `co.uk`, `com.ru` and
+  `github.io`. With `org_profile.dns_hygiene.axfr_probe: true` that was a
+  zone-transfer attempt against the nameservers of a registry, a registrar or
+  GitHub Pages — somebody else's infrastructure, which the module's own scope
+  gate forbids — and CT asked crt.sh for `%.co.uk`. Seeds now come from a
+  bundled [Public Suffix List](https://publicsuffix.org/) snapshot
+  (`scanner/pipeline/public_suffix_list.dat`, ICANN and private sections,
+  read from disk only and never fetched at run time), so they are
+  `bbc.co.uk`, `example.com.ru` and `x.github.io`; a name that is itself a
+  suffix, an IP literal or a bare label contributes no seed at all (an IP used
+  to become e.g. `3.4`). Independently of the seed, the AXFR probe refuses a
+  public suffix even when it is listed explicitly in
+  `org_profile.dns_hygiene.domains` (`axfr.status: refused`,
+  `reason: public_suffix`, before any nameserver is dialled), and
+  `dns_hygiene.json` records which snapshot decided (`public_suffix_list`).
+  `asset_identity.registrable_domain` — console clustering by domain, the
+  related-domains stage and credential-leak canonicalisation — uses the same
+  list in place of its twelve-entry stand-in, so names under a hosting
+  platform's suffix (`*.herokuapp.com`, `ec2-….compute-1.amazonaws.com`) no
+  longer cluster under the platform as if it owned them. No new Python
+  dependency; refresh the snapshot with `scripts/fetch-public-suffix-list.sh`.
+
 ### Fixed
 
+- **Typosquat candidates of a seed under a multi-label suffix are look-alikes
+  again.** `domain_monitor` split a seed at its last dot, so `bbc.co.uk` was
+  the label `bbc.co` plus the TLD `uk`: the generators mutated the dot and the
+  `co` (`bbcco.uk`, `bbc.c0.uk`), the TLD swap offered `bbc.co.com`, and
+  `bbc.com` was never tried; `x.github.io` even gave `.github.io`. The split
+  now comes from the bundled Public Suffix List snapshot — the registrable
+  label and the whole public suffix (`bbc` + `co.uk`, `example` + `com.ru`,
+  `x` + `github.io`), a subdomain seed such as `shop.example.com.ru` cut to its
+  registrable domain first — and the TLD swap replaces the suffix as a unit
+  (`bbc.com`, `bbc.co`), led by the suffix's own TLD (`bbc.uk`, `example.ru`).
+  The seed's registrable domain is dropped from its candidates along with the
+  seed. A seed with no registrable domain (a public suffix, an IP, a bare
+  label) still splits at the last dot. Known limitation: platforms such as
+  `github.io` and `herokuapp.com` answer for every name, so a seed under one
+  reports each label mutation as registered.
+- **The scanner's SSRF gate judges the IPv4 address behind NAT64.**
+  `safe_http.is_public_address`, the check behind every `safe_http.get`
+  (RDAP, MTA-STS, DNS-over-HTTPS) and the DNS-hygiene AXFR probe, took
+  `ipaddress`'s word that
+  `64:ff9b::a00:5` is global. On a sensor whose IPv6-only egress goes through
+  NAT64 that address is 10.0.0.5, so a redirect, a bootstrap entry or an NS
+  record written by the scanned party could point the sensor at its own
+  network. An address under the well-known prefix `64:ff9b::/96` is now judged
+  by the IPv4 address in its low 32 bits, as an IPv4-mapped one already was:
+  DNS64 answers for public hosts still work, `64:ff9b::a9fe:a9fe` does not.
+  Refused outright, whatever the interpreter's special-purpose table says:
+  the local-use NAT64 prefix `64:ff9b:1::/48` (where the IPv4 address sits
+  depends on the operator's prefix length), 6to4 `2002::/16`, and the
+  retired IPv4-translated `::ffff:0:0:0/96` and IPv4-compatible `::/96`,
+  which `ipaddress` also calls global (`::7f00:1` passed). Python 3.9 passed
+  the local-use prefix and 6to4 as well. A network-specific NAT64
+  prefix chosen by the sensor's operator is still indistinguishable from
+  ordinary global space. The API's webhook boundary
+  (`api/services/outbound_targets.check_addresses`, used by
+  `integrations/delivery.py`) has the same gap for `64:ff9b::/96`,
+  `::ffff:0:0:0/96` and `::/96` and is not changed here; the SSH deployer's
+  policy already refuses all three as reserved.
 - **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
   route matched — every 404 on an API without the console build, every CORS
@@ -598,6 +702,39 @@ All notable changes to Shapoclyack are documented in this file.
   An unreachable nameserver, a reset, `SERVFAIL` or an answer that broke off
   before any record is `error`, not `closed`. `axfr_open` findings from runs
   before this release are unreliable: re-run before acting on them.
+- **The native sensor install works on Alpine, RHEL 9 and Ubuntu 22.04.**
+  Checked in `alpine:3.20`, `debian:bookworm-slim` (also under a real
+  systemd), `rockylinux:9` and `ubuntu:22.04` with the package staged in
+  `/opt/shapoclyack-agent`:
+  - On Alpine it stopped at `chown: unknown user/group shapoclyack:shapoclyack`.
+    There is no `useradd` there, and BusyBox `adduser -S` without `-G` puts the
+    account in `nogroup` and creates no `shapoclyack` group. The fallback's
+    `2>/dev/null || true` hid that. The installer now creates the group first
+    on every distribution (`groupadd --system` / `addgroup -S`). It stops with
+    an error if no account comes out in that group, or if an existing
+    `shapoclyack` account has another primary group, which is what the old
+    installer left on Alpine: remove it and re-run.
+  - The agent needs Python 3.11+ (`from datetime import UTC`). RHEL/Rocky/Alma
+    9 default `python3` to 3.9 and Ubuntu 22.04 to 3.10, so the venv was built
+    on an interpreter the agent cannot import in. The installer now uses
+    `python3` only if it is 3.11+. Otherwise it installs `python3.12` or
+    `python3.11` from the distribution (AppStream, universe), or stops before
+    touching the host and names the version it found (Ubuntu 20.04, Debian
+    11). A venv left on an older interpreter is rebuilt with `--clear`, since
+    `venv` does not replace an existing `bin/python`.
+  - On RHEL 9 it never reached Python: asking dnf for `curl` conflicts with the
+    preinstalled `curl-minimal`. curl is now requested only where there is no
+    `curl` command.
+  - Without systemd (Alpine's OpenRC, containers) the agent was started with
+    `nohup sudo …&`. Those hosts have no `sudo`, and even with it the process
+    started outside the install directory and died with `No module named
+    agent`. Either way the installer reported success. It now drops to the
+    account with `runuser` or BusyBox `su`, starts from the install directory
+    (the unit's `WorkingDirectory=`), and fails if the process is gone three
+    seconds later. A re-run stops the agent the previous run started instead
+    of starting a second one beside it.
+  - A failed `import agent.worker` check now prints the last lines of the
+    traceback instead of discarding them.
 
 ## [0.46-0922] — 2026-09-22
 

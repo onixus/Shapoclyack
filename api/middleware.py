@@ -16,6 +16,7 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from api.db import tenant_scope
 from api.request_context import (
     REQUEST_ID_HEADER,
     new_request_id,
@@ -275,6 +276,36 @@ class RequestIdMiddleware:
             reset_request_id(token)
 
 
+class TenantScopeMiddleware:
+    """Open every HTTP request in the *undeclared* tenant scope (#311).
+
+    From here until a route's guard says which tenant the request acts for —
+    or that it acts for none — a transaction that touches a tenant table fails
+    instead of reading as the connecting role. That is the difference between a
+    second line and a formality: a request whose tenant nobody declared is
+    exactly the request a forgotten ``WHERE`` would leak through. Outside a
+    request (workers, startup, CLIs) nothing is bound, and the scope is
+    ``system``. See ``api/db/tenant_scope.py``.
+
+    Raw ASGI and installed with the request-id layer, outside everything else,
+    so no middleware, dependency or background task of the request runs before
+    the scope exists.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        token = tenant_scope.bind_request()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            tenant_scope.reset_request(token)
+
+
 def install_request_id_middleware(app: Any) -> None:
     """Wrap ``app``'s middleware stack in :class:`RequestIdMiddleware` (#330).
 
@@ -289,8 +320,14 @@ def install_request_id_middleware(app: Any) -> None:
     Building the stack here rather than letting the first request build it is
     the price: ``add_middleware`` raises afterwards, so this is called last in
     ``create_app``.
+
+    :class:`TenantScopeMiddleware` goes in here too, just inside the request
+    id, for the same reason: it has to be outside everything, and the stack can
+    only be built once (#311).
     """
-    app.middleware_stack = RequestIdMiddleware(app.build_middleware_stack())
+    app.middleware_stack = RequestIdMiddleware(
+        TenantScopeMiddleware(app.build_middleware_stack())
+    )
 
 
 # Resolved once, not per response: OpenTelemetry is an optional dependency of

@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scanner.pipeline import domain_monitor
 from scanner.pipeline.config_schema import DomainMonitorConfig
 from scanner.pipeline.domain_monitor import (
     _classify_dangling_cname,
     _classify_typosquat,
     _generate_typosquat_candidates,
+    _split_domain,
     monitor_domains,
 )
 
@@ -188,3 +191,95 @@ def test_persisted_files_reflect_both_findings(tmp_path: Path, monkeypatch):
 def test_classify_helpers_return_none_when_appropriate():
     assert _classify_typosquat("example.com", "examp1e.com", {"a": [], "aaaa": []}) is None
     assert _classify_dangling_cname("host.example.com", {"cname": [], "a": [], "aaaa": []}) is None
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("bbc.co.uk", ("bbc", "co.uk")),
+        ("example.com.ru", ("example", "com.ru")),
+        ("shop.example.com.ru", ("example", "com.ru")),
+        ("x.github.io", ("x", "github.io")),
+        ("example.com", ("example", "com")),
+    ],
+)
+def test_split_domain_is_registrable_label_and_public_suffix(domain, expected):
+    assert _split_domain(domain) == expected
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("co.uk", ("co", "uk")),
+        ("github.io", ("github", "io")),
+        ("localhost", ("localhost", "")),
+        ("192.0.2.1", ("192.0.2", "1")),
+    ],
+)
+def test_split_domain_without_registrable_domain_splits_at_last_dot(domain, expected):
+    assert _split_domain(domain) == expected
+
+
+def _suffix_after_first_label(candidate: str) -> tuple[str, str]:
+    label, _, suffix = candidate.partition(".")
+    return label, suffix
+
+
+def test_typosquat_candidates_keep_a_multi_label_suffix_whole():
+    candidates = _generate_typosquat_candidates("bbc.co.uk", max_candidates=500)
+
+    assert "bbcc.co.uk" in candidates  # doubling
+    assert "vbc.co.uk" in candidates  # keyboard-adjacent
+    assert "bbc.com" in candidates  # co.uk swapped as a unit
+    assert "bbc.uk" in candidates  # the suffix's own TLD
+    assert "bbc.co" in candidates
+    assert "bbc.co.com" not in candidates
+    swaps = {"uk", "com", "net", "org", "co", "io", "info", "biz", "cc", "xyz"}
+    for candidate in candidates:
+        label, suffix = _suffix_after_first_label(candidate)
+        # Only the label is ever mutated; the suffix is kept or swapped whole.
+        assert suffix == "co.uk" or (label == "bbc" and suffix in swaps), candidate
+
+
+def test_typosquat_candidates_for_a_subdomain_seed_mutate_the_registrable_label():
+    candidates = _generate_typosquat_candidates("shop.example.com.ru", max_candidates=500)
+
+    assert "exmaple.com.ru" in candidates
+    assert "example.ru" in candidates
+    assert "example.com" in candidates
+    assert not [c for c in candidates if "shop" in c]
+
+
+def test_typosquat_candidates_under_a_private_suffix():
+    candidates = _generate_typosquat_candidates("x.github.io", max_candidates=500)
+
+    assert "z.github.io" in candidates
+    assert "x.io" in candidates
+    assert "x.com" in candidates
+    assert "xgithub.io" not in candidates
+    assert "x.github.com" not in candidates
+
+
+def test_typosquat_candidates_never_include_the_seeds_own_registrable_domain():
+    # Transposing the two b's of "bbc" gives "bbc" back.
+    candidates = _generate_typosquat_candidates("www.bbc.co.uk", max_candidates=500)
+
+    assert "bbc.co.uk" not in candidates
+
+
+def test_org_registrable_domain_is_not_reported_as_its_own_typosquat(tmp_path: Path, monkeypatch):
+    def resolve_everything(domains, output_dir, *, timeout, retries):
+        return {d.lower(): {"a": ["192.0.2.10"], "aaaa": []} for d in domains}
+
+    monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", resolve_everything)
+
+    result = monitor_domains(
+        ["www.bbc.co.uk"],
+        [],
+        DomainMonitorConfig(enabled=True, dangling_cname_enabled=False, max_candidates=500),
+        tmp_path,
+    )
+    reported = {finding["candidate"] for finding in result["typosquat"]["findings"]}
+    assert reported
+    assert "bbc.co.uk" not in reported
+    assert "bbc.com" in reported
