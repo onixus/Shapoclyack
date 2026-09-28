@@ -184,7 +184,7 @@ def test_the_installer_writes_exactly_the_lock(tmp_path):
     )
     assert out.read_bytes() == LOCK.read_bytes(), (
         "scripts/install-agent.sh carries a different lock than requirements-agent.lock; "
-        "paste the regenerated lock between its LOCK lines"
+        "run scripts/lock-python-deps.sh, which rewrites the copy"
     )
 
 

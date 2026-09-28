@@ -5,6 +5,19 @@ name: Docker Publish
 # минуты раннеров, а не на реестр, поэтому деплой и k8s-манифесты не меняются.
 # Автоматические триггеры сняты; ручной запуск оставлен.
 # Вернуть: раскомментировать push/release ниже.
+#
+# Подпись (#313): образ пушится по digest без тега, подписывается keyless —
+# сертификатом Fulcio на OIDC-идентичность этого workflow, — получает
+# подписанную аттестацию SLSA provenance, проверяется так же, как его будет
+# проверять клиент, и только потом получает теги. Всё это делает
+# scripts/sign-release-image.sh, общий с Jenkinsfile.publish. Идентичность,
+# которую проверяют клиенты и политики допуска, —
+#   https://github.com/onixus/Shapoclyack/.github/workflows/docker-publish.yml@refs/tags/<тег релиза>
+# поэтому релизный прогон запускается с тега («Use workflow from» → тег);
+# прогон с ветки подписывается тоже, но политики его не пропустят.
+# Сторонние actions здесь закреплены по SHA коммита: у этого job есть
+# id-token: write, то есть право подписывать от имени проекта, и
+# переставленный чужой тег получил бы его вместе с job.
 on:
   # push:
   #   tags: ["v*"]
@@ -20,8 +33,10 @@ on:
 permissions:
   contents: read
   packages: write
+  # Fulcio certificate for keyless signing. `attestations: write` is gone:
+  # provenance is a cosign attestation in the registry, next to the image,
+  # not a GitHub attestation.
   id-token: write
-  attestations: write
 
 concurrency:
   group: docker-publish-${{ github.ref }}
@@ -66,16 +81,29 @@ jobs:
             install_nmap: "1"
             tag_suffix: "-nmap"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          # The emulator that runs the arm64 half of the build, pinned like
+          # any other image the build runs (#313).
+          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          # The BuildKit daemon builds the image and writes its provenance.
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      # The reviewed cosign binary, not whatever an installer action fetches.
+      - name: Install cosign
+        run: |
+          scripts/install-cosign.sh "${RUNNER_TEMP}/cosign-bin"
+          echo "${RUNNER_TEMP}/cosign-bin" >> "${GITHUB_PATH}"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -83,7 +111,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ matrix.image }}
           flavor: |
@@ -98,17 +126,21 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.event_name == 'release' }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      # Pushed by digest only: no tag points here until the next step has
+      # signed and verified it.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
-          sbom: true
-          provenance: mode=max
+          # SLSA v1 is what the signing step attests and the admission
+          # examples require. The SBOM generator image is pinned too.
+          provenance: mode=max,version=v1
+          attests: type=sbom,generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
           # Private GenDec release assets for Pulse binary stage.
           secrets: |
             github_token=${{ secrets.GENDEC_READ_TOKEN || secrets.GITHUB_TOKEN }}
@@ -128,3 +160,27 @@ jobs:
           # the "pushing manifest ... done" step above) no longer fails the
           # whole job -- it only costs a colder cache on the next build.
           cache-to: type=gha,mode=min,scope=${{ matrix.name }},ignore-error=true
+
+      # Keyless: the certificate names this workflow at this ref, so the
+      # identity verified here is the one a customer pins. A failure leaves
+      # the digest untagged and the job red — the fallback publisher fails
+      # closed exactly like the release pipeline.
+      - name: Sign, attest provenance, verify, then tag
+        env:
+          IMAGE: ${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          args=(--keyless
+            --identity "${GITHUB_SERVER_URL}/${GITHUB_WORKFLOW_REF}"
+            --issuer https://token.actions.githubusercontent.com)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            args+=(--release "${GITHUB_REF_NAME}")
+          fi
+          while IFS= read -r tag; do
+            if [[ -n "${tag}" ]]; then
+              args+=(--tag "${tag}")
+            fi
+          done <<< "${TAGS}"
+          scripts/sign-release-image.sh "${args[@]}" "${IMAGE}@${DIGEST}"

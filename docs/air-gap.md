@@ -39,7 +39,7 @@ For a release that is the all-in-one image and the API image
 [#338](https://github.com/onixus/Shapoclyack/issues/338) (both pinned by
 digest in every manifest), and the upstream datastore images `postgres`,
 `nats`, `clickhouse/clickhouse-server` and `amazon/aws-cli` (backup upload),
-which the base pins by tag. Copy each with its digest intact — `skopeo` shown,
+which the base pins by tag and digest (#313). Copy each with its digest intact — `skopeo` shown,
 `crane copy` or `oras copy` are equivalent:
 
 ```bash
@@ -49,15 +49,21 @@ skopeo copy --all --preserve-digests \
   docker://ghcr.io/onixus/shapoclyack-aio:$TAG@sha256:<digest from the manifests> \
   docker://$REG/shapoclyack/shapoclyack-aio:$TAG
 skopeo inspect --format '{{.Digest}}' docker://$REG/shapoclyack/shapoclyack-aio:$TAG   # must match
-skopeo copy --all --preserve-digests docker://postgres:16-alpine docker://$REG/library/postgres:16-alpine
-skopeo inspect --format '{{.Digest}}' docker://$REG/library/postgres:16-alpine   # pin this
+skopeo copy --all --preserve-digests \
+  docker://postgres:16-alpine@sha256:<digest from the manifests> \
+  docker://$REG/library/postgres:16-alpine
+skopeo inspect --format '{{.Digest}}' docker://$REG/library/postgres:16-alpine   # must match
 ```
+
+A signed release ([supply-chain.md](supply-chain.md#air-gapped-clusters)) is
+copied with `cosign copy` instead: `skopeo` and `crane` copy the image but not
+its signature and provenance, which an admission policy in the cluster checks.
 
 Then rewrite the image names in an overlay. `k8s/shapoclyack/overlays/airgap/`
 is that overlay with `registry.internal.example` as a placeholder: kustomize's
-`images:` transformer replaces the registry and keeps the aio and API images' digests,
-and for the datastore images add a `digest:` line with the value `skopeo
-inspect` printed, so they are pinned too.
+`images:` transformer replaces the registry and keeps each image's tag and
+digest. Leave the entries at `newName`: a `digest:` alone drops the tag and a
+`newTag:` alone drops the digest.
 
 ### The pull secret
 

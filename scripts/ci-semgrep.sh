@@ -32,7 +32,8 @@
 #   host-root  Path the *daemon* should mount. Default: SEMGREP_HOST_ROOT, else
 #              the repository root (correct when docker runs on this machine).
 #
-#   SEMGREP_IMAGE   Scanner image. Default: semgrep/semgrep:latest
+#   SEMGREP_IMAGE   Scanner image. Default: semgrep 1.177.0 pinned by digest
+#                   (#313); :latest gave each run whichever engine was newest.
 #   SEMGREP_JSON    Report path, relative to the repo root. Default: semgrep.json
 set -euo pipefail
 
@@ -40,7 +41,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 HOST_ROOT="${1:-${SEMGREP_HOST_ROOT:-${ROOT_DIR}}}"
-SEMGREP_IMAGE="${SEMGREP_IMAGE:-semgrep/semgrep:latest}"
+SEMGREP_IMAGE="${SEMGREP_IMAGE:-semgrep/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198}"
 SEMGREP_JSON="${SEMGREP_JSON:-semgrep.json}"
 RULES=(--config p/security-audit --config p/secrets --config p/python)
 

@@ -1,0 +1,86 @@
+# Admission policy for Kyverno (>= 1.13): only Shapoclyack images signed by
+# the Shapoclyack release pipelines, with signed SLSA v1 build provenance, may
+# run (#313). docs/supply-chain.md explains the identities and how to verify
+# the same thing by hand with cosign.
+#
+# An image passes if ONE of the two release identities signed it:
+#
+#   * the release key — Jenkinsfile.publish, the release path. Its public half
+#     is cosign.pub at the root of the repository, at the release tag. Kyverno
+#     reads it from a Secret with a `cosign.pub` key:
+#
+#       kubectl -n kyverno create secret generic shapoclyack-release-key \
+#         --from-file=cosign.pub=cosign.pub
+#
+#   * GitHub Actions keyless — .github/workflows/docker-publish.yml, the
+#     fallback publisher, run from a release tag. Nothing to install: the
+#     certificate names the workflow and the tag, and Fulcio vouches for it.
+#
+# Trust only one of them by deleting the other entry (both lists: signature
+# and attestation). tests/test_admission_policies.py keeps the identity, the
+# tag pattern and the image list here equal to what the pipelines publish.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: shapoclyack-verify-release-images
+  annotations:
+    policies.kyverno.io/title: Verify Shapoclyack release images
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Shapoclyack images must be referenced by digest, signed by the
+      Shapoclyack release key or by the project's GitHub publish workflow at a
+      release tag, and carry a SLSA v1 provenance attestation from the same
+      identity.
+spec:
+  # Signatures are checked at admission; a background scan would re-pull
+  # signatures for every running pod on every cycle for no new answer.
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: shapoclyack-release-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/onixus/shapoclyack-*"
+          failureAction: Enforce
+          # The manifests already pin tag@sha256; a tag alone is refused
+          # rather than resolved, so what was verified is what runs.
+          verifyDigest: true
+          mutateDigest: false
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keys:
+                    secret:
+                      name: shapoclyack-release-key
+                      namespace: kyverno
+                    rekor:
+                      url: https://rekor.sigstore.dev
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subjectRegExp: '^https://github\.com/onixus/Shapoclyack/\.github/workflows/docker-publish\.yml@refs/tags/shapoclyack-[0-9]+\.[0-9]+-[0-9]{4}(-(alpha|beta|rc)[0-9]+)?$'
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - type: https://slsa.dev/provenance/v1
+              attestors:
+                - count: 1
+                  entries:
+                    - keys:
+                        secret:
+                          name: shapoclyack-release-key
+                          namespace: kyverno
+                        rekor:
+                          url: https://rekor.sigstore.dev
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subjectRegExp: '^https://github\.com/onixus/Shapoclyack/\.github/workflows/docker-publish\.yml@refs/tags/shapoclyack-[0-9]+\.[0-9]+-[0-9]{4}(-(alpha|beta|rc)[0-9]+)?$'
+                        rekor:
+                          url: https://rekor.sigstore.dev

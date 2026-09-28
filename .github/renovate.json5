@@ -1,0 +1,201 @@
+// Renovate: dependency and pin updates as reviewed pull requests (#313).
+//
+// Renovate rather than Dependabot, for three things this repository needs and
+// Dependabot does not do: it regenerates the hash-pinned Python locks from the
+// requirements*.txt they are compiled from (its pip-compile manager replays
+// the `uv pip compile` command recorded in each lock's header; Dependabot
+// only compiles `*.in` inputs, so every pip bump would arrive with a stale
+// lock); it can follow the digest-pinned images that live outside Dockerfiles
+// and manifests (the Jenkinsfiles, CI scripts, workflow options) through regex
+// managers; and it can hold new releases back for a few days before
+// proposing them. It needs the Renovate GitHub App (or a self-hosted runner)
+// installed on the repository; without it this file does nothing.
+//
+// Volume is capped on purpose: one weekly window, at most five open PRs and
+// two new ones an hour, and updates grouped so that a normal week is a
+// handful of PRs rather than one per package. Security fixes skip the window.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  timezone: "Europe/Moscow",
+  schedule: ["before 6am on monday"],
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  labels: ["dependencies"],
+  // Conventional Commits, like every other commit here: chore(deps): …
+  semanticCommits: "enabled",
+  semanticCommitType: "chore",
+  semanticCommitScope: "deps",
+  // A release has to be three days old before it is proposed: most
+  // compromised releases are found and pulled within that window.
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    labels: ["dependencies", "security"],
+    schedule: ["at any time"],
+  },
+  // config:recommended ignores **/tests/** and **/examples/**; both hold
+  // pinned images here (the e2e/load targets, the example manifests) that
+  // must not go stale unnoticed.
+  ignorePaths: ["**/node_modules/**", "tests/fixtures/**", "tests/data/**"],
+
+  // --- Python: bump requirements*.txt, regenerate the hashed locks --------
+  // pip-compile reads each lock's header and updates its source files with
+  // the pip_requirements parser itself; leaving that manager on as well
+  // would bump requirements*.txt a second time, without the locks.
+  pip_requirements: { enabled: false },
+  "pip-compile": {
+    managerFilePatterns: ["/(^|/)requirements(-[a-z]+)?\\.lock$/"],
+  },
+  // A monthly refresh of the transitive pins that no direct bump touches.
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 6am on the first day of the month"],
+  },
+
+  // --- images outside Dockerfiles and workflow services -------------------
+  kubernetes: {
+    managerFilePatterns: ["/^k8s/.+\\.ya?ml$/"],
+  },
+  customManagers: [
+    {
+      customType: "regex",
+      description: "Stage images and buildx pins in the Jenkinsfiles",
+      managerFilePatterns: ["/^Jenkinsfile(\\.publish)?$/"],
+      matchStrings: [
+        "'(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})'",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      description: "Default images of the CI, test and bench scripts (${X_IMAGE:-…})",
+      managerFilePatterns: [
+        "/^(scripts|k8s/scripts|tests/e2e|tests/load|bench)/[^/]+$/",
+      ],
+      matchStrings: [
+        "IMAGE:-(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})\\}",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      description: "The Postgres image the server installer writes into compose",
+      managerFilePatterns: ["/^scripts/install-server\\.py$/"],
+      matchStrings: [
+        "POSTGRES_IMAGE = \"(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})\"",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      description: "Buildx options (image=, generator=) and *_IMAGE env values in workflows",
+      managerFilePatterns: ["/^\\.github/.+\\.ya?ml$/"],
+      matchStrings: [
+        "(?:image|generator)=(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "[A-Z_]+_IMAGE: (?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      description: "The QEMU emulator image of the publish workflow (a `with: image:` input)",
+      managerFilePatterns: ["/^\\.github/workflows/docker-publish\\.yml$/"],
+      matchStrings: [
+        "\\n\\s+image: (?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      datasourceTemplate: "docker",
+    },
+  ],
+
+  packageRules: [
+    // Shapoclyack's own images move with releases, by the release process.
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["ghcr.io/onixus/**"],
+      enabled: false,
+    },
+    // linuxserver tags are <upstream>_p<patch>-r<alpine rev>-ls<build>
+    // (10.3_p1-r1-ls235): each build is a new tag, never a new digest under
+    // an old one, so without this Renovate would read the suffix as a
+    // different image flavour and propose nothing.
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["lscr.io/linuxserver/**"],
+      versioning: "regex:^(?<major>\\d+)\\.(?<minor>\\d+)_p(?<patch>\\d+)-r(?<build>\\d+)-ls(?<revision>\\d+)$",
+    },
+    // Refreshing a pinned digest under the same tag is the routine bump that
+    // clears base-image CVEs: one PR a week for all of them.
+    {
+      matchDatasources: ["docker"],
+      matchUpdateTypes: ["digest", "pinDigest"],
+      groupName: "container image digests",
+    },
+    {
+      matchDatasources: ["docker"],
+      matchUpdateTypes: ["patch"],
+      groupName: "container image patch releases",
+    },
+    // A minor or major image bump is a platform change — Python 3.12 -> 3.13,
+    // Postgres 16 -> 17, ClickHouse 24.8 -> 25.x — and each needs its own
+    // decision. They wait on the Dependency Dashboard until someone ticks one.
+    {
+      matchDatasources: ["docker"],
+      matchUpdateTypes: ["minor", "major"],
+      dependencyDashboardApproval: true,
+    },
+    {
+      matchManagers: ["pip-compile"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "python dependencies",
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["devDependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "web-next dev dependencies",
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["dependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "web-next dependencies",
+    },
+    {
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "recon go modules",
+    },
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      schedule: ["before 6am on the first day of the month"],
+    },
+    // setup-python/setup-node versions are the interpreter CI tests on, not
+    // an action: moving them is the same decision as the base image's.
+    {
+      matchManagers: ["github-actions"],
+      matchDepNames: ["python", "node"],
+      dependencyDashboardApproval: true,
+    },
+    // The publish job holds id-token: write, i.e. the right to sign as the
+    // project, so its actions are pinned to commit SHAs and kept that way.
+    {
+      matchManagers: ["github-actions"],
+      matchFileNames: [".github/workflows/docker-publish.yml"],
+      pinDigests: true,
+    },
+    // tests/test_pr_gate.py compares the gate's action refs exactly: a bump
+    // there is a change to the required check and lands with that test.
+    {
+      matchManagers: ["github-actions"],
+      matchFileNames: [".github/workflows/pr-gate.yml"],
+      dependencyDashboardApproval: true,
+    },
+    {
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+    },
+  ],
+}

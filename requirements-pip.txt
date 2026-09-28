@@ -1,0 +1,15 @@
+# The pip every image upgrades to before it installs anything else (#313).
+# It used to be ARG PIP_VERSION in each Dockerfile; it lives here now so the
+# upgrade is hash-checked like every other install (requirements-pip.lock).
+#
+# The base image's bundled pip (25.0.1) carries five MEDIUM and one LOW
+# advisory that the scan reports against our images. Pinned rather than left
+# as --upgrade so the build stays reproducible; raise it deliberately, the same
+# way the base digest is refreshed.
+# 26.2.1 is the newest pip and still vendors msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) and setuptools 70.3.0 (as
+# pkg_resources; CVE-2025-47273), both read from pip/_vendor/vendor.txt.
+# Neither is ours to bump, and pip cannot be dropped from the image while the
+# Jenkins Smoke stage installs pytest with it. Raise this once a release
+# vendors fixed copies.
+pip==26.2.1

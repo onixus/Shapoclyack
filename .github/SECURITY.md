@@ -107,8 +107,11 @@ Official release workflows include these controls:
 - Kubernetes manifest validation;
 - image build, smoke, end-to-end, and synthetic load checks;
 - Trivy reporting and a gate for fixable critical vulnerabilities;
-- SPDX SBOM generation and release provenance where configured;
-- pinned base image digests, tool checksums, and selected upstream revisions;
+- release images signed by digest with cosign, with signed SLSA provenance and
+  an SPDX SBOM in the image index — how to verify them, and admission policy
+  examples, are in [Supply chain](../docs/supply-chain.md);
+- digest-pinned base, build-stage and CI images, hash-locked Python
+  dependencies, tool checksums, and selected upstream revisions;
 - non-root runtime users and workload-specific Linux capabilities.
 
 Passing CI is necessary but not sufficient. Security-sensitive changes must

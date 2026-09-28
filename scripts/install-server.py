@@ -18,6 +18,10 @@ DEFAULT_IMAGE = (
     "ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922"
     "@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161"
 )
+# The database is pinned the same way as the application (#313): a tag alone
+# lets the next `compose pull` start a Postgres nobody tested this with. One
+# line, so Renovate's regex manager can propose the refresh.
+POSTGRES_IMAGE = "postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea"
 
 
 def origin(value: str) -> str:
@@ -46,7 +50,7 @@ def manifest(image: str, url: str, port: int, password: str) -> dict:
     return {
         "services": {
             "postgres": {
-                "image": "postgres:16-alpine", "restart": "unless-stopped",
+                "image": POSTGRES_IMAGE, "restart": "unless-stopped",
                 "environment": {"POSTGRES_DB": "shapoclyack", "POSTGRES_USER": "octo",
                                 "POSTGRES_PASSWORD": db_password},
                 "volumes": ["postgres:/var/lib/postgresql/data"],

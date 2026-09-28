@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Pinned by digest, like every other image CI pulls: the test is about our
 # argv against OpenSSH, not about whatever linuxserver published this week.
-SSHD_IMAGE="${SSHD_IMAGE:-lscr.io/linuxserver/openssh-server@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47}"
+SSHD_IMAGE="${SSHD_IMAGE:-lscr.io/linuxserver/openssh-server:10.3_p1-r1-ls235@sha256:2a48f9ce01f61c1d7b376b7be99bd12801a3ecd9f339a4c7e7698d529e8d0b47}"
 NAME="sshd-live-$$"
 PORT="${SSHD_PORT:-$(( 20000 + RANDOM % 20000 ))}"
 USER_NAME="deploy"

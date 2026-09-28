@@ -24,7 +24,7 @@ FULL_CI = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(enco
 # The gate's commands, in order. Changing one is a decision about what the
 # required check proves, so it has to be made here too.
 EXPECTED_RUNS = [
-    "python -m pip install -r requirements-dev.txt",
+    "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock",
     "./scripts/ci-lint.sh",
     "python -m compileall scanner api tests agent",
     "./scripts/ci-pytest.sh --maxfail=1",

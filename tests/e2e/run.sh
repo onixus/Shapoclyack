@@ -6,7 +6,7 @@
 set -euo pipefail
 
 IMAGE="${1:-network-scan-cli:ci}"
-TARGET_IMAGE="${TARGET_IMAGE:-nginx:alpine}"
+TARGET_IMAGE="${TARGET_IMAGE:-nginx:alpine@sha256:1ed1b0e1d7652937d6cbdaf4018c7b6fc009a7dd6c3047351e2eddda745de43f}"
 NET="scan-e2e-net-$$"
 TARGET="e2e-target-$$"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
