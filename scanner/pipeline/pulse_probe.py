@@ -49,7 +49,12 @@ from typing import Any
 
 from .protocol import parse_endpoint
 from .pulse_plan import plan_tcp_probe
-from .pulse_progress import completed_hosts, retain_completed_payload
+from .pulse_progress import (
+    completed_hosts,
+    completion_manifest,
+    normalize_host,
+    retain_completed_payload,
+)
 from .service_schema import (
     FINDING_CLASSES,
     CveRecord,
@@ -169,7 +174,7 @@ def _group_tcp_ports(open_ports: list[str]) -> dict[str, list[int]]:
         except ValueError:
             continue
         if 1 <= port <= 65535:
-            grouped[parsed.host].append(port)
+            grouped[normalize_host(parsed.host)].append(port)
     return {h: sorted(set(ports)) for h, ports in grouped.items() if ports}
 
 
@@ -608,6 +613,7 @@ def run_pulse_probe(
     report_primary: bool | None = None,
     retry_settle_seconds: int = 15,
     on_unresolved: Callable[[list[str]], None] | None = None,
+    on_resume_validated: Callable[[set[str]], None] | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
@@ -629,7 +635,7 @@ def run_pulse_probe(
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
-    requested_done = set(done_hosts or ())
+    requested_done = {normalize_host(host) for host in (done_hosts or ())}
     done: set[str] = set()
     cached: dict[str, Any] = {}
     if requested_done:
@@ -643,6 +649,10 @@ def run_pulse_probe(
         except (OSError, ValueError, TypeError):
             logging.warning("pulse_probe: persisted checkpoint evidence unavailable; re-probing approved endpoints")
             done, cached = set(), {}
+    # Reconcile the coarse and per-host checkpoint before any replay/spawn.
+    # A callback failure aborts the stage rather than running with stale progress.
+    if on_resume_validated:
+        on_resume_validated(set(done))
     size = max(1, chunk_hosts)
     chunks = plan_tcp_probe(grouped, chunk_hosts=size, done_hosts=done)
     planned_endpoints = sum(chunk.endpoint_count for chunk in chunks)
@@ -670,6 +680,7 @@ def run_pulse_probe(
         "tls": list(cached.get("tls") or []),
         "stats": {},
         "chunks": [],
+        "completion": completion_manifest({host: grouped[host] for host in done}),
         "adapter": {"chunk_hosts": size, **diagnostics},
     }
 
@@ -865,6 +876,9 @@ def run_pulse_probe(
             }
         )
 
+        merged_raw["completion"]["hosts"].update(
+            completion_manifest({host: ports_list for host in resolved_hosts})["hosts"]
+        )
         for host in host_chunk:
             if host in resolved_hosts and on_host_done:
                 on_host_done(host)

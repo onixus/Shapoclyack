@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 from .utils import load_json, save_json
@@ -52,6 +53,18 @@ class CheckpointStore:
     def mark_item_done(self, key: str, item: str) -> None:
         with self._lock:
             self.items.setdefault(key, set()).add(item)
+            self._save_locked()
+
+    def restart_stage(self, stage: str, completed_items: Iterable[str] = ()) -> None:
+        """Clear coarse completion and replace items with validated progress.
+
+        The caller owns artifact validation. Persist the replacement before
+        replaying rejected work so a failed replay cannot revive stale items.
+        One locked save preserves unrelated stages, including concurrent NSE.
+        """
+        with self._lock:
+            self.stages.pop(stage, None)
+            self.items[stage] = set(completed_items)
             self._save_locked()
 
     def clear(self) -> None:

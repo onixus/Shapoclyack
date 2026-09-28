@@ -902,15 +902,17 @@ def _run_pipeline_body(
         timer.skip("nse", "skip_nse")
         nmap_dir.mkdir(parents=True, exist_ok=True)
     else:
-        pulse_pending = run_pulse and not (args.resume and checkpoint.is_done("pulse"))
+        # A stage flag is not proof of persisted endpoint evidence or success.
+        # Always enter the adapter: validated all-done resume rebuilds artifacts
+        # without spawning Pulse; legacy/missing evidence is safely replayed.
+        pulse_pending = run_pulse
         nse_pending = run_nmap_nse and not (args.resume and checkpoint.is_done("nse"))
 
         def _do_pulse() -> None:
             pulse_cfg = merge_pulse_config(config.service_probe.pulse, profile.pulse)
-            # Chunks that still report every port closed after their retry are
-            # contradictions, not results (see pulse_probe). Marking the stage done
-            # would let --resume skip it and keep that zero forever, so the flag is
-            # withheld until a later run gets an answer for those hosts.
+            # The adapter validates persisted success receipts, then replaces
+            # stale coarse/per-host progress before replay. Partial or failed
+            # results must not inherit the old stage's completed flag.
             unresolved: list[str] = []
             _run_stage(
                 "pulse",
@@ -938,11 +940,12 @@ def _run_pipeline_body(
                     report_primary=report_primary_pulse,
                     retry_settle_seconds=pulse_cfg.retry_settle_seconds,
                     on_unresolved=unresolved.extend,
+                    on_resume_validated=lambda hosts: checkpoint.restart_stage("pulse", hosts),
                 ),
             )
             if unresolved:
                 logging.warning(
-                    "pulse: %s host(s) still reported no services after re-probing; leaving the "
+                    "pulse: %s host(s) have incomplete or unsuccessful probe results; leaving the "
                     "stage open so --resume asks again: %s",
                     len(unresolved),
                     ", ".join(sorted(unresolved)[:10]),
@@ -1005,11 +1008,7 @@ def _run_pipeline_body(
                     raise nse_exc
         else:
             if run_pulse:
-                if not pulse_pending:
-                    timer.skip("pulse")
-                    logging.info("Skipping Pulse probe (checkpoint)")
-                else:
-                    _do_pulse()
+                _do_pulse()
             else:
                 timer.skip("pulse", "backend")
             if run_nmap_nse:

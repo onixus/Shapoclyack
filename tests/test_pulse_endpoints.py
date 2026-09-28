@@ -201,9 +201,10 @@ def test_legacy_partial_checkpoint_and_overscan_are_not_trusted(tmp_path, driver
     ])))
     pp.run_pulse_probe(["10.0.0.1:22", "10.0.0.2:443"], output_dir=tmp_path,
                        done_hosts=["10.0.0.1", "10.0.0.2"])
-    assert [pairs for _, pairs, _ in calls] == [[("10.0.0.2", 443)]]
+    # Endpoint-only legacy data has no successful-outcome receipt: replay both.
+    assert [pairs for _, pairs, _ in calls] == [[("10.0.0.1", 22)], [("10.0.0.2", 443)]]
     assert {(r["ip"], r["port"]) for r in _raw(tmp_path)["open"]} == {("10.0.0.1", 22), ("10.0.0.2", 443)}
-    assert _raw(tmp_path)["adapter"]["replayed_checkpoint_hosts"] == 1
+    assert _raw(tmp_path)["adapter"]["replayed_checkpoint_hosts"] == 2
 
 
 def test_completion_normalizes_literal_ipv6_but_never_infers_dns():

@@ -33,13 +33,41 @@ nonzero exit with partial JSON stays unresolved. Available partial evidence
 is still written; an incomplete pass is not proof of remediation.
 
 On resume, a checkpoint is honored only when `pulse/raw.json` contains the
-corresponding persisted endpoint evidence. Completed hosts' service/OS/CVE/TLS
+corresponding persisted endpoint evidence **and successful processing receipts**. Completed hosts' service/OS/CVE/TLS
 evidence is retained when pending hosts are re-probed. An all-completed pass
 does not erase the artifacts. Missing/invalid cache or a legacy checkpoint
 that incorrectly marked a partial group done causes safe replay of the
 still-approved endpoints. Previously overscanned ports and hosts outside the
 current input are excluded from retained data. Literal IPv6 forms are
-normalized for evidence matching; DNS equivalence is not inferred.
+normalized consistently for planning, checkpoint keys and evidence matching;
+ports from equivalent literal spellings are unioned. DNS equivalence is not inferred.
+
+The additive `pulse/raw.json.completion` block has schema
+`octo.pulse_completion.v1` and a `hosts` mapping. Each successful host receipt
+contains `ports` and integer `returncode: 0`. Receipts are issued only after
+successful exit, complete endpoint evidence and canonical parsing. They survive
+subsequent partial and all-done passes independently of current-pass `chunks`.
+A receipt without its matching endpoint evidence is insufficient. Missing,
+malformed, unknown-version or non-success receipts cause replay, never an
+implicit success. These are local processing receipts, not cryptographic
+signatures or proof that a vulnerability has been verified.
+
+**Compatibility:** older endpoint-only artifacts (including earlier revisions
+of PR #491) cannot prove the process outcome. Their checkpointed targets are
+replayed once within the same approved input. Old artifacts remain readable;
+there is no silent promotion of legacy data to the new completion schema.
+
+`scanner.main --resume` always enters the enabled Pulse adapter even when
+`stages.pulse` was true. After validating cache, the adapter invokes
+`on_resume_validated`; the CLI uses one locked `CheckpointStore.restart_stage`
+save to clear coarse completion and replace stale host marks with verified
+ones **before any replay**. Other stages' checkpoints are untouched. Failure
+to persist this reconciliation aborts before spawn. Successful all-done resume
+reconstructs canonical files without invoking the Pulse binary. A disabled
+backend or `--skip-nse` still does not enter the adapter.
+
+Partial results retain the existing pipeline exit policy, but never restore
+the Pulse stage-complete flag. A later successful attempt can complete it.
 
 This does not make checkpoint and artifact writes transactional. An
 interruption between them may cause bounded-per-invocation rework on resume,
@@ -93,7 +121,8 @@ pinned engine before making a throughput claim or changing profile limits.
 ## Validation and reproducible local fixture
 
 ```
-python -m pytest -q tests/test_pulse_probe.py tests/test_pulse_endpoints.py
+python -m pytest -q tests/test_pulse_probe.py tests/test_pulse_endpoints.py \
+  tests/test_pulse_resume.py tests/test_pulse_main_resume.py
 python scripts/benchmark-pulse-endpoints.py --repeats 5 --output /tmp/pulse-endpoints.json
 ```
 
