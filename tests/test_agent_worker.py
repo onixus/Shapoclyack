@@ -702,6 +702,311 @@ def test_an_agent_with_no_id_of_its_own_keeps_the_first_one_it_was_given(monkeyp
     assert beat_ids == ["agent_1", "agent_1"]
 
 
+class _IdFileClient:
+    """A key-exchanging API for the OCTO_AGENT_ID_FILE tests.
+
+    Mints ``agent_<n>`` for an exchange that names no id and echoes one that
+    does, and records every exchange and registration. ``refuse`` maps an
+    agent id to the exception its exchange raises. ``id_file`` is read on
+    every registration, which is how the tests see whether the id was on disk
+    before the server first heard it named.
+
+    One run of ``run_loop`` is one process: its first heartbeat ends it.
+    """
+
+    def __init__(self, id_file, refuse: dict[str, Exception] | None = None) -> None:
+        self.id_file = id_file
+        self.refuse = dict(refuse or {})
+        self.exchanged: list[str | None] = []
+        self.registered: list[str | None] = []
+        self.file_at_register: list[str] = []
+        self.minted = 0
+
+    def __call__(self, *args: Any, **kwargs: Any) -> _IdFileClient:
+        return self
+
+    def set_token(self, token: str) -> None:
+        pass
+
+    def exchange_provisioning_key(
+        self, provisioning_key: str, *, agent_id: str | None = None
+    ) -> dict[str, Any]:
+        self.exchanged.append(agent_id)
+        if len(self.exchanged) > 20:
+            raise KeyboardInterrupt  # a loop that never gets as far as a heartbeat
+        if agent_id in self.refuse:
+            raise self.refuse[agent_id]
+        if not agent_id:
+            self.minted += 1
+            agent_id = f"agent_{self.minted}"
+        return {"access_token": "tok", "tenant_id": "t1", "agent_id": agent_id, "expires_in": 3600}
+
+    def register(self, *, agent_id=None, **kwargs: Any) -> dict[str, Any]:
+        self.registered.append(agent_id)
+        self.file_at_register.append(
+            self.id_file.read_text().strip() if self.id_file.exists() else ""
+        )
+        return {"agent_id": agent_id, "hostname": "edge-1", "tenant_id": "t1"}
+
+    def heartbeat(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+    def claim(self, agent_id: str, **kwargs: Any) -> None:
+        return None
+
+
+def _start(monkeypatch, api: _IdFileClient, **overrides: Any) -> int:
+    """One start of the sensor against ``api``, as a restarted container is."""
+    monkeypatch.setattr(worker, "AgentClient", api)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    args = _run_loop_args(agent_id_file=str(api.id_file), **overrides)
+    return worker.run_loop(args)
+
+
+def test_a_restarted_sensor_keeps_the_id_it_saved(monkeypatch, tmp_path):
+    """The container snippets set no OCTO_AGENT_ID, so the server mints one.
+
+    The worker used to keep it in memory only, and every start registered a
+    new sensor: the old row went stale, was announced as agent_offline, and
+    kept the operator's group and any quarantine. The minted id is now on disk
+    *before* the registration that makes it a row, so a crash in between
+    cannot orphan one.
+    """
+    api = _IdFileClient(tmp_path / "state" / "agent-id")
+
+    for _ in range(3):
+        assert _start(monkeypatch, api) == 0
+
+    assert api.exchanged == [None, "agent_1", "agent_1"]
+    assert api.registered == ["agent_1", "agent_1", "agent_1"]
+    assert api.file_at_register == ["agent_1", "agent_1", "agent_1"]
+    assert api.id_file.read_text() == "agent_1\n"
+
+
+def test_octo_agent_id_wins_over_the_file_and_leaves_it_alone(monkeypatch, tmp_path):
+    """An id the operator pinned is theirs; the file is not consulted."""
+    api = _IdFileClient(tmp_path / "agent-id")
+    api.id_file.write_text("agent_saved\n")
+
+    assert _start(monkeypatch, api, agent_id="edge-01") == 0
+
+    assert api.exchanged == ["edge-01"]
+    assert api.registered == ["edge-01"]
+    assert api.id_file.read_text() == "agent_saved\n"
+
+
+def test_an_id_file_the_sensor_cannot_write_stops_it_before_any_exchange(
+    monkeypatch, tmp_path, caplog
+):
+    """Fail where the operator is looking, not one stale row per restart later.
+
+    This is a fresh volume that the image's user may read but not write, the
+    root-owned mount point of a bind mount for instance. The refusal is
+    injected at the temporary file, because the suite may run as root, and
+    root ignores directory permissions.
+    """
+    import errno
+    import logging
+
+    api = _IdFileClient(tmp_path / "state" / "agent-id")
+
+    def refused(*args: Any, **kwargs: Any):
+        raise PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "state"))
+
+    monkeypatch.setattr(worker.tempfile, "mkstemp", refused)
+
+    with caplog.at_level(logging.ERROR, logger=worker.LOG.name):
+        assert _start(monkeypatch, api) == 2
+
+    assert api.exchanged == []
+    assert "Cannot use OCTO_AGENT_ID_FILE" in caplog.text
+    assert "Permission denied" in caplog.text
+
+
+def test_an_id_file_the_sensor_cannot_read_stops_it_before_any_exchange(monkeypatch, tmp_path):
+    (tmp_path / "state").write_text("a file where the directory should be")
+    api = _IdFileClient(tmp_path / "state" / "agent-id")
+
+    assert _start(monkeypatch, api) == 2
+
+    assert api.exchanged == []
+
+
+def test_an_id_file_holding_something_else_stops_the_sensor_and_is_kept(monkeypatch, tmp_path):
+    """Overwriting it would orphan whatever row the id in it named."""
+    api = _IdFileClient(tmp_path / "agent-id")
+    api.id_file.write_text("not an id\n")
+
+    assert _start(monkeypatch, api) == 2
+
+    assert api.exchanged == []
+    assert api.id_file.read_text() == "not an id\n"
+
+
+def test_an_empty_id_file_is_no_id(monkeypatch, tmp_path):
+    api = _IdFileClient(tmp_path / "agent-id")
+    api.id_file.write_text("\n")
+
+    assert _start(monkeypatch, api) == 0
+
+    assert api.exchanged == [None]
+    assert api.id_file.read_text() == "agent_1\n"
+
+
+def test_an_id_that_could_not_be_saved_is_never_registered(monkeypatch, tmp_path):
+    """A failed write abandons the exchange; the retry mints and saves anew.
+
+    Registering the unsaved id would leave its row stale at the next start,
+    which is the defect the file exists for.
+    """
+    api = _IdFileClient(tmp_path / "agent-id")
+    real_save = worker.save_agent_id
+    attempts: list[str] = []
+
+    def flaky_save(path, agent_id):
+        attempts.append(agent_id)
+        if len(attempts) == 1:
+            raise OSError(28, "No space left on device")
+        real_save(path, agent_id)
+
+    monkeypatch.setattr(worker, "save_agent_id", flaky_save)
+
+    assert _start(monkeypatch, api) == 0
+
+    assert attempts == ["agent_1", "agent_2"]
+    assert api.registered == ["agent_2"]
+    assert api.file_at_register == ["agent_2"]
+
+
+def test_a_saved_id_from_another_tenant_is_replaced(monkeypatch, tmp_path, caplog):
+    """A sensor moved to another tenant with its old volume still attached.
+
+    The id stays bound to the tenant that registered it, and no revocation
+    releases it, so the saved one can never be used again. The sensor
+    registers anew, as the installer does for an agent.env written for
+    another tenant.
+    """
+    import logging
+
+    api = _IdFileClient(
+        tmp_path / "agent-id",
+        refuse={
+            "agent_old": worker.AgentIdInAnotherTenant(
+                "POST /api/auth/agent/token -> 403: This agent_id is registered in another tenant"
+            )
+        },
+    )
+    api.id_file.write_text("agent_old\n")
+
+    with caplog.at_level(logging.WARNING, logger=worker.LOG.name):
+        assert _start(monkeypatch, api) == 0
+
+    assert api.exchanged == ["agent_old", None]
+    assert api.registered == ["agent_1"]
+    assert api.id_file.read_text() == "agent_1\n"
+    assert "belongs to another tenant" in caplog.text
+
+
+def test_a_pinned_id_from_another_tenant_is_not_replaced(monkeypatch, tmp_path):
+    """OCTO_AGENT_ID is the operator's choice, even when it is refused."""
+    api = _IdFileClient(
+        tmp_path / "agent-id",
+        refuse={"edge-01": worker.AgentIdInAnotherTenant("403: registered in another tenant")},
+    )
+
+    assert _start(monkeypatch, api, agent_id="edge-01") == 0
+
+    assert set(api.exchanged) == {"edge-01"}
+    assert api.registered == []
+    assert not api.id_file.exists()
+
+
+def test_a_quarantined_saved_id_is_waited_out_not_replaced(monkeypatch, tmp_path):
+    """Dropping the id on a lifecycle refusal would walk out of the quarantine.
+
+    That is what every restart did before the file: the new row was active.
+    """
+    monkeypatch.setattr(worker, "DISABLED_BACKOFF_SECONDS", 0.0)
+    api = _IdFileClient(
+        tmp_path / "agent-id",
+        refuse={
+            "agent_7": worker.AgentDisabled(
+                "POST /api/auth/agent/token -> 403: This agent is quarantined by an operator"
+            )
+        },
+    )
+    api.id_file.write_text("agent_7\n")
+
+    assert _start(monkeypatch, api) == 0
+
+    assert len(api.exchanged) > 1
+    assert set(api.exchanged) == {"agent_7"}
+    assert api.registered == []
+    assert api.id_file.read_text() == "agent_7\n"
+
+
+def test_a_legacy_token_sensor_saves_the_id_its_registration_named(monkeypatch, tmp_path):
+    """No exchange with the shared token: the registration mints the id."""
+    api = _IdFileClient(tmp_path / "agent-id")
+    real_register = api.register
+
+    def register(*, agent_id=None, **kwargs: Any) -> dict[str, Any]:
+        return {**real_register(agent_id=agent_id, **kwargs), "agent_id": agent_id or "legacy_1"}
+
+    api.register = register  # type: ignore[method-assign]
+
+    for _ in range(2):
+        assert _start(monkeypatch, api, token="shared", provisioning_key="") == 0
+
+    assert api.exchanged == []
+    assert api.registered == [None, "legacy_1"]
+    assert api.id_file.read_text() == "legacy_1\n"
+
+
+def test_the_exchange_names_the_other_tenant_refusal(monkeypatch):
+    """The client turns the API's 403 into the one exception the loop acts on,
+    and leaves the key-binding 403 a plain error for the operator to read."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    answers = iter(
+        [
+            b'{"detail":"This agent_id is registered in another tenant"}',
+            b'{"detail":"This agent_id is registered with a different provisioning key; '
+            b'revoke that key before re-provisioning the host with this one"}',
+        ]
+    )
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            url=req.full_url, code=403, msg="forbidden", hdrs={}, fp=io.BytesIO(next(answers))
+        )
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+
+    with pytest.raises(worker.AgentIdInAnotherTenant):
+        client.exchange_provisioning_key("octo-pk-x", agent_id="agent_1")
+    with pytest.raises(RuntimeError) as other_key:
+        client.exchange_provisioning_key("octo-pk-x", agent_id="agent_1")
+    assert not isinstance(other_key.value, worker.AgentIdInAnotherTenant)
+
+
+def test_save_agent_id_replaces_the_file_whole(tmp_path):
+    """A reboot mid-write leaves the old id or the new one, never a torn file:
+    written beside the target and renamed over it."""
+    target = tmp_path / "nested" / "agent-id"
+
+    worker.save_agent_id(target, "agent_1")
+    worker.save_agent_id(target, "agent_2")
+
+    assert target.read_text() == "agent_2\n"
+    assert worker.load_saved_agent_id(target) == "agent_2"
+    assert sorted(p.name for p in target.parent.iterdir()) == ["agent-id"]
+
+
 def test_a_quarantined_agent_backs_off_at_registration_instead_of_dying(monkeypatch):
     """A quarantined host restarting must wait, not spin under Restart=always.
 

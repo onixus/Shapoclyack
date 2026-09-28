@@ -389,6 +389,23 @@ NATS_FALLBACK_CLAIM_SECONDS = 60.0
 # a state to wait out.
 _DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operator")
 
+# The exchange's refusal of an agent_id whose row belongs to another tenant
+# (api/services/agents.py::check_exchange_identity). Pinned against the API's
+# wording by tests/test_agent_identity.py.
+_OTHER_TENANT_MARKER = "registered in another tenant"
+
+
+class AgentIdInAnotherTenant(RuntimeError):
+    """The exchange refused this agent_id: another tenant registered it.
+
+    Unlike the other identity refusals this one never clears. An id is bound
+    to its tenant for good, and revoking a key does not release it across
+    tenants, so the key's own tenant can never take the id. The run loop acts
+    on it only for an id it saved itself (``OCTO_AGENT_ID_FILE``), which is
+    what a sensor moved to another tenant with its old volume still attached
+    brings along.
+    """
+
 
 #: The API's reason for a 409 on the results route, and the values it sends.
 #: Kept as literals rather than imported: this module is what ships to the
@@ -510,6 +527,10 @@ class AgentClient:
             # RuntimeError and be retried at the poll interval forever.
             if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
                 raise AgentDisabled(
+                    f"POST /api/auth/agent/token -> 403: {detail}"
+                ) from exc
+            if exc.code == 403 and _OTHER_TENANT_MARKER in detail:
+                raise AgentIdInAnotherTenant(
                     f"POST /api/auth/agent/token -> 403: {detail}"
                 ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
@@ -1485,6 +1506,73 @@ class AgentNatsSession:
             return None
 
 
+# The API's own bound on an agent_id (api/schemas.py, AgentTokenRequest).
+_AGENT_ID_MAX_LENGTH = 128
+
+
+def load_saved_agent_id(path: Path) -> str:
+    """The agent id an earlier start saved to ``path``, or ``""`` if none.
+
+    Raises ``ValueError`` for a file that holds something else. The sensor
+    does not start then, rather than overwrite it: whatever id was in it
+    still has a row, and a fresh one would leave that row stale.
+    """
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    if value and (
+        len(value) > _AGENT_ID_MAX_LENGTH
+        or not value.isprintable()
+        or any(ch.isspace() for ch in value)
+    ):
+        raise ValueError(
+            "the file does not hold an agent id (one line, no spaces, at most "
+            f"{_AGENT_ID_MAX_LENGTH} characters)"
+        )
+    return value
+
+
+def save_agent_id(path: Path, agent_id: str) -> None:
+    """Write ``agent_id`` to ``path`` so that it survives a crash or power loss.
+
+    Written to a temporary file in the same directory and renamed over
+    ``path``, both synced, so a reboot half-way through leaves the old
+    content or the new one and never an empty file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"{agent_id}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _check_agent_id_file_writable(path: Path) -> None:
+    """Raise ``OSError`` unless :func:`save_agent_id` could write ``path``.
+
+    Checked at start, before any exchange. A container whose volume the
+    sensor's user cannot write should fail where the operator is looking.
+    Otherwise it registers, keeps its id in memory only, and leaves a stale
+    row behind on every restart.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    os.close(fd)
+    os.unlink(tmp)
+
+
 def run_loop(args: argparse.Namespace) -> int:
     client = AgentClient(
         args.api_url,
@@ -1519,6 +1607,39 @@ def run_loop(args: argparse.Namespace) -> int:
     # a refresh that omitted it used to hand the process a token for a
     # different agent, after which its own heartbeat was 403 (#308).
     agent_id: str = (args.agent_id or "").strip()
+    # Where the id the server mints is kept for the next start. The container
+    # and Kubernetes snippets set no OCTO_AGENT_ID, and without the file every
+    # restart registered a second sensor. OCTO_AGENT_ID wins, and the file is
+    # then neither read nor written: that id is the operator's to change.
+    id_file_setting = str(getattr(args, "agent_id_file", "") or "").strip()
+    agent_id_file = Path(id_file_setting) if id_file_setting and not agent_id else None
+    if id_file_setting and agent_id:
+        LOG.info("OCTO_AGENT_ID is set; not using OCTO_AGENT_ID_FILE %s", id_file_setting)
+    if agent_id_file is not None:
+        try:
+            agent_id = load_saved_agent_id(agent_id_file)
+            if not agent_id:
+                _check_agent_id_file_writable(agent_id_file)
+        except ValueError as exc:
+            LOG.error(
+                "OCTO_AGENT_ID_FILE %s: %s. Put this sensor's agent id in it, or "
+                "remove it to register as a new sensor",
+                agent_id_file,
+                exc,
+            )
+            return 2
+        except OSError as exc:
+            LOG.error(
+                "Cannot use OCTO_AGENT_ID_FILE %s: %s. The sensor keeps its agent id "
+                "there across restarts: mount a volume that uid %s can write, or "
+                "set OCTO_AGENT_ID",
+                agent_id_file,
+                exc,
+                os.getuid(),
+            )
+            return 2
+        if agent_id:
+            LOG.info("Keeping agent id %s from %s", agent_id, agent_id_file)
     tenant_id = ""
     # The group an operator put this agent in, as the API reports it on every
     # register and heartbeat. Never read from ``labels``: an agent that could
@@ -1567,9 +1688,36 @@ def run_loop(args: argparse.Namespace) -> int:
 
     def _exchange() -> None:
         nonlocal agent_id, tenant_id, token_refresh_at, registered
-        exchanged = client.exchange_provisioning_key(
-            _provisioning_key(args), agent_id=agent_id or None
-        )
+        try:
+            exchanged = client.exchange_provisioning_key(
+                _provisioning_key(args), agent_id=agent_id or None
+            )
+        except AgentIdInAnotherTenant as exc:
+            if agent_id_file is None:
+                raise
+            # The saved id came from another tenant's key. This key's tenant
+            # can never take it, so the sensor registers anew, as the
+            # installer does for an agent.env written for another --tenant.
+            # Only the tenant rule is handled this way. A lifecycle refusal
+            # or another active key's binding is the operator's to resolve,
+            # and dropping the id there would walk out of a quarantine.
+            LOG.warning(
+                "Saved agent id %s from %s belongs to another tenant; registering "
+                "as a new sensor (%s)",
+                agent_id,
+                agent_id_file,
+                exc,
+            )
+            agent_id = ""
+            exchanged = client.exchange_provisioning_key(_provisioning_key(args), agent_id=None)
+        minted = str(exchanged.get("agent_id") or "")
+        if minted and minted != agent_id and agent_id_file is not None:
+            # Saved before anything else, the token included. If the write
+            # fails, this exchange never happened as far as the loop is
+            # concerned: the refresh stays due and nothing registers an id
+            # that the next start would not know.
+            save_agent_id(agent_id_file, minted)
+            LOG.info("Saved agent id %s to %s", minted, agent_id_file)
         client.set_token(str(exchanged["access_token"]))
         expires = int(exchanged.get("expires_in") or 3600)
         token_refresh_at = time.time() + max(
@@ -1597,7 +1745,23 @@ def run_loop(args: argparse.Namespace) -> int:
             hostname=hostname,
             labels=labels,
         )
-        agent_id = str(info["agent_id"])
+        registered_id = str(info["agent_id"])
+        if registered_id != agent_id and agent_id_file is not None:
+            # Only the legacy shared token gets here: it is exchanged for
+            # nothing, so the registration is what names the agent. The row
+            # exists by now. On a failed write the sensor carries on as that
+            # row rather than register again, which would add another row.
+            try:
+                save_agent_id(agent_id_file, registered_id)
+            except OSError as exc:
+                LOG.error(
+                    "Could not save agent id %s to %s (%s); the next start registers "
+                    "a new sensor",
+                    registered_id,
+                    agent_id_file,
+                    exc,
+                )
+        agent_id = registered_id
         # The registration response is authoritative for the legacy shared
         # token, which is exchanged for nothing and whose tenant the agent
         # cannot know on its own (api.auth.LEGACY_AGENT_TENANT_ID = "default").
@@ -1810,6 +1974,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum duration for a single scan execution in seconds (default: 7200)",
     )
     parser.add_argument("--agent-id", default=os.environ.get("OCTO_AGENT_ID"), help="Stable agent id")
+    parser.add_argument(
+        "--agent-id-file",
+        default=os.environ.get("OCTO_AGENT_ID_FILE", ""),
+        help=(
+            "Without --agent-id: keep the agent id the API mints in this file and "
+            "reuse it on the next start (or OCTO_AGENT_ID_FILE). Put it on a volume "
+            "that outlives the container"
+        ),
+    )
     parser.add_argument("--hostname", default=os.environ.get("OCTO_AGENT_HOSTNAME"), help="Agent hostname")
     parser.add_argument(
         "--label",

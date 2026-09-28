@@ -422,7 +422,7 @@ export const en = {
   "ui.installed": "Installed",
   "ui.intervalSeconds": "Interval (seconds)",
   "ui.jobExecutionMode": "Job Execution Mode",
-  "ui.kubernetesDeploymentManifest": "Kubernetes Deployment Manifest",
+  "ui.kubernetesDeploymentManifest": "Kubernetes Manifest",
   "ui.lastRetentionSweep": "Last Retention Sweep",
   "ui.lastUsed": "Last used",
   "ui.legacyNmapNseProfiles": "Legacy nmap NSE profiles",

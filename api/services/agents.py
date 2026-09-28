@@ -1328,6 +1328,19 @@ DEPLOYMENT_KEY_PLACEHOLDER = "<PROVISIONING_KEY>"
 # the release before it.
 SENSOR_IMAGE = "ghcr.io/onixus/shapoclyack-scanner:shapoclyack-0.46-0922@sha256:7eb82c8dab4071517ee7af8825bb8df58d7706afac4eb6e1da6ca4759f44fa66"
 
+# Where a sensor started from the container and Kubernetes snippets keeps the
+# agent id the API mints for it (OCTO_AGENT_ID_FILE, agent/worker.py). The
+# snippets set no OCTO_AGENT_ID: one snippet is pasted onto many hosts, and an
+# id rendered into it would make them all one sensor. Without the file the
+# worker held the minted id in memory only, so every restart registered a new
+# row. The old row went stale and kept the sensor's group and any quarantine.
+#
+# The directory is the image's own declared VOLUME, owned by the image's uid
+# 1000, so an empty named volume mounted there starts out writable by it.
+SENSOR_STATE_DIR = "/app/scanner/state"
+SENSOR_ID_FILE = f"{SENSOR_STATE_DIR}/agent-id"
+SENSOR_STATE_VOLUME = "shapoclyack-agent-state"
+
 
 def get_deployment_snippets(
     tenant_id: str,
@@ -1352,6 +1365,11 @@ def get_deployment_snippets(
     which exits at once. And naabu carries NET_RAW+NET_ADMIN file
     capabilities that Docker's default set does not grant, so without
     ``--cap-add`` its exec fails with EPERM on the first scan.
+
+    Each of them also keeps the sensor's identity on a volume, at
+    :data:`SENSOR_ID_FILE`. It is a named volume for Docker. For Kubernetes it
+    is a StatefulSet claim per replica: a Deployment's pod loses an
+    ``emptyDir`` on reschedule, and replicas would share a single claim.
     """
     key_minted = bool(provisioning_key)
     if not provisioning_key:
@@ -1366,8 +1384,9 @@ def get_deployment_snippets(
     docker_run = (
         f"docker run -d --name shapoclyack-agent --restart always "
         f"--network host --cap-add NET_RAW --cap-add NET_ADMIN "
+        f"-v {SENSOR_STATE_VOLUME}:{SENSOR_STATE_DIR} "
         f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
-        f"-e OCTO_TENANT_ID={tenant_id} "
+        f"-e OCTO_TENANT_ID={tenant_id} -e OCTO_AGENT_ID_FILE={SENSOR_ID_FILE} "
         f"--entrypoint python {SENSOR_IMAGE} -m agent"
     )
     docker_compose = f"""services:
@@ -1383,14 +1402,26 @@ def get_deployment_snippets(
       - OCTO_API_URL={clean_server}
       - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
       - OCTO_TENANT_ID={tenant_id}
+      - OCTO_AGENT_ID_FILE={SENSOR_ID_FILE}
+    # The sensor's agent id lives here. Keep the volume across upgrades
+    # (`down -v` removes it, and the sensor then registers anew).
+    volumes:
+      - {SENSOR_STATE_VOLUME}:{SENSOR_STATE_DIR}
     entrypoint: ["python", "-m", "agent"]
+volumes:
+  {SENSOR_STATE_VOLUME}:
 """
-    kubernetes_yaml = f"""apiVersion: apps/v1
-kind: Deployment
+    kubernetes_yaml = f"""# A StatefulSet, not a Deployment: each replica keeps its agent id on its own
+# volume, across restarts, rescheduling and upgrades. Needs a default StorageClass.
+apiVersion: apps/v1
+kind: StatefulSet
 metadata:
   name: shapoclyack-agent
   namespace: default
 spec:
+  # No Service is needed, since the sensor only dials out. The field is set
+  # because older kubectl versions refuse a StatefulSet without it.
+  serviceName: shapoclyack-agent
   replicas: 1
   selector:
     matchLabels:
@@ -1400,6 +1431,9 @@ spec:
       labels:
         app: shapoclyack-agent
     spec:
+      securityContext:
+        # The image's user, so that it can write to the claim.
+        fsGroup: 1000
       containers:
       - name: agent
         image: {SENSOR_IMAGE}
@@ -1410,6 +1444,8 @@ spec:
           value: "{provisioning_key}"
         - name: OCTO_TENANT_ID
           value: "{tenant_id}"
+        - name: OCTO_AGENT_ID_FILE
+          value: "{SENSOR_ID_FILE}"
         command: ["python", "-m", "agent"]
         securityContext:
           # The scanners get these through file capabilities, which a
@@ -1419,6 +1455,17 @@ spec:
           capabilities:
             drop: ["ALL"]
             add: ["NET_RAW", "NET_ADMIN"]
+        volumeMounts:
+        - name: state
+          mountPath: {SENSOR_STATE_DIR}
+  volumeClaimTemplates:
+  - metadata:
+      name: state
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
 """
     return {
         "tenant_id": tenant_id,

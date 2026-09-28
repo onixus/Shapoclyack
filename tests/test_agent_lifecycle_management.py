@@ -508,6 +508,63 @@ def test_snippets_use_the_configured_base_url_not_the_host_header(
     assert "attacker.example.net" not in body["kubernetes_yaml"]
 
 
+def test_every_container_snippet_keeps_the_sensors_id_on_a_volume(monkeypatch):
+    """A restart of a snippet-deployed sensor used to register a second sensor.
+
+    None of the snippets sets OCTO_AGENT_ID, so the id is the one the API
+    mints, and the worker kept it in memory only. Each snippet now names
+    OCTO_AGENT_ID_FILE inside a directory it mounts from something that
+    outlives the container: a named volume, and for Kubernetes a claim per
+    replica. A Deployment would lose an emptyDir on reschedule and share one
+    claim across replicas.
+    """
+    import shlex
+
+    import yaml
+
+    from agent import worker
+    from api.services import agents
+
+    state_dir = agents.SENSOR_STATE_DIR
+    id_file = agents.SENSOR_ID_FILE
+    assert Path(id_file).parent == Path(state_dir)
+    snips = agents.get_deployment_snippets(
+        "ten_acme", "https://console.example.com", provisioning_key="octo-pk-test"
+    )
+    for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
+        assert "OCTO_AGENT_ID=" not in snips[name] and "name: OCTO_AGENT_ID\n" not in snips[name]
+
+    argv = shlex.split(snips["docker_run"])
+    assert argv[argv.index("-v") + 1] == f"{agents.SENSOR_STATE_VOLUME}:{state_dir}"
+    assert f"OCTO_AGENT_ID_FILE={id_file}" in argv
+
+    compose = yaml.safe_load(snips["docker_compose"])
+    service = compose["services"]["shapoclyack-agent"]
+    assert f"OCTO_AGENT_ID_FILE={id_file}" in service["environment"]
+    volume, mount = service["volumes"][0].split(":")
+    assert mount == state_dir
+    assert volume in compose["volumes"]  # named, not a bind mount of a host path
+
+    sts = yaml.safe_load(snips["kubernetes_yaml"])
+    assert sts["kind"] == "StatefulSet"
+    pod = sts["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    env = {item["name"]: item["value"] for item in container["env"]}
+    assert env["OCTO_AGENT_ID_FILE"] == id_file
+    assert env["OCTO_API_URL"] == "https://console.example.com"
+    (mounted,) = container["volumeMounts"]
+    assert mounted["mountPath"] == state_dir
+    (claim,) = sts["spec"]["volumeClaimTemplates"]
+    assert claim["metadata"]["name"] == mounted["name"]
+    assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
+    # The images run as uid/gid 1000; a fresh claim is root's otherwise.
+    assert pod["securityContext"]["fsGroup"] == 1000
+
+    # And the variable is the one the worker reads.
+    monkeypatch.setenv("OCTO_AGENT_ID_FILE", id_file)
+    assert worker.build_parser().parse_args([]).agent_id_file == id_file
+
+
 def test_remote_ssh_deployer_flow(tmp_path: Path, monkeypatch):
     settings = make_settings(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
