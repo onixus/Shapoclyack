@@ -415,6 +415,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **nuclei no longer uses ProjectDiscovery's public interactsh servers.** It
+  runs with `-no-interactsh` by default, so the 304 out-of-band (OAST)
+  templates inside the default filters (blind SSRF, command injection,
+  Log4Shell-style callbacks) no longer run. Before, nuclei registered with
+  `oast.pro` and five sibling servers, and the scanned hosts called back to
+  them. `nuclei.interactsh_server` turns OAST back on against a server you run,
+  with its token in `OCTO_INTERACTSH_TOKEN`, passed to nuclei in a private
+  file rather than on the command line. `nuclei.json` records `interactsh` and
+  `interactsh_registered`, because nuclei reports a failed registration nowhere
+  below `-v`. [Network requirements](docs/network-requirements.md#out-of-band-testing-interactsh)
+  has the measurements and what a self-hosted server needs, including pinning
+  its name in the sensor's `/etc/hosts`.
 - **`python -m api` runs exactly one uvicorn worker, whatever
   `WEB_CONCURRENCY` says** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
   uvicorn read that variable when no worker count was passed, and several
@@ -526,6 +538,25 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Sensors no longer fill their disk with finished runs.** `agent/worker.py`
+  left every `runs/<run_id>` it scanned on disk for ever, so a systemd sensor
+  grew without bound and an in-cluster one grew its `emptyDir` until the pod
+  was evicted mid-scan. A run whose archive the API acknowledged (the results
+  call answered 2xx) is now removed at the end of its job, with its per-run
+  state directory; a run the API did not acknowledge is kept
+  `OCTO_AGENT_RUN_RETENTION_HOURS` (default `72`) for debugging, and
+  `OCTO_AGENT_RUN_MAX_BYTES` (default 5 GiB) removes the oldest removable runs
+  past a size budget. The sweep runs at startup, after every job and every
+  15 minutes while idle. Never removed: the run in progress, a cancelled
+  scan's unacknowledged partial results for an hour (#360), and the run the
+  scanner's `latest_run.json` names — the next scan diffs against it, and
+  that diff is where asset events and their webhooks come from, so removing
+  it straight after its upload would have silently stopped them for every
+  sensor-executed scan. One acknowledged run therefore stays until the next
+  replaces it. **On the first start after upgrading**, run directories older
+  than the retention are removed, as is anything past the budget. A sensor
+  whose `OCTO_OUTPUT_DIR` also holds an API's run store (`runs/_tenants`)
+  only removes runs it executed itself.
 - **Typosquat candidates of a seed under a multi-label suffix are look-alikes
   again.** `domain_monitor` split a seed at its last dot, so `bbc.co.uk` was
   the label `bbc.co` plus the TLD `uk`: the generators mutated the dot and the
@@ -558,11 +589,27 @@ All notable changes to Shapoclyack are documented in this file.
   which `ipaddress` also calls global (`::7f00:1` passed). Python 3.9 passed
   the local-use prefix and 6to4 as well. A network-specific NAT64
   prefix chosen by the sensor's operator is still indistinguishable from
-  ordinary global space. The API's webhook boundary
-  (`api/services/outbound_targets.check_addresses`, used by
-  `integrations/delivery.py`) has the same gap for `64:ff9b::/96`,
-  `::ffff:0:0:0/96` and `::/96` and is not changed here; the SSH deployer's
-  policy already refuses all three as reserved.
+  ordinary global space. The API's webhook boundary had the same gap; see
+  the next entry.
+- **Webhooks and every other API delivery refuse IPv6 that reaches private
+  IPv4 through NAT64.** `api/services/outbound_targets.check_addresses`
+  under the webhook policy — the boundary behind `integrations/delivery.py`,
+  so webhooks, notification channels, ticket transports and report
+  webhooks — refused an address only if `ipaddress` said it was not global.
+  It says `64:ff9b::a00:5` and `64:ff9b::a9fe:a9fe` are global (the RFC 6052
+  NAT64 well-known prefix), and on an API pod whose IPv6-only egress goes
+  through NAT64 those are 10.0.0.5 and the cloud metadata service. The SIIT
+  form `::ffff:0:a00:5` and the IPv4-compatible `::a00:5` and `::127.0.0.1`
+  passed as well. The API now applies the scanner's rule from the entry
+  above: `64:ff9b::/96` and IPv4-mapped are judged by the IPv4 address in the
+  low 32 bits, so a DNS64 answer for a public receiver
+  (`64:ff9b::5db8:d822`) is still delivered to, and `64:ff9b:1::/48`,
+  `::ffff:0:0:0/96`, `2002::/16` and `::/96` are refused outright. A test
+  holds the API and scanner copies to the same verdicts.
+  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` still turns the check off. The
+  SSH deployer's policy already refused all of these as reserved and still
+  does; a NAT64 address now reports the loopback, link-local or multicast
+  address behind it instead.
 - **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
   route matched — every 404 on an API without the console build, every CORS

@@ -213,7 +213,7 @@ def test_the_native_sensor_uses_the_nats_client_of_the_image():
 # when it is missing (agent/worker.py, check_nats_transport).
 _OPTIONAL_IMPORTS = {"aiohttp"}
 # Import name -> distribution, where they differ.
-_DISTRIBUTIONS = {"nats": "nats-py"}
+_DISTRIBUTIONS = {"nats": "nats-py", "yaml": "PyYAML"}
 
 
 def test_the_lock_covers_what_the_agent_package_imports():
