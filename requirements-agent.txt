@@ -18,3 +18,5 @@
 nats-py==2.15.0
 # CPU/memory/disk in the heartbeat; the worker reports none without it.
 psutil==7.2.2
+# Read the scanner state directory for baseline-preserving run retention.
+PyYAML==6.0.3

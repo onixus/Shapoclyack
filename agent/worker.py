@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import __version__, egress
-from agent import logging_setup
+from agent import logging_setup, run_retention
 
 LOG = logging.getLogger("octo-agent")
 
@@ -1047,6 +1047,7 @@ def _execute_job(
     output_dir: Path,
     heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
     scan_timeout: float | None = 7200.0,
+    retention: run_retention.RunRetention | None = None,
 ) -> None:
     LOG.info("Claimed job %s run_id=%s", job["job_id"], job["run_id"])
     cancel_event = threading.Event()
@@ -1062,7 +1063,14 @@ def _execute_job(
     if (beat or {}).get("cancel_requested"):
         LOG.warning("Job %s was cancelled before the scan started", job["job_id"])
         cancel_event.set()
-    with tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp:
+    run_id = str(job["run_id"])
+    # Outermost, so the run is held out of every sweep until the archive's
+    # temporary directory is gone too, and swept when the job is over — which
+    # is what removes the run directory once the API has acknowledged it.
+    with (
+        retention.job(run_id) if retention is not None else contextlib.nullcontext(),
+        tempfile.TemporaryDirectory(prefix="octo-agent-") as tmp,
+    ):
         workdir = Path(tmp)
         if cancel_event.is_set():
             exit_code, error, archive = 143, "cancelled before the scan started", None
@@ -1085,6 +1093,11 @@ def _execute_job(
                     cancel_event=cancel_event,
                 )
         cancelled = cancel_event.is_set() and exit_code != 0
+        if retention is not None and cancelled and archive is not None:
+            # Before the upload, not after it fails: a sensor killed while
+            # sending the partial results still knows on restart that the API
+            # is owed them, and does not sweep the only copy (#360).
+            retention.mark_owed(run_id)
         # Under heartbeats like the scan itself: the transfer of a run archive
         # over a branch office's uplink, plus the API's ingest of it, is minutes
         # during which the job is in flight and its lease has to be renewed.
@@ -1137,6 +1150,12 @@ def _execute_job(
                     "The API rejected the result of job %s: %s", job["job_id"], exc
                 )
                 return
+        # Only here, past every way the upload can fail or be refused: the
+        # results call answers once the ingest is done, so this is the API
+        # saying it holds the run. A run that sent no archive — the scan failed
+        # or timed out — is kept for debugging, whatever the API answered.
+        if retention is not None and archive is not None:
+            retention.mark_delivered(run_id)
     LOG.info(
         "Job %s finished exit=%s%s", job["job_id"], exit_code, " (cancelled)" if cancelled else ""
     )
@@ -1464,6 +1483,18 @@ def run_loop(args: argparse.Namespace) -> int:
     # process); never with a legacy shared token, which is not exchanged.
     token_refresh_at = 0.0 if args.provisioning_key else float("inf")
 
+    retention = run_retention.RunRetention(
+        Path(args.output_dir),
+        config=Path(args.config),
+        retention_hours=getattr(
+            args, "run_retention_hours", run_retention.DEFAULT_RETENTION_HOURS
+        ),
+        max_bytes=getattr(args, "run_max_bytes", run_retention.DEFAULT_MAX_BYTES),
+    )
+    # Due at once: a sensor restarted onto a full disk sweeps before it waits
+    # on the API, which may be exactly what is unreachable.
+    retention_sweep_at = 0.0
+
     shutdown_event = threading.Event()
     last_upgrade_message = ""
     last_lifecycle_message = ""
@@ -1531,6 +1562,9 @@ def run_loop(args: argparse.Namespace) -> int:
     try:
         while not shutdown_event.is_set():
             try:
+                if time.time() >= retention_sweep_at:
+                    retention_sweep_at = time.time() + run_retention.SWEEP_INTERVAL_SECONDS
+                    retention.sweep()
                 if args.provisioning_key and time.time() >= token_refresh_at:
                     _exchange()
                 if not registered:
@@ -1621,6 +1655,7 @@ def run_loop(args: argparse.Namespace) -> int:
                     config=Path(args.config),
                     output_dir=Path(args.output_dir),
                     scan_timeout=getattr(args, "scan_timeout", 7200.0),
+                    retention=retention,
                 )
             except KeyboardInterrupt:
                 LOG.info("Shutting down")
@@ -1741,6 +1776,32 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Shape the results upload to this many KiB/s (or "
             "OCTO_AGENT_UPLOAD_RATE_LIMIT_KBPS); 0 = no limit"
+        ),
+    )
+    parser.add_argument(
+        "--run-retention-hours",
+        type=float,
+        default=float(
+            os.environ.get(
+                "OCTO_AGENT_RUN_RETENTION_HOURS", str(run_retention.DEFAULT_RETENTION_HOURS)
+            )
+        ),
+        help=(
+            "Keep a run the API did not acknowledge (failed scan, failed or refused "
+            "upload) this many hours before removing it (or "
+            "OCTO_AGENT_RUN_RETENTION_HOURS); 0 = no age limit. An acknowledged run "
+            "is removed as soon as the next scan no longer diffs against it"
+        ),
+    )
+    parser.add_argument(
+        "--run-max-bytes",
+        type=int,
+        default=int(
+            os.environ.get("OCTO_AGENT_RUN_MAX_BYTES", str(run_retention.DEFAULT_MAX_BYTES))
+        ),
+        help=(
+            "Remove the oldest removable runs while <output-dir>/runs is larger than "
+            "this (or OCTO_AGENT_RUN_MAX_BYTES); 0 = no size limit"
         ),
     )
     parser.add_argument("--timeout", type=float, default=60.0)

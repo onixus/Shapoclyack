@@ -315,6 +315,8 @@ def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: 
         "-retries", "1",
         "-silent",
         "-no-color",
+        # No public interactsh servers (test_nuclei_oast.py).
+        "-no-interactsh",
     ]  # fmt: skip
     assert seen["resolvers"] == ["10.96.0.10:53"]
 

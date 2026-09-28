@@ -25,13 +25,20 @@ is flagged "truncated". Never raises: a missing ``templates_dir``, missing
 ``nuclei`` binary, or a failed/timed-out invocation all degrade to a clean
 ``skipped_reason`` rather than failing the scan (same fail-soft convention
 as ``fingerprint.py``/``tls_posture.py``).
+
+OAST: off unless ``nuclei.interactsh_server`` names a server the operator
+runs. Off means ``-no-interactsh``, and nuclei then skips every template that
+needs an interactsh URL. See ``NucleiConfig`` and
+``docs/network-requirements.md`` for why the default is not nuclei's own.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -42,6 +49,18 @@ from .protocol import is_ipv6, parse_endpoint
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.nuclei")
+
+#: Token for a self-hosted interactsh server started with ``-auth``/``-token``.
+#: Read from the environment rather than the scan config, and handed to nuclei
+#: in a private ``-config`` file rather than as ``-interactsh-token``:
+#: ``run_command`` writes argv into ``scan.log``, which is uploaded with the
+#: run, and argv is readable in ``/proc`` by anything else in the container.
+INTERACTSH_TOKEN_ENV = "OCTO_INTERACTSH_TOKEN"
+
+#: What nuclei v3.11.1 logs at INFO once its interactsh client has registered.
+#: Registration is lazy (the first template that asks for a URL), and a failed
+#: one is logged nowhere below -v, so this line is the only evidence either way.
+_INTERACTSH_REGISTERED = "Using Interactsh Server:"
 
 _SEVERITY_CVSS_FLOOR = {
     "critical": 9.5,
@@ -152,6 +171,38 @@ def _persist(output_dir: Path, result: dict[str, Any]) -> None:
     write_lines(output_dir / "nuclei_findings.txt", lines)
 
 
+def _interactsh_args(server: str) -> tuple[list[str], Path | None]:
+    """The OAST flags for nuclei, and a private directory the caller removes.
+
+    No server: ``-no-interactsh``. A server: ``-interactsh-server``, plus
+    ``-config`` pointing at a 0600 file holding the token when
+    :data:`INTERACTSH_TOKEN_ENV` is set. The file lives in a fresh temp
+    directory, never under the run's output directory, which is uploaded.
+    If the file cannot be written OAST is turned off for the run rather than
+    registering without the token the server expects.
+    """
+    if not server:
+        return ["-no-interactsh"], None
+    args = ["-interactsh-server", server]
+    token = os.environ.get(INTERACTSH_TOKEN_ENV, "").strip()
+    if not token:
+        return args, None
+    private_dir: Path | None = None
+    try:
+        private_dir = Path(tempfile.mkdtemp(prefix="shapoclyack-nuclei-"))
+        config_file = private_dir / "interactsh.yaml"
+        fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            # A JSON string is a valid YAML scalar, quoted and escaped.
+            handle.write(f"interactsh-token: {json.dumps(token)}\n")
+    except OSError as exc:
+        LOG.warning("nuclei: cannot write the interactsh token file (%s); OAST is off for this run", exc)
+        if private_dir is not None:
+            shutil.rmtree(private_dir, ignore_errors=True)
+        return ["-no-interactsh"], None
+    return [*args, "-config", str(config_file)], private_dir
+
+
 def run_nuclei_scan(
     open_ports: list[str],
     config: NucleiConfig,
@@ -171,6 +222,12 @@ def run_nuclei_scan(
         "cve_findings": [],
         "truncated": False,
         "skipped_reason": None,
+        # Which interactsh server the OAST templates were given, or "disabled"
+        # when they were not run at all, so a report without blind-SSRF/RCE
+        # findings says whether those checks happened. With a server,
+        # "interactsh_registered" says whether nuclei actually got to use it.
+        "interactsh": config.interactsh_server or "disabled",
+        "interactsh_registered": None,
     }
     if not config.enabled:
         result["skipped_reason"] = "nuclei.disabled"
@@ -240,14 +297,41 @@ def run_nuclei_scan(
         "-silent",
         "-no-color",
     ])  # fmt: skip
+    # interactsh ignores -resolvers above: its client resolves the server name
+    # through nuclei's built-in public resolvers as well (dns_resolvers.py).
+    interactsh_args, private_dir = _interactsh_args(config.interactsh_server)
+    command.extend(interactsh_args)
+    oast = "-no-interactsh" not in interactsh_args
+    if oast:
+        # A registration that fails prints nothing under -silent, or at any
+        # level short of -v, which logs every request. The only signal is the
+        # INFO line on success, and -silent hides that too.
+        command.remove("-silent")
+    else:
+        result["interactsh"] = "disabled"
 
     try:
-        run_command(command, timeout=config.overall_timeout_seconds, retries=0, check=False)
+        completed = run_command(command, timeout=config.overall_timeout_seconds, retries=0, check=False)
     except Exception as exc:  # noqa: BLE001
         LOG.warning("nuclei scan failed for %d endpoint(s): %s", len(candidates), exc)
         result["skipped_reason"] = "nuclei_run_failed"
         _persist(output_dir, result)
         return result
+    finally:
+        if private_dir is not None:
+            shutil.rmtree(private_dir, ignore_errors=True)
+
+    if oast:
+        stderr = getattr(completed, "stderr", None)
+        registered = isinstance(stderr, str) and _INTERACTSH_REGISTERED in stderr
+        result["interactsh_registered"] = registered
+        if not registered:
+            LOG.warning(
+                "nuclei never registered with interactsh server %s, so no OAST template ran: "
+                "either none reached a live target, or the server could not be resolved or "
+                "reached (see docs/network-requirements.md)",
+                config.interactsh_server,
+            )
 
     findings: list[dict[str, Any]] = []
     cve_findings: list[dict[str, Any]] = []
