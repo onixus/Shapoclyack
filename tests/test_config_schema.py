@@ -417,3 +417,72 @@ def test_default_yaml_l2_is_safe_and_disabled():
     assert cfg.discovery.l2.enabled is False
     assert cfg.discovery.l2.networks == []
     assert cfg.discovery.l2.max_hosts == 4096
+
+
+# --- dns.resolvers: what dnsx is told to ask with -r -----------------------
+
+
+def test_dns_resolvers_default_to_the_system_ones():
+    assert load_config(_minimal_config()).dns.resolvers == []
+
+
+@pytest.mark.parametrize("path", ["scanner/config/default.yaml", "k8s/shapoclyack/base/config/k8s.yaml"])
+def test_shipped_configs_leave_dns_resolvers_to_the_system(path):
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    # Present, so an operator finds the key; empty, so dnsx asks resolv.conf.
+    assert raw["dns"] == {"resolvers": []}
+    assert AppConfig.model_validate(raw).dns.resolvers == []
+
+
+def test_dns_resolvers_are_normalised_to_what_dnsx_takes():
+    cfg = load_config(
+        _minimal_config(
+            dns={
+                "resolvers": [
+                    "10.0.0.53",
+                    " 10.0.0.54:5353 ",
+                    "fd00::53",
+                    "[fd00::54]",
+                    "[FD00::55]:5353",
+                    "10.0.0.53:53",
+                ]
+            }
+        )
+    )
+    # Port 53 made explicit, IPv6 bracketed (a bare one would reach dnsx with
+    # no port and too many colons), duplicates dropped, order kept.
+    assert cfg.dns.resolvers == [
+        "10.0.0.53:53",
+        "10.0.0.54:5353",
+        "[fd00::53]:53",
+        "[fd00::54]:53",
+        "[fd00::55]:5353",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "dns.corp.example",
+        "10.0.0.53:0",
+        "10.0.0.53:65536",
+        "10.0.0.53:",
+        "10.0.0.53:dns",
+        "udp:10.0.0.53:53",
+        "10.0.0.53,10.0.0.54",
+        "[fd00::53",
+        "[fd00::53]53",
+        "[fd00::53]:",
+        "",
+    ],
+)
+def test_dns_resolvers_reject_anything_but_an_address(bad):
+    with pytest.raises(ValidationError, match="dns.resolvers"):
+        load_config(_minimal_config(dns={"resolvers": [bad]}))
+
+
+def test_dns_resolver_list_is_capped():
+    with pytest.raises(ValidationError):
+        load_config(_minimal_config(dns={"resolvers": [f"10.0.0.{i}" for i in range(17)]}))
