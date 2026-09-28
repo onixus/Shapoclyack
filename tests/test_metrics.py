@@ -157,6 +157,12 @@ def test_console_assets_are_labelled_by_their_mount(tmp_path, monkeypatch):
     (web / "index.html").write_text("<html></html>", encoding="utf-8")
     (web / "_next" / "static" / "chunks" / "app.js").write_text("console.log(1)", encoding="utf-8")
     client = configured_client(tmp_path, monkeypatch, web_dist=web)
+    # The counter is process-wide, and an earlier test in the same run can put
+    # a 200 there legitimately — FastAPI's /docs and /openapi.json are plain
+    # Starlette routes, which set no scope["route"] either (the route-guard
+    # walk of #311 requests them). Only what this test's requests add counts.
+    unmatched = {"method": "GET", "path": "<unmatched>", "status": "200"}
+    before = metrics.REGISTRY.get_sample_value("octo_http_requests_total", unmatched) or 0.0
     assert client.get("/_next/static/chunks/app.js").status_code == 200
     assert client.get(f"/_next/static/{uuid.uuid4().hex}.js").status_code == 404
     body = client.get("/metrics").text
@@ -167,7 +173,8 @@ def test_console_assets_are_labelled_by_their_mount(tmp_path, monkeypatch):
     ]
     assert any('path="/_next/*",status="200"' in line for line in served), served
     assert any('path="/_next/*",status="404"' in line for line in served), served
-    assert not any('path="<unmatched>"' in line and 'status="200"' in line for line in served), served
+    after = metrics.REGISTRY.get_sample_value("octo_http_requests_total", unmatched) or 0.0
+    assert after == before, served
     assert "app.js" not in body
 
 

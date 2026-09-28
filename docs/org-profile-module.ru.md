@@ -141,7 +141,7 @@ M2/M3, когда появится агрегатор, читающий чужи
 | Параметр | Дефолт | Смысл |
 | --- | --- | --- |
 | `enabled` | `false` | стадия opt-in, как все стадии модуля |
-| `domains` | `[]` | пусто = базовые домены из входных FQDN (`base_domains_from_fqdns`) |
+| `domains` | `[]` | пусто = регистрируемые домены входных FQDN по Public Suffix List (`base_domains_from_fqdns`) |
 | `max_domains` | `50` | кап на число доменов, которым уйдёт RDAP-запрос |
 | `timeout_seconds` | `15` | таймаут одного запроса (весь бюджет hop'а, включая редиректы) |
 | `deadline_seconds` | `300` | общий дедлайн стадии — проверяется и между доменами, и перед каждой попыткой запроса, и таймаут одного запроса им подрезается |
@@ -187,9 +187,14 @@ false-negative: у домена частного лица `fn` — это имя
 `docs/api-and-rbac.md`. В `pdf_report.py`, в ClickHouse и в webhook-payload
 стадия ничего не проводит.
 
-**Исходящий HTTPS.** `safe_http.py` — второй экземпляр границы из
-`api/services/integrations/delivery.py` (`scanner/` не импортирует `api/`):
-только https, запрет userinfo, отказ, если хоть один A/AAAA не `is_global`,
+**Исходящий HTTPS.** `safe_http.py` — второй экземпляр границы вебхуков из
+`api/services/outbound_targets.py` и `api/services/integrations/delivery.py`
+(`scanner/` не импортирует `api/`): только https, запрет userinfo, отказ, если
+хоть один A/AAAA не проходит `safe_http.is_public_address`. Это `is_global`
+плюс то, чего `is_global` не видит: адрес под NAT64-префиксом `64:ff9b::/96`
+судится по IPv4 в младших 32 битах (как и IPv4-mapped), а `64:ff9b:1::/48`,
+`::ffff:0:0:0/96`, `2002::/16` и `::/96` отклоняются целиком — обоснование в
+докстринге функции. Копия правила в API эти формы пока не разбирает.
 TCP на провалидированный IP при SNI и проверке сертификата по DNS-имени,
 кап тела 256 KiB, один wall-clock дедлайн на всю цепочку, до 3 редиректов с
 повторной валидацией каждого `Location`. Проверка сертификата и пиннинг не
@@ -349,7 +354,7 @@ RDAP-сервер реестра не подхватился бы никогда
 | Параметр | Дефолт | Смысл |
 | --- | --- | --- |
 | `dns_hygiene.enabled` | `false` | стадия opt-in |
-| `dns_hygiene.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `dns_hygiene.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope (регистрируемые домены по PSL) |
 | `dns_hygiene.max_domains` | `50` | кап на число доменов стадии |
 | `dns_hygiene.timeout_seconds` | `15` | таймаут одного вызова dnsx |
 | `dns_hygiene.retries` | `1` | ретраи вызова dnsx |
@@ -357,7 +362,7 @@ RDAP-сервер реестра не подхватился бы никогда
 | `dns_hygiene.axfr_probe` | `false` | **активная** проверка, см. ниже |
 | `dns_hygiene.axfr_timeout_seconds` | `10` | таймаут одной попытки трансфера |
 | `mail_posture.enabled` | `false` | стадия opt-in |
-| `mail_posture.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope |
+| `mail_posture.domains` | `[]` | пусто = `base_domains_from_fqdns` от scope (регистрируемые домены по PSL) |
 | `mail_posture.max_domains` | `50` | кап на число доменов стадии |
 | `mail_posture.timeout_seconds` | `15` | таймаут одного вызова dnsx |
 | `mail_posture.retries` | `1` | ретраи вызова dnsx |
@@ -410,7 +415,13 @@ RDAP-сервер реестра не подхватился бы никогда
    что это перенесло бы решение об активной проверке на роль `operator`,
    которая запускает скан, а не отвечает за авторизацию цели;
 2. **runtime по scope:** пробуются только домены сид/scope самого run'а
-   (`base_domains_from_fqdns`), никогда — кандидаты атрибуции из M4;
+   (`base_domains_from_fqdns`), никогда — кандидаты атрибуции из M4. Сид
+   обрезается до регистрируемого домена по вшитому снапшоту Public Suffix
+   List (`scanner/pipeline/public_suffix.py`): `www.bbc.co.uk` → `bbc.co.uk`,
+   а не `co.uk`. Публичный суффикс (`co.uk`, `com.ru`, `github.io`) не
+   пробуется никогда — даже явно указанный в `dns_hygiene.domains`: его NS
+   принадлежат регистратуре или хостинг-платформе. Отказ — до обращения к
+   любому NS, в артефакте `axfr.status: refused`, `reason: public_suffix`;
 3. **по адресу NS:** каждый адрес NS обязан пройти
    `safe_http.is_public_address`. NS-запись пишет сканируемая сторона, поэтому
    `ns1.target.example → 10.0.0.5` превращает пробу в TCP/53-коннект по

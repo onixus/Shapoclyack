@@ -25,7 +25,7 @@ from typing import Any
 from sqlalchemy import case, extract, func, or_, select, update
 
 from api import __version__
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentFleetSummary, AgentInfo
 from api.services import audit as audit_service
@@ -697,6 +697,19 @@ def register_agent(
 ) -> AgentInfo:
     settings = _require_settings()
     now = _now()
+    if agent_id:
+        # The one question here that has to see past the caller's tenant
+        # (#311): an agent_id is the caller's choice and the key of the whole
+        # table, so whether *another* tenant holds it can only be asked across
+        # tenants. In the caller's own scope that row is invisible, and the
+        # refusal below would turn into an INSERT dying on the primary key.
+        with tenant_scope.system("agent registration: is this id another tenant's"):
+            with get_session(settings.postgres_url) as session:
+                owner = session.execute(
+                    select(models.Agent.tenant_id).where(models.Agent.agent_id == agent_id)
+                ).scalar_one_or_none()
+        if owner and owner != tenant_id:
+            raise PermissionError("agent_id belongs to a different tenant")
     with get_session(settings.postgres_url) as session:
         row = session.get(models.Agent, agent_id) if agent_id else None
         if row is not None:

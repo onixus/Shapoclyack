@@ -202,6 +202,15 @@ infer it from the fact that a scan was started.
 - **Only this run's own seed domains** are probed. Attribution candidates from
   the related-domains stage are never probed: a wrongly attributed domain would
   mean an active request against a third party's infrastructure.
+- **A public suffix is never probed**, not even when it is listed in
+  `org_profile.dns_hygiene.domains`. The nameservers of `co.uk`, `com.ru` or
+  `github.io` belong to a registry, a registrar or a hosting platform, not to
+  anyone under them. The seed derived from scope already stops at the
+  registrable domain (see below); this refusal is what holds if a suffix gets
+  in anyway. It happens before any nameserver is contacted and is recorded as
+  `axfr.status: refused`, `reason: public_suffix` (or `not_a_domain_name` for
+  an IP literal or similar), with a `refusing AXFR for <domain>` warning in the
+  log.
 - **A nameserver on a non-public address is refused**, not dialled. NS records
   are written by the scanned party, so `ns1.target.example -> 10.0.0.5` would
   turn the probe into a TCP/53 connection inside the sensor's own network. The
@@ -231,8 +240,28 @@ infer it from the fact that a scan was started.
   it yourself with `dig axfr` — the scanner will not keep a copy for you.
 
 Before switching `axfr_probe` on, confirm the engagement covers active testing
-of the domains in `org_profile.dns_hygiene.domains` (or of every base domain the
-run derives from its scope, when that list is empty).
+of the domains in `org_profile.dns_hygiene.domains` (or of every registrable
+domain the run derives from its scope, when that list is empty).
+
+**How the seed is derived.** When a stage's `domains` list is empty, its seed
+is the registrable domain of each in-scope name, taken from the Public Suffix
+List: `www.bbc.co.uk` gives `bbc.co.uk`, `shop.example.com.ru` gives
+`example.com.ru`, `x.github.io` gives `x.github.io` itself. The list is a
+snapshot committed at `scanner/pipeline/public_suffix_list.dat` and read from
+disk only — a sensor in a restricted network never fetches it — and
+`dns_hygiene.json` names the snapshot in `public_suffix_list`. Both sections
+of the list are used; the private one is what keeps hosting platforms
+(`github.io`, `herokuapp.com`) from becoming seeds. Two consequences worth
+knowing:
+
+- a stale snapshot does not know a suffix added upstream since, and derives
+  the last two labels for it — the pre-list behaviour. Refresh with
+  `scripts/fetch-public-suffix-list.sh`, review the diff and ship it like any
+  other change; the script refuses a truncated download;
+- an organisation whose own domain is listed in the private section (a
+  platform scanning its own `*.platform.example`) gets per-customer seeds, not
+  the platform domain. Name the platform domain in `domains` explicitly — and
+  note that AXFR will still refuse it, because it is a public suffix.
 
 ## Approved scan scope per tenant
 
@@ -1667,12 +1696,31 @@ Without it, the native path installs Python and a virtualenv under
 `requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
 with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
 not in the lock is refused, and only wheels are taken, which exist for x86_64 and
-aarch64 with glibc or musl — creates a `shapoclyack` system account, writes
-`/etc/shapoclyack/agent.env` (`0600`, owned by that account), and — where
-systemd is present — installs and enables `shapoclyack-agent.service`
-(`Restart=always`, `EnvironmentFile=/etc/shapoclyack/agent.env`). Without
-systemd the sensor is started with `nohup` and is **not** restarted on boot; on
-such a host, supervise it yourself.
+aarch64 with glibc or musl — creates a `shapoclyack` system account in a
+`shapoclyack` group, writes `/etc/shapoclyack/agent.env` (`0600`, owned by that
+account), and — where systemd is present — installs and enables
+`shapoclyack-agent.service` (`Restart=always`,
+`EnvironmentFile=/etc/shapoclyack/agent.env`). Without systemd (Alpine with
+OpenRC, containers) the sensor is started in the background with `nohup` as
+that account (`runuser`, or BusyBox `su`; `sudo` is not needed). It logs to
+`/opt/shapoclyack-agent/agent.log` and is **not** restarted on boot or after a
+crash, so supervise it yourself on such a host. The installer fails if that
+process has exited three seconds after start. A re-run stops the process the
+previous run started before it starts the new one.
+
+**The sensor needs Python 3.11 or newer.** The installer uses `python3` when it
+is new enough. If it is older, the installer installs `python3.12` or
+`python3.11` from the distribution: AppStream on RHEL/Rocky/Alma 9, whose
+`python3` is 3.9, and universe on Ubuntu 22.04, whose `python3` is 3.10. Where
+no such package exists (Ubuntu 20.04, Debian 11), it stops before creating the
+account and names the version it found. Install a 3.11+ interpreter with its
+`venv` module yourself, or use `--docker`. A virtualenv left by an earlier run
+on an older interpreter is rebuilt.
+
+**If the `shapoclyack` account already exists**, its primary group must be
+`shapoclyack`, or the installer stops and says so. Installers before this fix
+created it in `nogroup` on Alpine and then failed at `chown`. Remove that
+account (`deluser shapoclyack`) and re-run.
 
 **The native path does not ship the sensor source.** The API serves no sensor
 bundle, so the package has to come from somewhere explicit: pass
@@ -3150,6 +3198,19 @@ pod reaches all three. The datastores' kubelet probes kept passing, as the
 manifest's note on host traffic predicted. Needs docker, kind and the
 locally built aio image (`scripts/dev-up.sh` builds it); `KEEP=1` leaves the
 cluster up for inspection.
+
+### Tenant row-level security (#311)
+
+Migration `0067_tenant_rls` creates the NOLOGIN role `shapoclyack_tenant` and a
+row-level-security policy on every tenant table; the API switches to that role
+for each transaction of a tenant-scoped request (`OCTO_TENANT_RLS=enforce`, the
+default). On the stock manifests (`octo`, a superuser) and on managed services
+whose master user has `CREATEROLE` there is nothing to do. A migration role
+without `CREATEROLE`, an API role separate from the migration role, the
+`audit_events` ownership split above, backup roles, the startup check that
+refuses a database which cannot enforce it, and how to read a denied row are in
+[tenant-isolation.md](tenant-isolation.md#operations). `OCTO_TENANT_RLS=off` and
+a restart is the kill switch; it needs no migration rollback.
 
 ## Data-plane credentials
 

@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
 
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.services import agents as agents_service
 from api.services import endpoint_inventory
@@ -95,15 +95,18 @@ def scrape_session(settings: Settings) -> Iterator[Any]:
     with the scrape: a session-level setting would stay on the pooled
     connection and cancel the next request that drew it at 2 s.
 
-    When row-level security lands (#311), whichever of #311 and #334 merges
-    second wraps this body in #311's system scope — these are cluster-wide
-    aggregates by design, and an undeclared tenant scope makes every statement
-    here raise. The scrape tests fail until it does.
+    In the system scope of row-level security (#311): these are cluster-wide
+    aggregates by design, and an undeclared tenant scope would make every
+    statement here raise. ``/metrics`` declares the cross-tenant scope for its
+    request as well; this covers a collector run from anywhere else.
     """
-    with get_session(settings.postgres_url) as session:
-        if session.get_bind().dialect.name == "postgresql":
-            session.execute(select(func.set_config("statement_timeout", str(STATEMENT_TIMEOUT_MS), True)))
-        yield session
+    with tenant_scope.system("metrics scrape: cluster-wide aggregates"):
+        with get_session(settings.postgres_url) as session:
+            if session.get_bind().dialect.name == "postgresql":
+                session.execute(
+                    select(func.set_config("statement_timeout", str(STATEMENT_TIMEOUT_MS), True))
+                )
+            yield session
 
 
 @dataclass(frozen=True)
