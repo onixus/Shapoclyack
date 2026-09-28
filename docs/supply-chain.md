@@ -349,8 +349,9 @@ on its branch.
 
 - **First real release.** Signing, attestation and tagging were exercised end
   to end against a local registry with the real cosign 2.6.5; nothing has yet
-  been signed against ghcr.io, Fulcio or the public Rekor log. The first
-  release after this change also needs the one-time key setup above.
+  been signed against ghcr.io or Fulcio. The local Jenkins release identity
+  is provisioned, and its signing check records and verifies real public
+  Rekor entries. A full production release remains a separate validation.
 - **pip's vendored copies.** The pip in the images vendors msgpack and
   setuptools versions with advisories; see `requirements-pip.txt`.
 - **Debian packages** come from Debian's signed repositories at whatever
