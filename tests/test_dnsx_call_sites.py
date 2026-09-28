@@ -68,6 +68,7 @@ class FakeDnsx:
         flags = []
         for argv in self.argvs:
             assert argv.count("-r") == 1, argv
+            assert argv.count("-disable-update-check") == 1, argv
             flags.append(argv[argv.index("-r") + 1])
         return flags
 

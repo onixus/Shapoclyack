@@ -738,7 +738,8 @@ def test_every_projectdiscovery_invocation_disables_the_update_check() -> None:
     nuclei), and none with -disable-update-check. On an air-gapped network that
     is a timeout per call; on any network it is a beacon."""
     invocations = _pd_argv_literals()
-    assert len(invocations) >= 9, invocations  # the test must not pass vacuously
+    # dnsx call sites share one builder; require all three tool families.
+    assert {flags[0] for _, _, flags in invocations} == _PD_TOOLS, invocations
     for where, line, flags in invocations:
         assert "-disable-update-check" in flags or "-duc" in flags, f"{where}:{line} {flags[0]} phones home"
         assert not _UPDATE_FLAGS & set(flags), f"{where}:{line} asks {flags[0]} to update itself"
