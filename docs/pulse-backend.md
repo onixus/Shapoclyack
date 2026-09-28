@@ -134,8 +134,10 @@ Release** (not a vendored Rust tree). Canonical pipeline:
 ```dockerfile
 # stage pulse-bin downloads:
 #   pulse-v1.1.0-linux-amd64.tar.gz from onixus/GenDec releases
-# copied as a directory, so INSTALL_PULSE=0 (empty /out) copies nothing:
-COPY --from=pulse-bin /out/ /usr/local/bin/
+# /out/bin/pulse + /out/share/shapoclyack/pulse-install.txt, one COPY per
+# directory; with INSTALL_PULSE=0 both are empty and nothing is copied:
+COPY --from=pulse-bin /out/bin/ /usr/local/bin/
+COPY --from=pulse-bin /out/share/ /usr/local/share/
 # + setcap cap_net_raw,cap_net_admin+eip when the binary is there
 ```
 
@@ -147,6 +149,7 @@ COPY --from=pulse-bin /out/ /usr/local/bin/
 | `INSTALL_NMAP` | `1` | set `0` for lean image without nmap |
 | `INSTALL_PULSE` | `1` | set `0` to build without Pulse — and without a token for the private GenDec repo |
 | `PULSE_PINS` (script only) | `scripts/pulse-pinned.sha256` | file of reviewed per-platform digests |
+| `PULSE_RECORD` (script only) | empty — no record | where to write the install record; the images set `/usr/local/share/shapoclyack/pulse-install.txt` (#340) |
 | `PULSE_SKIP_CHECKSUM` | `0` | `1` accepts a tarball unchecked — **only for a version with no pin**; ignored for a pinned one |
 
 The pin is the **engine** (banner / OS / `--cve` / TLS JSON). Shapoclyack does
@@ -205,8 +208,19 @@ release being installed, and the images carry no cosign.
 This proves the release was produced by GenDec's release workflow. It does not
 prove the code that went into it was reviewed — it closes "the assets were
 swapped", not "a bad commit was merged". Whether GenDec's releases become
-public (the SPDX SBOM is already built per release) or its sources get vendored
-here is still open in #340.
+public or its sources get built here is the proposed
+[ADR 0001](adr/0001-pulse-distribution-model.md), awaiting the owner's decision.
+
+**Checking the binary in a published image.** The image keeps the binary, not
+the tarball the pin is for, so the build also writes an install record —
+tarball, the check it passed, and the binary's digest — to
+`/usr/local/share/shapoclyack/pulse-install.txt`, and
+`scripts/verify-pulse-image.py` checks an image against the pin file of its
+release tag, or independently against the pinned tarball. The record is
+unsigned and lives in the image it describes, so against deliberate tampering
+it is only as good as the image digest that was checked. What each check
+proves, the commands, and the Pulse support and update policy are in the
+[release contract](release-contract.md).
 
 Neither the script nor the image stage uses `set -x`: the token would land in
 the build log.

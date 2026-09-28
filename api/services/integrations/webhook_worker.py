@@ -142,6 +142,7 @@ class WebhookFanoutWorker:
             metrics.NATS_CONSUMER_PENDING.labels(consumer=self._consumer).set(
                 info.num_pending
             )
+            metrics.NATS_CONSUMER_PENDING_TIMESTAMP.labels(consumer=self._consumer).set_to_current_time()
         except Exception:  # noqa: BLE001
             pass
 

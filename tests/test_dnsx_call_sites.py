@@ -10,8 +10,8 @@ The stage tests elsewhere replace the dnsx wrappers wholesale, so none of them
 sees an argv. These drive each stage through its real wrappers with only
 ``run_command`` replaced, and then the pipeline itself, so a new call site
 that builds its own argv -- or a stage that stops passing the setting along --
-fails here. The AXFR probe is the one dnsx run without ``-r``: it names the
-zone's nameserver with ``-resolver`` and is covered in ``test_dns_hygiene.py``.
+fails here. The AXFR probe uses a direct gated TCP connection, not dnsx, and is covered
+in ``test_dns_hygiene.py``.
 """
 
 from __future__ import annotations

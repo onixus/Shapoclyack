@@ -1,0 +1,71 @@
+# A short-lived pod to copy an offline enrichment bundle into the inbox volume
+# (base/enrichment-bundle, #339). Not part of any overlay: apply it, copy, delete
+# it — the inbox is ReadWriteOnce, and the loader cannot mount it on another
+# node while this holds it.
+#
+#   kubectl apply -f k8s/shapoclyack/examples/enrichment-bundle-inbox.example.yaml
+#   kubectl -n network-scan wait --for=condition=Ready pod/enrichment-bundle-inbox
+#   kubectl -n network-scan cp enrichment-bundle.tar.gz \
+#     enrichment-bundle-inbox:/inbox/enrichment-bundle.tar.gz.part
+#   kubectl -n network-scan exec enrichment-bundle-inbox -- \
+#     mv /inbox/enrichment-bundle.tar.gz.part /inbox/enrichment-bundle.tar.gz
+#   kubectl -n network-scan delete pod enrichment-bundle-inbox
+#   kubectl -n network-scan create job --from=cronjob/enrichment-bundle-load load-now
+#
+# The copy lands under a temporary name and is renamed into place, so a
+# scheduled loader run never reads half a bundle (it would refuse it anyway —
+# a truncated archive fails verification — but the log is clearer this way).
+#
+# Same image as everything else (kubectl cp needs `tar` in the container, which
+# it has), same hardened baseline, no ServiceAccount token.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: enrichment-bundle-inbox
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: enrichment-bundle
+spec:
+  serviceAccountName: enrichment-bundle
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  # Gone on its own after an hour if nobody deletes it.
+  activeDeadlineSeconds: 3600
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: inbox
+      image: ghcr.io/onixus/shapoclyack-aio:shapoclyack-0.46-0922@sha256:40a7312b39b46d2fce7e529a2ce7003834b32f880f8579ffff5850c5e2b0b161
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: inbox
+          mountPath: /inbox
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: inbox
+      persistentVolumeClaim:
+        claimName: enrichment-bundle-inbox
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi

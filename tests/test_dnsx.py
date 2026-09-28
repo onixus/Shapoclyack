@@ -129,6 +129,7 @@ def test_command_pins_the_whole_argv(tmp_path: Path):
         "-aaaa",
         "-json",
         "-silent",
+        "-disable-update-check",
         "-o",
         str(tmp_path / "o.jsonl"),
     ]

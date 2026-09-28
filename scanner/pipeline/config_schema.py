@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+
 #: One DNS label. Guards config values that are interpolated into a query name
 #: and handed to an external tool (currently mail_posture.dkim_selectors).
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9-]{1,63}$")
@@ -79,7 +80,7 @@ class RuntimeConfig(BaseModel):
 
 
 class DnsConfig(BaseModel):
-    """The resolvers every dnsx run asks: resolve, discover-hostnames,
+    """The resolvers passed to nuclei and every dnsx run: resolve, discover-hostnames,
     domain_monitor, dns_hygiene and mail_posture (the AXFR probe dials the
     zone's own nameserver and is the one exception).
 

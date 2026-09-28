@@ -5,13 +5,59 @@ A single process-wide ``CollectorRegistry`` shared by the HTTP middleware
 ClickHouse ingest worker (``api/services/ch_ingest_worker.py``). Scraped via
 ``GET /metrics`` (unauthenticated, matching standard Prometheus practice —
 restrict at the network/gateway layer, not app auth).
+
+Most series here are pushed by the code path they describe. The ones at the
+bottom are read when Prometheus asks (#334): the process view, the SQLAlchemy
+pool, and — through ``api.services.metrics_sources`` — the sensor/agent fleet,
+the job queue, the endpoint devices and the opt-in per-tenant series. The catalogue,
+with the bound on every label, is docs/observability.md;
+tests/test_observability_assets.py fails when a series here has no entry there,
+or when a dashboard or alert names one that is not here.
 """
 
 from __future__ import annotations
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+import logging
+import threading
+import time
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
+
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    GCCollector,
+    Gauge,
+    Histogram,
+    PlatformCollector,
+    ProcessCollector,
+    generate_latest,
+)
+from prometheus_client.core import (
+    CounterMetricFamily,
+    GaugeHistogramMetricFamily,
+    GaugeMetricFamily,
+    Metric,
+)
+from prometheus_client.utils import floatToGoString
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from api.services.metrics_sources import ClusterSnapshot as MetricsClusterSnapshot
+    from api.services.metrics_sources import TenantSnapshot as MetricsTenantSnapshot
+
+LOG = logging.getLogger("shapoclyack.metrics")
 
 REGISTRY = CollectorRegistry()
+
+# The process view (#334). These three are what ``prometheus_client`` registers
+# on its *default* registry by itself; a private one starts empty, so until
+# they were added here /metrics had no memory, CPU, file-descriptor or GC series
+# at all. One process per pod (``python -m api`` runs a single uvicorn worker),
+# so ``instance`` is the process and nothing needs the multiprocess mode.
+ProcessCollector(registry=REGISTRY)
+PlatformCollector(registry=REGISTRY)
+GCCollector(registry=REGISTRY)
 
 HTTP_REQUESTS_TOTAL = Counter(
     "octo_http_requests_total",
@@ -36,16 +82,8 @@ JOB_DURATION_SECONDS = Histogram(
     buckets=(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800),
     registry=REGISTRY,
 )
-JOBS_QUEUED = Gauge(
-    "octo_jobs_queued",
-    "Scan jobs currently queued.",
-    registry=REGISTRY,
-)
-JOBS_RUNNING = Gauge(
-    "octo_jobs_running",
-    "Scan jobs currently running.",
-    registry=REGISTRY,
-)
+# octo_jobs_queued / octo_jobs_running are read from the jobs table at scrape
+# time: see CLUSTER_COLLECTOR at the bottom (#334).
 
 AGENT_INGEST_IN_FLIGHT = Gauge(
     "octo_agent_ingest_in_flight",
@@ -221,6 +259,17 @@ NATS_CONSUMER_PENDING = Gauge(
     ["consumer"],
     registry=REGISTRY,
 )
+NATS_CONSUMER_PENDING_TIMESTAMP = Gauge(
+    "octo_nats_consumer_pending_timestamp_seconds",
+    "Unix time at which this replica last refreshed octo_nats_consumer_pending "
+    "for the consumer. The count is read on each poll, so a worker that has "
+    "stopped polling leaves its last value standing instead of a rising one; "
+    "this is the series that ages when that happens (#334). Prometheus stamps "
+    "every sample of the count with the scrape time, so the count's own "
+    "timestamp() cannot tell.",
+    ["consumer"],
+    registry=REGISTRY,
+)
 
 NATS_STREAM_CONFIG_DRIFT = Gauge(
     "octo_nats_stream_config_drift",
@@ -300,12 +349,7 @@ ENDPOINT_SOFTWARE_CHANGES_TOTAL = Counter(
     ["event_type"],
     registry=REGISTRY,
 )
-ENDPOINT_DEVICES = Gauge(
-    "octo_endpoint_devices",
-    "Endpoint devices known to the installation, by derived staleness state.",
-    ["state"],
-    registry=REGISTRY,
-)
+# octo_endpoint_devices is read at scrape time too: CLUSTER_COLLECTOR (#334).
 ENDPOINT_RETENTION_DELETED_TOTAL = Counter(
     "octo_endpoint_retention_deleted_total",
     "Rows deleted by the endpoint-inventory retention job, by table.",
@@ -412,6 +456,542 @@ ENDPOINT_RETENTION_RUN_DURATION_SECONDS = Histogram(
     "Duration of one endpoint-inventory retention sweep in seconds.",
     registry=REGISTRY,
 )
+
+
+# --- SQLAlchemy connection pool (#334) ------------------------------------
+#
+# Per replica, unlike the fleet and backlog gauges: each API process has its
+# own pool, and sum() across replicas is the number of connections the
+# installation holds against the server's max_connections (#335). The two
+# event series are fed by ``api.db.engine.InstrumentedQueuePool``; the gauges
+# are read off the live pool at scrape time by :class:`DbPoolCollector`.
+
+DB_POOL_CHECKOUT_DURATION_SECONDS = Histogram(
+    "octo_db_pool_checkout_duration_seconds",
+    "Time a caller waited for a Postgres connection from this replica's pool: "
+    "the queue wait, plus the handshake when the pool had to open a new "
+    "connection. Checkouts that timed out are observed too, so a pool at its "
+    "limit shows here as a tail at OCTO_DB_POOL_TIMEOUT before it shows as "
+    "errors.",
+    # From a pooled hand-over (well under a millisecond) to past the 30 s default
+    # of OCTO_DB_POOL_TIMEOUT: a checkout that gives up waited a little *more*
+    # than the timeout, and a top bucket equal to it put every one of them in
+    # +Inf, where no quantile can be read.
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 60),
+    registry=REGISTRY,
+)
+DB_POOL_CHECKOUT_TIMEOUTS_TOTAL = Counter(
+    "octo_db_pool_checkout_timeouts_total",
+    "Checkouts that gave up after OCTO_DB_POOL_TIMEOUT because the pool and its "
+    "overflow were all in use. Each one is a request that failed without "
+    "reaching the database; the answer is a bigger pool or finding what holds "
+    "connections, not a longer timeout.",
+    registry=REGISTRY,
+)
+
+
+class DbPoolCollector:
+    """Gauges read off the live SQLAlchemy pool when Prometheus asks.
+
+    Read rather than kept in step with pool events: a gauge that events move
+    drifts the first time one is missed, and ``checkedout()``/``checkedin()``
+    are the numbers the pool itself decides with. No engine yet (a replica
+    that has not touched its database), or a pool that is not a queue (the
+    SQLite fallback), reports nothing rather than zeros: an empty pool and no
+    pool are different answers.
+    """
+
+    _FAMILIES = (
+        ("octo_db_pool_size", "Connections this replica's pool keeps open (OCTO_DB_POOL_SIZE)."),
+        (
+            "octo_db_pool_max_overflow",
+            "Connections the pool may open beyond its size under load "
+            "(OCTO_DB_MAX_OVERFLOW); size + max_overflow is the most this replica "
+            "will ever hold.",
+        ),
+        (
+            "octo_db_pool_timeout_seconds",
+            "How long a checkout waits for a free connection before failing (OCTO_DB_POOL_TIMEOUT).",
+        ),
+        (
+            "octo_db_pool_checked_out",
+            "Connections in use right now. Includes the one each leader lock this "
+            "replica holds keeps for as long as it leads, so the floor is not zero.",
+        ),
+        ("octo_db_pool_checked_in", "Open connections idle in the pool."),
+        ("octo_db_pool_overflow", "Overflow connections open right now, beyond the pool's size."),
+    )
+
+    def describe(self) -> Iterator[Metric]:
+        for name, documentation in self._FAMILIES:
+            yield GaugeMetricFamily(name, documentation)
+
+    def collect(self) -> Iterator[Metric]:
+        # Imported here, not at module level: the engine module imports this
+        # one for the two event series above.
+        from api.db import engine as db_engine
+
+        status = db_engine.pool_status()
+        values = (
+            None
+            if status is None
+            else (
+                status.size,
+                status.max_overflow,
+                status.timeout,
+                status.checked_out,
+                status.checked_in,
+                status.overflow,
+            )
+        )
+        for index, (name, documentation) in enumerate(self._FAMILIES):
+            family = GaugeMetricFamily(name, documentation)
+            if values is not None:
+                family.add_metric([], values[index])
+            yield family
+
+
+DB_POOL_COLLECTOR = DbPoolCollector()
+REGISTRY.register(DB_POOL_COLLECTOR)
+
+
+# --- Cluster-wide and per-tenant series, read from the database (#334) -----
+#
+# Read from shared tables at scrape time by :class:`SnapshotCollector`, through
+# ``api.services.metrics_sources`` (the one place a scrape opens a session).
+# Every replica therefore reports the same numbers: aggregate with max(), not
+# sum(). The job queue and the endpoint devices used to be *set* here by
+# whichever replica handled the last job event or retention sweep, so replicas
+# disagreed indefinitely and max() picked the most stale of them.
+#
+# Labels come from fixed vocabularies (docs/observability.md § Label bounds).
+# The one tenant label is on the opt-in tenant series, capped at
+# OCTO_METRICS_TENANT_TOP_N ids plus ``_other``.
+
+#: How long one cluster snapshot answers scrapes for. /metrics answers anyone
+#: who can reach it unless OCTO_METRICS_TOKEN is set, so without a cache every
+#: request to it would be a query against the database; with it the cost is
+#: one short transaction per replica per TTL, however often it is asked. Well
+#: under the 60 s sensor heartbeat, so the ages it reports are late by at most
+#: this.
+CLUSTER_TTL_SECONDS = 15.0
+#: How long a snapshot may still be served while a fresh one cannot be taken
+#: (the pool has no room). Past this the series are withdrawn: absent is
+#: honest, an old number drawn as a current one is not.
+CLUSTER_MAX_STALE_SECONDS = 60.0
+#: The per-tenant series scan the findings table; a minute is fresh enough for
+#: a product dashboard and a quarter of the work.
+TENANT_TTL_SECONDS = 60.0
+TENANT_MAX_STALE_SECONDS = 180.0
+#: Connections that must be free before a scrape takes one. One is not enough:
+#: checking for one free connection and then taking it races the next request,
+#: which then waits OCTO_DB_POOL_TIMEOUT — longer than Prometheus waits for the
+#: scrape. A check, not a reservation: a burst in between can still make the
+#: scrape wait, which the statement timeout does not bound.
+POOL_HEADROOM = 2
+#: How often a snapshot that the pool keeps too busy to take is logged. The
+#: series are gone meanwhile, and the alerts on them with them; once per scrape
+#: would bury the line, never would hide it.
+STARVED_WARNING_INTERVAL_SECONDS = 600.0
+#: Why a refresh that was due produced no snapshot.
+MISS_REASONS = ("pool_busy", "error")
+
+
+class SnapshotCollector:
+    """Series rendered from one cached database snapshot per TTL.
+
+    What keeps a scrape from costing more than one snapshot per TTL:
+
+    * the TTL, measured from the last *attempt*, failed ones included — so a
+      query that keeps failing is tried once per TTL, not once per request to
+      an unauthenticated endpoint, and logged as often;
+    * a non-blocking lock, so while one scrape runs the query the others are
+      answered from the previous snapshot instead of each parking a worker
+      thread behind it;
+    * no attempt while the pool has fewer than :data:`POOL_HEADROOM`
+      connections free. A busy pool is when the dashboards are being read, and
+      a scrape that waited OCTO_DB_POOL_TIMEOUT for a connection would lose the
+      whole /metrics answer — the pool gauges with it — to Prometheus's scrape
+      timeout, and take a connection from a request to do it.
+
+    A failed attempt withdraws the series rather than freezing them. Either
+    way the gap is visible: :class:`SnapshotHealthCollector` exports how old
+    the last snapshot is and the refreshes that were missed, and a snapshot
+    the pool keeps too busy to take is logged.
+
+    ``epoch``, when given, is a second expiry besides the TTL: a snapshot taken
+    under another epoch is retaken at the next scrape. The tenant series use
+    the wall-clock hour, the period their named set is fixed for.
+    """
+
+    def __init__(
+        self,
+        *,
+        render: Callable[[Any], list[Metric]],
+        snapshot: Callable[[], Any],
+        ttl: float,
+        max_stale: float,
+        clock: Callable[[], float] = time.monotonic,
+        pool_too_busy: Callable[[], bool] | None = None,
+        epoch: Callable[[], int] | None = None,
+    ) -> None:
+        self._render = render
+        self._snapshot_fn = snapshot
+        self._ttl = ttl
+        self._max_stale = max_stale
+        self._clock = clock
+        self._pool_too_busy = pool_too_busy or _pool_too_busy
+        self._epoch = epoch
+        self._lock = threading.Lock()
+        self._snapshot: Any = None
+        self._taken_at: float | None = None
+        self._attempted_at: float | None = None
+        self._attempted_epoch: int | None = None
+        self._started_at = clock()
+        self._succeeded_at: float | None = None
+        self._starved_warned_at: float | None = None
+        self.misses = dict.fromkeys(MISS_REASONS, 0)
+
+    def render(self, snapshot: Any) -> list[Metric]:
+        """The families for ``snapshot``; without one, described but empty."""
+        return self._render(snapshot)
+
+    def expire(self) -> None:
+        """Make the next scrape try afresh, keeping the current snapshot until then."""
+        self._attempted_at = None
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._snapshot = None
+            self._taken_at = None
+            self._attempted_at = None
+            self._attempted_epoch = None
+
+    def age(self) -> float:
+        """Seconds since the last snapshot was taken, or since start if none was."""
+        since = self._succeeded_at if self._succeeded_at is not None else self._started_at
+        return max(0.0, self._clock() - since)
+
+    def describe(self) -> Iterator[Metric]:
+        # Described even when empty, so the registry reserves the names and the
+        # catalogue checks see them without a database.
+        return iter(self._render(None))
+
+    def collect(self) -> Iterator[Metric]:
+        return iter(self._render(self._current()))
+
+    def _current(self) -> Any:
+        now = self._clock()
+        if self._lock.acquire(blocking=False):
+            try:
+                self._refresh(now)
+            finally:
+                self._lock.release()
+        # Read after this scrape's refresh, or while somebody else's is still
+        # running: whatever is there is served only while it is recent enough
+        # to be true.
+        snapshot, taken_at = self._snapshot, self._taken_at
+        if taken_at is None or now - taken_at > self._max_stale:
+            return None
+        return snapshot
+
+    def _due(self, now: float) -> bool:
+        if self._attempted_at is None or now - self._attempted_at >= self._ttl:
+            return True
+        return self._epoch is not None and self._epoch() != self._attempted_epoch
+
+    def _refresh(self, now: float) -> None:
+        if not self._due(now):
+            return
+        if self._pool_too_busy():
+            # Not an attempt: the next scrape looks again.
+            self.misses["pool_busy"] += 1
+            self._warn_if_starved(now)
+            return
+        self._attempted_at = now
+        self._attempted_epoch = self._epoch() if self._epoch is not None else None
+        try:
+            snapshot = self._snapshot_fn()
+        except Exception as exc:  # noqa: BLE001 - one collector must not fail the scrape
+            self.misses["error"] += 1
+            LOG.warning(
+                "Could not read %s for /metrics (%s: %s); the series are withdrawn until "
+                "the next attempt in %.0f s",
+                self._name(),
+                type(exc).__name__,
+                _first_line(exc),
+                self._ttl,
+            )
+            LOG.debug("scrape snapshot failed", exc_info=True)
+            self._snapshot, self._taken_at = None, None
+            return
+        self._snapshot, self._taken_at = snapshot, now
+        self._succeeded_at = now
+        self._starved_warned_at = None
+
+    def _warn_if_starved(self, now: float) -> None:
+        """Log, once per interval, a snapshot the pool has kept too busy to take.
+
+        Six leader-lock workers each hold a connection for as long as they
+        lead, so a small pool may never have :data:`POOL_HEADROOM` free: the
+        series would then never appear and nothing would say why.
+        """
+        if self.age() <= self._max_stale:
+            return
+        if (
+            self._starved_warned_at is not None
+            and now - self._starved_warned_at < STARVED_WARNING_INTERVAL_SECONDS
+        ):
+            return
+        self._starved_warned_at = now
+        from api.db import engine as db_engine
+
+        LOG.warning(
+            "%s has not been read for /metrics for %.0f s: the database pool never had "
+            "%d connections free when it was due (%s). Its series are withdrawn and the "
+            "alerts on them cannot fire. Raise OCTO_DB_POOL_SIZE or OCTO_DB_MAX_OVERFLOW; "
+            "leader-lock workers hold one connection each for as long as they lead.",
+            self._name(),
+            self.age(),
+            POOL_HEADROOM,
+            db_engine.pool_status(),
+        )
+
+    def _name(self) -> str:
+        return getattr(self._snapshot_fn, "__name__", "a snapshot")
+
+
+def _first_line(exc: BaseException) -> str:
+    """The cause, not the statement: a driver error's first line, bounded."""
+    text = str(exc).strip()
+    return text.splitlines()[0][:200] if text else ""
+
+
+class SnapshotHealthCollector:
+    """How old each snapshot is and how many refreshes it missed, per replica.
+
+    Read from the collectors' own state, never from the database: this is what
+    is left to look at when the database is what is wrong. The age counts from
+    process start until the first snapshot, so a replica that never managed
+    one still has an age to alert on.
+    """
+
+    def __init__(self, collectors: dict[str, SnapshotCollector]) -> None:
+        self._collectors = collectors
+
+    def describe(self) -> Iterator[Metric]:
+        # With samples: they cost nothing to read, and the catalogue checks
+        # learn the labels from them.
+        return self.collect()
+
+    def collect(self) -> Iterator[Metric]:
+        return iter(self._families())
+
+    def _families(self) -> list[Metric]:
+        age = GaugeMetricFamily(
+            "octo_metrics_snapshot_age_seconds",
+            "Seconds since this replica last read the snapshot behind a group of "
+            "scrape-time series (cluster: fleet, queue, devices; tenant: the "
+            "per-tenant series), or since it started if it never has. Per replica.",
+            labels=["snapshot"],
+        )
+        misses = CounterMetricFamily(
+            "octo_metrics_snapshot_misses",
+            "Snapshot refreshes that were due and produced nothing: pool_busy (not "
+            "attempted, fewer than two connections free) or error (the query "
+            "failed). Per replica.",
+            labels=["snapshot", "reason"],
+        )
+        for name, collector in self._collectors.items():
+            age.add_metric([name], collector.age())
+            for reason in MISS_REASONS:
+                misses.add_metric([name, reason], collector.misses[reason])
+        return [age, misses]
+
+
+def _pool_too_busy() -> bool:
+    from api.db import engine as db_engine
+
+    status = db_engine.pool_status()
+    return status is not None and status.free < POOL_HEADROOM
+
+
+def _cluster_snapshot() -> MetricsClusterSnapshot | None:
+    from api.services import metrics_sources
+
+    return metrics_sources.cluster_snapshot()
+
+
+def _tenant_snapshot() -> MetricsTenantSnapshot | None:
+    from api.services import metrics_sources
+
+    return metrics_sources.tenant_snapshot()
+
+
+def _tenant_pool_too_busy() -> bool:
+    """Off — the default — the tenant snapshot reads nothing, so it neither
+    waits for the pool nor reports being starved by it."""
+    from api.services import metrics_sources
+
+    return metrics_sources.tenant_series_enabled() and _pool_too_busy()
+
+
+def _membership_epoch() -> int:
+    from api.services import metrics_sources
+
+    return metrics_sources.membership_epoch()
+
+
+def _cluster_families(snapshot: MetricsClusterSnapshot | None) -> list[Metric]:
+    agents = GaugeMetricFamily(
+        "octo_agents",
+        "Registered sensors (agent_kind=scanner) and endpoint agents "
+        "(agent_kind=endpoint), by state: idle/busy/error as last reported by one "
+        "heard from within OCTO_AGENT_STALE_SECONDS, stale past it, or "
+        "disabled/quarantined by an operator whatever it reports. Cluster-wide: "
+        "aggregate with max(), not sum().",
+        labels=["agent_kind", "state"],
+    )
+    ages = GaugeHistogramMetricFamily(
+        "octo_agent_heartbeat_age_seconds",
+        "Seconds since each active (neither disabled nor quarantined) sensor or "
+        "agent was last heard from, as a distribution per kind; "
+        "histogram_quantile() over max by (le, agent_kind) gives percentiles. "
+        "Cluster-wide.",
+        labels=["agent_kind"],
+    )
+    oldest = GaugeMetricFamily(
+        "octo_agent_heartbeat_age_max_seconds",
+        "The longest silence among active sensors or agents of a kind; absent for "
+        "a kind with none. Cluster-wide.",
+        labels=["agent_kind"],
+    )
+    threshold = GaugeMetricFamily(
+        "octo_agent_stale_threshold_seconds",
+        "OCTO_AGENT_STALE_SECONDS: the heartbeat age past which an agent is "
+        "reported stale. Cluster-wide.",
+    )
+    queued = GaugeMetricFamily(
+        "octo_jobs_queued",
+        "Scan jobs waiting for a sensor or a local slot, read from the jobs table "
+        "at scrape time. Cluster-wide: aggregate with max(), not sum().",
+    )
+    running = GaugeMetricFamily(
+        "octo_jobs_running",
+        "Scan jobs claimed, running or being cancelled, read from the jobs table "
+        "at scrape time. Cluster-wide: aggregate with max(), not sum().",
+    )
+    devices = GaugeMetricFamily(
+        "octo_endpoint_devices",
+        "Endpoint devices by staleness (OCTO_ENDPOINT_STALE_HOURS), read at scrape "
+        "time; absent with the endpoint inventory off. Cluster-wide: aggregate "
+        "with max(), not sum().",
+        labels=["state"],
+    )
+    families = [agents, ages, oldest, threshold, queued, running, devices]
+    if snapshot is None:
+        return families
+    # Not at module level, and not before there is a snapshot: describe()
+    # runs while this module is still being imported, and the agents service
+    # imports the engine, which imports this module.
+    from api.services import agents as agents_service
+
+    fleet = snapshot.fleet
+    for (kind, state), count in sorted(fleet.counts.items()):
+        agents.add_metric([kind, state], count)
+    for kind in agents_service.FLEET_KINDS:
+        buckets = [
+            (floatToGoString(bound), count)
+            for bound, count in zip(
+                agents_service.HEARTBEAT_AGE_BUCKETS, fleet.age_buckets[kind], strict=True
+            )
+        ]
+        buckets.append(("+Inf", fleet.age_totals[kind]))
+        ages.add_metric([kind], buckets, fleet.age_sums[kind])
+        if kind in fleet.age_max:
+            oldest.add_metric([kind], fleet.age_max[kind])
+    threshold.add_metric([], fleet.stale_seconds)
+    queued.add_metric([], snapshot.jobs_queued)
+    running.add_metric([], snapshot.jobs_running)
+    if snapshot.endpoint_devices is not None:
+        for state in ("active", "stale"):
+            devices.add_metric([state], snapshot.endpoint_devices[state])
+    return families
+
+
+def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
+    open_findings = GaugeMetricFamily(
+        "octo_tenant_open_findings",
+        "Open findings (any state but CLOSED) per tenant and severity. Opt-in "
+        "(OCTO_METRICS_TENANT_TOP_N): the top N tenants by open findings when "
+        "the hour began keep their id, so the set changes only on the hour; the "
+        "rest are summed into tenant=\"_other\". Cluster-wide.",
+        labels=["tenant", "severity"],
+    )
+    breached = GaugeMetricFamily(
+        "octo_tenant_sla_breached_findings",
+        "Open findings past their SLA due date and not under an accepted "
+        "exception, per tenant (top N, the rest as _other). Cluster-wide.",
+        labels=["tenant"],
+    )
+    scans = GaugeMetricFamily(
+        "octo_tenant_scans_finished_24h",
+        "Scans that finished in the last 24 hours, per tenant (top N, the rest as "
+        "_other) and outcome. A window count, not a counter: use it as it is. "
+        "Cluster-wide.",
+        labels=["tenant", "status"],
+    )
+    if snapshot is not None:
+        for (tenant, severity), count in sorted(snapshot.open_findings.items()):
+            open_findings.add_metric([tenant, severity], count)
+        for tenant, count in sorted(snapshot.sla_breached.items()):
+            breached.add_metric([tenant], count)
+        for (tenant, status), count in sorted(snapshot.scans_finished.items()):
+            scans.add_metric([tenant, status], count)
+    return [open_findings, breached, scans]
+
+
+def cluster_collector(
+    *,
+    snapshot: Callable[[], Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    pool_too_busy: Callable[[], bool] | None = None,
+) -> SnapshotCollector:
+    """The fleet, the job queue and the endpoint devices (tests build their own)."""
+    return SnapshotCollector(
+        render=_cluster_families,
+        snapshot=snapshot or _cluster_snapshot,
+        ttl=CLUSTER_TTL_SECONDS,
+        max_stale=CLUSTER_MAX_STALE_SECONDS,
+        clock=clock,
+        pool_too_busy=pool_too_busy,
+    )
+
+
+def tenant_collector(
+    *,
+    snapshot: Callable[[], Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    pool_too_busy: Callable[[], bool] | None = None,
+) -> SnapshotCollector:
+    """The opt-in per-tenant series; no samples while they are off."""
+    return SnapshotCollector(
+        render=_tenant_families,
+        snapshot=snapshot or _tenant_snapshot,
+        ttl=TENANT_TTL_SECONDS,
+        max_stale=TENANT_MAX_STALE_SECONDS,
+        clock=clock,
+        pool_too_busy=pool_too_busy or _tenant_pool_too_busy,
+        epoch=_membership_epoch,
+    )
+
+
+CLUSTER_COLLECTOR = cluster_collector()
+REGISTRY.register(CLUSTER_COLLECTOR)
+TENANT_COLLECTOR = tenant_collector()
+REGISTRY.register(TENANT_COLLECTOR)
+SNAPSHOT_HEALTH = SnapshotHealthCollector({"cluster": CLUSTER_COLLECTOR, "tenant": TENANT_COLLECTOR})
+REGISTRY.register(SNAPSHOT_HEALTH)
 
 
 def render() -> tuple[bytes, str]:

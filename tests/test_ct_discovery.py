@@ -17,6 +17,25 @@ def test_base_domains_from_fqdns():
     ]
 
 
+def test_base_domains_stop_at_the_registrable_domain_not_the_public_suffix():
+    # "Last two labels" is the public suffix itself for all three of these --
+    # a registry's (co.uk), a registrar's (com.ru) and GitHub's (github.io) --
+    # and every seed-driven stage, AXFR included, would have been pointed at it.
+    assert base_domains_from_fqdns(
+        ["www.bbc.co.uk", "shop.example.com.ru", "x.github.io", "a.b.example.com"]
+    ) == ["bbc.co.uk", "example.com.ru", "x.github.io", "example.com"]
+
+
+def test_base_domains_drop_names_that_have_no_registrable_domain():
+    # A public suffix, an IP literal and a bare label are nobody's domain;
+    # the old code turned the first two into "co.uk", "github.io" and "3.4".
+    assert base_domains_from_fqdns(["co.uk", "github.io", "1.2.3.4", "localhost", ""]) == []
+
+
+def test_base_domains_accept_a_wildcard_scope_entry():
+    assert base_domains_from_fqdns(["*.example.com", "*.co.uk"]) == ["example.com"]
+
+
 def test_ct_disabled(tmp_path: Path):
     result = discover_ct_subdomains_sync(
         ["example.com"],
