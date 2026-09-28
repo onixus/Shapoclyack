@@ -625,6 +625,28 @@ export function DeployAgentDialog() {
                   {snippets?.kubernetes_yaml || "apiVersion: apps/v1..."}
                 </pre>
               </div>
+
+              {/* The manifest holds no key; this is what puts it in the Secret. */}
+              <div className="rounded-lg border border-border overflow-hidden bg-muted dark:bg-black shadow-inner">
+                <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-card text-xs text-foreground">
+                  <span className="font-mono text-xs font-semibold text-foreground">{t("ui.kubernetesSecretCommand")}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleCopy(snippets?.kubernetes_secret_command || "", "k8s-secret")}
+                    className="h-7 border-border bg-muted text-xs text-foreground hover:bg-slate-700"
+                  >
+                    {copiedKey === "k8s-secret" ? <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+                    {copiedKey === "k8s-secret" ? "Copied!" : "Copy"}
+                  </Button>
+                </div>
+                <p className="px-3.5 pt-3 text-xs leading-relaxed text-muted-foreground">
+                  {t("prose.kubernetesSecretAfterApply")}
+                </p>
+                <pre className="p-4 font-mono text-xs text-sky-600 dark:text-sky-300 overflow-x-auto custom-scrollbar whitespace-pre">
+                  {snippets?.kubernetes_secret_command || "printf '%s' ... | kubectl create secret ..."}
+                </pre>
+              </div>
             </TabsContent>
           </Tabs>
         </div>

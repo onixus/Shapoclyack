@@ -4,6 +4,12 @@
 # decision, and a Deployment that dials a host nobody configured would restart
 # forever. Copy this file, fill the Secret in, `kubectl apply -f` it.
 #
+# Everything here goes into network-scan: the Deployment reads the `api`
+# password out of Secret shapoclyack-nats, which exists only there, and dials
+# shapoclyack-nats-client / shapoclyack-postgres-client by their short names.
+# The last two objects let it in to NATS and Postgres, which otherwise admit
+# only the API (base/networkpolicy-datastores.yaml).
+#
 # One replica, `strategy: Recreate`. The `nats` source would tolerate more —
 # JetStream divides a durable consumer between them — but the `db` source
 # serialises replicas on a row lock, so a second one only waits. Both sources
@@ -17,7 +23,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: shapoclyack-audit-syslog
-  namespace: shapoclyack
+  namespace: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: audit-syslog-forwarder
@@ -50,7 +56,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: shapoclyack-audit-syslog-forwarder
-  namespace: shapoclyack
+  namespace: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: audit-syslog-forwarder
@@ -169,7 +175,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: shapoclyack-audit-syslog-egress
-  namespace: shapoclyack
+  namespace: network-scan
   labels:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: audit-syslog-forwarder
@@ -215,6 +221,63 @@ spec:
             matchLabels:
               app.kubernetes.io/name: shapoclyack
               app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# The other end of the two rules above. NATS and Postgres each admit the API
+# (and Postgres the backup CronJob) and nothing else
+# (base/networkpolicy-datastores.yaml), so the egress policy alone gets the
+# forwarder as far as a connect that times out. A second policy on the same
+# pods adds to those lists rather than replacing them. Keep whichever one the
+# source needs: this one for `nats`, the next for `db`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-nats-ingress-audit-syslog
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-syslog-forwarder
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: audit-syslog-forwarder
+      ports:
+        - protocol: TCP
+          port: 4222
+---
+# OCTO_AUDIT_SYSLOG_SOURCE=db only — delete it with the Postgres egress rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-postgres-ingress-audit-syslog
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: audit-syslog-forwarder
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: shapoclyack
+              app.kubernetes.io/component: audit-syslog-forwarder
       ports:
         - protocol: TCP
           port: 5432
