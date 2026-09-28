@@ -377,6 +377,18 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **nuclei no longer uses ProjectDiscovery's public interactsh servers.** It
+  runs with `-no-interactsh` by default, so the 304 out-of-band (OAST)
+  templates inside the default filters (blind SSRF, command injection,
+  Log4Shell-style callbacks) no longer run. Before, nuclei registered with
+  `oast.pro` and five sibling servers, and the scanned hosts called back to
+  them. `nuclei.interactsh_server` turns OAST back on against a server you run,
+  with its token in `OCTO_INTERACTSH_TOKEN`, passed to nuclei in a private
+  file rather than on the command line. `nuclei.json` records `interactsh` and
+  `interactsh_registered`, because nuclei reports a failed registration nowhere
+  below `-v`. [Network requirements](docs/network-requirements.md#out-of-band-testing-interactsh)
+  has the measurements and what a self-hosted server needs, including pinning
+  its name in the sensor's `/etc/hosts`.
 - **`python -m api` runs exactly one uvicorn worker, whatever
   `WEB_CONCURRENCY` says** ([#334](https://github.com/onixus/Shapoclyack/issues/334)).
   uvicorn read that variable when no worker count was passed, and several
