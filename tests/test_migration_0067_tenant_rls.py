@@ -16,6 +16,7 @@ the schema and ``audit_events`` belongs to a role of its own:
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 
@@ -40,9 +41,12 @@ def owner_database(monkeypatch: pytest.MonkeyPatch):
     """A fresh database owned by a non-superuser, CREATEROLE migration role."""
     suffix = uuid.uuid4().hex[:8]
     owner, audit_owner, name = f"rls_mig_{suffix}", f"rls_audit_{suffix}", f"rls0067_{suffix}"
+    password = secrets.token_hex(24)
     admin = create_engine(POSTGRES_URL, future=True, isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
-        conn.execute(text(f'CREATE ROLE "{owner}" LOGIN CREATEROLE'))
+        conn.execute(
+            text(f"CREATE ROLE \"{owner}\" LOGIN CREATEROLE PASSWORD '{password}'")
+        )
         conn.execute(text(f'CREATE ROLE "{audit_owner}" NOLOGIN'))
         conn.execute(text(f'CREATE DATABASE "{name}" OWNER "{owner}"'))
         # The documented step for a role that did not create shapoclyack_tenant
@@ -55,7 +59,7 @@ def owner_database(monkeypatch: pytest.MonkeyPatch):
             )
         )
         conn.execute(text(f'GRANT shapoclyack_tenant TO "{owner}" WITH INHERIT FALSE'))
-    as_owner = make_url(POSTGRES_URL).set(database=name, username=owner, password=None)
+    as_owner = make_url(POSTGRES_URL).set(database=name, username=owner, password=password)
     as_admin = make_url(POSTGRES_URL).set(database=name)
     monkeypatch.setenv("OCTO_POSTGRES_URL", as_owner.render_as_string(hide_password=False))
     try:
