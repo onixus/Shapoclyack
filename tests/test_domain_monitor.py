@@ -15,15 +15,23 @@ from scanner.pipeline.domain_monitor import (
     monitor_domains,
 )
 
+#: What every stage call below passes as ``resolvers`` and every dnsx fake
+#: asserts it received, so a stage that drops the argument fails here.
+RESOLVERS = ["192.0.2.53:53"]
+
 
 def test_domain_monitor_disabled(tmp_path: Path):
-    result = monitor_domains(["example.com"], [], DomainMonitorConfig(enabled=False), tmp_path)
+    result = monitor_domains(
+        ["example.com"], [], DomainMonitorConfig(enabled=False), tmp_path, resolvers=RESOLVERS
+    )
     assert result["skipped_reason"] == "domain_monitor.disabled"
     assert (tmp_path / "domain_monitor.json").exists()
 
 
 def test_domain_monitor_no_domains(tmp_path: Path):
-    result = monitor_domains([], [], DomainMonitorConfig(enabled=True), tmp_path)
+    result = monitor_domains(
+        [], [], DomainMonitorConfig(enabled=True), tmp_path, resolvers=RESOLVERS
+    )
     assert result["skipped_reason"] == "no_domains"
 
 
@@ -32,7 +40,8 @@ def test_typosquat_finding_present(tmp_path: Path, monkeypatch):
     assert candidates
     picked = candidates[0]
 
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {picked.lower(): {"a": ["1.2.3.4"], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
@@ -42,6 +51,7 @@ def test_typosquat_finding_present(tmp_path: Path, monkeypatch):
         [],
         DomainMonitorConfig(enabled=True, dangling_cname_enabled=False, max_candidates=50),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     findings = result["typosquat"]["findings"]
     assert len(findings) == 1
@@ -53,7 +63,8 @@ def test_typosquat_finding_present(tmp_path: Path, monkeypatch):
 
 
 def test_typosquat_no_finding_when_not_resolved(tmp_path: Path, monkeypatch):
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
@@ -63,12 +74,14 @@ def test_typosquat_no_finding_when_not_resolved(tmp_path: Path, monkeypatch):
         [],
         DomainMonitorConfig(enabled=True, dangling_cname_enabled=False, max_candidates=20),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["typosquat"]["findings"] == []
 
 
 def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_cname", fake_cname)
@@ -78,6 +91,7 @@ def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
         ["staging.example.com"],
         DomainMonitorConfig(enabled=True, typosquat_enabled=False),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     findings = result["dangling_cname"]["findings"]
     assert len(findings) == 1
@@ -89,7 +103,8 @@ def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
 
 
 def test_dangling_cname_no_finding_when_a_present(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {
             "staging.example.com": {
                 "cname": ["abandoned.github.io"],
@@ -105,12 +120,14 @@ def test_dangling_cname_no_finding_when_a_present(tmp_path: Path, monkeypatch):
         ["staging.example.com"],
         DomainMonitorConfig(enabled=True, typosquat_enabled=False),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["dangling_cname"]["findings"] == []
 
 
 def test_dangling_cname_no_finding_when_no_suffix_match(tmp_path: Path, monkeypatch):
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {
             "staging.example.com": {
                 "cname": ["internal-lb.example-corp.net"],
@@ -126,6 +143,7 @@ def test_dangling_cname_no_finding_when_no_suffix_match(tmp_path: Path, monkeypa
         ["staging.example.com"],
         DomainMonitorConfig(enabled=True, typosquat_enabled=False),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     assert result["dangling_cname"]["findings"] == []
 
@@ -163,10 +181,12 @@ def test_persisted_files_reflect_both_findings(tmp_path: Path, monkeypatch):
     candidates = _generate_typosquat_candidates("example.com", max_candidates=50)
     picked = candidates[0]
 
-    def fake_a_aaaa(domains, output_dir, *, timeout, retries):
+    def fake_a_aaaa(domains, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {picked.lower(): {"a": ["1.2.3.4"], "aaaa": []}}
 
-    def fake_cname(fqdns, output_dir, *, timeout, retries):
+    def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
+        assert resolvers == RESOLVERS
         return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
@@ -177,6 +197,7 @@ def test_persisted_files_reflect_both_findings(tmp_path: Path, monkeypatch):
         ["staging.example.com"],
         DomainMonitorConfig(enabled=True, max_candidates=50),
         tmp_path,
+        resolvers=RESOLVERS,
     )
 
     saved = json.loads((tmp_path / "domain_monitor.json").read_text(encoding="utf-8"))
@@ -268,7 +289,7 @@ def test_typosquat_candidates_never_include_the_seeds_own_registrable_domain():
 
 
 def test_org_registrable_domain_is_not_reported_as_its_own_typosquat(tmp_path: Path, monkeypatch):
-    def resolve_everything(domains, output_dir, *, timeout, retries):
+    def resolve_everything(domains, output_dir, *, timeout, retries, resolvers):
         return {d.lower(): {"a": ["192.0.2.10"], "aaaa": []} for d in domains}
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", resolve_everything)
@@ -278,6 +299,7 @@ def test_org_registrable_domain_is_not_reported_as_its_own_typosquat(tmp_path: P
         [],
         DomainMonitorConfig(enabled=True, dangling_cname_enabled=False, max_candidates=500),
         tmp_path,
+        resolvers=RESOLVERS,
     )
     reported = {finding["candidate"] for finding in result["typosquat"]["findings"]}
     assert reported

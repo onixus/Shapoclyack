@@ -81,7 +81,7 @@ def templates(tmp_path):
 
 def test_dnsx_starts_with_the_update_check_off(tmp_path):
     # run_command raises on a non-zero exit, which is how a refused flag shows.
-    resolve_fqdns(["localhost"], tmp_path, timeout=60, retries=0)
+    resolve_fqdns(["localhost"], tmp_path, timeout=60, retries=0, resolvers=[])
 
 
 def test_nuclei_default_runs_and_skips_oast(tmp_path, templates, target):
