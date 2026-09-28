@@ -514,7 +514,7 @@ def test_the_jenkins_test_containers_are_handed_the_rendered_manifests():
     uses it): render there, hand the directory in."""
     stage = _jenkins_stage("Tests")
     render = stage.index("validate-kustomize.sh")
-    assert render < stage.index('docker.image("python:${PY}-slim")'), (
+    assert render < stage.index('docker.image(PYTHON_IMAGES[PY])'), (
         "the render has to happen on the node, before the python container starts"
     )
     assert "'OCTO_K8S_RENDER_DIR=" in stage, "the directory is not passed into the container"
