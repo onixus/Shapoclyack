@@ -1,0 +1,11 @@
+# The price of local execution, stated where it is paid: Pod Security stops
+# enforcing anything in the namespace that holds the API, the databases and
+# every credential, because the API and the scan Jobs need NET_RAW/NET_ADMIN
+# and `baseline` refuses both. audit/warn stay at `restricted`, so each apply
+# and the audit log still name every pod that is not.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-scan
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

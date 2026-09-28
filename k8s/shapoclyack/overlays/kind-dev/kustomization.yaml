@@ -8,10 +8,20 @@ kind: Kustomization
 resources:
   - ../dev
 
+# The stand serves TLS, and the executor verifies it against the development
+# CA scripts/dev-tls-cert.sh issues.
+components:
+  - ../../base/api-tls
+
 patches:
   - path: api-service-nodeport-patch.yaml
-  - path: api-tls-patch.yaml
 
+# One locally built image for every workload: base's API image is the
+# all-in-one without the scanners, so the all-in-one serves as both here
+# rather than doubling the stand's slowest build step (scripts/dev-up.sh).
 images:
   - name: ghcr.io/onixus/shapoclyack-aio
+    newTag: kind-dev
+  - name: ghcr.io/onixus/shapoclyack-api
+    newName: ghcr.io/onixus/shapoclyack-aio
     newTag: kind-dev

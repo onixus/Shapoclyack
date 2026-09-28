@@ -125,7 +125,7 @@ def test_compose_starts_the_sensor_with_scan_capabilities():
 
 
 def test_kubernetes_starts_the_sensor_with_scan_capabilities():
-    doc = next(d for d in yaml.safe_load_all(_snippets()["kubernetes_yaml"]) if d and d.get("kind") == "Deployment")
+    doc = next(d for d in yaml.safe_load_all(_snippets()["kubernetes_yaml"]) if d and d.get("kind") == "StatefulSet")
     (container,) = doc["spec"]["template"]["spec"]["containers"]
     assert container["image"] == SENSOR_IMAGE
     assert container["command"] == SENSOR_COMMAND

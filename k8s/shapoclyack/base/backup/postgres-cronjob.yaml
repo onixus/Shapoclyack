@@ -23,12 +23,15 @@ spec:
             app.kubernetes.io/component: backup
         spec:
           restartPolicy: Never
+          automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
             runAsGroup: 1000
             fsGroup: 1000
             fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
           initContainers:
             - name: dump
               image: postgres:16-alpine
@@ -76,8 +79,11 @@ spec:
                 limits:
                   cpu: "1"
                   memory: 1Gi
+              # pg_dump writes only the archive and its checksum, both in
+              # /backup (#338).
               securityContext:
                 allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
                 capabilities:
                   drop:
                     - ALL
@@ -155,8 +161,12 @@ spec:
                 limits:
                   cpu: "500m"
                   memory: 512Mi
+              # HOME=/tmp above: whatever the AWS CLI writes under ~/.aws
+              # (credential and SSO caches) lands in /tmp, which with the image
+              # read-only (#338) has to be a volume of its own.
               securityContext:
                 allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
                 capabilities:
                   drop:
                     - ALL
@@ -164,7 +174,12 @@ spec:
                 - name: backup-tmp
                   mountPath: /backup
                   readOnly: true
+                - name: tmp
+                  mountPath: /tmp
           volumes:
             - name: backup-tmp
               emptyDir:
                 sizeLimit: 10Gi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

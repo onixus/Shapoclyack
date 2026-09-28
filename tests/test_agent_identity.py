@@ -880,3 +880,207 @@ def test_padded_agent_id_does_not_ride_the_cached_snapshot(tmp_path, monkeypatch
         data={"agent_id": "edge-01 ", "exit_code": "0"},
     )
     assert results.status_code == 404, results.text
+
+
+# --------------------------------------------------------------------------
+# 8. A sensor without OCTO_AGENT_ID keeps the id the API minted for it.
+# --------------------------------------------------------------------------
+
+
+class _InProcessResponse:
+    def __init__(self, response) -> None:
+        self.status = response.status_code
+        self.headers = response.headers
+        self._body = response.content
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_InProcessResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class _InProcessOpener:
+    """The sensor's urllib opener, answered by the app in this process.
+
+    The real ``AgentClient`` and run loop, with their exchange, the 403
+    classification, register, heartbeat and claim, run against the real
+    routes and database. One start of the sensor ends at its first claim, the
+    way ``docker restart`` ends it, or after ``max_requests`` for a start
+    that the API refuses throughout.
+    """
+
+    def __init__(self, client: TestClient, max_requests: int = 12) -> None:
+        self.client = client
+        self.max_requests = max_requests
+        self.requests = 0
+
+    def open(self, req, timeout=None):
+        import io
+        import urllib.error
+        import urllib.parse
+
+        self.requests += 1
+        url = urllib.parse.urlsplit(req.full_url)
+        if url.path.endswith("/jobs/claim") or self.requests > self.max_requests:
+            raise KeyboardInterrupt
+        response = self.client.request(
+            req.get_method(),
+            url.path + (f"?{url.query}" if url.query else ""),
+            content=req.data,
+            headers=dict(req.header_items()),
+        )
+        if response.status_code >= 400:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                response.status_code,
+                response.reason_phrase,
+                response.headers,
+                io.BytesIO(response.content),
+            )
+        return _InProcessResponse(response)
+
+
+def _start_sensor(client: TestClient, monkeypatch, key: str, id_file: Path | None) -> None:
+    """One start of ``python -m agent`` as the container snippets run it."""
+    import argparse
+
+    from agent import worker
+
+    opener = _InProcessOpener(client)
+    monkeypatch.setattr(worker.egress, "build_opener", lambda base_url: opener)
+    monkeypatch.setattr(worker, "DISABLED_BACKOFF_SECONDS", 0.0)
+    args = argparse.Namespace(
+        api_url="http://sensor-test",
+        token="",
+        timeout=5.0,
+        provisioning_key=key,
+        jwt_refresh_seconds=0,
+        agent_id=None,
+        agent_id_file=str(id_file) if id_file else "",
+        hostname="edge-1",
+        label=None,
+        nats_url="",
+        poll_interval=0.01,
+        config="scanner/config/default.yaml",
+        output_dir="out",
+        scan_timeout=1.0,
+    )
+    assert worker.run_loop(args) == 0
+
+
+def _agent_rows(settings: Settings) -> list[tuple[str, str, str]]:
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        return sorted(
+            (row.agent_id, row.tenant_id, row.lifecycle_status or "active")
+            for row in session.query(models.Agent).all()
+        )
+
+
+def test_a_sensor_restarted_from_the_snippets_stays_one_row(tmp_path, monkeypatch):
+    """Three starts, one row, and the quarantine still on it after the third.
+
+    Before OCTO_AGENT_ID_FILE, the container and Kubernetes snippets had no
+    way to remember the id the server minted: each start was a new row, and
+    the new row was active whatever the operator had done to the old one.
+    The first half is that behaviour, kept as the control that shows this
+    harness sees a duplicate when there is one.
+    """
+    settings = _settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)["key"]
+
+    _start_sensor(client, monkeypatch, key, None)
+    _start_sensor(client, monkeypatch, key, None)
+    assert len(_agent_rows(settings)) == 2
+
+    client.delete("/api/agents/" + _agent_rows(settings)[0][0], headers=bearer(admin))
+    client.delete("/api/agents/" + _agent_rows(settings)[0][0], headers=bearer(admin))
+    assert _agent_rows(settings) == []
+
+    id_file = tmp_path / "state" / "agent-id"
+    for _ in range(3):
+        _start_sensor(client, monkeypatch, key, id_file)
+    rows = _agent_rows(settings)
+    assert len(rows) == 1
+    agent_id = rows[0][0]
+    assert id_file.read_text() == f"{agent_id}\n"
+
+    quarantined = client.patch(
+        f"/api/agents/{agent_id}",
+        headers=bearer(admin),
+        json={"status": "quarantined", "reason": "credential leak"},
+    )
+    assert quarantined.status_code == 200, quarantined.text
+    _start_sensor(client, monkeypatch, key, id_file)
+    assert _agent_rows(settings) == [(agent_id, "default", "quarantined")]
+
+
+def test_a_saved_id_waits_for_the_old_key_to_be_revoked(tmp_path, monkeypatch):
+    """Key rotation with the volume kept: refused while the old key is active,
+    the same row once it is revoked. Nothing mints a second sensor meanwhile."""
+    settings = _settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = login(client, "admin")
+    old = _mint_key(client, admin, label="old")
+    new_key = _mint_key(client, admin, label="new")["key"]
+    id_file = tmp_path / "agent-id"
+
+    _start_sensor(client, monkeypatch, old["key"], id_file)
+    (agent_id, _, _), = _agent_rows(settings)
+
+    _start_sensor(client, monkeypatch, new_key, id_file)
+    assert _agent_rows(settings) == [(agent_id, "default", "active")]
+    assert id_file.read_text() == f"{agent_id}\n"
+
+    client.post(
+        f"/api/tenants/default/provisioning-keys/{old['key_id']}/revoke", headers=bearer(admin)
+    )
+    _start_sensor(client, monkeypatch, new_key, id_file)
+    assert _agent_rows(settings) == [(agent_id, "default", "active")]
+
+
+def test_a_sensor_moved_to_another_tenant_with_its_volume_registers_there(
+    tmp_path, monkeypatch
+):
+    """The tenant binding never releases, so the saved id is given up.
+
+    This also pins the wording agent/worker.py recognises the refusal by
+    (``_OTHER_TENANT_MARKER``): if the API rephrases it, this test fails
+    rather than the sensor being refused for ever.
+    """
+    from agent import worker
+
+    settings = _settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = login(client, "admin")
+    created = client.post(
+        "/api/tenants", headers=bearer(admin), json={"name": "Acme", "tenant_id": "ten_acme"}
+    )
+    assert created.status_code == 201, created.text
+    home_key = _mint_key(client, admin)["key"]
+    acme_key = _mint_key(client, admin, tenant_id="ten_acme")["key"]
+    id_file = tmp_path / "agent-id"
+
+    _start_sensor(client, monkeypatch, home_key, id_file)
+    (home_id, _, _), = _agent_rows(settings)
+
+    refused = client.post(
+        "/api/auth/agent/token", json={"provisioning_key": acme_key, "agent_id": home_id}
+    )
+    assert refused.status_code == 403
+    assert worker._OTHER_TENANT_MARKER in refused.json()["detail"]  # noqa: SLF001
+
+    _start_sensor(client, monkeypatch, acme_key, id_file)
+    rows = _agent_rows(settings)
+    acme_rows = [row for row in rows if row[1] == "ten_acme"]
+    assert [row[1] for row in rows].count("default") == 1
+    assert len(acme_rows) == 1
+    assert id_file.read_text() == f"{acme_rows[0][0]}\n"

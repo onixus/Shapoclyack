@@ -1,0 +1,32 @@
+# overlays/prod only: the scanner-executor on the host network (#338). Apply
+# this beside kyverno-policyexception.example.yaml only where that overlay is —
+# it is the widest exception Shapoclyack needs, and anywhere else it would
+# admit a host-network pod nothing asked for.
+#
+#   kubectl apply -f k8s/shapoclyack/examples/kyverno-policyexception-prod-hostnetwork.example.yaml
+#
+# Same scoping and Kyverno versions as the other file.
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: shapoclyack-scanner-executor-hostnetwork
+  namespace: network-scan-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  exceptions:
+    - policyName: disallow-host-namespaces
+      ruleNames:
+        - host-namespaces
+        - autogen-host-namespaces
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+            - StatefulSet
+          namespaces:
+            - network-scan-executor
+          names:
+            - shapoclyack-scanner-executor*

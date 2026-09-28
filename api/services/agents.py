@@ -1037,7 +1037,21 @@ def touch_job(agent_id: str, job_id: str | None, *, status: str = "busy") -> Non
         )
 
 
-def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
+def get_fleet_summary(
+    tenant_id: str | None = None, *, ready_tenant_id: str | None = None
+) -> AgentFleetSummary:
+    """The fleet tiles; ``tenant_id`` None counts every tenant.
+
+    ``scan_ready_agents`` answers "would a scan started here run", so it is
+    counted for ``ready_tenant_id`` (the caller's tenant; a platform admin's
+    unscoped view is still fleet-wide for every other count) and only for
+    agents a claim would not refuse: online, active, scanner kind, not below
+    the version floor, declaring every capability a job may need (#338).
+    """
+    from api.services.scan_policy import AGENT_CAPABILITY as POLICY_CAPABILITY
+    from scanner.pipeline.config_overlay import CAPABILITY as OVERLAY_CAPABILITY
+
+    needed = {POLICY_CAPABILITY, OVERLAY_CAPABILITY}
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         query = select(models.Agent)
@@ -1047,6 +1061,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
 
     total = len(rows)
     online = 0
+    scan_ready = 0
     busy = 0
     stale = 0
     error = 0
@@ -1060,6 +1075,14 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
             stale += 1
         else:
             online += 1
+            if (
+                (r.agent_kind or KIND_SCANNER) == KIND_SCANNER
+                and (r.lifecycle_status or LIFECYCLE_ACTIVE) == LIFECYCLE_ACTIVE
+                and (ready_tenant_id is None or t == ready_tenant_id)
+                and not is_below_min_version(r.version or "")
+                and needed <= set(_extract_detail(r.detail)[2] or [])
+            ):
+                scan_ready += 1
             if r.status == "busy":
                 busy += 1
             elif r.status == "error":
@@ -1071,6 +1094,7 @@ def get_fleet_summary(tenant_id: str | None = None) -> AgentFleetSummary:
         min_version=_min_version(),
         total_agents=total,
         online_agents=online,
+        scan_ready_agents=scan_ready,
         busy_agents=busy,
         stale_agents=stale,
         error_agents=error,
@@ -1310,6 +1334,19 @@ SENSOR_K8S_NAMESPACE = "network-scan-executor"
 SENSOR_K8S_SECRET = "shapoclyack-agent"
 SENSOR_K8S_SECRET_KEY = "provisioning_key"
 
+# Where a sensor started from the container and Kubernetes snippets keeps the
+# agent id the API mints for it (OCTO_AGENT_ID_FILE, agent/worker.py). The
+# snippets set no OCTO_AGENT_ID: one snippet is pasted onto many hosts, and an
+# id rendered into it would make them all one sensor. Without the file the
+# worker held the minted id in memory only, so every restart registered a new
+# row. The old row went stale and kept the sensor's group and any quarantine.
+#
+# The directory is the image's own declared VOLUME, owned by the image's uid
+# 1000, so an empty named volume mounted there starts out writable by it.
+SENSOR_STATE_DIR = "/app/scanner/state"
+SENSOR_ID_FILE = f"{SENSOR_STATE_DIR}/agent-id"
+SENSOR_STATE_VOLUME = "shapoclyack-agent-state"
+
 
 def get_deployment_snippets(
     tenant_id: str,
@@ -1338,6 +1375,11 @@ def get_deployment_snippets(
     which exits at once. And naabu carries NET_RAW+NET_ADMIN file
     capabilities that Docker's default set does not grant, so without
     ``--cap-add`` its exec fails with EPERM on the first scan.
+
+    Each of them also keeps the sensor's identity on a volume, at
+    :data:`SENSOR_ID_FILE`. It is a named volume for Docker. For Kubernetes it
+    is a StatefulSet claim per replica: a Deployment's pod loses an
+    ``emptyDir`` on reschedule, and replicas would share a single claim.
     """
     key_minted = bool(provisioning_key)
     if not provisioning_key:
@@ -1356,8 +1398,9 @@ def get_deployment_snippets(
     docker_run = (
         f"docker run -d --name shapoclyack-agent --restart always "
         f"--network host --cap-add NET_RAW --cap-add NET_ADMIN "
+        f"-v {SENSOR_STATE_VOLUME}:{SENSOR_STATE_DIR} "
         f"-e OCTO_API_URL={clean_server} -e OCTO_AGENT_PROVISIONING_KEY={provisioning_key} "
-        f"-e OCTO_TENANT_ID={tenant_id} "
+        f"-e OCTO_TENANT_ID={tenant_id} -e OCTO_AGENT_ID_FILE={SENSOR_ID_FILE} "
         f"--entrypoint python {SENSOR_IMAGE} -m agent"
     )
     docker_compose = f"""services:
@@ -1373,7 +1416,14 @@ def get_deployment_snippets(
       - OCTO_API_URL={clean_server}
       - OCTO_AGENT_PROVISIONING_KEY={provisioning_key}
       - OCTO_TENANT_ID={tenant_id}
+      - OCTO_AGENT_ID_FILE={SENSOR_ID_FILE}
+    # The sensor's agent id lives here. Keep the volume across upgrades
+    # (`down -v` removes it, and the sensor then registers anew).
+    volumes:
+      - {SENSOR_STATE_VOLUME}:{SENSOR_STATE_DIR}
     entrypoint: ["python", "-m", "agent"]
+volumes:
+  {SENSOR_STATE_VOLUME}:
 """
     # k8s/shapoclyack/examples/agent-deployment.example.yaml with the API's URL
     # filled in, less what a fresh cluster lacks: the scanner-config ConfigMap
@@ -1381,7 +1431,7 @@ def get_deployment_snippets(
     # snippets) and the second replica. Why each securityContext field:
     # docs/k8s-hardening.md. Interpolated values are JSON-quoted, which YAML
     # reads as double-quoted scalars whatever the URL contains.
-    kubernetes_yaml = f"""# Shapoclyack sensor. The provisioning key is not in this file:
+    kubernetes_yaml = f"""# Shapoclyack sensor. Each replica needs a persistent claim and default StorageClass. The provisioning key is not in this file:
 #   1. kubectl apply -f <this file>
 #   2. create Secret {SENSOR_K8S_SECRET} (key {SENSOR_K8S_SECRET_KEY}) in {SENSOR_K8S_NAMESPACE}
 #      with the command shown next to this manifest, which reads the key on stdin:
@@ -1402,7 +1452,7 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: shapoclyack-agent
   namespace: {SENSOR_K8S_NAMESPACE}
@@ -1410,6 +1460,9 @@ metadata:
     app.kubernetes.io/name: shapoclyack
     app.kubernetes.io/component: agent
 spec:
+  # No Service is needed, since the sensor only dials out. The field is set
+  # because older kubectl versions refuse a StatefulSet without it.
+  serviceName: shapoclyack-agent
   replicas: 1
   selector:
     matchLabels:
@@ -1446,6 +1499,8 @@ spec:
             # For the operator: the sensor's tenant is the one its key was minted for.
             - name: OCTO_TENANT_ID
               value: {json.dumps(tenant_id)}
+            - name: OCTO_AGENT_ID_FILE
+              value: {json.dumps(SENSOR_ID_FILE)}
             - name: OCTO_OUTPUT_DIR
               value: scanner/output
             - name: OCTO_AGENT_HOSTNAME
@@ -1487,20 +1542,25 @@ spec:
             - name: home
               mountPath: /home/octo
       # Sized so that a full disk evicts this pod rather than filling the node:
-      # the sensor keeps each finished run under output/ until the pod goes.
+      # retention preserves the baseline and sweeps older finished runs.
       volumes:
         - name: output
           emptyDir:
             sizeLimit: 20Gi
-        - name: state
-          emptyDir:
-            sizeLimit: 5Gi
         - name: tmp
           emptyDir:
             sizeLimit: 5Gi
         - name: home
           emptyDir:
             sizeLimit: 1Gi
+  volumeClaimTemplates:
+  - metadata:
+      name: state
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
 """
     # printf is a shell builtin, so the key is in no process's argv on the way
     # to kubectl, which reads it from stdin.

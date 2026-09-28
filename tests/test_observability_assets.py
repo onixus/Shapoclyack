@@ -255,15 +255,30 @@ def test_the_components_leave_the_namespace_to_the_including_overlay():
         for resource in kustomization.get("resources", []):
             for document in yaml.safe_load_all((directory / resource).read_text(encoding="utf-8")):
                 assert "namespace" not in document["metadata"], f"{component}/{resource}"
-    overlay = yaml.safe_load(
-        (ROOT / "k8s/shapoclyack/overlays/prod-ha-monitoring/kustomization.yaml").read_text(encoding="utf-8")
-    )
-    assert overlay["namespace"] == "network-scan"
+    # The overlay that includes them names it — with an unsetOnly transformer,
+    # not `namespace:`, which would also move #338's scanner-executor out of
+    # network-scan-executor (tests/test_k8s_pod_security.py).
+    overlay_dir = ROOT / "k8s/shapoclyack/overlays/prod-ha-monitoring"
+    overlay = yaml.safe_load((overlay_dir / "kustomization.yaml").read_text(encoding="utf-8"))
+    assert "namespace" not in overlay
+    assert overlay["transformers"] == ["namespace-transformer.yaml"]
+    transformer = yaml.safe_load((overlay_dir / "namespace-transformer.yaml").read_text(encoding="utf-8"))
+    assert transformer["kind"] == "NamespaceTransformer"
+    assert transformer["metadata"]["namespace"] == "network-scan"
+    assert transformer["unsetOnly"] is True
 
 
 def _render_with_components(tmp_path: Path, *, namespace: str | None) -> list[dict]:
-    """``overlays/prod`` moved to scanner-prod by one overlay, the two
-    components added by a second one — with or without a namespace of its own."""
+    """An installation moved to scanner-prod by one overlay, the two
+    components added by a second one — with or without a namespace of its own.
+
+    The installation is ``overlays/local-scan``: since #338 every other overlay
+    spans two namespaces (the scanner-executor has its own), and a plain
+    ``namespace:`` over one of them does not render at all — both Namespace
+    objects become scanner-prod. local-scan is the one topology still in a
+    single namespace, which is what this reproduction needs; the two-namespace
+    case is ``test_the_components_leave_the_executor_where_it_is``.
+    """
     shapoclyack = ROOT / "k8s/shapoclyack"
     moved = tmp_path / "moved"
     with_monitoring = tmp_path / "with-monitoring"
@@ -272,7 +287,7 @@ def _render_with_components(tmp_path: Path, *, namespace: str | None) -> list[di
     (moved / "kustomization.yaml").write_text(
         "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
         "namespace: scanner-prod\n"
-        f"resources:\n  - {os.path.relpath(shapoclyack / 'overlays/prod', moved)}\n",
+        f"resources:\n  - {os.path.relpath(shapoclyack / 'overlays/local-scan', moved)}\n",
         encoding="utf-8",
     )
     (with_monitoring / "kustomization.yaml").write_text(
@@ -316,6 +331,36 @@ def test_an_overlay_that_names_its_namespace_gets_the_components_there(tmp_path)
     }
     assert namespaces == {"scanner-prod"}
     assert _COMPONENT_KINDS <= {document["kind"] for document in documents}
+
+
+@pytest.mark.skipif(shutil.which("kubectl") is None, reason="needs kubectl (kustomize)")
+def test_the_components_leave_the_executor_where_it_is():
+    """overlays/prod-ha-monitoring over an installation in two namespaces
+    (#338): what the components add lands beside the API, and the
+    scanner-executor stays in network-scan-executor. With `namespace:` in the
+    overlay the render failed outright, both Namespace objects renamed to
+    network-scan."""
+    rendered = subprocess.run(
+        ["kubectl", "kustomize", str(ROOT / "k8s/shapoclyack/overlays/prod-ha-monitoring")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    where = {
+        (document["kind"], document["metadata"]["name"]): document["metadata"].get("namespace")
+        for document in yaml.safe_load_all(rendered)
+        if document
+    }
+    added = {
+        key: namespace
+        for key, namespace in where.items()
+        if key[0] in _COMPONENT_KINDS or key[1].startswith("shapoclyack-dashboard-")
+    }
+    assert {kind for kind, _ in added} == _COMPONENT_KINDS | {"ConfigMap"}
+    assert set(added.values()) == {"network-scan"}
+    assert where[("Deployment", "shapoclyack-api")] == "network-scan"
+    assert where[("StatefulSet", "shapoclyack-scanner-executor")] == "network-scan-executor"
+    assert {name for kind, name in where if kind == "Namespace"} == {"network-scan", "network-scan-executor"}
 
 
 def test_product_dashboard_is_installation_wide():

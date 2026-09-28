@@ -1,0 +1,22 @@
+# Drains take executors one at a time (#338 review).
+#
+# An executor evicted mid-scan loses that scan: the run is on its emptyDir, and
+# the job goes back to the queue only when its lease expires
+# (OCTO_JOB_LEASE_SECONDS), to start again from nothing on another executor.
+# maxUnavailable, not minAvailable, for the reason base/api-pdb.yaml gives: at
+# one replica `minAvailable: 1` blocks every node drain until somebody deletes
+# the PDB. At three (overlays/agents) this keeps two scanning while the third
+# moves.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shapoclyack-scanner-executor
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: scanner-executor

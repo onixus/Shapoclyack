@@ -390,6 +390,13 @@ class JobInfo(BaseModel):
     # is restarting comes back — but a job nobody can claim must not look like
     # an ordinary queued one.
     agent_group_unavailable: bool = False
+    # The same question for a job addressed to no group (#338 review): queued
+    # for agent execution while the tenant has no active scanner agent with a
+    # recent heartbeat. An agent claims only its own tenant's jobs, so this is
+    # what an upgrade applied before the executor was enrolled, a tenant the
+    # executor's key does not belong to, and an expired executor key all look
+    # like. Answered on read, like the group flag.
+    sensor_unavailable: bool = False
 
 
 class RunPublicationInfo(BaseModel):
@@ -660,6 +667,10 @@ class UpdateAgentStatusRequest(BaseModel):
 class AgentFleetSummary(BaseModel):
     total_agents: int = 0
     online_agents: int = 0
+    # Online agents that could claim a scan: scanner kind (an endpoint agent is
+    # refused scan jobs) and active (a quarantined or disabled one is refused
+    # too). What the console's "no sensor online" banners are drawn from (#338).
+    scan_ready_agents: int = 0
     busy_agents: int = 0
     stale_agents: int = 0
     error_agents: int = 0

@@ -1,0 +1,28 @@
+# No inbound connections to the executor (#338). The process listens on
+# nothing: it polls the API for work and uploads results over the same
+# outbound connection. So the one pod that holds raw-socket capabilities is
+# also one that nothing in the cluster can open a connection to, which is the
+# cheapest half of containing it.
+#
+# Egress is deliberately NOT restricted: the executor's job is to reach the
+# targets an operator approved, and those are arbitrary addresses. The scope
+# check is the API's (#226), applied before a job is queued. An installation
+# that knows its target ranges can add an egress policy of its own here — DNS,
+# the API Service in network-scan, and those ranges.
+#
+# Inert for hostNetwork pods (overlays/prod), which a NetworkPolicy does not
+# select on most CNIs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shapoclyack-scanner-executor-ingress
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: scanner-executor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: shapoclyack
+      app.kubernetes.io/component: scanner-executor
+  policyTypes:
+    - Ingress
