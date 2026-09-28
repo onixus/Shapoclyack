@@ -35,7 +35,10 @@ rotates the public four in. With the flag, 160 of 312 lookups still went
 public. All of them were for the six interactsh server names
 (``oast.pro``, ``oast.live``, ...), which are fixed public names and not
 derived from any target. Stopping those is a matter of ``-no-interactsh`` or a
-self-hosted ``-interactsh-server``, not of resolvers.
+self-hosted ``-interactsh-server``, not of resolvers, and ``nuclei_scan.py``
+does the first unless ``nuclei.interactsh_server`` asks for the second. A
+self-hosted server's name still goes through the public four, so it has to be
+pinned in the sensor's ``/etc/hosts``, which fastdialer reads first.
 """
 
 from __future__ import annotations

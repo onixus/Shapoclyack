@@ -396,6 +396,21 @@ nuclei:
   overall_timeout_seconds: 1800
   http_ports: [80, 8080, 8000, 8008, 8888]
   https_ports: [443, 8443]
+  # Out-of-band (OAST) testing. Empty = -no-interactsh: nuclei contacts no
+  # interactsh server and skips the templates that need one (blind SSRF, blind
+  # RCE, Log4Shell-style callbacks; 341 of v9.9.4's templates, 304 of them
+  # inside the severity and tag filters above). nuclei's own default is
+  # ProjectDiscovery's public servers (oast.pro, oast.live, oast.site,
+  # oast.online, oast.fun, oast.me): the scanner would register with them and
+  # the scanned hosts would call back to them. To turn OAST on, run your own
+  # interactsh-server and name its domain here: oast.corp.example or
+  # https://oast.corp.example for HTTPS, http://oast.corp.example for plain
+  # HTTP; no port, no path. Pin that name in the sensor's /etc/hosts, because
+  # nuclei's interactsh client resolves it through public resolvers too. Put
+  # the server's -auth token in the OCTO_INTERACTSH_TOKEN environment variable,
+  # not in this file. The full list of what the sensor and the scanned hosts
+  # then need to reach is in docs/network-requirements.md.
+  interactsh_server: ""
 
 # Service / OS enrichment after open ports (naabu).
 # Phase 4.1 default is pulse (OS/banner/CVE; no nmap NSE required).

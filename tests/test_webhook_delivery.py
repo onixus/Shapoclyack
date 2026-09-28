@@ -111,6 +111,14 @@ def test_validate_url_rejects_malformed_port():
         "http://10.0.0.5/hook",
         "http://169.254.169.254/latest/meta-data",
         "http://[::1]/hook",
+        # ``ipaddress`` calls these global; behind NAT64, SIIT or a kernel that
+        # still speaks IPv4-compatible they are the private address in their
+        # low 32 bits.
+        pytest.param("http://[64:ff9b::a00:5]/hook", id="nat64-wkp-rfc1918"),
+        pytest.param("http://[64:ff9b::a9fe:a9fe]/latest/meta-data", id="nat64-wkp-metadata"),
+        pytest.param("http://[::ffff:0:a00:5]/hook", id="siit-ipv4-translated"),
+        pytest.param("http://[::a00:5]/hook", id="ipv4-compatible-rfc1918"),
+        pytest.param("http://[::127.0.0.1]:8080/hook", id="ipv4-compatible-loopback"),
     ],
 )
 def test_validate_url_blocks_internal_targets_by_default(url):
@@ -163,6 +171,56 @@ def test_post_pins_connection_to_the_validated_address(monkeypatch):
     assert seen["target"].port == 8443
     assert seen["target"].request_target == "/hook?q=1"
     assert seen["target"].host_header == "receiver.example:8443"
+
+
+@pytest.mark.parametrize(
+    "synthesized",
+    [
+        pytest.param("64:ff9b::a00:5", id="rfc1918"),
+        pytest.param("64:ff9b::a9fe:a9fe", id="metadata"),
+    ],
+)
+def test_post_refuses_a_dns64_answer_for_an_internal_host(monkeypatch, synthesized):
+    """A receiver name whose only answer is a NAT64 AAAA for private space.
+
+    On an API pod with IPv6-only egress this is the tenant-controlled name
+    that reaches 10.0.0.5 or the metadata service through the translator.
+    """
+    monkeypatch.setattr(
+        outbound_targets, "resolve", lambda host: [ipaddress.ip_address(synthesized)]
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_send_to_address",
+        lambda *a, **kw: pytest.fail("a NAT64 address for private space reached the wire"),
+    )
+    result = delivery.post("https://receiver.example/hook", b"{}", {})
+    assert result.ok is False
+    assert result.retryable is False
+    assert "non-public address" in (result.error or "")
+
+
+def test_post_delivers_to_a_dns64_answer_for_a_public_host(monkeypatch):
+    """DNS64 answers an IPv4-only receiver with its A record plus a synthesized
+    ``64:ff9b::/96`` AAAA. Refusing the prefix outright would refuse every such
+    receiver on an IPv6-only pod, because one failing address fails the name."""
+    synthesized = ipaddress.ip_address("64:ff9b::5db8:d822")
+    monkeypatch.setattr(
+        outbound_targets,
+        "resolve",
+        lambda host: [synthesized, ipaddress.ip_address("93.184.216.34")],
+    )
+    seen = []
+
+    def _capture(target, address, body, headers, *, method="POST", deadline, capture_body=False):
+        seen.append(address)
+        return 204, ""
+
+    monkeypatch.setattr(delivery, "_send_to_address", _capture)
+    result = delivery.post("https://receiver.example/hook", b"{}", {})
+
+    assert result.ok is True
+    assert seen == [synthesized]
 
 
 def test_post_does_not_reresolve_after_validation(monkeypatch):
