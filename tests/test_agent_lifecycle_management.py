@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
+
 from api.db import models
 from api.db.engine import get_session
 from api.services import agent_deployer
@@ -373,6 +375,8 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert "<PROVISIONING_KEY>" in snips["systemd_oneliner"]
     assert "curl -sSL" in snips["systemd_oneliner"]
     assert "docker run -d --name shapoclyack-agent" in snips["docker_run"]
+    _assert_hardened_k8s_sensor(snips, key="<PROVISIONING_KEY>")
+    _assert_container_snippets_can_scan(snips)
     assert "apiVersion: apps/v1" in snips["kubernetes_yaml"]
     for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
         assert SENSOR_IMAGE in snips[name], name
@@ -387,8 +391,121 @@ def test_agent_installer_and_deployment_snippets(tmp_path: Path, monkeypatch):
     assert key in minted["systemd_oneliner"]
     assert key in minted["docker_run"]
     assert key in minted["docker_compose"]
-    assert key in minted["kubernetes_yaml"]
     assert "<PROVISIONING_KEY>" not in minted["systemd_oneliner"]
+    assert "<PROVISIONING_KEY>" not in minted["kubernetes_secret_command"]
+    _assert_hardened_k8s_sensor(minted, key=key)
+    _assert_container_snippets_can_scan(minted)
+
+
+_EXAMPLE_SENSOR = (
+    Path(__file__).resolve().parents[1]
+    / "k8s/shapoclyack/examples/agent-deployment.example.yaml"
+)
+
+
+def _assert_hardened_k8s_sensor(snips: dict, *, key: str) -> None:
+    """The Kubernetes snippet is examples/agent-deployment.example.yaml's pod.
+
+    A namespace that admits NET_RAW/NET_ADMIN, the key from a Secret and not
+    from the manifest, the capabilities naabu/pulse need to exec at all, and
+    the rest of the hardened baseline (docs/k8s-hardening.md).
+    """
+    manifest = snips["kubernetes_yaml"]
+    docs = [d for d in yaml.safe_load_all(manifest) if d]
+    by_kind = {d["kind"]: d for d in docs}
+    assert sorted(by_kind) == ["Namespace", "StatefulSet"], manifest
+    namespace, deployment = by_kind["Namespace"], by_kind["StatefulSet"]
+
+    # Not `default`: a namespace of its own, and one Pod Security lets it into.
+    ns_name = namespace["metadata"]["name"]
+    assert ns_name != "default"
+    assert deployment["metadata"]["namespace"] == ns_name
+    assert namespace["metadata"]["labels"] == {
+        "pod-security.kubernetes.io/enforce": "privileged",
+        "pod-security.kubernetes.io/audit": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+    }
+
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    pod_sc = pod["securityContext"]
+    assert pod_sc["runAsNonRoot"] is True
+    assert pod_sc["runAsUser"] == 1000 and pod_sc["runAsGroup"] == 1000
+    assert pod_sc["seccompProfile"] == {"type": "RuntimeDefault"}
+
+    (container,) = pod["containers"]
+    image = container["image"]
+    assert image == SENSOR_IMAGE
+    assert container["command"] == ["python", "-m", "agent"]
+    sc = container["securityContext"]
+    assert sc["capabilities"]["drop"] == ["ALL"]
+    assert sorted(sc["capabilities"]["add"]) == ["NET_ADMIN", "NET_RAW"]
+    # false would set no_new_privs and the kernel would drop naabu's file caps.
+    assert sc["allowPrivilegeEscalation"] is True
+    assert sc["readOnlyRootFilesystem"] is True
+    assert "privileged" not in sc
+
+    # With the root filesystem read-only, every path the sensor writes is an
+    # emptyDir, sized so a full disk evicts the pod instead of filling the node.
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    mounts = {m["mountPath"]: m["name"] for m in container["volumeMounts"]}
+    for path in ("/app/scanner/output", "/app/scanner/state", "/tmp", "/home/octo"):
+        assert path in mounts, f"{path} is not writable"
+        if path == "/app/scanner/state":
+            assert any(c["metadata"]["name"] == mounts[path] for c in deployment["spec"]["volumeClaimTemplates"])
+        else:
+            assert volumes[mounts[path]]["emptyDir"]["sizeLimit"]
+
+    env = {e["name"]: e for e in container["env"]}
+    assert env["OCTO_API_URL"]["value"] == snips["server_url"]
+    key_env = env["OCTO_AGENT_PROVISIONING_KEY"]
+    assert "value" not in key_env
+    secret_ref = key_env["valueFrom"]["secretKeyRef"]
+    assert "optional" not in secret_ref  # wait for the Secret, do not start keyless
+
+    # The key is in no form anywhere in the manifest, comments included: it is
+    # the file that gets committed.
+    assert key not in manifest
+    assert all(key not in str(e.get("value", "")) for e in container["env"])
+
+    # It is in the command shown next to it, which feeds it to kubectl on stdin
+    # into that very Secret, and not on kubectl's command line.
+    command = snips["kubernetes_secret_command"]
+    feed, kubectl = command.split(" | ", 1)
+    assert key in feed and key not in kubectl
+    assert feed.startswith("printf ")
+    assert kubectl.split() == [
+        "kubectl", "-n", ns_name, "create", "secret", "generic", secret_ref["name"],
+        f"--from-file={secret_ref['key']}=/dev/stdin",
+    ]
+
+    # Same image repository and the same two deviations as the reference.
+    example = yaml.safe_load(_EXAMPLE_SENSOR.read_text(encoding="utf-8"))
+    (ref,) = example["spec"]["template"]["spec"]["containers"]
+    assert container["command"] == ref["command"]
+    assert sc["capabilities"] == ref["securityContext"]["capabilities"]
+    assert sc["allowPrivilegeEscalation"] == ref["securityContext"]["allowPrivilegeEscalation"]
+
+
+def _assert_container_snippets_can_scan(snips: dict) -> None:
+    """A published image, and the capabilities naabu/pulse's file caps need.
+
+    Docker's default set has NET_RAW but not NET_ADMIN, and an exec whose file
+    capabilities exceed the bounding set fails with EPERM.
+    """
+    image = SENSOR_IMAGE
+    for name in ("docker_run", "docker_compose", "kubernetes_yaml"):
+        assert "ghcr.io/onixus/shapoclyack:" not in snips[name], name
+
+    run = snips["docker_run"].split()
+    assert run[run.index(image) + 1 :] == ["-m", "agent"]
+    assert run[run.index("--entrypoint") + 1] == "python"
+    caps = {run[i + 1] for i, arg in enumerate(run) if arg == "--cap-add"}
+    assert caps == {"NET_RAW", "NET_ADMIN"}
+
+    service = yaml.safe_load(snips["docker_compose"])["services"]["shapoclyack-agent"]
+    assert service["image"] == image
+    assert sorted(service["cap_add"]) == ["NET_ADMIN", "NET_RAW"]
 
 
 def _key_count(client, admin_hdrs, tenant_id: str = "default") -> int:
@@ -429,6 +546,7 @@ def test_minting_a_deployment_key_takes_admin_and_reading_takes_operator(
         resp = client.get("/api/agent/deployment-command", headers=operator_hdrs)
         assert resp.status_code == 200
         assert resp.json()["provisioning_key"] is None
+        assert "<PROVISIONING_KEY>" in resp.json()["kubernetes_secret_command"]
     assert _key_count(client, admin_hdrs) == before
 
     # ...and an operator cannot mint one at all.
@@ -506,6 +624,13 @@ def test_snippets_use_the_configured_base_url_not_the_host_header(
     assert "attacker.example.net" not in body["systemd_oneliner"]
     assert "https://console.example.com/api/agent/install.sh" in body["systemd_oneliner"]
     assert "attacker.example.net" not in body["kubernetes_yaml"]
+    # And it is the manifest's API URL, not merely absent from it.
+    (deployment,) = [
+        d for d in yaml.safe_load_all(body["kubernetes_yaml"]) if d["kind"] == "StatefulSet"
+    ]
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["OCTO_API_URL"] == "https://console.example.com"
 
 
 def test_every_container_snippet_keeps_the_sensors_id_on_a_volume(monkeypatch):
@@ -545,14 +670,14 @@ def test_every_container_snippet_keeps_the_sensors_id_on_a_volume(monkeypatch):
     assert mount == state_dir
     assert volume in compose["volumes"]  # named, not a bind mount of a host path
 
-    sts = yaml.safe_load(snips["kubernetes_yaml"])
+    sts = next(d for d in yaml.safe_load_all(snips["kubernetes_yaml"]) if d and d.get("kind") == "StatefulSet")
     assert sts["kind"] == "StatefulSet"
     pod = sts["spec"]["template"]["spec"]
     container = pod["containers"][0]
-    env = {item["name"]: item["value"] for item in container["env"]}
+    env = {item["name"]: item["value"] for item in container["env"] if "value" in item}
     assert env["OCTO_AGENT_ID_FILE"] == id_file
     assert env["OCTO_API_URL"] == "https://console.example.com"
-    (mounted,) = container["volumeMounts"]
+    mounted = next(m for m in container["volumeMounts"] if m["mountPath"] == state_dir)
     assert mounted["mountPath"] == state_dir
     (claim,) = sts["spec"]["volumeClaimTemplates"]
     assert claim["metadata"]["name"] == mounted["name"]
