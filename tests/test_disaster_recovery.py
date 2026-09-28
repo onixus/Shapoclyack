@@ -890,24 +890,51 @@ def test_merges_restart_when_the_restore_is_interrupted(tmp_path, signame):
     alone does not run on a fatal signal in dash or busybox ash, and merges
     left stopped fail every later OPTIMIZE with Code 236."""
     rules = [
-        (match, [{"stdout": "RESTORING\n"}]) if match.startswith("SELECT status") else (match, replies)
+        (match, [{"stdout": "RESTORING\n"}])
+        if match.startswith("SELECT status")
+        else (match, replies)
         for match, replies in _restore_rules()
     ]
     stub = Stub(tmp_path, rules)
     proc = subprocess.Popen(
-        ["sh", str(RESTORE_SCRIPT), "--backup-url", _URL, "--local"],
+        # Jenkins uses nohup. A POSIX shell cannot trap a signal ignored at
+        # exec, so reset it in a launcher rather than inheriting SIG_IGN.
+        # Avoid preexec_fn: pytest may already have threads running.
+        [
+            sys.executable,
+            "-c",
+            "import os, signal, sys; "
+            "signal.signal(getattr(signal, sys.argv[1]), signal.SIG_DFL); "
+            "os.execvp('sh', ['sh', *sys.argv[2:]])",
+            signame,
+            str(RESTORE_SCRIPT),
+            "--backup-url",
+            _URL,
+            "--local",
+        ],
+        start_new_session=True,
         env=stub.env(CLICKHOUSE_RESTORE_POLL_SECONDS="1"),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    deadline = time.monotonic() + 30
-    while not any("SELECT status FROM system.backups" in sql for sql in stub.statements):
-        assert time.monotonic() < deadline, "restore never reached its poll"
-        time.sleep(0.05)
-    proc.send_signal(getattr(signal, signame))
-    proc.communicate(timeout=30)
-    assert proc.returncode != 0
+    try:
+        deadline = time.monotonic() + 30
+        while not any(
+            "SELECT status FROM system.backups" in sql for sql in stub.statements
+        ):
+            assert time.monotonic() < deadline, "restore never reached its poll"
+            time.sleep(0.05)
+        proc.send_signal(getattr(signal, signame))
+        proc.communicate(timeout=30)
+    finally:
+        # A failed assertion/timeout must not leave the restore poll running.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate(timeout=5)
+    assert proc.returncode == 128 + getattr(signal, signame)
     assert sum(sql.startswith("SYSTEM START MERGES") for sql in stub.statements) == 3
 
 
