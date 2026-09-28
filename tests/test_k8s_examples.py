@@ -83,6 +83,8 @@ def _pod_labels(path: Path, kind: str, name: str) -> dict[str, str]:
 def _defined_namespaces() -> set[str]:
     return {
         _one(K8S / "base" / "namespace.yaml", "Namespace")["metadata"]["name"],
+        # The restore overlay deliberately isolates the CSI recovery example.
+        yaml.safe_load((K8S / "overlays" / "kind-restore" / "kustomization.yaml").read_text())["namespace"],
         _one(K8S / "base" / "scanner-executor" / "namespace.yaml", "Namespace")["metadata"]["name"],
     }
 
