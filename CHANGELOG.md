@@ -545,6 +545,21 @@ All notable changes to Shapoclyack are documented in this file.
   org's zones; set `dns.resolvers` if that is not the view you want judged.
   The `resolve` stage logs when no resolver answered at all. The AXFR probe
   keeps dialling the zone's own nameserver.
+- **Typosquat candidates of a seed under a multi-label suffix are look-alikes
+  again.** `domain_monitor` split a seed at its last dot, so `bbc.co.uk` was
+  the label `bbc.co` plus the TLD `uk`: the generators mutated the dot and the
+  `co` (`bbcco.uk`, `bbc.c0.uk`), the TLD swap offered `bbc.co.com`, and
+  `bbc.com` was never tried; `x.github.io` even gave `.github.io`. The split
+  now comes from the bundled Public Suffix List snapshot — the registrable
+  label and the whole public suffix (`bbc` + `co.uk`, `example` + `com.ru`,
+  `x` + `github.io`), a subdomain seed such as `shop.example.com.ru` cut to its
+  registrable domain first — and the TLD swap replaces the suffix as a unit
+  (`bbc.com`, `bbc.co`), led by the suffix's own TLD (`bbc.uk`, `example.ru`).
+  The seed's registrable domain is dropped from its candidates along with the
+  seed. A seed with no registrable domain (a public suffix, an IP, a bare
+  label) still splits at the last dot. Known limitation: platforms such as
+  `github.io` and `herokuapp.com` answer for every name, so a seed under one
+  reports each label mutation as registered.
 - **The scanner's SSRF gate judges the IPv4 address behind NAT64.**
   `safe_http.is_public_address`, the check behind every `safe_http.get`
   (RDAP, MTA-STS, DNS-over-HTTPS) and the DNS-hygiene AXFR probe, took
