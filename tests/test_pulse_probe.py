@@ -655,7 +655,7 @@ def test_failed_chunks_are_on_the_record(tmp_path, monkeypatch):
     _run_probe(
         tmp_path,
         monkeypatch,
-        [crash, crash, _ONE_SERVICE, _ONE_SERVICE],
+        [crash, crash, _ONE_SERVICE.replace("10.0.0.1", "10.0.0.2")],
         open_ports=("10.0.0.1:22/tcp", "10.0.0.2:22/tcp"),
         chunk_hosts=1,
     )
