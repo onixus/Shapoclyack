@@ -57,9 +57,10 @@ class TargetPolicy:
 
     subject: str
     #: False refuses every address that is not globally routable — loopback,
-    #: RFC1918, link-local, CGNAT, multicast. True accepts them, which is the
-    #: right default only for a caller whose targets legitimately live inside
-    #: a private network.
+    #: RFC1918, link-local, CGNAT, multicast, and the IPv6 forms that deliver
+    #: to one of those (see :func:`is_public_address`). True accepts them,
+    #: which is the right default only for a caller whose targets
+    #: legitimately live inside a private network.
     allow_private: bool = False
     #: Refused whatever ``allow_private`` says: loopback, link-local,
     #: multicast, unspecified and reserved space. Set by callers that accept
@@ -102,7 +103,7 @@ class HttpTarget(Target):
 
 
 def webhook_policy(*, allow_private: bool) -> TargetPolicy:
-    """The webhook boundary from #151, unchanged: public addresses or the flag."""
+    """The webhook boundary from #151: :func:`is_public_address` addresses or the flag."""
     return TargetPolicy(
         subject="webhook",
         allow_private=allow_private,
@@ -173,15 +174,82 @@ def resolve(hostname: str) -> list[IpAddress]:
     return addresses
 
 
-def _unmapped(address: IpAddress) -> IpAddress:
-    """``::ffff:127.0.0.1`` is 127.0.0.1 wearing a hat; judge the address itself."""
-    mapped = getattr(address, "ipv4_mapped", None)
-    return mapped or address
+#: RFC 6052 well-known NAT64 prefix. It is a /96, so the IPv4 destination is
+#: exactly the low 32 bits: no operator-chosen length, no u-octet to skip.
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+
+#: IPv6 ranges that deliver to an embedded IPv4 address this code cannot
+#: judge, refused outright. See :func:`is_public_address` for each one.
+_EMBEDDED_IPV4_REFUSED = (
+    ipaddress.IPv6Network("64:ff9b:1::/48"),  # RFC 8215 local-use NAT64
+    ipaddress.IPv6Network("::ffff:0:0:0/96"),  # RFC 2765 SIIT, replaced by RFC 6052
+    ipaddress.IPv6Network("2002::/16"),  # RFC 3056 6to4
+    ipaddress.IPv6Network("::/96"),  # RFC 4291 IPv4-compatible, deprecated
+)
+
+
+def _embedded_ipv4(address: IpAddress) -> IpAddress:
+    """The IPv4 address a packet to ``address`` is delivered to, where the RFC fixes it.
+
+    ``::ffff:127.0.0.1`` is 127.0.0.1 wearing a hat, and behind a NAT64
+    translator ``64:ff9b::a00:5`` is 10.0.0.5; judge the address itself.
+    Anything else comes back unchanged.
+    """
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return address.ipv4_mapped
+        if address in _NAT64_WELL_KNOWN:
+            return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return address
+
+
+def is_public_address(address: IpAddress) -> bool:
+    """Whether ``address`` is public in the webhook sense (``allow_private=False``).
+
+    ``is_global`` alone is not the answer for an IPv6 address that is really an
+    IPv4 destination in transit. ``ipaddress`` calls ``64:ff9b::a00:5`` global
+    (IANA lists the NAT64 well-known prefix as globally reachable), but on an
+    API pod whose IPv6-only egress goes through NAT64 that address *is*
+    10.0.0.5, and ``64:ff9b::a9fe:a9fe`` is the cloud metadata service.
+
+    - ``::ffff:0:0/96`` (IPv4-mapped) and ``64:ff9b::/96`` (NAT64 well-known)
+      are judged by the IPv4 address in their low 32 bits. Unwrapped rather
+      than refused because DNS64 answers every IPv4-only name with a
+      synthesized ``64:ff9b::/96`` AAAA and :func:`check_addresses` refuses a
+      name if *any* of its addresses fails: refusing the prefix would refuse
+      every IPv4-only receiver on an IPv6-only pod. RFC 6052 section 3.1
+      forbids the prefix for non-global IPv4, so nothing a conforming DNS64
+      produces is lost.
+    - ``64:ff9b:1::/48`` (local-use NAT64: where the IPv4 address sits depends
+      on the operator's prefix length), ``::ffff:0:0:0/96`` (SIIT
+      IPv4-translated), ``2002::/16`` (6to4) and ``::/96`` (IPv4-compatible)
+      are refused outright, so the verdict does not move with the
+      interpreter's special-purpose table (3.9 passes local-use and 6to4).
+
+    This is the API's copy of ``scanner/pipeline/safe_http.is_public_address``,
+    whose docstring has the full reasoning for each range; the scanner cannot
+    import ``api/``, and ``tests/test_outbound_targets.py`` pins the two to the
+    same verdicts. A network-specific NAT64 prefix carved from the operator's
+    own global space is out of reach of any address-only rule.
+    """
+    if isinstance(address, ipaddress.IPv6Address) and any(
+        address in network for network in _EMBEDDED_IPV4_REFUSED
+    ):
+        return False
+    candidate = _embedded_ipv4(address)
+    return bool(candidate.is_global) and not candidate.is_multicast
 
 
 def _special_reason(address: IpAddress) -> str | None:
-    """Why no legitimate target is ever at this address, or None."""
-    candidate = _unmapped(address)
+    """Why no legitimate target is ever at this address, or None.
+
+    A NAT64 well-known address is named after the IPv4 address it reaches
+    (``64:ff9b::a9fe:a9fe`` is the metadata service, not just "reserved"), and
+    one that reaches an ordinary IPv4 address is still refused as reserved, as
+    it was before the prefix was unwrapped: ``ipaddress`` files it under
+    ``::/8``, and RFC 6052 forbids it for the private space agents live in.
+    """
+    candidate = _embedded_ipv4(address)
     if candidate.is_loopback:
         return "loopback address"
     if candidate.is_link_local:
@@ -196,6 +264,8 @@ def _special_reason(address: IpAddress) -> str | None:
         "255.255.255.255"
     ):
         return "broadcast address"
+    if address in _NAT64_WELL_KNOWN:
+        return "reserved address"
     return None
 
 
@@ -231,7 +301,7 @@ def check_addresses(
                     f"a {reason} — nothing deployable is there, and reaching it "
                     "would only report on this platform's own internals"
                 )
-        if not policy.allow_private and (not address.is_global or address.is_multicast):
+        if not policy.allow_private and not is_public_address(address):
             remedy = f"; {policy.private_remedy}" if policy.private_remedy else ""
             raise OutboundTargetError(
                 f"{policy.subject} host {hostname} resolves to non-public address "

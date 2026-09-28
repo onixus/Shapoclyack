@@ -558,11 +558,27 @@ All notable changes to Shapoclyack are documented in this file.
   which `ipaddress` also calls global (`::7f00:1` passed). Python 3.9 passed
   the local-use prefix and 6to4 as well. A network-specific NAT64
   prefix chosen by the sensor's operator is still indistinguishable from
-  ordinary global space. The API's webhook boundary
-  (`api/services/outbound_targets.check_addresses`, used by
-  `integrations/delivery.py`) has the same gap for `64:ff9b::/96`,
-  `::ffff:0:0:0/96` and `::/96` and is not changed here; the SSH deployer's
-  policy already refuses all three as reserved.
+  ordinary global space. The API's webhook boundary had the same gap; see
+  the next entry.
+- **Webhooks and every other API delivery refuse IPv6 that reaches private
+  IPv4 through NAT64.** `api/services/outbound_targets.check_addresses`
+  under the webhook policy — the boundary behind `integrations/delivery.py`,
+  so webhooks, notification channels, ticket transports and report
+  webhooks — refused an address only if `ipaddress` said it was not global.
+  It says `64:ff9b::a00:5` and `64:ff9b::a9fe:a9fe` are global (the RFC 6052
+  NAT64 well-known prefix), and on an API pod whose IPv6-only egress goes
+  through NAT64 those are 10.0.0.5 and the cloud metadata service. The SIIT
+  form `::ffff:0:a00:5` and the IPv4-compatible `::a00:5` and `::127.0.0.1`
+  passed as well. The API now applies the scanner's rule from the entry
+  above: `64:ff9b::/96` and IPv4-mapped are judged by the IPv4 address in the
+  low 32 bits, so a DNS64 answer for a public receiver
+  (`64:ff9b::5db8:d822`) is still delivered to, and `64:ff9b:1::/48`,
+  `::ffff:0:0:0/96`, `2002::/16` and `::/96` are refused outright. A test
+  holds the API and scanner copies to the same verdicts.
+  `OCTO_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` still turns the check off. The
+  SSH deployer's policy already refused all of these as reserved and still
+  does; a NAT64 address now reports the loopback, link-local or multicast
+  address behind it instead.
 - **`/metrics` no longer mints a series per probed URL, and SLO 5 can alert**
   ([#334](https://github.com/onixus/Shapoclyack/issues/334)). A request that no
   route matched — every 404 on an API without the console build, every CORS
