@@ -273,6 +273,7 @@ class JsonAdvisoryProvider:
     distro: str = ""
     env_var: str = ""
     default_path: str = ""
+    case_sensitive_packages: bool = False
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._explicit_path = Path(path) if path else None
@@ -293,12 +294,16 @@ class JsonAdvisoryProvider:
             return (str(path), 0.0, -1)
         return (str(path), stat.st_mtime, stat.st_size)
 
+    def _load_dataset(self, path: Path) -> AdvisoryDataset:
+        """Format hook; all providers share the same cache and snapshot rules."""
+        return load_dataset(path, provider=self.name)
+
     def dataset(self) -> AdvisoryDataset:
         path = self.path()
         key = self._stat_key(path)
         with self._lock:
             if self._dataset is None or self._cache_key != key:
-                self._dataset = load_dataset(path, provider=self.name)
+                self._dataset = self._load_dataset(path)
                 self._cache_key = key
             return self._dataset
 
@@ -332,9 +337,10 @@ class JsonAdvisoryProvider:
     def advisories_for(
         self, *, release: str, source_package: str
     ) -> tuple[AdvisoryRecord, ...]:
-        return self.dataset().lookup(
-            (release or "").strip().lower(), (source_package or "").strip().lower()
-        )
+        package = (source_package or "").strip()
+        if not self.case_sensitive_packages:
+            package = package.lower()
+        return self.dataset().lookup((release or "").strip().lower(), package)
 
     def status(self) -> dict[str, Any]:
         """Provenance for ``GET /api/system`` and the fetch script."""

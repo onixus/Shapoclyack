@@ -31,6 +31,7 @@ class AdvisorySnapshot:
     name: str
     distro: str
     data: AdvisoryDataset
+    case_sensitive_packages: bool = False
 
     def available(self) -> bool:
         return bool(self.data.records)
@@ -50,9 +51,10 @@ class AdvisorySnapshot:
     def advisories_for(
         self, *, release: str, source_package: str
     ) -> tuple[AdvisoryRecord, ...]:
-        return self.data.lookup(
-            (release or "").strip().lower(), (source_package or "").strip().lower()
-        )
+        package = (source_package or "").strip()
+        if not self.case_sensitive_packages:
+            package = package.lower()
+        return self.data.lookup((release or "").strip().lower(), package)
 
 
 def snapshot_provider(provider: AdvisoryProvider | None) -> AdvisoryProvider | None:
@@ -76,7 +78,10 @@ def snapshot_provider(provider: AdvisoryProvider | None) -> AdvisoryProvider | N
         for method in methods
     ):
         return provider
-    return AdvisorySnapshot(name=provider.name, distro=provider.distro, data=provider.dataset())
+    return AdvisorySnapshot(
+        name=provider.name, distro=provider.distro, data=provider.dataset(),
+        case_sensitive_packages=provider.case_sensitive_packages,
+    )
 
 
 def coverage_reason(provider: AdvisoryProvider | None, *, release: str) -> str | None:

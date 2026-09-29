@@ -184,15 +184,15 @@ def test_identity_errors_take_precedence_over_a_missing_feed(tmp_path):
 
 
 @pytest.mark.parametrize(("os_name", "os_version", "reason"), [
-    ("Red Hat Enterprise Linux", "9", "unsupported_distro"),
+    ("Red Hat Enterprise Linux", "9", "no_advisory_data"),
     ("Rocky Linux", "9", "unsupported_distro"),
     ("AlmaLinux", "9", "unsupported_distro"),
-    ("SUSE Linux Enterprise Server", "15", "unsupported_distro"),
-    ("Amazon Linux", "2023", "unsupported_distro"),
+    ("SUSE Linux Enterprise Server", "15", "unknown_release"),
+    ("Amazon Linux", "2023", "no_advisory_data"),
     ("Unknown appliance", "1", "unknown_distro"),
     ("Ubuntu", "unrecognised", "unknown_release"),
 ])
-def test_no_new_distribution_support_is_implied(os_name, os_version, reason):
+def test_unconfigured_feeds_and_unknown_distributions_remain_unassessed(os_name, os_version, reason):
     result = run(None, [package(source="rpm")], DEVICE | {
         "os_name": os_name, "os_version": os_version,
     })

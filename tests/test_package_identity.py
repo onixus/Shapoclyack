@@ -36,7 +36,6 @@ def test_resolve_distro(os_family, os_name, os_version, distro, release) -> None
         # A distribution we recognise but do not cover is a different answer
         # from one we could not identify at all.
         ("linux", "Rocky Linux", "9.3", "rocky", pi.REASON_UNSUPPORTED_DISTRO),
-        ("linux", "Red Hat Enterprise Linux", "9.2", "rhel", pi.REASON_UNSUPPORTED_DISTRO),
         ("linux", "Fedora Linux", "40", "fedora", pi.REASON_UNSUPPORTED_DISTRO),
         ("windows", "Windows 11 Pro", "10.0.22631", None, pi.REASON_UNSUPPORTED_DISTRO),
         ("darwin", "macOS", "14.5", None, pi.REASON_UNSUPPORTED_DISTRO),

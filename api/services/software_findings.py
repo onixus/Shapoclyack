@@ -106,7 +106,7 @@ from sqlalchemy import select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import advisories, package_identity
+from api.services import advisories, package_identity, rpm_identity
 from api.services import software_cve_match as match_service
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
@@ -625,6 +625,25 @@ def _fold_device(
         for match in context.matches
         if match.status == match_service.UNKNOWN and (match.cve_id or "").strip()
     }
+    rpm_device = package_identity.resolve_distro(
+        os_family=device.os_family, os_name=device.os_name, os_version=device.os_version,
+    ).distro in rpm_identity.RPM_DISTROS
+    # Device/CVE deduplication cannot prove that a different, unassessed
+    # binary is unrelated to a fixed CVE. RPM gaps veto closure conservatively.
+    rpm_incomplete = rpm_device and any(
+        match.status == match_service.UNKNOWN
+        and match.unknown_reason != package_identity.REASON_NON_DISTRO_SOURCE
+        for match in context.matches
+    )
+    confirmed_keys = {
+        software_finding_key(
+            asset_id=asset.asset_id, device_id=device.device_id, cve=match.cve_id,
+        )
+        for match in context.matches
+        if match.status == match_service.FIXED and match.cve_id
+        and match.snapshot_id == device.latest_snapshot_id
+        and (match.evidence or {}).get("assessment_scope") == "installed_binary_rpm"
+    } if rpm_device else set()
     for key, row in existing.items():
         if key in seen_keys or row.state == vuln_states.CLOSED:
             continue
@@ -639,6 +658,7 @@ def _fold_device(
         if not (
             fresh_snapshot and context.assessment_possible
             and not coverage_unknown and key not in unknown_keys
+            and (not rpm_device or (not rpm_incomplete and key in confirmed_keys))
         ):
             # Not observed is not fixed. ``last_seen_at`` deliberately does not
             # move either, so ``?stale_days=`` still surfaces this row.

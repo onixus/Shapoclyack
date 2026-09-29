@@ -159,7 +159,8 @@ def fold_with_matches(monkeypatch, matches, *, assessment_possible=True, fresh=T
     events = []
     monkeypatch.setattr(findings.vulns_service, "_record_event", lambda *a, **kw: events.append(kw))
     context = findings._DeviceContext(
-        device=SimpleNamespace(device_id="d", latest_snapshot_id="s2", hostname="fixture"),
+        device=SimpleNamespace(device_id="d", latest_snapshot_id="s2", hostname="fixture",
+                               os_family="linux", os_name="Ubuntu", os_version="20.04"),
         asset=SimpleNamespace(asset_id="a"),
         observed_at=first_seen + timedelta(days=1 if fresh else 0),
         assessment_possible=assessment_possible, matches=matches,

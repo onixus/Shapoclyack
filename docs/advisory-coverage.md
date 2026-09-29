@@ -1,8 +1,9 @@
 # Advisory coverage and unknown assessments
 
-This is the first correctness stage of #358. It does not add RHEL, SUSE or
-Amazon Linux advisory providers. See [software CVE matching](software-cve-matching.md)
-for the existing Debian, Ubuntu and Windows OS-build paths.
+The safeguards of #358 now also protect RHEL/SLES/ALAS binary-RPM providers.
+See [RPM applicability and import](rpm-advisories.md) for their supported matrix
+and explicit channel bindings. Debian/Ubuntu and Windows OS-build paths remain
+in [software CVE matching](software-cve-matching.md).
 
 ## A resolved identity is not an assessment
 

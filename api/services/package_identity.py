@@ -33,13 +33,13 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
-from api.services import version_compare
+from api.services import rpm_identity, version_compare
 
 #: Distributions this milestone has an advisory provider for. Anything else is
 #: resolvable as an identity but not matchable — see ``reason``.
 DEBIAN = "debian"
 UBUNTU = "ubuntu"
-SUPPORTED_DISTROS = (DEBIAN, UBUNTU)
+SUPPORTED_DISTROS = (DEBIAN, UBUNTU, *rpm_identity.RPM_DISTROS)
 
 #: Why an identity cannot be matched against a vendor advisory. These strings
 #: are persisted on ``unknown`` rows and rendered in the UI, so they are part
@@ -50,6 +50,8 @@ REASON_NON_DISTRO_SOURCE = "non_distro_source"
 REASON_UNKNOWN_DISTRO = "unknown_distro"
 REASON_UNKNOWN_RELEASE = "unknown_release"
 REASON_UNSUPPORTED_DISTRO = "unsupported_distro"
+REASON_PACKAGE_DISTRO_MISMATCH = "package_distro_mismatch"
+REASON_INVALID_PACKAGE_NAME = "invalid_package_name"
 #: Windows (#358). The matcher assesses the *operating system build* against
 #: Microsoft's remediations, which is what a Microsoft advisory is written
 #: about; the products in the uninstall registry carry marketing version
@@ -235,6 +237,14 @@ def resolve_distro(
         # windows/darwin/… — recognised, and out of scope by construction.
         return DistroContext(distro=None, release=None, reason=REASON_UNSUPPORTED_DISTRO)
 
+    rpm_distro = rpm_identity.distro_id(name)
+    if rpm_distro is not None:
+        release = rpm_identity.release_id(rpm_distro, version, name)
+        return DistroContext(
+            distro=rpm_distro, release=release, supported=release is not None,
+            reason=None if release is not None else REASON_UNKNOWN_RELEASE,
+        )
+
     distro: str | None = None
     if "ubuntu" in name:
         distro = UBUNTU
@@ -288,7 +298,7 @@ def source_package_candidates(name: str, *, flavor: str | None) -> tuple[str, ..
     turn a miss into a hit and never turn a correct exact lookup into a
     different package's advisory.
     """
-    base = _normalize(name)
+    base = name.strip() if flavor == version_compare.RPM else _normalize(name)
     if not base:
         return ()
     if flavor != version_compare.DEB:
@@ -388,15 +398,17 @@ def identify(
     passed in rather than re-derived per package, since it is a property of the
     endpoint.
     """
-    clean_name = _normalize(name)
     source = _normalize(source) or "other"
     flavor = _SOURCE_FLAVORS.get(source)
+    clean_name = name.strip() if flavor == version_compare.RPM else _normalize(name)
     ctx = distro or DistroContext(distro=None, release=None, reason=REASON_UNKNOWN_DISTRO)
 
     evr: version_compare.Evr | None = None
     version_reason: str | None = None
     if not (version or "").strip():
         version_reason = REASON_NO_VERSION
+    elif flavor == version_compare.RPM and not rpm_identity.valid_evr((version or "").strip()):
+        version_reason = REASON_UNPARSABLE_VERSION
     elif flavor is not None:
         try:
             evr = version_compare.parse_evr(version or "", flavor=flavor)
@@ -414,6 +426,10 @@ def identify(
         reason = version_reason
     elif not ctx.supported:
         reason = ctx.reason or REASON_UNKNOWN_DISTRO
+    elif not clean_name or (flavor == version_compare.RPM and not rpm_identity.valid_name(clean_name)):
+        reason = REASON_INVALID_PACKAGE_NAME
+    elif (ctx.distro in rpm_identity.RPM_DISTROS) != (flavor == version_compare.RPM):
+        reason = REASON_PACKAGE_DISTRO_MISMATCH
 
     purl = (
         build_purl(

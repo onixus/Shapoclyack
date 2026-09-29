@@ -72,6 +72,11 @@ _JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
     # therefore below a single month: it catches a truncated document without
     # refusing an installation that deliberately fetched one month.
     "advisories_msrc": ("advisories/msrc-advisories.json", 5_000, False),
+    # Explicit product bindings can legitimately be very small. Presence of
+    # one valid record is not a claim of complete vendor/estate coverage.
+    "advisories_rhel": ("advisories/rhel-advisories.json", 1, False),
+    "advisories_suse": ("advisories/suse-advisories.json", 1, False),
+    "advisories_alas": ("advisories/alas-advisories.json", 1, False),
     # NVD CPE ranges for retro CVE matching (docs/retro-cve-matching.md). The
     # count is *products* (``entries`` is keyed by part:vendor:product), not
     # statements: the full application corpus is tens of thousands of products
