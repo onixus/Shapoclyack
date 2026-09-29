@@ -1,0 +1,111 @@
+name: RPM consumer validation
+
+# Temporary PR-local acceptance; deleted from the verified delivered tree.
+on:
+  pull_request:
+    paths: ['.github/workflows/rpm-provider-workbench.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: github.event.pull_request.number == 494 && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_DB: shapoclyack
+          POSTGRES_USER: octo
+          POSTGRES_PASSWORD: octo-ci-secret
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U octo -d shapoclyack"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Materialize and verify corrected source tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, json, os, subprocess, urllib.request
+          from pathlib import Path
+          assert os.environ['GITHUB_REPOSITORY'] == 'onixus/Shapoclyack'
+          base = 'https://api.github.com/repos/onixus/Shapoclyack'
+          def api(path, payload=None):
+              request = urllib.request.Request(base + path,
+                  data=None if payload is None else json.dumps(payload).encode(), headers={
+                      'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                      'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                      'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          data = base64.b64decode(api('/git/blobs/a2868829f0a24cf32aebd5c1e3859fa01ffd032a')['content'])
+          assert hashlib.sha256(data).hexdigest() == 'c1abcac6d9c208d3e31ee0ec1dc2b216b883344e9b1106f18f5b09f94c12ee7a'
+          result = Path('/tmp/rpm-results')
+          result.mkdir()
+          patch = result / 'consumer-fix.patch'
+          patch.write_bytes(gzip.decompress(data))
+          subprocess.run(['git', 'apply', '--index', str(patch)], check=True)
+          subprocess.run(['git', 'rm', '.github/workflows/rpm-provider-workbench.yml'], check=True)
+          expected = '3e8b7a44d53777f6decaea3821e258e9880aa82d'
+          assert git('write-tree').decode().strip() == expected
+          parent = git('rev-parse', 'HEAD').decode().strip()
+          entries = []
+          for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw:
+                  continue
+              path = raw.decode()
+              indexed = git('ls-files', '-s', '--', path)
+              if not indexed:
+                  entries.append(dict(path=path, mode='100644', type='blob', sha=None))
+                  continue
+              mode, sha, _ = indexed.decode().split(None, 2)
+              content = git('cat-file', 'blob', sha)
+              written = api('/git/blobs', dict(content=base64.b64encode(content).decode(), encoding='base64'))
+              assert written['sha'] == sha
+              entries.append(dict(path=path, mode=mode, type='blob', sha=sha))
+          parent_tree = api('/git/commits/' + parent)['tree']['sha']
+          tree = api('/git/trees', dict(base_tree=parent_tree, tree=entries))
+          assert tree['sha'] == expected
+          (result / 'tree.json').write_text(json.dumps(dict(parent=parent, tree=expected, files=entries), indent=2))
+          print('Verified tree:', expected)
+          # This job writes only immutable Git objects, never branch refs.
+          PY
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock
+      - name: Ruff compile and diff check
+        run: |
+          ./scripts/ci-lint.sh
+          python -m compileall -q api scanner tests agent
+          git diff --cached --check
+      - name: PostgreSQL migrations
+        env:
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
+        run: alembic -c api/db/alembic.ini upgrade head
+      - name: Provider and PostgreSQL API acceptance
+        env:
+          OCTO_POSTGRES_URL: postgresql+psycopg://octo:octo-ci-secret@127.0.0.1:5432/shapoclyack
+          OCTO_REQUIRE_INTEGRATION: '0'
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/test_rpm_advisories.py tests/test_rpm_advisory_lifecycle.py tests/test_api_rpm_advisories.py tests/test_api_software_cve_match.py tests/test_software_cve_match.py tests/test_software_finding*.py tests/test_software_match_worker.py tests/test_advisory*.py tests/test_package_identity.py tests/test_version_compare.py tests/test_windows_cve_match.py tests/test_retro_match.py tests/test_retro_findings.py tests/test_enrichment_bundle.py tests/test_air_gap_feeds.py tests/test_api_system.py tests/test_patch_gap.py tests/test_rpm_patch_gap.py --junitxml=/tmp/rpm-results/python.xml 2>&1 | tee /tmp/rpm-results/python.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: rpm-consumer-validation
+          path: /tmp/rpm-results
+          retention-days: 7
+          if-no-files-found: error
