@@ -9,12 +9,15 @@ already have open ports from naabu, writes canonical artifacts:
   output_dir/os.json              — octo.os.v1 list
   output_dir/pulse_cves.json      — optional CVE findings from pulse
 
-Hosts are probed in chunks of ``chunk_hosts``. Pulse's own ``--checkpoint`` is
+Hosts with identical TCP port sets are probed in chunks of ``chunk_hosts``;
+no invocation introduces host/port combinations absent from the input.
+Pulse's own ``--checkpoint`` is
 deliberately not used: Shapoclyack already tracks per-host progress in its
 CheckpointStore, a chunk is cheap to rescan, and a pulse checkpoint that
 outlives one invocation is a liability -- pulse trusts the file over
 ``--targets-file`` and *replays* a finished (or all-hosts-completed) one
 without OS detection, CVE correlation or the TLS probe. See ``chunk_key``.
+Exact planning, resume and diagnostic contracts: docs/pulse-endpoints.md.
 
 ``--os`` needs raw sockets. When pulse refuses for that reason the stage does
 not fail: it drops ``--os`` for the rest of the run and keeps services,
@@ -45,6 +48,13 @@ from pathlib import Path
 from typing import Any
 
 from .protocol import parse_endpoint
+from .pulse_plan import plan_tcp_probe
+from .pulse_progress import (
+    completed_hosts,
+    completion_manifest,
+    normalize_host,
+    retain_completed_payload,
+)
 from .service_schema import (
     FINDING_CLASSES,
     CveRecord,
@@ -164,7 +174,7 @@ def _group_tcp_ports(open_ports: list[str]) -> dict[str, list[int]]:
         except ValueError:
             continue
         if 1 <= port <= 65535:
-            grouped[parsed.host].append(port)
+            grouped[normalize_host(parsed.host)].append(port)
     return {h: sorted(set(ports)) for h, ports in grouped.items() if ports}
 
 
@@ -603,6 +613,7 @@ def run_pulse_probe(
     report_primary: bool | None = None,
     retry_settle_seconds: int = 15,
     on_unresolved: Callable[[list[str]], None] | None = None,
+    on_resume_validated: Callable[[set[str]], None] | None = None,
 ) -> Path:
     """Run Pulse against hosts derived from open_ports; write artifacts.
 
@@ -624,28 +635,61 @@ def run_pulse_probe(
     """
     pulse_bin = resolve_pulse_bin(bin_path)
     grouped = _group_tcp_ports(open_ports)
-    done = set(done_hosts or ())
-    pending_hosts = sorted(h for h in grouped if h not in done)
+    requested_done = {normalize_host(host) for host in (done_hosts or ())}
+    done: set[str] = set()
+    cached: dict[str, Any] = {}
+    if requested_done:
+        try:
+            previous = json.loads((output_dir / "pulse" / "raw.json").read_text(encoding="utf-8"))
+            if not isinstance(previous, dict):
+                raise ValueError("expected an object")
+            done, cached = retain_completed_payload(grouped, requested_done, previous)
+            # Validate reusable canonical data before honoring any checkpoint.
+            parse_pulse_json(cached)
+        except (OSError, ValueError, TypeError):
+            logging.warning("pulse_probe: persisted checkpoint evidence unavailable; re-probing approved endpoints")
+            done, cached = set(), {}
+    # Reconcile the coarse and per-host checkpoint before any replay/spawn.
+    # A callback failure aborts the stage rather than running with stale progress.
+    if on_resume_validated:
+        on_resume_validated(set(done))
+    size = max(1, chunk_hosts)
+    chunks = plan_tcp_probe(grouped, chunk_hosts=size, done_hosts=done)
+    planned_endpoints = sum(chunk.endpoint_count for chunk in chunks)
+    diagnostics = {
+        "input_unique_tcp_endpoints": sum(len(ports) for ports in grouped.values()),
+        "pending_unique_tcp_endpoints": sum(len(ports) for host, ports in grouped.items() if host not in done),
+        "planned_tcp_combinations": planned_endpoints,
+        "planned_chunks": len(chunks),
+        # These are adapter calls, NOT packets/connections or subprocess counts:
+        # run_command may retry timeouts internally with the same exact argv.
+        "chunk_probe_calls": 0,
+        "adapter_retry_calls": 0,
+        "adapter_retry_tcp_combinations": 0,
+        "command_retries": retries,
+        "resumed_hosts": len(done),
+        "replayed_checkpoint_hosts": len((requested_done & grouped.keys()) - done),
+    }
 
-    all_services: list[ServiceRecord] = []
-    all_os: list[OsRecord] = []
-    all_cves: list[CveRecord] = []
+    all_services, all_os, all_cves = parse_pulse_json(cached)
     merged_raw: dict[str, Any] = {
-        "open": [],
-        "os": [],
-        "cves": [],
-        "findings": [],
-        "tls": [],
+        "open": list(cached.get("open") or []),
+        "os": list(cached.get("os") or []),
+        "cves": list(cached.get("cves") or []),
+        "findings": list(cached.get("findings") or cached.get("cves") or []),
+        "tls": list(cached.get("tls") or []),
         "stats": {},
         "chunks": [],
+        "completion": completion_manifest({host: grouped[host] for host in done}),
+        "adapter": {"chunk_hosts": size, **diagnostics},
     }
 
     pulse_dir = output_dir / "pulse"
     pulse_dir.mkdir(parents=True, exist_ok=True)
 
-    if not pending_hosts:
+    if not chunks:
         logging.info("pulse_probe: no TCP open ports to probe")
-        write_pulse_artifacts(output_dir, [], [], [], raw=merged_raw)
+        write_pulse_artifacts(output_dir, all_services, all_os, all_cves, raw=merged_raw)
         sync_report_primary_marker(pulse_dir, report_primary)
         return pulse_dir
 
@@ -668,19 +712,28 @@ def run_pulse_probe(
     consecutive_crashes = 0
     scan_mode = "syn" if syn else "connect"
 
-    # Global port union keeps one pulse invocation simpler; overscans closed
-    # ports on hosts that don't share the full set — acceptable for MVP.
-    # Chunk by hosts for timeout/resume.
-    size = max(1, chunk_hosts)
-    chunks = [pending_hosts[i : i + size] for i in range(0, len(pending_hosts), size)]
+    logging.info(
+        "pulse_probe plan: %s unique input TCP endpoints, %s pending, "
+        "%s planned combinations in %s chunks",
+        diagnostics["input_unique_tcp_endpoints"],
+        diagnostics["pending_unique_tcp_endpoints"],
+        planned_endpoints,
+        len(chunks),
+    )
 
-    for idx, host_chunk in enumerate(chunks):
-        ports_union: set[int] = set()
-        for h in host_chunk:
-            ports_union.update(grouped.get(h, []))
-        ports_list = sorted(ports_union)
-        if not ports_list:
-            continue
+    for idx, chunk in enumerate(chunks):
+        host_chunk = list(chunk.hosts)
+        ports_list = list(chunk.ports)
+        probe_calls = 0
+
+        def _probe(command: list[str]) -> tuple[dict[str, Any], int, str]:
+            nonlocal probe_calls
+            if probe_calls:
+                diagnostics["adapter_retry_calls"] += 1
+                diagnostics["adapter_retry_tcp_combinations"] += chunk.endpoint_count
+            probe_calls += 1
+            diagnostics["chunk_probe_calls"] += 1
+            return _probe_chunk(command, timeout_seconds=timeout_seconds, retries=retries, idx=idx)
 
         key = chunk_key(host_chunk, ports_list, scan_mode)
         hosts_file = pulse_dir / f"chunk_{key}.hosts.txt"
@@ -716,9 +769,7 @@ def run_pulse_probe(
             len(host_chunk),
             len(ports_list),
         )
-        payload, returncode, stderr = _probe_chunk(
-            cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
-        )
+        payload, returncode, stderr = _probe(cmd)
 
         # pulse aborts the whole invocation -- not just OS detection -- when
         # --os cannot open raw sockets (unprivileged host install, a pod
@@ -745,9 +796,7 @@ def run_pulse_probe(
                 os_detect_degraded,
             )
             cmd = _command(with_os=False)
-            payload, returncode, stderr = _probe_chunk(
-                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
-            )
+            payload, returncode, stderr = _probe(cmd)
 
         crashed = returncode != 0 and not payload
         if crashed:
@@ -760,9 +809,7 @@ def run_pulse_probe(
                 returncode,
                 stderr[:300] or "no stderr",
             )
-            payload, returncode, stderr = _probe_chunk(
-                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
-            )
+            payload, returncode, stderr = _probe(cmd)
             crashed = returncode != 0 and not payload
         elif not payload.get("open") and retry_settle_seconds:
             # Every host here reached this stage because naabu proved a port
@@ -777,10 +824,10 @@ def run_pulse_probe(
                 retry_settle_seconds,
             )
             time.sleep(retry_settle_seconds)
-            payload, returncode, stderr = _probe_chunk(
-                cmd, timeout_seconds=timeout_seconds, retries=retries, idx=idx
-            )
+            payload, returncode, stderr = _probe(cmd)
 
+        # A settle retry can itself crash; classify the final attempt.
+        crashed = returncode != 0 and not payload
         if crashed:
             consecutive_crashes += 1
             if consecutive_crashes >= MAX_CONSECUTIVE_CRASHED_CHUNKS:
@@ -794,15 +841,11 @@ def run_pulse_probe(
             consecutive_crashes = 0
 
 
-        resolved = bool(payload.get("open") if payload else None)
-        if not resolved:
-            # Leave nothing behind that records this chunk as finished-and-closed:
-            # the hosts must not be marked done below, and the caller must not
-            # mark the whole stage done, or --resume would skip the stage
-            # outright and keep the false-empty result the retry exists to
-            # recover from.
-            if on_unresolved:
-                on_unresolved(list(host_chunk))
+        resolved_hosts = completed_hosts({host: ports_list for host in host_chunk}, payload, returncode)
+        unresolved_hosts = [host for host in host_chunk if host not in resolved_hosts]
+        resolved = not unresolved_hosts
+        if unresolved_hosts and on_unresolved:
+            on_unresolved(unresolved_hosts)
 
         if payload:
             services, os_recs, cves = parse_pulse_json(payload)
@@ -825,15 +868,20 @@ def run_pulse_probe(
                 "index": idx,
                 "key": key,
                 "hosts": host_chunk,
+                "ports": ports_list,
                 "returncode": returncode,
                 "resolved": resolved,
+                "unresolved_hosts": unresolved_hosts,
+                "probe_calls": probe_calls,
             }
         )
 
-        if resolved:
-            for h in host_chunk:
-                if on_host_done:
-                    on_host_done(h)
+        merged_raw["completion"]["hosts"].update(
+            completion_manifest({host: ports_list for host in resolved_hosts})["hosts"]
+        )
+        for host in host_chunk:
+            if host in resolved_hosts and on_host_done:
+                on_host_done(host)
 
     # Dedupe services by ip:port:proto
     seen: set[tuple[str, int, str]] = set()
@@ -869,6 +917,7 @@ def run_pulse_probe(
         "os_detect": os_detect_effective,
         "os_detect_degraded": os_detect_degraded,
         "chunk_hosts": size,
+        **diagnostics,
     }
 
     write_pulse_artifacts(output_dir, deduped, all_os, all_cves, raw=merged_raw)
