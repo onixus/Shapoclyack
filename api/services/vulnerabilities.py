@@ -956,6 +956,7 @@ def register_findings_from_run(
             script_id = str(entry.get("script_id") or "").strip() or None
             scored = scorer.score_vulnerability(
                 entry,
+                asset_criticality_override=asset.asset_criticality,
                 operator_exposure=asset.exposure_level,
                 declared_surface=declared_surface,
                 cdn_waf_index=cdn_waf,

@@ -44,6 +44,33 @@ Scoring consumes `asset_criticality` (impact) and, since
 IP is not treated as internet-facing. Environment and data class still do
 not move the verdict.
 
+### Scan-tracker criticality (#453)
+
+When `register_findings_from_run` observes a finding, it passes the already
+resolved tenant asset's `asset_criticality` to the shared scorer as
+`asset_criticality_override`. **Zero is an explicit value**, not a missing
+setting; `None` retains the scorer's existing heuristic. A value supplied on
+an individual finding does not override an operator-set asset value.
+
+This fixes the scan tracker independently of the wider context alignment in
+[#453](https://github.com/onixus/Shapoclyack/issues/453). It adds no database
+lookup and does not change the formula. An asset edit alone does not trigger a
+mass rewrite: the tracker's latest assessment is refreshed when the finding
+is next registered. The stable finding key, remediation owner, active lifecycle
+state, existing SLA deadline and accepted exception are not reset by that
+refresh. Criticality alone does not override a false-positive suppression;
+the existing evidence-based rules for reopening still apply.
+
+Run API/ClickHouse context parity, batch asset resolution and versioned
+historical assessment snapshots remain separate work under #453. This fix
+does not claim that scores made with different contexts are comparable or
+that the existing per-finding identity lookups have been batched.
+
+Regression coverage: `tests/test_scan_risk_criticality.py` runs the real scan
+fold, ORM and shared scorer on the SQLite test fallback, without requiring
+Postgres or contacting scanned hosts. Production Postgres concurrency is not
+validated by that fallback.
+
 ## CMDB / AD
 
 The same PATCH is how a later importer writes. Send `context_source: "cmdb"`
