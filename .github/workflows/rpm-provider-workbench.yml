@@ -1,0 +1,34 @@
+name: RPM provider workbench
+
+# Temporary, PR-local preparation of a reproducible offline review checkout.
+# Removed before merge; this does not enable the full CI on every PR.
+on:
+  pull_request:
+    paths: ['.github/workflows/rpm-provider-workbench.yml']
+permissions:
+  contents: read
+jobs:
+  workspace:
+    if: github.event.pull_request.number == 494 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Export tracked sources only
+        run: |
+          mkdir -p /tmp/rpm-workbench
+          git archive HEAD | gzip > /tmp/rpm-workbench/source.tar.gz
+      - name: Download hash-locked wheels for isolated offline tests
+        run: python -m pip download --require-hashes --only-binary=:all: -r requirements-dev.lock -d /tmp/rpm-workbench/wheels
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: rpm-provider-workbench
+          path: /tmp/rpm-workbench
+          retention-days: 1
+          if-no-files-found: error
