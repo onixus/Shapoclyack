@@ -1,7 +1,6 @@
 name: RPM provider workbench
 
-# Temporary, PR-local preparation of a reproducible offline review checkout.
-# Removed before merge; this does not enable the full CI on every PR.
+# Temporary PR-local offline review material, removed before merge.
 on:
   pull_request:
     paths: ['.github/workflows/rpm-provider-workbench.yml']
@@ -24,7 +23,14 @@ jobs:
           mkdir -p /tmp/rpm-workbench
           git archive HEAD | gzip > /tmp/rpm-workbench/source.tar.gz
       - name: Download hash-locked wheels for isolated offline tests
-        run: python -m pip download --require-hashes --only-binary=:all: -r requirements-dev.lock -d /tmp/rpm-workbench/wheels
+        run: |
+          python -m pip download --require-hashes --only-binary=:all: -r requirements-dev.lock -d /tmp/rpm-workbench/wheels
+      - name: Fetch public vendor samples for format inspection
+        run: |
+          mkdir -p /tmp/rpm-workbench/vendor
+          curl -fLSs --max-time 30 https://security.access.redhat.com/data/csaf/v2/advisories/2025/rhsa-2025_23127.json -o /tmp/rpm-workbench/vendor/rhel.json || true
+          curl -fLSs --max-time 30 https://ftp.suse.com/pub/projects/security/csaf/suse-su-2024_3307-1.json -o /tmp/rpm-workbench/vendor/suse.json || true
+          curl -fLSs --max-time 30 https://raw.githubusercontent.com/RedHatProductSecurity/security-data-guidelines/main/csaf-vex/csaf-vex.json -o /tmp/rpm-workbench/vendor/redhat-example.json || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
