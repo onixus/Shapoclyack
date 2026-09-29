@@ -59,7 +59,9 @@ stays open:
    ``last_seen_at``;
 3. the question could still be *put*: the distribution resolved, its provider
    has a dataset loaded, and that dataset covers this release
-   (:func:`assessment_possible`).
+   (:func:`assessment_possible`). Recorded missing-feed/release unknowns and
+   an explicit unknown verdict for this CVE still veto closure: a feed restored
+   after matching does not retroactively assess the persisted result.
 
 Condition 2 is the whole point. A device that went quiet produces exactly the
 same "no match" as a device that was patched, and closing on it would mean the
@@ -67,10 +69,9 @@ platform forgives findings whenever the agent stops reporting — the failure
 mode ``docs/vulnerability-lifecycle.md`` refuses for the scan path. Condition 3
 is the same absence arriving from our side: an advisory volume that stopped
 mounting, a ``fetch`` that wrote an empty file, or a release dropped from the
-vendor's export. It is deliberately **not** "how many packages we could have
-asked about" — that number is counted before the provider is consulted, so it
-stays comfortably positive on a host whose feed has gone, and it made a missing
-feed read as an estate patched overnight.
+vendor's export. It is deliberately **not** the package counter: the counter
+now respects feed coverage, but closure must also honor persisted unknown
+verdicts when the live feed has changed since that matching pass.
 
 Condition 1 is the same distinction in the other direction. ``seen_keys`` used
 to hold only the matches that passed :func:`is_trackable`, so two things that
@@ -109,6 +110,7 @@ from api.services import advisories, package_identity
 from api.services import software_cve_match as match_service
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
+from api.services.advisories.coverage import ADVISORY_RELEASE_NOT_COVERED, NO_ADVISORY_DATA
 from api.services.risk_scoring import get_scorer
 from api.settings import Settings
 from scanner.pipeline.cvss4 import Cvss4Database, normalize_cwes
@@ -606,6 +608,23 @@ def _fold_device(
             )
 
     # --- closure -----------------------------------------------------------
+    # Matching and folding can happen in different transactions/replicas. A
+    # now-healthy provider cannot turn an explicitly unassessed stored result
+    # into negative evidence. Unrelated non-distribution inventory does not
+    # block a properly assessed CVE; a per-CVE unknown blocks that CVE only.
+    coverage_unknown = any(
+        match.status == match_service.UNKNOWN
+        and match.unknown_reason in (NO_ADVISORY_DATA, ADVISORY_RELEASE_NOT_COVERED)
+        for match in context.matches
+    )
+    unknown_keys = {
+        software_finding_key(
+            asset_id=asset.asset_id, device_id=device.device_id,
+            cve=str(match.cve_id).strip().upper(),
+        )
+        for match in context.matches
+        if match.status == match_service.UNKNOWN and (match.cve_id or "").strip()
+    }
     for key, row in existing.items():
         if key in seen_keys or row.state == vuln_states.CLOSED:
             continue
@@ -617,7 +636,10 @@ def _fold_device(
             stats.held_open_untracked_match += 1
             continue
         fresh_snapshot = observed_at > (row.last_seen_at or observed_at)
-        if not (fresh_snapshot and context.assessment_possible):
+        if not (
+            fresh_snapshot and context.assessment_possible
+            and not coverage_unknown and key not in unknown_keys
+        ):
             # Not observed is not fixed. ``last_seen_at`` deliberately does not
             # move either, so ``?stale_days=`` still surfaces this row.
             stats.held_open_stale_snapshot += 1
@@ -672,9 +694,9 @@ def ingest_devices(
 
     ``run_matcher=False`` folds the rows already in ``software_cve_matches``,
     which is what a caller that has just run the matcher itself wants. The
-    closure gate does not depend on which of the two ran: it is
-    :func:`assessment_possible`, read from the device, so both paths reach the
-    same verdict about the same device and the same snapshot.
+    closure gate is the same for both callers: live :func:`assessment_possible`
+    plus the persisted coverage/per-CVE unknown vetoes. Restoring a feed alone
+    cannot upgrade an unassessed result; it needs a new matching pass.
     """
     stats = SoftwareFindingStats()
     if not device_ids:

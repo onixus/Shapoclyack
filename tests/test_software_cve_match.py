@@ -230,7 +230,7 @@ def test_unknown_rows_are_grouped_by_reason_and_bounded(providers) -> None:
     assert result.packages_unassessed == 61
 
 
-def test_a_provider_with_no_data_matches_nothing() -> None:
+def test_a_provider_with_no_data_is_unassessed_without_cve_findings() -> None:
     """A missing dataset must not read as "the vendor knows of no advisories"."""
     empty = ubuntu.UbuntuAdvisoryProvider(Path("/nonexistent/advisories.json"))
     result = matcher.match_software(
@@ -238,8 +238,14 @@ def test_a_provider_with_no_data_matches_nothing() -> None:
         software=[_pkg("openssl", "1.1.1f-1ubuntu2.4")],
         provider_for=lambda distro: empty,
     )
-    assert result.candidates == []
-    assert result.packages_assessed == 1
+    assert _by_cve(result) == {}
+    row, = result.candidates
+    assert row.status == matcher.UNKNOWN
+    assert row.unknown_reason == "no_advisory_data"
+    assert row.evidence["package_count"] == 1
+    assert row.evidence["packages"] == ["openssl"]
+    assert result.packages_total == result.packages_unassessed == 1
+    assert result.packages_assessed == 0
 
 
 # --------------------------------------------------------------------------

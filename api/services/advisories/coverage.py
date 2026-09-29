@@ -58,17 +58,25 @@ class AdvisorySnapshot:
 def snapshot_provider(provider: AdvisoryProvider | None) -> AdvisoryProvider | None:
     """Pin JSON providers once; retain the existing custom-provider protocol.
 
-    Invalid text or excessive JSON nesting cannot become a successful empty
-    assessment. Other programming errors are not swallowed. Provider status
-    and fetching keep their existing interfaces and are outside this layer.
+    Only inherited JSON read methods can be replaced by a raw dataset view.
+    A subclass/instance overriding availability, filtering or provenance owns
+    its policy and consistency; bypassing those methods could enable a disabled
+    provider or expose records it intentionally filters. The shared loader owns
+    malformed-document handling for matching, status and closure alike.
     """
     if not isinstance(provider, JsonAdvisoryProvider):
         return provider
-    try:
-        dataset = provider.dataset()
-    except (UnicodeError, RecursionError):
-        dataset = AdvisoryDataset(present=True, error="invalid advisory document")
-    return AdvisorySnapshot(name=provider.name, distro=provider.distro, data=dataset)
+    methods = (
+        "available", "feed_date", "entry_count", "source_label",
+        "releases", "advisories_for",
+    )
+    if any(
+        getattr(getattr(provider, method), "__func__", None)
+        is not getattr(JsonAdvisoryProvider, method)
+        for method in methods
+    ):
+        return provider
+    return AdvisorySnapshot(name=provider.name, distro=provider.distro, data=provider.dataset())
 
 
 def coverage_reason(provider: AdvisoryProvider | None, *, release: str) -> str | None:
