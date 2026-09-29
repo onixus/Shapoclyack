@@ -1,0 +1,63 @@
+name: Vendor feed publication probe
+on:
+  pull_request:
+    paths: ['.github/workflows/vendor-feed-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: github.event.pull_request.number == 494 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read public vendor metadata and signature endpoints
+        shell: bash
+        run: |
+          mkdir -p /tmp/vendor-probe
+          python3 - <<'PY'
+          import hashlib, json, pathlib, urllib.request, urllib.error
+          root = pathlib.Path('/tmp/vendor-probe')
+          urls = {
+            'suse-metadata': 'https://ftp.suse.com/pub/projects/security/csaf/provider-metadata.json',
+            'suse-index': 'https://ftp.suse.com/pub/projects/security/csaf/index.txt',
+            'suse-changes': 'https://ftp.suse.com/pub/projects/security/csaf/changes.csv',
+            'suse-doc': 'https://ftp.suse.com/pub/projects/security/csaf/suse-su-2025_0613-1.json',
+            'suse-signature': 'https://ftp.suse.com/pub/projects/security/csaf/suse-su-2025_0613-1.json.asc',
+            'redhat-key': 'https://security.access.redhat.com/data/97f5eac4.txt',
+            'redhat-latest': 'https://security.access.redhat.com/data/csaf/v2/advisories/archive_latest.txt',
+            'redhat-index': 'https://security.access.redhat.com/data/csaf/v2/advisories/index.txt',
+            'redhat-changes': 'https://security.access.redhat.com/data/csaf/v2/advisories/changes.csv',
+            'amazon-mirrors': 'https://cdn.amazonlinux.com/al2023/core/mirrors/latest/x86_64/mirror.list',
+            'amazon2-mirrors': 'https://cdn.amazonlinux.com/2/core/latest/x86_64/mirror.list',
+          }
+          result = {}
+          for name, url in urls.items():
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      body = response.read(8 * 1024 * 1024 + 1)
+                      if len(body) > 8 * 1024 * 1024: raise ValueError('over limit')
+                      (root / name).write_bytes(body)
+                      result[name] = {'status': response.status, 'size': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'sample': body[:1000].decode('utf-8', errors='replace')}
+              except Exception as exc:
+                  result[name] = {'error': str(exc)}
+          for name in ['amazon-mirrors', 'amazon2-mirrors']:
+              file = root / name
+              if not file.exists(): continue
+              base = file.read_text().strip().splitlines()[0]
+              if not base.startswith('https://cdn.amazonlinux.com/'): continue
+              for tail in ['repodata/repomd.xml', 'repodata/repomd.xml.asc', 'repodata/repomd.xml.key']:
+                  label = name + '-' + tail.rsplit('/', 1)[-1]
+                  try:
+                      with urllib.request.urlopen(base.rstrip('/') + '/' + tail, timeout=15) as response:
+                          body = response.read(1024 * 1024)
+                          (root / label).write_bytes(body)
+                          result[label] = {'url': response.url, 'status': response.status, 'size': len(body), 'sample': body[:500].decode('utf-8', errors='replace')}
+                  except Exception as exc: result[label] = {'error': str(exc)}
+          (root / 'report.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2))
+          PY
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: vendor-feed-publication
+          path: /tmp/vendor-probe
+          retention-days: 7
