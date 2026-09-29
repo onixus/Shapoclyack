@@ -14,9 +14,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from defusedxml.ElementTree import fromstring
+from defusedxml.ElementTree import ParseError, fromstring
 from defusedxml.common import DefusedXmlException
-from xml.etree.ElementTree import ParseError
 
 from .finding_evidence import aggregate, observation
 
