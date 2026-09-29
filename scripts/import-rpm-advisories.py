@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from defusedxml.common import DefusedXmlException  # noqa: E402
-from xml.etree.ElementTree import ParseError  # noqa: E402
+from defusedxml.ElementTree import ParseError  # noqa: E402
 from api.services.advisories.rpm_import import import_manifest  # noqa: E402
 
 
