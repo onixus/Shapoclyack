@@ -10,49 +10,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect public trust publication
+      - name: Read published SUSE public verification keys
         run: |
           mkdir -p /tmp/vendor-probe
           python3 - <<'PY'
           import json, pathlib, urllib.request
           from html.parser import HTMLParser
-          root = pathlib.Path('/tmp/vendor-probe')
-          urls = {
-            'suse-directory': 'https://ftp.suse.com/pub/projects/security/',
-            'suse-csaf-directory': 'https://ftp.suse.com/pub/projects/security/csaf/',
-            'suse-metadata': 'https://ftp.suse.com/pub/projects/security/provider-metadata.json',
-            'amazon-key': 'https://cdn.amazonlinux.com/_assets/11a7a6e5c44ad63371a0b6d5a0090b97/RPM-GPG-KEY-amazon-linux-2023',
-            'amazon-key2': 'https://cdn.amazonlinux.com/amazon-linux-2023/RPM-GPG-KEY-amazon-linux-2023',
-          }
+          root=pathlib.Path('/tmp/vendor-probe'); base='https://ftp.suse.com/pub/projects/security/keys/'
           class Links(HTMLParser):
               def __init__(self): super().__init__(); self.links=[]
-              def handle_starttag(self, tag, attrs):
-                  if tag == 'a': self.links.extend(v for k,v in attrs if k == 'href')
-          result = {}
-          for name,url in urls.items():
-              try:
-                  with urllib.request.urlopen(url, timeout=15) as response:
-                      body = response.read(16*1024*1024)
-                      (root/name).write_bytes(body)
-                      result[name]={'status': response.status, 'size':len(body), 'sample':body[:5000].decode('utf-8',errors='replace')}
-                      if 'directory' in name:
-                          parser=Links(); parser.feed(body.decode()); result[name]['links']=[x for x in parser.links if not x.endswith('.json')][:200]
-              except Exception as exc: result[name]={'error':str(exc)}
-          (root/'report.json').write_text(json.dumps(result,indent=2)); print(json.dumps(result,indent=2))
+              def handle_starttag(self,tag,attrs):
+                  if tag=='a': self.links.extend(v for k,v in attrs if k=='href')
+          data=urllib.request.urlopen(base,timeout=30).read(1048576)
+          (root/'keys-index.html').write_bytes(data); parser=Links(); parser.feed(data.decode())
+          for n,ref in enumerate(parser.links):
+              if '/' in ref or ref.startswith('?') or not ref.endswith(('.asc','.key','.gpg','.pub','.txt')): continue
+              content=urllib.request.urlopen(base+ref,timeout=15).read(1048576)
+              (root/ref).write_bytes(content)
+          print(parser.links)
           PY
-      - name: Inspect signed Red Hat archive layout
+          for key in /tmp/vendor-probe/*; do gpg --batch --show-keys --with-colons "$key" || true; done
+      - name: Export public AL2023 key from official image and metadata
         run: |
-          base=https://security.access.redhat.com/data/csaf/v2/advisories
-          name=$(curl --fail --silent --show-error --max-time 30 "$base/archive_latest.txt")
-          [[ "$name" =~ ^csaf_advisories_[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.zst$ ]]
-          curl --fail --silent --show-error --max-time 100 "$base/$name" -o /tmp/vendor-probe/archive.tar.zst
-          curl --fail --silent --show-error --max-time 30 "$base/$name.asc" -o /tmp/vendor-probe/archive.asc
-          tar --zstd -tf /tmp/vendor-probe/archive.tar.zst > /tmp/vendor-probe/archive-members.txt
-          head -30 /tmp/vendor-probe/archive-members.txt
-          rm /tmp/vendor-probe/archive.tar.zst
+          docker run --rm --entrypoint cat public.ecr.aws/amazonlinux/amazonlinux:2023 /etc/pki/rpm-gpg/RPM-GPG-KEY-amazon-linux-2023 > /tmp/vendor-probe/amazon-linux-2023.asc
+          gpg --batch --show-keys --with-colons /tmp/vendor-probe/amazon-linux-2023.asc
+          python3 - <<'PY'
+          import pathlib,urllib.request,xml.etree.ElementTree as ET
+          root=pathlib.Path('/tmp/vendor-probe'); mirrors='https://cdn.amazonlinux.com/al2023/core/mirrors/latest/x86_64/mirror.list'
+          base=urllib.request.urlopen(mirrors,timeout=30).read().decode().strip().splitlines()[0].rstrip('/')+'/'
+          for name in ['repomd.xml','repomd.xml.asc']:
+              (root/name).write_bytes(urllib.request.urlopen(base+'repodata/'+name,timeout=30).read(1048576))
+          tree=ET.fromstring((root/'repomd.xml').read_bytes()); ns={'r':'http://linux.duke.edu/metadata/repo'}
+          elem=tree.find("r:data[@type='updateinfo']/r:location",ns); url=base+elem.attrib['href']
+          assert url.startswith('https://cdn.amazonlinux.com/')
+          (root/'updateinfo-source-url.txt').write_text(url)
+          (root/'updateinfo.xml.gz').write_bytes(urllib.request.urlopen(url,timeout=60).read(67108865))
+          PY
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
-          name: vendor-trust-publication
+          name: vendor-verification-keys
           path: /tmp/vendor-probe
           retention-days: 7
