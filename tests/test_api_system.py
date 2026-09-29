@@ -48,6 +48,9 @@ def test_system_status_shape():
         # Microsoft's Update Guide (#358), reported since an offline bundle
         # carries it (#339).
         "advisories_msrc",
+        "advisories_rhel",
+        "advisories_suse",
+        "advisories_alas",
         # The NVD CPE ranges behind retro CVE matching, for the same reason.
         "nvd_cpe",
     }

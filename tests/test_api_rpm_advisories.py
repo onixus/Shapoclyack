@@ -35,6 +35,12 @@ def test_inventory_match_persist_fold_and_upgrade(tmp_path, monkeypatch, vendor,
         matches = client.get(f"/api/endpoint/devices/{device_id}/cve-matches", headers=auth_headers(client)).json()
         assert all(r["evidence"]["source_sha256"] and r["provider"] == provider.name for r in matches)
         assert all(r["installed_package"] == name for r in matches)
+        gap_response = client.get(f"/api/endpoint/devices/{device_id}/patch-gap", headers=auth_headers(client))
+        assert gap_response.status_code == 200, gap_response.text
+        gap_body = gap_response.json()
+        command = ("sudo zypper refresh && sudo zypper update " if vendor == "suse" else "sudo dnf upgrade ") + name
+        assert gap_body["combined_upgrade_command"] == command
+        assert all(gap["upgrade_command"] == command and gap["target_version"] == fixed for gap in gap_body["gaps"])
         # A caller from a different tenant cannot retrieve these match rows.
         assert client.get(f"/api/endpoint/devices/{device_id}/cve-matches?tenant_id=other",
                           headers=auth_headers(client)).status_code in (403, 404)

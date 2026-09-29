@@ -46,10 +46,8 @@ _log = logging.getLogger("shapoclyack.patch-gap")
 #: are written in.
 _PURL_FLAVORS = {"deb": version_compare.DEB, "rpm": version_compare.RPM}
 
-#: Distro → the upgrade a single package takes. Debian and Ubuntu are the
-#: distributions the advisory providers actually cover today, so the ``rpm``
-#: branch is written and dormant rather than exercised; it is here so an rpm
-#: provider does not also need a command mapping written under time pressure.
+#: Default commands by grammar. RPM callers also supply distribution/release:
+#: the package version grammar does not identify the host's package manager.
 _UPGRADE_TEMPLATES = {
     version_compare.DEB: "sudo apt-get update && sudo apt-get install --only-upgrade {packages}",
     version_compare.RPM: "sudo dnf upgrade {packages}",
@@ -63,7 +61,10 @@ def _flavor_for(purl: str | None) -> str | None:
     return _PURL_FLAVORS.get(purl[4:].split("/", 1)[0].strip().lower())
 
 
-def upgrade_command(flavor: str | None, packages: list[str]) -> str | None:
+def upgrade_command(
+    flavor: str | None, packages: list[str], *,
+    distro: str | None = None, release: str | None = None,
+) -> str | None:
     """The command that installs ``packages``, or ``None`` when unknown.
 
     Names are shell-quoted. They come from a remote endpoint's inventory and
@@ -71,6 +72,16 @@ def upgrade_command(flavor: str | None, packages: list[str]) -> str | None:
     package name is data here, never syntax.
     """
     template = _UPGRADE_TEMPLATES.get(flavor or "")
+    if flavor == version_compare.RPM and distro is not None:
+        major = (release or "").split(".", 1)[0]
+        if distro == "sles":
+            template = "sudo zypper refresh && sudo zypper update {packages}"
+        elif (distro == "rhel" and major == "7") or (distro == "amazonlinux" and major == "2"):
+            template = "sudo yum update {packages}"
+        elif (distro == "rhel" and major in ("8", "9", "10")) or (distro == "amazonlinux" and major == "2023"):
+            template = _UPGRADE_TEMPLATES[version_compare.RPM]
+        else:
+            template = None
     if template is None or not packages:
         return None
     return template.format(packages=" ".join(shlex.quote(name) for name in sorted(set(packages))))
@@ -158,7 +169,8 @@ def _build_gaps(rows) -> tuple[list[dict[str, Any]], int]:
                 "distro": group[0].distro,
                 "distro_release": group[0].distro_release,
                 "upgrade_command": (
-                    upgrade_command(flavor, [package]) if target else None
+                    upgrade_command(flavor, [package], distro=group[0].distro,
+                                    release=group[0].distro_release) if target else None
                 ),
             }
         )
@@ -201,9 +213,11 @@ def for_device(
     # One command for the whole host, but only for packages we can actually
     # name a target for, and only when the host speaks one package grammar.
     actionable = [gap["installed_package"] for gap in gaps if gap["target_version"]]
-    combined = (
-        upgrade_command(next(iter(flavors)), actionable) if len(flavors) == 1 else None
-    )
+    contexts = {(gap["distro"], gap["distro_release"]) for gap in gaps if gap["target_version"]}
+    combined = None
+    if len(flavors) == 1 and len(contexts) == 1:
+        distro, release = next(iter(contexts))
+        combined = upgrade_command(next(iter(flavors)), actionable, distro=distro, release=release)
     return {
         "device_id": device_id,
         "hostname": hostname,
