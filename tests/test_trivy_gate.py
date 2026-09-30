@@ -13,13 +13,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def trivy_shell(source: str) -> str:
-    stage = source.split("stage('Trivy')", 1)[1].split("stage('SBOM')", 1)[0]
+def trivy_shell(source: str, stage_name: str = "Trivy") -> str:
+    stage = source.split(f"stage('{stage_name}')", 1)[1].split("stage('SBOM')", 1)[0]
     shell = re.search(r'sh """(.*?)"""', stage, re.S).group(1)
     return shell.replace('\\\\', '\\').replace('\\$', '$')
 
 
-def run_gate(tmp_path, source, severity, fixed):
+def run_gate(tmp_path, source, severity, fixed, stage_name="Trivy"):
     stub = tmp_path / 'docker'
     stub.write_text(
         f'#!{sys.executable}\n'
@@ -32,9 +32,9 @@ def run_gate(tmp_path, source, severity, fixed):
     )
     stub.chmod(0o755)
     result = subprocess.run(
-        ['bash', '-c', trivy_shell(source)], capture_output=True, text=True,
+        ['bash', '-c', trivy_shell(source, stage_name)], capture_output=True, text=True,
         env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}', WORKSPACE=str(tmp_path),
-                 TRIVY_IMAGE='trivy:test', IMAGE_TAG='scanner:test',
+                 TRIVY_IMAGE='trivy:test', IMAGE_TAG='scanner:test', tag='api:test', kind='api',
                  FINDING_SEVERITY=severity, FINDING_FIXED='1' if fixed else '0'),
         check=False,
     )
@@ -46,8 +46,9 @@ def run_gate(tmp_path, source, severity, fixed):
     ('HIGH', True, 1), ('CRITICAL', True, 1), ('MEDIUM', True, 0),
     ('HIGH', False, 0), ('CRITICAL', False, 0),
 ])
-def test_jenkins_blocks_fixable_high_and_critical(tmp_path, severity, fixed, expected):
-    assert run_gate(tmp_path, (ROOT / 'Jenkinsfile').read_text(), severity, fixed) == expected
+@pytest.mark.parametrize('stage_name', ['Trivy', 'API and all-in-one security'])
+def test_jenkins_blocks_fixable_high_and_critical(tmp_path, severity, fixed, expected, stage_name):
+    assert run_gate(tmp_path, (ROOT / 'Jenkinsfile').read_text(), severity, fixed, stage_name) == expected
 
 
 @pytest.mark.parametrize('before,after', [
@@ -84,3 +85,15 @@ def test_runtime_removes_installers_after_the_locked_install(name):
     assert "shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)" in source[remove:]
     assert "assert importlib.util.find_spec('pip') is None" in source[remove:]
     assert "assert importlib.util.find_spec('ensurepip') is None" in source[remove:]
+
+
+def test_smoke_pytest_lock_keeps_hashes_and_only_required_packages():
+    source = (ROOT / 'Jenkinsfile').read_text()
+    program = re.search(r"awk '(.*?)'", source.split("stage('Smoke')", 1)[1]).group(1)
+    result = subprocess.run(['awk', program, str(ROOT / 'requirements-dev.lock')],
+                            capture_output=True, text=True, check=True)
+    packages = re.findall(r'^([a-z][a-z0-9-]*)==', result.stdout, re.M)
+    assert set(packages) == {'pytest', 'iniconfig', 'packaging', 'pluggy', 'pygments'}
+    for block in re.split(r'(?=^[a-z][a-z0-9-]*==)', result.stdout, flags=re.M):
+        if block.strip():
+            assert '--hash=sha256:' in block

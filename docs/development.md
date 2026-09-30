@@ -338,7 +338,8 @@ quotes leave it to the shell, which has no such variable, and the tag silently
 becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
 
 **Image vulnerability gate.** Jenkins and GitHub CI fail on fixable HIGH or
-CRITICAL vulnerabilities. The full Trivy report retains unfixed findings;
+CRITICAL vulnerabilities. Jenkins scans scanner, API and all-in-one images;
+GitHub CI scans its scanner image. The full Trivy reports retain unfixed findings;
 `--ignore-unfixed` only applies to the blocking pass. The exception file is
 empty. Python package installers are build-only: runtime images remove pip and
 ensurepip after installing locked dependencies. Live scanner smoke tests mount

@@ -368,7 +368,7 @@ pipeline {
                 sh '''
                   set -eu
                   mkdir -p .ci-smoke-pytest
-                  awk '/^(pytest|iniconfig|packaging|pluggy|pygments)==/ { keep=1 } keep { print; if ($0 !~ /\\$/) keep=0 }' \
+                  awk '/^[^[:space:]#]/ { keep=0 } /^(pytest|iniconfig|packaging|pluggy|pygments)==/ { keep=1 } keep { print }' \
                     requirements-dev.lock > .ci-smoke-pytest/pytest.lock
                   pip install --quiet --no-cache-dir --require-hashes --only-binary=:all: --no-deps \
                     --target .ci-smoke-pytest -r .ci-smoke-pytest/pytest.lock
@@ -414,6 +414,7 @@ pipeline {
 
         stage('Trivy') {
           steps {
+            sh 'rm -f trivy.json'
             // Кэш — на джобу, а не общий том `trivy-db` на всех. Trivy берёт
             // на своём кэше блокировку, поэтому две сборки разных веток
             // одновременно роняли друг друга с "Failed to acquire cache or
@@ -449,6 +450,53 @@ pipeline {
           }
           post {
             always { archiveArtifacts artifacts: 'trivy.json', allowEmptyArchive: true }
+          }
+        }
+
+        stage('API and all-in-one security') {
+          steps {
+            sh 'rm -f trivy-api.json trivy-allinone.json'
+            script {
+              // These images have API dependencies absent from the scanner.
+              for (kind in ['api', 'allinone']) {
+                def tag = "${IMAGE_TAG}-${kind}"
+                try {
+                  withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
+                    sh "docker build --secret id=github_token,env=GH_TOKEN --build-arg INSTALL_NMAP=0 -f Dockerfile.${kind} -t ${tag} ."
+                  }
+                  sh """
+                    set -eu
+                    mkdir -p "\$WORKSPACE/.trivy-cache"
+
+                    # Отчёт — не блокирующий
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
+                      --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
+
+                    # Archive the unfiltered report as structured evidence, including
+                    # findings for which the distribution has not published a fix.
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
+                      --format json --output /reports/trivy-${kind}.json \
+                      --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
+
+                    # Гейт — падаем на исправимых HIGH и CRITICAL
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
+                      ${TRIVY_IMAGE} image \
+                      --format table --severity HIGH,CRITICAL --ignore-unfixed \
+                      --ignorefile /.trivyignore.yaml --exit-code 1 ${tag}
+                  """
+                } finally {
+                  sh "docker rmi ${tag} || true"
+                }
+              }
+            }
+          }
+          post {
+            always { archiveArtifacts artifacts: 'trivy-api.json,trivy-allinone.json', allowEmptyArchive: true }
           }
         }
 
