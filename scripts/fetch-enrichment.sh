@@ -97,6 +97,18 @@ nvd_cpe_fetch_enabled() {
   esac
 }
 
+# BDU FSTEC is a large full dump, so refreshing it is an explicit opt-in.
+# The parser and API can still consume a bundle-installed/local overlay with this off.
+bdu_fstec_fetch_enabled() {
+  local raw="${OCTO_BDU_FSTEC_FETCH_ENABLED:-false}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # The same parse again, for the air-gap switch (#339): no network at all.
 enrichment_offline() {
   local raw="${OCTO_ENRICHMENT_OFFLINE:-false}"
@@ -225,8 +237,12 @@ run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
 # FSTEC BDU: CVE -> BDU identity/provenance for Russian compliance evidence.
 # It is enrichment, not a detector: BDU-only records are retained in the overlay
 # but never turned into findings without an independently observable match.
-run bdu_fstec "bdu fstec" python3 "$ROOT/scripts/fetch-bdu-fstec.py" \
-  -o "$DEST/bdu/bdu-overlay.json"
+if bdu_fstec_fetch_enabled; then
+  run bdu_fstec "bdu fstec" python3 "$ROOT/scripts/fetch-bdu-fstec.py" \
+    -o "$DEST/bdu/bdu-overlay.json"
+else
+  echo "==> bdu fstec: skipped (opt-in; set OCTO_BDU_FSTEC_FETCH_ENABLED=true to refresh)"
+fi
 
 # Vendor advisories for software->CVE matching (docs/software-cve-matching.md).
 # The opt-in flag is tested here rather than letting fetch-advisories.py exit 3
