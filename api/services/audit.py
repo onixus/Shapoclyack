@@ -106,6 +106,7 @@ ACTION_AGENT_GROUP_CREATE = "agent_group.create"
 ACTION_AGENT_GROUP_DELETE = "agent_group.delete"
 ACTION_AGENT_GROUP_ASSIGN = "agent_group.assign"
 ACTION_REPORT_DOWNLOAD = "report.download"
+ACTION_COMPLIANCE_EVIDENCE_CREATE = "compliance.evidence.create"
 # One row per *bulk* request, listing the ids it acted on (#346), rather than
 # one row per id: a batch is one decision, and two hundred rows that each look
 # like a hand edit would hide that it was taken once. The single-finding verbs
