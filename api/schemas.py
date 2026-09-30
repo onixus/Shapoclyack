@@ -2771,6 +2771,7 @@ class CompliancePosture(BaseModel):
     #: the score is not docked for honest triage, but a reader has to be able to
     #: see how much of the estate the score did not look at.
     suppressed_findings: int = 0
+    evidence_provenance: dict[str, Any] = Field(default_factory=dict)
     controls_total: int = 0
     controls_assessed: int = 0
     controls_passed: int = 0
