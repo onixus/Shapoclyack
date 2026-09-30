@@ -39,6 +39,7 @@ from sqlalchemy import func, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import bdu_fstec
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.compliance import frameworks as catalog
@@ -68,7 +69,7 @@ def _meets_floor(severity: str | None, floor: str) -> bool:
 class _Evidence:
     """A finding or asset that raised signals, kept in the shape the API returns."""
 
-    __slots__ = ("kind", "ref_id", "label", "severity", "detail", "signals", "accepted")
+    __slots__ = ("kind", "ref_id", "label", "severity", "detail", "signals", "accepted", "cve", "bdu_ids")
 
     def __init__(
         self,
@@ -80,6 +81,8 @@ class _Evidence:
         detail: str,
         signals: set[str],
         accepted: bool = False,
+        cve: str | None = None,
+        bdu_ids: list[str] | None = None,
     ) -> None:
         self.kind = kind
         self.ref_id = ref_id
@@ -88,6 +91,8 @@ class _Evidence:
         self.detail = detail
         self.signals = signals
         self.accepted = accepted
+        self.cve = cve
+        self.bdu_ids = list(bdu_ids or [])
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +102,8 @@ class _Evidence:
             "severity": self.severity,
             "detail": self.detail,
             "signals": sorted(self.signals),
+            "cve": self.cve,
+            "bdu_ids": list(self.bdu_ids),
             "accepted": self.accepted,
         }
 
@@ -239,6 +246,8 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
                 detail=f"asset {asset_id}" + (f", port {port}" if port else ""),
                 signals=raised,
                 accepted=reading == "accepted",
+                cve=str(cve) if cve else None,
+                bdu_ids=bdu_fstec.lookup(str(cve) if cve else None)["bdu_ids"],
             )
         )
 
