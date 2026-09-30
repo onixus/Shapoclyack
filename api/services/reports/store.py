@@ -104,7 +104,10 @@ def _validate_template(
         )
     if kind == "compliance" and not framework_id:
         raise ReportError("a compliance template needs framework_id")
-    if framework_id and catalog.get_framework(framework_id) is None:
+    if (
+        framework_id
+        and compliance_registry.resolve_framework(settings, framework_id, tenant_id) is None
+    ):
         raise ReportError(f"unknown compliance framework {framework_id!r}")
     unknown = sorted(set(sections) - set(content_builder.SECTIONS))
     if unknown:
