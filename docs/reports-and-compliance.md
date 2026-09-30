@@ -132,7 +132,6 @@ Two caveats travel with the window. The guidance grades vulnerabilities by
 FSTEC's own criticality method (28 October 2022), which weighs exploitability
 and exposure as well as CVSS; this platform's CVSS-derived severity stands in
 for it, and a finding with `unknown` severity has no window rather than a
-for it, and a finding with `unknown` severity has no window rather than a
 guessed one. БДУ ФСТЭК identity is enrichment only: an observed CVE can carry
 its `BDU:*` identifiers, while a BDU-only record is not promoted to a finding.
 
@@ -338,6 +337,7 @@ not cover it.
 | `OCTO_REPORT_SMTP_USERNAME` / `OCTO_REPORT_SMTP_PASSWORD` | *(empty)* | Relay credentials; login is attempted only when a username is set |
 | `OCTO_REPORT_SMTP_STARTTLS` | `true` | Require an encrypted connection. A relay that refuses fails that recipient rather than downgrading to cleartext |
 | `OCTO_REPORT_SMTP_TIMEOUT_SECONDS` | `20` | Per-message budget |
+| `OCTO_EVIDENCE_SIGNING_KEY` | *(unset)* | Dedicated 32-byte Ed25519 private seed (base64/hex) required only to create signed compliance evidence packages |
 
 The report relay is deliberately separate from the scanner's alert SMTP
 (`OCTO_SMTP_*`, [operations.md](operations.md)): an alert goes to an operations
