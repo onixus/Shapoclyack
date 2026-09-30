@@ -97,3 +97,19 @@ def test_smoke_pytest_lock_keeps_hashes_and_only_required_packages():
     for block in re.split(r'(?=^[a-z][a-z0-9-]*==)', result.stdout, flags=re.M):
         if block.strip():
             assert '--hash=sha256:' in block
+
+
+def test_runtime_installer_assertion_survives_shell_quoting():
+    import shlex
+
+    source = (ROOT / 'Jenkinsfile').read_text().split("stage('Smoke')", 1)[1]
+    line = next(line for line in source.splitlines() if '--entrypoint python' in line)
+    args = shlex.split(line)
+    code = args[args.index('-c') + 1]
+    # Execute with a stub finder: the real check must query names, not variables.
+    import importlib.util
+    from unittest.mock import patch
+
+    with patch.object(importlib.util, 'find_spec', return_value=None) as finder:
+        exec(code)
+    assert [call.args[0] for call in finder.call_args_list] == ['pip', 'ensurepip']

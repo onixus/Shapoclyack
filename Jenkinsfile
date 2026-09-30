@@ -376,6 +376,7 @@ pipeline {
               }
             }
             sh """
+              docker run --rm --entrypoint python ${IMAGE_TAG} -c 'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("ensurepip") is None'
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
                 -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
                 -v "\$WORKSPACE/tests/test_pd_flags_live.py":/app/test_pd_flags_live.py:ro \
@@ -383,7 +384,6 @@ pipeline {
                 -e PYTHONPATH=/opt/ci-pytest -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
                 -e OCTO_NAABU_LIVE=1 -e OCTO_PD_LIVE=1 --entrypoint sh ${IMAGE_TAG} -c '
                   set -e
-                  python -c "import importlib.util; assert importlib.util.find_spec(\"pip\") is None; assert importlib.util.find_spec(\"ensurepip\") is None"
                   python -m pytest -p no:cacheprovider test_naabu_live.py test_pd_flags_live.py -q
                 '
             """
