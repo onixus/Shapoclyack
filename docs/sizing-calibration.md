@@ -14,7 +14,8 @@ commands independently at least three times. For each repetition, keep every
 raw JSON and its own `scale_measure derive ... --out derived-N.json` result.
 
 Do not use the same raw file three times. Keep at least two distinct host counts
-of real sensor runs with resource accounting per repetition for a per-host fit.
+of real sensor runs with resource accounting **and archive bytes** per repetition
+for the CPU/RSS and archive-size fits; collect them with `runs-dir --archive`.
 Synthetic report-stage and checkpoint-resumed runs are excluded by the existing
 collector, not relabelled as real scans. Copy the complete raw artifacts to the
 campaign directory before review; do not discard failures from the scan log.
@@ -55,7 +56,8 @@ services, execute shell commands, read a URL, or modify any store.
 
 The report binds the manifest, every derived result and every raw input by
 SHA-256 and retains **each** raw environment block. It detects reuse of an
-identical artifact as another repetition. PostgreSQL `fsync`, `full_page_writes`,
+identical artifact as another repetition and refuses a repetition whose real
+runs do not include archive measurements at two distinct host counts. PostgreSQL `fsync`, `full_page_writes`,
 `synchronous_commit` and `autovacuum` must all be explicitly `on` in the raw
 metadata; missing settings are not treated as enabled. This intentionally strict
 baseline does not silently accept other durability profiles as equivalent.
