@@ -117,7 +117,7 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
         raw_files = sample.get("raw_results")
         if not isinstance(raw_files, list) or not 1 <= len(raw_files) <= MAX_RAW_FILES:
             raise CampaignError(f"{name}: raw_results must contain 1..{MAX_RAW_FILES} source files")
-        files, local_hashes, postgres_seen, real_run_hosts = [], set(), False, set()
+        files, local_hashes, postgres_seen = [], set(), False\n        real_run_hosts, real_archive_hosts = set(), set()
         for relative in raw_files:
             document, digest = _read(_path(path.parent, relative))
             if digest in local_hashes or digest in raw_seen:
