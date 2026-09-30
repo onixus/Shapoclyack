@@ -227,12 +227,21 @@ def _load() -> dict[str, Any]:
         return _cache
 
 
-def lookup(cve: str | None) -> dict[str, Any]:
+def snapshot() -> dict[str, Any]:
+    """The currently loaded overlay object, for one internally consistent pass."""
+    return _load()
+
+
+def lookup(
+    cve: str | None,
+    *,
+    dataset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """BDU identity for one CVE together with dataset provenance."""
     value = str(cve or "").strip().upper()
     if not _CVE_RE.fullmatch(value):
         return {"bdu_ids": [], "source": None, "updated": None, "source_sha256": None}
-    payload = _load()
+    payload = _load() if dataset is None else dataset
     raw = (payload.get("entries") or {}).get(value, [])
     records = raw if isinstance(raw, list) else []
     ids = sorted(
@@ -251,8 +260,8 @@ def lookup(cve: str | None) -> dict[str, Any]:
     }
 
 
-def dataset_info() -> dict[str, Any]:
-    payload = _load()
+def dataset_info(dataset: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = _load() if dataset is None else dataset
     entries = payload.get("entries") if isinstance(payload.get("entries"), dict) else {}
     bdu_only = payload.get("bdu_only") if isinstance(payload.get("bdu_only"), list) else []
     return {
