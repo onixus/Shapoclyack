@@ -31,7 +31,7 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.services import artifact_store, legal_hold, retention_policy, workflow_events
-from api.services.compliance import frameworks as catalog
+from api.services.compliance import registry as compliance_registry
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
 from api.settings import Settings
@@ -91,7 +91,7 @@ def _template_dict(row: models.ReportTemplate) -> dict[str, Any]:
     }
 
 
-def _validate_template(kind: str, framework_id: str | None, sections: dict[str, Any]) -> None:
+def _validate_template(\n    settings: Settings,\n    tenant_id: str,\n    kind: str,\n    framework_id: str | None,\n    sections: dict[str, Any],\n) -> None:
     if kind not in content_builder.KINDS:
         raise ReportError(
             f"unknown kind {kind!r}; expected one of {', '.join(content_builder.KINDS)}"
@@ -116,7 +116,7 @@ def create_template(
     actor: str | None = None,
 ) -> dict[str, Any]:
     sections = dict(sections or {})
-    _validate_template(kind, framework_id, sections)
+    _validate_template(settings, tenant_id, kind, framework_id, sections)
     now = _now()
     with get_session(settings.postgres_url) as session:
         existing = session.execute(
@@ -186,7 +186,7 @@ def update_template(
             (fields.get("sections") if fields.get("sections") is not None else row.sections)
             or {}
         )
-        _validate_template(kind, framework_id, sections)
+        _validate_template(settings, row.tenant_id, kind, framework_id, sections)
         name = fields.get("name") or row.name
         if name != row.name:
             clash = session.execute(
