@@ -71,7 +71,9 @@ evidence**, and the groups are ORed. `requires` is inferred from the signals
 may add prerequisites, not remove them. A conjunction mixing asset and finding
 signals is rejected because no evidence item can satisfy it. Missing required
 data means `not_assessed`, never `passed`. `severity_floor` defaults to `low`;
-allowed values are `info`, `low`, `medium`, `high`, `critical`.
+allowed values are `info`, `low`, `medium`, `high`, `critical`. Asset/inventory
+signals have fixed `medium` severity in the evidence engine: their controls cannot
+set a higher floor that would silently discard every possible match.
 
 The signal vocabulary is in `api/services/compliance/signals.py`. No imported
 expressions, SQL, Python, new signal names or signal-free manual/legal controls

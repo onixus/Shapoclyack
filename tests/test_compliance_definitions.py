@@ -51,6 +51,8 @@ def test_json_csv_bom_and_digest_roundtrip():
     {"signals": ["unpatched_cve", "unpatched_cve"]}, {"signals": [1]},
     {"requires": []}, {"requires": ["assets"]}, {"requires": "findings"},
     {"severity_floor": "critical OR true"}, {"severity_floor": None},
+    {"signals": ["stale_asset"], "severity_floor": "high"},
+    {"signals": ["unassessable_software"], "severity_floor": "critical"},
     {"combinations": [["unpatched_cve"]]},
     {"combinations": [["unpatched_cve", "stale_asset"]]},
     {"combinations": [["unpatched_cve", "known_exploited"], ["known_exploited", "unpatched_cve"]]},
@@ -129,3 +131,10 @@ def test_canonicalization_does_not_mutate_caller():
     original = copy.deepcopy(raw)
     d.normalize(raw)
     assert raw == original
+
+
+@pytest.mark.parametrize("content", ['{"\\ud800":1}', '{"\\ud800":1,"\\ud800":2}'])
+def test_error_messages_are_safe_utf8_for_http(content):
+    with pytest.raises(d.DefinitionError) as caught:
+        d.parse(content, "json")
+    assert str(caught.value).encode("utf-8")

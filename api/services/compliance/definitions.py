@@ -76,7 +76,7 @@ def _object(value: Any, allowed: set[str], field: str) -> dict[str, Any]:
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise DefinitionError(f"{field}: expected an object")
     if set(value) - allowed:
-        raise DefinitionError(f"{field}: unknown fields: {', '.join(sorted(set(value) - allowed))}")
+        raise DefinitionError(f"{field}: unknown fields: {', '.join(repr(key) for key in sorted(set(value) - allowed))}")
     return value
 
 
@@ -126,6 +126,8 @@ def normalize(document: Any) -> dict[str, Any]:
         floor = row.get("severity_floor", "low")
         if not isinstance(floor, str) or floor not in SEVERITIES:
             raise DefinitionError(f"{label}.severity_floor: unknown severity")
+        if floor in {"high", "critical"} and inferred - {"findings"}:
+            raise DefinitionError(f"{label}.severity_floor: asset/inventory signals have medium severity")
         result.append({
             "control_id": control_id,
             "title": _text(row.get("title"), f"{label}.title", 512),
@@ -153,7 +155,7 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise DefinitionError(f"duplicate JSON key: {key}")
+            raise DefinitionError(f"duplicate JSON key: {key!r}")
         result[key] = value
     return result
 
