@@ -5,9 +5,9 @@ control identifiers. They are not certification, a legal opinion or automated
 assessment of organisational duties. The response always prefixes the customer's
 scope note with that limitation. Built-in catalogues are unchanged.
 
-This increment implements PostgreSQL-backed catalogues and JSON/CSV import.
-BDU enrichment, signed point-in-time evidence packages and any additional
-152-ФЗ mapping are **not** implemented by it and remain in #356.
+This feature implements PostgreSQL-backed catalogues and JSON/CSV import.
+BDU CVE↔BDU provenance and signed point-in-time evidence packages are shared
+platform capabilities documented in `reports-and-compliance.md`.
 
 ## Import and read
 
@@ -109,7 +109,14 @@ batched purge, including legal-hold checks; audit records retain their existing
 retention policy. There is no in-process catalogue cache to become inconsistent
 across API replicas.
 
-The digest detects accidental modification; it is **not a signature**, a
-trusted timestamp, or a historical evidence snapshot. Posture remains a view of
-current evidence. A signed/archivable point-in-time package is separate remaining
-work, as is retention/version lifecycle beyond the bounded immutable catalogue.
+The definition digest detects accidental modification; it is not the package
+signature. For an archivable assessment, create the signed evidence package
+for this custom framework through the compliance API.
+
+## 152-ФЗ decision
+
+A custom catalogue may use an organisation's own 152-ФЗ control numbering only
+for the existing observable technical signals. The platform does not ship a
+separate 152-ФЗ pass/fail catalogue: legal and organisational duties cannot be
+established from scanner evidence. Technical personal-data-system measures are
+represented by the built-in FSTEC order 21 catalogue.
