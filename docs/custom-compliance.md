@@ -31,7 +31,8 @@ The `content` member is the uploaded UTF-8 document as a string, not a URL or a
 server file path. A new definition returns **201**, an identical canonical
 re-import **200**, invalid content **422**, and a changed definition under an
 existing ID or an exhausted tenant catalogue budget **409**. Identifiers are
-immutable: use `custom-acme-v2` for a changed mapping. This avoids changing what
+immutable and limited to **64 characters** (the same contract used by report templates):
+use `custom-acme-v2` for a changed mapping. This avoids changing what
 an old control identifier meant silently. Re-import does not emit another audit
 event. Definition and audit event commit in the same database transaction.
 
