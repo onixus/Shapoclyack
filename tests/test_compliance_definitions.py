@@ -67,7 +67,7 @@ def test_invalid_control_is_rejected_atomically(patch):
 
 
 @pytest.mark.parametrize("patch", [
-    {"framework_id": "pci-dss-4.0"}, {"framework_id": "custom-../escape"},
+    {"framework_id": "pci-dss-4.0"}, {"framework_id": "custom-../escape"},\n    {"framework_id": "custom-" + "a" * 58},
     {"schema_version": True}, {"schema_version": 2}, {"controls": []},
     {"controls": {}}, {"tenant_id": "another-tenant"}, {"name": None},
 ])
@@ -138,3 +138,35 @@ def test_error_messages_are_safe_utf8_for_http(content):
     with pytest.raises(d.DefinitionError) as caught:
         d.parse(content, "json")
     assert str(caught.value).encode("utf-8")
+
+
+def test_custom_definition_columns_follow_data_subject_contract():
+    from api.services import data_subject
+
+    assert data_subject.SUBJECT_COLUMNS[
+        ("compliance_framework_definitions", "created_by")
+    ][0] == data_subject.PSEUDONYM
+    assert data_subject.SUBJECT_COLUMNS[
+        ("compliance_framework_definitions", "definition")
+    ][0] == data_subject.RETAINED
+
+
+def test_report_validation_resolves_framework_in_tenant_scope(monkeypatch):
+    from api.services.reports import store as report_store
+
+    seen = {}
+
+    def resolve(settings, framework_id, tenant_id):
+        seen.update(settings=settings, framework_id=framework_id, tenant_id=tenant_id)
+        return object()
+
+    monkeypatch.setattr(report_store.compliance_registry, "resolve_framework", resolve)
+    settings = object()
+    report_store._validate_template(
+        settings, "tenant-a", "compliance", "custom-acme-v1", {}
+    )
+    assert seen == {
+        "settings": settings,
+        "framework_id": "custom-acme-v1",
+        "tenant_id": "tenant-a",
+    }
