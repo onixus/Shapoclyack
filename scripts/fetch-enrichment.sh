@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refresh all enrichment data (GeoIP, CVSS4, EPSS, KEV, vendor advisories)
+# Refresh enrichment data (GeoIP, CVSS4, EPSS, KEV, BDU, vendor advisories)
 # into one directory.
 #
 # Designed to run as a Kubernetes CronJob / initContainer or a compose
@@ -54,6 +54,7 @@
 #   MAXMIND_LICENSE_KEY=xxxx ./scripts/fetch-enrichment.sh
 #   OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 #   OCTO_NVD_CPE_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
+#   OCTO_BDU_FSTEC_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 #   OCTO_ENRICHMENT_OFFLINE=true ./scripts/fetch-enrichment.sh   # floor + manifest only
 set -uo pipefail
 
