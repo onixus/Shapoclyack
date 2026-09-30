@@ -16,19 +16,20 @@ import threading
 import xml.etree.ElementTree as ET
 import zipfile
 
-from defusedxml import ElementTree as SafeET
-from defusedxml.common import DefusedXmlException
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
+
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 
 DEFAULT_DATABASE = Path("scanner/data/bdu/bdu-overlay.json")
 DATABASE_ENV = "OCTO_BDU_FSTEC_DATABASE"
 SOURCE_URL = "https://bdu.fstec.ru/files/documents/vulxml.zip"
 SOURCE_URL_ENV = "BDU_FSTEC_URL"
 
-_CVE_RE = re.compile(r"^CVE-\\d{4}-\\d{4,}$", re.IGNORECASE)
-_BDU_RE = re.compile(r"^BDU:\\d{4}-\\d{5,}$", re.IGNORECASE)
+_CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+_BDU_RE = re.compile(r"^BDU:\d{4}-\d{5,}$", re.IGNORECASE)
 MAX_XML_BYTES = 1024 * 1024 * 1024
 
 _lock = threading.Lock()
