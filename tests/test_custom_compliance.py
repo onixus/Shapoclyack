@@ -1,5 +1,6 @@
 """W11 catalogue persistence, HTTP guards, assessment and PostgreSQL RLS."""
 from datetime import UTC, datetime
+import base64
 import json
 
 import pytest
@@ -10,7 +11,7 @@ from api.db import models
 from api.db.compliance_models import ComplianceFrameworkDefinition as Definition
 from api.db.engine import get_engine, get_session
 from api.services import audit, tenants
-from api.services.compliance import definitions, registry, service, signals
+from api.services.compliance import definitions, evidence_package, registry, service, signals
 from api.services.tenant_purge import postgres as purge_pg
 from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
 from tests.test_compliance_definitions import example
@@ -92,6 +93,65 @@ def test_custom_catalogue_uses_existing_assessment_and_report_fold(setup):
     )
     assert updated_template.status_code == 200, updated_template.text
     assert updated_template.json()["framework_id"] == "custom-acme-v1"
+
+
+
+def test_signed_custom_evidence_package_is_archivable(setup, monkeypatch):
+    client, settings, tenant_id = setup
+    assert upload(client).status_code == 201
+    monkeypatch.setenv(
+        evidence_package.SIGNING_KEY_ENV,
+        base64.b64encode(bytes(range(32))).decode("ascii"),
+    )
+
+    operator = auth_headers(client, "operator")
+    created = client.post(
+        "/api/compliance/custom-acme-v1/evidence-package",
+        headers=operator,
+    )
+    assert created.status_code == 201, created.text
+    report = created.json()
+    assert report["kind"] == "compliance_evidence"
+    assert report["format"] == "json"
+    assert report["status"] == "ready"
+
+    viewer = auth_headers(client, "viewer")
+    downloaded = client.get(
+        f"/api/reports/{report['report_id']}/download",
+        headers=viewer,
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    document = downloaded.json()
+    payload = evidence_package.verify(
+        document,
+        expected_key_id=document["signature"]["key_id"],
+    )
+    assert payload["tenant_id"] == tenant_id
+    assert payload["framework_id"] == "custom-acme-v1"
+    assert payload["framework"]["kind"] == "custom"
+    assert payload["posture"]["evidence_untruncated"] is True
+    assert payload["scope_notice"].startswith("This package records technical evidence")
+
+    with get_session(settings.postgres_url) as session:
+        assert session.scalar(
+            select(func.count())
+            .select_from(models.AuditEvent)
+            .where(
+                models.AuditEvent.tenant_id == tenant_id,
+                models.AuditEvent.action == audit.ACTION_COMPLIANCE_EVIDENCE_CREATE,
+            )
+        ) == 1
+
+
+def test_evidence_package_requires_a_dedicated_signing_key(setup, monkeypatch):
+    client, _, _ = setup
+    assert upload(client).status_code == 201
+    monkeypatch.delenv(evidence_package.SIGNING_KEY_ENV, raising=False)
+    response = client.post(
+        "/api/compliance/custom-acme-v1/evidence-package",
+        headers=auth_headers(client, "operator"),
+    )
+    assert response.status_code == 503
 
 
 def test_tenant_isolation_quota_and_batched_purge(setup, monkeypatch):
