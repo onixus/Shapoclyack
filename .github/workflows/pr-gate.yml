@@ -46,7 +46,7 @@ jobs:
       # This is deliberately the infrastructure-free PR gate: the same
       # scripts/ci-pytest.sh as Jenkins, with the integration gate off because
       # PostgreSQL/NATS suites skip here. Coverage measured without them is not
-      # the number the 74% gate is about, so the threshold is off as well;
+      # the number the 85% gate is about, so the threshold is off as well;
       # Jenkins and the manual full CI run the script with both at defaults.
       - name: Unit tests without infrastructure
         env:

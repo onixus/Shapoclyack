@@ -145,7 +145,7 @@ RUN npm run build
 
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-aio" \
@@ -243,10 +243,15 @@ WORKDIR /app
 
 # Installed from the hash-pinned locks, not from requirements-api.txt (#313);
 # see the same step in Dockerfile for why and requirements-pip.txt for the pip.
+# Package installers are build-only; remove pip and its bundled bootstrap wheel
+# after the locked install so vendored tooling does not ship in runtime images.
 COPY requirements-pip.lock requirements-api.lock /app/
 RUN set -eux; \
     pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
-    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-api.lock
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-api.lock; \
+    python -m pip uninstall --yes pip; \
+    python -c "import ensurepip, pathlib, shutil; shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)"; \
+    python -c "import importlib.util; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None"
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

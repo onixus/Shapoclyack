@@ -31,7 +31,7 @@ def IMAGE_TAG = "network-scan-cli:ci-${CI_SLUG}"
 // тег без digest. Ключи PYTHON_IMAGES — матрица стадии Tests.
 def PYTHON_IMAGES = [
   '3.11': 'python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9',
-  '3.12': 'python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9',
+  '3.12': 'python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f',
 ]
 def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'
@@ -354,23 +354,42 @@ pipeline {
             // disabled", exit 1), и это поймал только E2E — стадией позже и
             // сообщением про non-zero exit status. Монтируем один файл теста,
             // а не весь tests/: conftest.py тянет api и Postgres, которых в
-            // образе нет. pytest ставится в --user, чтобы прогон шёл от
+            // образе нет. pytest монтируется отдельно, чтобы прогон шёл от
             // непривилегированного 'scanner' — ровно как в E2E и в проде, где
             // права даёт только file capability на бинаре.
             // test_pd_flags_live.py — то же для dnsx и nuclei: флаги, которые
             // собирает код (-disable-update-check, -no-interactsh, -config с
             // токеном interactsh), на настоящих бинарях. Сеть не нужна: цель —
             // локальный HTTP-сервер, interactsh-сервер отказывает в соединении.
+            // Install only pytest and its Python 3.12 dependencies outside the
+            // image under test; production dependencies stay exactly as built.
+            script {
+              docker.image(PYTHON_IMAGES['3.12']).inside(PIP_CACHE) {
+                sh '''
+                  set -eu
+                  mkdir -p .ci-smoke-pytest
+                  awk '/^[^[:space:]#]/ { keep=0 } /^(pytest|iniconfig|packaging|pluggy|pygments)==/ { keep=1 } keep { print }' \
+                    requirements-dev.lock > .ci-smoke-pytest/pytest.lock
+                  pip install --quiet --no-cache-dir --require-hashes --only-binary=:all: --no-deps \
+                    --target .ci-smoke-pytest -r .ci-smoke-pytest/pytest.lock
+                '''
+              }
+            }
             sh """
+              docker run --rm --entrypoint python ${IMAGE_TAG} -c 'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("ensurepip") is None'
               docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
                 -v "\$WORKSPACE/tests/test_naabu_live.py":/app/test_naabu_live.py:ro \
                 -v "\$WORKSPACE/tests/test_pd_flags_live.py":/app/test_pd_flags_live.py:ro \
+                -v "\$WORKSPACE/.ci-smoke-pytest":/opt/ci-pytest:ro \
+                -e PYTHONPATH=/opt/ci-pytest -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
                 -e OCTO_NAABU_LIVE=1 -e OCTO_PD_LIVE=1 --entrypoint sh ${IMAGE_TAG} -c '
                   set -e
-                  pip install --quiet --no-cache-dir --user pytest
                   python -m pytest -p no:cacheprovider test_naabu_live.py test_pd_flags_live.py -q
                 '
             """
+          }
+          post {
+            always { sh 'rm -rf "$WORKSPACE/.ci-smoke-pytest"' }
           }
         }
 
@@ -395,6 +414,7 @@ pipeline {
 
         stage('Trivy') {
           steps {
+            sh 'rm -f trivy.json'
             // Кэш — на джобу, а не общий том `trivy-db` на всех. Trivy берёт
             // на своём кэше блокировку, поэтому две сборки разных веток
             // одновременно роняли друг друга с "Failed to acquire cache or
@@ -411,14 +431,72 @@ pipeline {
                 -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
                 --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
 
-              # Гейт — падаем на исправимых CRITICAL
+              # Archive the unfiltered report as structured evidence, including
+              # findings for which the distribution has not published a fix.
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
+                --format json --output /reports/trivy.json \
+                --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${IMAGE_TAG}
+
+              # Гейт — падаем на исправимых HIGH и CRITICAL
               docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                 -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
                 -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
                 ${TRIVY_IMAGE} image \
-                --format table --severity CRITICAL --ignore-unfixed \
+                --format table --severity HIGH,CRITICAL --ignore-unfixed \
                 --ignorefile /.trivyignore.yaml --exit-code 1 ${IMAGE_TAG}
             """
+          }
+          post {
+            always { archiveArtifacts artifacts: 'trivy.json', allowEmptyArchive: true }
+          }
+        }
+
+        stage('API and all-in-one security') {
+          steps {
+            sh 'rm -f trivy-api.json trivy-allinone.json'
+            script {
+              // These images have API dependencies absent from the scanner.
+              for (kind in ['api', 'allinone']) {
+                def tag = "${IMAGE_TAG}-${kind}"
+                try {
+                  withCredentials([string(credentialsId: 'GENDEC_READ_TOKEN', variable: 'GH_TOKEN')]) {
+                    sh "docker build --secret id=github_token,env=GH_TOKEN --build-arg INSTALL_NMAP=0 -f Dockerfile.${kind} -t ${tag} ."
+                  }
+                  sh """
+                    set -eu
+                    mkdir -p "\$WORKSPACE/.trivy-cache"
+
+                    # Отчёт — не блокирующий
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy ${TRIVY_IMAGE} image \
+                      --format table --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
+
+                    # Archive the unfiltered report as structured evidence, including
+                    # findings for which the distribution has not published a fix.
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$WORKSPACE":/reports ${TRIVY_IMAGE} image \
+                      --format json --output /reports/trivy-${kind}.json \
+                      --severity CRITICAL,HIGH,MEDIUM --exit-code 0 ${tag}
+
+                    # Гейт — падаем на исправимых HIGH и CRITICAL
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "\$WORKSPACE/.trivy-cache":/root/.cache/trivy \
+                      -v "\$WORKSPACE/.trivyignore.yaml":/.trivyignore.yaml \
+                      ${TRIVY_IMAGE} image \
+                      --format table --severity HIGH,CRITICAL --ignore-unfixed \
+                      --ignorefile /.trivyignore.yaml --exit-code 1 ${tag}
+                  """
+                } finally {
+                  sh "docker rmi ${tag} || true"
+                }
+              }
+            }
+          }
+          post {
+            always { archiveArtifacts artifacts: 'trivy-api.json,trivy-allinone.json', allowEmptyArchive: true }
           }
         }
 
