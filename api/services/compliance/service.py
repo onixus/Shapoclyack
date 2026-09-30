@@ -374,6 +374,46 @@ def assess_all(settings: Settings, *, tenant_id: str | None = None) -> list[dict
     return [_fold(framework, collected) for framework in registry.all_frameworks(settings, tenant_id)]
 
 
+def snapshot(
+    settings: Settings,
+    *,
+    framework_id: str,
+    tenant_id: str,
+) -> dict[str, Any] | None:
+    """Point-in-time posture with every matching evidence item per control.
+
+    Unlike the interactive posture summary, this is intentionally untruncated:
+    it is the input to the signed evidence package an auditor archives. Evidence
+    is collected once, so a package cannot mix controls read at different
+    database moments merely because each control was queried separately.
+    """
+
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
+    if framework is None:
+        return None
+    collected = _collect_evidence(settings, tenant_id)
+    posture = _fold(framework, collected)
+    controls = []
+    for control in framework.controls:
+        assessed = _assess_control(control, collected)
+        items = [
+            item
+            for item in collected["evidence"]
+            if control.matched_by(item.signals)
+            and _meets_floor(item.severity, control.severity_floor)
+        ]
+        items.sort(
+            key=lambda item: SEVERITY_ORDER.get(item.severity, 0),
+            reverse=True,
+        )
+        assessed["evidence"] = [item.as_dict() for item in items]
+        assessed["framework_id"] = framework.framework_id
+        controls.append(assessed)
+    posture["controls"] = controls
+    posture["evidence_untruncated"] = True
+    return posture
+
+
 def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, Any]:
     controls = [_assess_control(control, collected) for control in framework.controls]
     assessed = [entry for entry in controls if entry["status"] != NOT_ASSESSED]
