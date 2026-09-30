@@ -132,13 +132,13 @@ Two caveats travel with the window. The guidance grades vulnerabilities by
 FSTEC's own criticality method (28 October 2022), which weighs exploitability
 and exposure as well as CVSS; this platform's CVSS-derived severity stands in
 for it, and a finding with `unknown` severity has no window rather than a
-guessed one. And FSTEC's БДУ is not yet an enrichment source — a finding is
-recognised by its CVE, not by its BDU identifier — so a vulnerability that is
-in БДУ and not in NVD is not in the evidence base at all.
+for it, and a finding with `unknown` severity has no window rather than a
+guessed one. БДУ ФСТЭК identity is enrichment only: an observed CVE can carry
+its `BDU:*` identifiers, while a BDU-only record is not promoted to a finding.
 
-The personal-data catalogue is keyed to order 21 as it stands. FSTEC has
-published a draft order to replace it from 1 September 2026; the catalogue is
-re-keyed when that text is final, not to a draft.
+The personal-data catalogue remains a technical-evidence mapping for FSTEC
+order 21. It is not a claim that scanner evidence establishes the operator's
+broader 152-ФЗ compliance.
 
 `coverage_score` is the share of **assessed** controls that pass. It is not a
 percentage of the standard, and the API returns the framework's `scope_note`
@@ -157,6 +157,24 @@ marking can be told apart by the person reading the page. The verdicts
 themselves — who made them, on what evidence, and when they expire — are in
 `vulnerability_events` and on the adoption page's Noise block.
 
+### БДУ ФСТЭК provenance
+
+With the BDU overlay enabled, an already observed CVE carries matching
+`BDU:*` identifiers plus source date/SHA-256. The full BDU dump is opt-in.
+Records that have no CVE are counted in feed provenance but are not turned
+into findings: the affected-version prose is not treated as a reliable
+machine constraint.
+
+### 152-ФЗ scope decision
+
+There is deliberately no standalone automatic 152-ФЗ pass/fail score.
+The law spans legal, organisational and technical measures, while this
+engine can only attest to technical evidence it actually observes. Technical
+measures for personal-data information systems are represented through the
+FSTEC order 21 catalogue. Organisations may import their own 152-ФЗ control
+numbering, but the importer only permits the existing closed technical-signal
+vocabulary; policy/legal requirements cannot be made auto-passing.
+
 ### API
 
 | Route | Role | Purpose |
@@ -164,6 +182,7 @@ themselves — who made them, on what evidence, and when they expire — are in
 | `GET /api/compliance/frameworks` | viewer | Catalogue list with scope notes |
 | `GET /api/compliance/{framework_id}` | viewer | Posture: per-control status, counts, sample evidence |
 | `GET /api/compliance/{framework_id}/controls/{control_id}` | viewer | Every piece of evidence behind one control |
+| `POST /api/compliance/{framework_id}/evidence-package` | operator | Freeze full evidence + definition + provenance into a signed JSON report artifact |
 
 A platform admin gets **no** cross-tenant view here, unlike the vulnerability
 lists: a control status is a statement about one organisation's estate, and
@@ -327,16 +346,27 @@ different senders for the two.
 
 ---
 
+## Signed evidence packages
+
+An operator can freeze current evidence with
+`POST /api/compliance/{framework_id}/evidence-package`. It is stored as a
+`GeneratedReport` JSON artifact, so the normal tenant isolation, S3/local
+storage, retention, legal-hold and download paths apply.
+
+The signed payload contains the exact built-in/custom framework definition
+and SHA-256, every matching evidence item for every control (not the UI's
+sample), accepted-risk counts, BDU identities and enrichment provenance.
+Set `OCTO_EVIDENCE_SIGNING_KEY` to a dedicated 32-byte Ed25519 private seed.
+The package embeds its public key and `key_id`; archive verifiers should pin
+that `key_id` through a separate trusted channel:
+
+```bash
+python3 scripts/verify-compliance-evidence.py evidence.json --key-id <trusted-key-id>
+```
+
+---
+
 ## What is not here
 
-* **No scheduled *compliance evidence collection*.** The posture is computed on
-  read from current state; there is no signed, immutable point-in-time evidence
-  package an auditor could archive. The compliance report is the closest thing,
-  and it is a document, not an attestation.
 * **No control ownership or remediation plan per control.** Findings have
   owners; controls do not.
-* **No custom frameworks.** The catalogues are code — a per-tenant catalogue
-  would let a tenant define the standard it passes.
-* **No БДУ ФСТЭК feed.** The Russian catalogues run on the same CVE-keyed
-  evidence as the others; BDU identifiers, and vulnerabilities that exist only
-  there, are not recognised ([#356](https://github.com/onixus/Shapoclyack/issues/356)).
