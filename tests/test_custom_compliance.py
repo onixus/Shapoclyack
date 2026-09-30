@@ -73,6 +73,26 @@ def test_custom_catalogue_uses_existing_assessment_and_report_fold(setup):
     assert registry.resolve_framework(settings, "custom-acme-v1", None) is None
     assert set(definitions.SIGNAL_SOURCES) == set(signals.SIGNALS)
 
+    operator = auth_headers(client, "operator")
+    created_template = client.post(
+        "/api/reports/templates",
+        headers=operator,
+        json={
+            "name": "Custom compliance",
+            "kind": "compliance",
+            "framework_id": "custom-acme-v1",
+        },
+    )
+    assert created_template.status_code == 201, created_template.text
+    template_id = created_template.json()["template_id"]
+    updated_template = client.patch(
+        f"/api/reports/templates/{template_id}",
+        headers=operator,
+        json={"name": "Custom compliance updated"},
+    )
+    assert updated_template.status_code == 200, updated_template.text
+    assert updated_template.json()["framework_id"] == "custom-acme-v1"
+
 
 def test_tenant_isolation_quota_and_batched_purge(setup, monkeypatch):
     client, settings, tenant_id = setup
