@@ -42,6 +42,7 @@ from api.db.engine import get_session
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.compliance import frameworks as catalog
+from api.services.compliance import registry
 from api.services.compliance import signals as sig
 from api.settings import Settings
 from scanner.pipeline.report import SEVERITY_ORDER
@@ -350,7 +351,7 @@ def assess(
 ) -> dict[str, Any] | None:
     """Posture for one framework, or ``None`` if the framework is unknown."""
 
-    framework = catalog.get_framework(framework_id)
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
     if framework is None:
         return None
     collected = _collect_evidence(settings, tenant_id)
@@ -361,7 +362,7 @@ def assess_all(settings: Settings, *, tenant_id: str | None = None) -> list[dict
     """Posture for every framework off one evidence pass (used by the report factory)."""
 
     collected = _collect_evidence(settings, tenant_id)
-    return [_fold(framework, collected) for framework in catalog.FRAMEWORKS.values()]
+    return [_fold(framework, collected) for framework in registry.all_frameworks(settings, tenant_id)]
 
 
 def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, Any]:
@@ -402,7 +403,7 @@ def control_evidence(
 ) -> dict[str, Any] | None:
     """Every piece of evidence behind one control, not just the sample."""
 
-    framework = catalog.get_framework(framework_id)
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
     if framework is None:
         return None
     control = framework.control(control_id)

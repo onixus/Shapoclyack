@@ -1,3 +1,9 @@
-"""Postgres PRIMARY_DB (Phase 7): SQLAlchemy models + Alembic migrations for
-tenants/provisioning keys and the cross-run asset inventory.
+"""Postgres PRIMARY_DB: SQLAlchemy models and Alembic migrations.
+
+Register domain model modules before any caller uses Base.metadata, including
+SQLite development schema creation, Alembic and the tenant-RLS startup check.
 """
+
+from api.db.compliance_models import (
+    ComplianceFrameworkDefinition as ComplianceFrameworkDefinition,
+)
