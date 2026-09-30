@@ -74,6 +74,8 @@ spec:
               value: /app/scanner/data/geoip/geoip.mmdb
             - name: OCTO_CVSS4_DATABASE
               value: /app/scanner/data/cvss4/cvss4.json
+            - name: OCTO_BDU_FSTEC_DATABASE
+              value: /app/scanner/data/bdu/bdu-overlay.json
             # Re-check overlay mtimes at most once per minute — cheap stat,
             # keeps replicas in sync with the CronJob's daily refresh without
             # a restart.
