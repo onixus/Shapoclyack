@@ -12,9 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes._audit import AuditDep
-from api.schemas import ComplianceControlStatus, ComplianceFrameworkInfo, CompliancePosture
+from api.schemas import (
+    ComplianceControlStatus,
+    ComplianceFrameworkInfo,
+    CompliancePosture,
+    GeneratedReportInfo,
+)
+from api.services import artifact_store
 from api.services import compliance as compliance_service
-from api.services.compliance import definitions, registry
+from api.services.compliance import definitions, evidence_package, registry
 from api.settings import Settings
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
@@ -66,6 +72,44 @@ def get_definition(
     result = registry.get_definition(settings, tenant_id=principal.tenant_id, framework_id=framework_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Unknown custom compliance framework")
+    return result
+
+
+@router.post(
+    "/{framework_id}/evidence-package",
+    response_model=GeneratedReportInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_evidence_package(
+    framework_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Freeze and sign the tenant's current technical evidence for one framework."""
+    try:
+        result = evidence_package.create(
+            settings,
+            tenant_id=principal.tenant_id,
+            framework_id=framework_id,
+            actor=principal.username,
+            audit=audit,
+        )
+    except evidence_package.SigningUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except artifact_store.ArtifactStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Artifact storage is unavailable",
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Unknown compliance framework",
+        )
     return result
 
 
