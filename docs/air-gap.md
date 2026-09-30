@@ -136,6 +136,7 @@ read by the script and by the in-process fetcher that shares the feed.
 |---|---|---|---|
 | EPSS | `EPSS_URL` | `https://epss.cyentia.com/epss_scores-current.csv.gz` | The same `.csv.gz` |
 | CISA KEV | `KEV_URL` | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` | The same JSON |
+| БДУ ФСТЭК | `BDU_FSTEC_URL` | `https://bdu.fstec.ru/files/documents/vulxml.zip` | The same ZIP/XML dump; enable refresh with `OCTO_BDU_FSTEC_FETCH_ENABLED=true` |
 | GeoIP City | `GEOIP_URL` | DB-IP City Lite (monthly file name) or MaxMind GeoLite2-City (with `MAXMIND_LICENSE_KEY`) | The `.mmdb`, a DB-IP `.mmdb.gz` or a MaxMind `.tar.gz` — any of the three. No licence key is sent to a mirror |
 | ASN | `ASN_URL` | DB-IP ASN Lite or MaxMind GeoLite2-ASN | As for GeoIP |
 | NVD CVE API 2.0 (CVSS v4 overlay *and* the CPE ranges behind retro matching) | `NVD_API_URL` | `https://services.nvd.nist.gov/rest/json/cves/2.0` | An endpoint that answers the CVE API's query parameters — a caching proxy of NVD, not a static file |
