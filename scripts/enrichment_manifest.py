@@ -82,7 +82,11 @@ _JSON_DATASETS: dict[str, tuple[str, int, bool]] = {
     # statements: the full application corpus is tens of thousands of products
     # and a few million statements. Not required, for the advisory datasets'
     # reason: without it the retro matcher matches nothing, which is honest.
-    "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5_000, False),\n    # FSTEC BDU identity/provenance enrichment (#356). Optional: without it\n    # findings keep their CVE identity and the compliance engine says nothing\n    # about BDU rather than guessing. A real dump carries tens of thousands.\n    "bdu_fstec": ("bdu/bdu-overlay.json", 1_000, False),
+    "nvd_cpe": ("nvd-cpe/nvd-cpe-ranges.json", 5_000, False),
+    # FSTEC BDU identity/provenance enrichment (#356). Optional: without it
+    # findings keep their CVE identity and the compliance engine says nothing
+    # about BDU rather than guessing. A real dump carries tens of thousands.
+    "bdu_fstec": ("bdu/bdu-overlay.json", 1_000, False),
 }
 
 # GeoIP/ASN are MaxMind-format .mmdb blobs, not JSON overlays: there is no
