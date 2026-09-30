@@ -117,7 +117,8 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
         raw_files = sample.get("raw_results")
         if not isinstance(raw_files, list) or not 1 <= len(raw_files) <= MAX_RAW_FILES:
             raise CampaignError(f"{name}: raw_results must contain 1..{MAX_RAW_FILES} source files")
-        files, local_hashes, postgres_seen = [], set(), False\n        real_run_hosts, real_archive_hosts = set(), set()
+        files, local_hashes, postgres_seen = [], set(), False
+        real_run_hosts, real_archive_hosts = set(), set()
         for relative in raw_files:
             document, digest = _read(_path(path.parent, relative))
             if digest in local_hashes or digest in raw_seen:
@@ -152,6 +153,14 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
                     raise CampaignError(f"{name}: run must be an object")
                 resources = run.get("resources")
                 hosts = run.get("hosts")
+                archive_bytes = run.get("archive_bytes")
+                if (
+                    type(hosts) is int
+                    and hosts > 0
+                    and _finite(archive_bytes)
+                    and archive_bytes > 0
+                ):
+                    real_archive_hosts.add(hosts)
                 if type(hosts) is int and hosts > 0 and isinstance(resources, dict):
                     fields = ("cpu_sec", "children_cpu_sec", "max_rss_mb", "children_max_rss_mb")
                     if all(_finite(resources.get(key)) for key in fields):
@@ -165,6 +174,10 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
             problems.append(f"{name}: no raw PostgreSQL durability settings")
         if len(real_run_hosts) < 2:
             problems.append(f"{name}: need resource-accounted real runs at two distinct host counts")
+        if len(real_archive_hosts) < 2:
+            problems.append(
+                f"{name}: need archived real runs at two distinct host counts; run runs-dir --archive"
+            )
         provenance.append({"sample": name, "result": sample["result"], "result_sha256": result_sha, "raw": files})
     numeric = known_coefficients - {"source", "run_dir_bytes_is_floor"}
     comparison = {}
