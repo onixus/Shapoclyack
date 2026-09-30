@@ -220,7 +220,8 @@ run asn "asn (${MMDB_PROVIDER})" "$ROOT/scripts/fetch-asn-db.sh" \
 run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
   --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
 run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
-run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
+run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"\n\n# FSTEC BDU: CVE -> BDU identity/provenance for Russian compliance evidence.\n# It is enrichment, not a detector: BDU-only records are retained in the overlay\n# but never turned into findings without an independently observable match.\nrun bdu_fstec "bdu fstec" python3 "$ROOT/scripts/fetch-bdu-fstec.py" \
+  -o "$DEST/bdu/bdu-overlay.json"
 
 # Vendor advisories for software->CVE matching (docs/software-cve-matching.md).
 # The opt-in flag is tested here rather than letting fetch-advisories.py exit 3
