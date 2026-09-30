@@ -72,6 +72,17 @@ def test_duplicate_raws_and_derived_results_are_not_repetitions(tmp_path):
     assert any("repeated raw" in problem for problem in report["problems"])
 
 
+def test_requires_archived_real_runs(tmp_path):
+    path = campaign(tmp_path)
+    modify(
+        tmp_path / "raw0.json",
+        lambda d: [run.pop("archive_bytes") for run in d["runs_dir"]["runs"]],
+    )
+    report = audit_campaign(path, known_coefficients=FIELDS)
+    assert not report["checks_passed"]
+    assert any("archived real runs" in problem for problem in report["problems"])
+
+
 def test_requires_repetitions_real_runs_and_environment(tmp_path):
     path = campaign(tmp_path, repeats=1)
     modify(tmp_path / "raw0.json", lambda d: (d.pop("environment"), d.pop("runs_dir")))
