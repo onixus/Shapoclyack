@@ -15,7 +15,6 @@ import re
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
-
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
