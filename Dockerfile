@@ -141,23 +141,11 @@ RUN --mount=type=secret,id=github_token,required=false \
 # Shapoclyack scanner pipeline image.
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-# Refresh this digest deliberately: a pin is only reproducible, never current,
-# so every Debian security update since it was taken is a finding the scan
-# reports against us. Bumping it to the 3.12-slim of 2026-09-07 cleared every
-# fixable HIGH (30) and all but five fixable MEDIUM in the OS layer.
-# The 3.12-slim of 2026-09-19 clears the next batch: gzip (CVE-2026-41992),
-# pcre2 (CVE-2026-86145/-89157/-89161), sqlite (CVE-2026-11822/-11824) and the
-# three perl-base CRITICALs (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376),
-# which Debian has since fixed in 5.40.1-6+deb13u1.
-# What that base still reports at HIGH has no Debian fix at all: util-linux
-# (CVE-2026-76642, -78408/-78409/-78410, across bsdutils, mount, login and the
-# lib* it builds), ncurses (CVE-2025-69720), acl (CVE-2026-54369), systemd
-# (CVE-2026-16742) and perl's fix_deferred CVE-2026-9538. util-linux, login
-# and perl-base are Essential, and python's _uuid links libuuid1, so none of
-# them can be removed either. They survive a base bump and stay out of the
-# gate by --ignore-unfixed, not by an exception. Revisit when Debian
-# publishes a fix.
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+# Refresh deliberately: the immutable digest is reproducible, not automatically
+# current. Stable Debian packages without a vendor fix remain visible in the
+# full Trivy report; the gate blocks every fixable HIGH and CRITICAL. Do not
+# remove Essential system packages or introduce CVE exceptions to hide them.
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-scanner" \
@@ -267,10 +255,15 @@ WORKDIR /app
 # it would fetch unchecked. pip itself is upgraded first, from its own lock;
 # requirements-pip.txt says why that version. Regenerate the locks with
 # scripts/lock-python-deps.sh.
+# Package installers are build-only; remove pip and its bundled bootstrap wheel
+# after the locked install so vendored tooling does not ship in runtime images.
 COPY requirements-pip.lock requirements.lock /app/
 RUN set -eux; \
     pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements-pip.lock; \
-    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock
+    pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock; \
+    python -m pip uninstall --yes pip; \
+    python -c "import ensurepip, pathlib, shutil; shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)"; \
+    python -c "import importlib.util; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None"
 
 # The images redistribute scanner/data, and the EPSS overlay in it is CC BY 4.0.
 # The attribution has to travel with the bytes, not stay in the repository.

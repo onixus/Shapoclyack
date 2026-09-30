@@ -337,6 +337,14 @@ does not help: it is per job.
 quotes leave it to the shell, which has no such variable, and the tag silently
 becomes empty. Either use `sh """…"""` or pass the value through `withEnv`.
 
+**Image vulnerability gate.** Jenkins and GitHub CI fail on fixable HIGH or
+CRITICAL vulnerabilities. The full Trivy report retains unfixed findings;
+`--ignore-unfixed` only applies to the blocking pass. The exception file is
+empty. Python package installers are build-only: runtime images remove pip and
+ensurepip after installing locked dependencies. Live scanner smoke tests mount
+separately prepared, hash-checked pytest libraries and run as the image's normal
+nonroot user, without replacing production dependencies.
+
 **Shared caches must be per job.** Trivy takes a lock on its cache directory, so
 the single `trivy-db` volume every build mounted made two branch builds kill each
 other with `Failed to acquire cache or database lock`. The cache now lives in the

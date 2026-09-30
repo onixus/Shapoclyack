@@ -304,12 +304,8 @@ _INSTALLERS = [
 
 # Installs that deliberately do not go through a lock, and why. Matched as a
 # substring of the install command, so rewording one is a decision made here.
-_UNLOCKED = {
-    # The Smoke stage adds pytest to the throwaway container it tests the
-    # just-built image in; nothing it installs ships, and the image's own
-    # dependencies were installed from the lock by the Dockerfile.
-    "pip install --quiet --no-cache-dir --user pytest": "Jenkinsfile",
-}
+_UNLOCKED: dict[str, str] = {}
+
 
 def _pip_installs(text: str) -> list[str]:
     """Every `pip install` command in a file, continuation lines joined."""

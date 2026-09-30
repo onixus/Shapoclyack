@@ -222,7 +222,7 @@ jobs:
           format: table
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "0"
-      - name: Trivy gate (fail on fixable CRITICAL)
+      - name: Trivy gate (fail on fixable HIGH and CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         # Путь к ignore-файлу передаём через TRIVY_IGNOREFILE, а не через вход
         # `trivyignores:`: тот копирует перечисленные файлы в один временный
@@ -235,7 +235,7 @@ jobs:
         with:
           image-ref: network-scan-cli:ci
           format: table
-          severity: CRITICAL
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
       - name: Generate SBOM (SPDX JSON)
