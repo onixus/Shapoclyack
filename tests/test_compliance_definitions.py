@@ -67,7 +67,8 @@ def test_invalid_control_is_rejected_atomically(patch):
 
 
 @pytest.mark.parametrize("patch", [
-    {"framework_id": "pci-dss-4.0"}, {"framework_id": "custom-../escape"},\n    {"framework_id": "custom-" + "a" * 58},
+    {"framework_id": "pci-dss-4.0"}, {"framework_id": "custom-../escape"},
+    {"framework_id": "custom-" + "a" * 58},
     {"schema_version": True}, {"schema_version": 2}, {"controls": []},
     {"controls": {}}, {"tenant_id": "another-tenant"}, {"name": None},
 ])
