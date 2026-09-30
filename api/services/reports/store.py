@@ -552,7 +552,7 @@ def generate(
         framework_id = template["framework_id"]
         sections = template["sections"]
         title = title or template["name"]
-    _validate_template(kind, framework_id, dict(sections or {}))
+    _validate_template(settings, tenant_id, kind, framework_id, dict(sections or {}))
 
     report_id = f"rpt_{uuid.uuid4().hex[:16]}"
     now = _now()
