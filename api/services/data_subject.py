@@ -144,6 +144,7 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("tenant_branding", "updated_by"): (PSEUDONYM, "attribution"),
     ("report_templates", "created_by"): (PSEUDONYM, "attribution"),
     ("report_schedules", "created_by"): (PSEUDONYM, "attribution"),
+    ("compliance_framework_definitions", "created_by"): (PSEUDONYM, "attribution"),
     ("generated_reports", "generated_by"): (PSEUDONYM, "attribution"),
     ("tenant_promoted_domains", "promoted_by"): (PSEUDONYM, "attribution"),
     ("tenant_quotas", "updated_by"): (PSEUDONYM, "attribution"),
@@ -167,6 +168,10 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("generated_reports", "delivery"): (
         RETAINED,
         "log of a disclosure already made; ages out with the report",
+    ),
+    ("compliance_framework_definitions", "definition"): (
+        RETAINED,
+        "tenant-authored control mapping; creator attribution is stored separately",
     ),
     ("webhook_deliveries", "payload"): (
         RETAINED,

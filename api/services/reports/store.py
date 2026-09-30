@@ -31,7 +31,7 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.services import artifact_store, legal_hold, retention_policy, workflow_events
-from api.services.compliance import frameworks as catalog
+from api.services.compliance import registry as compliance_registry
 from api.services.reports import content as content_builder
 from api.services.reports import render as renderer
 from api.settings import Settings
@@ -91,14 +91,23 @@ def _template_dict(row: models.ReportTemplate) -> dict[str, Any]:
     }
 
 
-def _validate_template(kind: str, framework_id: str | None, sections: dict[str, Any]) -> None:
+def _validate_template(
+    settings: Settings,
+    tenant_id: str,
+    kind: str,
+    framework_id: str | None,
+    sections: dict[str, Any],
+) -> None:
     if kind not in content_builder.KINDS:
         raise ReportError(
             f"unknown kind {kind!r}; expected one of {', '.join(content_builder.KINDS)}"
         )
     if kind == "compliance" and not framework_id:
         raise ReportError("a compliance template needs framework_id")
-    if framework_id and catalog.get_framework(framework_id) is None:
+    if (
+        framework_id
+        and compliance_registry.resolve_framework(settings, framework_id, tenant_id) is None
+    ):
         raise ReportError(f"unknown compliance framework {framework_id!r}")
     unknown = sorted(set(sections) - set(content_builder.SECTIONS))
     if unknown:
@@ -116,7 +125,7 @@ def create_template(
     actor: str | None = None,
 ) -> dict[str, Any]:
     sections = dict(sections or {})
-    _validate_template(kind, framework_id, sections)
+    _validate_template(settings, tenant_id, kind, framework_id, sections)
     now = _now()
     with get_session(settings.postgres_url) as session:
         existing = session.execute(
@@ -186,7 +195,7 @@ def update_template(
             (fields.get("sections") if fields.get("sections") is not None else row.sections)
             or {}
         )
-        _validate_template(kind, framework_id, sections)
+        _validate_template(settings, row.tenant_id, kind, framework_id, sections)
         name = fields.get("name") or row.name
         if name != row.name:
             clash = session.execute(
@@ -552,7 +561,7 @@ def generate(
         framework_id = template["framework_id"]
         sections = template["sections"]
         title = title or template["name"]
-    _validate_template(kind, framework_id, dict(sections or {}))
+    _validate_template(settings, tenant_id, kind, framework_id, dict(sections or {}))
 
     report_id = f"rpt_{uuid.uuid4().hex[:16]}"
     now = _now()

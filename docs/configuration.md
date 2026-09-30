@@ -226,6 +226,7 @@ to a sensor) is rejected. Caps:
 | ASN MMDB | ASN and organization | Provider release cadence |
 | EPSS | Exploit probability | Daily |
 | CISA KEV | Known exploitation | Daily |
+| БДУ ФСТЭК | CVE ↔ BDU identity/provenance for observed findings | Full dump, **opt-in** |
 | CVSS v4 overlay | Score/vector enrichment | With source updates |
 | Debian Security Tracker | Vendor advisories for software→CVE matching | Daily, **opt-in** |
 | Ubuntu USN | Vendor advisories for software→CVE matching | Daily, **opt-in** |
@@ -292,6 +293,27 @@ looks more defensive than a paging loop ought to.
   genuine v4 — so a fetch restricted to well-known old CVEs returns nothing.
   About 1,900 entries do come from CVEs published before 2024, added
   retroactively by CNAs, which is why `--full` does not skip the older corpus.
+
+### БДУ ФСТЭК identity enrichment
+
+The BDU feed enriches an already observed CVE with one or more `BDU:*`
+identifiers and records the source dump SHA-256/date. It does **not** create
+findings from BDU-only records because the dump's affected-version text is
+not treated as a machine-safe package/CPE constraint.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_BDU_FSTEC_DATABASE` | `scanner/data/bdu/bdu-overlay.json` | Overlay read by the API; hot-reloaded by mtime/size |
+| `OCTO_BDU_FSTEC_FETCH_ENABLED` | `false` | Enables the large full-dump refresh in `fetch-enrichment.sh` |
+| `BDU_FSTEC_URL` | `https://bdu.fstec.ru/files/documents/vulxml.zip` | Mirror override for the official XML dump |
+
+Manual refresh:
+
+```bash
+OCTO_BDU_FSTEC_FETCH_ENABLED=true scripts/fetch-enrichment.sh
+# or parse an already-downloaded official dump:
+python3 scripts/fetch-bdu-fstec.py --source vulxml.zip
+```
 
 ### NVD CPE ranges (retro CVE matching)
 
@@ -1345,3 +1367,14 @@ both.
 `.dev-tls/` is git-ignored. It holds a private key and a CA whose only purpose
 is to be trusted by lab agents; nothing in it belongs in a repository or on a
 machine that matters.
+
+
+### Signed compliance evidence
+
+`POST /api/compliance/{framework_id}/evidence-package` requires
+`OCTO_EVIDENCE_SIGNING_KEY`: a dedicated 32-byte Ed25519 private seed in
+base64 or hex. Generate one with `openssl rand -base64 32`. It is deliberately
+separate from JWT and `OCTO_MASTER_KEY`; losing it prevents new signatures
+but does not make archived packages unverifiable because they embed the public
+key. Pin the package `key_id` through an independent trusted record when
+authenticity, rather than integrity alone, is required.

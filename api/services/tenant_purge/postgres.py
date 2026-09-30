@@ -94,6 +94,7 @@ POSTGRES_TABLES = (
     "idempotency_records",
     "retro_match_state",
     # Configuration the tenant wrote.
+    "compliance_framework_definitions",
     "wordlists",
     "sla_policies",
     "sla_escalation_policies",

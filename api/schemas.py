@@ -2060,6 +2060,10 @@ class VulnerabilityInfo(BaseModel):
     source: str = "scan"
     device_id: str | None = None
     cve: str | None = None
+    bdu_ids: list[str] = Field(default_factory=list)
+    bdu_source: str | None = None
+    bdu_updated: str | None = None
+    bdu_source_sha256: str | None = None
     cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None
     port: str | None = None
@@ -2725,6 +2729,8 @@ class ComplianceEvidenceItem(BaseModel):
     severity: str
     detail: str = ""
     signals: list[str] = Field(default_factory=list)
+    cve: str | None = None
+    bdu_ids: list[str] = Field(default_factory=list)
     #: An accepted risk is evidence an auditor should see, but it does not fail
     #: the control — the framework's own risk-acceptance process covers it.
     accepted: bool = False
@@ -2765,6 +2771,7 @@ class CompliancePosture(BaseModel):
     #: the score is not docked for honest triage, but a reader has to be able to
     #: see how much of the estate the score did not look at.
     suppressed_findings: int = 0
+    evidence_provenance: dict[str, Any] = Field(default_factory=dict)
     controls_total: int = 0
     controls_assessed: int = 0
     controls_passed: int = 0

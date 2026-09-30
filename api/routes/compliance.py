@@ -1,40 +1,116 @@
-"""Compliance posture over the tenant's own evidence (Sprint 4).
+"""Tenant-scoped compliance posture and admin-only custom catalogue import.
 
-Read-only and ``viewer``-gated throughout: nothing here changes state, and a
-compliance page an analyst cannot open is a page that gets replaced by a
-spreadsheet.
-
-Unlike the vulnerability lists, an unscoped platform admin is **not** given a
-cross-tenant view. A control status is a statement about one organisation's
-estate; merging three customers' findings into one PCI score would produce a
-number that is true of nobody.
+A control status describes one organisation; an unscoped platform admin is not
+allowed a merged cross-tenant view. Importing a catalogue never imports code.
 """
-
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.routes._audit import AuditDep
 from api.schemas import (
     ComplianceControlStatus,
     ComplianceFrameworkInfo,
     CompliancePosture,
+    GeneratedReportInfo,
 )
+from api.services import artifact_store
 from api.services import compliance as compliance_service
+from api.services.compliance import definitions, evidence_package, registry
 from api.settings import Settings
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
-
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+class FrameworkImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    format: Literal["json", "csv"]
+    content: str = Field(min_length=1, max_length=definitions.MAX_BYTES)
 
 
 @router.get("/frameworks", response_model=list[ComplianceFrameworkInfo])
 def list_frameworks(
-    _principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
 ) -> list[dict]:
-    return compliance_service.list_frameworks()
+    return registry.list_frameworks(settings, tenant_id=principal.tenant_id)
+
+
+@router.post("/frameworks/import", status_code=status.HTTP_201_CREATED)
+def import_framework(
+    payload: FrameworkImport,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: SettingsDep,
+    audit: AuditDep,
+    response: Response,
+) -> dict[str, Any]:
+    try:
+        result, created = registry.import_definition(
+            settings, tenant_id=principal.tenant_id,
+            content=payload.content, format=payload.format, audit=audit,
+        )
+    except definitions.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except registry.CatalogueConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return result
+
+
+@router.get("/frameworks/{framework_id}/definition")
+def get_definition(
+    framework_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    result = registry.get_definition(settings, tenant_id=principal.tenant_id, framework_id=framework_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown custom compliance framework")
+    return result
+
+
+@router.post(
+    "/{framework_id}/evidence-package",
+    response_model=GeneratedReportInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_evidence_package(
+    framework_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> dict[str, Any]:
+    """Freeze and sign the tenant's current technical evidence for one framework."""
+    try:
+        result = evidence_package.create(
+            settings,
+            tenant_id=principal.tenant_id,
+            framework_id=framework_id,
+            actor=principal.username,
+            audit=audit,
+        )
+    except evidence_package.SigningUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except artifact_store.ArtifactStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Artifact storage is unavailable",
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Unknown compliance framework",
+        )
+    return result
 
 
 @router.get("/{framework_id}", response_model=CompliancePosture)
@@ -47,15 +123,11 @@ def get_posture(
         settings, framework_id=framework_id, tenant_id=principal.tenant_id
     )
     if posture is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown compliance framework"
-        )
+        raise HTTPException(status_code=404, detail="Unknown compliance framework")
     return posture
 
 
-@router.get(
-    "/{framework_id}/controls/{control_id}", response_model=ComplianceControlStatus
-)
+@router.get("/{framework_id}/controls/{control_id}", response_model=ComplianceControlStatus)
 def get_control(
     framework_id: str,
     control_id: str,
@@ -63,13 +135,9 @@ def get_control(
     settings: SettingsDep,
 ) -> dict:
     """Every piece of evidence behind one control, not the summary's sample."""
-
     control = compliance_service.control_evidence(
-        settings,
-        framework_id=framework_id,
-        control_id=control_id,
-        tenant_id=principal.tenant_id,
+        settings, framework_id=framework_id, control_id=control_id, tenant_id=principal.tenant_id,
     )
     if control is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown control")
+        raise HTTPException(status_code=404, detail="Unknown control")
     return control

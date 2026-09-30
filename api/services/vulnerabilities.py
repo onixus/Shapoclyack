@@ -46,6 +46,7 @@ from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session, insert_or_skip
+from api.services import bdu_fstec
 from api.services import audit as audit_service
 from api.services import exploit_evidence
 from api.services import metrics
@@ -1272,6 +1273,7 @@ def register_findings_from_run(
 
 def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or _now()
+    bdu = bdu_fstec.lookup(row.cve)
     return {
         "vuln_id": row.vuln_id,
         "tenant_id": row.tenant_id,
@@ -1280,6 +1282,10 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "source": row.source,
         "device_id": row.device_id,
         "cve": row.cve,
+        "bdu_ids": list(bdu["bdu_ids"]),
+        "bdu_source": bdu["source"],
+        "bdu_updated": bdu["updated"],
+        "bdu_source_sha256": bdu["source_sha256"],
         "cwe": list(row.cwe or []),
         "script_id": row.script_id,
         "port": row.port,
