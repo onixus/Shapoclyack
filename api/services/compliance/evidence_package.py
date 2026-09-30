@@ -28,6 +28,7 @@ from api.db import models
 from api.db.engine import get_session
 from api.services import artifact_store, audit as audit_service, bdu_fstec, system_status
 from api.services.compliance import frameworks, registry, service
+from api.services.reports import store as report_store
 
 SIGNING_KEY_ENV = "OCTO_EVIDENCE_SIGNING_KEY"
 FORMAT = "shapoclyack.compliance-evidence"
@@ -271,7 +272,7 @@ def create(
         + "\n"
     ).encode("utf-8")
     report_id = f"rpt_{uuid.uuid4().hex[:16]}"
-    key = artifact_store.keys.report_key(tenant_id, f"{report_id}.json")
+    key = report_store._report_key(settings, tenant_id, report_id, "json")
     store = artifact_store.get_store(settings)
     store.put_bytes(key, encoded, content_type="application/json")
     now = datetime.now(UTC)
@@ -310,7 +311,7 @@ def create(
                 },
             )
             session.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001 - remove the orphan artifact, then re-raise
         try:
             store.delete(key)
         except artifact_store.ArtifactStoreError:
