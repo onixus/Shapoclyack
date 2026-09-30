@@ -78,7 +78,8 @@ the CI stage `SSH deploy (live sshd)` does.
 `pytest` exits 0 the same way whether a Postgres-backed suite passed or was
 skipped wholesale, so CI cannot treat its own exit code as evidence. Set
 `OCTO_REQUIRE_INTEGRATION=1` to declare the infrastructure available — which is
-what `scripts/ci-pytest.sh` does, and what both pipelines run:
+what `scripts/ci-pytest.sh` does, and what both pipelines run. The full run
+also requires at least **85% combined coverage of `api` and `scanner`**:
 
 ```bash
 OCTO_POSTGRES_URL=... OCTO_NATS_URL=... scripts/ci-pytest.sh
@@ -275,7 +276,7 @@ The one workflow GitHub runs by itself is the **PR gate**,
 one Python 3.12 job with no PostgreSQL, NATS, images or web build —
 `scripts/ci-lint.sh`, `compileall`, and `scripts/ci-pytest.sh` with
 `OCTO_REQUIRE_INTEGRATION=0 COV_FAIL_UNDER=0`, because the database suites skip
-there and the 74% coverage gate is about the run that includes them. It proves
+there and the 85% coverage gate is about the run that includes them. It proves
 less than Jenkins and does not replace it; see
 [`.github/PR_GATE.md`](../.github/PR_GATE.md). Python 3.11 is not run in the
 gate: `ruff.toml` sets `target-version = "py311"`, the oldest version in the

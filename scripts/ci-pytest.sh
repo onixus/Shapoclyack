@@ -16,7 +16,7 @@
 #
 #   JUNIT_XML         JUnit report path; empty (default) writes none.
 #   COVERAGE_XML      Cobertura report path. Default: coverage.xml
-#   COV_FAIL_UNDER    Coverage gate. Default: 74 (docs/development.md).
+#   COV_FAIL_UNDER    Coverage gate. Default: 85 (docs/development.md).
 #   OCTO_REQUIRE_INTEGRATION
 #                     Set to 0 for a deliberately infrastructure-less or
 #                     narrowed run, which then proves nothing and says so.
@@ -27,7 +27,7 @@ cd "${ROOT_DIR}"
 
 JUNIT_XML="${JUNIT_XML:-}"
 COVERAGE_XML="${COVERAGE_XML:-coverage.xml}"
-COV_FAIL_UNDER="${COV_FAIL_UNDER:-74}"
+COV_FAIL_UNDER="${COV_FAIL_UNDER:-85}"
 export OCTO_REQUIRE_INTEGRATION="${OCTO_REQUIRE_INTEGRATION:-1}"
 
 args=(-q)
