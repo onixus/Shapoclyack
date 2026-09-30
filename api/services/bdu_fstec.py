@@ -15,6 +15,9 @@ import re
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
+
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -109,7 +112,7 @@ def parse_xml(
     bdu_only: list[dict[str, Any]] = []
     newest: str | None = None
     newest_key = (0, 0, 0)
-    for _event, node in ET.iterparse(stream, events=("end",)):
+    for _event, node in SafeET.iterparse(stream, events=("end",)):
         if _local(node.tag) != "vul":
             continue
         record = _record(node)
@@ -160,12 +163,18 @@ def build_overlay(source: Path, *, origin_url: str | None = None) -> dict[str, A
             if member.file_size <= 0 or member.file_size > MAX_XML_BYTES:
                 raise ValueError(f"BDU XML expands to {member.file_size} bytes; refusing")
             with archive.open(member) as stream:
-                entries, bdu_only, updated = parse_xml(stream)
+                try:
+                    entries, bdu_only, updated = parse_xml(stream)
+                except (ET.ParseError, DefusedXmlException) as exc:
+                    raise ValueError(f"invalid BDU XML: {exc}") from exc
     else:
         if source.stat().st_size > MAX_XML_BYTES:
             raise ValueError(f"BDU XML exceeds {MAX_XML_BYTES} bytes; refusing")
         with source.open("rb") as stream:
-            entries, bdu_only, updated = parse_xml(stream)
+            try:
+                entries, bdu_only, updated = parse_xml(stream)
+            except (ET.ParseError, DefusedXmlException) as exc:
+                raise ValueError(f"invalid BDU XML: {exc}") from exc
     if not entries and not bdu_only:
         raise ValueError("BDU dump contains no usable vulnerability records")
     return {
