@@ -91,7 +91,13 @@ def _template_dict(row: models.ReportTemplate) -> dict[str, Any]:
     }
 
 
-def _validate_template(\n    settings: Settings,\n    tenant_id: str,\n    kind: str,\n    framework_id: str | None,\n    sections: dict[str, Any],\n) -> None:
+def _validate_template(
+    settings: Settings,
+    tenant_id: str,
+    kind: str,
+    framework_id: str | None,
+    sections: dict[str, Any],
+) -> None:
     if kind not in content_builder.KINDS:
         raise ReportError(
             f"unknown kind {kind!r}; expected one of {', '.join(content_builder.KINDS)}"
