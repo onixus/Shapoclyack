@@ -16,7 +16,7 @@ def campaign(tmp_path, repeats=3):
                "platform": "test-only", "cpu_count": 2, "mem_total_bytes": 1024,
                "postgres": dict.fromkeys(("fsync", "full_page_writes", "synchronous_commit", "autovacuum"), "on")}
         raw = {"environment": env, "runs_dir": {"runs": [
-            {"hosts": n, "resources": dict.fromkeys(("cpu_sec", "children_cpu_sec", "max_rss_mb", "children_max_rss_mb"), 1)}
+            {"hosts": n, "archive_bytes": n * 100, "resources": dict.fromkeys(("cpu_sec", "children_cpu_sec", "max_rss_mb", "children_max_rss_mb"), 1)}
             for n in (10, 20)], "skipped": {"synthetic": 1}}}
         result = {"coefficients": {"source": f"test-only-{index}", "run_dir_bytes_is_floor": False,
                                    "sensor_cpu_seconds_per_host": index + 1}}
