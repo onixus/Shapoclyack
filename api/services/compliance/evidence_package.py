@@ -234,7 +234,10 @@ def build_payload(
         ),
         "posture": posture,
         "enrichment": _enrichment_provenance(),
-        "bdu_fstec": bdu_fstec.dataset_info(),
+        "bdu_fstec": (
+            posture.get("evidence_provenance", {}).get("bdu_fstec")
+            or bdu_fstec.dataset_info()
+        ),
         "scope_notice": (
             "This package records technical evidence observed by the platform at generation "
             "time. It is not a certification or a legal compliance opinion."
@@ -272,6 +275,7 @@ def create(
     store = artifact_store.get_store(settings)
     store.put_bytes(key, encoded, content_type="application/json")
     now = datetime.now(UTC)
+    title = f"Compliance evidence — {framework_id}"
     row = models.GeneratedReport(
         report_id=report_id,
         tenant_id=tenant_id,
@@ -280,7 +284,7 @@ def create(
         kind="compliance_evidence",
         fmt="json",
         status="ready",
-        title=f"Compliance evidence — {framework_id}",
+        title=title,
         storage_path=key,
         size_bytes=len(encoded),
         error=None,
@@ -320,7 +324,7 @@ def create(
         "kind": "compliance_evidence",
         "format": "json",
         "status": "ready",
-        "title": row.title,
+        "title": title,
         "size_bytes": len(encoded),
         "error": None,
         "delivery": [],
