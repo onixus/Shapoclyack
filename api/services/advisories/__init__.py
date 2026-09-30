@@ -1,9 +1,8 @@
 """Vendor-advisory providers for software→CVE matching (ROADMAP Track E).
 
-Two distributions in this milestone — Debian and Ubuntu — because that is what
-the roadmap called for and because the cost of a provider is almost entirely in
-knowing the vendor's own vocabulary, not in the plumbing. Adding a third means
-writing a ``normalize_*`` function and one four-line subclass.
+Debian/Ubuntu source-package advisories and explicitly bound RHEL/SLES/ALAS
+binary-RPM advisories share the cache and status interface. Windows OS-build
+assessment remains a separate MSRC path, not a distro package provider.
 
 The registry is module-level and lazily built, mirroring how the enrichment
 overlays are held: providers are stateless apart from a cached dataset that
@@ -24,6 +23,9 @@ from api.services.advisories.base import (
     load_dataset,
 )
 from api.services.advisories.debian import DebianAdvisoryProvider
+from api.services.advisories.rhel import RhelAdvisoryProvider
+from api.services.advisories.suse import SuseAdvisoryProvider
+from api.services.advisories.alas import AlasAdvisoryProvider
 from api.services.advisories.ubuntu import UbuntuAdvisoryProvider
 
 __all__ = [
@@ -36,6 +38,9 @@ __all__ = [
     "DebianAdvisoryProvider",
     "JsonAdvisoryProvider",
     "UbuntuAdvisoryProvider",
+    "RhelAdvisoryProvider",
+    "SuseAdvisoryProvider",
+    "AlasAdvisoryProvider",
     "get_provider",
     "load_dataset",
     "providers",
@@ -46,6 +51,9 @@ __all__ = [
 _PROVIDER_TYPES: tuple[type[JsonAdvisoryProvider], ...] = (
     DebianAdvisoryProvider,
     UbuntuAdvisoryProvider,
+    RhelAdvisoryProvider,
+    SuseAdvisoryProvider,
+    AlasAdvisoryProvider,
 )
 
 _registry: dict[str, JsonAdvisoryProvider] | None = None

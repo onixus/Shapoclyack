@@ -1,0 +1,183 @@
+{
+  "document": {
+    "csaf_version": "2.0",
+    "publisher": {
+      "category": "vendor",
+      "name": "SUSE Product Security Team",
+      "namespace": "https://www.suse.com/"
+    },
+    "tracking": {
+      "id": "SUSE-SU-2024:3307-1",
+      "status": "final",
+      "current_release_date": "2026-09-20T16:59:46Z"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "vendor",
+        "name": "SUSE",
+        "branches": [
+          {
+            "category": "architecture",
+            "name": "i586",
+            "branches": [
+              {
+                "category": "product_version",
+                "name": "ucode-intel-0:20240910-143.1.i586",
+                "product": {
+                  "name": "ucode-intel-0:20240910-143.1.i586",
+                  "product_id": "ucode-intel-0:20240910-143.1.i586",
+                  "product_identification_helper": {
+                    "purl": "pkg:rpm/suse/ucode-intel@20240910-143.1?arch=i586&upstream=ucode-intel-0:20240910-143.1.src.rpm"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "category": "architecture",
+            "name": "x86_64",
+            "branches": [
+              {
+                "category": "product_version",
+                "name": "ucode-intel-0:20240910-143.1.x86_64",
+                "product": {
+                  "name": "ucode-intel-0:20240910-143.1.x86_64",
+                  "product_id": "ucode-intel-0:20240910-143.1.x86_64",
+                  "product_identification_helper": {
+                    "purl": "pkg:rpm/suse/ucode-intel@20240910-143.1?arch=x86_64&upstream=ucode-intel-0:20240910-143.1.src.rpm"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "category": "product_family",
+            "name": "SUSE Linux Enterprise",
+            "branches": [
+              {
+                "category": "product_name",
+                "name": "SUSE Linux Enterprise Server 12 SP5",
+                "product": {
+                  "name": "SUSE Linux Enterprise Server 12 SP5",
+                  "product_id": "SUSE Linux Enterprise Server 12 SP5",
+                  "product_identification_helper": {
+                    "cpe": "cpe:/o:suse:sles:12:sp5"
+                  }
+                }
+              },
+              {
+                "category": "product_name",
+                "name": "SUSE Linux Enterprise High Performance Computing 12 SP5",
+                "product": {
+                  "name": "SUSE Linux Enterprise High Performance Computing 12 SP5",
+                  "product_id": "SUSE Linux Enterprise High Performance Computing 12 SP5",
+                  "product_identification_helper": {
+                    "cpe": "cpe:/o:suse:sle-hpc:12:sp5"
+                  }
+                }
+              },
+              {
+                "category": "product_name",
+                "name": "SUSE Linux Enterprise Server for SAP Applications 12 SP5",
+                "product": {
+                  "name": "SUSE Linux Enterprise Server for SAP Applications 12 SP5",
+                  "product_id": "SUSE Linux Enterprise Server for SAP Applications 12 SP5",
+                  "product_identification_helper": {
+                    "cpe": "cpe:/o:suse:sles_sap:12:sp5"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "category": "default_component_of",
+        "full_product_name": {
+          "name": "ucode-intel-0:20240910-143.1.x86_64 as component of SUSE Linux Enterprise Server 12 SP5",
+          "product_id": "SUSE Linux Enterprise Server 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+        },
+        "product_reference": "ucode-intel-0:20240910-143.1.x86_64",
+        "relates_to_product_reference": "SUSE Linux Enterprise Server 12 SP5"
+      },
+      {
+        "category": "default_component_of",
+        "full_product_name": {
+          "name": "ucode-intel-0:20240910-143.1.x86_64 as component of SUSE Linux Enterprise Server 12 SP5",
+          "product_id": "SUSE Linux Enterprise High Performance Computing 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+        },
+        "product_reference": "ucode-intel-0:20240910-143.1.x86_64",
+        "relates_to_product_reference": "SUSE Linux Enterprise High Performance Computing 12 SP5"
+      },
+      {
+        "category": "default_component_of",
+        "full_product_name": {
+          "name": "ucode-intel-0:20240910-143.1.x86_64 as component of SUSE Linux Enterprise Server for SAP Applications 12 SP5",
+          "product_id": "SUSE Linux Enterprise Server for SAP Applications 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+        },
+        "product_reference": "ucode-intel-0:20240910-143.1.x86_64",
+        "relates_to_product_reference": "SUSE Linux Enterprise Server for SAP Applications 12 SP5"
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2024-23984",
+      "product_status": {
+        "recommended": [
+          "SUSE Linux Enterprise High Performance Computing 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+          "SUSE Linux Enterprise Server 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+          "SUSE Linux Enterprise Server for SAP Applications 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+        ]
+      },
+      "threats": [
+        {
+          "category": "impact",
+          "date": "2024-09-18T12:54:54Z",
+          "details": "moderate"
+        }
+      ],
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "product_ids": [
+            "SUSE Linux Enterprise High Performance Computing 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+            "SUSE Linux Enterprise Server 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+            "SUSE Linux Enterprise Server for SAP Applications 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+          ]
+        }
+      ]
+    },
+    {
+      "cve": "CVE-2024-24968",
+      "product_status": {
+        "recommended": [
+          "SUSE Linux Enterprise High Performance Computing 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+          "SUSE Linux Enterprise Server 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+          "SUSE Linux Enterprise Server for SAP Applications 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+        ]
+      },
+      "threats": [
+        {
+          "category": "impact",
+          "date": "2024-09-18T12:54:54Z",
+          "details": "moderate"
+        }
+      ],
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "product_ids": [
+            "SUSE Linux Enterprise High Performance Computing 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+            "SUSE Linux Enterprise Server 12 SP5:ucode-intel-0:20240910-143.1.x86_64",
+            "SUSE Linux Enterprise Server for SAP Applications 12 SP5:ucode-intel-0:20240910-143.1.x86_64"
+          ]
+        }
+      ]
+    }
+  ]
+}

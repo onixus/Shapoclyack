@@ -180,7 +180,22 @@ class AdvisoryDataset:
 
 
 def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
-    """Read one advisory dataset. Fail-soft, like every enrichment overlay."""
+    """Read a dataset; data/encoding failures are unavailable for every consumer.
+
+    Keep this at the shared loader, not only at the matching boundary: status,
+    availability and closure checks must see the same cached failure. Do not
+    swallow arbitrary exceptions from a broken provider or normalizer.
+    """
+    try:
+        return _load_dataset(path, provider=provider)
+    except (UnicodeError, RecursionError):
+        # Includes invalid file encoding, excessive nesting and invalid Unicode
+        # encountered while normalizing/hash-encoding the parsed statements.
+        LOG.warning("advisories: invalid text or nesting in %s", path)
+        return AdvisoryDataset(present=True, error="invalid advisory document")
+
+
+def _load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -191,6 +206,11 @@ def load_dataset(path: Path, *, provider: str) -> AdvisoryDataset:
     except json.JSONDecodeError as exc:
         LOG.warning("advisories: %s is not valid JSON: %s", path, exc)
         return AdvisoryDataset(present=True, error=f"invalid JSON: {exc}")
+    except ValueError:
+        # json.loads may raise a plain ValueError for Python's integer-string
+        # conversion ceiling. Limit this handler to parsing, not normalization.
+        LOG.warning("advisories: JSON value exceeds parser limits in %s", path)
+        return AdvisoryDataset(present=True, error="invalid JSON value")
 
     if not isinstance(payload, dict):
         return AdvisoryDataset(present=True, error="not an object")
@@ -253,6 +273,7 @@ class JsonAdvisoryProvider:
     distro: str = ""
     env_var: str = ""
     default_path: str = ""
+    case_sensitive_packages: bool = False
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._explicit_path = Path(path) if path else None
@@ -273,12 +294,16 @@ class JsonAdvisoryProvider:
             return (str(path), 0.0, -1)
         return (str(path), stat.st_mtime, stat.st_size)
 
+    def _load_dataset(self, path: Path) -> AdvisoryDataset:
+        """Format hook; all providers share the same cache and snapshot rules."""
+        return load_dataset(path, provider=self.name)
+
     def dataset(self) -> AdvisoryDataset:
         path = self.path()
         key = self._stat_key(path)
         with self._lock:
             if self._dataset is None or self._cache_key != key:
-                self._dataset = load_dataset(path, provider=self.name)
+                self._dataset = self._load_dataset(path)
                 self._cache_key = key
             return self._dataset
 
@@ -312,9 +337,10 @@ class JsonAdvisoryProvider:
     def advisories_for(
         self, *, release: str, source_package: str
     ) -> tuple[AdvisoryRecord, ...]:
-        return self.dataset().lookup(
-            (release or "").strip().lower(), (source_package or "").strip().lower()
-        )
+        package = (source_package or "").strip()
+        if not self.case_sensitive_packages:
+            package = package.lower()
+        return self.dataset().lookup((release or "").strip().lower(), package)
 
     def status(self) -> dict[str, Any]:
         """Provenance for ``GET /api/system`` and the fetch script."""

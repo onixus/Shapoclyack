@@ -1,0 +1,12 @@
+{
+  "rhel": {
+    "url": "https://security.access.redhat.com/data/csaf/v2/advisories/2025/rhsa-2025_23127.json",
+    "original_sha256": "f49c23226b6eae365fa80aa4d699ed8feabcd53a10d716467b21d153089c0a08",
+    "fixture_sha256": "abe5bb0b442c3e740b06328e7699cf25c9ef65807e27ea39c45fbd8bdfe155bd"
+  },
+  "suse": {
+    "url": "https://ftp.suse.com/pub/projects/security/csaf/suse-su-2024_3307-1.json",
+    "original_sha256": "d09084c144de1772d22787ac2093515dceaab468b84dd206cabfddb52dd89feb",
+    "fixture_sha256": "4cda67ff7748ed4a3e9a36987482ab67bd11651f951d65b3a47b42048b3acf4e"
+  }
+}

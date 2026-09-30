@@ -46,8 +46,9 @@ from sqlalchemy import case, delete, insert, select
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import advisories, package_identity, version_compare
-from api.services.advisories import msrc
+from api.services import advisories, package_identity, rpm_identity, version_compare
+from api.services.advisories import msrc, rpm
+from api.services.advisories.coverage import coverage_reason, snapshot_provider
 from api.settings import Settings
 
 _log = logging.getLogger("shapoclyack.software-cve-match")
@@ -161,7 +162,9 @@ def _compare_status(
 
 def evaluate_package(
     identity: package_identity.PackageIdentity,
-    provider: advisories.JsonAdvisoryProvider | None,
+    provider: advisories.AdvisoryProvider | None,
+    *,
+    selected_records: tuple[advisories.AdvisoryRecord, ...] | None = None,
 ) -> list[MatchCandidate]:
     """Every candidate row one installed package produces.
 
@@ -169,7 +172,9 @@ def evaluate_package(
     and the vendor simply has nothing on file for it. That is a real answer:
     the provider was asked and had no advisory. ``unknown`` is reserved for the
     cases where the question could not be put at all, which the caller detects
-    from ``identity.matchable``.
+    from ``identity.matchable`` and the provider coverage check in
+    ``match_software``. A direct caller must check both before interpreting an
+    empty result as an assessed package. See docs/advisory-coverage.md.
     """
     if not identity.matchable or provider is None or not provider.available():
         return []
@@ -179,13 +184,20 @@ def evaluate_package(
     feed_date = provider.feed_date()
     candidates: list[MatchCandidate] = []
 
-    records: tuple[advisories.AdvisoryRecord, ...] = ()
-    matched_package = ""
-    for name in identity.source_package_candidates:
-        records = provider.advisories_for(release=release, source_package=name)
-        if records:
-            matched_package = name
-            break
+    records: tuple[advisories.AdvisoryRecord, ...] = selected_records or ()
+    matched_package = identity.name if selected_records is not None else ""
+    if identity.distro in rpm_identity.RPM_DISTROS and selected_records is None:
+        # Direct callers cannot bypass RPM architecture/module restrictions.
+        records, reason = rpm.select_records(identity, provider)
+        if reason is not None:
+            return []
+        matched_package = identity.name
+    elif selected_records is None:
+        for name in identity.source_package_candidates:
+            records = provider.advisories_for(release=release, source_package=name)
+            if records:
+                matched_package = name
+                break
     if not records:
         return []
 
@@ -218,8 +230,16 @@ def evaluate_package(
                     purl=identity.purl,
                     cpe23=identity.cpe23,
                     unknown_reason=reason,
-                    feed_date=feed_date,
+                    feed_date=record.feed_date if isinstance(record, rpm.RpmAdvisoryRecord) else feed_date,
                     evidence={
+                        **({
+                            "architecture": record.architecture,
+                            "product_id": record.product_id,
+                            "source_sha256": record.source_sha256,
+                            "source_url": record.source_url,
+                            "source_updated": record.source_updated,
+                            "assessment_scope": "installed_binary_rpm",
+                        } if isinstance(record, rpm.RpmAdvisoryRecord) else {}),
                         "advisory_state": record.state,
                         "source_package_lookup": (
                             "exact"
@@ -282,6 +302,10 @@ def match_software(
         os_version=device.get("os_version"),
     )
     provider = provider_for(ctx.distro) if ctx.supported else None
+    # Availability, release coverage and every package lookup must see one
+    # dataset. A refresh during this pass applies to the next pass instead.
+    provider = snapshot_provider(provider)
+    missing_coverage = coverage_reason(provider, release=ctx.release or "")
 
     by_cve: dict[str, MatchCandidate] = {}
     unassessed: dict[str, list[str]] = {}
@@ -300,8 +324,19 @@ def match_software(
                 identity.name
             )
             continue
+        if missing_coverage is not None:
+            unassessed.setdefault(missing_coverage, []).append(identity.name)
+            continue
+        if ctx.distro in rpm_identity.RPM_DISTROS:
+            selected, selection_reason = rpm.select_records(identity, provider)
+            if selection_reason is not None:
+                unassessed.setdefault(selection_reason, []).append(identity.name)
+                continue
+            candidates = evaluate_package(identity, provider, selected_records=selected)
+        else:
+            candidates = evaluate_package(identity, provider)
         assessed += 1
-        for candidate in evaluate_package(identity, provider):
+        for candidate in candidates:
             existing = by_cve.get(candidate.cve_id)
             by_cve[candidate.cve_id] = (
                 candidate if existing is None else _worse(existing, candidate)
@@ -319,6 +354,7 @@ def match_software(
             distro_release=ctx.release,
             installed_package=names[0] if len(names) == 1 else "",
             provider=(provider.name if provider is not None else ""),
+            feed_date=provider.feed_date() if provider is not None else None,
             evidence={
                 "reason": reason,
                 "package_count": len(names),

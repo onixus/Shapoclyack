@@ -275,6 +275,12 @@ def enrichment_status(config: dict[str, Any]) -> list[dict[str, Any]]:
         # has to be able to see the date it loaded, like every other dataset.
         "advisories_msrc": os.environ.get("OCTO_MSRC_DATABASE")
         or "scanner/data/advisories/msrc-advisories.json",
+        "advisories_rhel": os.environ.get("OCTO_RHEL_ADVISORY_DATABASE")
+        or "scanner/data/advisories/rhel-advisories.json",
+        "advisories_suse": os.environ.get("OCTO_SUSE_ADVISORY_DATABASE")
+        or "scanner/data/advisories/suse-advisories.json",
+        "advisories_alas": os.environ.get("OCTO_ALAS_ADVISORY_DATABASE")
+        or "scanner/data/advisories/alas-advisories.json",
         # NVD CPE ranges behind retro CVE matching. Same question as above: a
         # retro matcher on a stale range file silently misses every CVE
         # published since, and says nothing about it.

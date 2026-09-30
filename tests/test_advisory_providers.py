@@ -167,8 +167,8 @@ def test_committed_seed_datasets_are_loadable(path, provider_cls, distro) -> Non
     assert provider.entry_count() < 500
 
 
-def test_registry_covers_debian_and_ubuntu() -> None:
-    assert set(advisories.providers()) == {"debian", "ubuntu"}
+def test_registry_covers_supported_distro_providers() -> None:
+    assert set(advisories.providers()) == {"debian", "ubuntu", "rhel", "sles", "amazonlinux"}
     assert advisories.get_provider("Ubuntu") is advisories.get_provider("ubuntu")
     assert advisories.get_provider("rocky") is None
     assert advisories.get_provider(None) is None
@@ -176,7 +176,7 @@ def test_registry_covers_debian_and_ubuntu() -> None:
 
 def test_registry_status_is_reportable() -> None:
     entries = advisories.status()
-    assert {entry["distro"] for entry in entries} == {"debian", "ubuntu"}
+    assert {entry["distro"] for entry in entries} == {"debian", "ubuntu", "rhel", "sles", "amazonlinux"}
     for entry in entries:
         assert set(entry) >= {"name", "path", "present", "entries", "releases"}
 

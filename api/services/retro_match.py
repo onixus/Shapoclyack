@@ -895,7 +895,7 @@ def match(
             # see (DISTRO_PACKAGED).
             verdict, confidence = POSSIBLE, CONFIDENCE_BACKPORT
             evidence["advisory"] = {"reason": "distro_packaged_on_linux"}
-        elif hint.distro in package_identity.SUPPORTED_DISTROS:
+        elif hint.distro in (package_identity.DEBIAN, package_identity.UBUNTU):
             verdict, advisory = vendor_verdict(
                 hint,
                 product_key=key,
