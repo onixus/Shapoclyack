@@ -123,6 +123,8 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
         asset_filters.append(models.Asset.tenant_id == tenant_id)
 
     evidence: list[_Evidence] = []
+    bdu_dataset = bdu_fstec.snapshot()
+    bdu_info = bdu_fstec.dataset_info(bdu_dataset)
     with get_session(settings.postgres_url) as session:
         # Only open findings are loaded, and the filter is in SQL rather than in
         # the loop below: at 50,000 assets a compliance page that pulled every
@@ -247,7 +249,10 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
                 signals=raised,
                 accepted=reading == "accepted",
                 cve=str(cve) if cve else None,
-                bdu_ids=bdu_fstec.lookup(str(cve) if cve else None)["bdu_ids"],
+                bdu_ids=bdu_fstec.lookup(
+                    str(cve) if cve else None,
+                    dataset=bdu_dataset,
+                )["bdu_ids"],
             )
         )
 
@@ -304,6 +309,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
         "open_findings": open_findings,
         "suppressed_findings": suppressed_findings,
         "generated_at": now,
+        "evidence_provenance": {"bdu_fstec": bdu_info},
     }
 
 
@@ -430,6 +436,7 @@ def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, 
         # findings held out of this assessment by a false-positive verdict, so
         # the score can be read together with what it was built on.
         "suppressed_findings": collected["suppressed_findings"],
+        "evidence_provenance": dict(collected.get("evidence_provenance") or {}),
         "controls_total": len(controls),
         "controls_assessed": len(assessed),
         "controls_passed": len(passed),
