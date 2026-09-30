@@ -88,10 +88,10 @@ def normalize(document: Any) -> dict[str, Any]:
         raise DefinitionError("schema_version: only integer 1 is supported")
     metadata = {
         field: _text(body.get(field), field, maximum)
-        for field, maximum in zip(_METADATA, (103, 256, 64, 4000), strict=True)
+        for field, maximum in zip(_METADATA, (64, 256, 64, 4000), strict=True)
     }
-    if not re.fullmatch(r"custom-[a-z0-9][a-z0-9._-]{0,95}", metadata["framework_id"]):
-        raise DefinitionError("framework_id: use custom- followed by a lowercase, URL-safe identifier")
+    if not re.fullmatch(r"custom-[a-z0-9][a-z0-9._-]{0,56}", metadata["framework_id"]):
+        raise DefinitionError("framework_id: use custom- followed by a lowercase, URL-safe identifier (64 chars max)")
     controls = body.get("controls")
     if not isinstance(controls, list) or not 1 <= len(controls) <= MAX_CONTROLS:
         raise DefinitionError(f"controls: expected 1..{MAX_CONTROLS} controls")
