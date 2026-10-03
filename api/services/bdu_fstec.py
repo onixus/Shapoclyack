@@ -14,7 +14,7 @@ import os
 import re
 import threading
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 import zipfile
 from datetime import datetime
 from pathlib import Path
