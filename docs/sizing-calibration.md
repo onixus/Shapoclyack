@@ -62,9 +62,16 @@ runs do not include archive measurements at two distinct host counts. PostgreSQL
 metadata; missing settings are not treated as enabled. This intentionally strict
 baseline does not silently accept other durability profiles as equivalent.
 
+Every environment block must carry `measured_at`, `platform` and `cpu_count`.
+`mem_total_bytes` and `git_commit` are `null` where the collector cannot read
+them (no `/proc/meminfo` on macOS, no git checkout on the stand); that is listed
+under `notes` without failing the checks. Record the value with the campaign.
+
 The coefficient vocabulary comes from the existing `Coefficients` dataclass.
-Unknown names, boolean-as-number, negative/non-finite values and invalid shapes
-are refused. The comparison reports min/median/max, relative range and the
+Unknown names, boolean-as-number, non-finite values and invalid shapes are
+refused. A negative coefficient is what `derive` emits for a noisy fit (slopes
+are not clamped): it fails the checks as a problem and stays in the comparison,
+so the spread that produced it is visible. The comparison reports min/median/max, relative range and the
 number of measured repetitions **for each coefficient**. Missing values remain
 missing: a median of available samples is only diagnostic and is marked
 `complete: false` when any repetition lacks that coefficient. A zero median has

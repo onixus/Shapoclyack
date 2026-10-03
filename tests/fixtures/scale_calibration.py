@@ -81,7 +81,7 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
     samples = manifest.get("samples")
     if not isinstance(samples, list) or not 1 <= len(samples) <= MAX_SAMPLES:
         raise CampaignError(f"samples must contain 1..{MAX_SAMPLES} repetitions")
-    problems = []
+    problems, notes = [], []
     if len(samples) < MIN_REPETITIONS:
         problems.append(f"need at least {MIN_REPETITIONS} independent repetitions")
     ids, raw_seen, result_seen = set(), set(), set()
@@ -107,8 +107,13 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
             elif key == "run_dir_bytes_is_floor":
                 if type(value) is not bool:
                     raise CampaignError(f"{name}: run_dir_bytes_is_floor must be boolean")
-            elif value is not None and not _finite(value):
-                raise CampaignError(f"{name}: {key} must be a finite non-negative number or null")
+            elif value is not None:
+                if type(value) not in (int, float) or not math.isfinite(value):
+                    raise CampaignError(f"{name}: {key} must be a finite number or null")
+                if value < 0:
+                    # derive does not clamp a fitted slope: a noisy repetition
+                    # is evidence for the reviewer, not unreadable input.
+                    problems.append(f"{name}: {key} is negative ({value}); the fit is not usable")
         if not coefficients.get("source") or coefficients.get("source") == "unset":
             problems.append(f"{name}: no coefficient provenance")
         if coefficients.get("run_dir_bytes_is_floor", True) is not False:
@@ -131,9 +136,15 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
             for env in envs.values():
                 if not isinstance(env, dict):
                     raise CampaignError(f"{name}: environment must be an object")
-                for key in ("measured_at", "git_commit", "platform", "cpu_count", "mem_total_bytes"):
+                for key in ("measured_at", "platform", "cpu_count"):
                     if not env.get(key):
                         problems.append(f"{name}: {relative} environment lacks {key}")
+                # scale_measure records these as null where it cannot read them
+                # (no /proc/meminfo on macOS, no git checkout on a stand): a
+                # gap to fill in by hand at review, not a failed measurement.
+                for key in ("git_commit", "mem_total_bytes"):
+                    if not env.get(key):
+                        notes.append(f"{name}: {relative} environment has no {key}; record it with the campaign")
                 pg = env.get("postgres")
                 if pg is not None:
                     if not isinstance(pg, dict):
@@ -194,7 +205,7 @@ def audit_campaign(path: Path, *, known_coefficients: set[str]) -> dict[str, Any
     return {
         "schema_version": 1, "deployment": manifest["deployment"],
         "scanner_mode": manifest["scanner_mode"], "manifest_sha256": manifest_sha,
-        "checks_passed": not problems, "problems": problems,
+        "checks_passed": not problems, "problems": problems, "notes": notes,
         "sources": provenance, "comparison": comparison,
         "missing_coefficients": [key for key, value in comparison.items() if not value["complete"]],
         "capacity_validated": False,

@@ -55,11 +55,11 @@ def test_non_production_postgres_is_reported(tmp_path, setting):
     assert any(setting in problem for problem in report["problems"])
 
 
-@pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), True, "12"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), True, "12"])
 def test_invalid_coefficients_cannot_reach_comparison(tmp_path, bad):
     path = campaign(tmp_path)
     modify(tmp_path / "result0.json", lambda d: d["coefficients"].update(sensor_cpu_seconds_per_host=bad))
-    with pytest.raises(CampaignError, match="finite non-negative"):
+    with pytest.raises(CampaignError, match="finite number"):
         audit_campaign(path, known_coefficients=FIELDS)
 
 
@@ -122,3 +122,22 @@ def test_unknown_coefficient_rejected(tmp_path):
     modify(tmp_path / "result0.json", lambda d: d["coefficients"].update(guessed_capacity=10000))
     with pytest.raises(CampaignError, match="unknown fields"):
         audit_campaign(path, known_coefficients=FIELDS)
+
+
+def test_negative_fitted_slope_is_reported_with_its_spread(tmp_path):
+    path = campaign(tmp_path)
+    modify(tmp_path / "result0.json", lambda d: d["coefficients"].update(sensor_cpu_seconds_per_host=-0.5))
+    report = audit_campaign(path, known_coefficients=FIELDS)
+    assert not report["checks_passed"]
+    assert any("negative" in problem for problem in report["problems"])
+    assert report["comparison"]["sensor_cpu_seconds_per_host"]["min"] == -0.5
+
+
+@pytest.mark.parametrize("key", ["mem_total_bytes", "git_commit"])
+def test_fields_the_collector_cannot_always_read_are_notes(tmp_path, key):
+    path = campaign(tmp_path)
+    for index in range(3):
+        modify(tmp_path / f"raw{index}.json", lambda d: d["environment"].update({key: None}))
+    report = audit_campaign(path, known_coefficients=FIELDS)
+    assert report["checks_passed"], report["problems"]
+    assert len(report["notes"]) == 3 and all(key in note for note in report["notes"])
