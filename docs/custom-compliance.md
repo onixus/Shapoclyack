@@ -100,6 +100,12 @@ rejected atomically. Limits: **1 MiB UTF-8 content**, **500 controls per
 catalogue**, **32 catalogues / 1000 custom controls total per tenant**; text fields and conjunctions have
 additional bounds. Listing reads metadata only, not all definition documents.
 
+A definition is never edited, but an admin can remove one with
+`DELETE /api/compliance/frameworks/{framework_id}`, which returns its catalogues
+and controls to the budget. The deletion is audited with the definition digest,
+and is refused (409) while a report template names the framework. Evidence
+packages already created embed the definition they were built on.
+
 ## Operations and evidence limits
 
 Definitions are keyed by `(tenant_id, framework_id)` and protected by application
@@ -111,7 +117,9 @@ across API replicas.
 
 The definition digest detects accidental modification; it is not the package
 signature. For an archivable assessment, create the signed evidence package
-for this custom framework through the compliance API.
+for this custom framework through the compliance API. A package carries at
+most 250 000 evidence items and 256 MiB; a larger estate gets a 413 rather
+than a package the verifier would refuse.
 
 ## 152-ФЗ decision
 

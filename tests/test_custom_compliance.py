@@ -215,3 +215,53 @@ def test_total_control_budget_is_bounded(setup, monkeypatch):
     monkeypatch.setattr(registry, "MAX_CONTROLS_PER_TENANT", 1)
     assert upload(client).status_code == 201
     assert upload(client, document=example() | {"framework_id": "custom-second"}).status_code == 409
+
+
+def test_delete_returns_the_budget_and_is_refused_while_a_template_uses_it(setup, monkeypatch):
+    client, settings, tenant_id = setup
+    monkeypatch.setattr(registry, "MAX_CONTROLS_PER_TENANT", 1)
+    admin = auth_headers(client, "admin")
+    assert upload(client).status_code == 201
+    second = example() | {"framework_id": "custom-second"}
+    assert upload(client, document=second).status_code == 409
+
+    template = client.post("/api/reports/templates", headers=admin, json={
+        "name": "uses custom", "kind": "compliance", "framework_id": "custom-acme-v1",
+    })
+    assert template.status_code == 201, template.text
+    url = "/api/compliance/frameworks/custom-acme-v1"
+    assert client.delete(url, headers=auth_headers(client, "operator")).status_code == 403
+    assert client.delete(url, headers=admin).status_code == 409
+    removed = client.delete(
+        f"/api/reports/templates/{template.json()['template_id']}", headers=admin
+    )
+    assert removed.status_code in (200, 204), removed.text
+
+    assert client.delete(url, headers=admin).status_code == 204
+    assert client.delete(url, headers=admin).status_code == 404
+    assert upload(client, document=second).status_code == 201
+    with get_session(settings.postgres_url) as session:
+        assert session.scalar(select(func.count()).select_from(models.AuditEvent).where(
+            models.AuditEvent.tenant_id == tenant_id,
+            models.AuditEvent.action == "compliance.framework.delete")) == 1
+
+
+def test_evidence_package_is_bounded_and_checks_the_key_first(setup, monkeypatch):
+    client, _, _ = setup
+    assert upload(client).status_code == 201
+    operator = auth_headers(client, "operator")
+    url = "/api/compliance/custom-acme-v1/evidence-package"
+
+    snapshot = service.snapshot
+    monkeypatch.delenv(evidence_package.SIGNING_KEY_ENV, raising=False)
+    monkeypatch.setattr(
+        service, "snapshot", lambda *a, **k: pytest.fail("evidence read without a signing key")
+    )
+    assert client.post(url, headers=operator).status_code == 503
+
+    monkeypatch.setattr(service, "snapshot", snapshot)
+    monkeypatch.setenv(
+        evidence_package.SIGNING_KEY_ENV, base64.b64encode(bytes(range(32))).decode("ascii")
+    )
+    monkeypatch.setattr(evidence_package, "MAX_PACKAGE_BYTES", 16)
+    assert client.post(url, headers=operator).status_code == 413

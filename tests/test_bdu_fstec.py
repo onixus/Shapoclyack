@@ -67,6 +67,7 @@ def test_official_shape_builds_cve_identity_and_keeps_bdu_only(tmp_path):
 def test_lookup_hot_reloads_and_never_promotes_bdu_only(tmp_path, monkeypatch):
     database = tmp_path / "bdu.json"
     monkeypatch.setenv(bdu_fstec.DATABASE_ENV, str(database))
+    monkeypatch.setenv("OCTO_ENRICHMENT_RELOAD_SECONDS", "0")
     bdu_fstec.reset_cache()
 
     first = bdu_fstec.build_overlay(_zip(tmp_path))

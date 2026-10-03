@@ -36,10 +36,19 @@ VERSION = 1
 SIGNATURE_ALGORITHM = "Ed25519"
 _KEY_BYTES = 32
 _KEY_ID_DOMAIN = b"shapoclyack/compliance-evidence/ed25519/v1"
+# The snapshot is untruncated by design, and it is built, canonicalized and
+# serialized in memory. Both bounds are checked before the next copy is made;
+# the byte bound is the one scripts/verify-compliance-evidence.py accepts.
+MAX_EVIDENCE_ITEMS = 250_000
+MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 
 
 class SigningUnavailable(RuntimeError):
     """The installation has no usable evidence signing identity."""
+
+
+class PackageTooLarge(ValueError):
+    """The tenant's evidence does not fit one verifiable package."""
 
 
 class InvalidEvidencePackage(ValueError):
@@ -95,7 +104,9 @@ def _raw_public(key: Ed25519PrivateKey | Ed25519PublicKey) -> bytes:
 
 
 def key_id(key: Ed25519PrivateKey | Ed25519PublicKey) -> str:
-    return hashlib.sha256(_KEY_ID_DOMAIN + _raw_public(key)).hexdigest()[:16]
+    # The whole digest: this is what a verifier pins, so it must not be
+    # cheaper to collide than the signature is to forge.
+    return hashlib.sha256(_KEY_ID_DOMAIN + _raw_public(key)).hexdigest()
 
 
 def sign_payload(
@@ -221,6 +232,11 @@ def build_payload(
     )
     if posture is None:
         return None
+    items = sum(len(control["evidence"]) for control in posture["controls"])
+    if items > MAX_EVIDENCE_ITEMS:
+        raise PackageTooLarge(
+            f"{items} evidence items exceed the {MAX_EVIDENCE_ITEMS} one package may carry"
+        )
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -259,6 +275,9 @@ def create(
     Artifact bytes are written first. If the database transaction fails, those
     bytes are deleted so there is no unindexed evidence object outside retention.
     """
+    # Before the evidence pass: without a signing identity the answer is a 503
+    # whatever the tenant holds, and the pass reads every open finding.
+    _private_key()
     payload = build_payload(
         settings,
         tenant_id=tenant_id,
@@ -271,6 +290,10 @@ def create(
         json.dumps(package, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
         + "\n"
     ).encode("utf-8")
+    if len(encoded) > MAX_PACKAGE_BYTES:
+        raise PackageTooLarge(
+            f"evidence package is {len(encoded)} bytes; the limit is {MAX_PACKAGE_BYTES}"
+        )
     report_id = f"rpt_{uuid.uuid4().hex[:16]}"
     key = report_store._report_key(settings, tenant_id, report_id, "json")
     store = artifact_store.get_store(settings)

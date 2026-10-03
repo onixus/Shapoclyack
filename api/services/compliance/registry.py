@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 
 from api.db.compliance_models import ComplianceFrameworkDefinition as Definition
 from api.db.engine import get_session
-from api.db.models import Tenant
+from api.db.models import ReportTemplate, Tenant
 from api.services import audit as audit_service
 from api.services.compliance import definitions, frameworks
 
@@ -111,6 +111,42 @@ def import_definition(
         )
         session.flush()
         return _document(row), True
+
+
+def delete_definition(
+    settings: Settings, *, tenant_id: str, framework_id: str, audit: AuditContext,
+) -> bool:
+    """Remove a definition and give its budget back; the audit row keeps its digest.
+
+    Evidence packages already archived embed the definition they were built on,
+    so they stay attributable. A report template that names the framework would
+    start failing instead, so that is refused. The same tenant-row lock as the
+    import, so the two cannot interleave on the catalogue budget.
+    """
+    tenant_id = _tenant(tenant_id)
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            select(Tenant).where(Tenant.tenant_id == tenant_id).with_for_update()
+        ).scalar_one_or_none()
+        row = session.get(Definition, (tenant_id, framework_id))
+        if row is None:
+            return False
+        used = session.scalar(
+            select(func.count()).select_from(ReportTemplate).where(
+                ReportTemplate.tenant_id == tenant_id,
+                ReportTemplate.framework_id == framework_id,
+            )
+        ) or 0
+        if used:
+            raise CatalogueConflict(f"framework is used by {used} report template(s)")
+        audit_service.record(
+            session, audit, action="compliance.framework.delete",
+            resource_type="compliance_framework", resource_id=row.framework_id, tenant_id=tenant_id,
+            before={"framework_id": row.framework_id, "version": row.version,
+                    "control_count": row.control_count, "definition_sha256": row.definition_sha256},
+        )
+        session.delete(row)
+        return True
 
 
 def get_definition(settings: Settings, *, tenant_id: str, framework_id: str) -> dict[str, Any] | None:

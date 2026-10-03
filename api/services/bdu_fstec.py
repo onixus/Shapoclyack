@@ -13,6 +13,7 @@ import json
 import os
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
@@ -34,6 +35,7 @@ MAX_XML_BYTES = 1024 * 1024 * 1024
 _lock = threading.Lock()
 _cache_fingerprint: tuple[str, int, int] | None = None
 _cache: dict[str, Any] = {}
+_checked_at: float | None = None
 
 
 def _local(tag: str) -> str:
@@ -193,14 +195,33 @@ def database_path() -> Path:
 
 
 def reset_cache() -> None:
-    global _cache_fingerprint, _cache
+    global _cache_fingerprint, _cache, _checked_at
     with _lock:
         _cache_fingerprint = None
         _cache = {}
+        _checked_at = None
+
+
+def _reload_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("OCTO_ENRICHMENT_RELOAD_SECONDS", "60")))
+    except (TypeError, ValueError):
+        return 60.0
 
 
 def _load() -> dict[str, Any]:
-    global _cache_fingerprint, _cache
+    """The overlay, re-checked on disk at most once per
+    ``OCTO_ENRICHMENT_RELOAD_SECONDS`` like the other enrichment overlays.
+
+    The steady state is two attribute reads: no ``stat`` and no lock per
+    finding. A changed file is parsed outside the lock, so readers keep the
+    previous overlay meanwhile instead of queueing behind the parse.
+    """
+    global _cache_fingerprint, _cache, _checked_at
+    now = time.monotonic()
+    checked = _checked_at
+    if checked is not None and now - checked < _reload_seconds():
+        return _cache
     path = database_path()
     try:
         stat = path.stat()
@@ -209,21 +230,24 @@ def _load() -> dict[str, Any]:
         fingerprint = (str(path), 0, 0)
     with _lock:
         if fingerprint == _cache_fingerprint:
+            _checked_at = now
             return _cache
-        payload: dict[str, Any] = {}
-        if fingerprint[1]:
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if (
-                    isinstance(raw, dict)
-                    and raw.get("version") == 1
-                    and isinstance(raw.get("entries"), dict)
-                ):
-                    payload = raw
-            except (OSError, ValueError, RecursionError):
-                payload = {}
+    payload: dict[str, Any] = {}
+    if fingerprint[1]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                isinstance(raw, dict)
+                and raw.get("version") == 1
+                and isinstance(raw.get("entries"), dict)
+            ):
+                payload = raw
+        except (OSError, ValueError, RecursionError):
+            payload = {}
+    with _lock:
         _cache_fingerprint = fingerprint
         _cache = payload
+        _checked_at = now
         return _cache
 
 

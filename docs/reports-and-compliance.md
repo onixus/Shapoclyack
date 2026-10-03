@@ -357,8 +357,10 @@ The signed payload contains the exact built-in/custom framework definition
 and SHA-256, every matching evidence item for every control (not the UI's
 sample), accepted-risk counts, BDU identities and enrichment provenance.
 Set `OCTO_EVIDENCE_SIGNING_KEY` to a dedicated 32-byte Ed25519 private seed.
-The package embeds its public key and `key_id`; archive verifiers should pin
-that `key_id` through a separate trusted channel:
+The package embeds its public key and `key_id` (the full SHA-256 fingerprint,
+64 hex characters); archive verifiers should pin that `key_id` through a
+separate trusted channel. The verifier is one file that needs only Python and
+the `cryptography` package, not the platform:
 
 ```bash
 python3 scripts/verify-compliance-evidence.py evidence.json --key-id <trusted-key-id>

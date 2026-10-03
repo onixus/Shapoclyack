@@ -75,6 +75,24 @@ def get_definition(
     return result
 
 
+@router.delete("/frameworks/{framework_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_framework(
+    framework_id: str,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    settings: SettingsDep,
+    audit: AuditDep,
+) -> Response:
+    try:
+        deleted = registry.delete_definition(
+            settings, tenant_id=principal.tenant_id, framework_id=framework_id, audit=audit,
+        )
+    except registry.CatalogueConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Unknown custom compliance framework")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post(
     "/{framework_id}/evidence-package",
     response_model=GeneratedReportInfo,
@@ -98,6 +116,11 @@ def create_evidence_package(
     except evidence_package.SigningUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except evidence_package.PackageTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=str(exc),
         ) from exc
     except artifact_store.ArtifactStoreError as exc:

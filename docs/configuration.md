@@ -303,9 +303,16 @@ not treated as a machine-safe package/CPE constraint.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_BDU_FSTEC_DATABASE` | `scanner/data/bdu/bdu-overlay.json` | Overlay read by the API; hot-reloaded by mtime/size |
+| `OCTO_BDU_FSTEC_DATABASE` | `scanner/data/bdu/bdu-overlay.json` | Overlay read by the API; hot-reloaded by mtime/size (see below) |
 | `OCTO_BDU_FSTEC_FETCH_ENABLED` | `false` | Enables the large full-dump refresh in `fetch-enrichment.sh` |
 | `BDU_FSTEC_URL` | `https://bdu.fstec.ru/files/documents/vulxml.zip` | Mirror override for the official XML dump |
+
+`bdu.fstec.ru` presents a certificate issued under the Russian national root
+(Russian Trusted Root CA), which stock trust stores do not carry: the refresh
+then fails TLS verification on every run and no overlay is written. Add that
+root to the PEM file named by `OCTO_CA_BUNDLE`, or point `BDU_FSTEC_URL` at a
+mirror your trust store already accepts. Verification is never switched off.
+The API re-checks the overlay at most once per `OCTO_ENRICHMENT_RELOAD_SECONDS`.
 
 Manual refresh:
 
