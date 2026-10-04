@@ -79,9 +79,12 @@ describe("withinAuthority", () => {
     expect(withinAuthority(hr, 1, [])).toBe(true);
     expect(withinAuthority(hr, 2, [])).toBe(false);
     expect(withinAuthority(hr, 1, ["audit.read"])).toBe(false);
-    // The approvals are a member manager's to hand out without holding them,
-    // as the tenant admin has always staffed scope-approver.
-    expect(withinAuthority(hr, 1, ["scan_scope.read", "scan_scope.approve"])).toBe(true);
+    // The approvals are not a rank-1 member manager's to hand out: staffing
+    // one without holding it is the admin rank's...
+    expect(withinAuthority(hr, 1, ["scan_scope.read", "scan_scope.approve"])).toBe(false);
+    expect(withinAuthority({ ...hr, tenant_rank: 2 }, 1, ["scan_scope.approve"])).toBe(false);
+    // ...as the tenant admin has always staffed scope-approver, under any name.
+    expect(withinAuthority({ ...hr, tenant_rank: 3 }, 1, ["scan_scope.read", "scan_scope.approve"])).toBe(true);
     const tokenAdmin = principal("viewer", "token-admin", ["tenant.credential.manage"]);
     expect(withinAuthority(tokenAdmin, 1, ["scan_scope.approve"])).toBe(false);
   });

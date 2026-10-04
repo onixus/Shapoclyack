@@ -336,7 +336,8 @@ TENANT_GRANTABLE_PERMISSIONS: frozenset[str] = frozenset(
 #: :func:`separation_of_duties_conflict`). They are also the two permissions a
 #: tenant ``admin`` hands out without holding — it grants ``scope-approver``
 #: and ``risk-approver`` to colleagues, and cannot approve anything itself —
-#: which is why :func:`exceeds_authority` lets a member manager delegate them.
+#: which is why :func:`exceeds_authority` lets a member manager at the admin
+#: rank delegate them, and nobody below it.
 APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
     {SCAN_SCOPE_APPROVE, VULNERABILITY_EXCEPTION_APPROVE}
 )
@@ -397,18 +398,26 @@ def exceeds_authority(rank: int, permissions: frozenset[str], held: Authority) -
     everything in every tenant.
 
     One exception, and it is the pre-existing one: :data:`APPROVAL_PERMISSIONS`
-    may be handed out by a member manager who does not hold them, because that
-    is how the tenant ``admin`` has always staffed ``scope-approver`` and
-    ``risk-approver``. It is not a way up: a membership holds one role, the
-    approval roles are held to read rank without ``tenant.member.manage``
-    (:func:`separation_of_duties_conflict`), and so whoever takes one gives up
-    the administration they had.
+    may be handed out without being held by a member manager **at the admin
+    rank** (3), because that is how the tenant ``admin`` has always staffed
+    ``scope-approver`` and ``risk-approver``. It is the admin rank's and not
+    any member manager's: a tenant may give ``tenant.member.manage`` to a
+    "personnel" role at rank 1 or 2, and with the exception open to it, its
+    holder could write an approver role and grant it to a second account of
+    their own — approving a wider scope from one and scanning it from the
+    other — or write one role holding both approvals the built-ins keep apart
+    and take it. At rank 3 that power is the one the tenant admin already
+    had; below it, staffing an approval is the tenant admin's call.
     """
     if held.is_platform_admin:
         return None
     if rank > held.rank:
         return f"rank {rank} is above the caller's rank {held.rank} in this tenant"
-    delegable = APPROVAL_PERMISSIONS if TENANT_MEMBER_MANAGE in held.permissions else frozenset()
+    delegable = (
+        APPROVAL_PERMISSIONS
+        if TENANT_MEMBER_MANAGE in held.permissions and held.rank >= ROLE_RANKS[ROLE_ADMIN]
+        else frozenset()
+    )
     beyond = sorted(permissions - held.permissions - delegable)
     if beyond:
         return f"the caller does not hold {', '.join(beyond)} in this tenant"

@@ -990,7 +990,8 @@ on the account's role; the two panels on it are shared with `/users`
 [api-and-rbac.md](api-and-rbac.md#tenant-defined-roles)) with their rank,
 permissions and how many members hold each. **New role** and the edit dialog
 offer only what the API will accept from the signed-in principal: ranks up to
-its own, permissions it holds (plus the two approvals, for a member manager),
+its own, permissions it holds (plus the two approvals, for a member manager
+at the admin rank — below it they are not offered, as the API refuses them),
 and never a permission the catalogue marks not `tenant_grantable`. The
 separation-of-duties conflicts (an approval above read rank, or with
 `tenant.member.manage`) are named in the dialog before saving. A role above the

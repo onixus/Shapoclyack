@@ -11,11 +11,13 @@ rest of the API ranks as if it were a built-in one.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 
 from api.core import permissions as permission_catalog
@@ -219,10 +221,13 @@ def test_a_member_manager_cannot_hand_out_more_than_it_holds(tmp_path, monkeypat
     ).status_code == 403
     assert client.delete(f"/api/tenants/default/members/{boss}", headers=hr).status_code == 403
 
-    # Within its ceiling it works: a viewer, its own role, and the approval
-    # roles a member manager staffs without holding (as the tenant admin
-    # always has) — scope-approver needs the scan_scope.read it does hold.
-    for role in ("viewer", "people-ops", "scope-approver"):
+    # Within its ceiling it works: a viewer and its own role. Not the approval
+    # roles, though it holds scope-approver's scan_scope.read: staffing an
+    # approval without holding it is the admin rank's (see the test below).
+    assert client.put(
+        "/api/tenants/default/members/newbie", headers=hr, json={"role": "scope-approver"}
+    ).status_code == 403
+    for role in ("viewer", "people-ops"):
         allowed = client.put(
             "/api/tenants/default/members/newbie", headers=hr, json={"role": role}
         )
@@ -242,6 +247,104 @@ def test_a_tenant_admin_keeps_granting_every_built_in_role(tmp_path, monkeypatch
     for role in permission_catalog.TENANT_ROLES:
         granted = client.put(
             "/api/tenants/default/members/colleague", headers=tenant_admin, json={"role": role}
+        )
+        assert granted.status_code == 200, (role, granted.text)
+
+
+def test_a_member_manager_below_admin_cannot_staff_an_approval(tmp_path, monkeypatch):
+    """The separation of duties, defeated from the side that grants (#501 review).
+
+    The approvals may be handed out without being held — that is how the
+    tenant ``admin`` staffs ``scope-approver`` — but only from the admin
+    rank. Below it, ``tenant.member.manage`` would turn a role the tenant
+    admin set up as "personnel" into an approval desk: an ``ops-lead`` at rank
+    2 defines an approver role, grants it to a second account of their own,
+    approves a wider scope with it and runs the scans in it from the first.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    admin = _admin(client)
+    assert _define(
+        client,
+        "default",
+        admin,
+        role_id="ops-lead",
+        rank=2,
+        permissions=["tenant.member.manage", "tenant.member.read", "config.read", "scan.cancel"],
+    ).status_code == 201
+    lead = _member(client, "lead", "default", "ops-lead")
+    alt_password = _user(client, "lead-alt")
+    alt = {"Authorization": f"Bearer {login(client, 'lead-alt', alt_password)}"}
+
+    # A role of its own carrying the approval...
+    approver = _define(
+        client, "default", lead, role_id="approver2", permissions=["scan_scope.approve"]
+    )
+    assert approver.status_code == 403, approver.text
+    assert "scan_scope.approve" in approver.json()["detail"]
+    # ...or the built-in one, to the second account.
+    for role in ("scope-approver", "risk-approver"):
+        granted = client.put(
+            "/api/tenants/default/members/lead-alt", headers=lead, json={"role": role}
+        )
+        assert granted.status_code == 403, (role, granted.text)
+    widened = client.put(
+        "/api/tenants/default/scan-scope",
+        headers=alt,
+        json={"entries": [{"effect": "allow", "kind": "cidr", "value": "0.0.0.0/0"}]},
+    )
+    assert widened.status_code == 403, widened.text
+    assert "approver2" not in {
+        role["role_id"] for role in client.get("/api/rbac/roles", headers=admin).json()
+    }
+
+
+def test_a_personnel_role_cannot_join_the_two_approvals_for_itself(tmp_path, monkeypatch):
+    """The other half: a rank-1 ``people-ops`` writes ``approve-all`` and takes it.
+
+    The built-ins keep the scope approval and the risk approval in two roles;
+    a role holding both, granted by its own author, would be one person
+    signing for what to scan and for what to leave unfixed.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    assert _define(
+        client,
+        "default",
+        _admin(client),
+        role_id="people-ops",
+        permissions=["tenant.member.read", "tenant.member.manage"],
+    ).status_code == 201
+    hr = _member(client, "hr", "default", "people-ops")
+
+    both = _define(
+        client,
+        "default",
+        hr,
+        role_id="approve-all",
+        permissions=["scan_scope.approve", "vulnerability.exception.approve"],
+    )
+    assert both.status_code == 403, both.text
+    assert client.put(
+        "/api/tenants/default/members/hr", headers=hr, json={"role": "risk-approver"}
+    ).status_code == 403
+    assert _me(client, hr)["tenant_role"] == "people-ops"
+
+
+def test_a_tenant_defined_admin_rank_still_staffs_the_approvals(tmp_path, monkeypatch):
+    """The exception is the admin rank's, not the built-in name's."""
+    client = configured_client(tmp_path, monkeypatch)
+    assert _define(
+        client,
+        "default",
+        _admin(client),
+        role_id="tenant-owner",
+        rank=3,
+        permissions=["tenant.member.read", "tenant.member.manage", "scan_scope.read"],
+    ).status_code == 201
+    owner = _member(client, "owner", "default", "tenant-owner")
+    _user(client, "colleague")
+    for role in ("scope-approver", "risk-approver"):
+        granted = client.put(
+            "/api/tenants/default/members/colleague", headers=owner, json={"role": role}
         )
         assert granted.status_code == 200, (role, granted.text)
 
@@ -460,6 +563,254 @@ def test_renaming_a_role_carries_its_holders_and_an_edit_reaches_them(tmp_path, 
     assert rename["after"]["memberships_renamed"] == 1
 
 
+def test_deleting_a_role_cannot_reassign_its_holders_above_the_caller(tmp_path, monkeypatch):
+    """``reassign_to`` is a grant, and is held to the same ceiling.
+
+    Without it a ``people-ops`` holder would define a throwaway role within
+    its reach, grant it to an accomplice, and delete it "reassigning" to
+    ``admin`` — every holder regranted a role nobody let it grant.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    assert _define(
+        client,
+        "default",
+        _admin(client),
+        role_id="people-ops",
+        permissions=["tenant.member.read", "tenant.member.manage"],
+    ).status_code == 201
+    hr = _member(client, "hr", "default", "people-ops")
+    assert _define(client, "default", hr, role_id="temp").status_code == 201
+    _user(client, "accomplice")
+    assert client.put(
+        "/api/tenants/default/members/accomplice", headers=hr, json={"role": "temp"}
+    ).status_code == 200
+
+    for target in ("admin", "operator", "auditor"):
+        refused = client.delete(
+            f"/api/tenants/default/roles/temp?reassign_to={target}", headers=hr
+        )
+        assert refused.status_code == 403, (target, refused.text)
+        assert "cannot reassign" in refused.json()["detail"]
+    members = {
+        m["username"]: m["role"]
+        for m in client.get("/api/tenants/default/members", headers=_admin(client)).json()
+    }
+    assert members["accomplice"] == "temp"
+
+    # The control: within its reach the same call goes through.
+    moved = client.delete("/api/tenants/default/roles/temp?reassign_to=viewer", headers=hr)
+    assert moved.status_code == 200, moved.text
+
+
+def test_renaming_onto_another_tenant_role_is_a_conflict_not_a_crash(tmp_path, monkeypatch):
+    """409 for a name the tenant already uses — not the primary key's 500.
+
+    A built-in name is refused earlier, by the name check itself, so only a
+    rename onto the tenant's *own* role reaches this one.
+    """
+    client = configured_client(tmp_path, monkeypatch)
+    admin = _admin(client)
+    assert _define(
+        client, "default", admin, role_id="analyst", permissions=["audit.read"]
+    ).status_code == 201
+    assert _define(
+        client, "default", admin, role_id="reviewer", permissions=["scan_scope.read"]
+    ).status_code == 201
+    _member(client, "analyst-1", "default", "analyst")
+
+    taken = client.patch(
+        "/api/tenants/default/roles/analyst", headers=admin, json={"role_id": "Reviewer"}
+    )
+    assert taken.status_code == 409, taken.text
+    roles = {
+        role["role_id"]: role
+        for role in client.get("/api/rbac/roles", headers=admin).json()
+        if not role["builtin"]
+    }
+    assert roles["analyst"]["permissions"] == ["audit.read"]
+    assert roles["analyst"]["member_count"] == 1
+    assert roles["reviewer"]["permissions"] == ["scan_scope.read"]
+
+
+def _waiting_on_a_lock(settings) -> int:
+    with get_session(settings.postgres_url) as session:
+        return int(
+            session.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+def test_a_grant_in_flight_holds_off_the_delete_of_its_role(tmp_path, monkeypatch):
+    """A grant and a delete of the same role, interleaved on two connections.
+
+    The grant has read the role and not yet committed its membership; the
+    delete counts holders and sees none. Unless the grant's ``FOR SHARE``
+    makes the delete's ``FOR UPDATE`` wait for that commit, the delete goes
+    ahead and the grant commits a membership naming a role that no longer
+    exists. Driven by a barrier inside the grant and the database's own lock
+    table, not by sleeps.
+    """
+    from api.services import memberships as memberships_service
+    from api.services import rbac as rbac_service
+
+    client = configured_client(tmp_path, monkeypatch)
+    settings = make_settings(tmp_path)
+    assert _define(
+        client, "default", _admin(client), role_id="analyst", permissions=["audit.read"]
+    ).status_code == 201
+    _user(client, "newcomer")
+
+    read_the_role = threading.Event()
+    release = threading.Event()
+    real_refuse_above = memberships_service._refuse_above  # noqa: SLF001
+
+    def _check_then_hold(granted_by, role, what):
+        real_refuse_above(granted_by, role, what)
+        if role.name == "analyst" and threading.current_thread().name == "grant":
+            read_the_role.set()
+            assert release.wait(30), "the test never released the grant"
+
+    monkeypatch.setattr(memberships_service, "_refuse_above", _check_then_hold)
+    outcome: dict[str, object] = {}
+
+    def _grant() -> None:
+        try:
+            outcome["grant"] = memberships_service.grant(
+                username="newcomer", tenant_id="default", role="analyst", granted_by=None
+            )
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            outcome["grant"] = exc
+
+    def _delete() -> None:
+        try:
+            outcome["delete"] = rbac_service.delete_role(
+                tenant_id="default",
+                role_id="analyst",
+                actor=permission_catalog.Authority(
+                    rank=3, permissions=frozenset(), is_platform_admin=True
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            outcome["delete"] = exc
+
+    granting = threading.Thread(target=_grant, name="grant")
+    deleting = threading.Thread(target=_delete, name="delete")
+    granting.start()
+    try:
+        assert read_the_role.wait(30), "the grant never reached its check"
+        deleting.start()
+        # Either the delete is now waiting on the grant's lock, or it did not
+        # wait and has already finished — which is the defect, and is what
+        # the assertions below report.
+        deadline = time.monotonic() + 30
+        while deleting.is_alive() and _waiting_on_a_lock(settings) == 0:
+            assert time.monotonic() < deadline, "the delete neither waited nor finished"
+            time.sleep(0.02)
+    finally:
+        release.set()
+        granting.join(30)
+        if deleting.ident is not None:
+            deleting.join(30)
+
+    assert isinstance(outcome["grant"], dict), outcome["grant"]
+    assert isinstance(outcome["delete"], rbac_service.RoleInUse), outcome["delete"]
+    with get_session(settings.postgres_url) as session:
+        membership = session.execute(
+            select(models.UserTenant).where(models.UserTenant.username == "newcomer")
+        ).scalar_one()
+        assert membership.role == "analyst"
+        assert session.get(models.RoleDefinition, ("analyst", "default")) is not None
+
+
+# --- The other rank gates a tenant role reaches -------------------------------
+
+
+def test_a_tenant_role_is_ranked_at_the_restricted_artifacts(tmp_path, monkeypatch):
+    """Ownership artifacts and screenshots are operator-only by rank, which a
+    tenant role carries.
+
+    Compared by name, ``soc-lead`` is no operator and is refused the run's
+    ownership data the API's own rank says it may read.
+    """
+    from tests.test_api_restricted_artifacts import _seed_run
+
+    client = configured_client(tmp_path, monkeypatch)
+    run_dir = _seed_run(tmp_path / "output")
+    (run_dir / "screenshots").mkdir()
+    (run_dir / "screenshots" / "login.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    admin = _admin(client)
+    assert _define(client, "default", admin, role_id="soc-lead", rank=2).status_code == 201
+    assert _define(client, "default", admin, role_id="reader").status_code == 201
+    lead = _member(client, "lead", "default", "soc-lead")
+    reader = _member(client, "reader-1", "default", "reader")
+
+    for rel in ("ownership.json", "ownership_findings.txt"):
+        assert client.get(
+            f"/api/runs/run-own/artifacts/{rel}", headers=lead
+        ).status_code == 200, rel
+        assert client.get(
+            f"/api/runs/run-own/download/{rel}", headers=lead
+        ).status_code == 200, rel
+        assert client.get(
+            f"/api/runs/run-own/artifacts/{rel}", headers=reader
+        ).status_code == 404, rel
+        assert client.get(
+            f"/api/runs/run-own/download/{rel}", headers=reader
+        ).status_code == 404, rel
+
+    # Screenshots are operator-only the same way.
+    shot = "/api/runs/run-own/download/screenshots/login.png"
+    assert client.get(shot, headers=lead).status_code == 200
+    assert client.get(shot, headers=reader).status_code == 404
+
+    # The org profile carries the same ownership block, behind the same rank.
+    profile = client.get("/api/runs/run-own/org-profile", headers=lead)
+    assert profile.status_code == 200, profile.text
+    assert profile.json()["ownership"]["domains"]["example.com"]["org_name"] == (
+        "Example Holding LLC"
+    )
+    withheld = client.get("/api/runs/run-own/org-profile", headers=reader)
+    assert withheld.status_code == 404 or withheld.json()["ownership"] is None, withheld.text
+
+
+def test_a_tenant_role_is_ranked_at_the_bulk_verbs(tmp_path, monkeypatch):
+    """The per-verb floor of ``/api/vulnerabilities/bulk`` is a rank as well."""
+    from tests.test_api_vulnerabilities import _seed
+
+    client = configured_client(tmp_path, monkeypatch)
+    settings, tenant_id = _seed(tmp_path)
+    admin = _admin(client)
+    assert _define(client, "default", admin, role_id="soc-lead", rank=2).status_code == 201
+    assert _define(client, "default", admin, role_id="soc-head", rank=3).status_code == 201
+    assert _define(client, "default", admin, role_id="reader").status_code == 201
+    lead = _member(client, "lead", "default", "soc-lead")
+    head = _member(client, "head", "default", "soc-head")
+    reader = _member(client, "reader-1", "default", "reader")
+    listed = client.get("/api/vulnerabilities", headers=admin).json()["items"]
+    ids = [item["vuln_id"] for item in listed]
+
+    def bulk(headers, action, payload):
+        return client.post(
+            "/api/vulnerabilities/bulk",
+            headers=headers,
+            json={"action": action, "vuln_ids": ids, "payload": payload},
+        )
+
+    assign = {"assignee": "ada"}
+    assigned = bulk(lead, "assign", assign)
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["succeeded"] == len(ids)
+    assert bulk(reader, "assign", assign).status_code == 403
+    # The admin-ranked verbs: refused at rank 2, past the gate at rank 3.
+    false_positive = {"reason": "a scanner artefact"}
+    assert bulk(lead, "false_positive", false_positive).status_code == 403
+    assert bulk(head, "false_positive", false_positive).status_code == 200
+
+
 # --- Resolution, and the state an upgrade leaves ------------------------------
 
 
@@ -537,14 +888,19 @@ def test_the_ceiling_and_the_separation_rules():
     assert permission_catalog.exceeds_authority(1, frozenset(), held) is None
     assert permission_catalog.exceeds_authority(2, frozenset(), held)
     assert permission_catalog.exceeds_authority(1, frozenset({"audit.read"}), held)
-    # The approvals are delegable by a member manager...
-    assert (
-        permission_catalog.exceeds_authority(
-            1, frozenset({"scan_scope.read", "scan_scope.approve"}), held
-        )
-        is None
+    # The approvals are delegable by a member manager at the admin rank...
+    approval = frozenset({"scan_scope.read", "scan_scope.approve"})
+    admin_rank = permission_catalog.Authority(
+        rank=3, permissions=frozenset({"tenant.member.manage", "scan_scope.read"})
     )
-    # ...and by nobody else.
+    assert permission_catalog.exceeds_authority(1, approval, admin_rank) is None
+    # ...and by nobody else: not one below it...
+    assert permission_catalog.exceeds_authority(1, approval, held)
+    operator_rank = permission_catalog.Authority(
+        rank=2, permissions=frozenset({"tenant.member.manage", "scan_scope.read"})
+    )
+    assert permission_catalog.exceeds_authority(1, approval, operator_rank)
+    # ...nor an admin rank that does not manage members.
     no_manage = permission_catalog.Authority(rank=3, permissions=frozenset({"audit.read"}))
     assert permission_catalog.exceeds_authority(
         1, frozenset({"scan_scope.approve"}), no_manage

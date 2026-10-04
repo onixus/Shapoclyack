@@ -122,17 +122,16 @@ describe("TenantRolesPanel", () => {
         .getAllByRole("option")
         .map((o) => o.textContent),
     ).toEqual(["Read"]);
-    // Held, or an approval a member manager staffs; never the platform's, and
-    // never one it does not hold.
+    // Only what it holds: never the platform's, never one it lacks, and not
+    // an approval — staffing those without holding them is the admin rank's.
     expect(await within(dialog).findByText("scan_scope.read")).toBeInTheDocument();
-    expect(within(dialog).getByText("scan_scope.approve")).toBeInTheDocument();
     expect(within(dialog).getByText("tenant.member.read")).toBeInTheDocument();
+    expect(within(dialog).queryByText("scan_scope.approve")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("audit.read")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("config.write")).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("Name"), "Scope-Desk");
     await userEvent.click(screen.getByRole("checkbox", { name: /scan_scope\.read/ }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /scan_scope\.approve/ }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -140,9 +139,18 @@ describe("TenantRolesPanel", () => {
         role_id: "scope-desk",
         description: "",
         rank: 1,
-        permissions: ["scan_scope.approve", "scan_scope.read"],
+        permissions: ["scan_scope.read"],
       }),
     );
+  });
+
+  it("offers the approvals to a member manager at the admin rank", async () => {
+    signInAsPeopleOps({ tenant_role: "tenant-owner", tenant_rank: 3 });
+    renderWith(<TenantRolesPanel tenantId="acme" canManage />);
+    await userEvent.click(await screen.findByRole("button", { name: /new role/i }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByText("scan_scope.approve")).toBeInTheDocument();
   });
 
   it("will not delete a held role without saying where its members go", async () => {
@@ -211,7 +219,8 @@ describe("TenantMembersPanel", () => {
     const offered = within(screen.getByLabelText("Role in tenant")).getAllByRole("option");
     const names = offered.map((option) => option.textContent);
     expect(names).toContain("people-ops");
-    expect(names).toContain("scope-approver");
+    // An approval role is the admin rank's to staff, not a rank-1 granter's.
+    expect(names).not.toContain("scope-approver");
     expect(names).not.toContain("admin");
     expect(names).not.toContain("operator");
     expect(names).not.toContain("analyst");

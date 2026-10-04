@@ -2152,20 +2152,41 @@ rewritten, and built-in role names keep resolving from the code without a
 query, so nothing changes for anybody until a tenant defines a role. During a
 rolling deploy a replica still on the previous release reads a membership that
 names a tenant role as an unknown role and gives it the lowest authority (rank
-1, no permissions) — so define and grant tenant roles once the rollout is
-done, or expect their holders to be read-only on old replicas for its
-duration.
+1, no permissions). It also **cannot list that tenant's members**: the previous
+release's member list declares the role as one of the eight built-in names, so
+`GET /api/tenants/{id}/members` answers `500` on an old replica for every tenant
+in which somebody holds a tenant role — the membership screens (`/users`,
+`/access`) fail on whichever request lands there. Do not define or grant tenant
+roles until every replica runs this release.
 
-**Rolling back.** `0070` downgrades cleanly and keeps the tenant roles' rows.
-The previous release lists them and does not enforce them: their holders fall
-to the lowest authority, never to a higher one. Before a planned rollback,
-regrant those members a built-in role if they must keep working through it:
+**Rolling back.** The schema half is safe: `0070` downgrades cleanly, keeps the
+tenant roles' rows, and the previous release gives their holders the lowest
+authority, never a higher one. The API half is not: as above, the previous
+release answers `500` on the member list of every tenant where a membership
+still names a tenant role, and keeps answering it after the rollback until
+those memberships change. So **before** rolling back — not after — move every
+holder to a built-in role:
 
-```sql
-SELECT ut.tenant_id, ut.username, ut.role
-FROM user_tenants ut
-JOIN roles r ON r.role_id = ut.role AND r.tenant_id = ut.tenant_id AND NOT r.builtin;
-```
+1. List the holders:
+
+   ```sql
+   SELECT ut.tenant_id, ut.username, ut.role
+   FROM user_tenants ut
+   JOIN roles r ON r.role_id = ut.role AND r.tenant_id = ut.tenant_id AND NOT r.builtin;
+   ```
+
+2. Regrant each one a built-in role, through the API while this release still
+   runs — `PUT /api/tenants/{id}/members/{username}` with `{"role": "<built-in>"}`,
+   or `DELETE /api/tenants/{id}/roles/{role}?reassign_to=<built-in>` for all of
+   a role's holders at once — so each move is an audited `membership.grant`.
+   Choose a built-in that is **not stronger** than the tenant role; when none
+   fits, `viewer`, and tell the member.
+3. Run the query again; it must return no rows. Only then roll back.
+
+A rollback that skipped this (an emergency one) leaves the member list broken
+on the previous release until the same memberships are moved by hand in SQL
+(`UPDATE user_tenants SET role = '<built-in>' WHERE …`, recorded in the
+incident report, since no audit row is written).
 
 **Deleting a role somebody holds** is refused (`409`) until its holders are
 moved: `DELETE /api/tenants/{id}/roles/{role}?reassign_to=<role>` regrants all

@@ -34,6 +34,16 @@ side. A replica still running the previous release reads a membership that
 names a tenant role as an unknown role and resolves it to the lowest authority
 — the direction a rolling deploy has to fail in.
 
+**But the previous release's API is not ready for such a membership.** Its
+member list declares ``role`` as a ``Literal`` of the eight built-in names, so
+``GET /api/tenants/{id}/members`` on an old replica answers 500 for every
+tenant where somebody holds a tenant role — during a rolling deploy, and after
+a downgrade of this revision for as long as those memberships stay. Tenant
+roles are defined only once the rollout is complete, and a rollback starts by
+regranting every holder a built-in role (the procedure is in
+``docs/operations.md`` → *Tenant-defined roles*); the downgrade below keeps the
+rows and does not do that for you.
+
 The tables are small (a few dozen role rows, one membership per user and
 tenant), so the checks' validating scan and the index build hold their locks
 for milliseconds; ``api/db/migrate.py``'s ``lock_timeout`` bounds the wait.
@@ -67,7 +77,9 @@ def downgrade() -> None:
     # Lossless for the built-ins. A tenant role survives the downgrade as a
     # row the previous release lists and does not enforce: its holders resolve
     # to the lowest authority there, which is that release's rule for a role
-    # name it does not know — a demotion, never a promotion.
+    # name it does not know — a demotion, never a promotion. Its member list,
+    # though, answers 500 for a tenant where a membership still names one
+    # (see the module docstring): regrant the holders before downgrading.
     op.drop_index("ix_user_tenants_tenant_role", table_name="user_tenants")
     op.drop_constraint("ck_roles_builtin_scope", "roles", type_="check")
     op.drop_constraint("ck_roles_rank", "roles", type_="check")

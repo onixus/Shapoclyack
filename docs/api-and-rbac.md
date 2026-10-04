@@ -859,11 +859,19 @@ now hold `tenant.member.manage` below rank 3 — to **granting and revoking
 memberships**: `PUT`/`DELETE /api/tenants/{id}/members/{u}` refuse a role above
 the caller and refuse to change or revoke a member whose current role is above
 the caller. One exception keeps the tenant `admin` working as it always has:
-whoever holds `tenant.member.manage` may hand out the two approval permissions
-without holding them, which is how `scope-approver` and `risk-approver` have
-been staffed — the approval roles are held to read rank without
-`tenant.member.manage`, so taking one means giving up the administration. The
-platform admin has no ceiling.
+a holder of `tenant.member.manage` **at rank 3** may hand out the two approval
+permissions without holding them, which is how `scope-approver` and
+`risk-approver` have been staffed. The exception belongs to the admin rank,
+whatever the role is called, and not to every member manager: a role the tenant
+gives `tenant.member.manage` at rank 1 or 2 (a "personnel" role) cannot define
+a role carrying an approval, grant `scope-approver` or `risk-approver`, or
+change, revoke or delete a role or member that holds one (`403`). Without that,
+its holder could write an approver role and grant it to a second account of
+their own — approving a wider scan scope from it and running the scans from
+the first — or write one role holding both approvals the built-ins keep apart
+and take it. At rank 3 the same thing remains possible, as it always was for
+the tenant admin; the separation of duties at that rank rests on who the
+tenant makes its admins. The platform admin has no ceiling.
 
 **Rename and delete never change anybody's access silently.** Renaming a role
 (`PATCH` with a new `role_id`) moves every membership that names it to the new

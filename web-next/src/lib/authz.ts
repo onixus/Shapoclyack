@@ -129,10 +129,12 @@ export function isTenantAdmin(user: Principal): boolean {
   return tenantRank(user) >= ROLE_RANK.admin;
 }
 
-/** The two approvals: a member manager hands them out without holding them,
- * which is how the tenant admin has always staffed `scope-approver` and
- * `risk-approver`. Mirror of `APPROVAL_PERMISSIONS` in
- * `api/core/permissions.py`. */
+/** The two approvals: a member manager at the admin rank hands them out
+ * without holding them, which is how the tenant admin has always staffed
+ * `scope-approver` and `risk-approver`. Below that rank nobody does — a
+ * "personnel" role holding `tenant.member.manage` at rank 1 or 2 would
+ * otherwise staff an approval desk with its own second account. Mirror of
+ * `APPROVAL_PERMISSIONS` in `api/core/permissions.py`. */
 const APPROVAL_PERMISSIONS = ["scan_scope.approve", "vulnerability.exception.approve"];
 
 /**
@@ -140,8 +142,8 @@ const APPROVAL_PERMISSIONS = ["scan_scope.approve", "vulnerability.exception.app
  * in the active tenant — define it, or grant it to somebody. Mirror of
  * `exceeds_authority` in `api/core/permissions.py`, used to offer only what
  * the API will accept: no rank above the principal's own, no permission it
- * does not hold (the approvals excepted, for a member manager), and no limit
- * at all for the platform admin.
+ * does not hold (the approvals excepted, for a member manager at the admin
+ * rank), and no limit at all for the platform admin.
  */
 export function withinAuthority(
   user: (Principal & { is_platform_admin?: boolean }) | null | undefined,
@@ -152,7 +154,10 @@ export function withinAuthority(
   if (user.is_platform_admin) return true;
   if (rank > tenantRank(user)) return false;
   const held = new Set(user.permissions ?? []);
-  const delegable = held.has("tenant.member.manage") ? APPROVAL_PERMISSIONS : [];
+  const delegable =
+    held.has("tenant.member.manage") && tenantRank(user) >= ROLE_RANK.admin
+      ? APPROVAL_PERMISSIONS
+      : [];
   return permissions.every((key) => held.has(key) || delegable.includes(key));
 }
 

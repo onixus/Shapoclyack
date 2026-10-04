@@ -18,7 +18,12 @@ All notable changes to Shapoclyack are documented in this file.
   applies to membership grants and revokes** (`403` for a role above the
   caller, or for changing or revoking a member above the caller), because
   `tenant.member.manage` can now be held below `admin`; the tenant `admin`
-  keeps granting every built-in role, the two approval roles included.
+  keeps granting every built-in role, the two approval roles included. Handing
+  out an approval without holding it (`scan_scope.approve`,
+  `vulnerability.exception.approve`) is the admin rank's alone: a member
+  manager at rank 1 or 2 can neither define a role carrying one nor grant
+  `scope-approver`/`risk-approver`, or it could staff an approver account of
+  its own.
   Renaming a role carries its holders; deleting a held role is `409` unless
   `reassign_to` names where they go, each move recorded as a
   `membership.grant`. A tenant's roles are invisible and ungrantable in every
@@ -30,9 +35,12 @@ All notable changes to Shapoclyack are documented in this file.
   places that ranked a role by its name now read the resolved rank: the
   service-token issuance ceiling and the console's rank gates (including the
   risk-acceptance request, which compared the name to `admin`). Migration
-  `0070_tenant_custom_roles` (expand-only; see
-  [operations.md](docs/operations.md#tenant-defined-roles) for the rollout and
-  rollback notes).
+  `0070_tenant_custom_roles` (expand-only). **Rollout and rollback:** the
+  previous release answers `500` on `GET /api/tenants/{id}/members` for any
+  tenant where somebody holds a tenant role, so define none until every
+  replica is upgraded, and regrant every holder a built-in role *before*
+  rolling back — see
+  [operations.md](docs/operations.md#tenant-defined-roles).
 
 - **Postgres row-level security behind every tenant predicate
   ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
