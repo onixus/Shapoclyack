@@ -31,7 +31,7 @@ def IMAGE_TAG = "network-scan-cli:ci-${CI_SLUG}"
 // тег без digest. Ключи PYTHON_IMAGES — матрица стадии Tests.
 def PYTHON_IMAGES = [
   '3.11': 'python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9',
-  '3.12': 'python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f',
+  '3.12': 'python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016',
 ]
 def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'

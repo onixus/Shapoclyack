@@ -1,7 +1,7 @@
 -r requirements.txt
 fastapi==0.139.2
 uvicorn[standard]==0.51.0
-PyJWT==2.13.0
+PyJWT==2.14.0
 cryptography==50.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
