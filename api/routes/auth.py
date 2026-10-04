@@ -73,6 +73,7 @@ from api.services import oidc as oidc_service
 from api.services import passkeys as passkeys_service
 from api.services import promoted_domains
 from api.services import quotas
+from api.services import rbac as rbac_service
 from api.services import scan_policy
 from api.services import scan_scopes
 from api.services import sessions as sessions_service
@@ -472,12 +473,12 @@ def me(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     scoped_tenant = resolution.tenant_id
-    try:
-        effective_role = Role(resolution.role)
-    except ValueError:
-        # A membership naming a role this build does not know resolves to the
-        # lowest authority, exactly as ``resolve_tenant_principal`` does.
-        effective_role = Role.viewer
+    # The same resolution ``resolve_tenant_principal`` makes, a tenant-defined
+    # role (#318) included: its rank goes out with it, because the console's
+    # own rank table only knows the built-ins and would score it 1.
+    held = rbac_service.resolve(
+        scoped_tenant, resolution.role, is_platform_admin=is_platform_admin
+    )
     return MeResponse(
         username=user.username,
         role=user.role,
@@ -485,12 +486,9 @@ def me(
         default_tenant=default_tenant,
         scoped_tenant=scoped_tenant,
         is_platform_admin=is_platform_admin,
-        tenant_role=effective_role,
-        permissions=sorted(
-            permission_catalog.permissions_for(
-                effective_role.value, is_platform_admin=is_platform_admin
-            )
-        ),
+        tenant_role=resolution.role,
+        tenant_rank=held.rank,
+        permissions=sorted(held.permissions),
         # Reachable by a session that owes an enrolment: this route is on the
         # ``mfa_pending`` allowlist precisely so the console can render the
         # banner that sends the user to the setup page (#315).
@@ -874,11 +872,13 @@ def grant_membership(
 ) -> MembershipInfo:
     """Grant (or re-grant) one user access to one tenant. Idempotent.
 
-    ``role`` is one of the eight tenant roles since #318
-    (``GET /api/rbac/roles`` lists them with what each may do). The grant is
-    recorded in the audit trail with the role before and after, which is what
-    makes a promotion inside a tenant reviewable — the one thing tenant
-    self-service must not cost.
+    ``role`` is one of the eight built-in tenant roles or a role this tenant
+    defined (#318; ``GET /api/rbac/roles`` lists them with what each may do).
+    ``403`` when the role granted, or the one it replaces, is above the
+    caller's own authority in this tenant. The grant is recorded in the audit
+    trail with the role before and after, which is what makes a promotion
+    inside a tenant reviewable — the one thing tenant self-service must not
+    cost.
     """
     try:
         granted = memberships_service.grant(
@@ -886,11 +886,14 @@ def grant_membership(
             tenant_id=tenant_id,
             role=body.role,
             created_by=principal.username,
+            granted_by=principal.authority,
             audit=audit,
         )
     except users_service.AccountErased as exc:
         # A tombstone's state, not a malformed request (#332).
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return MembershipInfo.model_validate(granted)
@@ -900,13 +903,23 @@ def grant_membership(
 def revoke_membership(
     tenant_id: str,
     username: str,
-    _: Annotated[
+    principal: Annotated[
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
     audit: AuditDep,
 ) -> None:
-    if not memberships_service.revoke(username=username, tenant_id=tenant_id, audit=audit):
+    """Revoke one membership. ``403`` for a member whose role is above the caller's."""
+    try:
+        revoked = memberships_service.revoke(
+            username=username,
+            tenant_id=tenant_id,
+            revoked_by=principal.authority,
+            audit=audit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if not revoked:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membership not found")
 
 

@@ -165,11 +165,39 @@ describe("role gating", () => {
 
   it("shows an admin everything and drops empty groups for others", () => {
     const admin = menu(
-      principal("admin", "admin", ["tenant.credential.manage", "tenant.retention.read"]),
+      principal("admin", "admin", [
+        "tenant.credential.manage",
+        "tenant.retention.read",
+        "tenant.member.read",
+      ]),
     );
     expect(admin).toEqual(NAV.map((i) => i.href));
     expect(canSee({ globalMinRole: "admin" }, undefined)).toBe(false);
     expect(canSee({}, undefined)).toBe(true);
+  });
+});
+
+describe("tenant roles and members (#318)", () => {
+  it("opens /access on the permission in the tenant, never on the global role", () => {
+    // The tenant admin is globally a viewer; the membership screen used to sit
+    // behind the account's admin role on /users and so was never its own.
+    expect(menu(principal("viewer", "admin", ["tenant.member.read"]))).toContain("/access");
+    // A role the tenant defined, holding the permission under its own name.
+    expect(
+      menu(principal("viewer", "people-ops", ["tenant.member.read", "tenant.member.manage"])),
+    ).toContain("/access");
+    // A global admin holding nothing in the selected tenant does not.
+    expect(menu(principal("admin", "viewer", []))).not.toContain("/access");
+    expect(menu(principal("operator", "operator", ["config.read"]))).not.toContain("/access");
+  });
+
+  it("ranks a tenant-defined role by the rank the API sent, not by its name", () => {
+    // `soc-lead` is in no table the console has. Scored by name it is 1, and
+    // every scanning page disappears from a role the API lets scan.
+    const socLead = { ...principal("viewer", "soc-lead", ["audit.read"]), tenant_rank: 2 };
+    expect(menu(socLead)).toContain("/scans");
+    expect(menu(socLead)).toContain("/audit");
+    expect(menu({ ...socLead, tenant_rank: 1 })).not.toContain("/scans");
   });
 });
 

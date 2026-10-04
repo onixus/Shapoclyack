@@ -24,6 +24,7 @@ import {
   SlidersHorizontal,
   SquareKanban,
   Timer,
+  UserCheck,
   UserCog,
   Users,
   Webhook,
@@ -218,6 +219,19 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: UserCog,
         globalMinRole: "admin",
         hintKey: "nav.hint.users",
+      },
+      {
+        // The tenant's own counterpart of /users (#318): its members and the
+        // roles it defined, in the tenant the switcher is on. A permission
+        // there, not the global role — the tenant admin who holds
+        // `tenant.member.read` is globally whatever it is, and gating this on
+        // the account's role is exactly how the membership screen used to be
+        // the platform admin's alone.
+        href: "/access",
+        labelKey: "nav.access",
+        icon: UserCheck,
+        permission: "tenant.member.read",
+        hintKey: "nav.hint.access",
       },
       {
         // No minRole, unlike /users next door: "admin" on GET /api/audit means

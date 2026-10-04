@@ -8,6 +8,7 @@ import {
   isTenantAdmin,
   tenantRank,
   tenantRole,
+  withinAuthority,
 } from "@/lib/authz";
 
 /** A principal as `/auth/me` sends one: `role` is the account's, and
@@ -55,6 +56,43 @@ describe("tenantRank", () => {
 
   it("gives an unknown role the read-only rank, as `rank_for` does", () => {
     expect(tenantRank(principal("admin", "role-from-a-newer-server"))).toBe(1);
+  });
+
+  it("takes the rank the API resolved for a role the tenant defined (#318)", () => {
+    // By name `soc-lead` is unknown and would score 1; the API sends what the
+    // tenant defined it as, and that is the rank every gate compares against.
+    const socLead = { ...principal("viewer", "soc-lead", ["audit.read"]), tenant_rank: 2 };
+    expect(tenantRank(socLead)).toBe(2);
+    expect(canOperate(socLead)).toBe(true);
+    expect(isTenantAdmin({ ...socLead, tenant_rank: 3 })).toBe(true);
+    // The API's answer wins over the built-in table, too.
+    expect(tenantRank({ ...principal("viewer", "admin"), tenant_rank: 1 })).toBe(1);
+  });
+});
+
+describe("withinAuthority", () => {
+  it("offers nothing above the principal's rank or outside its permissions", () => {
+    const hr = {
+      ...principal("viewer", "people-ops", ["tenant.member.manage", "scan_scope.read"]),
+      tenant_rank: 1,
+    };
+    expect(withinAuthority(hr, 1, [])).toBe(true);
+    expect(withinAuthority(hr, 2, [])).toBe(false);
+    expect(withinAuthority(hr, 1, ["audit.read"])).toBe(false);
+    // The approvals are not a rank-1 member manager's to hand out: staffing
+    // one without holding it is the admin rank's...
+    expect(withinAuthority(hr, 1, ["scan_scope.read", "scan_scope.approve"])).toBe(false);
+    expect(withinAuthority({ ...hr, tenant_rank: 2 }, 1, ["scan_scope.approve"])).toBe(false);
+    // ...as the tenant admin has always staffed scope-approver, under any name.
+    expect(withinAuthority({ ...hr, tenant_rank: 3 }, 1, ["scan_scope.read", "scan_scope.approve"])).toBe(true);
+    const tokenAdmin = principal("viewer", "token-admin", ["tenant.credential.manage"]);
+    expect(withinAuthority(tokenAdmin, 1, ["scan_scope.approve"])).toBe(false);
+  });
+
+  it("has no ceiling for the platform admin and refuses an unknown principal", () => {
+    const platform = { ...principal("admin", "admin", []), is_platform_admin: true };
+    expect(withinAuthority(platform, 3, ["config.write"])).toBe(true);
+    expect(withinAuthority(null, 1, [])).toBe(false);
   });
 });
 

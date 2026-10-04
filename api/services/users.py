@@ -581,6 +581,10 @@ def link_or_provision_sso_user(
                 tenant_id=tenant_id,
                 role=role,
                 created_by=f"oidc:{issuer}",
+                # The platform granting on the identity provider's word, which
+                # the installation configured: there is no granter in the
+                # tenant whose ceiling it could be held to.
+                granted_by=None,
             )
         except ValueError:
             # An unknown tenant in the claim is a mapping mistake, not a reason

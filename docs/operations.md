@@ -2138,6 +2138,67 @@ with `--docker` (or roll the Kubernetes deployment).
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
 
+## Tenant-defined roles
+
+A tenant can define its own roles and grant them on memberships
+([#318](https://github.com/onixus/Shapoclyack/issues/318); the API contract is
+[api-and-rbac.md](api-and-rbac.md#tenant-defined-roles)). Three things an
+operator of the installation needs to know about them.
+
+**Upgrading.** Migration `0070_tenant_custom_roles` is expand-only: two
+nullable columns on `roles`, two check constraints every seeded row already
+satisfies, and an index on `user_tenants (tenant_id, role)`. No membership is
+rewritten, and built-in role names keep resolving from the code without a
+query, so nothing changes for anybody until a tenant defines a role. During a
+rolling deploy a replica still on the previous release reads a membership that
+names a tenant role as an unknown role and gives it the lowest authority (rank
+1, no permissions). It also **cannot list that tenant's members**: the previous
+release's member list declares the role as one of the eight built-in names, so
+`GET /api/tenants/{id}/members` answers `500` on an old replica for every tenant
+in which somebody holds a tenant role — the membership screens (`/users`,
+`/access`) fail on whichever request lands there. Do not define or grant tenant
+roles until every replica runs this release.
+
+**Rolling back.** The schema half is safe: `0070` downgrades cleanly, keeps the
+tenant roles' rows, and the previous release gives their holders the lowest
+authority, never a higher one. The API half is not: as above, the previous
+release answers `500` on the member list of every tenant where a membership
+still names a tenant role, and keeps answering it after the rollback until
+those memberships change. So **before** rolling back — not after — move every
+holder to a built-in role:
+
+1. List the holders:
+
+   ```sql
+   SELECT ut.tenant_id, ut.username, ut.role
+   FROM user_tenants ut
+   JOIN roles r ON r.role_id = ut.role AND r.tenant_id = ut.tenant_id AND NOT r.builtin;
+   ```
+
+2. Regrant each one a built-in role, through the API while this release still
+   runs — `PUT /api/tenants/{id}/members/{username}` with `{"role": "<built-in>"}`,
+   or `DELETE /api/tenants/{id}/roles/{role}?reassign_to=<built-in>` for all of
+   a role's holders at once — so each move is an audited `membership.grant`.
+   Choose a built-in that is **not stronger** than the tenant role; when none
+   fits, `viewer`, and tell the member.
+3. Run the query again; it must return no rows. Only then roll back.
+
+A rollback that skipped this (an emergency one) leaves the member list broken
+on the previous release until the same memberships are moved by hand in SQL
+(`UPDATE user_tenants SET role = '<built-in>' WHERE …`, recorded in the
+incident report, since no audit row is written).
+
+**Deleting a role somebody holds** is refused (`409`) until its holders are
+moved: `DELETE /api/tenants/{id}/roles/{role}?reassign_to=<role>` regrants all
+of them in one transaction and records each move as a `membership.grant`.
+
+**For whoever adds a built-in role in a later release.** Built-in names
+resolve before a tenant's own, so a release that adds a built-in role whose
+name some tenant already uses would silently give that tenant's holders the
+new built-in authority. Tenant role names are refused only when they collide
+with a built-in *today*; the migration that adds the built-in has to rename
+the colliding tenant roles (and the memberships naming them) first.
+
 ## Sessions and revocation
 
 Since [#314](https://github.com/onixus/Shapoclyack/issues/314) a console token

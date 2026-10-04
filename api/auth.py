@@ -108,11 +108,21 @@ class TenantPrincipal(BaseModel):
     ``tenant_id`` is resolved from the caller's memberships, never taken on
     trust from the query string, and ``role`` is the caller's role *inside*
     that tenant — which may differ from the global role in the JWT.
+
+    ``role`` is a plain name rather than a :class:`Role` since tenants define
+    their own (#318): a ``soc-lead`` membership is not one of the eight. So
+    nothing should rank a principal by looking its role name up in
+    :data:`ROLE_RANK` — that answered 1 for every tenant role, whatever it was
+    defined as — and :meth:`at_least` reads ``rank``, which the resolution
+    filled in from the role's definition.
     """
 
     username: str
     tenant_id: str
-    role: Role
+    role: str
+    #: The role's read/write rank in this tenant (1 reads, 2 writes, 3
+    #: administers), resolved with ``permissions`` below.
+    rank: int = 1
     is_platform_admin: bool = False
     # True when the caller named a tenant explicitly. Lets the cross-tenant
     # lists (jobs, agents) keep showing a platform admin everything by default
@@ -126,6 +136,19 @@ class TenantPrincipal(BaseModel):
 
     def allows(self, permission: str) -> bool:
         return permission in self.permissions
+
+    def at_least(self, minimum: Role) -> bool:
+        """Whether this principal's rank in the tenant reaches ``minimum``'s."""
+        return self.rank >= ROLE_RANK[minimum]
+
+    @property
+    def authority(self) -> permission_catalog.Authority:
+        """The ceiling of what this principal may hand out in its tenant."""
+        return permission_catalog.Authority(
+            rank=self.rank,
+            permissions=self.permissions,
+            is_platform_admin=self.is_platform_admin,
+        )
 
 
 class AgentPrincipal(BaseModel):
@@ -221,7 +244,11 @@ class MeResponse(BaseModel):
     # scope-approver in another. The console reads this to decide which pages
     # to render rather than keeping its own copy of the role table — and, like
     # every other field here, it is re-derived per request.
-    tenant_role: Role = Role.viewer
+    # A plain name, not :class:`Role`: it can be a role the tenant defined
+    # for itself, which is why ``tenant_rank`` travels with it — the console
+    # cannot look a tenant role's rank up in a table of its own.
+    tenant_role: str = Role.viewer.value
+    tenant_rank: int = 1
     permissions: list[str] = Field(default_factory=list)
     #: Which tenant ``tenant_role`` and ``permissions`` above describe. The
     #: console attaches the tenant its switcher is on to every request
@@ -1074,6 +1101,7 @@ def _resolve_tenant_principal(
 ) -> TenantPrincipal:
     """:func:`resolve_tenant_principal`'s lookups, run before the tenant is known."""
     from api.services import memberships as memberships_service
+    from api.services import rbac as rbac_service
     from api.services import tenants as tenants_service
 
     resolution: memberships_service.TenantResolution | None = None
@@ -1092,7 +1120,8 @@ def _resolve_tenant_principal(
         principal = TenantPrincipal(
             username=user.username,
             tenant_id=service_principal.tenant_id,
-            role=role,
+            role=role.value,
+            rank=ROLE_RANK[role],
             # Never: an admin-role token administers its own tenant, not
             # the fleet, so the cross-tenant listings stay closed to it.
             is_platform_admin=False,
@@ -1106,25 +1135,23 @@ def _resolve_tenant_principal(
             )
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-        resolved = resolution.tenant_id
-        try:
-            role = Role(resolution.role)
-        except ValueError:
-            # A membership naming a role this build does not know — a row
-            # written by a newer replica during a rollout, or a custom role
-            # (#318 leaves those unimplemented) — resolves to the lowest
-            # authority rather than to an error or to a guess.
-            role = Role.viewer
         is_platform_admin = user.role == Role.admin
+        # A built-in role resolves from the compiled table; a role the tenant
+        # defined (#318) from its rows, in *this* tenant only. A name that is
+        # neither — another tenant's role, one deleted, one a newer replica
+        # wrote during a rollout — resolves to rank 1 and no permissions
+        # rather than to an error or to a guess (api/services/rbac.py).
+        held = rbac_service.resolve(
+            resolution.tenant_id, resolution.role, is_platform_admin=is_platform_admin
+        )
         principal = TenantPrincipal(
             username=user.username,
-            tenant_id=resolved,
-            role=role,
+            tenant_id=resolution.tenant_id,
+            role=resolution.role,
+            rank=held.rank,
             is_platform_admin=is_platform_admin,
             tenant_requested=bool((requested_tenant or "").strip()),
-            permissions=permission_catalog.permissions_for(
-                role.value, is_platform_admin=is_platform_admin
-            ),
+            permissions=held.permissions,
         )
 
     if not principal.is_platform_admin:
@@ -1167,7 +1194,7 @@ def require_tenant(minimum: Role):
         tenant_id: Annotated[str | None, Query(description="Tenant to act in")] = None,
     ) -> TenantPrincipal:
         principal = resolve_tenant_principal(request, user, tenant_id)
-        if ROLE_RANK[principal.role] < ROLE_RANK[minimum]:
+        if not principal.at_least(minimum):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(

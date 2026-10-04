@@ -151,7 +151,10 @@ function VulnerabilityDetailInner() {
     "vulnerability.exception.approve",
     isAdmin,
   );
-  const canRequestException = (user?.tenant_role ?? user?.role) === "admin";
+  // Filing a request is `require_tenant(Role.admin)` — a rank, which a role
+  // the tenant defined can carry under any name (#318); comparing the name to
+  // "admin" hid the request from a rank-3 tenant role the API serves.
+  const canRequestException = isAdmin;
 
   const detailQuery = useTrackedVulnerability(vulnId || null);
   const eventsQuery = useVulnerabilityEvents(vulnId || null, { limit: 50 });

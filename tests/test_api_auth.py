@@ -36,6 +36,9 @@ def test_login_and_me():
         # rank, and every permission in the catalogue is something more than
         # that.
         "tenant_role": "viewer",
+        # The resolved rank, sent because a tenant-defined role is in no
+        # table a client keeps (#318).
+        "tenant_rank": 1,
         "permissions": [],
         # Which tenant those two describe: the request named none, so the
         # default one. The console sends the tenant its switcher is on, and
