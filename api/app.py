@@ -18,6 +18,7 @@ from api.db import engine as db_engine
 from api.db import tenant_scope
 from api.middleware import (
     BodySizeLimitMiddleware,
+    RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
     install_request_id_middleware,
 )
@@ -51,6 +52,7 @@ from api.routes import notification_channels as notification_channels_routes
 from api.routes import webhooks as webhooks_routes
 from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse, SsoStatus
+from api.settings import Settings
 from api.services import agent_deployer
 from api.services import agents as agents_service
 from api.services import audit as audit_service
@@ -61,6 +63,7 @@ from api.services import endpoint_inventory as endpoint_inventory_service
 from api.services import endpoint_agent_mgmt
 from api.services import endpoint_retention
 from api.services import health as health_service
+from api.services import rate_limit
 from api.services import retention_policy
 from api.services import screenshot_retention
 from api.services import sla_escalation
@@ -69,6 +72,7 @@ from api.services import retro_match_worker
 from api.services import risk_snapshots, run_retention
 from api.services import job_reaper
 from api.services import run_publisher
+from api.services.compliance import definitions as compliance_definitions
 from api.services.crypto import startup as crypto_startup
 from api.services.integrations import ticket_sync_worker
 from api.services.integrations import webhook_worker
@@ -228,6 +232,62 @@ def _mount_template(request: Request) -> str | None:
     return None
 
 
+#: Room for what wraps a capped payload: a multipart upload's boundaries, part
+#: headers and form fields, or the JSON object around an imported document.
+_ENVELOPE_ALLOWANCE_BYTES = 64 * 1024
+
+
+def _body_limit_overrides(settings: Settings) -> tuple[tuple[str, int], ...]:
+    """The routes whose bodies may be larger than ``OCTO_MAX_BODY_BYTES`` (#320).
+
+    Two kinds. The uploads carry a cap their own contract already enforces
+    further in, repeated here so this layer refuses nothing they would have
+    accepted. The routes that take a target list or a scope have no such cap —
+    nothing limits how many targets a scan may name — so they get
+    ``OCTO_TARGET_LIST_MAX_BODY_BYTES``, set far above any list a scan is
+    launched with: before this layer they had no limit at all, and a cap of
+    one MiB turned a 45 000-domain launch from a 202 into a 413. ``max`` with
+    the global cap, so raising ``OCTO_MAX_BODY_BYTES`` never makes one of these
+    smaller than the rest.
+    """
+    floor = settings.max_body_bytes
+    targets = max(floor, settings.target_list_max_body_bytes)
+    return (
+        # Newline-separated ``ranges``/``domains`` (StartScanRequest and the
+        # schedule bodies), a maintenance window's ``scope_targets``, and a
+        # tenant's whole scan scope — up to 1000 entries whose notes a client
+        # escaping non-ASCII sends at six bytes a character.
+        (r"^/api/jobs/?$", targets),
+        (r"^/api/schedules(?:/[^/]+)?/?$", targets),
+        (r"^/api/maintenance-windows(?:/[^/]+)?/?$", targets),
+        (r"^/api/(?:v1/)?tenants/[^/]+/scan-scope/?$", targets),
+        # Read from Content-Length by BodySizeLimitMiddleware as well, which
+        # answers 411 there; repeated here so this layer does not cut them at
+        # the global cap first.
+        (r"^/api/(?:v1/)?endpoint/inventory/?$", max(floor, settings.endpoint_inventory_max_body_bytes)),
+        (
+            r"^/api/(?:v1/)?agent/jobs/[^/]+/results/?$",
+            max(floor, settings.agent_results_max_body_bytes),
+        ),
+        # Multipart uploads whose file part is capped by the route or service.
+        (
+            r"^/api/wordlists/?$",
+            max(floor, settings.wordlist_max_body_bytes + _ENVELOPE_ALLOWANCE_BYTES),
+        ),
+        (
+            r"^/api/(?:v1/)?endpoint/agent/releases/?$",
+            max(floor, endpoint_agent_mgmt.MAX_RELEASE_BYTES + _ENVELOPE_ALLOWANCE_BYTES),
+        ),
+        # A definition of up to MAX_BYTES *characters*, inside a JSON string:
+        # a client that escapes non-ASCII (Python's json.dumps does by default)
+        # sends a Cyrillic catalogue as six bytes per character.
+        (
+            r"^/api/compliance/frameworks/import/?$",
+            max(floor, 6 * compliance_definitions.MAX_BYTES + _ENVELOPE_ALLOWANCE_BYTES),
+        ),
+    )
+
+
 def _check_flag(report: health_service.Readiness, name: str) -> bool | None:
     """One readiness check as ``HealthResponse``'s tri-state field.
 
@@ -273,6 +333,7 @@ def create_app() -> FastAPI:
     scan_schedules.configure(settings)
     memberships_service.configure(settings)
     auth_audit.configure(settings)
+    rate_limit.configure(settings)
     audit_service.configure(settings)
     rbac_service.configure(settings)
     service_tokens_service.configure(settings)
@@ -319,6 +380,13 @@ def create_app() -> FastAPI:
         path_patterns=(r"^/api/(?:v1/)?agent/jobs/[^/]+/results/?$",),
         count_endpoint_submissions=False,
     )
+    # The floor under every other route (#320), outside the two guards above so
+    # that their 411 for a length-less body still answers first on their paths.
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=settings.max_body_bytes,
+        overrides=_body_limit_overrides(settings),
+    )
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=settings.hsts_enabled)
     app.add_middleware(
         CORSMiddleware,
@@ -331,7 +399,9 @@ def create_app() -> FastAPI:
         # the CORS-safelist unless the server names it — and docs/operations.md
         # telling an operator to grep for "the id the console reported" would be
         # asking for an id nothing could report (#330).
-        expose_headers=[REQUEST_ID_HEADER],
+        # ``Retry-After`` for the same reason: a 429 that cannot say when to
+        # come back leaves the console guessing (#320).
+        expose_headers=[REQUEST_ID_HEADER, "Retry-After"],
     )
 
     @app.middleware("http")
@@ -448,6 +518,7 @@ def create_app() -> FastAPI:
     app.include_router(passkeys_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
     app.include_router(rbac_routes.router, prefix="/api")
+    app.include_router(rbac_routes.tenant_router, prefix="/api")
     app.include_router(retention_routes.router, prefix="/api")
     app.include_router(tenant_lifecycle_routes.router, prefix="/api")
     if settings.service_tokens_enabled:

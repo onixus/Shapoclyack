@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     ForeignKey,
     LargeBinary,
     ForeignKeyConstraint,
@@ -296,12 +297,20 @@ class UserTenant(Base):
     tenant_id: Mapped[str] = mapped_column(
         ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
     )
-    role: Mapped[str] = mapped_column(default="viewer")  # viewer | operator | admin
+    # A built-in tenant role (api/core/permissions.py) or, since #318, the
+    # ``role_id`` of a role this tenant defined in ``roles``. No foreign key:
+    # the built-ins are every tenant's and live under ``roles.tenant_id = ''``,
+    # so the reference is kept by api/services/rbac.py, which renames and
+    # deletes a tenant role together with the memberships that name it.
+    role: Mapped[str] = mapped_column(default="viewer")
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
+        # "Who holds this role here" — asked before a tenant role is deleted
+        # and by the rename that carries its holders along (migration 0070).
+        Index("ix_user_tenants_tenant_role", "tenant_id", "role"),
     )
 
 
@@ -348,6 +357,15 @@ class RoleDefinition(Base):
     rank: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
+    # Last edit of a tenant-defined role (migration 0070). NULL for the
+    # built-ins, which only a release changes, and for a role never edited.
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        CheckConstraint("rank BETWEEN 1 AND 3", name="ck_roles_rank"),
+        CheckConstraint("builtin = (tenant_id = '')", name="ck_roles_builtin_scope"),
+    )
 
 
 class RolePermission(Base):
@@ -523,6 +541,39 @@ class AuthEvent(Base):
         # The per-IP limiter and the "what is this address doing" audit query.
         Index("ix_auth_events_ip", "client_ip", "occurred_at"),
     )
+
+
+class RateLimitBucket(Base):
+    """One token bucket of the general request rate limiter (#320).
+
+    A row per principal or tenant that has made a request recently; see
+    ``api/services/rate_limit.py``. ``refilled_at`` is epoch seconds read from
+    the *database's* clock, never a replica's: the bucket is shared by every
+    replica, and two replicas whose clocks disagree would otherwise credit the
+    same interval twice or not at all.
+
+    ``UNLOGGED`` on Postgres (migration ``0069_rate_limit_buckets``): a crash
+    empties the table, which hands every principal a full bucket — the state
+    a principal idle for a while is in anyway — and in exchange the write each
+    authenticated request makes costs no WAL. For the same reason the table is
+    not replicated to a standby, which never serves the API's writes.
+
+    No ``tenant_id`` column and so no row security: the key names a tenant
+    only as an opaque string, the rows hold counters and nothing else, and
+    the limiter reads them before a request has declared any tenant.
+
+    No index on ``refilled_at``, deliberately: every charge rewrites it, and an
+    indexed column makes every one of those updates a non-HOT one — a new heap
+    tuple plus an entry in each index, per request. Only the prune reads it,
+    once every few minutes, over a table of one row per active principal; a
+    sequential scan is what that costs.
+    """
+
+    __tablename__ = "rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(primary_key=True)
+    tokens: Mapped[float] = mapped_column()
+    refilled_at: Mapped[float] = mapped_column()
 
 
 class AuditEvent(Base):

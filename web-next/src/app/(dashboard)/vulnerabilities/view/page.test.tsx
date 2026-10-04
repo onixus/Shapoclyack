@@ -211,6 +211,37 @@ describe("Accepted risk panel", () => {
     expect(screen.getAllByText("EXTENSION not yet approved").length).toBeGreaterThan(0);
   });
 
+  it("offers the request to an admin-ranked role the tenant defined (#318)", async () => {
+    // Filing is `require_tenant(Role.admin)` — a rank. Compared by name, a
+    // rank-3 `soc-head` is no "admin" and lost the button the API serves it.
+    signIn({
+      username: "head",
+      role: "viewer",
+      tenant_role: "soc-head",
+      tenant_rank: 3,
+      permissions: [],
+      scoped_tenant: "default",
+    });
+    renderPage(vuln());
+
+    expect(await screen.findByRole("button", { name: /Request acceptance/ })).toBeInTheDocument();
+  });
+
+  it("does not offer it to a role named like an admin but ranked below", async () => {
+    signIn({
+      username: "bob",
+      role: "admin",
+      tenant_role: "admin",
+      tenant_rank: 2,
+      permissions: [],
+      scoped_tenant: "default",
+    });
+    renderPage(vuln());
+
+    expect(await screen.findByText("Finding")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Request acceptance/ })).toBeNull();
+  });
+
   it("hides the panel from an account that can neither ask nor answer", async () => {
     signIn({ username: "bob", role: "operator", tenant_role: "operator", permissions: [] });
     renderPage(PENDING);

@@ -83,8 +83,9 @@ def create_service_token(
             role=body.role,
             created_by=admin.username,
             expires_in_days=body.expires_in_days,
-            issuer_role=admin.role.value,
+            issuer_role=admin.role,
             issuer_is_platform_admin=admin.is_platform_admin,
+            issuer_authority=admin.authority,
             audit=audit,
         )
     except LookupError as exc:

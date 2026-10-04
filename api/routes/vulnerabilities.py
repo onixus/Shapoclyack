@@ -43,7 +43,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from api.auth import (
-    ROLE_RANK,
     Role,
     TenantPrincipal,
     get_settings,
@@ -429,7 +428,7 @@ def bulk_action(
     edit would bury that.
     """
     required = _BULK_ROLES[body.action]
-    if ROLE_RANK[principal.role] < ROLE_RANK[required]:
+    if not principal.at_least(required):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(

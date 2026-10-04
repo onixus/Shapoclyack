@@ -6,6 +6,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Tenant-defined roles
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
+  member managers can define roles of their own — a name, a rank and an
+  explicit permission set — under `POST/PATCH/DELETE
+  /api/tenants/{id}/roles`, and grant them on a membership like a built-in
+  role. A role may hold only permissions some built-in tenant role carries
+  (never `config.write` or `platform.*`), keeps the approvals at read rank and
+  apart from `tenant.member.manage`, and can carry nothing — rank or
+  permission — the person defining it does not hold. **The same ceiling now
+  applies to membership grants and revokes** (`403` for a role above the
+  caller, or for changing or revoking a member above the caller), because
+  `tenant.member.manage` can now be held below `admin`; the tenant `admin`
+  keeps granting every built-in role, the two approval roles included. Handing
+  out an approval without holding it (`scan_scope.approve`,
+  `vulnerability.exception.approve`) is the admin rank's alone: a member
+  manager at rank 1 or 2 can neither define a role carrying one nor grant
+  `scope-approver`/`risk-approver`, or it could staff an approver account of
+  its own.
+  Renaming a role carries its holders; deleting a held role is `409` unless
+  `reassign_to` names where they go, each move recorded as a
+  `membership.grant`. A tenant's roles are invisible and ungrantable in every
+  other tenant, and a membership naming a role its tenant does not have
+  resolves to rank 1 and nothing. Recorded as `role.create`, `role.update`,
+  `role.delete`. `GET /api/auth/me` adds `tenant_rank`, and the console a
+  **Roles & members** page (`/access`) gated on `tenant.member.read` in the
+  selected tenant — the tenant admin's first screen for its own members. Two
+  places that ranked a role by its name now read the resolved rank: the
+  service-token issuance ceiling and the console's rank gates (including the
+  risk-acceptance request, which compared the name to `admin`). Migration
+  `0070_tenant_custom_roles` (expand-only). **Rollout and rollback:** the
+  previous release answers `500` on `GET /api/tenants/{id}/members` for any
+  tenant where somebody holds a tenant role, so define none until every
+  replica is upgraded, and regrant every holder a built-in role *before*
+  rolling back — see
+  [operations.md](docs/operations.md#tenant-defined-roles).
+
 - **Asset import from a CMDB/AD export
   ([#350](https://github.com/onixus/Shapoclyack/issues/350), first stage).**
   `POST /api/assets/import` takes CSV or JSON and upserts it into the tenant's
@@ -600,6 +636,44 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **General request rate limiting and a body cap on every route
+  ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
+  was the only one with a limiter and two uploads the only ones with a body
+  cap: an authenticated principal could call anything as fast as it liked,
+  with a body as large as it liked. Every authenticated request is now charged
+  to a token bucket — one per console user, service token and sensor/endpoint
+  agent, plus one shared by a tenant's users and service tokens — and an empty
+  bucket answers `429` with a `Retry-After` computed from the refill, counted
+  in `octo_rate_limited_total{scope}` (`user`, `service_token`, `agent`,
+  `legacy_agent`, `tenant`; never the principal) and logged once a minute per
+  principal. The buckets are rows of a new `UNLOGGED` table (migration
+  `0069_rate_limit_buckets`, no index beyond the key so every charge is a HOT
+  update), charged in one autocommitted statement on the database's clock, so
+  every replica spends from the same bucket; the SQLite dev fallback keeps them
+  in the process. Agents are never pooled per tenant, so a fleet's size cannot
+  throttle its heartbeats. An idle sensor makes a heartbeat and a claim per
+  poll, so `OCTO_RATE_LIMIT_AGENT_PER_SECOND` defaults to `4` — twice a sensor
+  polling every second — with a burst of 120, and a sensor's results upload is
+  not charged at all. Sensors on the legacy shared `OCTO_AGENT_TOKEN` name no
+  agent and are charged per source address, which behind an ingress without
+  `OCTO_TRUSTED_PROXIES` or a site NAT is a whole fleet: that bucket is the
+  agent bucket times `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` (25). Probes,
+  `/metrics` and the sign-in routes are not charged; the login limiter is
+  unchanged and still counts failed attempts. If Postgres is unreachable the
+  limiter lets requests through and warns. `OCTO_MAX_BODY_BYTES` (1 MiB) now
+  caps every request body, from `Content-Length` and by counting a chunked
+  body as it arrives. The routes that take a target list or a scope — scan
+  launch, schedules, maintenance windows, the tenant scan scope — had no limit
+  and still have no limit on the number of targets, so they get
+  `OCTO_TARGET_LIST_MAX_BODY_BYTES` (16 MiB, about 500 000 domains) instead of
+  the 1 MiB; a body over that is now `413` where it used to be accepted. The
+  inventory, results, wordlist, endpoint-agent build and compliance import
+  routes keep their larger caps. `Retry-After` is now a CORS-exposed header.
+  The sensor (`agent/worker.py`) now waits out a `429` for as long as its
+  `Retry-After` says — up to 30 s for a heartbeat or claim and 10 minutes for
+  a results upload, instead of two retries a second apart after which a
+  refused upload was lost.
+  See [docs/api-and-rbac.md](docs/api-and-rbac.md#request-rate-limiting-and-body-size).
 - **The runtime base carries the OpenSSL and PCRE2 security updates the
   fixable-HIGH gate blocks on.** `Dockerfile`, `Dockerfile.allinone`,
   `Dockerfile.api` and the Jenkins 3.12 test image move to the

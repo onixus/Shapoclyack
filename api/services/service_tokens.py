@@ -227,7 +227,13 @@ def _new_token() -> tuple[str, str]:
     return f"{prefix}_{secrets.token_urlsafe(_SECRET_BYTES)}", prefix
 
 
-def _refuse_escalation(role: str, *, issuer_role: str, issuer_is_platform_admin: bool) -> None:
+def _refuse_escalation(
+    role: str,
+    *,
+    issuer_role: str,
+    issuer_is_platform_admin: bool,
+    issuer_authority: permission_catalog.Authority | None = None,
+) -> None:
     """Refuse a token whose authority exceeds the hand issuing it (#318 review).
 
     ``tenant.credential.manage`` is held by the tenant's ``admin`` **and** by
@@ -246,15 +252,24 @@ def _refuse_escalation(role: str, *, issuer_role: str, issuer_is_platform_admin:
 
     A platform admin has no ceiling: it already holds every permission in every
     tenant, so there is nothing it could issue that it does not have.
+
+    ``issuer_authority`` is the issuer's rank and permissions as the request
+    resolved them, and wins over ``issuer_role`` when given: a role the tenant
+    defined (#318) is not in the compiled table, and looking its name up there
+    would hold a ``tenant.credential.manage`` holder at rank 2 to viewer
+    tokens — safe, and wrong.
     """
     if issuer_is_platform_admin:
         return
     issuer = (issuer_role or permission_catalog.ROLE_VIEWER).strip().lower()
     granted = permission_catalog.permissions_for(role)
-    held = permission_catalog.permissions_for(issuer)
-    if permission_catalog.rank_for(role) > permission_catalog.rank_for(issuer) or not (
-        granted <= held
-    ):
+    if issuer_authority is not None:
+        held = issuer_authority.permissions
+        held_rank = issuer_authority.rank
+    else:
+        held = permission_catalog.permissions_for(issuer)
+        held_rank = permission_catalog.rank_for(issuer)
+    if permission_catalog.rank_for(role) > held_rank or not (granted <= held):
         raise PermissionError(
             f"role '{role}' is stronger than the caller's role '{issuer}' in this tenant"
         )
@@ -271,6 +286,7 @@ def create_token(
     expires_in_days: int | None = None,
     issuer_role: str,
     issuer_is_platform_admin: bool = False,
+    issuer_authority: permission_catalog.Authority | None = None,
     audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
     """Mint one token. The returned dict carries ``token`` — the only time it exists.
@@ -286,7 +302,10 @@ def create_token(
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {', '.join(VALID_ROLES)}")
     _refuse_escalation(
-        role, issuer_role=issuer_role, issuer_is_platform_admin=issuer_is_platform_admin
+        role,
+        issuer_role=issuer_role,
+        issuer_is_platform_admin=issuer_is_platform_admin,
+        issuer_authority=issuer_authority,
     )
     cleaned_name = (name or "").strip()
     if not cleaned_name:

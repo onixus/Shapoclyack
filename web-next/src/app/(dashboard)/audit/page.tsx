@@ -31,6 +31,10 @@ const ACTIONS = [
   "user.erase",
   "membership.grant",
   "membership.revoke",
+  // Tenant-defined roles (#318): editing one changes every holder's access.
+  "role.create",
+  "role.update",
+  "role.delete",
   "service_token.create",
   "service_token.revoke",
   "provisioning_key.create",
