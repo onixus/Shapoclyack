@@ -1,7 +1,7 @@
 """Run publications: which derived updates a publication has already fed
 
 Revision ID: 0072_run_publication_projected
-Revises: 0068_compliance_frameworks
+Revises: 0071_asset_import_permission
 Create Date: 2026-10-04
 
 #454 feeds a published run to its derived state *before* the row is closed,
@@ -38,7 +38,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0072_run_publication_projected"
-down_revision: Union[str, None] = "0068_compliance_frameworks"
+down_revision: Union[str, None] = "0071_asset_import_permission"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
