@@ -53,6 +53,8 @@ def test_system_status_shape():
         "advisories_alas",
         # The NVD CPE ranges behind retro CVE matching, for the same reason.
         "nvd_cpe",
+        # The FSTEC BDU identity overlay (#356), optional like the two above.
+        "bdu_fstec",
     }
     # No bundle was ever installed on the test tree: the field is there and null.
     assert body["enrichment_bundle"] is None

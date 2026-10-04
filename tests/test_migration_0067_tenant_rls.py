@@ -34,6 +34,8 @@ pytestmark = requires_postgres
 # onto #325's 0066 at merge), with the ownership split applied just before it.
 BEFORE = "0066_tenant_lifecycle"
 REVISION = "0067_tenant_rls"
+#: Tenant tables created after REVISION; absent from a database stopped at it.
+ADDED_LATER = {"compliance_framework_definitions"}
 
 
 @pytest.fixture
@@ -127,7 +129,9 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
         migrate._upgrade(REVISION)  # noqa: SLF001
         done = _protected(as_admin)
         expected = set(tenant_scope.tenant_tables(models.Base.metadata))
-        assert done == expected - {"audit_events"}
+        # The models are today's; the database is at this revision. A tenant
+        # table a later revision creates carries its policies in that revision.
+        assert done == expected - {"audit_events"} - ADDED_LATER
 
         # The statements for the table it could not touch were handed over —
         # on stderr, where Alembic's own logging configuration sends them.
@@ -151,7 +155,12 @@ def test_0067_leaves_another_owners_table_to_it_and_survives_a_held_lock(
                 for statement in statements.split(";\n"):
                     conn.execute(text(statement.strip().rstrip(";")))
             with engine.connect() as conn:
-                assert tenant_scope.database_problems(conn, models.Base.metadata) == []
+                problems = tenant_scope.database_problems(conn, models.Base.metadata)
+            # What is left is only what a later revision has yet to create.
+            assert [
+                problem for problem in problems
+                if not any(table in problem for table in ADDED_LATER)
+            ] == [], problems
         finally:
             engine.dispose()
 

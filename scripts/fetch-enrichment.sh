@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refresh all enrichment data (GeoIP, CVSS4, EPSS, KEV, vendor advisories)
+# Refresh enrichment data (GeoIP, CVSS4, EPSS, KEV, BDU, vendor advisories)
 # into one directory.
 #
 # Designed to run as a Kubernetes CronJob / initContainer or a compose
@@ -54,6 +54,7 @@
 #   MAXMIND_LICENSE_KEY=xxxx ./scripts/fetch-enrichment.sh
 #   OCTO_ADVISORY_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 #   OCTO_NVD_CPE_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
+#   OCTO_BDU_FSTEC_FETCH_ENABLED=true ./scripts/fetch-enrichment.sh
 #   OCTO_ENRICHMENT_OFFLINE=true ./scripts/fetch-enrichment.sh   # floor + manifest only
 set -uo pipefail
 
@@ -89,6 +90,18 @@ advisory_fetch_enabled() {
 # different requests to different hosts, and an installation may allow one.
 nvd_cpe_fetch_enabled() {
   local raw="${OCTO_NVD_CPE_FETCH_ENABLED:-false}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# BDU FSTEC is a large full dump, so refreshing it is an explicit opt-in.
+# The parser and API can still consume a bundle-installed/local overlay with this off.
+bdu_fstec_fetch_enabled() {
+  local raw="${OCTO_BDU_FSTEC_FETCH_ENABLED:-false}"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   raw="${raw%"${raw##*[![:space:]]}"}"
   case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
@@ -134,7 +147,7 @@ run() {
 }
 
 mkdir -p "$DEST/geoip" "$DEST/asn" "$DEST/cvss4" "$DEST/epss" "$DEST/kev" "$DEST/exploit" \
-  "$DEST/advisories" "$DEST/nvd-cpe"
+  "$DEST/advisories" "$DEST/nvd-cpe" "$DEST/bdu"
 
 # Floor: copy any missing seed file to DEST so scoring never runs with zero
 # data even if every fetch below fails (e.g. no network egress). GeoIP is
@@ -221,6 +234,16 @@ run cvss4 "cvss4" python3 "$ROOT/scripts/fetch-cvss4-db.py" --last-mod-days 8 \
   --seed "$SEED_DIR/cvss4/cvss4.json" -o "$DEST/cvss4/cvss4.json"
 run epss "epss" "$ROOT/scripts/fetch-epss-db.sh" -o "$DEST/epss/epss-overlay.json"
 run kev "kev" "$ROOT/scripts/fetch-kev-db.sh" -o "$DEST/kev/kev-overlay.json"
+
+# FSTEC BDU: CVE -> BDU identity/provenance for Russian compliance evidence.
+# It is enrichment, not a detector: BDU-only records are retained in the overlay
+# but never turned into findings without an independently observable match.
+if bdu_fstec_fetch_enabled; then
+  run bdu_fstec "bdu fstec" python3 "$ROOT/scripts/fetch-bdu-fstec.py" \
+    -o "$DEST/bdu/bdu-overlay.json"
+else
+  echo "==> bdu fstec: skipped (opt-in; set OCTO_BDU_FSTEC_FETCH_ENABLED=true to refresh)"
+fi
 
 # Vendor advisories for software->CVE matching (docs/software-cve-matching.md).
 # The opt-in flag is tested here rather than letting fetch-advisories.py exit 3

@@ -39,9 +39,11 @@ from sqlalchemy import func, select
 
 from api.db import models
 from api.db.engine import get_session
+from api.services import bdu_fstec
 from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services.compliance import frameworks as catalog
+from api.services.compliance import registry
 from api.services.compliance import signals as sig
 from api.settings import Settings
 from scanner.pipeline.report import SEVERITY_ORDER
@@ -67,7 +69,7 @@ def _meets_floor(severity: str | None, floor: str) -> bool:
 class _Evidence:
     """A finding or asset that raised signals, kept in the shape the API returns."""
 
-    __slots__ = ("kind", "ref_id", "label", "severity", "detail", "signals", "accepted")
+    __slots__ = ("kind", "ref_id", "label", "severity", "detail", "signals", "accepted", "cve", "bdu_ids")
 
     def __init__(
         self,
@@ -79,6 +81,8 @@ class _Evidence:
         detail: str,
         signals: set[str],
         accepted: bool = False,
+        cve: str | None = None,
+        bdu_ids: list[str] | None = None,
     ) -> None:
         self.kind = kind
         self.ref_id = ref_id
@@ -87,6 +91,8 @@ class _Evidence:
         self.detail = detail
         self.signals = signals
         self.accepted = accepted
+        self.cve = cve
+        self.bdu_ids = list(bdu_ids or [])
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +102,8 @@ class _Evidence:
             "severity": self.severity,
             "detail": self.detail,
             "signals": sorted(self.signals),
+            "cve": self.cve,
+            "bdu_ids": list(self.bdu_ids),
             "accepted": self.accepted,
         }
 
@@ -115,6 +123,8 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
         asset_filters.append(models.Asset.tenant_id == tenant_id)
 
     evidence: list[_Evidence] = []
+    bdu_dataset = bdu_fstec.snapshot()
+    bdu_info = bdu_fstec.dataset_info(bdu_dataset)
     with get_session(settings.postgres_url) as session:
         # Only open findings are loaded, and the filter is in SQL rather than in
         # the loop below: at 50,000 assets a compliance page that pulled every
@@ -238,6 +248,11 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
                 detail=f"asset {asset_id}" + (f", port {port}" if port else ""),
                 signals=raised,
                 accepted=reading == "accepted",
+                cve=str(cve) if cve else None,
+                bdu_ids=bdu_fstec.lookup(
+                    str(cve) if cve else None,
+                    dataset=bdu_dataset,
+                )["bdu_ids"],
             )
         )
 
@@ -294,6 +309,7 @@ def _collect_evidence(settings: Settings, tenant_id: str | None) -> dict[str, An
         "open_findings": open_findings,
         "suppressed_findings": suppressed_findings,
         "generated_at": now,
+        "evidence_provenance": {"bdu_fstec": bdu_info},
     }
 
 
@@ -350,7 +366,7 @@ def assess(
 ) -> dict[str, Any] | None:
     """Posture for one framework, or ``None`` if the framework is unknown."""
 
-    framework = catalog.get_framework(framework_id)
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
     if framework is None:
         return None
     collected = _collect_evidence(settings, tenant_id)
@@ -361,7 +377,47 @@ def assess_all(settings: Settings, *, tenant_id: str | None = None) -> list[dict
     """Posture for every framework off one evidence pass (used by the report factory)."""
 
     collected = _collect_evidence(settings, tenant_id)
-    return [_fold(framework, collected) for framework in catalog.FRAMEWORKS.values()]
+    return [_fold(framework, collected) for framework in registry.all_frameworks(settings, tenant_id)]
+
+
+def snapshot(
+    settings: Settings,
+    *,
+    framework_id: str,
+    tenant_id: str,
+) -> dict[str, Any] | None:
+    """Point-in-time posture with every matching evidence item per control.
+
+    Unlike the interactive posture summary, this is intentionally untruncated:
+    it is the input to the signed evidence package an auditor archives. Evidence
+    is collected once, so a package cannot mix controls read at different
+    database moments merely because each control was queried separately.
+    """
+
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
+    if framework is None:
+        return None
+    collected = _collect_evidence(settings, tenant_id)
+    posture = _fold(framework, collected)
+    controls = []
+    for control in framework.controls:
+        assessed = _assess_control(control, collected)
+        items = [
+            item
+            for item in collected["evidence"]
+            if control.matched_by(item.signals)
+            and _meets_floor(item.severity, control.severity_floor)
+        ]
+        items.sort(
+            key=lambda item: SEVERITY_ORDER.get(item.severity, 0),
+            reverse=True,
+        )
+        assessed["evidence"] = [item.as_dict() for item in items]
+        assessed["framework_id"] = framework.framework_id
+        controls.append(assessed)
+    posture["controls"] = controls
+    posture["evidence_untruncated"] = True
+    return posture
 
 
 def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, Any]:
@@ -380,6 +436,7 @@ def _fold(framework: catalog.Framework, collected: dict[str, Any]) -> dict[str, 
         # findings held out of this assessment by a false-positive verdict, so
         # the score can be read together with what it was built on.
         "suppressed_findings": collected["suppressed_findings"],
+        "evidence_provenance": dict(collected.get("evidence_provenance") or {}),
         "controls_total": len(controls),
         "controls_assessed": len(assessed),
         "controls_passed": len(passed),
@@ -402,7 +459,7 @@ def control_evidence(
 ) -> dict[str, Any] | None:
     """Every piece of evidence behind one control, not just the sample."""
 
-    framework = catalog.get_framework(framework_id)
+    framework = registry.resolve_framework(settings, framework_id, tenant_id)
     if framework is None:
         return None
     control = framework.control(control_id)
