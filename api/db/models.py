@@ -525,6 +525,33 @@ class AuthEvent(Base):
     )
 
 
+class RateLimitBucket(Base):
+    """One token bucket of the general request rate limiter (#320).
+
+    A row per principal or tenant that has made a request recently; see
+    ``api/services/rate_limit.py``. ``refilled_at`` is epoch seconds read from
+    the *database's* clock, never a replica's: the bucket is shared by every
+    replica, and two replicas whose clocks disagree would otherwise credit the
+    same interval twice or not at all.
+
+    ``UNLOGGED`` on Postgres (migration ``0069_rate_limit_buckets``): a crash
+    empties the table, which hands every principal a full bucket — the state
+    a principal idle for a while is in anyway — and in exchange the write each
+    authenticated request makes costs no WAL. For the same reason the table is
+    not replicated to a standby, which never serves the API's writes.
+
+    No ``tenant_id`` column and so no row security: the key names a tenant
+    only as an opaque string, the rows hold counters and nothing else, and
+    the limiter reads them before a request has declared any tenant.
+    """
+
+    __tablename__ = "rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(primary_key=True)
+    tokens: Mapped[float] = mapped_column()
+    refilled_at: Mapped[float] = mapped_column(index=True)
+
+
 class AuditEvent(Base):
     """One administrative change this platform made, and who made it (#327).
 

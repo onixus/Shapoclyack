@@ -2385,6 +2385,33 @@ new value, so the tokens signed with it keep working and the older ones do not.
 Nobody is locked out — they log in again — but plan the rollback for the same
 reason you planned the rotation.
 
+### When callers start getting 429
+
+The general rate limiter ([#320](https://github.com/onixus/Shapoclyack/issues/320),
+settings in [configuration.md](configuration.md#environment-variables)) charges
+every authenticated request to a bucket per principal, per tenant for users and
+service tokens, and per agent. `octo_rate_limited_total{scope}` says which kind
+of bucket ran out; the API's INFO log names the principal or tenant in
+`rate limited: <scope> <key>, retry after <n>s`.
+
+1. **`scope="agent"` climbing** is one sensor or endpoint agent calling far
+   more often than its cadence — a worker started with a very short
+   `--poll-interval`, or a retry loop. Find the key in the log and fix the
+   host; raise `OCTO_RATE_LIMIT_AGENT_*` only if the cadence is intended.
+   Fleet size never causes this: agents are not pooled per tenant.
+2. **`scope="tenant"`** is one customer's combined console and API traffic.
+   Usually an integration polling in a tight loop under a service token; the
+   `service_token` scope will often be climbing next to it.
+3. **Everyone at once, right after an upgrade** — check that the limits were
+   not set in requests per *minute* by mistake. `OCTO_RATE_LIMIT_ENABLED=false`
+   and a restart switch the limiter off without touching the login limiter.
+
+The buckets are an `UNLOGGED` table: a Postgres crash or failover empties it,
+which hands every principal a full bucket — expected, nothing to repair. To
+clear a bucket by hand (a principal throttled by a limit you have since
+raised): `DELETE FROM rate_limit_buckets WHERE bucket_key = '<scope>:<key>';`.
+Rows idle for longer than the slowest refill are pruned by the API itself.
+
 ## Logs and observability
 
 ### Log format, level, and the request id

@@ -570,6 +570,29 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **General request rate limiting and a body cap on every route
+  ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
+  was the only one with a limiter and two uploads the only ones with a body
+  cap: an authenticated principal could call anything as fast as it liked,
+  with a body as large as it liked. Every authenticated request is now charged
+  to a token bucket — one per console user, service token and sensor/endpoint
+  agent, plus one shared by a tenant's users and service tokens — and an empty
+  bucket answers `429` with a `Retry-After` computed from the refill, counted
+  in `octo_rate_limited_total{scope}` (`user`, `service_token`, `agent`,
+  `tenant`; never the principal). The buckets are rows of a new `UNLOGGED`
+  table (migration `0069_rate_limit_buckets`), charged in one statement on the
+  database's clock, so every replica spends from the same bucket; the SQLite
+  dev fallback keeps them in the process. Agents are never pooled per tenant,
+  so a fleet's size cannot throttle its heartbeats, and the defaults
+  (`OCTO_RATE_LIMIT_AGENT_PER_SECOND=2`, burst 120) are an order of magnitude
+  above a sensor's or Lariska's cadence. Probes, `/metrics` and the sign-in
+  routes are not charged; the login limiter is unchanged and still counts
+  failed attempts. If Postgres is unreachable the limiter lets requests
+  through and warns. `OCTO_MAX_BODY_BYTES` (1 MiB) now caps every request
+  body, from `Content-Length` and by counting a chunked body as it arrives;
+  the inventory, results, wordlist, endpoint-agent build and compliance import
+  routes keep their larger caps. `Retry-After` is now a CORS-exposed header.
+  See [docs/api-and-rbac.md](docs/api-and-rbac.md#request-rate-limiting-and-body-size).
 - **The runtime base carries the OpenSSL and PCRE2 security updates the
   fixable-HIGH gate blocks on.** `Dockerfile`, `Dockerfile.allinone`,
   `Dockerfile.api` and the Jenkins 3.12 test image move to the

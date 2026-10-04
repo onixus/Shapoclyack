@@ -208,6 +208,19 @@ AUTH_ATTEMPTS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RATE_LIMITED_TOTAL = Counter(
+    "octo_rate_limited_total",
+    "Authenticated requests refused with 429 by the general rate limiter "
+    "(#320), by the bucket that ran out: 'user' and 'service_token' are one "
+    "principal's own bucket, 'agent' one sensor's or endpoint agent's, "
+    "'tenant' the bucket a tenant's users and service tokens share. Never "
+    "labelled with the principal or the tenant: those are unbounded sets, and "
+    "the 429's own log line names them. Failed logins are counted in "
+    "octo_auth_attempts_total{outcome=\"locked\"} instead.",
+    ["scope"],
+    registry=REGISTRY,
+)
+
 MFA_VERIFICATIONS_TOTAL = Counter(
     "octo_mfa_verifications_total",
     "Second-factor checks, by outcome (success, failure, recovery, "

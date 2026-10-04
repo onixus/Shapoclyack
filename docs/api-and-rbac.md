@@ -454,6 +454,47 @@ accounts worth attacking. The *mode* is public in `GET /api/auth/sso` as
 reason (`local_login_disabled`, `local_login_not_break_glass`) is in
 `auth_events`.
 
+## Request rate limiting and body size
+
+Since [#320](https://github.com/onixus/Shapoclyack/issues/320) every
+authenticated request is charged to a token bucket, and every request body is
+capped. Both answer before the route runs.
+
+**Rate limit.** A request is charged where it authenticates, because that is
+the first point at which the API knows who is asking — a key taken from
+anything the caller sends unverified would be a fresh bucket per request.
+
+| Bucket | Charged by | Defaults (refill / capacity) |
+|---|---|---|
+| `user` | each console session's account | 20/s / 300 |
+| `service_token` | each service token | 20/s / 300 |
+| `tenant` | every user and service token acting in that tenant, together. Not the platform admin, which acts for the installation | 100/s / 2000 |
+| `agent` | each sensor or endpoint agent (its JWT's agent id; a token minted before registration, its provisioning key; a legacy shared-token agent, its source address). **Not** charged to the tenant bucket | 2/s / 120 |
+
+An empty bucket answers `429` with `Retry-After` — the seconds until the next
+token is due, not a constant — and counts `octo_rate_limited_total{scope}`. A
+refused request spends nothing, so a client that keeps retrying an empty bucket
+does not push its own next token further away. The buckets are rows in
+Postgres (`rate_limit_buckets`), shared by every replica; settings and the
+SQLite caveat are in
+[configuration.md](configuration.md#environment-variables).
+
+Not charged: requests that do not authenticate — `/livez`, `/readyz`,
+`/api/health`, `/metrics`, the console's static files, and the sign-in routes,
+which are under the login limiter below. The two limiters count different
+things and neither replaces the other: that one counts *failed* attempts per
+address and username before anyone is authenticated, this one counts the
+requests of a principal that is.
+
+**Body size.** `OCTO_MAX_BODY_BYTES` (1 MiB) caps every body, read from
+`Content-Length` before a byte is read and counted as a chunked body arrives,
+so a body without a length is cut off at the same size. A route with a larger
+contract keeps its own cap: the inventory submission, the results upload, the
+wordlist upload, the endpoint-agent build upload and the compliance framework
+import. Over the cap is `413`; an unparsable `Content-Length` is `400`. The
+inventory and results routes additionally refuse a body without
+`Content-Length` with `411`, as before.
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
