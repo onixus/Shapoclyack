@@ -132,6 +132,10 @@ ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW = "vulnerability.exception_request_withdr
 ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
 ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"
+# A CMDB/AD file applied to the registry (#350): one row per applied import,
+# naming the file by its digest and the assets it created and updated. A dry
+# run changes nothing and writes no row.
+ACTION_ASSET_IMPORT = "asset.import"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 # How hard a tenant may be scanned (#362). The first is the operator's edit —
 # raising a rate ceiling or taking a fieldbus port off the avoid-list is a

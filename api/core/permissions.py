@@ -139,6 +139,14 @@ PLATFORM_LEGAL_HOLD_MANAGE = "platform.legal_hold.manage"
 #: who filed the request by name, which is what separates the duties for a
 #: platform admin, who holds every permission in this file.
 VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
+#: Import a CMDB or directory export into the asset registry (``POST
+#: /api/assets/import``, #350). Not the operator's ``PATCH`` at scale: an
+#: import *registers* assets, which spends the tenant's purchased asset quota,
+#: and rewrites the context of every asset in the file in one request — the
+#: tenant's system of record speaking, which is a tenant administrator's
+#: decision. An installation that wants a dedicated CMDB integration grants it
+#: through a service token issued with the ``admin`` role for that tenant.
+ASSET_IMPORT = "asset.import"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
 #: publish for it. The dict is the closed set: a permission not in here cannot
@@ -166,6 +174,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_RETENTION_READ: "Read the tenant's data retention policy and legal hold",
     TENANT_RETENTION_MANAGE: "Set the tenant's retention windows within the platform bounds",
     PLATFORM_LEGAL_HOLD_MANAGE: "Place and release a legal hold on any tenant",
+    ASSET_IMPORT: "Import a CMDB or directory export into the asset registry",
 }
 
 
@@ -226,6 +235,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     TENANT_QUOTA_READ,
     TENANT_RETENTION_READ,
     TENANT_RETENTION_MANAGE,
+    ASSET_IMPORT,
 )
 
 BUILTIN_ROLES: dict[str, RoleDefinition] = {

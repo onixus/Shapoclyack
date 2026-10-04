@@ -22,7 +22,7 @@ graph TB
         Sensors["Sensors (scan nodes)<br/>(DMZ, Private Clouds, Branch Offices)"]
     end
 
-    CMDB -->|PATCH /api/assets/{id}| API
+    CMDB -->|POST /api/assets/import · PATCH /api/assets/{id}| API
     CICD -->|Service Token /api/jobs| API
     API -->|Outbound Webhooks / NATS| SIEM
     API <-->|Two-way ticket sync| Jira
@@ -34,7 +34,7 @@ graph TB
 |---|---|---|
 | **EASM и инвентарь периметра** | Выявление Shadow IT, учет активов, картографирование графа сервисов | Модуль `org_profile`, `/attack-surface`, `/assets` |
 | **Сетевая топология и сенсоры** | Проектирование безопасного размещения сканирующих узлов в DMZ и VPC | Распределенный флот сенсоров (API-ресурс `agents`, `agent_kind = scanner`) через NATS JetStream или HTTPS-claim |
-| **Интеграция с CMDB и каталогами** | Автоматическое обогащение активов бизнес-контекстом и владельцами | Контракт `PATCH /api/assets/{id}` (`context_source: cmdb/ad`) |
+| **Интеграция с CMDB и каталогами** | Автоматическое обогащение активов бизнес-контекстом и владельцами | Импорт выгрузки CSV/JSON `POST /api/assets/import` с пробным прогоном и `PATCH /api/assets/{id}` (`context_source: cmdb/ad`); коннекторов ServiceNow и LDAP/AD нет |
 | **Встраивание в DevSecOps (CI/CD)** | Автоматизированный контроль релизных контуров и динамических сред | Сервисные токены (`/service-tokens`), REST API, Idempotency-Key |
 | **SOC & Event-Driven архитектура** | Потоковая передача событий об уязвимостях и новых активах | Webhooks dispatcher, NATS JetStream asset-event streams |
 | **Архитектура комплаенса** | Автоматизированный аудит контролей PCI DSS, CIS Controls, ISO 27001 | Движок сигналов и каталоги фреймворков (`/compliance`) |
@@ -108,7 +108,7 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 
 ## Сценарий 3: Интеграция с корпоративной CMDB и Active Directory
 
-Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Shapoclyack дает для этого **REST-контракт бизнес-контекста актива** — модель полей ниже и `PATCH /api/assets/{id}`, — а синхронизацию с CMDB (ServiceNow, Jira Service Management, внутренние учетные системы) архитектор пишет как внешний скрипт по расписанию. Готового импортера из CMDB/AD в платформе **нет**: он в roadmap как [#350](https://github.com/onixus/Shapoclyack/issues/350). Направление одно — из CMDB в Shapoclyack; обратной записи в CMDB платформа не делает.
+Точная оценка рисков невозможна без знания владельца и бизнес-назначения сервера. Shapoclyack дает для этого **импорт выгрузки из CMDB/AD** — CSV или JSON в `POST /api/assets/import` с пробным прогоном и отчётом по строкам — и **REST-контракт бизнес-контекста актива** (`PATCH /api/assets/{id}`) для точечных правок. Выгрузку из CMDB (ServiceNow, Jira Service Management, внутренние учетные системы) по расписанию делает ваш скрипт: **коннектора** ServiceNow (Table API) и синхронизации компьютеров из LDAP/AD в платформе нет, они остаются в [#350](https://github.com/onixus/Shapoclyack/issues/350). Направление одно — из CMDB в Shapoclyack; обратной записи в CMDB платформа не делает.
 
 ### 3.1. Модель данных бизнес-контекста актива
 Поля сущности **Asset** в Shapoclyack:
@@ -122,10 +122,22 @@ $$\text{Domain / FQDN} \longrightarrow \text{IP-Address} \longrightarrow \text{P
 | `data_classification`| `public`, `internal`, `confidential`, `restricted` | Оценка критичности в комплаенс-моделях |
 | `asset_criticality` | `0` (тест), `1` (низкая) ... `4` (бизнес-критичная) | **Прямой множитель Impact** в формуле риска NIST SP 800-30 |
 | `exposure_level` | `internet`, `partner`, `internal`, `unknown` | Экспертное определение доступности хоста |
-| `context_source` | `cmdb`, `ad`, `operator` | Источник записи для аудита |
+| `context_source` | `cmdb`, `ad`, `other`, `operator` | Источник записи для аудита; импорт пишет `cmdb`/`ad`/`other`, ручная правка — `operator` |
 
-### 3.2. Автоматизация обогащения через REST API
-Скрипт синхронизации (ваш, на стороне CMDB или в CI) опрашивает CMDB и обновляет данные в Shapoclyack вызовом — это и есть весь механизм «интеграции» на сегодня:
+### 3.2. Импорт выгрузки
+Скрипт синхронизации (ваш, на стороне CMDB или в CI) выгружает CSV/JSON и отправляет файл целиком — сначала пробным прогоном (`dry_run: true`, по умолчанию), затем с применением. Нужно право `asset.import` (администратор тенанта; для интеграции — сервисный токен с ролью `admin`):
+```bash
+jq -n --rawfile csv cmdb-export.csv \
+  '{format: "csv", content: $csv, dry_run: false, context_source: "cmdb"}' |
+curl -X POST https://shapoclyack.company.local/api/assets/import \
+  -H "Authorization: Bearer $CMDB_SERVICE_TOKEN" \
+  -H "Idempotency-Key: cmdb-sync-$(date +%F)" \
+  -H "Content-Type: application/json" -d @-
+```
+Строки сопоставляются по `asset_id`, `ip` или `fqdn` через реестр идентификаторов; пустые ячейки поля не очищают; значение, заданное оператором вручную, импорт не перезаписывает без `overwrite_operator_edits: true`, а сообщает конфликт. Колонки, коды конфликтов и лимиты — в [asset-context.md](../asset-context.md#cmdb--ad). Тот же импорт с предпросмотром есть в консоли на странице `/assets` (кнопка «Импорт…»).
+
+### 3.3. Точечная правка через REST API
+Для одного актива — `PATCH`:
 ```bash
 curl -X PATCH https://shapoclyack.company.local/api/assets/asset_prod_srv_42 \
   -H "Authorization: Bearer $CMDB_SERVICE_TOKEN" \

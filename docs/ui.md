@@ -596,6 +596,22 @@ of the four-hundred-clicks problem: asset context is what findings are scored
 and prioritised by, so fixing it one asset at a time is what leaves a pilot's
 queue unsorted.
 
+**Import…** in the `/assets` header loads a CMDB/AD export
+([#350](https://github.com/onixus/Shapoclyack/issues/350)). It is shown to
+whoever holds `asset.import` **in the active tenant** (`can(user, {permission:
+"asset.import"})`) — a tenant admin whose account is globally a viewer sees it,
+a global operator does not — and the API refuses everyone else regardless. Pick
+a `.csv` or `.json` file (read as UTF-8, falling back to Windows-1251 for an
+Excel export from a Russian locale; the dialog shows which), choose the source
+(`cmdb`, `ad`, `other`) and whether to overwrite values an operator set by hand,
+then **Preview**: a dry run whose counts cover the whole file and whose table
+lists the first 200 rows, conflicts and invalid rows first, each with its reason
+or its field changes. **Apply** is enabled only after a preview of the same file
+and options that would change something; changing the file or an option drops
+the preview. The apply carries an `Idempotency-Key`, so clicking it again after a
+timeout replays rather than imports twice. See
+[asset-context.md](asset-context.md#cmdb--ad).
+
 ## Exposure and MSSP
 
 `/tenants` is the provider comparison ([#139](https://github.com/onixus/Shapoclyack/issues/139)):

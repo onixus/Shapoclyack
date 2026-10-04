@@ -6,6 +6,27 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Asset import from a CMDB/AD export
+  ([#350](https://github.com/onixus/Shapoclyack/issues/350), first stage).**
+  `POST /api/assets/import` takes CSV or JSON and upserts it into the tenant's
+  registry, matching rows through the existing identifier registry
+  (`asset_id`, `ip`, `fqdn`; new assets get the id a scan would give them, so
+  the first scan lands on them). Owner, team, service, environment,
+  classification, exposure, criticality 0–4 and tags; `context_source`
+  `cmdb`/`ad`/`other`. Dry run by default with a per-row report —
+  `create`/`update`/`unchanged`/`conflict`/`invalid` — naming ambiguous
+  matches (never merged), an address owned by another asset, duplicates in the
+  file, the asset quota, and **a value an operator set by hand**, which the
+  import does not overwrite unless `overwrite_operator_edits` is set. Empty
+  cells and `null` never clear a field. One transaction per apply, one
+  `asset.import` audit row, `Idempotency-Key` on apply, 2 MiB / 5 000 rows,
+  BOM and `;`-separated Excel CSV accepted, formula cells and mis-decoded text
+  refused. New permission `asset.import` (tenant `admin`, platform admin),
+  seeded by migration `0071_asset_import_permission`. The console's `/assets`
+  page has **Import…** with a preview before apply. Not in this stage: the
+  ServiceNow CMDB connector and the LDAP/AD computer sync (after #317) — the
+  docs that described a "CMDB/AD integration" now say what exists.
+
 - **Postgres row-level security behind every tenant predicate
   ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
   isolation in the database was the `WHERE tenant_id` of each query and nothing

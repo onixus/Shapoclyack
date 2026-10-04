@@ -160,7 +160,7 @@ graph TD
 |---|---|
 | [**Wiki Portal & Architecture Principles**](docs/wiki/README.md) | Central entry point: concepts, asset-centric paradigm, NIST SP 800-30, mechanical verification |
 | [**Security Engineer Playbook**](docs/wiki/scenarios-security-engineer.md) | Daily operations: scan profiling, finding triage, remediation kanban, mechanical re-verification, patch gaps, noise reduction |
-| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, the asset business-context REST contract (`PATCH /api/assets/{id}`) your CMDB/AD sync script drives — a packaged importer is [#350](https://github.com/onixus/Shapoclyack/issues/350) — sensors in DMZ/VPC, CI/CD DevSecOps, compliance controls |
+| [**Architect Playbook**](docs/wiki/scenarios-architect.md) | Perimeter mapping, Shadow IT discovery, CMDB/AD export import (`POST /api/assets/import`, CSV/JSON with a dry-run report) your sync job posts to — ServiceNow and LDAP/AD connectors are still [#350](https://github.com/onixus/Shapoclyack/issues/350) — sensors in DMZ/VPC, CI/CD DevSecOps, compliance controls |
 | [**CISO & Executive Guide**](docs/wiki/scenarios-ciso.md) | Strategic governance: Risk Overview dashboard, estate risk score, CISA KEV tracking, SLA & MTTR metrics, adoption KPIs, board reporting |
 | [**Formal Security Processes**](docs/wiki/security-processes.md) | End-to-end VM lifecycle, continuous EASM, 0-day emergency response (KEV), and IT/DevOps SLA collaboration with 2-way ticket sync |
 | [**12-Week Implementation Roadmap**](docs/wiki/implementation-plan.md) | 4-phase rollout (Pilot → Production Scale), deployment topologies, RACI responsibility matrix, and measurable KPIs |
@@ -400,7 +400,7 @@ See the [Development Guide](docs/development.md) for full setup instructions and
 | **Vulnerability Lifecycle** | [State machine, SLA policies, mechanical verification](docs/vulnerability-lifecycle.md) |
 | **Software CVE Matching** | [Distro vendor advisory matching, EVR comparison, patch gaps](docs/software-cve-matching.md) |
 | **Reports & Compliance** | [Report factory, PCI DSS 4.0, CIS v8, and ISO 27001 mapping](docs/reports-and-compliance.md) |
-| **Asset Identity & Context** | [Identity correlation across IP drift, CMDB business context](docs/asset-identity.md) · [Context](docs/asset-context.md) |
+| **Asset Identity & Context** | [Identity correlation across IP drift](docs/asset-identity.md) · [Business context and CMDB/AD file import](docs/asset-context.md) |
 | **Web Interface** | [Full route directory, workflow guides, screenshot catalog](docs/ui.md) |
 | **Configuration** | [Scan profiles, rate limits, enrichment sources, safe overrides](docs/configuration.md) |
 | **Kubernetes** | [Kustomize production deployment, overlays, secrets](k8s/README.md) |
