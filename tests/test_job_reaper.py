@@ -120,11 +120,15 @@ def test_requeueing_stops_at_the_attempt_cap(settings):
     assert dead.finished_at is not None
 
 
-def test_an_abandoned_local_job_is_failed_not_requeued(settings):
+def test_an_abandoned_local_job_is_failed_not_requeued(settings, monkeypatch):
     """This is the P1.2 residual: a local job's only executor was the thread in
     the replica that died, so no other replica will ever pick the row up.
     Requeueing it would park it in the queue for good."""
     settings.job_execution_mode = "local"
+    # The replica died, so nothing runs the job. Left real, the thread
+    # start_scan spawns could finish the row before the lease is forged
+    # below, and the sweep would find nothing to reap (a CI flake).
+    monkeypatch.setattr(jobs_service, "_run_job", lambda *_args: None)
     job = jobs_service.start_scan(
         settings, StartScanRequest(mode="balanced"), username="admin"
     )
