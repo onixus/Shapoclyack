@@ -906,10 +906,15 @@ def register_findings_from_run(
 ) -> RegisterStats:
     """Fold one run's findings into the tracker. Idempotent per run.
 
-    Re-running it for the same run is a no-op beyond refreshing the latest
-    assessment: identity is the finding, not the observation, so the second pass
-    finds every row and updates it. That matters because both job completion
-    paths (local scan, agent upload) can be retried.
+    Re-running it for the same run is a no-op: identity is the finding, and a
+    row this run has already observed (``last_seen_run_id``) is the same fact
+    seen again, not a second sighting. It is counted as re-observed and left
+    alone — no ``observation_count`` bump, no second ``observed`` event, no
+    SLA restart. That matters because a published run's derived updates run at
+    least once (``run_completion.on_run_published``, #454): a replica killed
+    after the fold and before the publication was closed folds the run again.
+    Two entries of *one* pass that land on one key are still two observations,
+    as they always were.
     """
     entries = _run_findings(settings, run_id, tenant_id=tenant_id)
     if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
@@ -926,6 +931,9 @@ def register_findings_from_run(
     )
     now = _now()
     created = reobserved = reopened = skipped = 0
+    # Keys this pass has folded, so a run seen before is told apart from a
+    # second entry of the same run in this pass.
+    folded: set[str] = set()
     verification_passed = verification_failed = 0
     fp_suppressed_observations = fp_overridden = 0
 
@@ -1034,6 +1042,7 @@ def register_findings_from_run(
                 # transaction, and a subtransaction per row overflows
                 # Postgres's subxid cache past 64 (engine.insert_or_skip).
                 if insert_or_skip(session, candidate, conflict=["tenant_id", "finding_key"]):
+                    folded.add(key)
                     row = candidate
                     created += 1
                     _record_event(
@@ -1059,6 +1068,19 @@ def register_findings_from_run(
                         models.Vulnerability.finding_key == key,
                     )
                 ).scalar_one()
+
+            if (
+                row.last_seen_run_id == run_id
+                and row.source != "retro_match"
+                and key not in folded
+            ):
+                # This run was folded before — a replayed publication. The
+                # observation, its event and any reopen are already recorded.
+                # Not a retro row: the matcher stamps the run whose banner it
+                # read, and this scan observing it is the conversion below.
+                reobserved += 1
+                continue
+            folded.add(key)
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what

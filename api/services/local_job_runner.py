@@ -1,7 +1,11 @@
 """Execution wrapper for scans run inside the API process.
 
 The process mechanics live in local_scan_executor. This module owns the job
-state transitions and post-run bookkeeping around that process.
+state transitions around that process and hands the run it produced to
+run_publisher, as a durable publication written with the outcome. What the
+run then feeds — assets, findings, services, events, notifications, the
+scope-denial journal — is decided by run_completion for local and sensor runs
+alike (#454); nothing here calls those hooks.
 """
 
 from __future__ import annotations
@@ -9,8 +13,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 
-from api.services import artifact_store
+from api.db import models
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import job_repository
@@ -18,7 +23,7 @@ from api.services import job_states
 from api.services import job_store
 from api.services import local_scan_executor
 from api.services import run_completion
-from api.services import runs as runs_service
+from api.services import run_publisher
 from api.services import tenants as tenants_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
@@ -29,6 +34,54 @@ _log = logging.getLogger(__name__)
 def _now() -> datetime:
     """Naive UTC, matching the other Postgres-backed services."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _publication(
+    settings: Settings,
+    job_id: str,
+    *,
+    run_id: str | None,
+    status: str,
+    exit_code: int,
+    error: str | None,
+) -> models.RunPublication | None:
+    """The publication this scan's terminal write owes, or ``None``.
+
+    ``None`` when there is nothing to publish — no run id, or a scanner that
+    exited before it created its directory — and when the directory is not
+    this scan's to take: a flat ``runs/<run_id>`` that already names an owner
+    is an older run the scanner wrote into, and staging it would write this
+    job's tenant over another tenant's marker (#427). That one stays where it
+    is, as ``adopt_local_run`` always left it, and the job says so.
+    """
+    if not run_id:
+        return None
+    source = Path(settings.output_dir) / "runs" / str(run_id)
+    if not source.is_dir():
+        return None
+    if (source / artifact_workspace.RUN_MARKER).exists():
+        _log.warning("Run %s is an existing flat run; leaving %s in place", run_id, source)
+        return None
+    job = job_repository.get_job(settings, job_id)
+    return run_publisher.new_local_publication(
+        settings,
+        job_id=job_id,
+        run_id=str(run_id),
+        tenant_id=(
+            job.tenant_id
+            if job
+            else tenants_service.DEFAULT_TENANT_ID
+        ),
+        job_status=status,
+        exit_code=exit_code,
+        scan_error=error,
+        surface=(
+            (job.scan_options or {}).get("surface")
+            if job
+            else None
+        ),
+        source=source,
+    )
 
 
 def run_job(
@@ -86,9 +139,23 @@ def run_job(
                 or f"exit {completed.returncode}"
             )[:2000]
 
+        publication = _publication(
+            settings,
+            job_id,
+            run_id=run_id,
+            status=status,
+            exit_code=completed.returncode,
+            error=error,
+        )
+        # The outcome and the publication it owes are one write, as for a
+        # sensor's upload (#454): a job the reaper or a restart already wrote
+        # off refuses the transition here and leaves no publication behind,
+        # and an outcome that is written cannot lose its run to a store
+        # outage or to this replica dying before the run was published.
         job_store.update_job(
             settings,
             job_id,
+            publication=publication,
             status=status,
             finished_at=_now(),
             exit_code=completed.returncode,
@@ -96,90 +163,24 @@ def run_job(
             error=error,
         )
 
-        job = job_repository.get_job(settings, job_id)
-        tenant_id = (
-            job.tenant_id
-            if job
-            else tenants_service.DEFAULT_TENANT_ID
-        )
-        # Outside the success gate: a target the scanner refused was refused
-        # whether or not the scan that followed it finished cleanly.
-        run_completion.record_scope_denials_best_effort(
-            settings,
-            tenant_id=tenant_id,
-            run_id=str(run_id) if run_id else None,
-            requested_by=job.requested_by if job else "",
-        )
-
-        if run_id:
-            # The scanner chose the run id and wrote the directory itself, so
-            # this is the first moment the run can be put in the artifact
-            # store (#336). Before the tagging below, and before the hooks:
-            # they all read the run back through the workspace. Adopted into
-            # the job's tenant (#427): the scanner has no idea whose scan it
-            # ran, and this is the first code that does.
-            try:
-                artifact_workspace.adopt_local_run(
-                    settings,
-                    artifact_store.keys.run_ref(str(run_id), tenant_id),
-                    settings.output_dir / "runs" / str(run_id),
-                )
-            except (artifact_store.ArtifactStoreError, ValueError) as exc:
-                _log.exception(
-                    "Could not publish run %s to the artifact store",
-                    run_id,
-                )
-                run_completion.note_adoption_failed(settings, job_id, str(exc))
-
-        if status == job_states.SUCCEEDED:
-            # Tag the run before the asset upsert: an untagged run reads back
-            # as the default tenant, which would leak it to every tenant's
-            # run list.
-            if run_id:
-                runs_service.write_run_tenant(
-                    settings,
-                    str(run_id),
-                    tenant_id,
-                    job_id=job_id,
-                    surface=(
-                        (job.scan_options or {}).get("surface")
-                        if job
-                        else None
-                    ),
-                )
-
-            run_completion.upsert_assets_best_effort(
+        if (
+            publication is None
+            and run_id
+            and (
+                Path(settings.output_dir) / "runs" / str(run_id) / artifact_workspace.RUN_MARKER
+            ).exists()
+        ):
+            # After the terminal write, which sets ``error`` and would erase it.
+            run_completion.note_adoption_failed(
                 settings,
-                tenant_id=tenant_id,
-                run_id=str(run_id) if run_id else None,
-                job_id=job_id,
+                job_id,
+                f"runs/{run_id} is an existing run with an owner of its own; left in place",
             )
-            run_completion.track_vulnerabilities_best_effort(
-                settings,
-                tenant_id=tenant_id,
-                run_id=str(run_id) if run_id else None,
-                job_id=job_id,
-            )
-            run_completion.record_services_best_effort(
-                settings,
-                tenant_id=tenant_id,
-                run_id=str(run_id) if run_id else None,
-                job_id=job_id,
-            )
-            run_completion.publish_asset_events_best_effort(
-                settings,
-                tenant_id=tenant_id,
-                run_id=str(run_id) if run_id else None,
-                job_id=job_id,
-            )
-            # Last of the post-run hooks: the summary it sends describes the
-            # tracker and the registry as they are *after* the folds above.
-            run_completion.notify_channels_best_effort(
-                settings,
-                tenant_id=tenant_id,
-                run_id=str(run_id) if run_id else None,
-                job_id=job_id,
-            )
+        if publication is not None:
+            # In this thread, so the ordinary local scan is published and fed
+            # to its derived state before the executor returns. A failure is
+            # not raised: what is left undone is a row the reconciler owns.
+            run_publisher.publish_now(settings, publication.publication_id)
 
     except Exception as exc:  # noqa: BLE001
         _log.exception("Scan job %s failed", job_id)
@@ -192,9 +193,9 @@ def run_job(
                 error=str(exc)[:2000],
             )
         except job_states.InvalidJobTransition:
-            # The scan itself finished and the job is already terminal — this
-            # is post-completion bookkeeping (run tagging) blowing up. Record
-            # it without rewriting the outcome the scan actually had.
+            # The scan itself finished and the job is already terminal — the
+            # terminal write above was refused, or post-completion bookkeeping
+            # blew up. Record it without rewriting the outcome the job has.
             job_store.update_job(
                 settings, job_id, error=str(exc)[:2000]
             )

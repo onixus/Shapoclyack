@@ -361,6 +361,8 @@ def test_a_local_scan_does_not_take_over_another_tenants_flat_run(settings, monk
     assert runs_service.read_run_tenant(flat) == "ten_b"
     assert runs_service.get_run_dir(settings, run_id, tenant_id="ten_a") is None
     assert runs_service.get_run_dir(settings, run_id, tenant_id="ten_b") == flat
+    # Not published, and not owed either (#454): the job says why instead.
+    assert "an existing run with an owner of its own" in (get_job(settings, job.job_id).error or "")
 
 
 def test_a_custom_run_id_that_names_an_existing_flat_run_is_refused(settings):
@@ -406,7 +408,7 @@ def test_two_tenants_submitting_one_custom_run_id_do_not_share_a_directory(
         )
 
 
-def test_a_local_scan_that_was_not_filed_under_its_tenant_says_so_on_the_job(
+def test_a_local_run_the_store_will_not_take_is_owed_and_says_so_on_the_job(
     settings, monkeypatch
 ):
     import subprocess
@@ -425,7 +427,14 @@ def test_a_local_scan_that_was_not_filed_under_its_tenant_says_so_on_the_job(
     def _refuse(*_a, **_k):
         raise artifact_store.ArtifactStoreError("disk full")
 
-    monkeypatch.setattr(artifact_workspace, "adopt_local_run", _refuse)
+    # Since #454 a local run is published from a run_publications row, like a
+    # sensor's: the failure is a publication that is owed, and once it is out
+    # of attempts the job says so with the publication's own note.
+    from api.services import run_publisher
+
+    settings.run_publication_max_attempts = 1
+    run_publisher.reset_for_tests(settings)
+    monkeypatch.setattr(artifact_workspace, "promote_staging", _refuse)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -437,7 +446,13 @@ def test_a_local_scan_that_was_not_filed_under_its_tenant_says_so_on_the_job(
 
     row = get_job(settings, job.job_id)
     assert row.status == "succeeded"
-    assert "not filed under its tenant: disk full" in (row.error or "")
+    assert f"run not published (publication local-{job.job_id}): " in (row.error or "")
+    assert "disk full" in (row.error or "")
+    # The scan is still where the scanner wrote it, for the operator's requeue.
+    assert (settings.output_dir / "runs" / run_id).is_dir()
+    assert [p.status for p in run_publisher.pending_publications(settings, job.job_id)] == [
+        "dead"
+    ]
 
 
 class _NoopThread:

@@ -1300,6 +1300,26 @@ That write records the outcome and, in the same transaction, one
 everything visible is then done from that row — first in the request that
 accepted the upload, then by a reconciler in every replica.
 
+A **local** scan (`OCTO_JOB_EXECUTION_MODE=local`) gets the same row since
+[#454](https://github.com/onixus/Shapoclyack/issues/454), named
+`local-<job_id>`, with no `agent_id` and no `archive_path`. Its "staging tree" is
+the directory the scanner wrote, `<output_dir>/runs/<run_id>`, on the replica
+that ran the scan; everything below applies to it unchanged, except that a local
+row is never sent to `ingest.results` and never rewrites `latest_run.json`. A
+local run the store refused used to say `; run not filed under its tenant: …` on
+the job and was not retried; it now says `; run not published (publication
+local-<job_id>): …` once its attempts are spent, and requeue works on it. Notes
+of the old form already on jobs are left as they are.
+
+The assets, findings, service fingerprints, asset events, notification and
+scope-denial journal entry a run feeds are part of the publication: they run
+after the run is visible and before the row is closed, by outcome
+(`docs/architecture.md`, *After publication*). So a `pending` or `dead` row also
+means "not in the asset list or the tracker yet", and a requeue that lands
+feeds the run then. A failed or cancelled run — including a late partial
+archive — feeds only the scope-denial journal: it is not a gap in the asset
+list that a requeue would fill.
+
 So a store outage, an unreachable broker or a replica killed mid-publication no
 longer costs the scan. It costs its *visibility*, for as long as the row says
 `pending`. What an operator has to act on is a row that says `dead`:

@@ -57,11 +57,12 @@ pytestmark = requires_postgres
 RUN_ID = "20261004T101500Z-i454"
 DENIED = "10.9.9.9"
 
-#: Characterization of ``main`` before #454: the two paths disagree. The
-#: sensor path upserts assets whatever the outcome — before it looks at the
-#: status — while the local path upserts only a succeeded run; the local path
-#: journals scope denials first, the sensor path after the asset upsert.
-CURRENT = {
+#: Characterization of ``main`` before #454, kept as the record of what the
+#: unification changed: the two paths disagreed. The sensor path upserted
+#: assets whatever the outcome — before it looked at the status — while the
+#: local path upserted only a succeeded run; the local path journalled scope
+#: denials first, the sensor path after the asset upsert.
+BEFORE_454 = {
     ("local", "succeeded"): ["scope_denials", "assets", "findings", "services", "events", "notify"],
     ("local", "failed"): ["scope_denials"],
     ("local", "cancelled"): [],
@@ -71,6 +72,23 @@ CURRENT = {
     ("sensor", "cancelled"): ["assets", "scope_denials"],
     ("sensor", "partial"): ["assets", "scope_denials"],
 }
+
+#: One matrix for both paths, keyed by outcome alone (``run_completion.
+#: POST_PUBLICATION``). A local job cancelled before it started has no run
+#: and so no publication at all.
+MATRIX = {
+    "succeeded": ["scope_denials", "assets", "findings", "services", "events", "notify"],
+    "failed": ["scope_denials"],
+    "cancelled": ["scope_denials"],
+    "partial": ["scope_denials"],
+}
+
+
+def _expected(mode: str, case: str) -> list[str]:
+    if (mode, case) == ("local", "cancelled"):
+        return []
+    return MATRIX[case]
+
 
 #: The job status each case ends on, which the derived updates are keyed by.
 STATUS = {
@@ -298,11 +316,112 @@ def test_derived_updates_by_outcome(tmp_path, monkeypatch, derived, mode, case):
     job_id = _finish(settings, monkeypatch, mode, case)
 
     assert jobs_service.get_job(settings, job_id).status == STATUS[(mode, case)]
-    assert derived.names() == CURRENT[(mode, case)]
+    assert derived.names() == _expected(mode, case)
     # Whatever ran, ran for this run and under the job's tenant.
     for name, run_id, who in derived.calls:
         assert run_id == RUN_ID, name
         assert who == ("analyst" if name == "scope_denials" else "default"), name
+    # Fed from the publication, so nothing is owed once it has landed.
+    assert run_publisher.pending_publications(settings, job_id) == []
+
+
+@pytest.mark.parametrize("case", ["failed", "partial"])
+def test_an_unfinished_local_run_is_still_published_under_its_tenant(
+    tmp_path, monkeypatch, derived, case
+):
+    """It feeds nothing derived, but it is the tenant's run: filed under its
+    owner and marked, which a failed local run used not to be."""
+    from api.services import runs as runs_service
+
+    settings = _settings(tmp_path, "local")
+    _local(settings, monkeypatch, case)
+
+    run_dir = runs_service.get_run_dir(settings, RUN_ID, tenant_id="default")
+    assert run_dir is not None and (run_dir / "summary.json").is_file()
+    assert runs_service.read_run_tenant(run_dir) == "default"
+    assert not (Path(settings.output_dir) / "runs" / RUN_ID).exists()
+
+
+def test_the_matrix_is_the_service_table():
+    """The tests' table and the code's table say the same thing."""
+    for case, status in (("succeeded", "succeeded"), ("failed", "failed"), ("cancelled", "cancelled")):
+        assert list(run_completion.actions_for(status)) == MATRIX[case]
+    # An outcome nobody classified feeds the journal and nothing derived.
+    assert run_completion.actions_for("cancelling") == (run_completion.SCOPE_DENIALS,)
+
+
+def test_the_behaviour_change_against_main_is_the_documented_one():
+    """What #454 changed beyond moving code, and nothing else: a sensor's
+    failed, cancelled or partial run no longer feeds the asset registry, and
+    the sensor path journals scope denials before the asset upsert."""
+    changed = {key for key, before in BEFORE_454.items() if before != _expected(*key)}
+    assert changed == {
+        ("sensor", "succeeded"),
+        ("sensor", "failed"),
+        ("sensor", "cancelled"),
+        ("sensor", "partial"),
+    }
+    assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(MATRIX["succeeded"])
+    for case in ("failed", "cancelled", "partial"):
+        assert [n for n in BEFORE_454[("sensor", case)] if n != "assets"] == MATRIX[case]
+
+
+@pytest.mark.parametrize("mode", ["local", "sensor"])
+def test_a_failing_notification_does_not_touch_the_scan_outcome(
+    tmp_path, monkeypatch, derived, mode
+):
+    settings = _settings(tmp_path, mode)
+
+    def _slack_is_down(**_kwargs):
+        raise RuntimeError("could not start the sender thread")
+
+    monkeypatch.setattr(channels_service, "notify_run_complete_async", _slack_is_down)
+
+    job_id = _finish(settings, monkeypatch, mode, "succeeded")
+
+    job = jobs_service.get_job(settings, job_id)
+    assert job.status == "succeeded"
+    assert job.exit_code == 0
+    assert not job.error
+    assert derived.names() == MATRIX["succeeded"][:-1]
+    assert run_publisher.pending_publications(settings, job_id) == []
+
+
+class _Killed(BaseException):
+    """The replica dying: not an ``Exception`` any handler on the way catches."""
+
+
+@pytest.mark.parametrize("mode", ["local", "sensor"])
+def test_a_replica_killed_after_the_derived_updates_replays_them_on_the_owed_row(
+    tmp_path, monkeypatch, derived, mode
+):
+    """The derived updates are owed with the publication, not after it.
+
+    The replica dies between feeding the run and closing its row. The row is
+    still there, so the run is published and fed again — which is why each
+    derived update must take a second pass over one run as the same facts
+    (see the replay test below) — and then the row closes.
+    """
+    settings = _settings(tmp_path, mode)
+    real_record_success = run_publisher._record_success  # noqa: SLF001
+
+    def _dies(*_args, **_kwargs):
+        raise _Killed()
+
+    monkeypatch.setattr(run_publisher, "_record_success", _dies)
+    with pytest.raises(_Killed):
+        _finish(settings, monkeypatch, mode, "succeeded")
+    with get_session(settings.postgres_url) as session:
+        owed = session.query(models.RunPublication).one()
+        job_id = owed.job_id
+    assert derived.names() == MATRIX["succeeded"]
+    assert jobs_service.get_job(settings, job_id).status == "succeeded"
+
+    monkeypatch.setattr(run_publisher, "_record_success", real_record_success)
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+
+    assert derived.names() == MATRIX["succeeded"] * 2
+    assert run_publisher.pending_publications(settings, job_id) == []
 
 
 def _later():
@@ -314,16 +433,7 @@ def _store_is_down(*_args, **_kwargs):
     raise artifact_store.ArtifactStoreError("bucket unreachable")
 
 
-_LOCAL_IS_NOT_DURABLE = pytest.mark.xfail(
-    strict=True,
-    reason="#454: a local run is adopted inline, with no run_publications row, and its "
-    "derived updates run whether or not the store took it",
-)
-
-
-@pytest.mark.parametrize(
-    "mode", [pytest.param("local", marks=_LOCAL_IS_NOT_DURABLE), "sensor"]
-)
+@pytest.mark.parametrize("mode", ["local", "sensor"])
 def test_a_store_outage_defers_derived_updates_until_the_run_is_published(
     tmp_path, monkeypatch, derived, mode
 ):
@@ -350,15 +460,13 @@ def test_a_store_outage_defers_derived_updates_until_the_run_is_published(
     restarted.nats_url = settings.nats_url
     assert run_publisher.reconcile_once(restarted, now=_later())["published"] == 1
 
-    assert derived.names() == CURRENT[("sensor", "succeeded")]
+    assert derived.names() == MATRIX["succeeded"]
     assert run_publisher.pending_publications(settings, job_id) == []
     run_publisher.reconcile_once(restarted, now=_later())
-    assert len(derived.names()) == len(CURRENT[("sensor", "succeeded")])
+    assert len(derived.names()) == len(MATRIX["succeeded"])
 
 
-@pytest.mark.parametrize(
-    "mode", [pytest.param("local", marks=_LOCAL_IS_NOT_DURABLE), "sensor"]
-)
+@pytest.mark.parametrize("mode", ["local", "sensor"])
 def test_a_replica_that_cannot_see_the_run_leaves_it_to_the_one_that_can(
     tmp_path, monkeypatch, derived, mode
 ):
@@ -395,7 +503,7 @@ def test_a_replica_that_cannot_see_the_run_leaves_it_to_the_one_that_can(
         "failed": 0,
         "skipped": 0,
     }
-    assert derived.names() == CURRENT[("sensor", "succeeded")]
+    assert derived.names() == MATRIX["succeeded"]
 
 
 def test_a_replayed_upload_derives_nothing_twice(tmp_path, monkeypatch, derived):
@@ -461,7 +569,7 @@ def test_a_stale_attempt_derives_nothing_and_the_current_one_derives_once(
         archive_bytes=_archive(),
         attempt=current.attempt,
     )
-    assert derived.names() == CURRENT[("sensor", "succeeded")]
+    assert derived.names() == MATRIX["succeeded"]
 
 
 def test_a_local_result_for_a_job_already_written_off_is_refused(
@@ -507,11 +615,6 @@ def _seed_findings_run(settings) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#454: replaying a published run's derived updates counts the same "
-    "observation again",
-)
 def test_replaying_a_published_run_does_not_count_its_observations_twice(tmp_path):
     """A publication whose derived updates ran and whose row was not closed —
     a replica killed between the two — is published again. The findings it
