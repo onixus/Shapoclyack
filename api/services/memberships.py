@@ -32,6 +32,16 @@ viewer/operator/admin plus ``auditor``, ``scan-operator``, ``scope-approver``,
 :mod:`api.core.permissions`; this module only stores the name and hands it
 back. Nothing about the existing three changed, so no grant written before
 #318 means anything different than it did.
+
+A membership may also name a role **its tenant defined** (the last part of
+#318, :mod:`api.services.rbac`). Granting one checks that it is this tenant's
+— another tenant's role of the same name is an unknown role here — and takes
+its row ``FOR SHARE`` so a delete of that role cannot slip in between the check
+and the write. Every grant and revoke made over the API is held to the
+granter's own authority (:func:`api.core.permissions.exceeds_authority`): with
+``tenant.member.manage`` now holdable by a tenant role, "may manage members"
+would otherwise include "may make myself admin", and "may revoke a member"
+would include revoking the admins above you.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ from api.core import permissions as permission_catalog
 from api.db import models
 from api.db.engine import get_session
 from api.services import audit as audit_service
+from api.services import rbac as rbac_service
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -108,25 +119,55 @@ def list_memberships(
     return items
 
 
+def _refuse_above(
+    granted_by: permission_catalog.Authority | None,
+    role: "rbac_service.ResolvedRole",
+    what: str,
+) -> None:
+    if granted_by is None:
+        return
+    reason = permission_catalog.exceeds_authority(role.rank, role.permissions, granted_by)
+    if reason:
+        raise PermissionError(f"{what} '{role.name}': {reason}")
+
+
 def grant(
     *,
     username: str,
     tenant_id: str,
     role: str,
     created_by: str | None = None,
+    granted_by: permission_catalog.Authority | None,
     audit: "audit_service.AuditContext | None" = None,
 ) -> dict[str, Any]:
-    """Create or update one membership. Idempotent on (username, tenant_id)."""
+    """Create or update one membership. Idempotent on (username, tenant_id).
+
+    ``role`` is a built-in tenant role or one ``tenant_id`` defined; anything
+    else is a ValueError. ``granted_by`` is the granter's authority in this
+    tenant and bounds both the role granted and the role being replaced
+    (PermissionError). Required and not defaulted, like the service-token
+    issuer: ``None`` is a decision — the platform granting on its own account,
+    as OIDC provisioning does — and a new caller has to make it out loud.
+    """
     settings = _require_settings()
     username = username.strip()
     if not username:
         raise ValueError("username required")
-    if role not in VALID_ROLES:
-        raise ValueError(f"role must be one of {', '.join(VALID_ROLES)}")
+    role = (role or "").strip()
     if tenants_service.get_tenant(tenant_id) is None:
         raise ValueError(f"Unknown tenant_id: {tenant_id}")
 
     with get_session(settings.postgres_url) as session:
+        # FOR SHARE on a tenant role's row: a concurrent delete of it waits for
+        # this grant, then counts its holder (see api/services/rbac.py).
+        # ``platform-admin`` resolves to None here: it is the account's, never
+        # a grant inside one tenant.
+        resolved = rbac_service.role_in_session(session, tenant_id, role, lock="share")
+        if resolved is None:
+            raise ValueError(
+                f"role must be one of {', '.join(VALID_ROLES)} or a role of this tenant"
+            )
+        _refuse_above(granted_by, resolved, "cannot grant role")
         account = session.get(models.User, username)
         if account is not None and account.erased_at is not None:
             # An erased account is a pseudonym, not a person (#332); a grant
@@ -141,6 +182,12 @@ def grant(
             )
         ).scalar_one_or_none()
         previous = {"role": row.role} if row is not None else None
+        if row is not None and row.role != role:
+            # Replacing a role is also taking it away: a member manager below
+            # the member's current role cannot demote them either.
+            current = rbac_service.role_in_session(session, tenant_id, row.role)
+            if current is not None:
+                _refuse_above(granted_by, current, "cannot change a member holding")
         if row is None:
             row = models.UserTenant(
                 username=username,
@@ -171,8 +218,17 @@ def grant(
 
 
 def revoke(
-    *, username: str, tenant_id: str, audit: "audit_service.AuditContext | None" = None
+    *,
+    username: str,
+    tenant_id: str,
+    revoked_by: permission_catalog.Authority | None,
+    audit: "audit_service.AuditContext | None" = None,
 ) -> bool:
+    """Remove one membership. False when there was none.
+
+    ``revoked_by`` bounds it the way ``granted_by`` bounds :func:`grant`: a
+    member manager cannot revoke a member whose role is above their own.
+    """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
         row = session.execute(
@@ -183,6 +239,9 @@ def revoke(
         ).scalar_one_or_none()
         if row is None:
             return False
+        current = rbac_service.role_in_session(session, tenant_id, row.role)
+        if current is not None:
+            _refuse_above(revoked_by, current, "cannot revoke a member holding")
         removed = _to_dict(row)
         session.delete(row)
         audit_service.record(

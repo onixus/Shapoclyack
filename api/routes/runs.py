@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from api.auth import ROLE_RANK, Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import Role, TenantPrincipal, get_settings, require_tenant
 from api.routes import _artifact_download as artifact_download
 from api.routes._pagination import PageParams, build_page
 from api.schemas import (
@@ -153,7 +153,7 @@ def get_artifact(
     if runs_service.is_screenshot_path(artifact_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     if runs_service.is_restricted_artifact(artifact_path) and (
-        ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]
+        not principal.at_least(Role.operator)
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     text = runs_service.read_artifact_text(
@@ -199,11 +199,11 @@ def download_artifact(
     screenshot does not fetch the scan it belongs to. The path resolver below
     is the fallback for the flat single-run layout, which has no keys."""
     if runs_service.is_restricted_artifact(artifact_path) and (
-        ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]
+        not principal.at_least(Role.operator)
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     screenshot = runs_service.is_screenshot_path(artifact_path)
-    if screenshot and ROLE_RANK[principal.role] < ROLE_RANK[Role.operator]:
+    if screenshot and not principal.at_least(Role.operator):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     scoping = {
         "tenant_id": _run_tenant_filter(principal),
@@ -271,7 +271,7 @@ def get_org_profile(
         settings,
         run_id,
         tenant_id=_run_tenant_filter(principal),
-        allow_restricted=ROLE_RANK[principal.role] >= ROLE_RANK[Role.operator],
+        allow_restricted=principal.at_least(Role.operator),
     )
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org profile data not found for this run")

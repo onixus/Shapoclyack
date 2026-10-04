@@ -472,6 +472,77 @@ def _apply_one_correlation(
     return target
 
 
+def _host_candidates(tenant_id: str, entry: dict) -> list[IdentityCandidate]:
+    host_ip = str(entry.get("host") or "")
+    names = entry.get("names") if isinstance(entry.get("names"), list) else []
+    hostname = entry.get("hostname")
+    all_names = [str(n) for n in names]
+    if hostname:
+        all_names.append(str(hostname))
+    return identity_candidates_for_host(tenant_id, host_ip=host_ip, hostnames=all_names)
+
+
+#: ``IN`` lists are chunked to stay far from Postgres' bind-parameter limit.
+_LOCK_CHUNK = 1000
+
+
+def _lock_known_assets(
+    session, tenant_id: str, host_candidates: list[list[IdentityCandidate]]
+) -> None:
+    """Row-lock, in asset-id order, every existing asset this run will update.
+
+    The loop in :func:`upsert_assets_from_run` updates assets in the order the
+    run lists its hosts, and each UPDATE takes its row lock there and then. The
+    CMDB import (``api/services/asset_import.py``) locks the assets of its file
+    up front, in asset-id order. Two writers taking the same rows in different
+    orders deadlock — B then A here, A then B there — and this upsert is best
+    effort and never retried (``run_completion.upsert_assets_best_effort``):
+    the victim's run would simply be missing from the registry. Taking the
+    locks first, in the import's order, means neither writer can hold a row the
+    other is already queued behind.
+
+    The set is resolved the way the loop resolves it — a registered identifier,
+    else the primary candidate's id — and loaded into the session, so the loop's
+    ``session.get`` is answered from the identity map. An asset this misses (an
+    identifier another writer registered after this read) is locked by the loop
+    as before.
+    """
+    asset_ids: set[str] = set()
+    values_by_kind: dict[str, set[str]] = {}
+    for candidates in host_candidates:
+        if not candidates:
+            continue
+        primary = next((c for c in candidates if c.identifier_type == "ip"), candidates[0])
+        asset_ids.add(primary.key)
+        for candidate in candidates:
+            values_by_kind.setdefault(candidate.identifier_type, set()).add(
+                candidate.identifier_value
+            )
+    for kind, values in values_by_kind.items():
+        ordered = sorted(values)
+        for start in range(0, len(ordered), _LOCK_CHUNK):
+            asset_ids.update(
+                session.execute(
+                    select(models.AssetIdentifier.asset_id).where(
+                        models.AssetIdentifier.tenant_id == tenant_id,
+                        models.AssetIdentifier.identifier_type == kind,
+                        models.AssetIdentifier.identifier_value.in_(ordered[start:start + _LOCK_CHUNK]),
+                    )
+                ).scalars()
+            )
+    ordered_ids = sorted(asset_ids)
+    for start in range(0, len(ordered_ids), _LOCK_CHUNK):
+        session.execute(
+            select(models.Asset)
+            .where(
+                models.Asset.tenant_id == tenant_id,
+                models.Asset.asset_id.in_(ordered_ids[start:start + _LOCK_CHUNK]),
+            )
+            .order_by(models.Asset.asset_id)
+            .with_for_update()
+        ).scalars().all()
+
+
 def upsert_assets_from_run(
     settings: Settings, *, tenant_id: str, run_id: str, publication_id: str | None = None
 ) -> AssetUpsertStats:
@@ -521,15 +592,10 @@ def upsert_assets_from_run(
         # front of every host would be a table scan per result.
         capacity = quotas.asset_capacity_in_session(session, settings, tenant_id)
 
-        for entry in hosts:
-            host_ip = str(entry.get("host") or "")
-            names = entry.get("names") if isinstance(entry.get("names"), list) else []
-            hostname = entry.get("hostname")
-            all_names = [str(n) for n in names]
-            if hostname:
-                all_names.append(str(hostname))
+        host_candidates = [_host_candidates(tenant_id, entry) for entry in hosts]
+        _lock_known_assets(session, tenant_id, host_candidates)
 
-            candidates = identity_candidates_for_host(tenant_id, host_ip=host_ip, hostnames=all_names)
+        for candidates in host_candidates:
             if not candidates:
                 continue
 

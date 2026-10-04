@@ -114,6 +114,7 @@ def reset_service_state(settings: "Settings") -> None:
     from api.services import config_override as config_service
     from api.services import idempotency as idempotency_service
     from api.services import oidc as oidc_service
+    from api.services import rate_limit
     from api.services import run_publisher
     from api.services import scan_schedules
     from api.services import service_tokens as service_tokens_service
@@ -157,6 +158,10 @@ def reset_service_state(settings: "Settings") -> None:
     # would otherwise count against this one's rate limit.
     auth_audit.configure(settings)
     auth_audit.reset_for_tests()
+    # The general rate limiter's buckets (#320) are keyed by username and
+    # tenant id, which every test reuses, and have no foreign key to clear
+    # them: a test that drained a bucket would 429 the next one.
+    rate_limit.reset_for_tests(settings)
     # The administrative trail (#327) is append-only in the database, so it is
     # emptied through the same privileged function retention uses — a plain
     # DELETE is refused by migration 0037's trigger, which is the point of it.

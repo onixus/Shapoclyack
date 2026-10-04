@@ -361,15 +361,18 @@ export type Role = "viewer" | "operator" | "admin";
 
 /** The role a *membership* names — a different thing with a different domain
  * (#318). Deliberately not a union: the catalogue is served by
- * `GET /api/rbac/roles` and grew five names with #318, with tenant-defined
- * roles to come, so a union here would be a second copy of the role table
- * that goes stale the next time the platform's vocabulary does. What the
+ * `GET /api/rbac/roles`, grew five names with #318, and now holds whatever
+ * roles the tenant defined for itself, so a union here would be a second copy
+ * of the role table that is stale the moment a tenant adds one. What the
  * server accepts is what the catalogue lists. */
 export type TenantRoleName = string;
 
 /** One role from the catalogue (`GET /api/rbac/roles`). `tenant_id` is null
- * for a built-in role; `rank` is the coarse read/write level the older gates
- * compare against (1 reads, 2 writes, 3 administers). */
+ * for a built-in role and the tenant's id for one it defined; `rank` is the
+ * coarse read/write level the older gates compare against (1 reads, 2 writes,
+ * 3 administers). `member_count` is how many of the tenant's members hold it
+ * — what somebody about to edit or delete it reads first. The audit fields are
+ * absent on an API older than tenant-defined roles. */
 export type RoleInfo = {
   role_id: string;
   tenant_id: string | null;
@@ -377,13 +380,83 @@ export type RoleInfo = {
   builtin: boolean;
   rank: number;
   permissions: string[];
+  member_count?: number;
+  created_at?: string | null;
+  created_by?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
 };
 
-/** One named authority (`GET /api/rbac/permissions`). */
+/** One named authority (`GET /api/rbac/permissions`). `tenant_grantable` is
+ * whether a tenant-defined role may hold it — false for `config.write` and the
+ * `platform.*` authorities, which only the platform admin has. */
 export type PermissionInfo = {
   permission_key: string;
   description: string;
+  tenant_grantable?: boolean;
 };
+
+/** What a tenant role is defined as: a name, a rank and an explicit set. */
+export type TenantRoleBody = {
+  role_id: string;
+  description: string;
+  rank: number;
+  permissions: string[];
+};
+
+/** Define a role in one tenant (`POST /api/tenants/{id}/roles`). Needs
+ * `tenant.member.manage` there, and the role can carry nothing — rank or
+ * permission — the caller does not hold; the API answers 403 otherwise. */
+export async function createTenantRole(tenantId: string, body: TenantRoleBody) {
+  try {
+    const { data } = await api.post<RoleInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/roles`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Rename a tenant role or change what it may do. A new `role_id` moves its
+ * members along with it; a changed definition reaches them on their next
+ * request. */
+export async function updateTenantRole(
+  tenantId: string,
+  roleId: string,
+  body: Partial<TenantRoleBody>,
+) {
+  try {
+    const { data } = await api.patch<RoleInfo>(
+      `/tenants/${encodeURIComponent(tenantId)}/roles/${encodeURIComponent(roleId)}`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+export type DeleteTenantRoleResult = {
+  role_id: string;
+  reassigned_to: string | null;
+  memberships_reassigned: number;
+};
+
+/** Delete a tenant role. Refused (409) while anybody holds it, unless
+ * `reassignTo` names the role they are regranted instead. */
+export async function deleteTenantRole(tenantId: string, roleId: string, reassignTo?: string) {
+  try {
+    const { data } = await api.delete<DeleteTenantRoleResult>(
+      `/tenants/${encodeURIComponent(tenantId)}/roles/${encodeURIComponent(roleId)}`,
+      { params: reassignTo ? { reassign_to: reassignTo } : undefined },
+    );
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
 
 /** The roles that may be granted in one tenant, with what each one can do.
  *
@@ -431,6 +504,11 @@ export type Me = {
    * older than #318 does not send them, and the callers fall back to the role.
    */
   tenant_role?: string;
+  /** The rank `tenant_role` carries (1 reads, 2 writes, 3 administers). Sent
+   * because a role the tenant defined is in no table the console has: looked
+   * up by name it would score 1 whatever it was defined as. Absent on an API
+   * older than tenant-defined roles, where the name lookup is still right. */
+  tenant_rank?: number;
   permissions?: string[];
   /** Which tenant `tenant_role`/`permissions` describe. The request
    * interceptor below attaches the tenant the switcher is on to every call,
@@ -3015,6 +3093,74 @@ export async function bulkAssetAction(
       ? { "Idempotency-Key": options.idempotencyKey }
       : undefined;
     const { data } = await api.post<BulkActionReport>("/assets/bulk", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Where a CMDB/AD import says its data came from (#350). `operator` is not
+ * one: it marks a hand edit, which an import must not be able to claim. */
+export type AssetImportSource = "cmdb" | "ad" | "other";
+
+/** Body of `POST /api/assets/import`. `content` is the file's decoded text;
+ * `dry_run` defaults to true on the server, and the console always says. */
+export type AssetImportBody = {
+  format: "csv" | "json";
+  content: string;
+  dry_run: boolean;
+  context_source: AssetImportSource;
+  overwrite_operator_edits: boolean;
+  /** Let a row that found its asset by one identifier attach an IP or FQDN
+   * the registry has never seen. Off, such a row is a `new_identifier`
+   * conflict. */
+  link_new_identifiers: boolean;
+};
+
+export type AssetImportStatus = "create" | "update" | "unchanged" | "conflict" | "invalid";
+
+/** One data row's outcome. `row` counts data rows from 1, header excluded.
+ * `code` is the reason for a conflict or an invalid row — `ambiguous_match`,
+ * `identifier_owned_by_other_asset`, `operator_override`, `new_identifier`,
+ * `duplicate_in_file`, `quota_exhausted`, `unknown_asset`, `invalid_value`.
+ * `conflicting_fields` names the fields of an `operator_override` and the
+ * `kind:value` identifiers of a `new_identifier`. */
+export type AssetImportRow = {
+  row: number;
+  status: AssetImportStatus;
+  key: string;
+  code: string | null;
+  message: string | null;
+  asset_id: string | null;
+  changes: Record<string, { old: string | number | null; new: string | number | null }>;
+  identifiers_added: string[];
+  conflicting_fields: string[];
+};
+
+export type AssetImportReport = {
+  dry_run: boolean;
+  format: string;
+  sha256: string;
+  context_source: string;
+  overwrite_operator_edits: boolean;
+  link_new_identifiers: boolean;
+  total: number;
+  counts: Record<AssetImportStatus, number>;
+  codes: Record<string, number>;
+  ignored_columns: string[];
+  rows: AssetImportRow[];
+  replayed: boolean;
+};
+
+export async function importAssets(
+  body: AssetImportBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<AssetImportReport>("/assets/import", body, { headers });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

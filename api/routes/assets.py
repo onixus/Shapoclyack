@@ -4,7 +4,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from api.auth import Role, TenantPrincipal, get_settings, require_tenant
+from api.auth import Role, TenantPrincipal, get_settings, require_permission, require_tenant
+from api.core import permissions as permission_catalog
 from api.routes import _idempotency as idempotency
 from api.routes._audit import AuditDep
 from api.routes._idempotency import IdempotencyKeyHeader
@@ -12,6 +13,8 @@ from api.routes._pagination import PageParams, build_page
 from api.schemas import (
     AssetContextEventInfo,
     AssetDetail,
+    AssetImportReport,
+    AssetImportRequest,
     AssetInventorySummary,
     AssetServiceInfo,
     AssetSummary,
@@ -21,6 +24,7 @@ from api.schemas import (
     Page,
     UpdateAssetRequest,
 )
+from api.services import asset_import
 from api.services import asset_services as asset_services_service
 from api.services import assets as assets_service
 from api.services import audit as audit_service
@@ -146,6 +150,87 @@ def bulk_action(
         guard.release()
     else:
         guard.store(report)
+    return report
+
+
+@router.post("/import", response_model=AssetImportReport)
+def import_assets(
+    body: AssetImportRequest,
+    principal: Annotated[
+        TenantPrincipal, Depends(require_permission(permission_catalog.ASSET_IMPORT))
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+    idempotency_key: IdempotencyKeyHeader = None,
+) -> dict:
+    """Upsert a CMDB/AD export into this tenant's registry, row by row (#350).
+
+    200 with a per-row report whatever the rows say — a conflicting or invalid
+    row is the report's business, not the request's. 422 for a file that cannot
+    be read at all, 413 past the size or row ceiling, 409 when a concurrent
+    writer registered one of the file's identifiers mid-apply or the apply
+    deadlocked on every retry (nothing was applied either way; send it again).
+    ``dry_run`` (the default) writes nothing and ignores
+    ``Idempotency-Key``: there is nothing to apply twice.
+
+    Declared before ``/{asset_id}`` so "import" is not read as an asset id.
+    """
+    guard = None
+    if not body.dry_run:
+        guard = idempotency.begin(
+            settings,
+            tenant_id=principal.tenant_id,
+            actor=principal.username,
+            endpoint="assets.import",
+            key=idempotency_key,
+            payload={
+                "format": body.format,
+                "sha256": asset_import.content_digest(body.content),
+                "context_source": body.context_source,
+                "overwrite_operator_edits": body.overwrite_operator_edits,
+                "link_new_identifiers": body.link_new_identifiers,
+            },
+        )
+        if guard.replay is not None:
+            return {**guard.replay, "replayed": True}
+    try:
+        report = asset_import.run_import(
+            settings,
+            tenant_id=principal.tenant_id,
+            content=body.content,
+            format=body.format,
+            dry_run=body.dry_run,
+            context_source=body.context_source,
+            overwrite_operator_edits=body.overwrite_operator_edits,
+            link_new_identifiers=body.link_new_identifiers,
+            actor=principal.username,
+            audit=audit,
+        )
+    except asset_import.ImportTooLarge as exc:
+        if guard is not None:
+            guard.release()
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        if guard is not None:
+            guard.release()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except asset_import.ImportRace as exc:
+        if guard is not None:
+            guard.release()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception:
+        if guard is not None:
+            guard.release()
+        raise
+    if guard is not None:
+        if asset_import.changed_nothing(report):
+            # Same contract as the bulk verbs: an apply that changed nothing
+            # gives its key back rather than replaying the nothing it did.
+            guard.release()
+        else:
+            guard.store(report)
     return report
 
 

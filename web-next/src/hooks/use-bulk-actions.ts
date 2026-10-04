@@ -100,7 +100,7 @@ function announce(report: BulkActionReport, noun: string) {
  * key reused with a different request. Forgotten on success, so an identical
  * batch submitted again later is deliberate work and not a replay.
  */
-function useSubmissionKey() {
+export function useSubmissionKey() {
   const pending = useRef<{ signature: string; key: string } | null>(null);
   return {
     forBody(body: unknown): string {

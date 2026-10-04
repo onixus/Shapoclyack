@@ -454,6 +454,52 @@ accounts worth attacking. The *mode* is public in `GET /api/auth/sso` as
 reason (`local_login_disabled`, `local_login_not_break_glass`) is in
 `auth_events`.
 
+## Request rate limiting and body size
+
+Since [#320](https://github.com/onixus/Shapoclyack/issues/320) every
+authenticated request is charged to a token bucket, and every request body is
+capped. Both answer before the route runs.
+
+**Rate limit.** A request is charged where it authenticates, because that is
+the first point at which the API knows who is asking — a key taken from
+anything the caller sends unverified would be a fresh bucket per request.
+
+| Bucket | Charged by | Defaults (refill / capacity) |
+|---|---|---|
+| `user` | each console session's account | 20/s / 300 |
+| `service_token` | each service token | 20/s / 300 |
+| `tenant` | every user and service token acting in that tenant, together. Not the platform admin, which acts for the installation | 100/s / 2000 |
+| `agent` | each sensor or endpoint agent (its JWT's agent id; a token minted before registration, its provisioning key). **Not** charged to the tenant bucket, and the results upload is not charged at all | 4/s / 120 |
+| `legacy_agent` | each source address that presents the legacy shared `OCTO_AGENT_TOKEN`, which names no agent. Sized for a fleet behind one address (an ingress without `OCTO_TRUSTED_PROXIES`, a site NAT): the agent bucket times `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` | 100/s / 3000 |
+
+An empty bucket answers `429` with `Retry-After` — the seconds until the next
+token is due, not a constant — and counts `octo_rate_limited_total{scope}`. A
+refused request spends nothing, so a client that keeps retrying an empty bucket
+does not push its own next token further away. The buckets are rows in
+Postgres (`rate_limit_buckets`), shared by every replica; settings and the
+SQLite caveat are in
+[configuration.md](configuration.md#environment-variables).
+
+Not charged: requests that do not authenticate — `/livez`, `/readyz`,
+`/api/health`, `/metrics`, the console's static files, and the sign-in routes,
+which are under the login limiter below. The two limiters count different
+things and neither replaces the other: that one counts *failed* attempts per
+address and username before anyone is authenticated, this one counts the
+requests of a principal that is.
+
+**Body size.** `OCTO_MAX_BODY_BYTES` (1 MiB) caps every body, read from
+`Content-Length` before a byte is read and counted as a chunked body arrives,
+so a body without a length is cut off at the same size. The routes that take a
+target list or a scope — `POST /api/jobs`, `POST`/`PATCH /api/schedules`,
+`POST`/`PATCH /api/maintenance-windows`, `PUT /api/tenants/{tenant_id}/scan-scope`
+— are under `OCTO_TARGET_LIST_MAX_BODY_BYTES` (16 MiB) instead, since nothing
+limits how many targets they name. A route with a larger
+contract keeps its own cap: the inventory submission, the results upload, the
+wordlist upload, the endpoint-agent build upload and the compliance framework
+import. Over the cap is `413`; an unparsable `Content-Length` is `400`. The
+inventory and results routes additionally refuse a body without
+`Content-Length` with `411`, as before.
+
 ## Login rate limiting and the auth audit trail
 
 Every login attempt is recorded in the Postgres `auth_events` table (migration
@@ -534,7 +580,8 @@ One row per administrative change, with the resource before and after it:
 | `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
 | `user.mfa_enable`, `user.mfa_disable` | `POST /api/auth/mfa/totp/confirm`, `POST /api/auth/mfa/disable` — the account enrolling or removing its own second factor; the admin-side reset is `user.mfa_reset`. Disable and reset record how many security keys went with it (`webauthn_credentials`) |
 | `user.webauthn_register`, `user.webauthn_revoke` | `POST /api/auth/mfa/webauthn/register/verify`, `DELETE /api/auth/mfa/webauthn/credentials/{id}` — a security key added to or removed from one's own account (key id, name, AAGUID; no key material) |
-| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
+| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}`. A `membership.grant` is also written per holder when a tenant role is deleted with `reassign_to`, `after.reason` naming the role that went |
+| `role.create`, `role.update`, `role.delete` | `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles[/{role}]` ([#318](https://github.com/onixus/Shapoclyack/issues/318)) — the definition (`role_id`, `description`, `rank`, `permissions`) before and after. A rename's `after` carries `memberships_renamed`; a delete's carries where its holders went |
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
@@ -554,6 +601,7 @@ One row per administrative change, with the resource before and after it:
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
+| `asset.import` | `POST /api/assets/import` with `dry_run: false` — one row per applied import, `resource_id` = `import:<first 16 hex of the content's SHA-256>`. `after` carries the format, the full SHA-256, `context_source`, `overwrite_operator_edits`, the per-status `counts`, and the first 100 `created` and `updated` asset ids (`created_omitted`/`updated_omitted` count the rest). A dry run writes no row. The per-field history is in `asset_context_events` with the import's source |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -811,19 +859,93 @@ it is only supposed to approve.
 | `platform.legal_hold.manage` | platform admin. A tenant that could release its own hold could let evidence age out |
 | `platform.tenant.lifecycle` | platform admin. Suspend and resume a tenant, request, cancel, approve and retry its deletion (`/api/tenants/{id}/suspend`, `…/resume`, `…/deletion[/approve|/retry]`, `GET …/lifecycle`, `GET /api/tenants/deletions`); every change behind a step-up. See [tenant-lifecycle.md](tenant-lifecycle.md) |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
+| `asset.import` | tenant `admin`, platform admin. `POST /api/assets/import` (#350): an import registers assets against the tenant's quota and rewrites the context of every asset in the file, so it is not the operator's `PATCH` at scale. Seeded by migration `0071_asset_import_permission`. The route checks the permission and nothing else — no minimum rank — so once tenant custom roles exist, a custom role granted `asset.import` imports (and spends the asset quota) whatever rank it sits at. That is deliberate: a dedicated "CMDB sync" role is the use case; grant it knowing it registers billed assets |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
 anyone below it: those counters span every tenant on the installation.
 
-**Custom roles per tenant are not implemented.** The schema holds them
-(`roles`/`role_permissions`, keyed by role and tenant, with the built-ins under
-the empty tenant id) and `GET /api/rbac/roles` already returns a tenant's own
-rows, but there is no way to create one and an unknown role name resolves to no
-permissions at all. #318 stays open for it.
-
 The route implementation is authoritative. Client-side hiding is usability,
 not an authorization control.
+
+### Tenant-defined roles
+
+A tenant can define roles of its own — a **name**, a **rank** and an
+**explicit set of permissions** — and grant them on a membership like any
+built-in role ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+Defining one is a member-management act, so it needs `tenant.member.manage` in
+that tenant (its `admin`, the platform admin, or a tenant role holding it):
+
+```http
+POST   /api/tenants/{tenant_id}/roles              {"role_id": "soc-lead", "description": "…", "rank": 2, "permissions": ["audit.read", "scan.cancel"]}
+PATCH  /api/tenants/{tenant_id}/roles/{role_id}    {"role_id": "…", "description": "…", "rank": 1, "permissions": [...]}   (every field optional)
+DELETE /api/tenants/{tenant_id}/roles/{role_id}[?reassign_to=viewer]
+```
+
+`GET /api/rbac/roles` lists them after the built-ins, with `member_count` (how
+many of the tenant's members hold each role) and who created and last changed
+them; `GET /api/rbac/permissions` marks each permission `tenant_grantable`.
+Like every other `/api/tenants/{id}/…` route these are out of every service
+token's reach.
+
+**What a role may be** — refused with `422` for everybody, the platform admin
+included:
+
+| Rule | Why |
+|---|---|
+| The name is 2–48 lowercase letters, digits and single dashes, starting with a letter, and is not a built-in role's (`409` if it is, or if the tenant already has it) | `admin` in one tenant must not mean something else than in the next |
+| Every permission is in the catalogue, and is one some built-in **tenant** role carries — never `config.write` or a `platform.*` permission | A tenant cannot write a role that reaches the installation |
+| `scan_scope.approve` and `vulnerability.exception.approve` only at rank 1, and never together with `tenant.member.manage` | The separation of duties the built-ins have by construction: an approver who can write acts on their own approval, and one who grants memberships can hand the approved work to an account of their own |
+| Rank is 1, 2 or 3; at most 64 roles per tenant | |
+
+**Nobody hands out more than they hold** — `403`. A role may not carry a rank
+above the caller's own rank in the tenant, nor a permission the caller does not
+hold. This applies to defining a role, to editing one (both the definition
+before and the one after: a member manager can neither widen a role past
+themselves nor narrow or delete one above them), and — since a tenant role can
+now hold `tenant.member.manage` below rank 3 — to **granting and revoking
+memberships**: `PUT`/`DELETE /api/tenants/{id}/members/{u}` refuse a role above
+the caller and refuse to change or revoke a member whose current role is above
+the caller. One exception keeps the tenant `admin` working as it always has:
+a holder of `tenant.member.manage` **at rank 3** may hand out the two approval
+permissions without holding them, which is how `scope-approver` and
+`risk-approver` have been staffed. The exception belongs to the admin rank,
+whatever the role is called, and not to every member manager: a role the tenant
+gives `tenant.member.manage` at rank 1 or 2 (a "personnel" role) cannot define
+a role carrying an approval, grant `scope-approver` or `risk-approver`, or
+change, revoke or delete a role or member that holds one (`403`). Without that,
+its holder could write an approver role and grant it to a second account of
+their own — approving a wider scan scope from it and running the scans from
+the first — or write one role holding both approvals the built-ins keep apart
+and take it. At rank 3 the same thing remains possible, as it always was for
+the tenant admin; the separation of duties at that rank rests on who the
+tenant makes its admins. The platform admin has no ceiling.
+
+**Rename and delete never change anybody's access silently.** Renaming a role
+(`PATCH` with a new `role_id`) moves every membership that names it to the new
+name in the same transaction, so its holders keep exactly what they had.
+Deleting a role somebody holds is `409` with the number of holders; name
+`reassign_to` — a built-in or another role of the tenant, within what the
+caller may grant — and each holder is regranted that role and recorded as a
+`membership.grant` with the role before and after. A changed definition
+applies to every holder from their next request.
+
+**Isolation.** A tenant's role exists in that tenant only: another tenant's
+`GET /api/rbac/roles` does not list it, granting its name there is `422`
+(unknown role), and its `PATCH`/`DELETE` under another tenant's path is `404`.
+
+**Resolution.** Built-in roles still resolve from `api/core/permissions.py`
+without a query, so every membership written before tenant roles existed means
+what it meant. A tenant role is read from its rows, cut to the tenant-grantable
+permissions whatever the rows say, and a membership naming a role that is
+neither a built-in nor a role of *its* tenant — deleted, another tenant's, the
+platform admin's written in by hand — resolves to rank 1 and no permissions.
+`GET /api/auth/me` returns the role's resolved rank as `tenant_rank` next to
+`tenant_role`, because a client cannot look a tenant role's rank up in a table
+of its own.
+
+Every create, change and delete is in the administrative audit trail as
+`role.create`, `role.update` and `role.delete`.
 
 ### Platform admin vs tenant admin
 
@@ -876,12 +998,12 @@ sets the status yet — see
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (`audit.read` in the tenant, so an `auditor` too; CSV/NDJSON export) |
-| `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`), read-only |
+| `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`). A tenant's own roles are written under `/api/tenants/{id}/roles` (`tenant.member.manage`, see [Tenant-defined roles](#tenant-defined-roles)) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents`, `/api/agent/*` | Sensors: fleet status and per-sensor lifecycle under `/api/agents`; registration, heartbeat and job claim under `/api/agent/*` (agent JWT) |
 | `/api/agent/deploy` | Operator-driven SSH push installation of a sensor onto a Linux host |
-| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup. `GET /api/assets/{id}/services` (`viewer`) lists the listeners scans fingerprinted on the asset, with the retro-match verdict on each — see [retro-cve-matching.md](retro-cve-matching.md) |
+| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup. `POST /api/assets/import` (`asset.import`) upserts a CMDB/AD export (CSV or JSON) with a per-row dry-run report — see [asset-context.md](asset-context.md#cmdb--ad). `GET /api/assets/{id}/services` (`viewer`) lists the listeners scans fingerprinted on the asset, with the retro-match verdict on each — see [retro-cve-matching.md](retro-cve-matching.md) |
 | `/api/retro-match` | Retro CVE matching of stored fingerprints: `GET /status` (`viewer`) — dataset version, the tenant's queue, last sweep; `POST /refresh` (`operator`, the line `POST /api/endpoint/cve-matches/refresh` draws) — requeue every listener of the tenant and wake the worker; nothing is matched inside the request. See [retro-cve-matching.md](retro-cve-matching.md) |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
@@ -1192,6 +1314,20 @@ once.
 and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
 selection, including its "an explicit `null` clears the field, an omitted key
 leaves it untouched" contract. An empty payload is `422`.
+
+`POST /api/assets/import` (`asset.import`, [#350](https://github.com/onixus/Shapoclyack/issues/350))
+is the file-shaped sibling: a CMDB/AD export as CSV or JSON, matched to assets
+through the identifier registry, with a report per row (`create`, `update`,
+`unchanged`, `conflict`, `invalid`). Unlike the bulk verbs it is **one
+transaction** — a dry run (the default) writes nothing, an apply writes every
+applicable row or none: a `409` means a concurrent writer registered one of the
+file's identifiers, or the apply deadlocked on every retry; any other failure
+is a `500`. It **cannot clear** a field: empty cells and `null` mean "nothing
+to say", and it links an IP or FQDN to an asset it found by another identifier
+only with `link_new_identifiers`. It
+honours `Idempotency-Key` on an apply as the bulk verbs do, and records one
+`asset.import` audit row. Columns, conflict codes, the operator-precedence rule
+and limits are in [asset-context.md](asset-context.md#cmdb--ad).
 
 Both record **one** `audit_events` row per request (`vulnerability.bulk`,
 `asset.bulk`) whose `after` lists the ids applied and maps the rejected ones to
@@ -2136,7 +2272,10 @@ DELETE /api/tenants/{tenant_id}/members/{username}
 ```
 
 `PUT` is idempotent and re-grants change the role; `role` is any of the eight
-tenant roles in [Roles](#roles) above. Every grant and revoke is recorded in
+tenant roles in [Roles](#roles) above or a role this tenant defined
+([Tenant-defined roles](#tenant-defined-roles)). Both are held to the caller's
+own authority in the tenant: `403` for a role above it, and for changing or
+revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
 Membership rows hold no credential material.

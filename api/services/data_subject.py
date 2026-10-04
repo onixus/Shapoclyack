@@ -118,6 +118,7 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("tenant_deletions", "cancelled_by"): (PSEUDONYM, "deletion journal"),
     ("service_tokens", "created_by"): (PSEUDONYM, "attribution"),
     ("roles", "created_by"): (PSEUDONYM, "attribution"),
+    ("roles", "updated_by"): (PSEUDONYM, "who last changed a tenant role (#318)"),
     ("asset_context_events", "actor"): (PSEUDONYM, "attribution of an asset edit"),
     ("scan_schedules", "created_by"): (PSEUDONYM, "attribution"),
     ("maintenance_windows", "created_by"): (PSEUDONYM, "attribution"),

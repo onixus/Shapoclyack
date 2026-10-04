@@ -85,6 +85,13 @@ ACTION_USER_WEBAUTHN_REVOKE = "user.webauthn_revoke"
 ACTION_BREAK_GLASS_LOGIN = "auth.break_glass_login"
 ACTION_MEMBERSHIP_GRANT = "membership.grant"
 ACTION_MEMBERSHIP_REVOKE = "membership.revoke"
+# Tenant-defined roles (#318). Editing a role changes what every member holding
+# it may do, so it is recorded like a grant: the definition before and after.
+# A delete that moved its holders elsewhere also writes one ``membership.grant``
+# per holder, because each of those is a person whose access changed.
+ACTION_ROLE_CREATE = "role.create"
+ACTION_ROLE_UPDATE = "role.update"
+ACTION_ROLE_DELETE = "role.delete"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"
 ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
 ACTION_PROVISIONING_KEY_CREATE = "provisioning_key.create"
@@ -132,6 +139,10 @@ ACTION_VULN_EXCEPTION_REQUEST_WITHDRAW = "vulnerability.exception_request_withdr
 ACTION_VULN_EXCEPTION_WITHDRAW = "vulnerability.exception_withdraw"
 ACTION_VULN_EXCEPTION_EXPIRE = "vulnerability.exception_expire"
 ACTION_ASSET_BULK = "asset.bulk"
+# A CMDB/AD file applied to the registry (#350): one row per applied import,
+# naming the file by its digest and the assets it created and updated. A dry
+# run changes nothing and writes no row.
+ACTION_ASSET_IMPORT = "asset.import"
 ACTION_SCAN_SCOPE_REPLACE = "scan_scope.replace"
 # How hard a tenant may be scanned (#362). The first is the operator's edit —
 # raising a rate ceiling or taking a fieldbus port off the avoid-list is a

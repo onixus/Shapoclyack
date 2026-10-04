@@ -31,8 +31,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/data-table";
 import { KpiCard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
+import { TenantMembersPanel } from "@/components/tenant-members-panel";
 import { useResetUserMfa } from "@/hooks/use-mfa";
-import { useRoleCatalogue } from "@/hooks/use-rbac";
 import { usePagination } from "@/hooks/use-pagination";
 import { useTenants } from "@/hooks/use-tenants";
 import {
@@ -40,23 +40,18 @@ import {
   useChangeOwnPassword,
   useCreateUser,
   useDeleteUser,
-  useGrantMembership,
   useProvisioningKeys,
   useResetUserPassword,
-  useRevokeMembership,
   useRevokeProvisioningKey,
   useSetUserDisabled,
   useSetUserEmail,
   useSetUserRole,
-  useTenantMembers,
   useUsers,
 } from "@/hooks/use-users";
 import {
   type AuthEventInfo,
   type AuthEventOutcome,
   type Role,
-  type RoleInfo,
-  type TenantRoleName,
   type UserInfo,
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
@@ -188,7 +183,10 @@ export default function UsersPage() {
                 value={selectedTenant}
                 onChange={setTenantId}
               />
-              <MembershipTab t={t} tenantId={selectedTenant} />
+              {/* The platform admin manages every tenant's members; the
+                  tenant's own member managers do it from /access, which this
+                  panel is shared with. */}
+              <TenantMembersPanel tenantId={selectedTenant} canManage />
             </TabsContent>
             <TabsContent value="keys" className="space-y-4">
               <TenantPicker
@@ -782,178 +780,6 @@ function SetEmailDialog({
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** The grantable roles for one tenant, in an order a human can read: the
- * three ranked ones first, then the separation-of-duties roles, then anything
- * this tenant defined for itself. `platform-admin` is never in the answer —
- * the API refuses it as a membership role — but it is filtered here too so a
- * future catalogue change cannot put it in a dropdown. */
-function grantableRoles(catalogue: RoleInfo[]): RoleInfo[] {
-  const order = ["viewer", "operator", "admin"];
-  return [...catalogue]
-    .filter((role) => role.role_id !== "platform-admin")
-    .sort((a, b) => {
-      const ia = order.indexOf(a.role_id);
-      const ib = order.indexOf(b.role_id);
-      if (ia !== ib) return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib);
-      if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-      return a.role_id.localeCompare(b.role_id);
-    });
-}
-
-function MembershipTab({ t, tenantId }: { t: Translate; tenantId: string }) {
-  const { data = [], isLoading, error } = useTenantMembers(tenantId, Boolean(tenantId));
-  const grant = useGrantMembership(tenantId);
-  const revoke = useRevokeMembership(tenantId);
-  // The role table lives on the server (#318). Before this the editor offered
-  // viewer/operator/admin from a literal, so `auditor`, `scan-operator`,
-  // `scope-approver`, `token-admin` and `risk-approver` existed in the API,
-  // in migration 0049 and in the docs, and could not be granted from the
-  // console at all.
-  const catalogueQuery = useRoleCatalogue(tenantId, Boolean(tenantId));
-  const roles = useMemo(
-    () => grantableRoles(catalogueQuery.data ?? []),
-    [catalogueQuery.data],
-  );
-  const [username, setUsername] = useState("");
-  const [role, setRole] = useState<TenantRoleName>("viewer");
-  const selected = roles.find((entry) => entry.role_id === role);
-
-  async function onGrant(event: FormEvent) {
-    event.preventDefault();
-    if (!username.trim()) return;
-    try {
-      await grant.mutateAsync({ username: username.trim(), role });
-      setUsername("");
-    } catch {
-      // Reported by the mutation; the name stays so a typo can be fixed.
-    }
-  }
-
-  return (
-    <section className="space-y-4 rounded-xl border border-border bg-card p-5">
-      <p className="text-sm text-muted-foreground">{t("users.membership.note")}</p>
-
-      <form className="grid gap-3 sm:grid-cols-4 sm:items-end" onSubmit={onGrant}>
-        <div className="grid gap-1.5 sm:col-span-2">
-          <Label htmlFor="membership-username">{t("users.membership.grantTitle")}</Label>
-          <Input
-            id="membership-username"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            placeholder="analyst"
-            required
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="membership-role">{t("users.membership.role")}</Label>
-          <select
-            id="membership-role"
-            className={SELECT_CLASS}
-            value={role}
-            disabled={catalogueQuery.isLoading}
-            onChange={(event) => setRole(event.target.value)}
-          >
-            {roles.map((entry) => (
-              <option key={entry.role_id} value={entry.role_id}>
-                {entry.role_id}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Button type="submit" disabled={grant.isPending || !tenantId}>
-          {t("users.membership.grant")}
-        </Button>
-        {/* What the role does, in the platform's own words: the catalogue
-            publishes a description for exactly this, and "auditor" means
-            nothing to whoever is about to grant it. */}
-        {selected ? (
-          <p className="text-xs text-muted-foreground sm:col-span-4">{selected.description}</p>
-        ) : null}
-        {catalogueQuery.error ? (
-          <p className="text-xs text-rose-500 sm:col-span-4" role="alert">
-            {t("users.membership.catalogueFailed")}
-          </p>
-        ) : null}
-        <p className="text-xs text-muted-foreground sm:col-span-4">
-          {t("users.membership.grantHint")}
-        </p>
-      </form>
-
-      {error ? (
-        <p className="text-sm text-rose-500" role="alert">
-          {error instanceof Error ? error.message : null}
-        </p>
-      ) : null}
-
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">{t("users.membership.loading")}</p>
-      ) : data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("users.membership.empty")}</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="py-2 pr-4">{t("users.membership.username")}</th>
-                <th className="py-2 pr-4">{t("users.membership.role")}</th>
-                <th className="py-2 pr-4">{t("users.membership.granted")}</th>
-                <th className="py-2 pr-4">{t("users.membership.grantedBy")}</th>
-                <th className="py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((member) => (
-                <tr key={member.username} className="border-t border-border/60">
-                  <td className="py-2 pr-4 font-mono font-medium">{member.username}</td>
-                  <td className="py-2 pr-4">
-                    <select
-                      aria-label={t("users.roleFor", { username: member.username })}
-                      className={SELECT_CLASS}
-                      value={member.role}
-                      disabled={grant.isPending}
-                      onChange={(event) =>
-                        grant.mutate({
-                          username: member.username,
-                          role: event.target.value,
-                        })
-                      }
-                    >
-                      {roles.map((entry) => (
-                        <option key={entry.role_id} value={entry.role_id}>
-                          {entry.role_id}
-                        </option>
-                      ))}
-                      {/* A role the catalogue no longer lists — one a tenant
-                          deleted, or a newer replica wrote — still has to be
-                          shown as what it is, or the select renders blank and
-                          the first edit silently demotes somebody. */}
-                      {roles.some((entry) => entry.role_id === member.role) ? null : (
-                        <option value={member.role}>{member.role}</option>
-                      )}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-4 tabular-nums">{formatMoment(member.created_at)}</td>
-                  <td className="py-2 pr-4">{member.created_by ?? "—"}</td>
-                  <td className="py-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={revoke.isPending}
-                      onClick={() => revoke.mutate(member.username)}
-                    >
-                      {t("users.action.revoke")}
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
   );
 }
 

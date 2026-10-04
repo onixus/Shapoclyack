@@ -32,6 +32,13 @@ open when the database is slow, and an upgrade would be able to lock everybody
 out by seeding badly. ``tests/test_api_rbac_permissions.py`` asserts the seed
 and this dict still agree.
 
+**Tenant-defined roles are the exception, and are bounded by this file.** A
+tenant can write its own role into those tables (:mod:`api.services.rbac`),
+and that one is read back from them — but only ever as a subset of
+:data:`TENANT_GRANTABLE_PERMISSIONS`, under the separation-of-duties rule and
+the hand-out ceiling declared below (:func:`separation_of_duties_conflict`,
+:func:`exceeds_authority`), and resolving to nothing when its row is missing.
+
 **Global role vs tenant role.** ``users.role`` still holds one of
 :data:`GLOBAL_ROLES` — the three original names — and the global ``admin`` is
 the platform admin, whose authority is :data:`PLATFORM_ADMIN_PERMISSIONS` (all
@@ -139,6 +146,17 @@ PLATFORM_LEGAL_HOLD_MANAGE = "platform.legal_hold.manage"
 #: who filed the request by name, which is what separates the duties for a
 #: platform admin, who holds every permission in this file.
 VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
+#: Import a CMDB or directory export into the asset registry (``POST
+#: /api/assets/import``, #350). Not the operator's ``PATCH`` at scale: an
+#: import *registers* assets, which spends the tenant's purchased asset quota,
+#: and rewrites the context of every asset in the file in one request — the
+#: tenant's system of record speaking, which is a tenant administrator's
+#: decision. An installation that wants a dedicated CMDB integration grants it
+#: through a service token issued with the ``admin`` role for that tenant.
+#: The route asks for the permission alone, not a rank: a tenant custom role
+#: granted it imports at whatever rank it has. Deliberate — a "CMDB sync" role
+#: is the use — and documented, since whoever grants it grants quota spend.
+ASSET_IMPORT = "asset.import"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
 #: publish for it. The dict is the closed set: a permission not in here cannot
@@ -166,6 +184,7 @@ PERMISSIONS: dict[str, str] = {
     TENANT_RETENTION_READ: "Read the tenant's data retention policy and legal hold",
     TENANT_RETENTION_MANAGE: "Set the tenant's retention windows within the platform bounds",
     PLATFORM_LEGAL_HOLD_MANAGE: "Place and release a legal hold on any tenant",
+    ASSET_IMPORT: "Import a CMDB or directory export into the asset registry",
 }
 
 
@@ -226,6 +245,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     TENANT_QUOTA_READ,
     TENANT_RETENTION_READ,
     TENANT_RETENTION_MANAGE,
+    ASSET_IMPORT,
 )
 
 BUILTIN_ROLES: dict[str, RoleDefinition] = {
@@ -310,6 +330,111 @@ PLATFORM_ADMIN_PERMISSIONS: frozenset[str] = BUILTIN_ROLES[ROLE_PLATFORM_ADMIN].
 #: :func:`api.auth.require_role` cannot ``KeyError`` on a role a membership
 #: legitimately holds.
 ROLE_RANKS: dict[str, int] = {name: role.rank for name, role in BUILTIN_ROLES.items()}
+
+
+#: Every permission some tenant role carries — the only ones a tenant-defined
+#: role may name (#318). Derived rather than listed, so it is exactly "what a
+#: membership can already reach": ``config.write`` and the ``platform.*``
+#: authorities are held by the platform admin alone and are outside it, which
+#: is what stops a tenant from writing a role that would reach the
+#: installation. A permission added to the catalogue joins this set the day a
+#: built-in tenant role is given it, and not before.
+TENANT_GRANTABLE_PERMISSIONS: frozenset[str] = frozenset(
+    key for name in TENANT_ROLES for key in BUILTIN_ROLES[name].permissions
+)
+
+#: The two *approval* authorities. They are the separation of duties itself:
+#: whoever approves must not be whoever acts, so a role carrying either one
+#: is held to read rank and may not also grant memberships (see
+#: :func:`separation_of_duties_conflict`). They are also the two permissions a
+#: tenant ``admin`` hands out without holding — it grants ``scope-approver``
+#: and ``risk-approver`` to colleagues, and cannot approve anything itself —
+#: which is why :func:`exceeds_authority` lets a member manager at the admin
+#: rank delegate them, and nobody below it.
+APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
+    {SCAN_SCOPE_APPROVE, VULNERABILITY_EXCEPTION_APPROVE}
+)
+
+#: Ranks a role may sit at: read, write, administer.
+RANKS: tuple[int, ...] = (1, 2, 3)
+
+
+@dataclass(frozen=True)
+class Authority:
+    """What one principal holds in one tenant — the ceiling of what it may hand out.
+
+    Built by the route from the request's :class:`api.auth.TenantPrincipal`
+    and passed to the services that define roles and grant memberships, which
+    compare it against what is being handed out (:func:`exceeds_authority`).
+    """
+
+    rank: int
+    permissions: frozenset[str]
+    is_platform_admin: bool = False
+
+
+def separation_of_duties_conflict(rank: int, permissions: frozenset[str]) -> str | None:
+    """Why this combination may not be one role, or None when it may.
+
+    The built-in table keeps the approvals apart from acting by construction —
+    ``scope-approver`` and ``risk-approver`` are rank 1 and grant nobody — and a
+    tenant-defined role is held to the same shape, by the platform admin as
+    much as by anyone: a rank-2 role holding ``scan_scope.approve`` widens a
+    scope and runs the scans, and an approver who may also grant memberships
+    can approve and then hand the work to an account of their own.
+    """
+    approvals = sorted(permissions & APPROVAL_PERMISSIONS)
+    if not approvals:
+        return None
+    if rank > 1:
+        return (
+            f"{', '.join(approvals)} is an approval and is held at read rank only: "
+            "an approver who can also write acts on their own approval"
+        )
+    if TENANT_MEMBER_MANAGE in permissions:
+        return (
+            f"{', '.join(approvals)} cannot be combined with {TENANT_MEMBER_MANAGE}: "
+            "an approver who grants memberships can delegate the act they approved"
+        )
+    return None
+
+
+def exceeds_authority(rank: int, permissions: frozenset[str], held: Authority) -> str | None:
+    """Why handing out ``rank``/``permissions`` would exceed ``held``, or None.
+
+    The ceiling on defining a role and on granting one (#318): nobody hands out
+    more than they have, in either half of a role's authority — the rank is
+    what ``require_tenant`` gates on, the permission set is what
+    ``require_permission`` gates on, and checking one alone leaks through the
+    other (the reasoning :func:`api.services.service_tokens._refuse_escalation`
+    gives for tokens). The platform admin has no ceiling: it already holds
+    everything in every tenant.
+
+    One exception, and it is the pre-existing one: :data:`APPROVAL_PERMISSIONS`
+    may be handed out without being held by a member manager **at the admin
+    rank** (3), because that is how the tenant ``admin`` has always staffed
+    ``scope-approver`` and ``risk-approver``. It is the admin rank's and not
+    any member manager's: a tenant may give ``tenant.member.manage`` to a
+    "personnel" role at rank 1 or 2, and with the exception open to it, its
+    holder could write an approver role and grant it to a second account of
+    their own — approving a wider scope from one and scanning it from the
+    other — or write one role holding both approvals the built-ins keep apart
+    and take it. At rank 3 that power is the one the tenant admin already
+    had; below it, staffing an approval is the tenant admin's call.
+    """
+    if held.is_platform_admin:
+        return None
+    if rank > held.rank:
+        return f"rank {rank} is above the caller's rank {held.rank} in this tenant"
+    delegable = (
+        APPROVAL_PERMISSIONS
+        if TENANT_MEMBER_MANAGE in held.permissions and held.rank >= ROLE_RANKS[ROLE_ADMIN]
+        else frozenset()
+    )
+    beyond = sorted(permissions - held.permissions - delegable)
+    if beyond:
+        return f"the caller does not hold {', '.join(beyond)} in this tenant"
+    return None
 
 
 def permissions_for(role: str, *, is_platform_admin: bool = False) -> frozenset[str]:

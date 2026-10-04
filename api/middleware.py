@@ -14,7 +14,8 @@ import logging
 import re
 from typing import Any
 
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.exceptions import HTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api.db import tenant_scope
 from api.request_context import (
@@ -133,6 +134,122 @@ class BodySizeLimitMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+class _BodyTooLarge(HTTPException):
+    """Raised from the wrapped ``receive`` once a body outgrows its cap.
+
+    A Starlette ``HTTPException`` on purpose: FastAPI turns any other exception
+    raised while it reads the body into a 400 "error parsing the body", but
+    re-raises this one, and the ``ExceptionMiddleware`` inside this layer then
+    answers it as the 413 it is.
+    """
+
+
+class RequestBodyLimitMiddleware:
+    """Cap every request body, measured or not (#320).
+
+    :class:`BodySizeLimitMiddleware` above guards two contracts and answers a
+    length-less body there with 411. Everything else had no cap at all: a JSON
+    route parsed whatever arrived, however big, before Pydantic's per-field
+    limits ever ran. This layer is the floor under every route — ``max_bytes``
+    by default, a route's own larger cap where ``overrides`` names one.
+
+    Two checks, because a body can arrive two ways. A ``Content-Length`` over
+    the cap is refused before a byte is read. A chunked body has no length to
+    read, so the bytes are counted as the app pulls them through ``receive``,
+    and the first chunk past the cap ends the request with a 413 — the app
+    has buffered at most one chunk beyond the limit, never the whole body.
+    Refusing length-less bodies outright, as the guarded paths do, would be
+    simpler and would break every client that streams a request.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int,
+        overrides: tuple[tuple[str, int], ...] = (),
+    ) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        # ``(pattern, max_bytes)`` matched against the path in order; the first
+        # match wins. Patterns, like ``path_patterns`` above, because several
+        # of the large routes carry an id in the middle of the path.
+        self.overrides = tuple((re.compile(pattern), limit) for pattern, limit in overrides)
+
+    def limit_for(self, path: str) -> int:
+        for pattern, limit in self.overrides:
+            if pattern.match(path) is not None:
+                return limit
+        return self.max_bytes
+
+    @staticmethod
+    async def _reject(send: Send, *, status_code: int, detail: str) -> None:
+        body = json.dumps({"detail": detail}).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = self.limit_for(scope.get("path", ""))
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    length = int(value)
+                except ValueError:
+                    await self._reject(send, status_code=400, detail="invalid Content-Length header")
+                    return
+                if length > limit:
+                    await self._reject(
+                        send,
+                        status_code=413,
+                        detail=f"request body {length} bytes exceeds limit {limit}",
+                    )
+                    return
+                break
+
+        received = 0
+        response_started = False
+
+        async def _counting_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _BodyTooLarge(
+                        status_code=413,
+                        detail=f"request body exceeds limit {limit}",
+                    )
+            return message
+
+        async def _tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, _counting_receive, _tracking_send)
+        except _BodyTooLarge as exc:
+            # Normally answered further in, by the exception middleware; this
+            # catches a reader outside FastAPI's routing (a raw ASGI mount).
+            if response_started:
+                raise
+            await self._reject(send, status_code=413, detail=str(exc.detail))
 
 
 class SecurityHeadersMiddleware:
