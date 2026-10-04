@@ -145,7 +145,7 @@ RUN npm run build
 
 # Pinned by multi-arch index digest for reproducible, supply-chain-safe builds.
 # python:3.12-slim
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 LABEL org.opencontainers.image.source="https://github.com/onixus/Shapoclyack" \
       org.opencontainers.image.title="shapoclyack-aio" \
@@ -174,6 +174,12 @@ RUN set -eux; \
     PKGS="ca-certificates curl fping git jq openssh-client fonts-dejavu-core"; \
     if [ "${INSTALL_NMAP}" = "1" ]; then PKGS="${PKGS} nmap"; fi; \
     apt-get install -y --no-install-recommends ${PKGS}; \
+    # Security updates the pinned base digest does not carry yet: Debian has
+    # published them, python:3.12-slim has not been rebuilt on top. Upgrade
+    # only the named packages, and assert the version so a no-op upgrade fails
+    # here rather than at the Trivy gate. Drop a line once a base bump covers it.
+    apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3'; \
     rm -rf /var/lib/apt/lists/*
 
 # Copied as directories, not as /out/bin/pulse: with --build-arg INSTALL_PULSE=0
