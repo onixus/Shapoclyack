@@ -52,6 +52,9 @@ TENANT_GUARDS = frozenset(
         # The heartbeat's variant (#325): the same token, the same tenant
         # declared — it only lets a closed tenant's agent hear "stop".
         auth.require_agent_heartbeat.__qualname__,
+        # The results upload's variant (#320): the same token, the same tenant
+        # declared — it only skips the rate limit.
+        auth.require_agent_results.__qualname__,
     }
 )
 

@@ -631,6 +631,7 @@ OCTO_LOGIN_RATE_LIMIT_ENABLED
 OCTO_LOGIN_RATE_LIMIT_IP_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_MAX_FAILURES
 OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS
+OCTO_MAX_BODY_BYTES
 OCTO_METRICS_TENANT_TOP_N
 OCTO_METRICS_TOKEN
 OCTO_MFA_PHISHING_RESISTANT_ROLES
@@ -674,6 +675,14 @@ OCTO_PUBLIC_BASE_URL
 OCTO_QUOTA_DEFAULT_MAX_ASSETS
 OCTO_QUOTA_DEFAULT_MAX_SCANS_PER_MONTH
 OCTO_QUOTA_ENFORCEMENT_ENABLED
+OCTO_RATE_LIMIT_AGENT_BURST
+OCTO_RATE_LIMIT_AGENT_PER_SECOND
+OCTO_RATE_LIMIT_ENABLED
+OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS
+OCTO_RATE_LIMIT_PRINCIPAL_BURST
+OCTO_RATE_LIMIT_PRINCIPAL_PER_SECOND
+OCTO_RATE_LIMIT_TENANT_BURST
+OCTO_RATE_LIMIT_TENANT_PER_SECOND
 OCTO_REFRESH_COOKIE_SECURE
 OCTO_REPORTS_ENABLED
 OCTO_REPORT_DISPATCH_ENABLED
@@ -725,6 +734,7 @@ OCTO_SOFTWARE_MATCH_ENABLED
 OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS
 OCTO_SOFTWARE_MATCH_TICK_BUDGET_SECONDS
 OCTO_STATE_DIR
+OCTO_TARGET_LIST_MAX_BODY_BYTES
 OCTO_TENANT_DELETION_GRACE_DAYS
 OCTO_TENANT_DELETION_TWO_PERSON
 OCTO_TENANT_PURGE_BATCH_SIZE
@@ -1085,6 +1095,35 @@ Login rate limiting and the auth audit trail (see
 | `OCTO_TRUSTED_PROXIES` | *(empty)* | Comma-separated proxy IPs/CIDRs. `X-Forwarded-For` is read **only** when the immediate peer is one of these. Leave empty and every attempt is attributed to the socket peer — set it when the API sits behind an ingress, or the whole installation shares one limiter key |
 | `OCTO_AUTH_EVENT_RETENTION_DAYS` | `90` | Age past which `auth_events` rows are pruned; `0` keeps them forever. Rows inside the limiter window are kept regardless, so a short retention cannot weaken the lockout |
 | `OCTO_AUDIT_EVENT_RETENTION_DAYS` | `365` | Age past which `audit_events` (the administrative trail, #327) rows are pruned; `0` keeps them forever. The API never prunes them — the rows are append-only and only `python -m api.services.audit_retention`, run with its own credentials, can, see [operations.md](operations.md#audit-trail-immutability-and-retention-327-329) |
+
+General request rate limiting and the request-body cap
+([#320](https://github.com/onixus/Shapoclyack/issues/320), see
+[api-and-rbac.md](api-and-rbac.md#request-rate-limiting-and-body-size)). Each
+bucket holds up to `*_BURST` requests and refills at `*_PER_SECOND`; a request
+that finds its bucket empty is answered `429` with `Retry-After`. A
+`*_PER_SECOND` of `0` turns that bucket off.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_RATE_LIMIT_ENABLED` | `true` | Charge authenticated requests to the buckets below. Off is the kill switch; the login limiter above is separate and keeps working |
+| `OCTO_RATE_LIMIT_PRINCIPAL_PER_SECOND` | `20` | Refill of one console user's or one service token's bucket. A sustained 20/s from one principal is a loop, not a person |
+| `OCTO_RATE_LIMIT_PRINCIPAL_BURST` | `300` | Capacity of that bucket: a console page fans out a few dozen reads at once, and a script catching up after a pause has room |
+| `OCTO_RATE_LIMIT_TENANT_PER_SECOND` | `100` | Refill of the bucket a tenant's users and service tokens **share**, so one customer's automation cannot take the API from the others. The platform admin is not charged to it |
+| `OCTO_RATE_LIMIT_TENANT_BURST` | `2000` | Capacity of the tenant bucket |
+| `OCTO_RATE_LIMIT_AGENT_PER_SECOND` | `4` | Refill of one sensor's or endpoint agent's bucket. An idle sensor sends a heartbeat **and** a claim on every pass of its loop, so it makes two requests per `OCTO_AGENT_POLL_INTERVAL`: 0.4/s at the default 5 s, 2/s at the 1 s minimum this default is sized for (a busy sensor heartbeats every 60 s). Lariska heartbeats every 60 s and submits hourly. 4/s is twice the 1 s sensor, so its busy heartbeats and retries still find tokens; a sensor polling faster than once a second needs this raised. Agents are **never** charged to the tenant bucket: a fleet's traffic grows with its size, and a shared bucket sized for people would throttle a large fleet's heartbeats. The results upload is not charged at all — it is one request per claimed job, and refusing it would lose the scan |
+| `OCTO_RATE_LIMIT_AGENT_BURST` | `120` | Capacity of that bucket — what a sensor coming back from an outage spends on its backlog of retries |
+| `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` | `25` | A legacy `OCTO_AGENT_TOKEN` sensor names no agent, so it is charged per **source address** — and one address is often a whole fleet: every sensor behind an ingress when `OCTO_TRUSTED_PROXIES` is unset, every sensor of a site behind its NAT. That bucket is the agent bucket times this (100/s, burst 3000 at the defaults): 25 sensors at a 1 s poll, 125 at 5 s. Counted as `scope="legacy_agent"`. Set `OCTO_TRUSTED_PROXIES` so each site is its own address, raise this for a larger fleet behind one, or move the fleet to provisioning keys, where every sensor has a bucket of its own |
+| `OCTO_MAX_BODY_BYTES` | `1048576` (1 MiB) | Request-body cap for every route without a larger cap of its own. Enforced from `Content-Length` before a byte is read, **and** by counting a chunked body as it arrives, so a body without a length is cut off at the same size. The routes that take a target list are under `OCTO_TARGET_LIST_MAX_BODY_BYTES` instead. The routes with their own cap keep it: the inventory submission (`OCTO_ENDPOINT_INVENTORY_MAX_BODY_BYTES`), the results upload (`OCTO_AGENT_RESULTS_MAX_BODY_BYTES`), the wordlist upload (`OCTO_WORDLIST_MAX_BODY_BYTES` plus 64 KiB of multipart envelope), the endpoint-agent build upload (64 MiB plus envelope) and the compliance framework import (six times the 1 MiB definition limit, for a client that escapes non-ASCII). Raising this never lowers those |
+| `OCTO_TARGET_LIST_MAX_BODY_BYTES` | `16777216` (16 MiB) | Request-body cap for the routes whose body is a target list or a scope: `POST /api/jobs`, `POST`/`PATCH /api/schedules`, `POST`/`PATCH /api/maintenance-windows`, and `PUT /api/tenants/{tenant_id}/scan-scope`. Nothing limits how many targets these name, and a certificate-transparency export for one large customer is megabytes of domains — 16 MiB is about 500 000 of them. Never lower than `OCTO_MAX_BODY_BYTES` |
+
+The buckets are rows of the `UNLOGGED` table `rate_limit_buckets` (migration
+`0069`), so every replica spends from the same one, refilled from the
+database's clock rather than a replica's. On the SQLite dev fallback they live
+in the process instead: a real limit for that one process, not shared, and full
+again after a restart — the same caveat as everything else SQLite cannot share.
+If Postgres cannot be reached the limiter **lets requests through** and logs
+one warning a minute: turning a database blip into a 429 for every caller would
+make the limiter the outage.
 
 Audit trail to a SIEM ([#328](https://github.com/onixus/Shapoclyack/issues/328),
 see [operations.md](operations.md#audit-events-to-siem-328)). The API side needs
