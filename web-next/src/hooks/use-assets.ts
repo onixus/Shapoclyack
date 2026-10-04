@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { useSubmissionKey } from "@/hooks/use-bulk-actions";
 import { POLL_INTERVALS } from "@/lib/config/constants";
+import { useT } from "@/lib/i18n";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAssets(
@@ -99,6 +100,7 @@ export function useAssetImportPreview() {
 export function useAssetImportApply() {
   const queryClient = useQueryClient();
   const submission = useSubmissionKey();
+  const t = useT();
   return useMutation({
     mutationFn: (body: Omit<AssetImportBody, "dry_run">) => {
       const full = { ...body, dry_run: false };
@@ -109,8 +111,11 @@ export function useAssetImportApply() {
       const changed = report.counts.create + report.counts.update;
       toast.success(
         report.replayed
-          ? `Import already applied — ${changed} assets (replayed)`
-          : `Import applied: ${report.counts.create} created, ${report.counts.update} updated`,
+          ? t("assetImport.toast.replayed", { count: changed })
+          : t("assetImport.toast.applied", {
+              created: report.counts.create,
+              updated: report.counts.update,
+            }),
       );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["assets"] }),
@@ -119,7 +124,7 @@ export function useAssetImportApply() {
       ]);
     },
     onError: (err) => {
-      toast.error("Import failed", {
+      toast.error(t("assetImport.toast.failed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     },

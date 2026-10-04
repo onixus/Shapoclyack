@@ -15,7 +15,12 @@ the first scan that reaches it lands on the imported row instead of opening a
 second one. The import never *merges* two assets: an IP that belongs to one
 asset and an FQDN that belongs to another is a ``conflict`` the report names,
 because the evidence for a merge is a scan's (forward DNS plus a certificate,
-``asset_identity_links``) and a wrong merge is worse than two rows.
+``asset_identity_links``) and a wrong merge is worse than two rows. Nor does it
+*link* on the file's word alone: a row that finds an asset by one identifier
+and carries another the registry has never seen is ``new_identifier`` unless
+the request says ``link_new_identifiers`` — a load balancer's VIP that today's
+export pairs with a different name would otherwise hand that name, and every
+later scan of it, to yesterday's asset.
 
 **A cell that is absent or empty leaves the field alone.** There is no way to
 clear a field from an import, in either format: a JSON ``null`` and a blank CSV
@@ -27,17 +32,29 @@ time, by a person.
 
 **The operator's hand edit wins by default.** A field whose last write was an
 operator's (``asset_context_events.source == "operator"``, or a value with no
-event behind it on an asset the operator last touched) is not overwritten by an
-import that disagrees with it: the row is a ``conflict`` with code
-``operator_override`` and names the fields. ``overwrite_operator_edits`` is the
-explicit way to let the CMDB win. A row is applied whole or not at all, so a
-conflict on one field does not half-update the asset.
+event of that field behind it at all) is not overwritten by an import that
+disagrees with it: the row is a ``conflict`` with code ``operator_override``
+and names the fields. ``overwrite_operator_edits`` is the explicit way to let
+the CMDB win. A row is applied whole or not at all, so a conflict on one field
+does not half-update the asset.
 
 **Dry run is the default and writes nothing.** The plan is built from reads
 only; applying it is a second pass over the same plan in the same transaction,
 so the preview and the apply cannot disagree about what a row means — only
 about the data, if somebody changed it in between, which is why the apply
 recomputes rather than trusting a preview's answer.
+
+**One import per tenant at a time, without fencing anyone else.** Applies
+into one tenant are serialised by a transaction-scoped advisory lock, not by a
+row lock on ``tenants``: ``SELECT … FOR UPDATE`` there conflicts with the
+``FOR KEY SHARE`` every foreign-key check on a tenant-owned table takes, so it
+stalled scan ingest, job starts and sensor registration for the length of the
+import, and deadlocked with a scan that had already updated one of the file's
+assets. The asset rows themselves are locked up front in id order — the order
+the scan ingest takes them in too (``assets._lock_known_assets``). A deadlock
+or serialization failure that still happens is retried; past the retries, and
+on an identifier a concurrent writer registered first, the apply rolls back
+whole and the route answers ``409``.
 
 **The role is the route's business.** ``asset.import`` (tenant ``admin`` and
 the platform admin): an import registers assets, which spends the tenant's
@@ -57,8 +74,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from api.db import models
 from api.db.engine import get_session
@@ -132,6 +149,21 @@ _CHUNK = 1000
 #: How many asset ids of each kind the audit row lists before it counts.
 _AUDIT_ID_LIMIT = 100
 
+#: Advisory-lock class of the per-tenant import lock, ``(class, hash of the
+#: tenant)``. Not ``leader_lock.LOCK_CLASS_ID``: its object ids 1–n are
+#: session locks a replica holds for its lifetime, and a tenant whose hash
+#: landed on one would wait for a rollout. "SHAI" in ASCII.
+IMPORT_LOCK_CLASS_ID = 0x53484149
+#: Attempts at an apply that Postgres aborted as a deadlock (``40P01``) or a
+#: serialization failure (``40001``). Each starts from a fresh plan.
+_ATTEMPTS = 3
+_RETRYABLE_SQLSTATES = frozenset({"40P01", "40001"})
+#: The constraints a concurrent writer of the same identity trips: the scan
+#: (or a PATCH-free path) registered the identifier, or created the asset
+#: under the id this file would give it. Any other integrity error is a bug,
+#: not a race, and a ``409`` would tell the client to retry it forever.
+_IDENTITY_CONSTRAINTS = frozenset({"uq_asset_identifier", "assets_pkey"})
+
 
 class ImportRejected(ValueError):
     """The file as a whole cannot be read — not one row's problem. → 422."""
@@ -142,10 +174,12 @@ class ImportTooLarge(ImportRejected):
 
 
 class ImportRace(Exception):
-    """Another writer registered one of the file's identifiers mid-import.
+    """The apply lost to a concurrent writer and rolled back whole. → 409.
 
-    The transaction rolled back whole; sending the same file again re-plans
-    against what is there now. → 409.
+    Either another writer registered one of the file's identifiers between
+    the plan and the commit, or Postgres aborted the transaction as a deadlock
+    on every attempt. Sending the same file again re-plans against what is
+    there now.
     """
 
 
@@ -466,7 +500,9 @@ def _load_assets(
             models.Asset.tenant_id == tenant_id, models.Asset.asset_id.in_(chunk)
         )
         if lock:
-            query = query.with_for_update()
+            # Id order, the order the scan ingest locks in as well: two writers
+            # that queue on the same rows in one order cannot deadlock.
+            query = query.order_by(models.Asset.asset_id).with_for_update()
         for asset in session.execute(query).scalars():
             found[asset.asset_id] = asset
     return found
@@ -510,19 +546,27 @@ def _operator_owned(
 ) -> bool:
     """Whether the current value of ``field_name`` is an operator's hand edit.
 
-    The newest event for the field decides. A value with *no* event behind it
-    — set before #146 audited context, or carried over by an identity merge —
-    has no provenance, and it is treated as the operator's when the asset's
-    own ``context_source`` does not say an import wrote it: an import that
+    Decided per field: the newest event of *that* field. A value with no event
+    behind it — set before #146 audited context, or carried over by an identity
+    merge — has no provenance and is treated as the operator's: an import that
     cannot tell whose a value is must not be the one that decides it was
-    nobody's.
+    nobody's. Every import write records an event, so a value an import wrote
+    is never in that position.
+
+    The asset's own ``context_source`` is deliberately not consulted. It is one
+    column for the whole asset and an import rewrites it whenever it changes
+    *any* field, so reading it here let an import that only filled an empty
+    owner unprotect the hand-set team next to it for the import after.
     """
     key = (asset.asset_id, field_name)
     if key in last_sources:
         return last_sources[key] == "operator"
-    if getattr(asset, field_name) in (None, ""):
-        return False
-    return asset.context_source in (None, "operator")
+    return getattr(asset, field_name) not in (None, "")
+
+
+def _identity_key(tenant_id: str, ident: tuple[str, str]) -> str:
+    kind, value = ident
+    return ip_identity_key(tenant_id, value) if kind == "ip" else fqdn_identity_key(tenant_id, value)
 
 
 def _describe(row: _Row) -> str:
@@ -537,6 +581,7 @@ def plan(
     rows: list[_Row],
     context_source: str,
     overwrite_operator_edits: bool,
+    link_new_identifiers: bool = False,
     lock: bool = False,
 ) -> tuple[list[_Plan], dict[str, models.Asset], dict[str, dict[str, models.AssetTag]]]:
     """Decide every row's outcome from reads only. Nothing is added to ``session``."""
@@ -650,6 +695,24 @@ def plan(
             asset = assets[target]
             entry.asset_id = target
             entry.identifiers_added = [ident for ident in identifiers if ident not in owners]
+            # An identifier whose identity key *is* this asset's id is the one
+            # the asset was registered under, its row lost to a merge: putting
+            # it back links nothing new.
+            linked = [
+                ident
+                for ident in entry.identifiers_added
+                if _identity_key(tenant_id, ident) != target
+            ]
+            if linked and not link_new_identifiers:
+                entry.status = "conflict"
+                entry.code = "new_identifier"
+                entry.conflicting_fields = [f"{kind}:{value}" for kind, value in linked]
+                entry.message = (
+                    f"{', '.join(entry.conflicting_fields)} is not registered; linking it to "
+                    f"asset {target} on the file's word needs link_new_identifiers"
+                )
+                entry.identifiers_added = []
+                continue
             for name, value in row.context.items():
                 old = getattr(asset, name)
                 if old != value:
@@ -734,29 +797,32 @@ def _apply(
     a hand edit.
     """
     now = _now()
-    for entry in plans:
-        if entry.status not in ("create", "update"):
+    applied = [entry for entry in plans if entry.status in ("create", "update")]
+    created: dict[str, models.Asset] = {}
+    for entry in applied:
+        if entry.status != "create":
             continue
+        assert entry.asset_id is not None
+        created[entry.asset_id] = models.Asset(
+            asset_id=entry.asset_id,
+            tenant_id=tenant_id,
+            # Registered, not observed: ``last_seen`` starts at the import
+            # (the column is not nullable, and the staleness rule ages it like
+            # any other), while the three coverage columns stay NULL — the
+            # asset reads as "never scanned", which is what a CMDB record the
+            # scanner has not reached yet is.
+            status="active",
+            first_seen=now,
+            last_seen=now,
+        )
+    session.add_all(created.values())
+    # Once, for every new asset: the identifiers, tags and events below
+    # reference them, and a flush per row was a round trip per row.
+    session.flush()
+    for entry in applied:
         asset_id = entry.asset_id
         assert asset_id is not None
-        if entry.status == "create":
-            asset = models.Asset(
-                asset_id=asset_id,
-                tenant_id=tenant_id,
-                # Registered, not observed: ``last_seen`` starts at the import
-                # (the column is not nullable, and the staleness rule ages it
-                # like any other), while the three coverage columns stay NULL —
-                # the asset reads as "never scanned", which is what a CMDB
-                # record the scanner has not reached yet is.
-                status="active",
-                first_seen=now,
-                last_seen=now,
-            )
-            session.add(asset)
-            # The identifiers, tags and events reference the asset.
-            session.flush()
-        else:
-            asset = assets[asset_id]
+        asset = created.get(asset_id) or assets[asset_id]
         for name, (old, new) in entry.changes.items():
             setattr(asset, name, new)
             _event(
@@ -800,6 +866,7 @@ def _audit_document(report: dict[str, Any], plans: list[_Plan]) -> dict[str, Any
         "sha256": report["sha256"],
         "context_source": report["context_source"],
         "overwrite_operator_edits": report["overwrite_operator_edits"],
+        "link_new_identifiers": report["link_new_identifiers"],
         "counts": report["counts"],
     }
     for status, label in (("create", "created"), ("update", "updated")):
@@ -814,6 +881,32 @@ def changed_nothing(report: dict[str, Any]) -> bool:
     return not (report["counts"]["create"] or report["counts"]["update"])
 
 
+def _lock_tenant_imports(session, settings: Settings, tenant_id: str) -> None:
+    """Hold this tenant's import lock until the transaction ends.
+
+    Advisory, so it fences other imports of the tenant and nothing else — the
+    row lock on ``tenants`` it replaces also fenced every foreign-key check
+    against the tenant. Released at commit or rollback, including by a backend
+    that died. SQLite (dev and the test fallback) has no advisory locks and one
+    writer at a time anyway.
+    """
+    if not settings.postgres_url.startswith("postgres"):
+        return
+    digest = hashlib.blake2b(tenant_id.encode("utf-8"), digest_size=4).digest()
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:class_id, :object_id)"),
+        {"class_id": IMPORT_LOCK_CLASS_ID, "object_id": int.from_bytes(digest, "big", signed=True)},
+    )
+
+
+def _sqlstate(exc: OperationalError) -> str | None:
+    return getattr(exc.orig, "sqlstate", None)
+
+
+def _constraint(exc: IntegrityError) -> str | None:
+    return getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+
+
 def run_import(
     settings: Settings,
     *,
@@ -824,69 +917,79 @@ def run_import(
     context_source: str,
     overwrite_operator_edits: bool,
     actor: str,
+    link_new_identifiers: bool = False,
     audit: audit_service.AuditContext | None = None,
 ) -> dict[str, Any]:
     """Plan the import and, unless ``dry_run``, apply it in one transaction.
 
     The report lists every data row with its outcome; ``counts`` sums them. A
     ``dry_run`` is a read-only pass — nothing is added to the session, so
-    nothing can commit. An apply takes a row lock on the tenant first, so two
-    imports into one tenant run one after the other rather than both planning
-    against a registry the other is about to change.
+    nothing can commit, and it takes no locks. An apply takes the tenant's
+    import lock first, so two imports into one tenant run one after the other
+    rather than both planning against a registry the other is about to change.
     """
     if context_source not in IMPORT_SOURCES:
         raise ValueError(f"context_source must be one of {', '.join(IMPORT_SOURCES)}")
     rows, ignored = parse(content, format=format)
-    try:
-        with get_session(settings.postgres_url) as session:
-            if not dry_run:
-                session.execute(
-                    select(models.Tenant.tenant_id)
-                    .where(models.Tenant.tenant_id == tenant_id)
-                    .with_for_update()
+    options = {
+        "context_source": context_source,
+        "overwrite_operator_edits": overwrite_operator_edits,
+        "link_new_identifiers": link_new_identifiers,
+    }
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            with get_session(settings.postgres_url) as session:
+                if not dry_run:
+                    _lock_tenant_imports(session, settings, tenant_id)
+                plans, assets, tags = plan(
+                    session, settings, tenant_id=tenant_id, rows=rows, lock=not dry_run, **options
                 )
-            plans, assets, tags = plan(
-                session,
-                settings,
-                tenant_id=tenant_id,
-                rows=rows,
-                context_source=context_source,
-                overwrite_operator_edits=overwrite_operator_edits,
-                lock=not dry_run,
+                report = _report(
+                    plans, ignored=ignored, content=content, format=format, dry_run=dry_run, **options
+                )
+                if not dry_run:
+                    _apply(
+                        session, tenant_id=tenant_id, plans=plans, assets=assets, tags=tags,
+                        actor=actor,
+                    )
+                    audit_service.record(
+                        session,
+                        audit,
+                        action=audit_service.ACTION_ASSET_IMPORT,
+                        resource_type="asset",
+                        resource_id=f"import:{report['sha256'][:16]}",
+                        tenant_id=tenant_id,
+                        after=_audit_document(report, plans),
+                    )
+                    session.flush()
+            break
+        except OperationalError as exc:
+            if _sqlstate(exc) not in _RETRYABLE_SQLSTATES:
+                raise
+            # The other side of the cycle is a scan or a PATCH; the ingest
+            # locks in the import's order, so this is rare, and a fresh plan
+            # is the whole remedy.
+            LOG.info(
+                "asset import for tenant %s aborted by Postgres (%s), attempt %d of %d",
+                tenant_id, _sqlstate(exc), attempt, _ATTEMPTS,
             )
-            report = _report(
-                plans,
-                ignored=ignored,
-                content=content,
-                format=format,
-                dry_run=dry_run,
-                context_source=context_source,
-                overwrite_operator_edits=overwrite_operator_edits,
-            )
-            if not dry_run:
-                _apply(
-                    session, tenant_id=tenant_id, plans=plans, assets=assets, tags=tags,
-                    actor=actor,
-                )
-                audit_service.record(
-                    session,
-                    audit,
-                    action=audit_service.ACTION_ASSET_IMPORT,
-                    resource_type="asset",
-                    resource_id=f"import:{report['sha256'][:16]}",
-                    tenant_id=tenant_id,
-                    after=_audit_document(report, plans),
-                )
-                session.flush()
-    except IntegrityError as exc:
-        # A scan registered one of the file's identifiers between the plan and
-        # the commit. The whole import rolled back with it; nothing
-        # half-applied is left to reconcile.
-        LOG.info("asset import for tenant %s lost a race: %s", tenant_id, exc.orig)
-        raise ImportRace(
-            "another writer registered one of these identifiers while the import ran; "
-            "nothing was applied, send the file again"
-        ) from exc
+            if attempt == _ATTEMPTS:
+                raise ImportRace(
+                    "the import kept colliding with concurrent writes to these assets; "
+                    "nothing was applied, send the file again"
+                ) from exc
+        except IntegrityError as exc:
+            if _constraint(exc) not in _IDENTITY_CONSTRAINTS:
+                raise
+            # A scan registered one of the file's identifiers (or the asset
+            # under the id this file gives it) between the plan and the commit.
+            # The whole import rolled back with it; nothing half-applied is
+            # left to reconcile.
+            LOG.info("asset import for tenant %s lost a race: %s", tenant_id, exc.orig)
+            raise ImportRace(
+                "another writer registered one of these identifiers while the import ran; "
+                "nothing was applied, send the file again"
+            ) from exc
     if not dry_run:
         quotas.record_asset_refusal(tenant_id, report["codes"].get("quota_exhausted", 0))
     return report
@@ -901,6 +1004,7 @@ def _report(
     dry_run: bool,
     context_source: str,
     overwrite_operator_edits: bool,
+    link_new_identifiers: bool,
 ) -> dict[str, Any]:
     counts = {outcome: 0 for outcome in OUTCOMES}
     codes: dict[str, int] = {}
@@ -914,6 +1018,7 @@ def _report(
         "sha256": content_digest(content),
         "context_source": context_source,
         "overwrite_operator_edits": overwrite_operator_edits,
+        "link_new_identifiers": link_new_identifiers,
         "total": len(plans),
         "counts": counts,
         "codes": codes,

@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AssetImportButton } from "@/components/asset/import-dialog";
 import * as apiModule from "@/lib/api";
 import type { AssetImportReport, Me } from "@/lib/api";
+import { useAppearanceStore } from "@/lib/appearance";
 import { useAuthStore } from "@/lib/auth-store";
 
 function member(role: string, permissions: string[], global: Me["role"] = "viewer"): Me {
@@ -36,6 +38,7 @@ const PREVIEW: AssetImportReport = {
   sha256: "abc",
   context_source: "cmdb",
   overwrite_operator_edits: false,
+  link_new_identifiers: false,
   total: 2,
   counts: { create: 1, update: 0, unchanged: 0, conflict: 1, invalid: 0 },
   codes: { operator_override: 1 },
@@ -67,10 +70,106 @@ const PREVIEW: AssetImportReport = {
   replayed: false,
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function csvFile(text: string, name = "export.csv"): File {
+  return new File([text], name, { type: "text/csv" });
+}
+
+/** A file whose bytes arrive only when the test says so. */
+function slowFile(text: string, name = "next.csv") {
+  const file = csvFile(text, name);
+  const bytes = deferred<ArrayBuffer>();
+  Object.defineProperty(file, "arrayBuffer", { value: () => bytes.promise });
+  return { file, arrive: () => bytes.resolve(new TextEncoder().encode(text).buffer) };
+}
+
+function pick(file: File) {
+  const input = document.getElementById("asset-import-file") as HTMLInputElement;
+  fireEvent.change(input, { target: { files: [file] } });
+}
+
 describe("AssetImportButton", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAuthStore.setState({ user: null });
+    useAppearanceStore.setState({ locale: "en" });
+  });
+
+  it("offers neither button while a newly picked file is still being read", async () => {
+    useAuthStore.setState({ user: member("admin", ["asset.import"]) });
+    const importAssets = vi
+      .spyOn(apiModule, "importAssets")
+      .mockImplementation(async (body) => ({ ...PREVIEW, dry_run: body.dry_run }));
+    renderButton();
+    fireEvent.click(screen.getByRole("button", { name: /Import/ }));
+    pick(csvFile("ip\n10.0.0.1\n"));
+    const previewButton = await screen.findByRole("button", { name: "Preview" });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled());
+
+    const next = slowFile("ip\n10.9.9.9\n");
+    pick(next.file);
+
+    // Until the new text is in hand, Preview would send the previous file and
+    // its answer would unlock Apply for this one.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    await act(async () => next.arrive());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(importAssets).toHaveBeenCalledTimes(2));
+    expect(importAssets.mock.calls[1][0]).toMatchObject({ content: "ip\n10.9.9.9\n" });
+  });
+
+  it("drops a preview answer that arrives after the file changed", async () => {
+    useAuthStore.setState({ user: member("admin", ["asset.import"]) });
+    const answer = deferred<AssetImportReport>();
+    vi.spyOn(apiModule, "importAssets").mockImplementation(() => answer.promise);
+    renderButton();
+    fireEvent.click(screen.getByRole("button", { name: /Import/ }));
+    pick(csvFile("ip\n10.0.0.1\n"));
+    const previewButton = await screen.findByRole("button", { name: "Preview" });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+
+    pick(csvFile("ip\n10.9.9.9\n", "other.csv"));
+    await screen.findByText(/other\.csv/);
+    await act(async () => answer.resolve(PREVIEW));
+
+    expect(screen.queryByTestId("asset-import-report")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+  });
+
+  it("says what the apply did in the console's language", async () => {
+    useAuthStore.setState({ user: member("admin", ["asset.import"]) });
+    useAppearanceStore.setState({ locale: "ru" });
+    const success = vi.spyOn(toast, "success");
+    vi.spyOn(apiModule, "importAssets").mockImplementation(async (body) => ({
+      ...PREVIEW,
+      dry_run: body.dry_run,
+    }));
+    renderButton();
+    fireEvent.click(screen.getByRole("button", { name: /Импорт/ }));
+    pick(csvFile("ip\n10.0.0.1\n"));
+    const previewButton = await screen.findByRole("button", { name: "Предпросмотр" });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+    const applyButton = screen.getByRole("button", { name: "Применить" });
+    await waitFor(() => expect(applyButton).toBeEnabled());
+    fireEvent.click(applyButton);
+
+    await waitFor(() =>
+      expect(success).toHaveBeenCalledWith("Импорт применён: создано 1, обновлено 0"),
+    );
   });
 
   it("is not offered to a global operator who lacks asset.import in this tenant", () => {

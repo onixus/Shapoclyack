@@ -2423,6 +2423,9 @@ class AssetImportRequest(BaseModel):
     explicit act. ``context_source`` names the system the file came from and is
     recorded on every change; ``operator`` is not offered, because it is what
     marks a hand edit and an import must not be able to claim one.
+    ``link_new_identifiers`` lets a row that found its asset by one identifier
+    attach another the registry has never seen; without it such a row is a
+    ``new_identifier`` conflict.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2433,6 +2436,7 @@ class AssetImportRequest(BaseModel):
     dry_run: bool = True
     context_source: Literal["cmdb", "ad", "other"] = "cmdb"
     overwrite_operator_edits: bool = False
+    link_new_identifiers: bool = False
 
 
 class AssetImportChange(BaseModel):
@@ -2441,7 +2445,11 @@ class AssetImportChange(BaseModel):
 
 
 class AssetImportRow(BaseModel):
-    """One data row's outcome. ``row`` counts data rows from 1, header excluded."""
+    """One data row's outcome. ``row`` counts data rows from 1, header excluded.
+
+    ``conflicting_fields`` names the fields of an ``operator_override`` and the
+    ``kind:value`` identifiers of a ``new_identifier``.
+    """
 
     row: int
     status: Literal["create", "update", "unchanged", "conflict", "invalid"]
@@ -2467,6 +2475,7 @@ class AssetImportReport(BaseModel):
     sha256: str
     context_source: str
     overwrite_operator_edits: bool
+    link_new_identifiers: bool = False
     total: int
     counts: dict[str, int]
     codes: dict[str, int]

@@ -812,7 +812,7 @@ it is only supposed to approve.
 | `platform.legal_hold.manage` | platform admin. A tenant that could release its own hold could let evidence age out |
 | `platform.tenant.lifecycle` | platform admin. Suspend and resume a tenant, request, cancel, approve and retry its deletion (`/api/tenants/{id}/suspend`, `…/resume`, `…/deletion[/approve|/retry]`, `GET …/lifecycle`, `GET /api/tenants/deletions`); every change behind a step-up. See [tenant-lifecycle.md](tenant-lifecycle.md) |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
-| `asset.import` | tenant `admin`, platform admin. `POST /api/assets/import` (#350): an import registers assets against the tenant's quota and rewrites the context of every asset in the file, so it is not the operator's `PATCH` at scale. Seeded by migration `0071_asset_import_permission` |
+| `asset.import` | tenant `admin`, platform admin. `POST /api/assets/import` (#350): an import registers assets against the tenant's quota and rewrites the context of every asset in the file, so it is not the operator's `PATCH` at scale. Seeded by migration `0071_asset_import_permission`. The route checks the permission and nothing else — no minimum rank — so once tenant custom roles exist, a custom role granted `asset.import` imports (and spends the asset quota) whatever rank it sits at. That is deliberate: a dedicated "CMDB sync" role is the use case; grant it knowing it registers billed assets |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
@@ -1200,8 +1200,11 @@ is the file-shaped sibling: a CMDB/AD export as CSV or JSON, matched to assets
 through the identifier registry, with a report per row (`create`, `update`,
 `unchanged`, `conflict`, `invalid`). Unlike the bulk verbs it is **one
 transaction** — a dry run (the default) writes nothing, an apply writes every
-applicable row or, on a concurrent identifier registration (`409`), none — and
-it **cannot clear** a field: empty cells and `null` mean "nothing to say". It
+applicable row or none: a `409` means a concurrent writer registered one of the
+file's identifiers, or the apply deadlocked on every retry; any other failure
+is a `500`. It **cannot clear** a field: empty cells and `null` mean "nothing
+to say", and it links an IP or FQDN to an asset it found by another identifier
+only with `link_new_identifiers`. It
 honours `Idempotency-Key` on an apply as the bulk verbs do, and records one
 `asset.import` audit row. Columns, conflict codes, the operator-precedence rule
 and limits are in [asset-context.md](asset-context.md#cmdb--ad).

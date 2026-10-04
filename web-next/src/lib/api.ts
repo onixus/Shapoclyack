@@ -3033,14 +3033,20 @@ export type AssetImportBody = {
   dry_run: boolean;
   context_source: AssetImportSource;
   overwrite_operator_edits: boolean;
+  /** Let a row that found its asset by one identifier attach an IP or FQDN
+   * the registry has never seen. Off, such a row is a `new_identifier`
+   * conflict. */
+  link_new_identifiers: boolean;
 };
 
 export type AssetImportStatus = "create" | "update" | "unchanged" | "conflict" | "invalid";
 
 /** One data row's outcome. `row` counts data rows from 1, header excluded.
  * `code` is the reason for a conflict or an invalid row — `ambiguous_match`,
- * `identifier_owned_by_other_asset`, `operator_override`, `duplicate_in_file`,
- * `quota_exhausted`, `unknown_asset`, `invalid_value`. */
+ * `identifier_owned_by_other_asset`, `operator_override`, `new_identifier`,
+ * `duplicate_in_file`, `quota_exhausted`, `unknown_asset`, `invalid_value`.
+ * `conflicting_fields` names the fields of an `operator_override` and the
+ * `kind:value` identifiers of a `new_identifier`. */
 export type AssetImportRow = {
   row: number;
   status: AssetImportStatus;
@@ -3059,6 +3065,7 @@ export type AssetImportReport = {
   sha256: string;
   context_source: string;
   overwrite_operator_edits: boolean;
+  link_new_identifiers: boolean;
   total: number;
   counts: Record<AssetImportStatus, number>;
   codes: Record<string, number>;

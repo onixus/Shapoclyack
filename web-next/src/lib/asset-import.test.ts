@@ -35,6 +35,7 @@ function report(rows: AssetImportRow[]): AssetImportReport {
     sha256: "x",
     context_source: "cmdb",
     overwrite_operator_edits: false,
+    link_new_identifiers: false,
     total: rows.length,
     counts,
     codes: {},

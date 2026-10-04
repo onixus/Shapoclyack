@@ -16,9 +16,18 @@ All notable changes to Shapoclyack are documented in this file.
   `cmdb`/`ad`/`other`. Dry run by default with a per-row report —
   `create`/`update`/`unchanged`/`conflict`/`invalid` — naming ambiguous
   matches (never merged), an address owned by another asset, duplicates in the
-  file, the asset quota, and **a value an operator set by hand**, which the
-  import does not overwrite unless `overwrite_operator_edits` is set. Empty
-  cells and `null` never clear a field. One transaction per apply, one
+  file, the asset quota, **a value an operator set by hand** (decided per
+  field from its own history; a value with no history counts as the
+  operator's), which the import does not overwrite unless
+  `overwrite_operator_edits` is set, and **an IP or FQDN the registry has
+  never seen on an asset found by another identifier** (`new_identifier`),
+  linked only with `link_new_identifiers`. Empty cells and `null` never clear
+  a field. One transaction per apply; applies into one tenant are serialised
+  by an advisory lock that does not hold up scans, job starts or sensor
+  registration, deadlocks are retried, and `409` means only a concurrent
+  identifier registration or a deadlock that outlived the retries. The scan
+  ingest now locks the known assets of a run up front in asset-id order — the
+  import's order — so the two cannot deadlock. One
   `asset.import` audit row, `Idempotency-Key` on apply, 2 MiB / 5 000 rows,
   BOM and `;`-separated Excel CSV accepted, formula cells and mis-decoded text
   refused. New permission `asset.import` (tenant `admin`, platform admin),

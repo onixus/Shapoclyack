@@ -17,12 +17,27 @@ import threading
 import time
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from api.db import migrate
 from api.db.engine import _create_schema_if_unmanaged
 from tests.conftest import POSTGRES_URL, requires_postgres
+
+
+def test_the_migration_chain_has_exactly_one_head() -> None:
+    """Two branches that each add a migration on the same parent merge cleanly
+    in git and leave Alembic with two heads, and ``upgrade head`` then refuses
+    to run at all ("Multiple head revisions") — the API never starts. Each
+    branch's CI is green on its own, so the chain is checked here.
+    """
+    script = ScriptDirectory.from_config(Config(str(migrate._ALEMBIC_INI)))  # noqa: SLF001
+
+    heads = script.get_heads()
+
+    assert len(heads) == 1, f"alembic has {len(heads)} heads, re-chain down_revision: {heads}"
 
 
 def test_sqlite_still_gets_its_schema_from_the_models(tmp_path) -> None:

@@ -168,8 +168,9 @@ def import_assets(
     200 with a per-row report whatever the rows say — a conflicting or invalid
     row is the report's business, not the request's. 422 for a file that cannot
     be read at all, 413 past the size or row ceiling, 409 when a concurrent
-    writer registered one of the file's identifiers mid-apply (nothing was
-    applied). ``dry_run`` (the default) writes nothing and ignores
+    writer registered one of the file's identifiers mid-apply or the apply
+    deadlocked on every retry (nothing was applied either way; send it again).
+    ``dry_run`` (the default) writes nothing and ignores
     ``Idempotency-Key``: there is nothing to apply twice.
 
     Declared before ``/{asset_id}`` so "import" is not read as an asset id.
@@ -187,6 +188,7 @@ def import_assets(
                 "sha256": asset_import.content_digest(body.content),
                 "context_source": body.context_source,
                 "overwrite_operator_edits": body.overwrite_operator_edits,
+                "link_new_identifiers": body.link_new_identifiers,
             },
         )
         if guard.replay is not None:
@@ -200,6 +202,7 @@ def import_assets(
             dry_run=body.dry_run,
             context_source=body.context_source,
             overwrite_operator_edits=body.overwrite_operator_edits,
+            link_new_identifiers=body.link_new_identifiers,
             actor=principal.username,
             audit=audit,
         )

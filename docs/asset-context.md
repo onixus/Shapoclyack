@@ -101,8 +101,9 @@ not:
   SHA-256 of the content, counts, the first 100 created and updated asset ids).
 
 **Body:** `{"format": "csv"|"json", "content": "<file text>", "dry_run": true,
-"context_source": "cmdb"|"ad"|"other", "overwrite_operator_edits": false}`.
-`operator` is not an import source — it is what marks a hand edit.
+"context_source": "cmdb"|"ad"|"other", "overwrite_operator_edits": false,
+"link_new_identifiers": false}`. `operator` is not an import source — it is
+what marks a hand edit.
 
 **Columns** (CSV header, or JSON object keys; case-insensitive, spaces and
 dashes read as `_`):
@@ -129,8 +130,23 @@ A new asset gets the id a scan would have given it (the IP's identity key, or
 the FQDN's when there is no IP), so the first scan that reaches the host lands
 on the imported asset rather than opening a second one. An imported asset is
 `active`, its `last_seen` is the import time and its coverage columns stay
-empty — it reads as "never scanned". Identifiers in the row that the asset does
-not have yet are added to it.
+empty — it reads as "never scanned". The IP is stored in canonical form
+(`2001:DB8:0:0::1` → `2001:db8::1`) and the FQDN lower-cased without the root
+dot, which is how a scan reports them.
+
+**A known asset gains an identifier only on request.** A row that finds an
+existing asset by one identifier and carries another the registry has never
+seen — the asset matched by IP, and the row names an FQDN nobody registered —
+is a `new_identifier` conflict, and nothing in the row is applied. The file's
+word is the only evidence for that link, where the scan's own correlation
+needs forward DNS *and* a certificate ([asset-identity.md](asset-identity.md)),
+and a wrong link outlives the import: a load-balancer VIP that yesterday's
+export paired with `a.corp` and today's with `b.corp` would make `b.corp` an
+identifier of `a.corp`'s asset, and every later scan of `b.corp` would land
+there. There is no API to unlink an identifier. Send `link_new_identifiers:
+true` once you have checked the preview's `new_identifier` rows; a new asset's
+own identifiers, and the one an asset was registered under (its identity key),
+need no flag.
 
 **Empty means "nothing to say", never "clear".** A missing column, a blank CSV
 cell and a JSON `null` all leave the field as it is — in either format there is
@@ -146,6 +162,7 @@ with a `code` for the last two:
 | `ambiguous_match` | conflict | The row's IP and FQDN belong to two different assets. The import **never merges** — a merge needs a scan's evidence ([asset-identity.md](asset-identity.md)) |
 | `identifier_owned_by_other_asset` | conflict | The row names `asset_id` A but its IP or FQDN belongs to asset B |
 | `operator_override` | conflict | A field the row would change was last set by an operator (see below); `conflicting_fields` names them |
+| `new_identifier` | conflict | The row matched an existing asset and carries an IP or FQDN the registry does not have; `conflicting_fields` names them (`fqdn:b.corp.example`). Applied only with `link_new_identifiers` (above) |
 | `duplicate_in_file` | conflict | An earlier row of the same file already names this asset or identifier |
 | `quota_exhausted` | conflict | A new asset past the tenant's `max_assets`; known assets in the same file are still updated |
 | `unknown_asset` | invalid | `asset_id` is not an asset of this tenant |
@@ -157,10 +174,16 @@ half-update the asset.
 **Precedence: the operator's hand edit wins.** For each field a row would
 change, the newest `asset_context_events` row of that field decides: source
 `operator` means a person set it, and the import reports `operator_override`
-instead of overwriting it. A value with no event behind it (set before this
-trail existed, or carried over by an identity merge) counts as the operator's
-unless the asset's `context_source` says an import wrote it. A value an import
-wrote (`cmdb`, `ad`, `other`) is the import's to change. To let the CMDB win
+instead of overwriting it. A value with no event of its own field behind it
+(set before this trail existed, or carried over by an identity merge) counts
+as the operator's — always: every import write records an event, so such a
+value was not written by an import. The asset-wide `context_source` is not
+consulted, because an import rewrites it whenever it changes any field: an
+import that only filled an empty owner must not make the hand-set team next to
+it fair game for the next one. On a database upgraded from before #146 this
+means the first import reports `operator_override` for every field that
+already had a value; check them and send `overwrite_operator_edits: true` once.
+A value an import wrote (`cmdb`, `ad`, `other`) is the import's to change. To let the CMDB win
 anyway, send `overwrite_operator_edits: true`; the field is then the CMDB's
 again and the next sync updates it without the flag. `PATCH` and the bulk bar
 record `operator` unless the request names another source.
@@ -176,12 +199,25 @@ than being stored for a later export to hand to Excel; so do control
 characters. A file that cannot be read at all (bad JSON, ragged CSV, a column
 twice) is `422`.
 
+**Concurrency.** Applies into one tenant run one at a time (a transaction-scoped
+Postgres advisory lock per tenant); a second one waits for the first and then
+plans against what the first wrote. Nothing else of the tenant waits on an
+import: scans, job starts and sensor registration go on. The asset rows in
+the file are locked for the length of the apply, so a scan updating one of
+those assets waits for it, or the import for the scan — never both, because
+the scan ingest and the import take those row locks in the same order (by
+asset id). A dry run takes no locks.
+
 **Retries.** On an apply, `Idempotency-Key` works as on the bulk verbs: the
 same key and file replay the first report (`replayed: true`), the same key with
 a different file is `409`, and an apply that changed nothing gives its key
-back. A dry run ignores the key. `409` without a key means another writer
-registered one of the file's identifiers while the import ran; nothing was
-applied, send it again.
+back. A dry run ignores the key. A `409` that is not about the key has two
+causes, and nothing was applied in either: another writer — a scan — registered
+one of the file's identifiers (or created the asset under the id the file would
+give it) between the plan and the commit; or Postgres aborted the apply as a
+deadlock or serialization failure on all three attempts the API makes itself.
+Send the file again: it is re-planned against what is there now. Any other
+database error is a `500`, and retrying it unchanged will not help.
 
 ## Audit trail
 

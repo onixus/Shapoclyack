@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { useT, type MsgKey } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -49,6 +49,10 @@ import type {
  * Apply is offered only after a preview of the same file and options, and is
  * disabled when the preview says nothing would change. The server re-plans on
  * apply, so a registry that moved in between is reported as it is then.
+ *
+ * Both buttons are off while a picked file is still being read, and a preview
+ * answer that arrives after the file or an option changed is dropped: either
+ * would let Apply send a file whose preview the operator never saw.
  */
 const SOURCES: readonly AssetImportSource[] = ["cmdb", "ad", "other"];
 
@@ -106,8 +110,14 @@ export function AssetImportDialog({
   const [encoding, setEncoding] = useState<string | null>(null);
   const [source, setSource] = useState<AssetImportSource>("cmdb");
   const [overwrite, setOverwrite] = useState(false);
+  const [link, setLink] = useState(false);
+  const [reading, setReading] = useState(false);
   const [report, setReport] = useState<AssetImportReport | null>(null);
   const [applied, setApplied] = useState<AssetImportReport | null>(null);
+  // Bumped on every pick, so of two picks in quick succession only the later
+  // read lands. (A preview answer for an older file or option never does:
+  // `preview.reset()` detaches the `mutate` callbacks still in flight.)
+  const fileRead = useRef(0);
 
   const body = (): Omit<AssetImportBody, "dry_run"> | null =>
     file
@@ -116,6 +126,7 @@ export function AssetImportDialog({
           content: file.content,
           context_source: source,
           overwrite_operator_edits: overwrite,
+          link_new_identifiers: link,
         }
       : null;
 
@@ -129,15 +140,25 @@ export function AssetImportDialog({
 
   const onFile = async (picked: File | undefined) => {
     resetPreview();
+    // Dropped before the read, not after it: until the new text is in hand
+    // there is no file to preview, rather than the previous one.
+    setFile(null);
+    setFileName("");
+    const started = ++fileRead.current;
     if (!picked) {
-      setFile(null);
-      setFileName("");
+      setReading(false);
       return;
     }
-    const decoded = decodeImportFile(await picked.arrayBuffer());
-    setFileName(picked.name);
-    setEncoding(decoded.encoding);
-    setFile({ format: importFormatFor(picked.name), content: decoded.text });
+    setReading(true);
+    try {
+      const decoded = decodeImportFile(await picked.arrayBuffer());
+      if (fileRead.current !== started) return;
+      setFileName(picked.name);
+      setEncoding(decoded.encoding);
+      setFile({ format: importFormatFor(picked.name), content: decoded.text });
+    } finally {
+      if (fileRead.current === started) setReading(false);
+    }
   };
 
   const runPreview = () => {
@@ -177,7 +198,9 @@ export function AssetImportDialog({
               className="block w-full text-xs text-foreground file:mr-3 file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-1 file:text-xs"
               onChange={(event) => void onFile(event.target.files?.[0])}
             />
-            {file ? (
+            {reading ? (
+              <p className="text-[11px] text-muted-foreground">{t("assetImport.reading")}</p>
+            ) : file ? (
               <p className="text-[11px] text-muted-foreground">
                 {t("assetImport.fileInfo", {
                   name: fileName,
@@ -219,6 +242,16 @@ export function AssetImportDialog({
                 }}
               />
               {t("assetImport.overwrite")}
+            </label>
+            <label className="flex items-center gap-2 pt-5 text-xs text-foreground">
+              <Checkbox
+                checked={link}
+                onCheckedChange={(value) => {
+                  setLink(value === true);
+                  resetPreview();
+                }}
+              />
+              {t("assetImport.link")}
             </label>
           </div>
 
@@ -293,14 +326,20 @@ export function AssetImportDialog({
           <Button
             variant="outline"
             size="sm"
-            disabled={!file || preview.isPending}
+            disabled={!file || reading || preview.isPending}
             onClick={runPreview}
           >
             {t("assetImport.preview")}
           </Button>
           <Button
             size="sm"
-            disabled={!report || !importWouldChange(report) || apply.isPending || Boolean(applied)}
+            disabled={
+              !report ||
+              reading ||
+              !importWouldChange(report) ||
+              apply.isPending ||
+              Boolean(applied)
+            }
             onClick={runApply}
           >
             {t("assetImport.apply")}

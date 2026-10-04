@@ -146,6 +146,9 @@ VULNERABILITY_EXCEPTION_APPROVE = "vulnerability.exception.approve"
 #: tenant's system of record speaking, which is a tenant administrator's
 #: decision. An installation that wants a dedicated CMDB integration grants it
 #: through a service token issued with the ``admin`` role for that tenant.
+#: The route asks for the permission alone, not a rank: a tenant custom role
+#: granted it imports at whatever rank it has. Deliberate — a "CMDB sync" role
+#: is the use — and documented, since whoever grants it grants quota spend.
 ASSET_IMPORT = "asset.import"
 
 #: Every permission with the sentence the catalogue endpoint and migration 0049
