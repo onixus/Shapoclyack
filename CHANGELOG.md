@@ -481,6 +481,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **One post-publication sequence for local and sensor runs
+  ([#454](https://github.com/onixus/Shapoclyack/issues/454)).** What a finished
+  run feeds — scope-denial journal, assets, findings, service fingerprints,
+  asset events, notification, in that order — is decided once, by outcome, in
+  `run_completion.POST_PUBLICATION`, and reached once, from `run_publisher`, when
+  the run's publication lands. A local scan now writes a `run_publications` row
+  (`local-<job_id>`) with its outcome, in one transaction, instead of adopting
+  its run and calling the hooks inline: a store outage or a replica dying no
+  longer leaves a local run unpublished and unfed with nothing owed, it is
+  retried, ends `dead` visibly and can be requeued like a sensor's. The derived
+  updates now run before the row is closed, so a replica killed in between
+  replays them rather than losing them; the asset upsert and the vulnerability
+  fold mark the publication as fed in their own transaction (migration
+  `0072_run_publication_projected`, column `run_publications.projected`), so a
+  replay — even after a later run, or beside a peer's attempt — counts no
+  observation twice and winds no finding or asset back to the older run. The
+  mark is per publication, not per `run_id`: the next job under a reused custom
+  `run_id` is a new observation and reopens a closed finding. A local scan that
+  finishes after its job was written off leaves its flat run tagged with the
+  job's tenant (it used to read as `default`) and keeps the job's write-off
+  error. A dead local row ended by a pre-#454 replica mid-rollout offers
+  requeue, and a dead local row is not called a re-scan after a day
+  (docs/operations.md). `tests/test_job_architecture.py` keeps the sequence out of the
+  executors and `jobs.py`. **Behaviour change:** a sensor's failed, cancelled or
+  late partial run no longer upserts assets (it did, before even looking at the
+  status; a local one never did) — only a succeeded run feeds derived state, and
+  every outcome still journals the scanner's scope refusals. A local job's run
+  that the store refuses is reported as `; run not published (publication
+  local-<job_id>): …` once its attempts are spent, instead of `; run not filed
+  under its tenant: …`, and a failed local run is now tagged with its tenant like
+  a succeeded one. Local runs are still not sent to `ingest.results`.
+
 - **The API pod passes Pod Security `restricted`; scans moved to a
   `scanner-executor` in a namespace of its own
   ([#338](https://github.com/onixus/Shapoclyack/issues/338)).** The API held

@@ -52,6 +52,7 @@ from api.services import exploit_evidence
 from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
+from api.services import publication_marks
 from api.services import runs as runs_service
 from api.services import scan_surface
 from api.services import vuln_states
@@ -902,14 +903,23 @@ def _declared_surface_for_run(session: Any, *, tenant_id: str, run_id: str) -> s
 
 
 def register_findings_from_run(
-    settings: Settings, *, tenant_id: str, run_id: str
+    settings: Settings, *, tenant_id: str, run_id: str, publication_id: str | None = None
 ) -> RegisterStats:
-    """Fold one run's findings into the tracker. Idempotent per run.
+    """Fold one run's findings into the tracker. Idempotent per publication.
 
-    Re-running it for the same run is a no-op beyond refreshing the latest
-    assessment: identity is the finding, not the observation, so the second pass
-    finds every row and updates it. That matters because both job completion
-    paths (local scan, agent upload) can be retried.
+    Identity is the finding, not the observation: every entry of the run finds
+    or creates its row, and each one is an observation — two entries of one
+    pass that land on one key are two, as they always were.
+
+    A published run's derived updates run at least once
+    (``run_completion.on_run_published``, #454): a replica killed after the
+    fold and before the publication was closed folds the run again. Given the
+    ``publication_id`` it is fed from, a second fold of that publication does
+    nothing at all — no ``observation_count`` bump, no second ``observed``
+    event, no SLA restart, no older assessment written over a newer run's —
+    and the mark that says so commits with the fold (``publication_marks``).
+    Not ``run_id``: a tenant reuses one across jobs, and the next job under
+    the same id is a new sighting that must reopen what was closed.
     """
     entries = _run_findings(settings, run_id, tenant_id=tenant_id)
     if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
@@ -930,6 +940,15 @@ def register_findings_from_run(
     fp_suppressed_observations = fp_overridden = 0
 
     with get_session(settings.postgres_url) as session:
+        if not publication_marks.first_pass(
+            session, publication_id, publication_marks.FINDINGS
+        ):
+            LOG.info(
+                "Findings of run %s were already folded from publication %s",
+                run_id,
+                publication_id,
+            )
+            return RegisterStats(0, 0, 0, 0, 0)
         declared_surface = _declared_surface_for_run(
             session, tenant_id=tenant_id, run_id=run_id
         )

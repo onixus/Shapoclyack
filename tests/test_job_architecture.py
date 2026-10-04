@@ -178,3 +178,94 @@ def test_jobs_facade_functions_only_forward():
         "jobs.py must stay a forwarding table; put the logic in the owning "
         "service instead: " + "; ".join(offenders)
     )
+
+
+# The post-publication sequence (#454). What a published run feeds is decided
+# once, in run_completion, and reached once, from run_publisher, for local and
+# sensor runs alike. The executors are adapters that produce a publication;
+# they must not grow a second copy of the sequence, and neither may the facade.
+API = ROOT / "api"
+
+#: The run_completion entry points and steps of the sequence.
+POST_PUBLICATION_STEPS = {
+    "on_run_published",
+    "project_published_run",
+    "upsert_assets_best_effort",
+    "track_vulnerabilities_best_effort",
+    "record_services_best_effort",
+    "publish_asset_events_best_effort",
+    "notify_channels_best_effort",
+    "record_scope_denials_best_effort",
+}
+
+#: The owning-service calls those steps wrap: what "deriving from a run" is.
+DERIVED_UPDATES = {
+    "upsert_assets_from_run",
+    "register_findings_from_run",
+    "publish_run_events",
+    "notify_run_complete_async",
+}
+
+#: Who may reach each. jobs.py forwards for older callers and is held to
+#: single-call forwarding by test_jobs_facade_functions_only_forward.
+STEP_CALLERS = {
+    "on_run_published": {"run_completion.py", "run_publisher.py", "jobs.py"},
+}
+STEP_DEFAULT_CALLERS = {"run_completion.py", "jobs.py"}
+DERIVED_CALLERS = {
+    "run_completion.py",
+    "assets.py",
+    "vulnerabilities.py",
+    "asset_events.py",
+    "channels.py",
+}
+
+
+def _referenced_names(tree: ast.Module) -> set[str]:
+    """Every name the module calls or takes a reference to, bare or dotted."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+    return names
+
+
+def _api_modules() -> list[Path]:
+    return sorted(path for path in API.rglob("*.py") if "migrations" not in path.parts)
+
+
+def test_only_the_publisher_starts_the_post_publication_sequence():
+    offenders: list[str] = []
+    for path in _api_modules():
+        used = _referenced_names(_tree(path))
+        for step in sorted(used & POST_PUBLICATION_STEPS):
+            allowed = STEP_CALLERS.get(step, STEP_DEFAULT_CALLERS)
+            if path.name not in allowed:
+                offenders.append(f"{path.relative_to(ROOT)} -> {step}")
+        for update in sorted(used & DERIVED_UPDATES):
+            if path.name not in DERIVED_CALLERS:
+                offenders.append(f"{path.relative_to(ROOT)} -> {update}")
+    assert not offenders, (
+        "the post-publication sequence has one owner (run_completion.on_run_published, "
+        "reached from run_publisher once a run is published); a local or sensor "
+        "adapter that calls its steps itself is a second copy of it: "
+        + "; ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("name", ["local_job_runner.py", "job_results.py"])
+def test_execution_adapters_hand_the_run_to_the_publisher(name: str):
+    """Both adapters end in a run_publications row and nothing derived."""
+    tree = _tree(SERVICES / name)
+    used = _referenced_names(tree)
+    assert "publish_now" in used, f"{name} does not hand its run to run_publisher"
+    assert not used & {"adopt_local_run", "write_run_tenant"}, (
+        f"{name} publishes or tags a run itself; that is run_publisher's job"
+    )
+    imported = _imported_names(tree)
+    derived_services = {"assets", "vulnerabilities", "asset_services", "asset_events", "channels"}
+    assert not imported & derived_services, (
+        f"{name} imports a derived-state service; feed it through run_completion"
+    )

@@ -24,11 +24,18 @@ runs/_tenants/<tenant>/<run_id>/     # in the bucket, and under OCTO_OUTPUT_DIR
 ```
 
 A sensor upload lands there directly; a local scan is moved there from the
-flat directory above as soon as it finishes, which is a rename on the same
-volume. If that move fails, the job still succeeds but its `error` gains
-`run not filed under its tenant: …` naming where the complete scan was left;
-it is marked with the tenant, so it is not the default tenant's, but the
-tenant reads its own subtree first — copy it in by hand. A custom `run_id` for
+flat directory above once it finishes, by the same `run_publications` row a
+sensor upload gets (`local-<job_id>`,
+[#454](https://github.com/onixus/Shapoclyack/issues/454)). If that move or the
+store refuses, the job keeps its outcome and the row retries; once its attempts
+are spent the row is `dead`, the job's `error` gains `run not published
+(publication local-<job_id>): …`, and the fix is a requeue, not a copy by hand
+(*Run publications* below). Two cases still leave a flat run in place, tagged
+with its owner so no other tenant reads it, with `run not filed under its
+tenant: runs/<run_id> …` on the job: a `runs/<run_id>` that already carried
+another run's `tenant.json` when the scan finished, and a scan that finished
+after its job had been written off (reaper, restart) — that job keeps the
+error it was written off with. A custom `run_id` for
 a local scan reserves `runs/<run_id>` when the job is created, so a second
 scan asking for the same id is refused rather than written into the first. A scan run with `scanner.main` by hand stays flat — it has no tenant.
 `<tenant>` is the tenant id itself, or `h_<hash>` for an id that is not a safe
@@ -1299,6 +1306,51 @@ That write records the outcome and, in the same transaction, one
 `run_publications` row saying the run is accepted and owed its publication;
 everything visible is then done from that row — first in the request that
 accepted the upload, then by a reconciler in every replica.
+
+A **local** scan (`OCTO_JOB_EXECUTION_MODE=local`) gets the same row since
+[#454](https://github.com/onixus/Shapoclyack/issues/454), named
+`local-<job_id>`, with no `agent_id` and no `archive_path`. Its "staging tree" is
+the directory the scanner wrote, `<output_dir>/runs/<run_id>`, on the replica
+that ran the scan; everything below applies to it unchanged, except that a local
+row is never sent to `ingest.results` and never rewrites `latest_run.json`. A
+local run the store refused used to say `; run not filed under its tenant: …` on
+the job and was not retried; it now says `; run not published (publication
+local-<job_id>): …` once its attempts are spent, and requeue works on it. Notes
+of the old form already on jobs are left as they are.
+
+The assets, findings, service fingerprints, asset events, notification and
+scope-denial journal entry a run feeds are part of the publication: they run
+after the run is visible and before the row is closed, by outcome
+(`docs/architecture.md`, *After publication*). So a `pending` or `dead` row also
+means "not in the asset list or the tracker yet", and a requeue that lands
+feeds the run then. A failed or cancelled run — including a late partial
+archive — feeds only the scope-denial journal: it is not a gap in the asset
+list that a requeue would fill.
+
+Because the feed runs before the row is closed, a replica killed in between —
+or a second attempt that took the row after a lapsed lease — feeds it again.
+The asset upsert and the vulnerability fold each mark the row as fed
+(`run_publications.projected`, migration `0072`) in the same transaction as
+their writes, so the second pass changes nothing there: no extra
+`observation_count`, no second `observed` event, no older run's assessment or
+`last_scan_run_id` written over a newer one, no decommissioned asset revived.
+The mark is per publication, not per `run_id`: a tenant that submits the same
+custom `run_id` every night gets every night counted, and a finding closed in
+between is reopened. The channel notification and the scope-denial journal
+entry can still repeat on that path.
+
+**Rolling out #454 with local scans on more than one replica.** A replica on
+the release before #454 can adopt a `local-<job_id>` row that has been
+`pending` for longer than the adoption window (five minutes, or ten reconciler
+intervals if longer) and whose directory it can see — a shared
+`OCTO_OUTPUT_DIR`. It publishes the run, then looks for the sensor archive a
+local row does not have, and ends the row `dead` with `the uploaded archive is
+no longer on disk …`: the run is readable, nothing was fed. The console offers
+**requeue** for such a row (a sensor row with that reason offers discard);
+requeue it once the rollout has finished and the run is fed then. To avoid it
+altogether, let `octo_run_publication_backlog{status="pending"}` reach zero
+before the rollout, or run local scans on one replica during it. The agent
+execution mode the shipped manifests use has no local rows.
 
 So a store outage, an unreachable broker or a replica killed mid-publication no
 longer costs the scan. It costs its *visibility*, for as long as the row says

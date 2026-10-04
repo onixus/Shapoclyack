@@ -3,6 +3,10 @@
 A job becoming terminal and a run becoming published are separate concerns.
 This module owns the latter: derived inventory, vulnerability state, events,
 notifications and scope-denial audit. Queue state remains in jobs.
+
+Which of those a run feeds is decided here once, by outcome, for both
+execution paths (:data:`POST_PUBLICATION`, #454); the local executor and the
+sensor upload are only two ways of producing a ``run_publications`` row.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import auth_audit
 from api.services import job_states
+from api.services import publication_marks
 from api.services import vulnerabilities as vulns_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.services.integrations import channels as channels_service
@@ -82,12 +87,18 @@ def _requested_by(settings: Settings, job_id: str) -> str:
 
 
 def upsert_assets_best_effort(
-    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+    settings: Settings,
+    *,
+    tenant_id: str,
+    run_id: str | None,
+    job_id: str | None = None,
+    publication_id: str | None = None,
 ) -> None:
     """Best-effort asset-registry upsert (Phase 7) — never fails the scan/upload.
 
-    Covers both execution paths: local-mode scans land here from local_job_runner.run_job,
-    agent-uploaded results land here from complete_job.
+    Covers both execution paths: a local scan and a sensor's upload both reach
+    it through :func:`on_run_published` once their publication has landed, and
+    only for a succeeded run (:data:`POST_PUBLICATION`).
 
     A failure here used to leave no trace outside the pod log: the job still
     read as "succeeded", the scan artifacts were all present, and the asset list
@@ -97,7 +108,9 @@ def upsert_assets_best_effort(
     if not run_id:
         return
     try:
-        assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+        assets_service.upsert_assets_from_run(
+            settings, tenant_id=tenant_id, run_id=run_id, publication_id=publication_id
+        )
     except Exception as exc:  # noqa: BLE001
         _log.exception("Asset upsert failed for run %s (tenant=%s)", run_id, tenant_id)
         if job_id:
@@ -107,7 +120,12 @@ def upsert_assets_best_effort(
 
 
 def track_vulnerabilities_best_effort(
-    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+    settings: Settings,
+    *,
+    tenant_id: str,
+    run_id: str | None,
+    job_id: str | None = None,
+    publication_id: str | None = None,
 ) -> None:
     """Best-effort fold of the run's findings into the tracker (#145).
 
@@ -125,7 +143,9 @@ def track_vulnerabilities_best_effort(
     if not run_id:
         return
     try:
-        vulns_service.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+        vulns_service.register_findings_from_run(
+            settings, tenant_id=tenant_id, run_id=run_id, publication_id=publication_id
+        )
     except Exception:  # noqa: BLE001
         _log.exception(
             "Vulnerability tracking failed for run %s (tenant=%s, job=%s)",
@@ -175,10 +195,10 @@ def publish_asset_events_best_effort(
 ) -> None:
     """Best-effort publish of the run's Phase 10.1 events (Phase 10.2).
 
-    Called from the same two places as ``upsert_assets_best_effort`` and for
-    the same reason — those are the only two points where a finished run's
-    artifacts are on disk under a known tenant, whether the scan ran locally or
-    came up from an agent.
+    Called from :func:`on_run_published`, like ``upsert_assets_best_effort``
+    and for the same reason — a published run is the only point where a
+    finished run's artifacts are on disk under a known tenant, whether the scan
+    ran locally or came up from an agent.
 
     Deliberately quieter than the asset upsert on failure: an empty asset list
     is a broken installation worth recording on the job, while an unpublished
@@ -213,9 +233,9 @@ def notify_channels_best_effort(
 ) -> None:
     """Announce a finished run to the tenant's notification channels (#351).
 
-    Called from the same two points as the asset-event publish above, and that
-    is the fix: those are the only places where a finished run's artifacts are
-    on disk *under a known tenant*. The alert used to be a scanner stage, which
+    Called from the same point as the asset-event publish above, and that is
+    the fix: a published run is the only place where a finished run's
+    artifacts are on disk *under a known tenant*. The alert used to be a scanner stage, which
     ran with installation-wide credentials and no tenant id at all, so on an
     MSSP installation every tenant's scan announced itself in one Slack channel.
 
@@ -300,6 +320,51 @@ def record_scope_denials_best_effort(
         )
 
 
+#: The derived updates a published run can feed, in the order they run. The
+#: order is load-bearing: a finding and a service fingerprint attach to an
+#: asset, so the registry is current first; the events read the tracker the
+#: fold has just updated (retro announcements); the notification describes the
+#: registry and the tracker as they are *after* everything above it.
+SCOPE_DENIALS = "scope_denials"
+ASSETS = publication_marks.ASSETS
+FINDINGS = publication_marks.FINDINGS
+SERVICES = "services"
+EVENTS = "events"
+NOTIFY = "notify"
+
+#: What a published run feeds, by the outcome committed beside it (#454).
+#: One table for both execution paths: a local run and a sensor's upload
+#: reach :func:`on_run_published` through the same ``run_publications`` row,
+#: and nothing else in the codebase decides which of these run.
+#:
+#: Only a *succeeded* run is evidence of absence and of coverage. A failed or
+#: cancelled scan — and a partial archive, which is one of those two — may
+#: have stopped anywhere: its ``diff.json`` would announce as gone what it
+#: never reached, its ``vulnerabilities.json`` may be a partial write, and its
+#: host list would stamp ``last_scanned_at``/``last_vuln_scan_at`` on hosts it
+#: did not finish with and feed identity merges from half a certificate sweep.
+#: So it feeds nothing derived — not even the asset registry, which the sensor
+#: path used to upsert from such a run while the local path did not; the run
+#: itself stays published and readable, and the next complete scan observes
+#: the same hosts. The scanner's scope refusals are journalled whatever the
+#: outcome: a target refused was refused whether or not the scan after it
+#: finished (#244).
+POST_PUBLICATION: dict[str, tuple[str, ...]] = {
+    job_states.SUCCEEDED: (SCOPE_DENIALS, ASSETS, FINDINGS, SERVICES, EVENTS, NOTIFY),
+    job_states.FAILED: (SCOPE_DENIALS,),
+    job_states.CANCELLED: (SCOPE_DENIALS,),
+}
+
+
+def actions_for(status: str) -> tuple[str, ...]:
+    """The derived updates owed to a run published with ``status``.
+
+    An outcome the table does not name gets the journal only: a status added
+    later must opt into feeding derived state, not inherit it by accident.
+    """
+    return POST_PUBLICATION.get(status, (SCOPE_DENIALS,))
+
+
 def project_published_run(
     settings: Settings,
     job_id: str,
@@ -307,32 +372,44 @@ def project_published_run(
     run_id: str,
     tenant_id: str,
     status: str,
+    publication_id: str | None = None,
 ) -> None:
-    """The projections themselves, each already guarded by its own helper."""
-    upsert_assets_best_effort(settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id)
-    # Ungated, matching the local path: this is where the agent's copy of the
-    # run reaches disk, and a refusal the scanner made is a decision to journal
-    # regardless of how the scan ended (#244).
-    record_scope_denials_best_effort(
-        settings,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        requested_by=_requested_by(settings, job_id),
-    )
-    # Gated on the outcome, matching the local path. An agent may attach
-    # diagnostics to a *failed* run, and a partial diff read as a change set
-    # would alert on hosts and ports that a broken scan simply failed to
-    # observe — a disappearance is not a discovery.
-    if status == job_states.SUCCEEDED:
-        track_vulnerabilities_best_effort(
+    """The Postgres and broker projections of :data:`POST_PUBLICATION`.
+
+    Everything but the notification, which :func:`on_run_published` sends
+    last. Each step guards itself, so one that fails costs only itself.
+    """
+    steps = {
+        SCOPE_DENIALS: lambda: record_scope_denials_best_effort(
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            requested_by=_requested_by(settings, job_id),
+        ),
+        ASSETS: lambda: upsert_assets_best_effort(
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            job_id=job_id,
+            publication_id=publication_id,
+        ),
+        FINDINGS: lambda: track_vulnerabilities_best_effort(
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            job_id=job_id,
+            publication_id=publication_id,
+        ),
+        SERVICES: lambda: record_services_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
-        )
-        record_services_best_effort(
+        ),
+        EVENTS: lambda: publish_asset_events_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
-        )
-        publish_asset_events_best_effort(
-            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
-        )
+        ),
+    }
+    for action in actions_for(status):
+        if action in steps:
+            steps[action]()
 
 
 def on_run_published(
@@ -342,15 +419,30 @@ def on_run_published(
     run_id: str,
     tenant_id: str,
     status: str,
+    publication_id: str | None = None,
 ) -> None:
     """Feed a *published* run to everything derived from it. Best-effort.
 
-    Called by ``run_publisher`` the moment a run becomes visible — in the
-    request that accepted the upload when the publication lands there, and
-    from the reconciler when it lands later. Not by ``complete_job``: these
+    The one owner of the post-publication sequence, for both execution paths
+    (#454): ``run_publisher`` calls it once a run's publication has landed —
+    the sensor's upload and, since #454, a local scan's directory alike — and
+    nothing else does. Not ``complete_job`` and not the local executor: these
     read the run directory, so before the publication there is nothing to
     read, and a straggler refused at the terminal write never gets here at all
     because it never produced a publication.
+
+    **At least once, made safe by idempotency.** The publisher runs this
+    *before* it closes the publication's row, so a replica killed in between
+    leaves a row that is published again and fed again — rather than a run
+    whose derived state was simply never written. Each step therefore treats
+    a second pass over the same publication as the same facts: the asset
+    upsert and the vulnerability fold mark ``publication_id`` in their own
+    transaction and do nothing the second time (``publication_marks``; not
+    ``run_id``, which a tenant reuses across jobs), the service fingerprints
+    converge on the job's ``finished_at``, and asset events carry a
+    content-derived ``Msg-Id`` the broker deduplicates. The notification and
+    the scope-denial journal are the two that can repeat on that path; neither
+    is promised exactly-once (docs/architecture.md).
 
     Nothing here may escape. The outcome is committed and the agent's retry is
     answered as a replay, so an exception would report a failure for a run the
@@ -358,7 +450,14 @@ def on_run_published(
     that has in fact landed and have it published a second time.
     """
     try:
-        project_published_run(settings, job_id, run_id=run_id, tenant_id=tenant_id, status=status)
+        project_published_run(
+            settings,
+            job_id,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            status=status,
+            publication_id=publication_id,
+        )
     except Exception as exc:  # pragma: no cover - each projection guards itself
         _log.error(
             "Job %s published run %s but it could not be projected",
@@ -367,7 +466,7 @@ def on_run_published(
             exc_info=True,
         )
         _append_job_error(settings, job_id, f"; run projections did not complete: {exc}")
-    if status == job_states.SUCCEEDED:
+    if NOTIFY in actions_for(status):
         # Last, and only for a scan that finished: a partial or failed run
         # announced as a completed one is a notification about a scan that did
         # not happen. The send itself is on a thread, so this costs one

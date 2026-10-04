@@ -66,7 +66,9 @@ corresponding invariant:
   `run_completion.py` updates derived projections after publication.
 - `job_inputs.py` owns job-scoped files and object-store mirroring;
   `local_scan_executor.py` owns subprocess/process-group lifecycle and
-  `local_job_runner.py` owns the state transitions around a local execution.
+  `local_job_runner.py` owns the state transitions around a local execution
+  and, like `job_results.py`, ends in a `run_publications` row; what a
+  published run feeds is decided only in `run_completion.py` (#454).
 - `job_dispatch.py` publishes the optional NATS wake-up hint. PostgreSQL
   remains the queue; a broker failure cannot erase or transfer ownership of a
   job.
@@ -239,6 +241,69 @@ has to finish by hand. The
 projections that read a published run — assets, vulnerabilities, asset events,
 notifications — run when the publication lands, not when the job finishes, and
 they cannot fail it: a failure there is recorded in the job's `error`.
+
+### After publication: one sequence for local and sensor runs
+
+A local scan goes through the same row
+([#454](https://github.com/onixus/Shapoclyack/issues/454)). When its scanner
+exits, `local_job_runner` writes the outcome and a `run_publications` row
+(`publication_id` = `local-<job_id>`) in one transaction, exactly as
+`complete_job` does for an upload; the directory the scanner wrote plays the
+staging tree's part, and the row is published inline and, failing that, by the
+same reconciler, with the same retries, `dead` end and operator buttons. A local
+row has no `agent_id` and no archive: it is not sent to `ingest.results` (local
+runs never were) and does not rewrite `latest_run.json` (the scanner wrote it).
+A job the reaper or a restart already wrote off refuses the terminal write, so
+its run gets no row — the local counterpart of a refused stale attempt. Unlike a
+refused upload, which is a staging tree nobody lists, that run is a flat
+`runs/<run_id>` every replica lists, so it is tagged with the job's tenant
+before it is left there (no marker reads as `default`), and the job keeps the
+error it was written off with. A flat
+`runs/<run_id>` that already carries another owner's `tenant.json` is left in
+place, as before, and the job's `error` now says so.
+
+What a published run then feeds is decided in one place,
+`run_completion.POST_PUBLICATION`, by the outcome committed beside the row, and
+reached from one place, `run_publisher`, once the run is visible. The two
+executors are adapters that produce a row; `tests/test_job_architecture.py`
+fails if either of them, or `jobs.py`, calls a step of the sequence itself.
+
+| Outcome | Scope-denial journal | Assets | Findings | Services | Asset events | Notification |
+| --- | --- | --- | --- | --- | --- | --- |
+| `succeeded` | yes | yes | yes | yes | yes | yes, last |
+| `failed` | yes | — | — | — | — | — |
+| `cancelled` (incl. a late partial archive) | yes | — | — | — | — | — |
+| anything else | yes | — | — | — | — | — |
+
+The order is the column order. A finding and a fingerprint attach to an asset,
+so the registry is current first; the events read the tracker the fold has just
+written; the notification describes all of it. A run that did not finish — a
+failure, a cancellation, the partial archive a slow sensor uploads after the
+reaper wrote its stop off — feeds nothing derived: its `diff.json` would report
+as gone what it never reached, its findings may be a partial write, and its host
+list would stamp scan coverage on hosts it did not finish with. It is still
+published and readable, and its scope refusals are still journalled under the
+requester's name. **Changed in #454:** a sensor's failed or cancelled run used
+to upsert assets (and did so before looking at the status); the local path
+never did, and both now follow the table.
+
+The sequence runs **before** the row is closed, under the publication's renewed
+lease, so it is owed as durably as the publication: a replica killed in between
+leaves a row that is published and fed again, rather than a run whose assets and
+findings were silently never written. That makes it at-least-once, and each step
+takes a second pass over one publication as the same facts. The asset upsert and
+the vulnerability fold mark the row as fed (`run_publications.projected`) in
+their own transaction, under the row's lock, so a second pass — after a later
+run, or beside a peer's attempt on a lapsed lease — writes nothing: no
+`observation_count` bump, no second `observed` event, no SLA restart, no older
+assessment or `last_scan_run_id` written over a newer run's. The key is the
+publication, not `run_id`: a tenant chooses `run_id` and may reuse it every
+night, and the next job under it is a new sighting that reopens what was closed.
+The service fingerprints converge on the job's `finished_at`, and asset events
+carry a content-derived `Msg-Id` JetStream drops. Two things can repeat on that
+path and are not promised exactly-once: the channel notification and the
+scope-denial journal entry. An attempt that finds the row already closed by a
+peer does not feed the run again.
 
 A staging tree an ingest never finished is collected the next time this
 replica takes a staging directory: past one hour of inactivity for a killed

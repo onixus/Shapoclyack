@@ -299,6 +299,78 @@ def new_publication(
     )
 
 
+def local_publication_id(job_id: str) -> str:
+    """The one publication a local job can owe. Named after the job (#454).
+
+    A sensor's publication is named after the ingest lease that accepted the
+    upload, because one job can see several uploads and only one of them is
+    accepted. A local job has one execution and one terminal write, so the
+    job id already says "this run, once": a second insert under the same id
+    is refused by the primary key rather than becoming a second publication.
+    """
+    return f"local-{job_id}"
+
+
+def new_local_publication(
+    settings: Settings,
+    *,
+    job_id: str,
+    run_id: str,
+    tenant_id: str,
+    job_status: str,
+    exit_code: int | None,
+    scan_error: str | None,
+    surface: str | None,
+    source: Path,
+) -> models.RunPublication:
+    """The row a local scan's terminal write inserts, beside its outcome (#454).
+
+    The same durable intent a sensor's upload gets, so a local run is
+    published — and fed to the derived state — by the same code, with the
+    same retries, the same ``dead`` end and the same operator buttons, rather
+    than inline in the executor with nothing left behind when the store
+    refuses or the replica dies.
+
+    ``source`` is the directory the scanner wrote, ``<output_dir>/runs/<id>``:
+    it plays the staging tree's part. It is on this replica's disk, which is
+    what ``replica`` says to a peer that claims the row and cannot see it.
+
+    ``agent_id`` and ``archive_path`` stay empty, and that is what marks a row
+    as local in :func:`_publish`: there is no uploaded archive to send to
+    ``ingest.results`` (a local run has never been put on that bus), and the
+    scanner already wrote ``latest_run.json`` itself.
+    """
+    now = _now()
+    return models.RunPublication(
+        publication_id=local_publication_id(job_id),
+        tenant_id=tenant_id,
+        job_id=job_id,
+        run_id=run_id,
+        agent_id=None,
+        job_status=job_status,
+        exit_code=exit_code,
+        scan_error=scan_error,
+        surface=surface,
+        staging_path=str(source),
+        archive_path=None,
+        replica=settings.instance_id,
+        status=STATUS_PENDING,
+        attempts=0,
+        claims=0,
+        claims_base=0,
+        fence=0,
+        lease_lapses=0,
+        next_attempt_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _is_local(publication: _Publication | models.RunPublication) -> bool:
+    """A run the API executed itself, rather than one a sensor uploaded."""
+    return publication.agent_id is None and publication.archive_path is None
+
+
 def publish_now(settings: Settings, publication_id: str) -> bool:
     """Publish one owed run in the caller's thread. Answers whether it landed.
 
@@ -357,6 +429,9 @@ def _attempt(settings: Settings, publication: _Publication) -> bool:
     try:
         with _Lease(settings, publication):
             _publish(settings, publication)
+            # Still under the lease, and before the row is closed: see
+            # :func:`_project`.
+            _project(settings, publication)
     except _TreeIsGone as exc:
         _record_failure(settings, publication, str(exc) or _TREE_IS_GONE, final=True)
         return False
@@ -564,6 +639,13 @@ def _publish(settings: Settings, publication: _Publication) -> None:
         artifact_workspace.promote_staging(settings, run, staging)
     elif not _tree_is_stored(settings, publication):
         raise _TreeIsGone(_TREE_IS_GONE)
+    if _is_local(publication):
+        # The scanner wrote the pointer as it finished, and a local run has
+        # never been put on ``ingest.results``: there is no uploaded archive
+        # to carry it, and re-tarring the directory would give every retry a
+        # different ``Msg-Id``. Rewriting the pointer from a retry hours later
+        # would point it back at an older run.
+        return
     results_ingest.update_latest_run_pointer(settings.state_dir, run_id)
     _publish_to_bus(settings, publication)
 
@@ -762,13 +844,14 @@ def _publish_to_bus(settings: Settings, publication: _Publication) -> None:
 
 
 def _record_success(settings: Settings, publication: _Publication) -> None:
-    """Close the row out, drop the archive, and feed what reads the run.
+    """Close the row out and drop the archive.
 
-    The projections run here, not in ``complete_job``: they read the run
-    directory, so before the publication there is nothing for them to read,
-    and after a deferred publication they are owed exactly as much as the run
-    is. Each one guards itself; a failure among them is a note on the job, not
-    a reason to publish the run twice.
+    The projections have already run (:func:`_project`), not in
+    ``complete_job`` or the local executor: they read the run directory, so
+    before the publication there is nothing for them to read, and after a
+    deferred publication they are owed exactly as much as the run is. Each one
+    guards itself; a failure among them is a note on the job, not a reason to
+    publish the run twice.
 
     The "run not published" note is decided from the row as it is *now*,
     locked, and not from this attempt's snapshot. The snapshot was taken at
@@ -798,12 +881,41 @@ def _record_success(settings: Settings, publication: _Publication) -> None:
             publication.job_id,
             publication.attempts + 1,
         )
+
+
+def _project(settings: Settings, publication: _Publication) -> None:
+    """Feed the published run to its derived state, while the row still owes it.
+
+    After the run is visible — the projections read the run directory — and
+    *before* :func:`_record_success` closes the row, so the obligation is as
+    durable as the publication itself (#454). Run after the close, as it used
+    to be, a replica killed between the two left a published run that no
+    tick would ever feed: its assets, findings and notification simply never
+    happened, with nothing owed to say so. Run before it, the same death
+    leaves a row that is published again and projected again, which the
+    projections are built to treat as the same facts: the steps that are not
+    idempotent by themselves mark this row as fed in their own transaction
+    (``publication_marks``), so a second pass — this one, or a peer's running
+    beside it after a lapsed lease — feeds them nothing.
+
+    A row a peer has already closed is not projected a second time here: the
+    peer that closed it projected it first.
+    """
+    with get_session(settings.postgres_url) as session:
+        if session.get(models.RunPublication, publication.publication_id) is None:
+            LOG.info(
+                "Run %s of job %s was closed out by another attempt; not projecting it again",
+                publication.run_id,
+                publication.job_id,
+            )
+            return
     run_completion.on_run_published(
         settings,
         publication.job_id,
         run_id=publication.run_id,
         tenant_id=publication.tenant_id,
         status=publication.job_status,
+        publication_id=publication.publication_id,
     )
 
 
@@ -1242,7 +1354,13 @@ def _tree_kept_until(row: models.RunPublication) -> datetime | None:
     A day from the *acceptance*, not from the last attempt: the sweep
     (``workspace._sweep_abandoned``) reads the staging directory's
     ``st_mtime``, which only the first ``tenant.json`` moves.
+
+    ``None`` for a local row: its tree is the scanner's own
+    ``<output_dir>/runs/<run_id>``, which that sweep never takes (it removes
+    hidden staging names only), so no deadline is known for it.
     """
+    if _is_local(row):
+        return None
     if row.created_at is None:  # pragma: no cover - written with the row
         return None
     return row.created_at + timedelta(seconds=artifact_workspace.INGEST_KEPT_SECONDS)
@@ -1266,7 +1384,10 @@ def _resolution(row: models.RunPublication, *, now: datetime) -> str:
         return "wait"
     reason = row.last_error or ""
     if reason == _ARCHIVE_IS_GONE:
-        return "discard"
+        # A local row has no archive and the new code never asks for one; an
+        # old replica that adopted it mid-rollout does, and ends it here with
+        # the run promoted and nothing fed. A requeue on this release feeds it.
+        return "requeue" if _is_local(row) else "discard"
     if reason in (_REPLICA_IS_GONE, _TREE_IS_GONE):
         # Both are written only when no reachable copy of the tree was found
         # — not in staging, and not whole in the store (``_tree_is_stored``).

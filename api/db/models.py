@@ -2074,6 +2074,11 @@ class RunPublication(Base):
     # Renewals of this row that failed or came after the hold had lapsed
     # (#426): which publication ran unprotected, after the fact.
     lease_lapses: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The derived updates this publication has already fed, written in each
+    # update's own transaction (``publication_marks``, migration 0072). It is
+    # what makes a replayed row feed nothing twice: ``run_id`` cannot say it,
+    # because a tenant reuses one across jobs.
+    projected: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
