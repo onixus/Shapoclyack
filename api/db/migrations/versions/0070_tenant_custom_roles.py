@@ -1,7 +1,7 @@
 """Tenant-defined roles: the write side of ``roles`` (#318)
 
 Revision ID: 0070_tenant_custom_roles
-Revises: 0068_compliance_frameworks
+Revises: 0069_rate_limit_buckets
 Create Date: 2026-10-04
 
 Migration 0049 created ``roles``/``role_permissions`` keyed by ``(role_id,
@@ -56,7 +56,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0070_tenant_custom_roles"
-down_revision: Union[str, None] = "0068_compliance_frameworks"
+down_revision: Union[str, None] = "0069_rate_limit_buckets"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
