@@ -3021,6 +3021,67 @@ export async function bulkAssetAction(
   }
 }
 
+/** Where a CMDB/AD import says its data came from (#350). `operator` is not
+ * one: it marks a hand edit, which an import must not be able to claim. */
+export type AssetImportSource = "cmdb" | "ad" | "other";
+
+/** Body of `POST /api/assets/import`. `content` is the file's decoded text;
+ * `dry_run` defaults to true on the server, and the console always says. */
+export type AssetImportBody = {
+  format: "csv" | "json";
+  content: string;
+  dry_run: boolean;
+  context_source: AssetImportSource;
+  overwrite_operator_edits: boolean;
+};
+
+export type AssetImportStatus = "create" | "update" | "unchanged" | "conflict" | "invalid";
+
+/** One data row's outcome. `row` counts data rows from 1, header excluded.
+ * `code` is the reason for a conflict or an invalid row — `ambiguous_match`,
+ * `identifier_owned_by_other_asset`, `operator_override`, `duplicate_in_file`,
+ * `quota_exhausted`, `unknown_asset`, `invalid_value`. */
+export type AssetImportRow = {
+  row: number;
+  status: AssetImportStatus;
+  key: string;
+  code: string | null;
+  message: string | null;
+  asset_id: string | null;
+  changes: Record<string, { old: string | number | null; new: string | number | null }>;
+  identifiers_added: string[];
+  conflicting_fields: string[];
+};
+
+export type AssetImportReport = {
+  dry_run: boolean;
+  format: string;
+  sha256: string;
+  context_source: string;
+  overwrite_operator_edits: boolean;
+  total: number;
+  counts: Record<AssetImportStatus, number>;
+  codes: Record<string, number>;
+  ignored_columns: string[];
+  rows: AssetImportRow[];
+  replayed: boolean;
+};
+
+export async function importAssets(
+  body: AssetImportBody,
+  options?: { idempotencyKey?: string },
+) {
+  try {
+    const headers = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    const { data } = await api.post<AssetImportReport>("/assets/import", body, { headers });
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
 export async function fetchTrackedVulnerabilities(
   filters?: VulnerabilityListFilters,
   page?: PageParams,

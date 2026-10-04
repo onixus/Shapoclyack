@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
 import { AssetBulkContext } from "@/components/asset/bulk-context";
+import { AssetImportButton } from "@/components/asset/import-dialog";
 import { useT } from "@/lib/i18n";
 import { pluralForm } from "@/lib/plural";
 import { useRelativeTime } from "@/lib/i18n/datetime";
@@ -241,6 +242,7 @@ function AssetsInner() {
             {assetsQuery.isFetching ? " · Refreshing inventory stream…" : ""}
           </p>
         </div>
+        <AssetImportButton />
       </div>
 
       <DataTable
