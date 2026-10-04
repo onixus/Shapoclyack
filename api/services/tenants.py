@@ -223,6 +223,14 @@ def reset_for_tests() -> None:
         # one test left would refuse the next test's tenant of the same id.
         session.query(models.TenantDeletionStep).delete()
         session.query(models.TenantDeletion).delete()
+        # Tenant-defined roles (#318) are keyed by a tenant id with no foreign
+        # key — the built-ins share the table under ``""`` — so a role one test
+        # defined would otherwise be the name the next test's tenant of the
+        # same id finds taken. The built-in rows are the migration's seed and
+        # stay; their permission rows cascade with nothing here.
+        session.query(models.RoleDefinition).filter(
+            models.RoleDefinition.builtin.is_(False)
+        ).delete(synchronize_session=False)
         session.query(models.Tenant).delete()
 
 

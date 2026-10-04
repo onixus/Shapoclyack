@@ -59,6 +59,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/schedules` | Tenant-scoped recurring scan schedules, with the tenant's maintenance calendar and change freeze above them | Operator; admin to freeze or thaw |
 | `/wordlists` | Tenant-uploaded subdomain/bucket wordlists | Operator |
 | `/users` | Users & access: accounts and roles, tenant membership, sensor provisioning-key revocation, sign-in audit; every role gets **My account** (own password) | Admin; any role for own password |
+| `/access` | Roles & members of the selected tenant: the roles it defined for itself (create, edit, rename, delete with reassignment) and its members (grant, change, revoke) | `tenant.member.read` to read, `tenant.member.manage` to change — the tenant's admin, the platform admin, or a tenant role holding them |
 | `/audit` | Administrative audit trail: what was changed, by whom, with the value before and after; filters and CSV/NDJSON export | `audit.read` in the tenant — its admin or its auditor |
 | `/retention` | Data retention for the selected tenant: every category's platform default, bounds, override and window in force; the legal-hold banner; for a platform admin, placing and releasing a hold and the personal-data requests (export, erasure) for console accounts ([data-retention.md](data-retention.md)) | `tenant.retention.read` to read — the tenant's admin or auditor; `tenant.retention.manage` to edit; platform admin for the hold and the requests |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
@@ -973,6 +974,38 @@ role, because an empty picker would demote the member on the first edit. The
 account's *global* role — the **Users** tab, `users.role` — is still the three
 original names and is still a fixed list.
 
+## Roles & members
+
+`/access` is the tenant's own counterpart of the membership tab above, for the
+tenant the switcher is on. The membership tab is a platform page — `/users`
+hangs off the account's global `admin` role — so before it the tenant's own
+admin, whom `tenant.member.manage` lets the API serve, had no screen for it.
+The page is gated on `tenant.member.read` **in the selected tenant** and never
+on the account's role; the two panels on it are shared with `/users`
+(`web-next/src/components/tenant-members-panel.tsx` and
+`tenant-roles-panel.tsx`).
+
+**Tenant roles** lists the roles the tenant defined
+([#318](https://github.com/onixus/Shapoclyack/issues/318), see
+[api-and-rbac.md](api-and-rbac.md#tenant-defined-roles)) with their rank,
+permissions and how many members hold each. **New role** and the edit dialog
+offer only what the API will accept from the signed-in principal: ranks up to
+its own, permissions it holds (plus the two approvals, for a member manager),
+and never a permission the catalogue marks not `tenant_grantable`. The
+separation-of-duties conflicts (an approval above read rank, or with
+`tenant.member.manage`) are named in the dialog before saving. A role above the
+principal has no edit or delete control. Deleting a role somebody holds asks
+where its members go and cannot be confirmed without an answer.
+
+**Members** is the membership editor, with the same ceiling: the role picker
+offers the built-in and tenant roles the principal may grant, and a member
+whose current role is above the principal is shown as text, without a picker or
+a revoke button — the API refuses both.
+
+Rank-gated doors read `tenant_rank` from `/auth/me` before the console's own
+rank table, which knows only the built-ins: by name a tenant role would score
+1 whatever it was defined as.
+
 ## What the console hides, and how it decides
 
 Every gate in the console asks one function — `can(user, requirement)` in
@@ -982,7 +1015,7 @@ route behind it is written with:
 | In the console | On the API | Reads |
 | --- | --- | --- |
 | `permission: "…"` | `require_permission` | the permission list from `/auth/me`, scoped to the selected tenant |
-| `minRole: "operator"` | `require_tenant(Role.operator)` | the rank of `tenant_role` — the role held **in that tenant** |
+| `minRole: "operator"` | `require_tenant(Role.operator)` | `tenant_rank`, the rank of the role held **in that tenant** (the built-in table for `tenant_role` on an API that does not send it) |
 | `globalMinRole: "admin"` | `require_role(Role.admin)` | the account's own `role` from the JWT |
 
 Which matters because since [#318](https://github.com/onixus/Shapoclyack/issues/318)

@@ -448,6 +448,7 @@ def create_app() -> FastAPI:
     app.include_router(passkeys_routes.router, prefix="/api")
     app.include_router(audit_routes.router, prefix="/api")
     app.include_router(rbac_routes.router, prefix="/api")
+    app.include_router(rbac_routes.tenant_router, prefix="/api")
     app.include_router(retention_routes.router, prefix="/api")
     app.include_router(tenant_lifecycle_routes.router, prefix="/api")
     if settings.service_tokens_enabled:

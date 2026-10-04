@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     ForeignKey,
     LargeBinary,
     ForeignKeyConstraint,
@@ -296,12 +297,20 @@ class UserTenant(Base):
     tenant_id: Mapped[str] = mapped_column(
         ForeignKey("tenants.tenant_id", ondelete="CASCADE"), index=True
     )
-    role: Mapped[str] = mapped_column(default="viewer")  # viewer | operator | admin
+    # A built-in tenant role (api/core/permissions.py) or, since #318, the
+    # ``role_id`` of a role this tenant defined in ``roles``. No foreign key:
+    # the built-ins are every tenant's and live under ``roles.tenant_id = ''``,
+    # so the reference is kept by api/services/rbac.py, which renames and
+    # deletes a tenant role together with the memberships that name it.
+    role: Mapped[str] = mapped_column(default="viewer")
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
+        # "Who holds this role here" — asked before a tenant role is deleted
+        # and by the rename that carries its holders along (migration 0070).
+        Index("ix_user_tenants_tenant_role", "tenant_id", "role"),
     )
 
 
@@ -348,6 +357,15 @@ class RoleDefinition(Base):
     rank: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
+    # Last edit of a tenant-defined role (migration 0070). NULL for the
+    # built-ins, which only a release changes, and for a role never edited.
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+    updated_by: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        CheckConstraint("rank BETWEEN 1 AND 3", name="ck_roles_rank"),
+        CheckConstraint("builtin = (tenant_id = '')", name="ck_roles_builtin_scope"),
+    )
 
 
 class RolePermission(Base):

@@ -85,6 +85,13 @@ ACTION_USER_WEBAUTHN_REVOKE = "user.webauthn_revoke"
 ACTION_BREAK_GLASS_LOGIN = "auth.break_glass_login"
 ACTION_MEMBERSHIP_GRANT = "membership.grant"
 ACTION_MEMBERSHIP_REVOKE = "membership.revoke"
+# Tenant-defined roles (#318). Editing a role changes what every member holding
+# it may do, so it is recorded like a grant: the definition before and after.
+# A delete that moved its holders elsewhere also writes one ``membership.grant``
+# per holder, because each of those is a person whose access changed.
+ACTION_ROLE_CREATE = "role.create"
+ACTION_ROLE_UPDATE = "role.update"
+ACTION_ROLE_DELETE = "role.delete"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"
 ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
 ACTION_PROVISIONING_KEY_CREATE = "provisioning_key.create"

@@ -79,6 +79,10 @@ _ACTION_SEVERITY = {
     "user.delete": 8,
     "membership.grant": 8,
     "membership.revoke": 8,
+    # A tenant role's definition is every holder's privilege at once (#318).
+    "role.create": 8,
+    "role.update": 8,
+    "role.delete": 8,
     "service_token.create": 8,
     "provisioning_key.create": 8,
     "agent.delete": 8,

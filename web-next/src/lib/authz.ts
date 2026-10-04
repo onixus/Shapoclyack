@@ -19,7 +19,10 @@ import type { Me, Role } from "@/lib/api";
  */
 
 /** What a requirement is asked about: whatever `/auth/me` last said. */
-export type Principal = Pick<Me, "role" | "tenant_role" | "permissions"> | null | undefined;
+export type Principal =
+  | (Pick<Me, "role" | "tenant_role" | "permissions"> & Partial<Pick<Me, "tenant_rank">>)
+  | null
+  | undefined;
 
 /**
  * Mirror of the rank column in `api/core/permissions.py`. The
@@ -83,9 +86,14 @@ export function tenantRole(user: Principal): string {
   return user?.tenant_role ?? user?.role ?? "viewer";
 }
 
-/** Its rank; 1 (read-only) for a role this build does not know, matching
- * `api.core.permissions.rank_for`. */
+/** Its rank. The API's own answer (`tenant_rank`) when it sent one: a role the
+ * tenant defined (#318) is not in the table above, and looking it up by name
+ * would score a rank-2 `soc-lead` as 1 and hide every scanning page from it —
+ * the defect this file exists to close, reopened by the first custom role.
+ * The table is the fallback for an API that predates the field; 1 (read-only)
+ * for a role neither knows, matching `api.core.permissions.rank_for`. */
 export function tenantRank(user: Principal): number {
+  if (typeof user?.tenant_rank === "number") return user.tenant_rank;
   return ROLE_RANK[tenantRole(user)] ?? 1;
 }
 
@@ -119,6 +127,33 @@ export function canOperate(user: Principal): boolean {
  * separate question and the switcher already answers it. */
 export function isTenantAdmin(user: Principal): boolean {
   return tenantRank(user) >= ROLE_RANK.admin;
+}
+
+/** The two approvals: a member manager hands them out without holding them,
+ * which is how the tenant admin has always staffed `scope-approver` and
+ * `risk-approver`. Mirror of `APPROVAL_PERMISSIONS` in
+ * `api/core/permissions.py`. */
+const APPROVAL_PERMISSIONS = ["scan_scope.approve", "vulnerability.exception.approve"];
+
+/**
+ * Whether this principal may hand out a role of `rank` carrying `permissions`
+ * in the active tenant — define it, or grant it to somebody. Mirror of
+ * `exceeds_authority` in `api/core/permissions.py`, used to offer only what
+ * the API will accept: no rank above the principal's own, no permission it
+ * does not hold (the approvals excepted, for a member manager), and no limit
+ * at all for the platform admin.
+ */
+export function withinAuthority(
+  user: (Principal & { is_platform_admin?: boolean }) | null | undefined,
+  rank: number,
+  permissions: readonly string[],
+): boolean {
+  if (!user) return false;
+  if (user.is_platform_admin) return true;
+  if (rank > tenantRank(user)) return false;
+  const held = new Set(user.permissions ?? []);
+  const delegable = held.has("tenant.member.manage") ? APPROVAL_PERMISSIONS : [];
+  return permissions.every((key) => held.has(key) || delegable.includes(key));
 }
 
 /** The one gate. Everything above is a named shorthand for a call to this. */

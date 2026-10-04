@@ -534,7 +534,8 @@ One row per administrative change, with the resource before and after it:
 | `user.password_change` | `POST /api/auth/password` — the owner rotating their own, kept a separate action so a reset performed *on* an account is not buried under everyone's routine rotations |
 | `user.mfa_enable`, `user.mfa_disable` | `POST /api/auth/mfa/totp/confirm`, `POST /api/auth/mfa/disable` — the account enrolling or removing its own second factor; the admin-side reset is `user.mfa_reset`. Disable and reset record how many security keys went with it (`webauthn_credentials`) |
 | `user.webauthn_register`, `user.webauthn_revoke` | `POST /api/auth/mfa/webauthn/register/verify`, `DELETE /api/auth/mfa/webauthn/credentials/{id}` — a security key added to or removed from one's own account (key id, name, AAGUID; no key material) |
-| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}` |
+| `membership.grant`, `membership.revoke` | `PUT`/`DELETE /api/tenants/{id}/members/{u}`. A `membership.grant` is also written per holder when a tenant role is deleted with `reassign_to`, `after.reason` naming the role that went |
+| `role.create`, `role.update`, `role.delete` | `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles[/{role}]` ([#318](https://github.com/onixus/Shapoclyack/issues/318)) — the definition (`role_id`, `description`, `rank`, `permissions`) before and after. A rename's `after` carries `memberships_renamed`; a delete's carries where its holders went |
 | `service_token.create`, `service_token.revoke` | `POST /api/tenants/{id}/service-tokens[…/revoke]` |
 | `provisioning_key.create`, `provisioning_key.revoke` | `POST /api/tenants/{id}/provisioning-keys[…/revoke]` |
 | `agent.register` | `POST /api/agent/register`, **first registration only** — a restart re-registers, and that is uptime rather than an administrative change |
@@ -816,14 +817,79 @@ it is only supposed to approve.
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
 anyone below it: those counters span every tenant on the installation.
 
-**Custom roles per tenant are not implemented.** The schema holds them
-(`roles`/`role_permissions`, keyed by role and tenant, with the built-ins under
-the empty tenant id) and `GET /api/rbac/roles` already returns a tenant's own
-rows, but there is no way to create one and an unknown role name resolves to no
-permissions at all. #318 stays open for it.
-
 The route implementation is authoritative. Client-side hiding is usability,
 not an authorization control.
+
+### Tenant-defined roles
+
+A tenant can define roles of its own — a **name**, a **rank** and an
+**explicit set of permissions** — and grant them on a membership like any
+built-in role ([#318](https://github.com/onixus/Shapoclyack/issues/318)).
+Defining one is a member-management act, so it needs `tenant.member.manage` in
+that tenant (its `admin`, the platform admin, or a tenant role holding it):
+
+```http
+POST   /api/tenants/{tenant_id}/roles              {"role_id": "soc-lead", "description": "…", "rank": 2, "permissions": ["audit.read", "scan.cancel"]}
+PATCH  /api/tenants/{tenant_id}/roles/{role_id}    {"role_id": "…", "description": "…", "rank": 1, "permissions": [...]}   (every field optional)
+DELETE /api/tenants/{tenant_id}/roles/{role_id}[?reassign_to=viewer]
+```
+
+`GET /api/rbac/roles` lists them after the built-ins, with `member_count` (how
+many of the tenant's members hold each role) and who created and last changed
+them; `GET /api/rbac/permissions` marks each permission `tenant_grantable`.
+Like every other `/api/tenants/{id}/…` route these are out of every service
+token's reach.
+
+**What a role may be** — refused with `422` for everybody, the platform admin
+included:
+
+| Rule | Why |
+|---|---|
+| The name is 2–48 lowercase letters, digits and single dashes, starting with a letter, and is not a built-in role's (`409` if it is, or if the tenant already has it) | `admin` in one tenant must not mean something else than in the next |
+| Every permission is in the catalogue, and is one some built-in **tenant** role carries — never `config.write` or a `platform.*` permission | A tenant cannot write a role that reaches the installation |
+| `scan_scope.approve` and `vulnerability.exception.approve` only at rank 1, and never together with `tenant.member.manage` | The separation of duties the built-ins have by construction: an approver who can write acts on their own approval, and one who grants memberships can hand the approved work to an account of their own |
+| Rank is 1, 2 or 3; at most 64 roles per tenant | |
+
+**Nobody hands out more than they hold** — `403`. A role may not carry a rank
+above the caller's own rank in the tenant, nor a permission the caller does not
+hold. This applies to defining a role, to editing one (both the definition
+before and the one after: a member manager can neither widen a role past
+themselves nor narrow or delete one above them), and — since a tenant role can
+now hold `tenant.member.manage` below rank 3 — to **granting and revoking
+memberships**: `PUT`/`DELETE /api/tenants/{id}/members/{u}` refuse a role above
+the caller and refuse to change or revoke a member whose current role is above
+the caller. One exception keeps the tenant `admin` working as it always has:
+whoever holds `tenant.member.manage` may hand out the two approval permissions
+without holding them, which is how `scope-approver` and `risk-approver` have
+been staffed — the approval roles are held to read rank without
+`tenant.member.manage`, so taking one means giving up the administration. The
+platform admin has no ceiling.
+
+**Rename and delete never change anybody's access silently.** Renaming a role
+(`PATCH` with a new `role_id`) moves every membership that names it to the new
+name in the same transaction, so its holders keep exactly what they had.
+Deleting a role somebody holds is `409` with the number of holders; name
+`reassign_to` — a built-in or another role of the tenant, within what the
+caller may grant — and each holder is regranted that role and recorded as a
+`membership.grant` with the role before and after. A changed definition
+applies to every holder from their next request.
+
+**Isolation.** A tenant's role exists in that tenant only: another tenant's
+`GET /api/rbac/roles` does not list it, granting its name there is `422`
+(unknown role), and its `PATCH`/`DELETE` under another tenant's path is `404`.
+
+**Resolution.** Built-in roles still resolve from `api/core/permissions.py`
+without a query, so every membership written before tenant roles existed means
+what it meant. A tenant role is read from its rows, cut to the tenant-grantable
+permissions whatever the rows say, and a membership naming a role that is
+neither a built-in nor a role of *its* tenant — deleted, another tenant's, the
+platform admin's written in by hand — resolves to rank 1 and no permissions.
+`GET /api/auth/me` returns the role's resolved rank as `tenant_rank` next to
+`tenant_role`, because a client cannot look a tenant role's rank up in a table
+of its own.
+
+Every create, change and delete is in the administrative audit trail as
+`role.create`, `role.update` and `role.delete`.
 
 ### Platform admin vs tenant admin
 
@@ -876,7 +942,7 @@ sets the status yet — see
 |---|---|
 | `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
 | `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (`audit.read` in the tenant, so an `auditor` too; CSV/NDJSON export) |
-| `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`), read-only |
+| `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`). A tenant's own roles are written under `/api/tenants/{id}/roles` (`tenant.member.manage`, see [Tenant-defined roles](#tenant-defined-roles)) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents`, `/api/agent/*` | Sensors: fleet status and per-sensor lifecycle under `/api/agents`; registration, heartbeat and job claim under `/api/agent/*` (agent JWT) |
@@ -2136,7 +2202,10 @@ DELETE /api/tenants/{tenant_id}/members/{username}
 ```
 
 `PUT` is idempotent and re-grants change the role; `role` is any of the eight
-tenant roles in [Roles](#roles) above. Every grant and revoke is recorded in
+tenant roles in [Roles](#roles) above or a role this tenant defined
+([Tenant-defined roles](#tenant-defined-roles)). Both are held to the caller's
+own authority in the tenant: `403` for a role above it, and for changing or
+revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
 Membership rows hold no credential material.

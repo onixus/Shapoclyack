@@ -6,6 +6,34 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Tenant-defined roles
+  ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
+  member managers can define roles of their own — a name, a rank and an
+  explicit permission set — under `POST/PATCH/DELETE
+  /api/tenants/{id}/roles`, and grant them on a membership like a built-in
+  role. A role may hold only permissions some built-in tenant role carries
+  (never `config.write` or `platform.*`), keeps the approvals at read rank and
+  apart from `tenant.member.manage`, and can carry nothing — rank or
+  permission — the person defining it does not hold. **The same ceiling now
+  applies to membership grants and revokes** (`403` for a role above the
+  caller, or for changing or revoking a member above the caller), because
+  `tenant.member.manage` can now be held below `admin`; the tenant `admin`
+  keeps granting every built-in role, the two approval roles included.
+  Renaming a role carries its holders; deleting a held role is `409` unless
+  `reassign_to` names where they go, each move recorded as a
+  `membership.grant`. A tenant's roles are invisible and ungrantable in every
+  other tenant, and a membership naming a role its tenant does not have
+  resolves to rank 1 and nothing. Recorded as `role.create`, `role.update`,
+  `role.delete`. `GET /api/auth/me` adds `tenant_rank`, and the console a
+  **Roles & members** page (`/access`) gated on `tenant.member.read` in the
+  selected tenant — the tenant admin's first screen for its own members. Two
+  places that ranked a role by its name now read the resolved rank: the
+  service-token issuance ceiling and the console's rank gates (including the
+  risk-acceptance request, which compared the name to `admin`). Migration
+  `0070_tenant_custom_roles` (expand-only; see
+  [operations.md](docs/operations.md#tenant-defined-roles) for the rollout and
+  rollback notes).
+
 - **Postgres row-level security behind every tenant predicate
   ([#311](https://github.com/onixus/Shapoclyack/issues/311)).** Tenant
   isolation in the database was the `WHERE tenant_id` of each query and nothing

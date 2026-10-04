@@ -2138,6 +2138,46 @@ with `--docker` (or roll the Kubernetes deployment).
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
 
+## Tenant-defined roles
+
+A tenant can define its own roles and grant them on memberships
+([#318](https://github.com/onixus/Shapoclyack/issues/318); the API contract is
+[api-and-rbac.md](api-and-rbac.md#tenant-defined-roles)). Three things an
+operator of the installation needs to know about them.
+
+**Upgrading.** Migration `0070_tenant_custom_roles` is expand-only: two
+nullable columns on `roles`, two check constraints every seeded row already
+satisfies, and an index on `user_tenants (tenant_id, role)`. No membership is
+rewritten, and built-in role names keep resolving from the code without a
+query, so nothing changes for anybody until a tenant defines a role. During a
+rolling deploy a replica still on the previous release reads a membership that
+names a tenant role as an unknown role and gives it the lowest authority (rank
+1, no permissions) — so define and grant tenant roles once the rollout is
+done, or expect their holders to be read-only on old replicas for its
+duration.
+
+**Rolling back.** `0070` downgrades cleanly and keeps the tenant roles' rows.
+The previous release lists them and does not enforce them: their holders fall
+to the lowest authority, never to a higher one. Before a planned rollback,
+regrant those members a built-in role if they must keep working through it:
+
+```sql
+SELECT ut.tenant_id, ut.username, ut.role
+FROM user_tenants ut
+JOIN roles r ON r.role_id = ut.role AND r.tenant_id = ut.tenant_id AND NOT r.builtin;
+```
+
+**Deleting a role somebody holds** is refused (`409`) until its holders are
+moved: `DELETE /api/tenants/{id}/roles/{role}?reassign_to=<role>` regrants all
+of them in one transaction and records each move as a `membership.grant`.
+
+**For whoever adds a built-in role in a later release.** Built-in names
+resolve before a tenant's own, so a release that adds a built-in role whose
+name some tenant already uses would silently give that tenant's holders the
+new built-in authority. Tenant role names are refused only when they collide
+with a built-in *today*; the migration that adds the built-in has to rename
+the colliding tenant roles (and the memberships naming them) first.
+
 ## Sessions and revocation
 
 Since [#314](https://github.com/onixus/Shapoclyack/issues/314) a console token
