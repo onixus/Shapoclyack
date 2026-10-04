@@ -209,6 +209,7 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("maintenance_windows", "scope_targets"): "network targets",
     ("report_templates", "sections"): "report layout",
     ("retro_match_state", "last_stats"): "matcher counters",
+    ("run_publications", "projected"): "names of the projection steps already applied",
     ("risk_score_snapshots", "by_risk_level_open"): "counters",
     ("risk_score_snapshots", "by_severity_open"): "counters",
     ("risk_score_snapshots", "by_sla"): "counters",
