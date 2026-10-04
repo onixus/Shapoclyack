@@ -2464,6 +2464,76 @@ BulkVulnerabilityRequest = Annotated[
 ]
 
 
+class AssetImportRequest(BaseModel):
+    """Body for ``POST /api/assets/import`` (#350).
+
+    ``content`` is the file's text, already decoded — the console reads the
+    upload as UTF-8 and falls back to Windows-1251, which is what Excel in a
+    Russian locale writes. ``dry_run`` defaults to true: applying is the
+    explicit act. ``context_source`` names the system the file came from and is
+    recorded on every change; ``operator`` is not offered, because it is what
+    marks a hand edit and an import must not be able to claim one.
+    ``link_new_identifiers`` lets a row that found its asset by one identifier
+    attach another the registry has never seen; without it such a row is a
+    ``new_identifier`` conflict.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: Literal["csv", "json"]
+    # Characters, not bytes; the service applies the byte ceiling.
+    content: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+    dry_run: bool = True
+    context_source: Literal["cmdb", "ad", "other"] = "cmdb"
+    overwrite_operator_edits: bool = False
+    link_new_identifiers: bool = False
+
+
+class AssetImportChange(BaseModel):
+    old: str | int | None = None
+    new: str | int | None = None
+
+
+class AssetImportRow(BaseModel):
+    """One data row's outcome. ``row`` counts data rows from 1, header excluded.
+
+    ``conflicting_fields`` names the fields of an ``operator_override`` and the
+    ``kind:value`` identifiers of a ``new_identifier``.
+    """
+
+    row: int
+    status: Literal["create", "update", "unchanged", "conflict", "invalid"]
+    key: str
+    code: str | None = None
+    message: str | None = None
+    asset_id: str | None = None
+    changes: dict[str, AssetImportChange] = Field(default_factory=dict)
+    identifiers_added: list[str] = Field(default_factory=list)
+    conflicting_fields: list[str] = Field(default_factory=list)
+
+
+class AssetImportReport(BaseModel):
+    """What an import did, or — with ``dry_run`` — would do, row by row.
+
+    ``counts`` sums ``rows`` by status and ``codes`` by reason code
+    (``ambiguous_match``, ``operator_override``…). ``replayed`` is true when the
+    answer came from the ``Idempotency-Key`` record of an earlier apply.
+    """
+
+    dry_run: bool
+    format: str
+    sha256: str
+    context_source: str
+    overwrite_operator_edits: bool
+    link_new_identifiers: bool = False
+    total: int
+    counts: dict[str, int]
+    codes: dict[str, int]
+    ignored_columns: list[str]
+    rows: list[AssetImportRow]
+    replayed: bool = False
+
+
 class BulkAssetRequest(BaseModel):
     """Body for ``POST /api/assets/bulk`` — one context update, many assets.
 

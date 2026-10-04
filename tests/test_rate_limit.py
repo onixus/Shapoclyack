@@ -933,6 +933,27 @@ def test_upload_routes_keep_their_own_larger_caps(tmp_path, monkeypatch):
     assert uploaded.status_code == 201, uploaded.text
 
 
+def test_an_asset_import_escaped_past_one_mib_reaches_the_route(tmp_path, monkeypatch):
+    """A Cyrillic CSV inside the import's own 2 MiB limit, sent by a client that
+    escapes non-ASCII, is past the global cap on the wire (#350 x #320)."""
+    client = configured_client(tmp_path, monkeypatch)
+    rows = "\n".join(
+        f"10.9.{index // 250}.{index % 250 + 1},Отдел эксплуатации {'Ж' * 60}"
+        for index in range(3000)
+    )
+    content = "ip,business_unit\n" + rows
+    assert len(content.encode("utf-8")) < 2 * ONE_MIB
+    body = json.dumps({"format": "csv", "content": content, "dry_run": True})
+    assert len(body) > ONE_MIB
+    previewed = client.post(
+        "/api/assets/import",
+        headers={**auth_headers(client, "admin"), "Content-Type": "application/json"},
+        content=body,
+    )
+    # The dry run itself, not the body layer's 413.
+    assert previewed.status_code == 200, previewed.text[:300]
+
+
 def test_a_compliance_import_escaped_past_one_mib_reaches_the_route(tmp_path, monkeypatch):
     """A Cyrillic catalogue well inside the definition limit, sent by a client
     that escapes non-ASCII, is six bytes on the wire per character."""

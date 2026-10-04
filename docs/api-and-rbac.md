@@ -601,6 +601,7 @@ One row per administrative change, with the resource before and after it:
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
+| `asset.import` | `POST /api/assets/import` with `dry_run: false` — one row per applied import, `resource_id` = `import:<first 16 hex of the content's SHA-256>`. `after` carries the format, the full SHA-256, `context_source`, `overwrite_operator_edits`, the per-status `counts`, and the first 100 `created` and `updated` asset ids (`created_omitted`/`updated_omitted` count the rest). A dry run writes no row. The per-field history is in `asset_context_events` with the import's source |
 
 Every row carries the actor and what kind of principal it is (`user`,
 `service_token`, `agent`, `system`), the client address resolved the same way
@@ -858,6 +859,7 @@ it is only supposed to approve.
 | `platform.legal_hold.manage` | platform admin. A tenant that could release its own hold could let evidence age out |
 | `platform.tenant.lifecycle` | platform admin. Suspend and resume a tenant, request, cancel, approve and retry its deletion (`/api/tenants/{id}/suspend`, `…/resume`, `…/deletion[/approve|/retry]`, `GET …/lifecycle`, `GET /api/tenants/deletions`); every change behind a step-up. See [tenant-lifecycle.md](tenant-lifecycle.md) |
 | `platform.quota.manage`, `platform.tenant.manage`, `platform.fleet.read` | platform admin |
+| `asset.import` | tenant `admin`, platform admin. `POST /api/assets/import` (#350): an import registers assets against the tenant's quota and rewrites the context of every asset in the file, so it is not the operator's `PATCH` at scale. Seeded by migration `0071_asset_import_permission`. The route checks the permission and nothing else — no minimum rank — so once tenant custom roles exist, a custom role granted `asset.import` imports (and spends the asset quota) whatever rank it sits at. That is deliberate: a dedicated "CMDB sync" role is the use case; grant it knowing it registers billed assets |
 | `vulnerability.exception.approve` | `risk-approver`, platform admin. Holding it is not enough to approve *your own* request: the API refuses that by name, which is the half of the separation a platform admin cannot walk around. It also gates **revoking** a granted acceptance (`DELETE …/exception`) — undoing a signature weighs the same as making one. It revokes a *granted* window and nothing else: with none granted it answers `409`, because closing somebody else's pending ask is the reject, which leaves a decision with a name on it. A requester taking back their own unanswered ask is `DELETE …/exception/request` and needs only the rank that filed it |
 
 `platform.fleet.read` is why `GET /api/system` answers `inventory` as nulls for
@@ -1001,7 +1003,7 @@ sets the status yet — see
 | `/api/jobs` | Start, monitor, and cancel scan jobs |
 | `/api/agents`, `/api/agent/*` | Sensors: fleet status and per-sensor lifecycle under `/api/agents`; registration, heartbeat and job claim under `/api/agent/*` (agent JWT) |
 | `/api/agent/deploy` | Operator-driven SSH push installation of a sensor onto a Linux host |
-| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup. `GET /api/assets/{id}/services` (`viewer`) lists the listeners scans fingerprinted on the asset, with the retro-match verdict on each — see [retro-cve-matching.md](retro-cve-matching.md) |
+| `/api/assets` | Persistent asset inventory, business context and per-asset risk rollup. `POST /api/assets/import` (`asset.import`) upserts a CMDB/AD export (CSV or JSON) with a per-row dry-run report — see [asset-context.md](asset-context.md#cmdb--ad). `GET /api/assets/{id}/services` (`viewer`) lists the listeners scans fingerprinted on the asset, with the retro-match verdict on each — see [retro-cve-matching.md](retro-cve-matching.md) |
 | `/api/retro-match` | Retro CVE matching of stored fingerprints: `GET /status` (`viewer`) — dataset version, the tenant's queue, last sweep; `POST /refresh` (`operator`, the line `POST /api/endpoint/cve-matches/refresh` draws) — requeue every listener of the tenant and wake the worker; nothing is matched inside the request. See [retro-cve-matching.md](retro-cve-matching.md) |
 | `/api/tenants/posture` | Per-tenant risk comparison (operator; scoped like `GET /tenants`) |
 | `/api/endpoint` | Endpoint device and software inventory, plus vendor-advisory CVE matches over it (`/api/endpoint/cve-matches`, `/api/endpoint/devices/{id}/cve-matches`). Reads are `viewer`; the `…/refresh` routes that re-run the matcher **and fold the result into the vulnerability lifecycle** are `operator`, since a tenant-wide run walks every package on every device — see [software-cve-matching.md](software-cve-matching.md) |
@@ -1312,6 +1314,20 @@ once.
 and has one verb, `context` — `PATCH /api/assets/{id}`'s body applied to a
 selection, including its "an explicit `null` clears the field, an omitted key
 leaves it untouched" contract. An empty payload is `422`.
+
+`POST /api/assets/import` (`asset.import`, [#350](https://github.com/onixus/Shapoclyack/issues/350))
+is the file-shaped sibling: a CMDB/AD export as CSV or JSON, matched to assets
+through the identifier registry, with a report per row (`create`, `update`,
+`unchanged`, `conflict`, `invalid`). Unlike the bulk verbs it is **one
+transaction** — a dry run (the default) writes nothing, an apply writes every
+applicable row or none: a `409` means a concurrent writer registered one of the
+file's identifiers, or the apply deadlocked on every retry; any other failure
+is a `500`. It **cannot clear** a field: empty cells and `null` mean "nothing
+to say", and it links an IP or FQDN to an asset it found by another identifier
+only with `link_new_identifiers`. It
+honours `Idempotency-Key` on an apply as the bulk verbs do, and records one
+`asset.import` audit row. Columns, conflict codes, the operator-precedence rule
+and limits are in [asset-context.md](asset-context.md#cmdb--ad).
 
 Both record **one** `audit_events` row per request (`vulnerability.bulk`,
 `asset.bulk`) whose `after` lists the ids applied and maps the rejected ones to
