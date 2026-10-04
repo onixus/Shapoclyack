@@ -54,6 +54,7 @@ from api.routes import wordlists as wordlists_routes
 from api.schemas import HealthResponse, SsoStatus
 from api.settings import Settings
 from api.services import agent_deployer
+from api.services import asset_import
 from api.services import agents as agents_service
 from api.services import audit as audit_service
 from api.services import rbac as rbac_service
@@ -284,6 +285,12 @@ def _body_limit_overrides(settings: Settings) -> tuple[tuple[str, int], ...]:
         (
             r"^/api/compliance/frameworks/import/?$",
             max(floor, 6 * compliance_definitions.MAX_BYTES + _ENVELOPE_ALLOWANCE_BYTES),
+        ),
+        # The same, for an asset import (#350): a file of up to MAX_BYTES of
+        # text, sent inside a JSON string.
+        (
+            r"^/api/(?:v1/)?assets/import/?$",
+            max(floor, 6 * asset_import.MAX_BYTES + _ENVELOPE_ALLOWANCE_BYTES),
         ),
     )
 

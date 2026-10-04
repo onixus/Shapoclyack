@@ -1,7 +1,7 @@
 """The right to import a CMDB/AD export into the asset registry (#350)
 
 Revision ID: 0071_asset_import_permission
-Revises: 0068_compliance_frameworks
+Revises: 0070_tenant_custom_roles
 Create Date: 2026-10-04
 
 ``POST /api/assets/import`` writes into tables that already exist —
@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0071_asset_import_permission"
-down_revision: Union[str, None] = "0068_compliance_frameworks"
+down_revision: Union[str, None] = "0070_tenant_custom_roles"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
