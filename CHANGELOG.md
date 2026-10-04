@@ -570,6 +570,20 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **The runtime base carries the OpenSSL and PCRE2 security updates the
+  fixable-HIGH gate blocks on.** `Dockerfile`, `Dockerfile.allinone`,
+  `Dockerfile.api` and the Jenkins 3.12 test image move to the
+  `python:3.12-slim` index digest of 2026-10-04 (Python 3.12.15), which ships
+  `openssl`/`libssl3t64`/`openssl-provider-legacy` 3.5.7-1~deb13u3
+  (CVE-2026-75804, CVE-2026-84782). That base still has `libpcre2-8-0`
+  10.46-1~deb13u2, so the three final stages upgrade that one package from
+  `trixie-security` (CVE-2026-103111) and assert the resulting version; the
+  line goes away once a base rebuild includes it. No Trivy exception was added.
+  The API and all-in-one images, whose scan the red scanner gate had been
+  hiding, also move `PyJWT` 2.13.0 → 2.14.0 (CVE-2026-102268 CRITICAL and five
+  HIGH: CVE-2026-102266, -102267, -102271, -102272, -102273), relocked in
+  `requirements-api.lock` and `requirements-dev.lock`.
+
 - **Release images are signed, their provenance is attested, and every build
   input is pinned** ([#313](https://github.com/onixus/Shapoclyack/issues/313)).
   `Jenkinsfile.publish` now pushes each image by digest with no tag, and
