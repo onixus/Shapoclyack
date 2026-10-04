@@ -366,7 +366,7 @@ def new_local_publication(
     )
 
 
-def _is_local(publication: _Publication) -> bool:
+def _is_local(publication: _Publication | models.RunPublication) -> bool:
     """A run the API executed itself, rather than one a sensor uploaded."""
     return publication.agent_id is None and publication.archive_path is None
 
@@ -893,8 +893,10 @@ def _project(settings: Settings, publication: _Publication) -> None:
     tick would ever feed: its assets, findings and notification simply never
     happened, with nothing owed to say so. Run before it, the same death
     leaves a row that is published again and projected again, which the
-    projections are built to treat as the same facts
-    (``run_completion.on_run_published``).
+    projections are built to treat as the same facts: the steps that are not
+    idempotent by themselves mark this row as fed in their own transaction
+    (``publication_marks``), so a second pass — this one, or a peer's running
+    beside it after a lapsed lease — feeds them nothing.
 
     A row a peer has already closed is not projected a second time here: the
     peer that closed it projected it first.
@@ -913,6 +915,7 @@ def _project(settings: Settings, publication: _Publication) -> None:
         run_id=publication.run_id,
         tenant_id=publication.tenant_id,
         status=publication.job_status,
+        publication_id=publication.publication_id,
     )
 
 
@@ -1351,7 +1354,13 @@ def _tree_kept_until(row: models.RunPublication) -> datetime | None:
     A day from the *acceptance*, not from the last attempt: the sweep
     (``workspace._sweep_abandoned``) reads the staging directory's
     ``st_mtime``, which only the first ``tenant.json`` moves.
+
+    ``None`` for a local row: its tree is the scanner's own
+    ``<output_dir>/runs/<run_id>``, which that sweep never takes (it removes
+    hidden staging names only), so no deadline is known for it.
     """
+    if _is_local(row):
+        return None
     if row.created_at is None:  # pragma: no cover - written with the row
         return None
     return row.created_at + timedelta(seconds=artifact_workspace.INGEST_KEPT_SECONDS)
@@ -1375,7 +1384,10 @@ def _resolution(row: models.RunPublication, *, now: datetime) -> str:
         return "wait"
     reason = row.last_error or ""
     if reason == _ARCHIVE_IS_GONE:
-        return "discard"
+        # A local row has no archive and the new code never asks for one; an
+        # old replica that adopted it mid-rollout does, and ends it here with
+        # the run promoted and nothing fed. A requeue on this release feeds it.
+        return "requeue" if _is_local(row) else "discard"
     if reason in (_REPLICA_IS_GONE, _TREE_IS_GONE):
         # Both are written only when no reachable copy of the tree was found
         # — not in staging, and not whole in the store (``_tree_is_stored``).

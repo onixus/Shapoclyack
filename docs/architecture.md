@@ -254,7 +254,11 @@ same reconciler, with the same retries, `dead` end and operator buttons. A local
 row has no `agent_id` and no archive: it is not sent to `ingest.results` (local
 runs never were) and does not rewrite `latest_run.json` (the scanner wrote it).
 A job the reaper or a restart already wrote off refuses the terminal write, so
-its run gets no row — the local counterpart of a refused stale attempt. A flat
+its run gets no row — the local counterpart of a refused stale attempt. Unlike a
+refused upload, which is a staging tree nobody lists, that run is a flat
+`runs/<run_id>` every replica lists, so it is tagged with the job's tenant
+before it is left there (no marker reads as `default`), and the job keeps the
+error it was written off with. A flat
 `runs/<run_id>` that already carries another owner's `tenant.json` is left in
 place, as before, and the job's `error` now says so.
 
@@ -287,14 +291,19 @@ The sequence runs **before** the row is closed, under the publication's renewed
 lease, so it is owed as durably as the publication: a replica killed in between
 leaves a row that is published and fed again, rather than a run whose assets and
 findings were silently never written. That makes it at-least-once, and each step
-takes a second pass over one run as the same facts — the asset upsert and the
-service fingerprints converge, the vulnerability fold does not count an
-observation it already counted for this run (no `observation_count` bump, no
-second `observed` event, no SLA restart), and asset events carry a
-content-derived `Msg-Id` JetStream drops. Two things can repeat on that path and
-are not promised exactly-once: the channel notification and the scope-denial
-journal entry. An attempt that finds the row already closed by a peer does not
-feed the run again.
+takes a second pass over one publication as the same facts. The asset upsert and
+the vulnerability fold mark the row as fed (`run_publications.projected`) in
+their own transaction, under the row's lock, so a second pass — after a later
+run, or beside a peer's attempt on a lapsed lease — writes nothing: no
+`observation_count` bump, no second `observed` event, no SLA restart, no older
+assessment or `last_scan_run_id` written over a newer run's. The key is the
+publication, not `run_id`: a tenant chooses `run_id` and may reuse it every
+night, and the next job under it is a new sighting that reopens what was closed.
+The service fingerprints converge on the job's `finished_at`, and asset events
+carry a content-derived `Msg-Id` JetStream drops. Two things can repeat on that
+path and are not promised exactly-once: the channel notification and the
+scope-denial journal entry. An attempt that finds the row already closed by a
+peer does not feed the run again.
 
 A staging tree an ingest never finished is collected the next time this
 replica takes a staging directory: past one hour of inactivity for a killed

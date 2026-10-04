@@ -426,9 +426,18 @@ All notable changes to Shapoclyack are documented in this file.
   longer leaves a local run unpublished and unfed with nothing owed, it is
   retried, ends `dead` visibly and can be requeued like a sensor's. The derived
   updates now run before the row is closed, so a replica killed in between
-  replays them rather than losing them; the vulnerability fold no longer counts
-  a run it has already folded a second time (`observation_count`, `observed`
-  event, SLA). `tests/test_job_architecture.py` keeps the sequence out of the
+  replays them rather than losing them; the asset upsert and the vulnerability
+  fold mark the publication as fed in their own transaction (migration
+  `0072_run_publication_projected`, column `run_publications.projected`), so a
+  replay — even after a later run, or beside a peer's attempt — counts no
+  observation twice and winds no finding or asset back to the older run. The
+  mark is per publication, not per `run_id`: the next job under a reused custom
+  `run_id` is a new observation and reopens a closed finding. A local scan that
+  finishes after its job was written off leaves its flat run tagged with the
+  job's tenant (it used to read as `default`) and keeps the job's write-off
+  error. A dead local row ended by a pre-#454 replica mid-rollout offers
+  requeue, and a dead local row is not called a re-scan after a day
+  (docs/operations.md). `tests/test_job_architecture.py` keeps the sequence out of the
   executors and `jobs.py`. **Behaviour change:** a sensor's failed, cancelled or
   late partial run no longer upserts assets (it did, before even looking at the
   status; a local one never did) — only a succeeded run feeds derived state, and

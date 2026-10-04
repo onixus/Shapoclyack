@@ -45,6 +45,7 @@ from api.services import nats_outbox
 from api.services import run_completion
 from api.services import run_publisher
 from api.services import tenants as tenants_service
+from api.services import vuln_states
 from api.services import vulnerabilities as vulns_service
 from api.services import workflow_events
 from api.services.artifact_store import workspace as artifact_workspace
@@ -350,10 +351,16 @@ def test_the_matrix_is_the_service_table():
     assert run_completion.actions_for("cancelling") == (run_completion.SCOPE_DENIALS,)
 
 
-def test_the_behaviour_change_against_main_is_the_documented_one():
+def test_the_recorded_change_against_main_is_the_documented_one():
     """What #454 changed beyond moving code, and nothing else: a sensor's
     failed, cancelled or partial run no longer feeds the asset registry, and
-    the sensor path journals scope denials before the asset upsert."""
+    the sensor path journals scope denials before the asset upsert.
+
+    A record, not a check of the code: both tables are literals in this file
+    and no code runs here. ``BEFORE_454`` was made true by running this
+    module's matrix against ``main`` before the change (commit c7d882e7, as a
+    strict xfail); this only keeps the two tables saying what the CHANGELOG
+    says. ``test_derived_updates_by_outcome`` is the test of the code."""
     changed = {key for key, before in BEFORE_454.items() if before != _expected(*key)}
     assert changed == {
         ("sensor", "succeeded"),
@@ -601,8 +608,8 @@ def test_a_local_result_for_a_job_already_written_off_is_refused(
     assert run_publisher.pending_publications(settings, job_id) == []
 
 
-def _seed_findings_run(settings) -> None:
-    run_dir = Path(settings.output_dir) / "runs" / RUN_ID
+def _seed_findings_run(settings, run_id: str = RUN_ID, findings: int = 1) -> None:
+    run_dir = Path(settings.output_dir) / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "alive_hosts.json").write_text(
         json.dumps([{"host": "10.0.0.5", "hostname": "app.example.com"}]), encoding="utf-8"
@@ -610,9 +617,71 @@ def _seed_findings_run(settings) -> None:
     (run_dir / "vulnerabilities.json").write_text(
         json.dumps(
             [{"host": "10.0.0.5", "port": "443", "cve": "CVE-2024-0001", "severity": "critical"}]
+            * findings
         ),
         encoding="utf-8",
     )
+
+
+def _clean_tracker(settings) -> None:
+    with get_session(settings.postgres_url) as session:
+        session.query(models.VulnerabilityEvent).delete()
+        session.query(models.Vulnerability).delete()
+
+
+def _owed(settings, job_id: str, run_id: str = RUN_ID) -> str:
+    """The row ``job_id``'s terminal write leaves for its run, still owed."""
+    publication = run_publisher.new_local_publication(
+        settings,
+        job_id=job_id,
+        run_id=run_id,
+        tenant_id="default",
+        job_status="succeeded",
+        exit_code=0,
+        scan_error=None,
+        surface=None,
+        source=Path(settings.output_dir) / "runs" / run_id,
+    )
+    with get_session(settings.postgres_url) as session:
+        session.add(publication)
+    return publication.publication_id
+
+
+def _feed(settings, publication_id: str, run_id: str = RUN_ID) -> None:
+    """What ``run_publisher._project`` does for that row, once."""
+    with get_session(settings.postgres_url) as session:
+        job_id = session.get(models.RunPublication, publication_id).job_id
+    run_completion.on_run_published(
+        settings,
+        job_id,
+        run_id=run_id,
+        tenant_id="default",
+        status="succeeded",
+        publication_id=publication_id,
+    )
+
+
+def _finding(settings):
+    with get_session(settings.postgres_url) as session:
+        row = session.query(models.Vulnerability).one()
+        events = [
+            event.kind
+            for event in session.query(models.VulnerabilityEvent)
+            .filter_by(vuln_id=row.vuln_id)
+            .order_by(models.VulnerabilityEvent.id)
+        ]
+        return types.SimpleNamespace(
+            count=row.observation_count,
+            last_run=row.last_seen_run_id,
+            state=row.state,
+            reopens=row.reopen_count,
+            events=events,
+        )
+
+
+def _close_finding(settings) -> None:
+    with get_session(settings.postgres_url) as session:
+        session.query(models.Vulnerability).one().state = vuln_states.CLOSED
 
 
 def test_replaying_a_published_run_does_not_count_its_observations_twice(tmp_path):
@@ -621,21 +690,294 @@ def test_replaying_a_published_run_does_not_count_its_observations_twice(tmp_pat
     folds are the same facts, not a second sighting of them."""
     settings = _settings(tmp_path, "sensor")
     _seed_findings_run(settings)
-    with get_session(settings.postgres_url) as session:
-        session.query(models.VulnerabilityEvent).delete()
-        session.query(models.Vulnerability).delete()
+    _clean_tracker(settings)
+    publication_id = _owed(settings, "job-replayed")
 
     for _ in range(2):
-        run_completion.on_run_published(
-            settings, "job-replayed", run_id=RUN_ID, tenant_id="default", status="succeeded"
+        _feed(settings, publication_id)
+
+    finding = _finding(settings)
+    assert finding.count == 1
+    assert finding.events == ["observed"]
+
+
+def test_the_next_job_under_a_reused_run_id_reopens_a_closed_finding(tmp_path):
+    """A nightly integration submits ``run_id="nightly"`` every night. The
+    finding was closed in between and came back: the second job is a new
+    sighting, not a replay of the first, whatever its run is called."""
+    settings = _settings(tmp_path, "sensor")
+    _seed_findings_run(settings, "nightly")
+    _clean_tracker(settings)
+
+    _feed(settings, _owed(settings, "job-monday", "nightly"), "nightly")
+    _close_finding(settings)
+    _feed(settings, _owed(settings, "job-tuesday", "nightly"), "nightly")
+
+    finding = _finding(settings)
+    assert finding.state == vuln_states.OPEN
+    assert finding.count == 2
+    assert finding.reopens == 1
+    assert finding.events == ["observed", "reopened"]
+
+
+def test_a_replay_after_a_later_run_counts_nothing_and_winds_nothing_back(tmp_path):
+    """Run A is fed and its replica dies before closing the row; run B, another
+    job over the same host, is fed; A's row falls due and is fed again."""
+    settings = _settings(tmp_path, "sensor")
+    _seed_findings_run(settings, "run-a")
+    _seed_findings_run(settings, "run-b")
+    _clean_tracker(settings)
+    run_a = _owed(settings, "job-a", "run-a")
+
+    _feed(settings, run_a, "run-a")
+    _feed(settings, _owed(settings, "job-b", "run-b"), "run-b")
+    _close_finding(settings)
+    _feed(settings, run_a, "run-a")
+
+    finding = _finding(settings)
+    assert finding.count == 2
+    assert finding.last_run == "run-b"
+    # Closed after B, and A is older than the closure: not a regression.
+    assert finding.state == vuln_states.CLOSED
+    assert finding.events == ["observed", "observed"]
+
+
+def test_a_replayed_asset_upsert_neither_revives_nor_winds_back(tmp_path):
+    """The same replay, on the registry: A's second pass must not point the
+    asset back at A, nor bring back an asset retired after B."""
+    settings = _settings(tmp_path, "sensor")
+    _seed_findings_run(settings, "run-a")
+    _seed_findings_run(settings, "run-b")
+    _clean_tracker(settings)
+    run_a = _owed(settings, "job-a", "run-a")
+
+    _feed(settings, run_a, "run-a")
+    _feed(settings, _owed(settings, "job-b", "run-b"), "run-b")
+    with get_session(settings.postgres_url) as session:
+        asset_id = (
+            session.query(models.AssetIdentifier.asset_id)
+            .filter_by(tenant_id="default", identifier_value="10.0.0.5")
+            .scalar()
         )
+        session.get(models.Asset, asset_id).status = "decommissioned"
+    _feed(settings, run_a, "run-a")
 
     with get_session(settings.postgres_url) as session:
-        row = session.query(models.Vulnerability).one()
-        assert row.observation_count == 1
-        observed = (
-            session.query(models.VulnerabilityEvent)
-            .filter_by(vuln_id=row.vuln_id, kind="observed")
-            .count()
+        asset = session.get(models.Asset, asset_id)
+        assert asset.status == "decommissioned"
+        assert asset.last_scan_run_id == "run-b"
+
+
+def test_two_attempts_folding_one_publication_at_once_count_it_once(tmp_path, monkeypatch):
+    """Two attempts on one row after its lease lapsed, folding side by side.
+    The second waits for the first's transaction and then reads its mark;
+    neither may read "not folded yet" while the other is folding."""
+    import threading
+    import time
+
+    from sqlalchemy import text
+
+    settings = _settings(tmp_path, "sensor")
+    _seed_findings_run(settings)
+    _clean_tracker(settings)
+    publication_id = _owed(settings, "job-raced")
+    # The registry first, as the sequence has it: a finding needs its asset.
+    assets_service.upsert_assets_from_run(settings, tenant_id="default", run_id=RUN_ID)
+    real = vulns_service._declared_surface_for_run  # noqa: SLF001
+    first_inside = threading.Event()
+    release = threading.Event()
+    callers: list[str] = []
+
+    def _hold_the_first(session, **kwargs):
+        callers.append(threading.current_thread().name)
+        if threading.current_thread().name == "first":
+            first_inside.set()
+            release.wait(10)
+        return real(session, **kwargs)
+
+    monkeypatch.setattr(vulns_service, "_declared_surface_for_run", _hold_the_first)
+
+    def _fold():
+        vulns_service.register_findings_from_run(
+            settings, tenant_id="default", run_id=RUN_ID, publication_id=publication_id
         )
-    assert observed == 1
+
+    first = threading.Thread(target=_fold, name="first")
+    second = threading.Thread(target=_fold, name="second")
+    first.start()
+    assert first_inside.wait(10)
+    second.start()
+    # Until the second attempt is blocked on a lock, or has given up waiting.
+    deadline = time.monotonic() + 5
+    while second.is_alive() and time.monotonic() < deadline:
+        with get_session(settings.postgres_url) as session:
+            waiting = session.execute(
+                text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+            ).scalar_one()
+        if waiting:
+            break
+        time.sleep(0.05)
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert _finding(settings).count == 1
+    assert callers == ["first"]
+
+
+def test_two_entries_of_one_pass_on_one_key_are_two_observations(tmp_path):
+    """What a run reports twice it observed twice, as it always did; the mark
+    stops a second *pass*, not a second entry."""
+    settings = _settings(tmp_path, "sensor")
+    _seed_findings_run(settings, "run-once")
+    _seed_findings_run(settings, "run-twice", findings=2)
+    _clean_tracker(settings)
+
+    # Twice for a key the pass creates, and twice for one it finds.
+    _feed(settings, _owed(settings, "job-twice-new", "run-twice"), "run-twice")
+    assert _finding(settings).count == 2
+    _feed(settings, _owed(settings, "job-once", "run-once"), "run-once")
+    _feed(settings, _owed(settings, "job-twice-known", "run-twice"), "run-twice")
+
+    finding = _finding(settings)
+    assert finding.count == 5
+    assert finding.events == ["observed"] * 5
+
+
+@pytest.mark.parametrize("mode", ["local", "sensor"])
+def test_a_row_a_peer_closed_meanwhile_is_not_fed_again(
+    tmp_path, monkeypatch, derived, mode
+):
+    """Two attempts on one row: the peer published, fed and closed it while
+    this one was publishing. This one finds it gone and feeds nothing."""
+    bucket = FakeS3Client()
+    settings = _settings(tmp_path, mode, bucket)
+    real_publish_run = artifact_workspace.publish_run
+    monkeypatch.setattr(artifact_workspace, "publish_run", _store_is_down)
+    job_id = _finish(settings, monkeypatch, mode, "succeeded")
+    monkeypatch.setattr(artifact_workspace, "publish_run", real_publish_run)
+    real_publish = run_publisher._publish  # noqa: SLF001
+
+    def _peer_closes_it(settings_, publication):
+        real_publish(settings_, publication)
+        with get_session(settings_.postgres_url) as session:
+            session.query(models.RunPublication).filter_by(
+                publication_id=publication.publication_id
+            ).delete()
+
+    monkeypatch.setattr(run_publisher, "_publish", _peer_closes_it)
+    run_publisher.reconcile_once(settings, now=_later())
+
+    assert derived.names() == []
+    assert run_publisher.pending_publications(settings, job_id) == []
+
+
+def test_a_retried_local_row_leaves_the_latest_run_pointer_alone(
+    tmp_path, monkeypatch, derived
+):
+    """The scanner wrote ``latest_run.json`` as it finished. By the time a
+    retry publishes this run a newer scan has written it again, and a retry
+    that rewrote it would point it back at the older run."""
+    bucket = FakeS3Client()
+    settings = _settings(tmp_path, "local", bucket)
+    real_publish_run = artifact_workspace.publish_run
+    monkeypatch.setattr(artifact_workspace, "publish_run", _store_is_down)
+    job_id = _local(settings, monkeypatch, "succeeded")
+    monkeypatch.setattr(artifact_workspace, "publish_run", real_publish_run)
+    pointer = Path(settings.state_dir) / "latest_run.json"
+    pointer.write_text(json.dumps({"run_id": "20261004T120000Z-newer"}), encoding="utf-8")
+
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+
+    assert json.loads(pointer.read_text(encoding="utf-8"))["run_id"] == "20261004T120000Z-newer"
+    assert derived.names() == MATRIX["succeeded"]
+    assert run_publisher.pending_publications(settings, job_id) == []
+
+
+def test_a_local_row_an_old_replica_ended_for_want_of_an_archive_is_requeued(
+    tmp_path, monkeypatch, derived
+):
+    """Mid-rollout, a replica on the previous release adopts a local row: it
+    publishes the run, then asks for the archive a local row never has and
+    ends it ``dead``, unfed. A requeue on this release feeds it, so the
+    console must say requeue — a discard would drop the feed for good."""
+    settings = _settings(tmp_path, "local")
+
+    def _old_replica(*_args, **_kwargs):
+        raise run_publisher._TreeIsGone(run_publisher._ARCHIVE_IS_GONE)  # noqa: SLF001
+
+    real_project = run_publisher._project  # noqa: SLF001
+    monkeypatch.setattr(run_publisher, "_project", _old_replica)
+    job_id = _local(settings, monkeypatch, "succeeded")
+    monkeypatch.setattr(run_publisher, "_project", real_project)
+    [row] = run_publisher.publications_for_job(settings, job_id, tenant_id=None)
+    assert row["status"] == "dead"
+    assert row["resolution"] == "requeue"
+    assert row["tree_kept_until"] is None
+
+    with get_session(settings.postgres_url) as session:
+        # The rollout is over and the old replica's attempt with it.
+        session.get(models.RunPublication, row["publication_id"]).leased_until = None
+    run_publisher.requeue_publication(settings, row["publication_id"], job_id=job_id)
+    assert run_publisher.reconcile_once(settings, now=_later())["published"] == 1
+
+    assert derived.names() == MATRIX["succeeded"]
+    assert run_publisher.pending_publications(settings, job_id) == []
+
+
+def test_a_dead_local_row_is_not_a_rescan_after_a_day(tmp_path):
+    """The staging sweep that makes a day-old sensor tree a re-scan never
+    takes a local run's directory, so a requeue still has something to send."""
+    settings = _settings(tmp_path, "local")
+    row = run_publisher.new_local_publication(
+        settings,
+        job_id="job-old",
+        run_id=RUN_ID,
+        tenant_id="default",
+        job_status="succeeded",
+        exit_code=0,
+        scan_error=None,
+        surface=None,
+        source=Path(settings.output_dir) / "runs" / RUN_ID,
+    )
+    row.status = run_publisher.STATUS_DEAD
+    row.last_error = "ArtifactStoreError: bucket unreachable"
+
+    later = row.created_at + timedelta(days=3)
+    assert run_publisher._resolution(row, now=later) == "requeue"  # noqa: SLF001
+
+
+def test_a_refused_local_result_leaves_its_run_tagged_with_the_job(
+    tmp_path, monkeypatch, derived
+):
+    """The job was written off while its scanner ran, so the terminal write is
+    refused and nothing publishes the run. Its flat directory must still not
+    read as the default tenant's, and the write-off's reason must survive."""
+    from api.services import runs as runs_service
+
+    settings = _settings(tmp_path, "local")
+    real_run_scanner = local_scan_executor.run_scanner
+
+    def _written_off_meanwhile(job_id, command):
+        jobs_service._update_job(  # noqa: SLF001
+            settings,
+            job_id,
+            status="failed",
+            finished_at=jobs_service._now(),  # noqa: SLF001
+            error="orphaned by a restart",
+        )
+        return real_run_scanner(job_id, command)
+
+    monkeypatch.setattr(local_scan_executor, "run_scanner", _written_off_meanwhile)
+    job_id = _local(settings, monkeypatch, "succeeded")
+
+    flat = Path(settings.output_dir) / "runs" / RUN_ID
+    marker = json.loads((flat / artifact_workspace.RUN_MARKER).read_text(encoding="utf-8"))
+    assert marker["tenant_id"] == "default"
+    assert marker["job_id"] == job_id
+    assert runs_service.read_run_tenant(flat) == "default"
+    job = jobs_service.get_job(settings, job_id)
+    assert job.status == "failed"
+    assert job.error.startswith("orphaned by a restart")
+    assert f"runs/{RUN_ID} was left in place" in job.error
+    assert derived.names() == []

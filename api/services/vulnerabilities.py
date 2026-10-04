@@ -52,6 +52,7 @@ from api.services import exploit_evidence
 from api.services import metrics
 from api.services import nist_risk
 from api.services import pagination
+from api.services import publication_marks
 from api.services import runs as runs_service
 from api.services import scan_surface
 from api.services import vuln_states
@@ -902,19 +903,23 @@ def _declared_surface_for_run(session: Any, *, tenant_id: str, run_id: str) -> s
 
 
 def register_findings_from_run(
-    settings: Settings, *, tenant_id: str, run_id: str
+    settings: Settings, *, tenant_id: str, run_id: str, publication_id: str | None = None
 ) -> RegisterStats:
-    """Fold one run's findings into the tracker. Idempotent per run.
+    """Fold one run's findings into the tracker. Idempotent per publication.
 
-    Re-running it for the same run is a no-op: identity is the finding, and a
-    row this run has already observed (``last_seen_run_id``) is the same fact
-    seen again, not a second sighting. It is counted as re-observed and left
-    alone — no ``observation_count`` bump, no second ``observed`` event, no
-    SLA restart. That matters because a published run's derived updates run at
-    least once (``run_completion.on_run_published``, #454): a replica killed
-    after the fold and before the publication was closed folds the run again.
-    Two entries of *one* pass that land on one key are still two observations,
-    as they always were.
+    Identity is the finding, not the observation: every entry of the run finds
+    or creates its row, and each one is an observation — two entries of one
+    pass that land on one key are two, as they always were.
+
+    A published run's derived updates run at least once
+    (``run_completion.on_run_published``, #454): a replica killed after the
+    fold and before the publication was closed folds the run again. Given the
+    ``publication_id`` it is fed from, a second fold of that publication does
+    nothing at all — no ``observation_count`` bump, no second ``observed``
+    event, no SLA restart, no older assessment written over a newer run's —
+    and the mark that says so commits with the fold (``publication_marks``).
+    Not ``run_id``: a tenant reuses one across jobs, and the next job under
+    the same id is a new sighting that must reopen what was closed.
     """
     entries = _run_findings(settings, run_id, tenant_id=tenant_id)
     if not entries and not _run_verifies_anything(settings, run_id=run_id, tenant_id=tenant_id):
@@ -931,13 +936,19 @@ def register_findings_from_run(
     )
     now = _now()
     created = reobserved = reopened = skipped = 0
-    # Keys this pass has folded, so a run seen before is told apart from a
-    # second entry of the same run in this pass.
-    folded: set[str] = set()
     verification_passed = verification_failed = 0
     fp_suppressed_observations = fp_overridden = 0
 
     with get_session(settings.postgres_url) as session:
+        if not publication_marks.first_pass(
+            session, publication_id, publication_marks.FINDINGS
+        ):
+            LOG.info(
+                "Findings of run %s were already folded from publication %s",
+                run_id,
+                publication_id,
+            )
+            return RegisterStats(0, 0, 0, 0, 0)
         declared_surface = _declared_surface_for_run(
             session, tenant_id=tenant_id, run_id=run_id
         )
@@ -1042,7 +1053,6 @@ def register_findings_from_run(
                 # transaction, and a subtransaction per row overflows
                 # Postgres's subxid cache past 64 (engine.insert_or_skip).
                 if insert_or_skip(session, candidate, conflict=["tenant_id", "finding_key"]):
-                    folded.add(key)
                     row = candidate
                     created += 1
                     _record_event(
@@ -1068,19 +1078,6 @@ def register_findings_from_run(
                         models.Vulnerability.finding_key == key,
                     )
                 ).scalar_one()
-
-            if (
-                row.last_seen_run_id == run_id
-                and row.source != "retro_match"
-                and key not in folded
-            ):
-                # This run was folded before — a replayed publication. The
-                # observation, its event and any reopen are already recorded.
-                # Not a retro row: the matcher stamps the run whose banner it
-                # read, and this scan observing it is the conversion below.
-                reobserved += 1
-                continue
-            folded.add(key)
 
             # Weighed before ``latest`` is written over the row: an escalation
             # is a difference between what the verdict was made on and what

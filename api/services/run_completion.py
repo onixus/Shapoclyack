@@ -25,6 +25,7 @@ from api.services import asset_events
 from api.services import assets as assets_service
 from api.services import auth_audit
 from api.services import job_states
+from api.services import publication_marks
 from api.services import vulnerabilities as vulns_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.services.integrations import channels as channels_service
@@ -86,7 +87,12 @@ def _requested_by(settings: Settings, job_id: str) -> str:
 
 
 def upsert_assets_best_effort(
-    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+    settings: Settings,
+    *,
+    tenant_id: str,
+    run_id: str | None,
+    job_id: str | None = None,
+    publication_id: str | None = None,
 ) -> None:
     """Best-effort asset-registry upsert (Phase 7) — never fails the scan/upload.
 
@@ -102,7 +108,9 @@ def upsert_assets_best_effort(
     if not run_id:
         return
     try:
-        assets_service.upsert_assets_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+        assets_service.upsert_assets_from_run(
+            settings, tenant_id=tenant_id, run_id=run_id, publication_id=publication_id
+        )
     except Exception as exc:  # noqa: BLE001
         _log.exception("Asset upsert failed for run %s (tenant=%s)", run_id, tenant_id)
         if job_id:
@@ -112,7 +120,12 @@ def upsert_assets_best_effort(
 
 
 def track_vulnerabilities_best_effort(
-    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
+    settings: Settings,
+    *,
+    tenant_id: str,
+    run_id: str | None,
+    job_id: str | None = None,
+    publication_id: str | None = None,
 ) -> None:
     """Best-effort fold of the run's findings into the tracker (#145).
 
@@ -130,7 +143,9 @@ def track_vulnerabilities_best_effort(
     if not run_id:
         return
     try:
-        vulns_service.register_findings_from_run(settings, tenant_id=tenant_id, run_id=run_id)
+        vulns_service.register_findings_from_run(
+            settings, tenant_id=tenant_id, run_id=run_id, publication_id=publication_id
+        )
     except Exception:  # noqa: BLE001
         _log.exception(
             "Vulnerability tracking failed for run %s (tenant=%s, job=%s)",
@@ -311,8 +326,8 @@ def record_scope_denials_best_effort(
 #: fold has just updated (retro announcements); the notification describes the
 #: registry and the tracker as they are *after* everything above it.
 SCOPE_DENIALS = "scope_denials"
-ASSETS = "assets"
-FINDINGS = "findings"
+ASSETS = publication_marks.ASSETS
+FINDINGS = publication_marks.FINDINGS
 SERVICES = "services"
 EVENTS = "events"
 NOTIFY = "notify"
@@ -357,6 +372,7 @@ def project_published_run(
     run_id: str,
     tenant_id: str,
     status: str,
+    publication_id: str | None = None,
 ) -> None:
     """The Postgres and broker projections of :data:`POST_PUBLICATION`.
 
@@ -371,10 +387,18 @@ def project_published_run(
             requested_by=_requested_by(settings, job_id),
         ),
         ASSETS: lambda: upsert_assets_best_effort(
-            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            job_id=job_id,
+            publication_id=publication_id,
         ),
         FINDINGS: lambda: track_vulnerabilities_best_effort(
-            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
+            settings,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            job_id=job_id,
+            publication_id=publication_id,
         ),
         SERVICES: lambda: record_services_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id
@@ -395,6 +419,7 @@ def on_run_published(
     run_id: str,
     tenant_id: str,
     status: str,
+    publication_id: str | None = None,
 ) -> None:
     """Feed a *published* run to everything derived from it. Best-effort.
 
@@ -410,10 +435,12 @@ def on_run_published(
     *before* it closes the publication's row, so a replica killed in between
     leaves a row that is published again and fed again — rather than a run
     whose derived state was simply never written. Each step therefore treats
-    a second pass over the same run as the same facts: the asset upsert and
-    the service fingerprints converge, the vulnerability fold does not count
-    an observation it has already counted for this run, and asset events carry
-    a content-derived ``Msg-Id`` the broker deduplicates. The notification and
+    a second pass over the same publication as the same facts: the asset
+    upsert and the vulnerability fold mark ``publication_id`` in their own
+    transaction and do nothing the second time (``publication_marks``; not
+    ``run_id``, which a tenant reuses across jobs), the service fingerprints
+    converge on the job's ``finished_at``, and asset events carry a
+    content-derived ``Msg-Id`` the broker deduplicates. The notification and
     the scope-denial journal are the two that can repeat on that path; neither
     is promised exactly-once (docs/architecture.md).
 
@@ -423,7 +450,14 @@ def on_run_published(
     that has in fact landed and have it published a second time.
     """
     try:
-        project_published_run(settings, job_id, run_id=run_id, tenant_id=tenant_id, status=status)
+        project_published_run(
+            settings,
+            job_id,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            status=status,
+            publication_id=publication_id,
+        )
     except Exception as exc:  # pragma: no cover - each projection guards itself
         _log.error(
             "Job %s published run %s but it could not be projected",

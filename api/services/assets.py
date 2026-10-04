@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select
 from api.db import models
 from api.db.engine import get_session
 from api.services import asset_events
+from api.services import publication_marks
 from api.services import quotas
 from api.services import runs as runs_service
 from api.settings import Settings
@@ -471,7 +472,9 @@ def _apply_one_correlation(
     return target
 
 
-def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -> AssetUpsertStats:
+def upsert_assets_from_run(
+    settings: Settings, *, tenant_id: str, run_id: str, publication_id: str | None = None
+) -> AssetUpsertStats:
     """Upsert one asset per host observed in ``run_id`` into the registry.
 
     One asset per *host record* in the run (not per identifier): when a host
@@ -480,6 +483,12 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     bare-FQDN asset when forward DNS *and* a certificate on that IP agree,
     and the IP is not shared. The evidence is written to
     ``asset_identity_links``; a wrong merge is worse than two rows.
+
+    Given the ``publication_id`` it is fed from, a second pass over that
+    publication — a replica killed before it closed the row (#454) — writes
+    nothing: replayed after a later run, it would point ``last_scan_run_id``
+    back at the older run and revive an asset decommissioned since
+    (``publication_marks``).
     """
     run_dir = runs_service.get_written_run_dir(settings, run_id, tenant_id=tenant_id)
     if run_dir is None:
@@ -498,6 +507,13 @@ def upsert_assets_from_run(settings: Settings, *, tenant_id: str, run_id: str) -
     claimed = 0
 
     with get_session(settings.postgres_url) as session:
+        if not publication_marks.first_pass(session, publication_id, publication_marks.ASSETS):
+            LOG.info(
+                "Assets of run %s were already upserted from publication %s",
+                run_id,
+                publication_id,
+            )
+            return AssetUpsertStats(len(hosts), 0, 0, 0)
         # How many *new* billed assets this tenant may still register
         # (None = unlimited). Counted once per run on this session rather than
         # per host: this loop is the only thing creating rows inside the
