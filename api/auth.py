@@ -837,6 +837,48 @@ def _enforce_mfa_enrolment(request: Request, detail: str = _ENROLMENT_REQUIRED_D
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
+RATE_LIMIT_STATE_ATTR = "rate_limit_charged"
+
+
+def _request_client_ip(request: Request, settings: Settings) -> str:
+    """The address the login limiter would attribute ``request`` to."""
+    from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
+
+    return resolve_client_ip(
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+        parse_trusted_proxies(settings.trusted_proxies),
+    )
+
+
+def _charge_rate_limit(request: Request, scope: str, key: str) -> None:
+    """Spend one of the request's tokens from ``scope``'s bucket, or answer 429 (#320).
+
+    Called from authentication only, with identity it has just verified: a key
+    taken from anything the caller sent unverified would be a fresh bucket per
+    request. Once per bucket per request, because the dependencies that reach
+    here are not all cached together — ``resolve_tenant_principal`` runs once
+    per permission dependency a route declares.
+    """
+    from api.services import rate_limit
+
+    charged: set[tuple[str, str]] | None = getattr(request.state, RATE_LIMIT_STATE_ATTR, None)
+    if charged is None:
+        charged = set()
+        setattr(request.state, RATE_LIMIT_STATE_ATTR, charged)
+    if (scope, key) in charged:
+        return
+    charged.add((scope, key))
+    try:
+        rate_limit.charge(scope, key)
+    except rate_limit.RateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+
 def get_current_user(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -849,14 +891,20 @@ def get_current_user(
     through to the JWT path and is verified there exactly as before, so nothing
     here weakens the existing check.
     """
-    from api.services import service_tokens
+    from api.services import rate_limit, service_tokens
 
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = credentials.credentials
     if service_tokens.looks_like_service_token(token):
-        return _authenticate_service_token(request, settings, token)
+        service_user = _authenticate_service_token(request, settings, token)
+        service_principal = getattr(request.state, SERVICE_TOKEN_STATE_ATTR)
+        _charge_rate_limit(request, rate_limit.SCOPE_SERVICE_TOKEN, service_principal.token_id)
+        return service_user
     user = decode_token(settings, token)
+    # Before the MFA confinement below: a session that may only reach the
+    # enrolment routes is still somebody's session, and its requests count.
+    _charge_rate_limit(request, rate_limit.SCOPE_USER, user.username)
     if _owes_enrolment(settings, user):
         user.mfa_pending = True
         _enforce_mfa_enrolment(request)
@@ -1038,6 +1086,13 @@ def resolve_tenant_principal(
         tenant_scope.declare_system("platform admin")
     else:
         tenant_scope.declare_tenant(principal.tenant_id)
+        # The tenant's shared bucket (#320), charged here because this is
+        # where a console request's tenant is first known. Not for the
+        # platform admin, which acts for the installation rather than for
+        # the tenant it happens to be looking at.
+        from api.services import rate_limit
+
+        _charge_rate_limit(request, rate_limit.SCOPE_TENANT, principal.tenant_id)
     return principal
 
 
@@ -1339,13 +1394,36 @@ def require_agent_heartbeat(
     return _authenticate_agent(request, credentials, settings, allow_closed_tenant=True)
 
 
+def require_agent_results(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """:func:`require_agent` for the results upload, without the rate limit (#320).
+
+    The same authentication. Not charged, because a 429 here protects nothing
+    and costs a scan: the upload comes once per claimed job, is fenced by the
+    claim's attempt and refused when that is stale, and its body has a cap of
+    its own. A sensor that keeps being refused gives up and its run is swept —
+    the whole job's findings, lost to a limiter meant for runaway loops.
+    """
+    return _authenticate_agent(
+        request, credentials, settings, allow_closed_tenant=False, rate_limited=False
+    )
+
+
 def _authenticate_agent(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     settings: Settings,
     *,
     allow_closed_tenant: bool,
+    rate_limited: bool = True,
 ) -> AgentPrincipal:
+    from api.services.rate_limit import SCOPE_AGENT, SCOPE_LEGACY_AGENT
+
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1388,6 +1466,13 @@ def _authenticate_agent(
                 loaded=bool(principal.agent_id) and not closed,
             ),
         )
+        # One bucket per sensor or endpoint agent, never per tenant (#320):
+        # see ``api/services/rate_limit.py`` for why a fleet is not pooled.
+        # A token minted before registration carries no agent id yet, and is
+        # charged to the provisioning key that minted it.
+        identity = principal.agent_id or f"key:{principal.key_id or ''}"
+        if rate_limited:
+            _charge_rate_limit(request, SCOPE_AGENT, f"{principal.tenant_id}:{identity}")
         return principal
 
     if settings.agent_token:
@@ -1400,6 +1485,16 @@ def _authenticate_agent(
                 AgentRequestState(agent_id=None, info=None, loaded=False),
             )
             tenant_scope.declare_tenant(LEGACY_AGENT_TENANT_ID)
+            # The shared token says nothing about which agent holds it, so
+            # its bucket is the address it calls from: one bucket for the
+            # token would make the whole legacy fleet one principal. An
+            # address is still often many sensors — an ingress without
+            # OCTO_TRUSTED_PROXIES, a site's NAT — so the bucket is sized for
+            # a fleet (``rate_limit.principal_limit``), not for one agent.
+            if rate_limited:
+                _charge_rate_limit(
+                    request, SCOPE_LEGACY_AGENT, _request_client_ip(request, settings)
+                )
             return AgentPrincipal(
                 tenant_id=LEGACY_AGENT_TENANT_ID,
                 key_id=None,

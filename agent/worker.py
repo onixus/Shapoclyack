@@ -59,6 +59,15 @@ LOG = logging.getLogger("octo-agent")
 # to survive a few missed heartbeats, not just one.
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 
+# How long one call may spend waiting out the API's 429s (#320), following
+# their ``Retry-After``. Short for the loop's own calls — a heartbeat or a claim
+# refused for longer is simply made again on the next poll — and long for the
+# results upload, which is a whole scan and is not made again by anything:
+# given up, the archive stays on disk and the job is requeued. Busy heartbeats
+# keep the job's lease while the upload waits.
+RATE_LIMIT_WAIT_SECONDS = 30.0
+UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
+
 # What this build promises the API it can honour, reported on register and on
 # every heartbeat. ``scan_policy`` means: when a claim carries a
 # ``scan_policy.json`` input, this worker passes it to the scanner as
@@ -454,6 +463,21 @@ class AgentUpgradeRequired(RuntimeError):
     """
 
 
+def _retry_after_seconds(headers: Any) -> float | None:
+    """The delay a 429's ``Retry-After`` asks for, in seconds; ``None`` if absent.
+
+    The API sends delta-seconds. The HTTP-date form is not parsed: nothing
+    this agent talks to sends it, and guessing at a clock-skewed date would be
+    worse than the fixed backoff it falls back to.
+    """
+    value = headers.get("Retry-After") if headers is not None else None
+    try:
+        seconds = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 class AgentClient:
     """Every HTTP call this agent makes, over one proxy-aware opener (#359).
 
@@ -545,6 +569,7 @@ class AgentClient:
         expect_json: bool = True,
         max_retries: int = 2,
         timeout: float | None = None,
+        rate_limit_wait: float = RATE_LIMIT_WAIT_SECONDS,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -556,8 +581,13 @@ class AgentClient:
             # because it checks Content-Length before buffering the multipart.
             headers["Content-Length"] = str(len(body))
         deadline = timeout if timeout is not None else self.timeout
+        # A 429 is not a failure of the request and does not spend one of
+        # ``max_retries``: it is waited out, for as long as the API says, up to
+        # ``rate_limit_wait`` in all.
+        rate_limited_for = 0.0
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while True:
             if isinstance(body, _ThrottledBody):
                 # A retry re-sends from the beginning; a stream already read to
                 # its end would otherwise post an empty body and look like the
@@ -577,8 +607,18 @@ class AgentClient:
                 # on Content-Length, before it reads a byte, so the same body
                 # gets the same answer — and on a shaped uplink resending it is
                 # minutes of the site's bandwidth spent to be told twice more.
-                if exc.code in (429, 502, 503, 504) and attempt < max_retries:
+                if exc.code == 429:
+                    delay = _retry_after_seconds(exc.headers)
+                    if delay is None:
+                        delay = 0.5 * (2 ** min(attempt, 6))
+                    if rate_limited_for + delay <= rate_limit_wait:
+                        rate_limited_for += delay
+                        attempt += 1
+                        time.sleep(delay)
+                        continue
+                elif exc.code in (502, 503, 504) and attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
+                    attempt += 1
                     continue
                 detail = exc.read().decode("utf-8", errors="replace")
                 if exc.code == 401:
@@ -620,6 +660,7 @@ class AgentClient:
                     ) from exc
                 if attempt < max_retries:
                     time.sleep(0.5 * (2**attempt))
+                    attempt += 1
                     continue
                 raise RuntimeError(f"{method} {path} -> network error: {exc}") from exc
 
@@ -755,6 +796,7 @@ class AgentClient:
                 # The API answers this one when the ingest is finished, not
                 # when the bytes are in — see AgentClient.upload_timeout.
                 timeout=self.upload_timeout,
+                rate_limit_wait=UPLOAD_RATE_LIMIT_WAIT_SECONDS,
             )
         finally:
             body.close()

@@ -211,6 +211,101 @@ def test_agent_client_request_fails_fast_on_client_error(monkeypatch):
     assert attempts == 1  # No retries on 401
 
 
+def _rate_limited(req, retry_after: str | None):
+    """The API's 429 (#320), with the ``Retry-After`` it computes from the refill."""
+    import email.message
+    import io
+    import urllib.error
+
+    headers = email.message.Message()
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError(
+        url=req.full_url, code=429, msg="Too Many Requests", hdrs=headers, fp=io.BytesIO(b"slow down")
+    )
+
+
+def _ok_response():
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.return_value = b'{"status": "ok"}'
+    resp.__enter__.return_value = resp
+    return resp
+
+
+def test_a_429_waits_as_long_as_retry_after_says(monkeypatch):
+    """Not the fixed half-second backoff: a bucket that refills in 7 s answers
+    the retries before then with the same 429."""
+    sleeps: list[float] = []
+    answers = iter(["7", None])
+
+    def fake_urlopen(req, timeout):
+        retry_after = next(answers)
+        if retry_after is not None:
+            raise _rate_limited(req, retry_after)
+        return _ok_response()
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+
+    assert client._request("POST", "/api/agent/heartbeat") == {"status": "ok"}  # noqa: SLF001
+    assert sleeps == [7.0]
+
+
+def test_a_429_due_past_the_budget_is_raised_not_slept_through(monkeypatch):
+    """A heartbeat that would wait an hour is better reported now: the loop
+    comes back to it on the next poll anyway."""
+    import pytest
+
+    sleeps: list[float] = []
+
+    def fake_urlopen(req, timeout):
+        raise _rate_limited(req, "3600")
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+
+    with pytest.raises(RuntimeError, match="429"):
+        client._request("POST", "/api/agent/heartbeat")  # noqa: SLF001
+    assert sleeps == []
+
+
+def test_a_results_upload_outlasts_a_rate_limit(monkeypatch):
+    """The upload is a whole scan: a few 429s in a row must not lose it.
+
+    Before this it was retried twice, half a second and a second apart, and
+    then the exception went to the run loop — which does not send it again.
+    """
+    sleeps: list[float] = []
+    refusals = 5
+    bodies: list[bytes] = []
+
+    def fake_urlopen(req, timeout):
+        nonlocal refusals
+        data = req.data
+        bodies.append(b"".join(iter(lambda: data.read(65536), b"")))
+        if refusals:
+            refusals -= 1
+            raise _rate_limited(req, "20")
+        return _ok_response()
+
+    client = worker.AgentClient("http://127.0.0.1:8080", "token", timeout=1.0)
+    monkeypatch.setattr(client._opener, "open", fake_urlopen)  # noqa: SLF001
+    monkeypatch.setattr(worker.time, "sleep", sleeps.append)
+
+    result = client.upload_results(
+        "job-1", agent_id="a1", exit_code=0, run_id="run-1", error=None, archive_path=None
+    )
+    assert result == {"status": "ok"}
+    assert sleeps == [20.0] * 5
+    # Every attempt carried the whole form, not a stream already read to its end.
+    assert len(set(bodies)) == 1 and b'name="exit_code"' in bodies[0]
+
+
 def test_the_server_side_refusals_get_their_own_exception_types(monkeypatch):
     """401 and 426 are the two answers the run loop reacts to rather than
     logs: a rotated signing key (#312) and a fleet-wide version floor (#363).

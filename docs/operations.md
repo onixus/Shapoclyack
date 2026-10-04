@@ -2446,6 +2446,52 @@ new value, so the tokens signed with it keep working and the older ones do not.
 Nobody is locked out — they log in again — but plan the rollback for the same
 reason you planned the rotation.
 
+### When callers start getting 429
+
+The general rate limiter ([#320](https://github.com/onixus/Shapoclyack/issues/320),
+settings in [configuration.md](configuration.md#environment-variables)) charges
+every authenticated request to a bucket per principal, per tenant for users and
+service tokens, and per agent. `octo_rate_limited_total{scope}` says which kind
+of bucket ran out; the API's INFO log names the principal or tenant in
+`rate limited: <scope> <key>, retry after <n>s (<m> more refusals in the last
+60s not logged)` — once a minute per principal, not once per refusal.
+
+1. **`scope="agent"` climbing** is one sensor or endpoint agent calling far
+   more often than its cadence — a worker started with a `--poll-interval`
+   under a second (an idle sensor makes two requests per poll), or a retry
+   loop. Find the key in the log and fix the host; raise
+   `OCTO_RATE_LIMIT_AGENT_*` only if the cadence is intended. The size of a
+   provisioning-key fleet does not cause this: each of those sensors has a
+   bucket of its own and none is pooled per tenant.
+2. **`scope="legacy_agent"` climbing** is *not* one sensor. Sensors on the
+   legacy shared `OCTO_AGENT_TOKEN` are charged per source address, and one
+   address is every sensor behind it: behind an ingress without
+   `OCTO_TRUSTED_PROXIES` that is the whole legacy fleet, behind a site's NAT
+   the whole site. The key in the log is the address. In order of preference:
+   move those sensors to provisioning keys (each gets its own bucket, and the
+   legacy token stops being accepted in prod on 2027-03-01 anyway); set
+   `OCTO_TRUSTED_PROXIES` to the ingress so each site is its own address; or
+   raise `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` (default 25 sensors at a
+   1 s poll, 125 at the default 5 s) to the fleet behind the busiest address.
+   A sensor that is refused waits out `Retry-After` — up to 30 s for a
+   heartbeat or a claim, 10 minutes for a results upload, which is never
+   charged by an API of this release anyway.
+3. **`scope="tenant"`** is one customer's combined console and API traffic.
+   Usually an integration polling in a tight loop under a service token; the
+   `service_token` scope will often be climbing next to it.
+4. **Everyone at once, right after an upgrade** — check that the limits were
+   not set in requests per *minute* by mistake. `OCTO_RATE_LIMIT_ENABLED=false`
+   and a restart switch the limiter off without touching the login limiter.
+5. **`413` on a scan launch or a schedule** is a target list over
+   `OCTO_TARGET_LIST_MAX_BODY_BYTES` (16 MiB, about 500 000 domains). Split the
+   list across scans, or raise it; `OCTO_MAX_BODY_BYTES` does not apply there.
+
+The buckets are an `UNLOGGED` table: a Postgres crash or failover empties it,
+which hands every principal a full bucket — expected, nothing to repair. To
+clear a bucket by hand (a principal throttled by a limit you have since
+raised): `DELETE FROM rate_limit_buckets WHERE bucket_key = '<scope>:<key>';`.
+Rows idle for longer than the slowest refill are pruned by the API itself.
+
 ## Logs and observability
 
 ### Log format, level, and the request id

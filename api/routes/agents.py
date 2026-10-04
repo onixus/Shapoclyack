@@ -21,6 +21,7 @@ from api.auth import (
     get_settings,
     require_agent,
     require_agent_heartbeat,
+    require_agent_results,
     require_permission,
     require_tenant,
 )
@@ -373,7 +374,8 @@ def claim_job(
 async def upload_results(
     job_id: str,
     request: Request,
-    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    # Not rate limited (#320): see require_agent_results.
+    principal: Annotated[AgentPrincipal, Depends(require_agent_results)],
     settings: Annotated[Settings, Depends(get_settings)],
     agent_id: Annotated[str, Form()],
     exit_code: Annotated[int, Form()] = 0,
