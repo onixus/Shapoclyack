@@ -1367,14 +1367,35 @@ def require_agent_heartbeat(
     return _authenticate_agent(request, credentials, settings, allow_closed_tenant=True)
 
 
+def require_agent_results(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """:func:`require_agent` for the results upload, without the rate limit (#320).
+
+    The same authentication. Not charged, because a 429 here protects nothing
+    and costs a scan: the upload comes once per claimed job, is fenced by the
+    claim's attempt and refused when that is stale, and its body has a cap of
+    its own. A sensor that keeps being refused gives up and its run is swept —
+    the whole job's findings, lost to a limiter meant for runaway loops.
+    """
+    return _authenticate_agent(
+        request, credentials, settings, allow_closed_tenant=False, rate_limited=False
+    )
+
+
 def _authenticate_agent(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     settings: Settings,
     *,
     allow_closed_tenant: bool,
+    rate_limited: bool = True,
 ) -> AgentPrincipal:
-    from api.services.rate_limit import SCOPE_AGENT
+    from api.services.rate_limit import SCOPE_AGENT, SCOPE_LEGACY_AGENT
 
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
@@ -1423,7 +1444,8 @@ def _authenticate_agent(
         # A token minted before registration carries no agent id yet, and is
         # charged to the provisioning key that minted it.
         identity = principal.agent_id or f"key:{principal.key_id or ''}"
-        _charge_rate_limit(request, SCOPE_AGENT, f"{principal.tenant_id}:{identity}")
+        if rate_limited:
+            _charge_rate_limit(request, SCOPE_AGENT, f"{principal.tenant_id}:{identity}")
         return principal
 
     if settings.agent_token:
@@ -1438,10 +1460,14 @@ def _authenticate_agent(
             tenant_scope.declare_tenant(LEGACY_AGENT_TENANT_ID)
             # The shared token says nothing about which agent holds it, so
             # its bucket is the address it calls from: one bucket for the
-            # token would make the whole legacy fleet one principal.
-            _charge_rate_limit(
-                request, SCOPE_AGENT, f"legacy:{_request_client_ip(request, settings)}"
-            )
+            # token would make the whole legacy fleet one principal. An
+            # address is still often many sensors — an ingress without
+            # OCTO_TRUSTED_PROXIES, a site's NAT — so the bucket is sized for
+            # a fleet (``rate_limit.principal_limit``), not for one agent.
+            if rate_limited:
+                _charge_rate_limit(
+                    request, SCOPE_LEGACY_AGENT, _request_client_ip(request, settings)
+                )
             return AgentPrincipal(
                 tenant_id=LEGACY_AGENT_TENANT_ID,
                 key_id=None,

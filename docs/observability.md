@@ -321,7 +321,7 @@ Off unless `OCTO_METRICS_TENANT_TOP_N` is set — see
 | `octo_auth_attempts_total` | counter | `outcome` (`success`, `failure`, `locked`, `denied`) | E |
 | `octo_mfa_verifications_total` | counter | `outcome` (`success`, `failure`, `recovery`, `setup_success`, `setup_failure`, and the same four `webauthn_*`) | E |
 | `octo_break_glass_logins_total` | counter | — alert on any increase | E |
-| `octo_rate_limited_total` | counter | `scope` (`user`, `service_token`, `agent`, `tenant`) — the bucket that ran out, never the principal or tenant ([#320](https://github.com/onixus/Shapoclyack/issues/320)); a sustained `agent` rate is a misconfigured sensor or a limit set below the fleet's cadence | E |
+| `octo_rate_limited_total` | counter | `scope` (`user`, `service_token`, `agent`, `legacy_agent`, `tenant`) — the bucket that ran out, never the principal or tenant ([#320](https://github.com/onixus/Shapoclyack/issues/320)); a sustained `agent` rate is a misconfigured sensor or a limit set below its cadence, a sustained `legacy_agent` rate is a shared-token fleet behind one address ([operations.md](operations.md#when-callers-start-getting-429)) | E |
 
 ### Leadership
 

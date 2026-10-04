@@ -771,16 +771,30 @@ class Settings:
     # a large fleet's heartbeats (docs/configuration.md).
     rate_limit_tenant_per_second: float = 100.0
     rate_limit_tenant_burst: int = 2000
-    # Per sensor or endpoint agent. A sensor polls the claim route every 5 s
-    # and heartbeats every 60 s, Lariska heartbeats every 60 s and submits
-    # hourly: well under 1/s. The headroom is for a worker started with a
-    # short poll interval and for the retries after an outage.
-    rate_limit_agent_per_second: float = 2.0
+    # Per sensor or endpoint agent. An idle sensor sends a heartbeat *and* a
+    # claim on every pass of its loop (agent/worker.py run_loop), so it makes
+    # two requests per OCTO_AGENT_POLL_INTERVAL: 0.4/s at the default 5 s,
+    # 2/s at 1 s; a busy one heartbeats every 60 s. Lariska heartbeats every
+    # 60 s and submits hourly. 4/s is twice the busiest sensor, poll interval
+    # 1 s, so its busy heartbeats and retries still find tokens; the burst is
+    # for the backlog after an outage. The results upload is not charged.
+    rate_limit_agent_per_second: float = 4.0
     rate_limit_agent_burst: int = 120
+    # A legacy OCTO_AGENT_TOKEN names no agent, so its bucket is the source
+    # address — and every sensor behind one ingress (without
+    # OCTO_TRUSTED_PROXIES) or one site NAT shares it. That bucket is the agent
+    # bucket times this many sensors: 25 sensors at a 1 s poll, 125 at 5 s.
+    rate_limit_legacy_agents_per_address: int = 25
     # Request-body cap for every route that has no larger one of its own
     # (#320). Counted on the wire as well as read from Content-Length, so a
     # chunked body without one is cut off at the same size.
     max_body_bytes: int = 1024 * 1024
+    # Cap for the routes whose body is a target list or a scope: a scan
+    # launch, a schedule, a maintenance window, a tenant's scan scope. None of
+    # them limits the number of targets, and a certificate-transparency export
+    # for one large customer is megabytes of domains; 16 MiB is about 500 000
+    # of them, the order of the inventory submission's cap.
+    target_list_max_body_bytes: int = 16 * 1024 * 1024
     # Trusted reverse proxies (comma-separated IPs/CIDRs). X-Forwarded-For is
     # honoured **only** when the immediate peer is one of these — otherwise the
     # client picks its own limiter key by writing the header. Empty (default)
@@ -2106,13 +2120,20 @@ def load_settings() -> Settings:
             1, int(os.environ.get("OCTO_RATE_LIMIT_TENANT_BURST", "2000"))
         ),
         rate_limit_agent_per_second=max(
-            0.0, _float_env("OCTO_RATE_LIMIT_AGENT_PER_SECOND", 2.0)
+            0.0, _float_env("OCTO_RATE_LIMIT_AGENT_PER_SECOND", 4.0)
         ),
         rate_limit_agent_burst=max(
             1, int(os.environ.get("OCTO_RATE_LIMIT_AGENT_BURST", "120"))
         ),
+        rate_limit_legacy_agents_per_address=max(
+            1, int(os.environ.get("OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS", "25"))
+        ),
         max_body_bytes=max(
             1, int(os.environ.get("OCTO_MAX_BODY_BYTES", str(1024 * 1024)))
+        ),
+        target_list_max_body_bytes=max(
+            1,
+            int(os.environ.get("OCTO_TARGET_LIST_MAX_BODY_BYTES", str(16 * 1024 * 1024))),
         ),
         trusted_proxies=[
             part.strip()

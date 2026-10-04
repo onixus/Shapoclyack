@@ -469,7 +469,8 @@ anything the caller sends unverified would be a fresh bucket per request.
 | `user` | each console session's account | 20/s / 300 |
 | `service_token` | each service token | 20/s / 300 |
 | `tenant` | every user and service token acting in that tenant, together. Not the platform admin, which acts for the installation | 100/s / 2000 |
-| `agent` | each sensor or endpoint agent (its JWT's agent id; a token minted before registration, its provisioning key; a legacy shared-token agent, its source address). **Not** charged to the tenant bucket | 2/s / 120 |
+| `agent` | each sensor or endpoint agent (its JWT's agent id; a token minted before registration, its provisioning key). **Not** charged to the tenant bucket, and the results upload is not charged at all | 4/s / 120 |
+| `legacy_agent` | each source address that presents the legacy shared `OCTO_AGENT_TOKEN`, which names no agent. Sized for a fleet behind one address (an ingress without `OCTO_TRUSTED_PROXIES`, a site NAT): the agent bucket times `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` | 100/s / 3000 |
 
 An empty bucket answers `429` with `Retry-After` — the seconds until the next
 token is due, not a constant — and counts `octo_rate_limited_total{scope}`. A
@@ -488,7 +489,11 @@ requests of a principal that is.
 
 **Body size.** `OCTO_MAX_BODY_BYTES` (1 MiB) caps every body, read from
 `Content-Length` before a byte is read and counted as a chunked body arrives,
-so a body without a length is cut off at the same size. A route with a larger
+so a body without a length is cut off at the same size. The routes that take a
+target list or a scope — `POST /api/jobs`, `POST`/`PATCH /api/schedules`,
+`POST`/`PATCH /api/maintenance-windows`, `PUT /api/tenants/{tenant_id}/scan-scope`
+— are under `OCTO_TARGET_LIST_MAX_BODY_BYTES` (16 MiB) instead, since nothing
+limits how many targets they name. A route with a larger
 contract keeps its own cap: the inventory submission, the results upload, the
 wordlist upload, the endpoint-agent build upload and the compliance framework
 import. Over the cap is `413`; an unparsable `Content-Length` is `400`. The

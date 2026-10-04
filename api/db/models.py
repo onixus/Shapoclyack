@@ -543,13 +543,19 @@ class RateLimitBucket(Base):
     No ``tenant_id`` column and so no row security: the key names a tenant
     only as an opaque string, the rows hold counters and nothing else, and
     the limiter reads them before a request has declared any tenant.
+
+    No index on ``refilled_at``, deliberately: every charge rewrites it, and an
+    indexed column makes every one of those updates a non-HOT one — a new heap
+    tuple plus an entry in each index, per request. Only the prune reads it,
+    once every few minutes, over a table of one row per active principal; a
+    sequential scan is what that costs.
     """
 
     __tablename__ = "rate_limit_buckets"
 
     bucket_key: Mapped[str] = mapped_column(primary_key=True)
     tokens: Mapped[float] = mapped_column()
-    refilled_at: Mapped[float] = mapped_column(index=True)
+    refilled_at: Mapped[float] = mapped_column()
 
 
 class AuditEvent(Base):

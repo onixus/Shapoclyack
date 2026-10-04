@@ -240,14 +240,27 @@ _ENVELOPE_ALLOWANCE_BYTES = 64 * 1024
 def _body_limit_overrides(settings: Settings) -> tuple[tuple[str, int], ...]:
     """The routes whose bodies may be larger than ``OCTO_MAX_BODY_BYTES`` (#320).
 
-    Every route that accepts more than a small JSON document, each with the
-    cap its own contract already enforces further in — so this layer refuses
-    nothing those routes would have accepted, and only stops the body being
-    read past that size. ``max`` with the global cap, so raising
-    ``OCTO_MAX_BODY_BYTES`` never makes one of these smaller than the rest.
+    Two kinds. The uploads carry a cap their own contract already enforces
+    further in, repeated here so this layer refuses nothing they would have
+    accepted. The routes that take a target list or a scope have no such cap —
+    nothing limits how many targets a scan may name — so they get
+    ``OCTO_TARGET_LIST_MAX_BODY_BYTES``, set far above any list a scan is
+    launched with: before this layer they had no limit at all, and a cap of
+    one MiB turned a 45 000-domain launch from a 202 into a 413. ``max`` with
+    the global cap, so raising ``OCTO_MAX_BODY_BYTES`` never makes one of these
+    smaller than the rest.
     """
     floor = settings.max_body_bytes
+    targets = max(floor, settings.target_list_max_body_bytes)
     return (
+        # Newline-separated ``ranges``/``domains`` (StartScanRequest and the
+        # schedule bodies), a maintenance window's ``scope_targets``, and a
+        # tenant's whole scan scope — up to 1000 entries whose notes a client
+        # escaping non-ASCII sends at six bytes a character.
+        (r"^/api/jobs/?$", targets),
+        (r"^/api/schedules(?:/[^/]+)?/?$", targets),
+        (r"^/api/maintenance-windows(?:/[^/]+)?/?$", targets),
+        (r"^/api/(?:v1/)?tenants/[^/]+/scan-scope/?$", targets),
         # Read from Content-Length by BodySizeLimitMiddleware as well, which
         # answers 411 there; repeated here so this layer does not cut them at
         # the global cap first.

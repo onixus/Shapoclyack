@@ -15,6 +15,11 @@ bucket, which is the state an idle principal is in anyway, and in exchange the
 hot write costs no WAL. A standby does not get the table either, and does not
 need it — the API never writes to a standby.
 
+No index on ``refilled_at``. Every charge rewrites that column, and an index
+on it would make every one of those updates non-HOT — a new heap tuple and an
+index entry per authenticated request. The prune that reads it runs every few
+minutes over one row per active principal, and a sequential scan does.
+
 No row security and no ``shapoclyack_tenant`` grant: there is no ``tenant_id``
 column (``tenant_scope.tenant_tables`` keys on it), and the limiter reads the
 rows from authentication, under ``tenant_scope.system``, before any request
@@ -42,12 +47,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("bucket_key"),
         prefixes=prefixes,
     )
-    # The prune: rows untouched for longer than any bucket takes to refill.
-    op.create_index(
-        "ix_rate_limit_buckets_refilled_at", "rate_limit_buckets", ["refilled_at"]
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_rate_limit_buckets_refilled_at", table_name="rate_limit_buckets")
     op.drop_table("rate_limit_buckets")

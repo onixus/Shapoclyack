@@ -579,19 +579,34 @@ All notable changes to Shapoclyack are documented in this file.
   agent, plus one shared by a tenant's users and service tokens — and an empty
   bucket answers `429` with a `Retry-After` computed from the refill, counted
   in `octo_rate_limited_total{scope}` (`user`, `service_token`, `agent`,
-  `tenant`; never the principal). The buckets are rows of a new `UNLOGGED`
-  table (migration `0069_rate_limit_buckets`), charged in one statement on the
-  database's clock, so every replica spends from the same bucket; the SQLite
-  dev fallback keeps them in the process. Agents are never pooled per tenant,
-  so a fleet's size cannot throttle its heartbeats, and the defaults
-  (`OCTO_RATE_LIMIT_AGENT_PER_SECOND=2`, burst 120) are an order of magnitude
-  above a sensor's or Lariska's cadence. Probes, `/metrics` and the sign-in
-  routes are not charged; the login limiter is unchanged and still counts
-  failed attempts. If Postgres is unreachable the limiter lets requests
-  through and warns. `OCTO_MAX_BODY_BYTES` (1 MiB) now caps every request
-  body, from `Content-Length` and by counting a chunked body as it arrives;
-  the inventory, results, wordlist, endpoint-agent build and compliance import
+  `legacy_agent`, `tenant`; never the principal) and logged once a minute per
+  principal. The buckets are rows of a new `UNLOGGED` table (migration
+  `0069_rate_limit_buckets`, no index beyond the key so every charge is a HOT
+  update), charged in one autocommitted statement on the database's clock, so
+  every replica spends from the same bucket; the SQLite dev fallback keeps them
+  in the process. Agents are never pooled per tenant, so a fleet's size cannot
+  throttle its heartbeats. An idle sensor makes a heartbeat and a claim per
+  poll, so `OCTO_RATE_LIMIT_AGENT_PER_SECOND` defaults to `4` — twice a sensor
+  polling every second — with a burst of 120, and a sensor's results upload is
+  not charged at all. Sensors on the legacy shared `OCTO_AGENT_TOKEN` name no
+  agent and are charged per source address, which behind an ingress without
+  `OCTO_TRUSTED_PROXIES` or a site NAT is a whole fleet: that bucket is the
+  agent bucket times `OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS` (25). Probes,
+  `/metrics` and the sign-in routes are not charged; the login limiter is
+  unchanged and still counts failed attempts. If Postgres is unreachable the
+  limiter lets requests through and warns. `OCTO_MAX_BODY_BYTES` (1 MiB) now
+  caps every request body, from `Content-Length` and by counting a chunked
+  body as it arrives. The routes that take a target list or a scope — scan
+  launch, schedules, maintenance windows, the tenant scan scope — had no limit
+  and still have no limit on the number of targets, so they get
+  `OCTO_TARGET_LIST_MAX_BODY_BYTES` (16 MiB, about 500 000 domains) instead of
+  the 1 MiB; a body over that is now `413` where it used to be accepted. The
+  inventory, results, wordlist, endpoint-agent build and compliance import
   routes keep their larger caps. `Retry-After` is now a CORS-exposed header.
+  The sensor (`agent/worker.py`) now waits out a `429` for as long as its
+  `Retry-After` says — up to 30 s for a heartbeat or claim and 10 minutes for
+  a results upload, instead of two retries a second apart after which a
+  refused upload was lost.
   See [docs/api-and-rbac.md](docs/api-and-rbac.md#request-rate-limiting-and-body-size).
 - **The runtime base carries the OpenSSL and PCRE2 security updates the
   fixable-HIGH gate blocks on.** `Dockerfile`, `Dockerfile.allinone`,

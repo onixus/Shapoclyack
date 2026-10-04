@@ -16,6 +16,13 @@ bucket sized for people would throttle a large fleet's heartbeats. A platform
 admin acts for the installation, not for a tenant, and is charged to its own
 bucket only.
 
+The legacy shared agent token names no agent, so it is charged per source
+address (``legacy_agent``) — and one address is often a whole fleet: every
+sensor behind an ingress when ``OCTO_TRUSTED_PROXIES`` is unset, every sensor
+of a site behind its NAT. That bucket is therefore the agent bucket scaled by
+``OCTO_RATE_LIMIT_LEGACY_AGENTS_PER_ADDRESS``, not one sensor's. A sensor's
+results upload is not charged at all (``api.auth.require_agent_results``).
+
 Requests that do not authenticate are not charged: the probes (``/livez``,
 ``/readyz``, ``/api/health``), ``/metrics`` and the console's static files have
 no principal, and the unauthenticated write paths — login, MFA, token
@@ -67,6 +74,7 @@ SCOPE_USER = "user"
 SCOPE_SERVICE_TOKEN = "service_token"
 SCOPE_AGENT = "agent"
 SCOPE_TENANT = "tenant"
+SCOPE_LEGACY_AGENT = "legacy_agent"
 
 #: Rows untouched for longer than this are full buckets again, and are pruned.
 #: Raised to the slowest configured refill when that is longer, so a prune can
@@ -78,6 +86,10 @@ _MIN_PRUNE_HORIZON_SECONDS = 3600.0
 _PRUNE_INTERVAL_SECONDS = 300.0
 #: How often the fail-open warning is repeated while the database is away.
 _WARN_INTERVAL_SECONDS = 60.0
+#: How often one principal's refusals are logged. A client looping on an empty
+#: bucket is the case this exists for, and it would otherwise write a line per
+#: request on top of the access log.
+_REFUSAL_LOG_INTERVAL_SECONDS = 60.0
 #: The in-process store's size at which idle buckets are dropped.
 _MEMORY_MAX_KEYS = 10_000
 
@@ -123,42 +135,47 @@ def _wait_for_token(available: float, limit: Limit) -> float:
 # statement began before a peer's commit, and so carries an older
 # ``statement_timestamp()``, must not rewind the clock), cap at the
 # burst, spend one. The ``WHERE`` makes the update conditional, so an empty
-# bucket returns no row and is left exactly as it was — a refused request costs
-# nothing, and a principal hammering an empty bucket does not keep it empty.
+# bucket returns no row from ``spent`` and is left exactly as it was — a
+# refused request costs nothing, and a principal hammering an empty bucket
+# does not keep it empty.
+#
+# ``prior`` is the row as this statement's snapshot sees it, read only to say
+# how long a refused caller should wait. It takes no lock, so under contention
+# it can be a peer's charge behind ``spent``; the worst that does is a
+# ``Retry-After`` a second too early, never a token granted twice.
 _TAKE = text(
     """
-    INSERT INTO rate_limit_buckets AS b (bucket_key, tokens, refilled_at)
-    VALUES (:key, CAST(:burst AS double precision) - 1,
-            EXTRACT(EPOCH FROM statement_timestamp())::double precision)
-    ON CONFLICT (bucket_key) DO UPDATE SET
-        tokens = LEAST(
+    WITH prior AS (
+        SELECT LEAST(
+            CAST(:burst AS double precision),
+            tokens + CAST(:rate AS double precision) * GREATEST(
+                0, EXTRACT(EPOCH FROM statement_timestamp())::double precision - refilled_at
+            )
+        ) AS available
+        FROM rate_limit_buckets WHERE bucket_key = :key
+    ), spent AS (
+        INSERT INTO rate_limit_buckets AS b (bucket_key, tokens, refilled_at)
+        VALUES (:key, CAST(:burst AS double precision) - 1,
+                EXTRACT(EPOCH FROM statement_timestamp())::double precision)
+        ON CONFLICT (bucket_key) DO UPDATE SET
+            tokens = LEAST(
+                CAST(:burst AS double precision),
+                b.tokens + CAST(:rate AS double precision) * GREATEST(
+                    0, EXTRACT(EPOCH FROM statement_timestamp())::double precision - b.refilled_at
+                )
+            ) - 1,
+            refilled_at = GREATEST(
+                b.refilled_at, EXTRACT(EPOCH FROM statement_timestamp())::double precision
+            )
+        WHERE LEAST(
             CAST(:burst AS double precision),
             b.tokens + CAST(:rate AS double precision) * GREATEST(
                 0, EXTRACT(EPOCH FROM statement_timestamp())::double precision - b.refilled_at
             )
-        ) - 1,
-        refilled_at = GREATEST(
-            b.refilled_at, EXTRACT(EPOCH FROM statement_timestamp())::double precision
-        )
-    WHERE LEAST(
-        CAST(:burst AS double precision),
-        b.tokens + CAST(:rate AS double precision) * GREATEST(
-            0, EXTRACT(EPOCH FROM statement_timestamp())::double precision - b.refilled_at
-        )
-    ) >= 1
-    RETURNING b.tokens
-    """
-)
-
-_AVAILABLE = text(
-    """
-    SELECT LEAST(
-        CAST(:burst AS double precision),
-        tokens + CAST(:rate AS double precision) * GREATEST(
-            0, EXTRACT(EPOCH FROM statement_timestamp())::double precision - refilled_at
-        )
+        ) >= 1
+        RETURNING 1
     )
-    FROM rate_limit_buckets WHERE bucket_key = :key
+    SELECT EXISTS (SELECT 1 FROM spent), (SELECT available FROM prior)
     """
 )
 
@@ -179,10 +196,18 @@ class DatabaseBuckets:
         # Across tenants: the limiter runs while authentication is still
         # deciding whose request this is, and the table holds no tenant rows.
         with tenant_scope.system("rate limit bucket"):
-            with self._session_factory() as session, session.begin():
-                if session.execute(_TAKE, params).first() is not None:
-                    return None
-                available = session.execute(_AVAILABLE, params).scalar_one_or_none()
+            with self._session_factory() as session:
+                # Autocommit: the statement is atomic on its own, and without
+                # a BEGIN and a COMMIT around it a charge is one round trip
+                # rather than three — and the row lock, which every request
+                # of a tenant queues on, is released when the statement ends
+                # rather than a round trip later.
+                connection = session.connection(
+                    execution_options={"isolation_level": "AUTOCOMMIT"}
+                )
+                spent, available = connection.execute(_TAKE, params).one()
+        if spent:
+            return None
         return _wait_for_token(float(available if available is not None else 0.0), limit)
 
     def prune(self, horizon_seconds: float) -> None:
@@ -237,6 +262,8 @@ _buckets: Buckets | None = None
 _state_lock = threading.Lock()
 _last_prune = 0.0
 _last_warning = 0.0
+#: ``(scope, key)`` -> when its refusal was last logged, and how many since.
+_refusal_log: dict[tuple[str, str], tuple[float, int]] = {}
 
 
 def configure(settings: Settings) -> None:
@@ -247,6 +274,7 @@ def configure(settings: Settings) -> None:
     with _state_lock:
         _settings = settings
         _last_prune = 0.0
+        _refusal_log.clear()
         if not settings.rate_limit_enabled:
             _buckets = None
         elif settings.postgres_url.strip().lower().startswith("sqlite"):
@@ -258,6 +286,11 @@ def configure(settings: Settings) -> None:
 def principal_limit(settings: Settings, scope: str) -> Limit:
     if scope == SCOPE_AGENT:
         return Limit(settings.rate_limit_agent_per_second, settings.rate_limit_agent_burst)
+    if scope == SCOPE_LEGACY_AGENT:
+        fleet = settings.rate_limit_legacy_agents_per_address
+        return Limit(
+            settings.rate_limit_agent_per_second * fleet, settings.rate_limit_agent_burst * fleet
+        )
     if scope == SCOPE_TENANT:
         return Limit(settings.rate_limit_tenant_per_second, settings.rate_limit_tenant_burst)
     return Limit(settings.rate_limit_principal_per_second, settings.rate_limit_principal_burst)
@@ -265,7 +298,7 @@ def principal_limit(settings: Settings, scope: str) -> Limit:
 
 def _prune_horizon(settings: Settings) -> float:
     horizon = _MIN_PRUNE_HORIZON_SECONDS
-    for scope in (SCOPE_USER, SCOPE_AGENT, SCOPE_TENANT):
+    for scope in (SCOPE_USER, SCOPE_AGENT, SCOPE_LEGACY_AGENT, SCOPE_TENANT):
         limit = principal_limit(settings, scope)
         if limit.enabled:
             horizon = max(horizon, limit.burst / limit.per_second)
@@ -286,17 +319,19 @@ def charge(scope: str, key: str) -> None:
         return
     try:
         wait = buckets.take(f"{scope}:{key}", limit)
-        _maybe_prune(settings, buckets)
     except SQLAlchemyError:
         # Deliberate fail-open, see the module docstring: a limiter that 429s
         # every request while the database is away is an outage of its own.
         _warn_unavailable()
         return
+    # After the decision and outside its fail-open: a prune that times out
+    # must not turn the refusal just made into a pass.
+    _maybe_prune(settings, buckets)
     if wait is None:
         return
     retry_after = max(1, math.ceil(wait))
     metrics_service.RATE_LIMITED_TOTAL.labels(scope).inc()
-    logger.info("rate limited: %s %s, retry after %ss", scope, key, retry_after)
+    _log_refusal(scope, key, retry_after)
     raise RateLimited(scope, retry_after)
 
 
@@ -307,7 +342,39 @@ def _maybe_prune(settings: Settings, buckets: Buckets) -> None:
         if _last_prune and now - _last_prune < _PRUNE_INTERVAL_SECONDS:
             return
         _last_prune = now
-    buckets.prune(_prune_horizon(settings))
+    try:
+        buckets.prune(_prune_horizon(settings))
+    except SQLAlchemyError:
+        # Fail-soft: the prune is housekeeping on a table bounded by the number
+        # of active principals, done again by whichever replica is next due,
+        # and no reason to fail the request that happened to trigger it.
+        logger.warning("rate limit prune failed; retrying on a later request", exc_info=True)
+
+
+def _log_refusal(scope: str, key: str, retry_after: int) -> None:
+    """Name a refused principal at most once a minute, with the count held back."""
+    now = time.monotonic()
+    with _state_lock:
+        last, held_back = _refusal_log.get((scope, key), (0.0, 0))
+        if last and now - last < _REFUSAL_LOG_INTERVAL_SECONDS:
+            _refusal_log[(scope, key)] = (last, held_back + 1)
+            return
+        _refusal_log[(scope, key)] = (now, 0)
+        if len(_refusal_log) > _MEMORY_MAX_KEYS:
+            for stale in [
+                k
+                for k, (at, _) in _refusal_log.items()
+                if now - at >= _REFUSAL_LOG_INTERVAL_SECONDS
+            ]:
+                del _refusal_log[stale]
+    logger.info(
+        "rate limited: %s %s, retry after %ss (%d more refusals in the last %ds not logged)",
+        scope,
+        key,
+        retry_after,
+        held_back,
+        int(_REFUSAL_LOG_INTERVAL_SECONDS),
+    )
 
 
 def _warn_unavailable() -> None:
