@@ -268,6 +268,142 @@ def test_web_technologies_flags_version_banner(tmp_path: Path):
     assert web["findings_by_severity"]["low"] == 1  # bare "PHP"
 
 
+def _web_control(tmp_path: Path) -> dict:
+    return {c["control"]: c for c in evaluate_controls(tmp_path, ControlsConfig(enabled=True))["controls"]}[
+        "web_technologies"
+    ]
+
+
+def test_web_technologies_reads_the_exposures_the_fingerprint_stage_writes(tmp_path: Path, monkeypatch):
+    """Stage output in, control out: a console counts, a VPN portal is listed."""
+    import httpx
+
+    from scanner.pipeline.config_schema import FingerprintConfig
+    from scanner.pipeline.fingerprint import _Fetched, fingerprint_hosts_sync
+
+    responses = {
+        "http://198.51.100.7:8080/": (403, [("X-Jenkins", "2.414.3")], "<title>Sign in [Jenkins]</title>"),
+        "https://198.51.100.8:443/": (200, [], '<script>top.location="/remote/login";</script>'),
+    }
+
+    async def fake_fetch(client, url, timeout, max_bytes):
+        status, headers, body = responses[url]
+        return _Fetched(status, httpx.Headers(headers), body, url)
+
+    monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
+    fingerprint_hosts_sync(
+        ["198.51.100.7:8080/tcp", "198.51.100.8:443/tcp"],
+        FingerprintConfig(enabled=True, http_ports=[8080], https_ports=[443]),
+        tmp_path,
+    )
+
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 1, "low": 0}
+    assert web["top_findings"][0] == {
+        "id": "exposed_admin_interface",
+        "domain": "198.51.100.7:8080",
+        "severity": "medium",
+        "detail": "Jenkins at http://198.51.100.7:8080/",
+    }
+    listed = {(f["id"], f["domain"], f["severity"]) for f in web["top_findings"][1:]}
+    assert listed == {
+        ("exposed_remote_access_gateway", "198.51.100.8:443", "info"),
+        ("version_disclosure", "198.51.100.7:8080", "info"),
+    }
+    assert "1 exposed admin/management interface(s)" in web["why"]
+
+
+def test_web_technologies_lists_a_remote_access_gateway_without_degrading_the_control(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "vpn.example.com", "port": 443, "server": "", "x_powered_by": ""}],
+            "exposures": [
+                {
+                    "kind": "exposed_remote_access_gateway",
+                    "severity": "info",
+                    "host": "vpn.example.com",
+                    "port": 443,
+                    "url": "https://vpn.example.com:443/dana-na/auth/url_default/welcome.cgi",
+                    "technology": "ivanti_connect_secure",
+                    "name": "Ivanti Connect Secure (Pulse Connect Secure)",
+                    "evidence": ['url "/dana-na/auth/url_default/welcome.cgi"'],
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["status"] == "ok"
+    assert sum(web["findings_by_severity"].values()) == 0
+    assert [(f["id"], f["severity"]) for f in web["top_findings"]] == [("exposed_remote_access_gateway", "info")]
+    assert "listed for inventory" in web["why"]
+
+
+def test_web_technologies_keeps_an_exposed_console_in_the_top_ten(tmp_path: Path):
+    """Twelve bare banners must not push the one medium finding off the list."""
+    endpoints = [
+        {"host": f"h{i}.example.com", "port": 443, "server": "nginx", "x_powered_by": "Express"} for i in range(6)
+    ]
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 7,
+            "checked_count": 7,
+            "findings": endpoints,
+            "exposures": [
+                {
+                    "kind": "exposed_admin_interface",
+                    "severity": "medium",
+                    "host": "pma.example.com",
+                    "port": 443,
+                    "url": "https://pma.example.com:443/",
+                    "technology": "phpmyadmin",
+                    "name": "phpMyAdmin",
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 1, "low": 12}
+    assert web["top_findings"][0]["id"] == "exposed_admin_interface"
+    assert len(web["top_findings"]) == 10
+
+
+def test_web_technologies_does_not_count_a_server_banner_twice(tmp_path: Path):
+    """The stage's version_disclosure for Server: is the banner rule's finding already."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "a.example.com", "port": 443, "server": "nginx/1.24.0", "x_powered_by": ""}],
+            "exposures": [
+                {
+                    "kind": "version_disclosure",
+                    "severity": "info",
+                    "host": "a.example.com",
+                    "port": 443,
+                    "technology": "nginx",
+                    "header": "server",
+                    "evidence": ["server: nginx/1.24.0"],
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["findings_by_severity"]["medium"] == 1
+    assert [f["id"] for f in web["top_findings"]] == ["tech_version_disclosure"]
+
+
 def test_domain_monitor_findings_are_read_from_nested_sections(tmp_path: Path):
     """domain_monitor.json has no top-level ``findings``; typosquat and
     dangling-CNAME findings live under their own sections."""

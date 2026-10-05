@@ -37,6 +37,9 @@ LOG = logging.getLogger("shapoclyack.controls")
 # A banner discloses a version when it carries a digit-dotted token
 # ("nginx/1.24.0", "PHP/8.1.2"), as opposed to a bare product name ("nginx").
 _BANNER_VERSION_RE = re.compile(r"\d+\.\d+")
+#: The headers the web technologies control rates as banners itself.
+_BANNER_HEADERS = frozenset({"server", "x-powered-by"})
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 STAGE = "controls"
 
@@ -417,16 +420,60 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
                 "severity": sev,
                 "detail": f"{header_name}: {banner.strip()}",
             })
+    banner_count = len(findings)
+
+    # fingerprint.json ``exposures`` (catalogue matches that are findings in
+    # their own right). A console answering counts at its own severity. An
+    # info-level item -- a VPN or webmail portal, a version stated in some
+    # other header -- is listed for the reader and moves neither the counts nor
+    # the status: a gateway that is meant to be reachable is not a weakness of
+    # this control. A version in Server / X-Powered-By is already rated by the
+    # banner rule above and is not counted a second time.
+    exposure_count = 0
+    observations: list[dict[str, Any]] = []
+    for item in fp_data.get("exposures") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "web_exposure")
+        if kind == "version_disclosure" and str(item.get("header") or "").lower() in _BANNER_HEADERS:
+            continue
+        endpoint = str(item.get("host") or "")
+        if item.get("port"):
+            endpoint = f"{endpoint}:{item['port']}"
+        evidence = item.get("evidence") or []
+        if kind == "version_disclosure" and evidence:
+            detail = str(evidence[0])
+        else:
+            detail = f"{item.get('name') or item.get('technology') or 'web technology'} at {item.get('url') or endpoint}"
+        sev = str(item.get("severity") or "medium").lower()
+        entry = {"id": kind, "domain": endpoint, "severity": sev, "detail": detail}
+        if sev in sev_counts:
+            sev_counts[sev] += 1
+            exposure_count += 1
+            findings.append(entry)
+        else:
+            observations.append(entry)
+    findings.sort(key=lambda f: _SEVERITY_ORDER.get(f["severity"], len(_SEVERITY_ORDER)))
 
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
         why = f"{sev_counts['critical'] + sev_counts['high']} high/critical tech stack exposures"
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = f"{sev_counts['medium'] + sev_counts['low']} endpoint banner(s) disclose product/version information"
+        parts = []
+        if exposure_count:
+            parts.append(f"{exposure_count} exposed admin/management interface(s)")
+        if banner_count:
+            parts.append(f"{banner_count} endpoint banner(s) disclose product/version information")
+        why = "; ".join(parts)
     elif checked_count > 0:
         status = "ok"
-        why = f"{checked_count} web endpoint(s) fingerprinted with no product/version banner disclosure"
+        why = (
+            f"{checked_count} web endpoint(s) fingerprinted with no exposed admin interface "
+            "or product/version banner disclosure"
+        )
+        if observations:
+            why += f"; {len(observations)} remote-access portal(s) or version header(s) listed for inventory"
     else:
         status = "not_checked"
         why = "No web targets fingerprinted"
@@ -435,7 +482,7 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
         "status": status,
         "coverage": {"checked": checked_count, "total": total_count},
         "findings_by_severity": sev_counts,
-        "top_findings": findings[:10],
+        "top_findings": (findings + observations)[:10],
         "evidence": ["fingerprint.json"],
         "why": why,
     }
