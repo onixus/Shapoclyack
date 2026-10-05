@@ -2030,12 +2030,22 @@ this is how to get a fleet onto them without stopping it.
   verifies the certificate and forwards it in `ssl-client-*` headers —
   `examples/ingress-agent-mtls.example.yaml`. Set
   `OCTO_AGENT_MTLS_TRUSTED_PROXIES` to the controller's addresses and nothing
-  else — the nodes of a hostNetwork controller, or a pod range only the
-  controller gets (a Calico IPPool / Cilium pool bound to its namespace) —
-  **never the cluster's pod CIDR**: the scanner-executor and Prometheus may
-  open the API port too, and from a trusted address any pod can forward a
-  "verified" certificate. Apply `examples/networkpolicy-api-ingress.example.yaml`
-  with it, so only the controller pods reach port 8080 from that side.
+  else — a pod range only the controller gets (a Calico IPPool / Cilium pool
+  bound to its namespace) — **never the cluster's pod CIDR**: the
+  scanner-executor and Prometheus may open the API port too, and from a
+  trusted address any pod can forward a "verified" certificate. Apply
+  `examples/networkpolicy-api-ingress.example.yaml` with it, so that of the
+  pod network only the controller pods reach port 8080.
+  *A hostNetwork controller* (common on bare metal) connects from its nodes'
+  addresses, so those are what the list has to hold — and every hostNetwork
+  pod on those nodes connects from the same addresses: the scanner-executor
+  of `overlays/prod` (`hostNetwork: true`), node-exporter, the CNI's own
+  agents. Any of them can then forward a "verified" certificate, and no
+  NetworkPolicy tells them apart (Calico and Cilium let host traffic through
+  by default). Under `required` that makes the floor "whatever runs with host
+  networking on an ingress node"; prefer the API's own TLS listener (below)
+  or a controller on the pod network, or at least keep the ingress nodes free
+  of other hostNetwork workloads (a dedicated node pool with a taint).
   `OCTO_AGENT_MTLS_CLIENT_CA` is mandatory with the list (the API refuses to
   start without it, and an entry that is not an IP or CIDR): every forwarded
   certificate is checked against it. Every Ingress host that routes to the API
@@ -2114,10 +2124,14 @@ the newest and the one before — and revokes older ones as `superseded`.
 cert-manager's renewals overlap the same way (`renewBefore`).
 
 **Revocation** is immediate — the table is read on every request that
-presents a certificate:
+presents a certificate, and a renewal already in flight when the revocation
+commits is refused rather than issued (issuance and revocation of one sensor
+are serialised on its enrolment record):
 
 ```bash
-# a stolen or copied host: everything this sensor holds
+# a stolen or copied host: first the provisioning key it holds (see below),
+# then everything this sensor holds
+curl -X POST "$API/api/tenants/$TENANT/provisioning-keys/$KEY_ID/revoke" -H "$AUTH"
 curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
   -d '{"all": true, "reason": "laptop stolen"}'
 # one certificate, by fingerprint (colons optional) or serial
@@ -2127,25 +2141,46 @@ curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
   -d '{"serial": "4f2a…"}'
 ```
 
-**A revocation also locks the sensor.** Without that, revoking would undo
-itself: with nothing live left on record, the host's token would enrol a new
-certificate on its next poll (the review of #509 timed it at five seconds).
-After any revocation, until an operator resets it, the sensor:
+**Revoking a certificate the sensor held also locks the sensor.** Without
+that, revoking would undo itself: with nothing live left on record, the
+host's token would enrol a new certificate on its next poll (the review of
+#509 timed it at five seconds). "Held" means a certificate on record for this
+sensor that was not revoked yet — live, or already expired. After such a
+revocation, until an operator resets it, the sensor:
 
 - cannot enrol by token alone (`403`, `X-Client-Cert-Error: enrolment-locked`) —
   in every mode, `off` included, since enrolment does not depend on the mode;
 - cannot call anything without a certificate under `optional` as under
-  `required` (the same `enrolment-locked`), so a revoked host does not simply
-  fall back to its token;
+  `required` (the same `enrolment-locked`), so *this sensor's token* does not
+  simply fall back to working without one;
 - still works with a certificate that is live and its own — revoking one old
   certificate after a rotation does not stop the sensor holding the new one.
   For a stolen host revoke `{"all": true}`, so it holds nothing live.
 
-Revoking the provisioning key or token is still the step that takes the
-token itself away (`docs/api-and-rbac.md`); the lock is what keeps a
-certificate revocation from being undone by it in the meantime. The sensor
-logs the refusal and retries every five minutes. `client_cert_locked` in
-`GET /api/agents/summary` counts locked sensors.
+A tombstone (below) and a certificate that was already revoked — a
+`superseded` one, say — lock nothing: the sensor never held the first, and
+revoking the second again changes nothing it holds. So revoking a leaked
+certificate before its first use does not shut out a sensor still working
+without a certificate under `optional`, and tidying up an old certificate
+does not turn the next expiry into an operator's job. The `revoke` audit row
+says whether the sensor is locked (`enrolment_locked`).
+
+**The lock stops an identity, not a host.** It is keyed by the agent id. A
+stolen host that still holds the provisioning key exchanges it for a token
+under any other agent id (or none: the API then picks one) and enrols that
+from scratch — so for a stolen host, revoke the provisioning key *first*
+(`docs/api-and-rbac.md`), then the certificates, as above. A key shared by a
+fleet means a new key for every sensor on it (`other_agents_on_key` on the
+agent says how many). The lock is what keeps the certificate revocation from
+being undone by the token in the meantime. The sensor logs the refusal and
+retries every five minutes. `client_cert_locked` in `GET /api/agents/summary`
+counts locked sensors.
+
+**Deleting the sensor does not lift its lock.** Deleting an agent is a pause,
+not a revocation — a host with its token registers again under the same id —
+so the lock stays with the id, and `client_cert_locked` keeps counting it. A
+host re-installed under that id is refused `enrolment-locked` until the
+enrolment is reset; the reset below works by id for a deleted sensor too.
 
 **Resetting the enrolment** is the separate, deliberate act that lets the
 sensor enrol from scratch by its token — tenant admin, behind the same
@@ -2158,15 +2193,17 @@ curl -X POST "$API/api/agents/edge-01/certificates/reset-enrolment" -H "$AUTH" \
 ```
 
 It revokes whatever of the sensor's certificates is still live ("from
-scratch" means the old key stops working too), lifts the lock, and allows one
-enrolment without a certificate: the next one is a renewal again. Whoever
-enrols first after a reset wins it, so if the token may be elsewhere, revoke
-the provisioning key and give the host a new one *before* resetting.
+scratch" means the old key stops working too), lifts the lock, and allows
+exactly one enrolment without a certificate — two arriving at once get one
+certificate between them, and the other is refused `missing` and recorded as
+a conflict (below). The next one is a renewal again. Whoever enrols first
+after a reset wins it, so if the token may be elsewhere, revoke the
+provisioning key and give the host a new one *before* resetting.
 
 A fingerprint the platform has never seen is recorded as a revocation all the
 same (`source: tombstone`), so a certificate can be revoked before its first
-use. A serial has to match one on record: a serial alone does not say which CA
-issued it. The ingress does not consult this list — the API does — so revoke
+use; it does not lock the sensor (above). A serial has to match one on
+record: a serial alone does not say which CA issued it. The ingress does not consult this list — the API does — so revoke
 here, not by editing the ingress CA.
 
 **A sensor that lost its key** (re-imaged host, an emptyDir that went with its

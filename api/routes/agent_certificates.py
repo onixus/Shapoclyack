@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from api.auth import (
+    AGENT_CLIENT_CERT_ATTR,
     AgentPrincipal,
     Role,
     StepUpDep,
@@ -33,6 +34,7 @@ from api.schemas import (
     ResetAgentCertEnrolmentRequest,
     RevokeAgentCertificatesRequest,
 )
+from api.core.client_cert import Presentation
 from api.services import agent_certs
 from api.services import agents as agents_service
 from api.services import audit as audit_service
@@ -83,8 +85,26 @@ def enrol_certificate(
             # record, the record says (docs/api-and-rbac.md).
             agent_kind=agent.agent_kind if agent is not None else (body.agent_kind or "scanner"),
             csr_pem=body.csr,
+            presented=getattr(request.state, AGENT_CLIENT_CERT_ATTR, None),
             audit=audit,
         )
+    except agent_certs.ClientCertRefused as exc:
+        # What the certificate check answered a moment ago, answered again
+        # under the agent's enrolment lock: an operator revoked or reset in
+        # between, or another enrolment by the same token won the race.
+        agent_certs.record_refusal(
+            settings,
+            audit,
+            tenant_id=principal.tenant_id,
+            agent_id=principal.agent_id,
+            refusal=exc,
+            presentation=Presentation(cert=getattr(request.state, AGENT_CLIENT_CERT_ATTR, None)),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+            headers={agent_certs.REFUSAL_HEADER: exc.reason},
+        ) from exc
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -103,14 +123,18 @@ def enrol_certificate(
     )
 
 
-def _agent_in_scope(principal: TenantPrincipal, agent_id: str) -> AgentInfo:
-    """The agent, in the caller's tenant (any tenant for an unscoped platform admin)."""
-    tenant_id = (
+def _scope(principal: TenantPrincipal) -> str | None:
+    """The caller's tenant, or ``None`` (any tenant) for an unscoped platform admin."""
+    return (
         None
         if principal.is_platform_admin and not principal.tenant_requested
         else principal.tenant_id
     )
-    agent = agents_service.get_agent(agent_id, tenant_id=tenant_id)
+
+
+def _agent_in_scope(principal: TenantPrincipal, agent_id: str) -> AgentInfo:
+    """The agent, in the caller's tenant (any tenant for an unscoped platform admin)."""
+    agent = agents_service.get_agent(agent_id, tenant_id=_scope(principal))
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return agent
@@ -221,12 +245,23 @@ def reset_agent_certificate_enrolment(
 
     Revokes whatever of its certificates is still live and lifts the lock a
     revocation set. Every certificate on record is returned, as by revoke.
+    Also for an agent deleted since: its lock outlived it, and a host
+    re-installed under the same id is refused until this.
     """
-    agent = _agent_in_scope(principal, agent_id)
+    agent = agents_service.get_agent(agent_id, tenant_id=_scope(principal))
+    if agent is not None:
+        tenant_id = agent.tenant_id
+    else:
+        try:
+            tenant_id = agent_certs.enrolment_tenant(
+                settings, tenant_id=_scope(principal), agent_id=agent_id
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     rows = agent_certs.reset_enrolment(
         settings,
-        tenant_id=agent.tenant_id,
-        agent_id=agent.agent_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
         reason=body.reason,
         audit=audit,
     )

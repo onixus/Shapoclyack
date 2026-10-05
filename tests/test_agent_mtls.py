@@ -1425,3 +1425,452 @@ def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monk
     )
     assert renewed.status_code == 200, renewed.text
     assert renewed.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+
+
+# --------------------------------------------------------------------------
+# 16. Issuance and revocation of one agent are serialised (review 2 of #509).
+# --------------------------------------------------------------------------
+
+
+def _live(settings: Settings, agent_id: str) -> list[dict]:
+    """Live certificates on record, read directly: the agent may not be registered."""
+    from api.services import agent_certs
+
+    rows = agent_certs.list_certs(settings, tenant_id="default", agent_id=agent_id)
+    return [row for row in rows if row["state"] in ("valid", "expiring")]
+
+
+def _between_bind_and_issue(monkeypatch, act):  # type: ignore[no-untyped-def]
+    """Run ``act`` once, after the enrolment route's certificate check passed
+    and before ``issue`` writes — the window a concurrent request lands in."""
+    from api.services import agent_certs
+
+    real = agent_certs._load_issuer  # noqa: SLF001
+    pending = [act]
+
+    def load(settings):  # type: ignore[no-untyped-def]
+        if pending:
+            pending.pop()()
+        return real(settings)
+
+    monkeypatch.setattr(agent_certs, "_load_issuer", load)
+
+
+@requires_postgres
+def test_revoke_all_beats_a_renewal_already_past_the_certificate_check(tmp_path, monkeypatch):
+    """Before: the renewal inserted a live certificate after "revoke all"
+    committed — the stolen host renewing in a loop survived it in 22 of 30
+    unthrottled rounds of the review's probe."""
+    from api.services import agent_certs
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    first = _enrol(client, token_a).json()
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first["certificate"])).status_code == 200
+
+    _between_bind_and_issue(
+        monkeypatch,
+        lambda: agent_certs.revoke(
+            settings, tenant_id="default", agent_id="sensor-a", revoke_all=True, reason="stolen"
+        ),
+    )
+    renewal = _enrol(client, token_a, first["certificate"])
+    assert (renewal.status_code, renewal.headers["X-Client-Cert-Error"]) == (403, "revoked")
+    assert _live(settings, "sensor-a") == []
+
+
+@requires_postgres
+def test_two_enrolments_by_token_after_a_reset_issue_exactly_one(tmp_path, monkeypatch):
+    """Before: both were issued a certificate (10 of 10 rounds of the
+    review's probe), two live certificates and no conflict on record."""
+    from api.services import agent_certs
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+
+    _between_bind_and_issue(
+        monkeypatch,
+        lambda: agent_certs.issue(
+            settings,
+            tenant_id="default",
+            agent_id="sensor-a",
+            agent_kind="scanner",
+            csr_pem=_csr("other host")[1],
+        ),
+    )
+    second = _enrol(client, token_a)
+    assert (second.status_code, second.headers["X-Client-Cert-Error"]) == (403, "missing")
+    assert len(_live(settings, "sensor-a")) == 1
+    # The loser is the conflict the fleet view exists to show.
+    [event] = _events(client, admin, "agent.certificate_refused")
+    assert event["after"]["agent_holds_live_certificate"] is True
+
+
+@requires_postgres
+def test_a_lock_set_while_an_enrolment_by_token_is_in_flight_holds(tmp_path, monkeypatch):
+    from api.services import agent_certs
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    first = _enrol(client, token_a).json()
+    # Ran out while the host was offline: enrolment by token is open again...
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.AgentClientCert)
+            .where(models.AgentClientCert.agent_id == "sensor-a")
+            .values(not_after=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1))
+        )
+    # ...until the operator revokes what it held, mid-request.
+    _between_bind_and_issue(
+        monkeypatch,
+        lambda: agent_certs.revoke(
+            settings, tenant_id="default", agent_id="sensor-a", fingerprint=first["fingerprint_sha256"]
+        ),
+    )
+    late = _enrol(client, token_a)
+    assert (late.status_code, late.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+
+
+# --------------------------------------------------------------------------
+# 17. Only revoking a certificate the agent held locks it.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+def test_a_tombstone_does_not_lock_a_sensor_without_a_certificate(tmp_path, monkeypatch):
+    """operations.md: a certificate "can be revoked before its first use".
+    Before: doing so shut the cert-less sensor out under ``optional``."""
+    ca = CA()
+    client, admin, token_a, _ = _fleet(tmp_path, monkeypatch, mode="optional", ca=ca)
+    assert _register(client, token_a).status_code == 200
+    leaked = ca.sensor("default", "sensor-a")
+    tombstone = _revoke(client, admin, "sensor-a", fingerprint=leaked.fingerprint, reason="leaked")
+    assert tombstone.status_code == 200, tombstone.text
+    assert _register(client, token_a).status_code == 200
+    refused = _register(_peer(client, INGRESS_PEER), token_a, _forwarded(leaked))
+    assert (refused.status_code, refused.headers["X-Client-Cert-Error"]) == (403, "revoked")
+    [event] = _events(client, admin, "agent.certificate_revoke")
+    assert event["after"]["enrolment_locked"] is False
+    assert client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_locked"] == 0
+
+
+@requires_postgres
+def test_tidying_up_a_superseded_certificate_does_not_lock(tmp_path, monkeypatch):
+    """Before: revoking an already-revoked certificate locked the agent, and
+    the next expiry while offline then needed an operator — contrary to
+    operations.md's "expiry is not revocation"."""
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    c1 = _enrol(client, token_a).json()
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(c1["certificate"])).status_code == 200
+    c2 = _enrol(client, token_a, c1["certificate"]).json()
+    _enrol(client, token_a, c2["certificate"])  # c1 is superseded now
+    assert _revoke(client, admin, "sensor-a", fingerprint=c1["fingerprint_sha256"]).status_code == 200
+
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.AgentClientCert)
+            .where(models.AgentClientCert.agent_id == "sensor-a")
+            .values(not_after=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1))
+        )
+    again = _enrol(client, token_a)
+    assert again.status_code == 200, again.text
+
+
+@requires_postgres
+def test_revoking_a_certificate_the_agent_held_locks_even_once_expired(tmp_path, monkeypatch):
+    """The other direction: a stolen host offline past its certificate's
+    expiry is still shut out by revoking that certificate."""
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    first = _enrol(client, token_a)
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first.json()["certificate"])).status_code == 200
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.AgentClientCert)
+            .where(models.AgentClientCert.agent_id == "sensor-a")
+            .values(not_after=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1))
+        )
+    assert _revoke(client, admin, "sensor-a", all=True, reason="stolen").status_code == 200
+    locked = _enrol(client, token_a)
+    assert (locked.status_code, locked.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    assert _events(client, admin, "agent.certificate_revoke")[0]["after"]["enrolment_locked"] is True
+
+
+# --------------------------------------------------------------------------
+# 18. A lock outlives a deleted agent, and can still be lifted.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+def test_a_deleted_agents_lock_is_counted_and_reset_by_its_id(tmp_path, monkeypatch):
+    """Before: the re-installed host was refused ``enrolment-locked``, the
+    reset the refusal points to answered 404, and the fleet view counted
+    no lock — no way out through the API."""
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    key = _mint_key(client, admin)
+    token_a = _token(client, key, "sensor-a")
+    ingress = _peer(client, INGRESS_PEER)
+    first = _enrol(client, token_a)
+    assert _register(ingress, token_a, _forwarded(first.json()["certificate"])).status_code == 200
+    assert _revoke(client, admin, "sensor-a", all=True, reason="re-imaging").status_code == 200
+    assert client.delete("/api/agents/sensor-a", headers=bearer(admin)).status_code == 200
+
+    # Deleting is not a reset: the same id is still shut.
+    reinstalled = _token(client, key, "sensor-a")
+    locked = _enrol(client, reinstalled)
+    assert (locked.status_code, locked.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    assert client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_locked"] == 1
+
+    # Another tenant's admin cannot reach it.
+    created = client.post("/api/tenants", headers=bearer(admin), json={"name": "B", "tenant_id": "ten_b"})
+    assert created.status_code == 201, created.text
+    assert client.put("/api/tenants/ten_b/members/operator", headers=bearer(admin), json={"role": "admin"}).status_code == 200
+    other = client.post(
+        "/api/agents/sensor-a/certificates/reset-enrolment?tenant_id=ten_b",
+        headers=bearer(login(client, "operator")),
+        json={},
+    )
+    assert other.status_code == 404, (other.status_code, other.text)
+    # Row-level security hides the row on that path; the lookup does not
+    # lean on it — outside a request it is the only filter there is.
+    from api.services import agent_certs
+
+    with pytest.raises(LookupError):
+        agent_certs.enrolment_tenant(settings, tenant_id="ten_b", agent_id="sensor-a")
+    assert agent_certs.enrolment_tenant(settings, tenant_id=None, agent_id="sensor-a") == "default"
+
+    reset = _reset(client, admin, "sensor-a", "re-imaged")
+    assert reset.status_code == 200, reset.text
+    assert client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_locked"] == 0
+    fresh = _enrol(client, reinstalled)
+    assert fresh.status_code == 200, fresh.text
+    assert _register(ingress, reinstalled, _forwarded(fresh.json()["certificate"])).status_code == 200
+
+
+@requires_postgres
+def test_a_reset_of_an_id_nobody_has_is_404(tmp_path, monkeypatch):
+    client, admin, _, _ = _fleet(tmp_path, monkeypatch, mode="optional", ca=CA())
+    assert _reset(client, admin, "never-was").status_code == 404
+
+
+@requires_postgres
+def test_a_stolen_host_is_stopped_by_its_key_and_its_certificates_together(tmp_path, monkeypatch):
+    """operations.md's order for a stolen host. "Revoke all" alone stops the
+    identity: the provisioning key on the host enrols a new one."""
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    minted = client.post(
+        "/api/tenants/default/provisioning-keys", headers=bearer(admin), json={"label": ""}
+    ).json()
+    token_a = _token(client, minted["key"], "sensor-a")
+    first = _enrol(client, token_a)
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first.json()["certificate"])).status_code == 200
+    assert _revoke(client, admin, "sensor-a", all=True, reason="laptop stolen").status_code == 200
+    assert _enrol(client, _token(client, minted["key"], "sensor-a-2")).status_code == 200
+
+    revoked_key = client.post(
+        f"/api/tenants/default/provisioning-keys/{minted['key_id']}/revoke", headers=bearer(admin)
+    )
+    assert revoked_key.status_code == 200, revoked_key.text
+    exchanged = client.post(
+        "/api/auth/agent/token", json={"provisioning_key": minted["key"], "agent_id": "sensor-a-3"}
+    )
+    assert exchanged.status_code in (401, 403)
+    assert _enrol(client, token_a).status_code in (401, 403)
+
+
+# --------------------------------------------------------------------------
+# 19. The fleet view's conflict window, and the worker's backoff.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+def test_a_conflict_is_counted_for_a_day_and_no_longer(tmp_path, monkeypatch):
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+    from api.services import agent_certs
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    first = _enrol(client, token_a)
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first.json()["certificate"])).status_code == 200
+    assert _enrol(client, token_a).status_code == 403
+
+    def conflicts_after(age: timedelta) -> int:
+        with get_session(settings.postgres_url) as session:
+            session.execute(
+                update(models.AgentCertEnrolment)
+                .where(models.AgentCertEnrolment.agent_id == "sensor-a")
+                .values(conflict_at=datetime.now(UTC).replace(tzinfo=None) - age)
+            )
+        return client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_conflicts"]
+
+    assert conflicts_after(agent_certs.CONFLICT_WINDOW - timedelta(minutes=5)) == 1
+    assert conflicts_after(agent_certs.CONFLICT_WINDOW + timedelta(minutes=5)) == 0
+
+
+def test_the_worker_waits_out_a_refused_enrolment_instead_of_polling_into_it(tmp_path):
+    from agent import mtls, worker
+
+    ca = CA()
+    cert = mtls.ClientCertificate(tmp_path / "c.crt", tmp_path / "c.key", enrol=True)
+    issued = ca.sensor("default", "sensor-a")
+    cert.install(issued.key_pem, {"certificate": issued.pem})
+
+    # Refused, nothing failed yet: enrol on the next poll.
+    assert worker._after_client_cert_refusal(cert, 2.0) == (2.0, True)  # noqa: SLF001
+    assert worker._after_client_cert_refusal(cert, 60.0) == (5.0, True)  # noqa: SLF001
+    # The enrolment itself was refused (locked): wait the retry delay out.
+    cert.enrolment_failed()
+    assert worker._after_client_cert_refusal(cert, 2.0) == (mtls.RETRY_SECONDS, False)  # noqa: SLF001
+    # Not something an enrolment cures: the long backoff.
+    assert worker._after_client_cert_refusal(None, 2.0) == (worker.DISABLED_BACKOFF_SECONDS, False)  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------
+# 20. The attribute names of the forwarded subject, as OpenSSL writes them.
+# --------------------------------------------------------------------------
+
+#: ``openssl x509 -noout -subject -nameopt RFC2253`` (OpenSSL 3.6.4) for a
+#: certificate whose subject is CN=edge-01 and then that one attribute.
+OPENSSL_SUBJECTS = {
+    "name": ("2.5.4.41", "edge", "name=edge,CN=edge-01"),
+    "unstructuredName": ("1.2.840.113549.1.9.2", "router.example", "unstructuredName=router.example,CN=edge-01"),
+    "description": ("2.5.4.13", "sensor", "description=sensor,CN=edge-01"),
+    "telephoneNumber": ("2.5.4.20", "+70000000000", r"telephoneNumber=\+70000000000,CN=edge-01"),
+    "postalAddress": ("2.5.4.16", "Moscow", "postalAddress=Moscow,CN=edge-01"),
+    "role": ("2.5.4.72", "scanner", "role=scanner,CN=edge-01"),
+    "surname": ("2.5.4.4", "X1", "SN=X1,CN=edge-01"),
+    "serialNumber": ("2.5.4.5", "X1", "serialNumber=X1,CN=edge-01"),
+    "userId": ("0.9.2342.19200300.100.1.1", "u1", "UID=u1,CN=edge-01"),
+    "uniqueIdentifier": ("0.9.2342.19200300.100.1.44", "u1", "uid=u1,CN=edge-01"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(OPENSSL_SUBJECTS))
+def test_the_subject_openssl_writes_names_each_attribute_as_itself(case):
+    """Before: ``name``, ``unstructuredName``, ``description``,
+    ``telephoneNumber``, ``postalAddress`` and ``role`` were unreadable, and
+    ``uid`` (uniqueIdentifier) was read as userId."""
+    from api.core import client_cert
+
+    oid, value, dn = OPENSSL_SUBJECTS[case]
+    cert = CA().sensor("default", "sensor-a", subject=_name([(CN, "edge-01")], [(oid, value)])).cert
+    assert client_cert.subject_matches(dn, cert.subject)
+    # And never as any other attribute with the same value: the pairs that
+    # differ only by case or by a letter are the ones a table gets wrong.
+    for other, (other_oid, other_value, _) in OPENSSL_SUBJECTS.items():
+        if other_oid == oid or other_value != value:
+            continue
+        lookalike = CA().sensor(
+            "default", "sensor-a", subject=_name([(CN, "edge-01")], [(other_oid, value)])
+        ).cert
+        assert not client_cert.subject_matches(dn, lookalike.subject), other
+
+
+def test_every_attribute_name_openssl_prints_is_read_as_its_oid():
+    """Against the installed OpenSSL 3+, when there is one: every attribute
+    of the arcs a certificate subject draws on, printed and read back."""
+    import re
+    import shutil
+    import subprocess
+
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    from api.core import client_cert
+
+    binary = shutil.which("openssl")
+    version = subprocess.run([binary, "version"], capture_output=True, text=True).stdout if binary else ""
+    if not version.startswith(("OpenSSL 3", "OpenSSL 4")):
+        pytest.skip(f"needs OpenSSL 3 or later, found {version.strip() or 'none'}")
+    listed = subprocess.run([binary, "list", "-objects"], capture_output=True, text=True).stdout
+    # Attribute types only: 1.2.643.100.113.1 is a value of classSignTool.
+    attribute = re.compile(
+        r"(2\.5\.4|1\.2\.840\.113549\.1\.9|0\.9\.2342\.19200300\.100\.1"
+        r"|1\.3\.6\.1\.4\.1\.311\.60\.2\.1|1\.2\.643\.100)\.\d+|1\.2\.643\.3\.131\.1\.1"
+    )
+    oids = sorted(
+        {
+            line.rsplit(" ", 1)[-1]
+            for line in listed.splitlines()
+            if attribute.fullmatch(line.rsplit(" ", 1)[-1])
+        }
+    )
+    assert len(oids) > 100
+    checked = 0
+    for oid in oids:
+        value = "RU" if oid in ("2.5.4.6", "1.3.6.1.4.1.311.60.2.1.3") else "v1"
+        try:
+            issued = CA().sensor("default", "sensor-a", subject=_name([(CN, "edge-01")], [(oid, value)]))
+        except ValueError:
+            continue
+        printed = subprocess.run(
+            [binary, "x509", "-noout", "-subject", "-nameopt", "RFC2253"],
+            input=issued.cert.public_bytes(Encoding.PEM),
+            capture_output=True,
+            check=True,
+        ).stdout.decode().strip().removeprefix("subject=")
+        assert client_cert.subject_matches(printed, issued.cert.subject), printed
+        checked += 1
+    assert checked > 100
+
+
+@pytest.mark.parametrize(
+    "dn",
+    [
+        # The DER length says 7 bytes and 4 follow, or says 5 and 6 follow.
+        "CN=bmp,1.3.6.1.4.1.99999.1=#0C0763757374",
+        "CN=bmp,1.3.6.1.4.1.99999.1=#0C05637573746F6D",
+        # Not a string type at all (OCTET STRING, SEQUENCE, INTEGER).
+        "CN=bmp,1.3.6.1.4.1.99999.1=#0406637573746F6D",
+        "CN=bmp,1.3.6.1.4.1.99999.1=#3006637573746F6D",
+        "CN=bmp,1.3.6.1.4.1.99999.1=#0206637573746F6D",
+    ],
+)
+def test_a_dumped_value_that_is_not_a_well_formed_der_string_matches_nothing(dn):
+    from api.core import client_cert
+
+    cert = CA().sensor("default", "sensor-a", subject=_name([(CN, "bmp")], [("1.3.6.1.4.1.99999.1", "custom")])).cert
+    assert client_cert.parse_rfc2253(dn) is None
+    assert not client_cert.subject_matches(dn, cert.subject)

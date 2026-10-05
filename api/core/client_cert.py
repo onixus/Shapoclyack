@@ -282,42 +282,168 @@ def is_usable_now(cert: x509.Certificate, now: datetime) -> str | None:
 # none of that, so the two are compared as names: a list of RDNs, each a set
 # of (OID, value).
 
-#: Attribute names either spelling uses, lower-cased, to their OIDs. One that
-#: is not here and is not a dotted OID makes the subject unreadable, which is
-#: a refusal, never a match.
+#: Attribute names to OIDs: every name OpenSSL 3.x prints for an attribute of
+#: these arcs under ``-nameopt RFC2253`` (``openssl list -objects``; captured
+#: from 3.6 and checked against 4.0, and pinned by
+#: ``tests/test_agent_mtls.py``), spelt as OpenSSL spells them. Matched by
+#: case first: OpenSSL's ``UID`` is userId and its ``uid`` uniqueIdentifier,
+#: and reading one as the other is a different name taken for the same one.
+#: A name that is not here — and not a dotted OID — makes the subject
+#: unreadable, which is a refusal, never a match.
 _DN_ATTRIBUTE_OIDS = {
-    "cn": "2.5.4.3",
-    "sn": "2.5.4.4",
-    "serialnumber": "2.5.4.5",
-    "c": "2.5.4.6",
-    "l": "2.5.4.7",
-    "st": "2.5.4.8",
+    # X.520 (2.5.4)
+    "CN": "2.5.4.3",
+    "SN": "2.5.4.4",
+    "serialNumber": "2.5.4.5",
+    "C": "2.5.4.6",
+    "L": "2.5.4.7",
+    "ST": "2.5.4.8",
     "street": "2.5.4.9",
-    "o": "2.5.4.10",
-    "ou": "2.5.4.11",
+    "O": "2.5.4.10",
+    "OU": "2.5.4.11",
     "title": "2.5.4.12",
-    "businesscategory": "2.5.4.15",
-    "postalcode": "2.5.4.17",
-    "gn": "2.5.4.42",
-    "givenname": "2.5.4.42",
+    "description": "2.5.4.13",
+    "searchGuide": "2.5.4.14",
+    "businessCategory": "2.5.4.15",
+    "postalAddress": "2.5.4.16",
+    "postalCode": "2.5.4.17",
+    "postOfficeBox": "2.5.4.18",
+    "physicalDeliveryOfficeName": "2.5.4.19",
+    "telephoneNumber": "2.5.4.20",
+    "telexNumber": "2.5.4.21",
+    "teletexTerminalIdentifier": "2.5.4.22",
+    "facsimileTelephoneNumber": "2.5.4.23",
+    "x121Address": "2.5.4.24",
+    "internationaliSDNNumber": "2.5.4.25",
+    "registeredAddress": "2.5.4.26",
+    "destinationIndicator": "2.5.4.27",
+    "preferredDeliveryMethod": "2.5.4.28",
+    "presentationAddress": "2.5.4.29",
+    "supportedApplicationContext": "2.5.4.30",
+    "member": "2.5.4.31",
+    "owner": "2.5.4.32",
+    "roleOccupant": "2.5.4.33",
+    "seeAlso": "2.5.4.34",
+    "userPassword": "2.5.4.35",
+    "userCertificate": "2.5.4.36",
+    "cACertificate": "2.5.4.37",
+    "authorityRevocationList": "2.5.4.38",
+    "certificateRevocationList": "2.5.4.39",
+    "crossCertificatePair": "2.5.4.40",
+    "name": "2.5.4.41",
+    "GN": "2.5.4.42",
     "initials": "2.5.4.43",
-    "generationqualifier": "2.5.4.44",
-    "dnqualifier": "2.5.4.46",
+    "generationQualifier": "2.5.4.44",
+    "x500UniqueIdentifier": "2.5.4.45",
+    "dnQualifier": "2.5.4.46",
+    "enhancedSearchGuide": "2.5.4.47",
+    "protocolInformation": "2.5.4.48",
+    "distinguishedName": "2.5.4.49",
+    "uniqueMember": "2.5.4.50",
+    "houseIdentifier": "2.5.4.51",
+    "supportedAlgorithms": "2.5.4.52",
+    "deltaRevocationList": "2.5.4.53",
+    "dmdName": "2.5.4.54",
     "pseudonym": "2.5.4.65",
-    "organizationidentifier": "2.5.4.97",
-    "emailaddress": "1.2.840.113549.1.9.1",
-    "dc": "0.9.2342.19200300.100.1.25",
-    "uid": "0.9.2342.19200300.100.1.1",
-    "jurisdictionl": "1.3.6.1.4.1.311.60.2.1.1",
-    "jurisdictionst": "1.3.6.1.4.1.311.60.2.1.2",
-    "jurisdictionc": "1.3.6.1.4.1.311.60.2.1.3",
-    # The Russian qualified-certificate attributes OpenSSL names.
-    "inn": "1.2.643.3.131.1.1",
-    "ogrn": "1.2.643.100.1",
-    "snils": "1.2.643.100.3",
-    "innle": "1.2.643.100.4",
-    "ogrnip": "1.2.643.100.5",
+    "role": "2.5.4.72",
+    "organizationIdentifier": "2.5.4.97",
+    "c3": "2.5.4.98",
+    "n3": "2.5.4.99",
+    "dnsName": "2.5.4.100",
+    # PKCS #9 (1.2.840.113549.1.9)
+    "emailAddress": "1.2.840.113549.1.9.1",
+    "unstructuredName": "1.2.840.113549.1.9.2",
+    "contentType": "1.2.840.113549.1.9.3",
+    "messageDigest": "1.2.840.113549.1.9.4",
+    "signingTime": "1.2.840.113549.1.9.5",
+    "countersignature": "1.2.840.113549.1.9.6",
+    "challengePassword": "1.2.840.113549.1.9.7",
+    "unstructuredAddress": "1.2.840.113549.1.9.8",
+    "extendedCertificateAttributes": "1.2.840.113549.1.9.9",
+    "extReq": "1.2.840.113549.1.9.14",
+    "SMIME-CAPS": "1.2.840.113549.1.9.15",
+    "SMIME": "1.2.840.113549.1.9.16",
+    "friendlyName": "1.2.840.113549.1.9.20",
+    "localKeyID": "1.2.840.113549.1.9.21",
+    "id-aa-CMSAlgorithmProtection": "1.2.840.113549.1.9.52",
+    # RFC 4519 / pilot attributes (0.9.2342.19200300.100.1)
+    "UID": "0.9.2342.19200300.100.1.1",
+    "textEncodedORAddress": "0.9.2342.19200300.100.1.2",
+    "mail": "0.9.2342.19200300.100.1.3",
+    "info": "0.9.2342.19200300.100.1.4",
+    "favouriteDrink": "0.9.2342.19200300.100.1.5",
+    "roomNumber": "0.9.2342.19200300.100.1.6",
+    "photo": "0.9.2342.19200300.100.1.7",
+    "userClass": "0.9.2342.19200300.100.1.8",
+    "host": "0.9.2342.19200300.100.1.9",
+    "manager": "0.9.2342.19200300.100.1.10",
+    "documentIdentifier": "0.9.2342.19200300.100.1.11",
+    "documentTitle": "0.9.2342.19200300.100.1.12",
+    "documentVersion": "0.9.2342.19200300.100.1.13",
+    "documentAuthor": "0.9.2342.19200300.100.1.14",
+    "documentLocation": "0.9.2342.19200300.100.1.15",
+    "homeTelephoneNumber": "0.9.2342.19200300.100.1.20",
+    "secretary": "0.9.2342.19200300.100.1.21",
+    "otherMailbox": "0.9.2342.19200300.100.1.22",
+    "lastModifiedTime": "0.9.2342.19200300.100.1.23",
+    "lastModifiedBy": "0.9.2342.19200300.100.1.24",
+    "DC": "0.9.2342.19200300.100.1.25",
+    "aRecord": "0.9.2342.19200300.100.1.26",
+    "pilotAttributeType27": "0.9.2342.19200300.100.1.27",
+    "mXRecord": "0.9.2342.19200300.100.1.28",
+    "nSRecord": "0.9.2342.19200300.100.1.29",
+    "sOARecord": "0.9.2342.19200300.100.1.30",
+    "cNAMERecord": "0.9.2342.19200300.100.1.31",
+    "associatedDomain": "0.9.2342.19200300.100.1.37",
+    "associatedName": "0.9.2342.19200300.100.1.38",
+    "homePostalAddress": "0.9.2342.19200300.100.1.39",
+    "personalTitle": "0.9.2342.19200300.100.1.40",
+    "mobileTelephoneNumber": "0.9.2342.19200300.100.1.41",
+    "pagerTelephoneNumber": "0.9.2342.19200300.100.1.42",
+    "friendlyCountryName": "0.9.2342.19200300.100.1.43",
+    "uid": "0.9.2342.19200300.100.1.44",
+    "organizationalStatus": "0.9.2342.19200300.100.1.45",
+    "janetMailbox": "0.9.2342.19200300.100.1.46",
+    "mailPreferenceOption": "0.9.2342.19200300.100.1.47",
+    "buildingName": "0.9.2342.19200300.100.1.48",
+    "dSAQuality": "0.9.2342.19200300.100.1.49",
+    "singleLevelQuality": "0.9.2342.19200300.100.1.50",
+    "subtreeMinimumQuality": "0.9.2342.19200300.100.1.51",
+    "subtreeMaximumQuality": "0.9.2342.19200300.100.1.52",
+    "personalSignature": "0.9.2342.19200300.100.1.53",
+    "dITRedirect": "0.9.2342.19200300.100.1.54",
+    "audio": "0.9.2342.19200300.100.1.55",
+    "documentPublisher": "0.9.2342.19200300.100.1.56",
+    # EV jurisdiction (1.3.6.1.4.1.311.60.2.1)
+    "jurisdictionL": "1.3.6.1.4.1.311.60.2.1.1",
+    "jurisdictionST": "1.3.6.1.4.1.311.60.2.1.2",
+    "jurisdictionC": "1.3.6.1.4.1.311.60.2.1.3",
+    # Russian qualified-certificate attributes (1.2.643)
+    "INN": "1.2.643.3.131.1.1",
+    "OGRN": "1.2.643.100.1",
+    "SNILS": "1.2.643.100.3",
+    "OGRNIP": "1.2.643.100.5",
+    "subjectSignTool": "1.2.643.100.111",
+    "issuerSignTool": "1.2.643.100.112",
+    "classSignTool": "1.2.643.100.113",
+    # Spellings OpenSSL does not print but others do: cryptography's
+    # ``rfc4514_string`` writes STREET, and INNLE is a qualified-certificate
+    # attribute OpenSSL 3.6 dumps by OID.
+    "STREET": "2.5.4.9",
+    "INNLE": "1.2.643.100.4",
 }
+
+
+def _folded_names(names: dict[str, str]) -> dict[str, str]:
+    """The case-insensitive fallback (RFC 4514 names are), for the names whose
+    lower case is one name only — ``uid`` is two, so neither is in it."""
+    folded: dict[str, set[str]] = {}
+    for name, oid in names.items():
+        folded.setdefault(name.lower(), set()).add(oid)
+    return {name: next(iter(oids)) for name, oids in folded.items() if len(oids) == 1}
+
+
+_DN_ATTRIBUTE_OIDS_FOLDED = _folded_names(_DN_ATTRIBUTE_OIDS)
 _HEX = frozenset("0123456789abcdefABCDEF")
 #: DER string tags a ``#``-dumped value may carry, and how their bytes read.
 _DER_STRING_CODECS = {
@@ -338,7 +464,7 @@ def _attribute_oid(name: str) -> str | None:
     cleaned = name.strip()
     if cleaned and all(part.isdigit() for part in cleaned.split(".")) and "." in cleaned:
         return cleaned
-    return _DN_ATTRIBUTE_OIDS.get(cleaned.lower())
+    return _DN_ATTRIBUTE_OIDS.get(cleaned) or _DN_ATTRIBUTE_OIDS_FOLDED.get(cleaned.lower())
 
 
 def _der_string(hex_value: str) -> str | None:

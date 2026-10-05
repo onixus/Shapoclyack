@@ -59,9 +59,15 @@ spec:
             # The ingress-nginx controller and nothing else — the only peers
             # whose ssl-client-* headers are believed. IP addresses or CIDRs
             # (a host name is refused at start):
-            #   * a hostNetwork controller: the addresses of the nodes it runs on;
             #   * a pod-network controller: a range only its pods get — a Calico
-            #     IPPool or Cilium pool bound to the ingress-nginx namespace.
+            #     IPPool or Cilium pool bound to the ingress-nginx namespace;
+            #   * a hostNetwork controller: the addresses of the nodes it runs
+            #     on — which every hostNetwork pod on those nodes shares (the
+            #     overlays/prod scanner-executor, node-exporter), so any of them
+            #     is trusted too and no NetworkPolicy can tell them apart. For
+            #     `required`, prefer the API's own TLS listener or a controller
+            #     on the pod network (docs/operations.md § Sensor client
+            #     certificates).
             # Never the cluster's pod CIDR: the scanner-executor and Prometheus
             # may open 8080 too (networkpolicy-api-ingress.example.yaml), and
             # from a trusted address they could forge a verified certificate.

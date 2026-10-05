@@ -464,6 +464,26 @@ _CLIENT_CERT_ERROR_HEADER = "X-Client-Cert-Error"
 _RENEWABLE_CERT_REASONS = frozenset({"missing", "revoked", "expired"})
 
 
+def _after_client_cert_refusal(
+    client_cert: mtls.ClientCertificate | None, poll_interval: float
+) -> tuple[float, bool]:
+    """How long to wait after a certificate refusal, and whether to re-check it now.
+
+    ``client_cert`` is the certificate an enrolment can replace, ``None`` when
+    the refusal is not one an enrolment cures. Returns the wait in seconds and
+    whether the next poll should enrol before anything else.
+    """
+    if client_cert is None:
+        return DISABLED_BACKOFF_SECONDS, False
+    if not client_cert.retry_pending():
+        client_cert.force_enrolment()
+        return min(poll_interval, 5.0), True
+    # The enrolment itself was refused — locked by a revocation until an
+    # operator resets it. Wait it out instead of asking at the poll rate.
+    client_cert.force_enrolment()
+    return mtls.RETRY_SECONDS, False
+
+
 class AgentClientCertRefused(RuntimeError):
     """The API refused the request over its client certificate (#309).
 
@@ -2082,17 +2102,12 @@ def run_loop(args: argparse.Namespace) -> int:
                         "enrolling a new one" if renewable else message,
                     )
                 last_cert_message = message
-                if renewable and not client_cert.retry_pending():
-                    client_cert.force_enrolment()
+                wait, check_now = _after_client_cert_refusal(
+                    client_cert if renewable else None, args.poll_interval
+                )
+                if check_now:
                     cert_check_at = 0.0
-                    shutdown_event.wait(min(args.poll_interval, 5.0))
-                elif renewable:
-                    # The enrolment itself was refused — locked by a
-                    # revocation until an operator resets it. Wait it out.
-                    client_cert.force_enrolment()
-                    shutdown_event.wait(mtls.RETRY_SECONDS)
-                else:
-                    shutdown_event.wait(DISABLED_BACKOFF_SECONDS)
+                shutdown_event.wait(wait)
             except AgentDisabled as exc:
                 # Logged on change only, for the reason upgrade_message is: the
                 # API repeats the refusal on every poll, and at the normal
