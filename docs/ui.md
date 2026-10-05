@@ -64,7 +64,7 @@ The light theme remaps the existing slate utility classes rather than rewriting 
 | `/retention` | Data retention for the selected tenant: every category's platform default, bounds, override and window in force; the legal-hold banner; for a platform admin, placing and releasing a hold and the personal-data requests (export, erasure) for console accounts ([data-retention.md](data-retention.md)) | `tenant.retention.read` to read — the tenant's admin or auditor; `tenant.retention.manage` to edit; platform admin for the hold and the requests |
 | `/integrations` | Outbound webhooks and ticket-system transports (Jira, ServiceNow, DefectDojo): subscriptions, test, secret rotation, delivery log with retry | Operator to read; admin to change |
 | `/service-tokens` | Non-interactive API credentials for the selected tenant | `tenant.credential.manage` — the tenant's admin or a token-admin |
-| `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator |
+| `/agents` | **Sensors** — the fleet of sensors (API resource `agents`, `agent_kind = scanner`): live health tiles, a sensor drawer, the SSH deploy dialog and on-request provisioning keys (the page is labelled "Sensors"; the route stays `/agents`) | Operator; `tenant.credential.manage` alone (a `token-admin`) gets the tiles and the **Deploy Sensor** dialog without the fleet list |
 | `/security` | Your own second factor: enrol an authenticator, keep the recovery codes, turn it off | Any role, for the signed-in account only |
 | `/system` | Versions, dependencies, stages, runtime, retention state, safe config | Viewer; the config panel needs `config.read` and edits need platform admin. A viewer also sees the tenant/sensor counters as `—`: they span every tenant on the installation ([#318](https://github.com/onixus/Shapoclyack/issues/318)) |
 
@@ -205,7 +205,10 @@ says *why* from the API's `required_because` — "role admin in tenant acme:
 tenant.credential.manage, tenant.member.manage", or "your account role admin"
 — instead of naming the global role, which for a tenant admin with a global
 `viewer` role used to be the wrong answer. A membership granted while you are
-signed in can confine the session you already have on its next request. An amber banner above the header
+signed in can confine the session you already have on its next request; the
+console recognises that `403` and re-reads `/api/auth/me` once for the burst
+of refusals it arrives in, so the banner appears without a reload rather than
+after a page of error panels. An amber banner above the header
 says so and offers the one route that works; the login form sends such a session
 straight to `/security` rather than to a dashboard of 403s. Confirming the
 enrolment re-reads `/api/auth/me`, so the banner and the confinement lift on the
@@ -335,11 +338,13 @@ renders an absent value as internal: it shows **Unclassified**.
   ([#365](https://github.com/onixus/Shapoclyack/issues/365)) shows each job's
   place in its tenant's queue — `+20` highlighted, `0` plain, negative values
   dimmed — and on a queued job an up-down button opens a small dialog to move
-  it. What the dialog accepts mirrors the API: operator rank in the active
-  tenant may set `-100…0`; `scan.priority.raise` **in the active tenant**
+  it. What the dialog accepts mirrors the API: without the permission,
+  operator rank in the active tenant may only lower a job of its own
+  (`requested_by` is the signed-in user), from `-100` up to where it stands
+  now and never above 0 — somebody else's job, and one somebody raised, offer
+  no button at all; `scan.priority.raise` **in the active tenant**
   (`holdsPermission(user, "scan.priority.raise", false)`, never the global
-  role) widens it to `100`, and a job somebody already raised above 0 offers no
-  button at all to those without it. An API older than #365 sends no
+  role) opens the full `-100…100` on every queued job. An API older than #365 sends no
   `priority`, which reads as 0 with no permission to raise. There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
@@ -755,8 +760,13 @@ resource `agents`, `agent_kind = scanner`; see the Terminology section in
 which lives on `/endpoints`. The page shows status, version, telemetry,
 deregistration and remote upgrade. It takes `operator`; the two actions in the
 **Deploy Sensor** dialog that hand out a credential — **Generate key** and the
-SSH push — take tenant `admin` and answer `403` for an operator
-([#231](https://github.com/onixus/Shapoclyack/issues/231)). The page refreshes
+SSH push — take `tenant.credential.manage`, and the push the tenant `admin`
+rank on top, and answer `403` for an operator
+([#231](https://github.com/onixus/Shapoclyack/issues/231),
+[#504](https://github.com/onixus/Shapoclyack/issues/504)). A `token-admin`,
+who holds that permission at rank 1, is shown the page for the dialog: the
+tiles and **Deploy Sensor** render, the fleet list does not (`GET /api/agents`
+stays `operator`) and a line says so in its place. The page refreshes
 on a poll, so it reads as a live view rather than one that needs reloading.
 
 The tiles above the table are `GET /api/agents/summary`: total, online /

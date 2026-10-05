@@ -159,23 +159,26 @@ describe("JobsTable", () => {
   });
 
   it("offers a priority range that matches what the API accepts (#365)", () => {
-    const operator = { canOperate: true, canRaise: false };
-    const raiser = { canOperate: true, canRaise: true };
-    expect(priorityRange({ status: "queued", priority: 0 }, operator)).toEqual({
-      min: -100,
-      max: 0,
-    });
-    expect(priorityRange({ status: "queued" }, operator)).toEqual({ min: -100, max: 0 });
+    const operator = { canOperate: true, canRaise: false, username: "op" };
+    const raiser = { canOperate: true, canRaise: true, username: "boss" };
+    const mine = { status: "queued", requested_by: "op" } as const;
+    expect(priorityRange({ ...mine, priority: 0 }, operator)).toEqual({ min: -100, max: 0 });
+    expect(priorityRange(mine, operator)).toEqual({ min: -100, max: 0 });
+    // Down from where it stands: raising a demoted one back undoes whoever
+    // demoted it, and the job does not say who that was.
+    expect(priorityRange({ ...mine, priority: -30 }, operator)).toEqual({ min: -100, max: -30 });
     // Someone with the permission raised it: undoing that is theirs too.
-    expect(priorityRange({ status: "queued", priority: 5 }, operator)).toBeNull();
-    expect(priorityRange({ status: "queued", priority: 5 }, raiser)).toEqual({
-      min: -100,
-      max: 100,
-    });
-    // Out of the queue, its place in it is history.
-    expect(priorityRange({ status: "claimed", priority: 0 }, raiser)).toBeNull();
+    expect(priorityRange({ ...mine, priority: 5 }, operator)).toBeNull();
+    // Pushing somebody else's scan back is jumping the queue.
     expect(
-      priorityRange({ status: "queued", priority: 0 }, { canOperate: false, canRaise: true }),
+      priorityRange({ status: "queued", priority: 0, requested_by: "someone" }, operator),
+    ).toBeNull();
+    expect(priorityRange({ ...mine, priority: 0 }, { ...operator, username: null })).toBeNull();
+    expect(priorityRange({ ...mine, priority: 5 }, raiser)).toEqual({ min: -100, max: 100 });
+    // Out of the queue, its place in it is history.
+    expect(priorityRange({ status: "claimed", priority: 0, requested_by: "op" }, raiser)).toBeNull();
+    expect(
+      priorityRange({ ...mine, priority: 0 }, { canOperate: false, canRaise: true, username: "op" }),
     ).toBeNull();
   });
 
@@ -206,10 +209,11 @@ describe("JobsTable", () => {
       .spyOn(apiModule, "setJobPriority")
       .mockResolvedValue(job({ job_id: "000000000010", status: "queued", priority: -4 }));
     renderTable([
-      job({ job_id: "000000000010", status: "queued", priority: 0 }),
-      job({ job_id: "000000000011", status: "queued", priority: 7 }),
+      job({ job_id: "000000000010", status: "queued", priority: 0, requested_by: "on-call" }),
+      job({ job_id: "000000000011", status: "queued", priority: 7, requested_by: "on-call" }),
+      job({ job_id: "000000000012", status: "queued", priority: 0, requested_by: "op" }),
     ]);
-    // The raised one is not theirs to move.
+    // The raised one is not theirs to move, nor is somebody else's.
     expect(screen.getAllByRole("button", { name: "Change priority" })).toHaveLength(1);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Change priority" }));

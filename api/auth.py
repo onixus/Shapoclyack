@@ -848,6 +848,10 @@ def _owes_phishing_resistant_factor(
     return mfa_requirement(request, settings, user).phishing_resistant
 
 
+#: The console recognises this refusal, and the one below, by their opening
+#: words and re-reads ``/auth/me`` to raise its banner (#504,
+#: ``web-next/src/lib/mfa-confinement.ts``): reword the start of either and
+#: the console falls back to showing the detail as an error.
 _ENROLMENT_REQUIRED_DETAIL = (
     "This installation requires multi-factor authentication for your account's "
     "role or for what it may do in a tenant. "

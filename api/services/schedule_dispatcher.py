@@ -68,7 +68,9 @@ class ScheduleDispatcher:
         # schedule_id -> when a full queue first refused its current
         # occurrence. Leader-local: a handover forgets it, which only restarts
         # that occurrence's allowance of back-offs, never stretches it past
-        # the following one.
+        # the following one. An entry the schedule has since moved past is
+        # ignored rather than trusted (see ``_dispatch``): nothing removes it
+        # when this replica simply stops dispatching that schedule.
         self._queue_full_since: dict[str, datetime] = {}
 
     @property
@@ -154,7 +156,18 @@ class ScheduleDispatcher:
         key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
         # Popped here and put back only by another queue-full deferral, so
         # whatever else this attempt ends in closes the occurrence.
-        refused_since = self._queue_full_since.pop(sched["schedule_id"], now)
+        refused_since = self._queue_full_since.pop(sched["schedule_id"], None)
+        due = _due_at(sched)
+        if refused_since is None or due is None or (
+            due >= scan_schedules.next_occurrence(sched, after=refused_since)
+        ):
+            # No earlier refusal, or one left over from an occurrence this
+            # replica stopped seeing — it lost the lead, the tenant was
+            # suspended, another replica dispatched it — which the schedule
+            # has moved past since: a deferral never sets ``next_run_at`` as
+            # far as the following tick. Measured from that stale moment,
+            # this occurrence would be skipped at its first refusal.
+            refused_since = now
         try:
             job = jobs_service.start_scan(
                 self._settings, request, username="scheduler", idempotency_key=key
@@ -248,6 +261,15 @@ class ScheduleDispatcher:
         scan_schedules.record_dispatch(sched["schedule_id"], job_id=job.job_id, ran_at=now)
         self._stats["dispatched"] += 1
         LOG.info("Dispatched schedule %s -> job %s", sched["schedule_id"], job.job_id)
+
+
+def _due_at(sched: dict) -> datetime | None:
+    """The schedule's ``next_run_at`` as an aware UTC datetime, if it has one."""
+    raw = sched.get("next_run_at")
+    if not raw:
+        return None
+    due = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return due if due.tzinfo else due.replace(tzinfo=UTC)
 
 
 _DISPATCHER: ScheduleDispatcher | None = None

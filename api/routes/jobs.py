@@ -250,10 +250,12 @@ def set_job_priority(
     """Move a queued scan within its tenant's queue (#365).
 
     Higher is handed out first, ties by age; the bounds are -100..100 and 0
-    is the default. The operator rank may lower a scan or put it back to 0;
-    raising one above 0 — or moving one somebody already raised — needs
-    ``scan.priority.raise`` in the tenant (403 without it). 409 once the job
-    has left the queue: a scan out with an executor has no place in it.
+    is the default. The operator rank may lower a scan of its own (one it
+    requested), down from where it stands and never from above 0; anything
+    else — raising a scan, moving somebody else's, or putting a demoted one
+    back up — needs ``scan.priority.raise`` in the tenant (403 without it).
+    409 once the job has left the queue: a scan out with an executor has no
+    place in it.
     """
     try:
         return scan_queue.set_priority(

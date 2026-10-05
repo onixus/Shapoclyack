@@ -153,6 +153,17 @@ describe("role gating", () => {
     expect(canSee({ permission: "tenant.credential.manage" }, principal("operator"))).toBe(false);
   });
 
+  it("shows the sensors page to a token-admin, for the Deploy Agent dialog (#504)", () => {
+    // The dialog mints a provisioning key, which is `tenant.credential.manage`
+    // and not a rank; gating its page on operator alone left `token-admin`
+    // with a button it could only reach through the API.
+    expect(menu(principal("viewer", "token-admin", ["tenant.credential.manage"]))).toContain(
+      "/agents",
+    );
+    expect(menu(principal("viewer", "operator", []))).toContain("/agents");
+    expect(menu(principal("viewer", "viewer", []))).not.toContain("/agents");
+  });
+
   it("falls back to the global role when the API sends no tenant context", () => {
     // An installation older than #318 answers /auth/me with `role` alone.
     // Reading the tenant role as "viewer" there would take away every page

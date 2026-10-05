@@ -358,12 +358,13 @@ class JobPriorityRequest(BaseModel):
 class TenantQueueLimits(BaseModel):
     """A tenant's scan queue ceilings (#365). ``null`` (or 0) is unlimited.
 
-    Both are sent on every PUT, like the quota: a ceiling dropped because a
-    client forgot the field would be a silently lifted limit.
+    Both are required on every PUT, like the quota, and ``null`` has to be
+    spelled out: a ceiling dropped because a client forgot the field would be
+    a silently lifted limit, so an omitted one is a 422.
     """
 
-    max_concurrent_scans: int | None = Field(default=None, ge=0, le=10_000)
-    max_queued_scans: int | None = Field(default=None, ge=0, le=10_000)
+    max_concurrent_scans: int | None = Field(..., ge=0, le=10_000)
+    max_queued_scans: int | None = Field(..., ge=0, le=10_000)
 
 
 class TenantQueueLimitsInfo(TenantQueueLimits):
@@ -3440,13 +3441,13 @@ class TenantQuotaInfo(BaseModel):
 class TenantQuotaRequest(BaseModel):
     """``null`` is unlimited for this tenant; 0 is accepted as the same thing.
 
-    Spelled with an explicit ``null`` rather than by omitting the field: a PUT
-    that dropped a limit because a client forgot to send it would be a
-    silently widened contract.
+    Spelled with an explicit ``null`` rather than by omitting the field — an
+    omitted one is a 422: a PUT that dropped a limit because a client forgot
+    to send it would be a silently widened contract.
     """
 
-    max_assets: int | None = Field(default=None, ge=0, le=10_000_000)
-    max_scans_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
+    max_assets: int | None = Field(..., ge=0, le=10_000_000)
+    max_scans_per_month: int | None = Field(..., ge=0, le=1_000_000)
     note: str = Field(default="", max_length=500)
 
 

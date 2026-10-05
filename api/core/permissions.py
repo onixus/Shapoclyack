@@ -76,12 +76,14 @@ SCAN_SCOPE_APPROVE = "scan_scope.approve"
 #: to an on-call who is not otherwise an operator.
 SCAN_CANCEL = "scan.cancel"
 #: Queue a scan ahead of the tenant's other scans: start one, or move a queued
-#: one, with a ``priority`` above the default 0 (#365). Lowering a scan of
-#: one's own to make room needs only the operator rank, and so does starting
-#: one at or below 0. Its own permission because "jump the queue" is a
-#: decision about everybody else's scans, and an operator who could set it on
-#: every scan would make the ordering meaningless; the tenant ``admin`` holds
-#: it, and a custom role can be given it on its own.
+#: one, with a ``priority`` above the default 0 (#365) — and any other move
+#: but one: lowering a scan of one's own to make room needs only the operator
+#: rank, and so does starting one at or below 0. Demoting somebody else's scan
+#: or raising a demoted one back is the same decision the other way round.
+#: Its own permission because "jump the queue" is a decision about everybody
+#: else's scans, and an operator who could set it on every scan would make the
+#: ordering meaningless; the tenant ``admin`` holds it, and a custom role can
+#: be given it on its own.
 SCAN_PRIORITY_RAISE = "scan.priority.raise"
 #: List a tenant's members and their roles.
 TENANT_MEMBER_READ = "tenant.member.read"

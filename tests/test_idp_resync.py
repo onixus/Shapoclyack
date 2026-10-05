@@ -103,16 +103,14 @@ def test_a_login_without_the_group_loses_the_membership_and_its_sessions(
     old_token = first.json()["access_token"]
     assert client.get("/api/auth/me", headers=bearer(old_token)).status_code == 200
 
-    # Taken out of acme-ops at the IdP.
+    # Taken out of acme-ops at the IdP. Still in vm-ops, but that places her
+    # in no tenant: the login is refused rather than let into `default`.
     second = _login(client, provider, groups=["vm-ops"])
-    assert second.status_code == 200, second.text
+    assert second.status_code == 403, second.text
     assert _memberships("dana") == {}
     # The session issued while the membership existed is over (#314): a token
     # that still carried it would make the removal take effect at its expiry.
     assert client.get("/api/auth/me", headers=bearer(old_token)).status_code == 401
-    assert (
-        client.get("/api/auth/me", headers=bearer(second.json()["access_token"])).status_code == 200
-    )
 
     revoked = _audit(client, admin, action="membership.revoke", resource_id="dana")
     assert len(revoked) == 1
@@ -201,9 +199,9 @@ def test_locally_granted_memberships_survive_switching_authoritative_mode_on(
         ).status_code
         == 200
     )
-    # This release's JIT marks its own grant as the IdP's...
-    assert _memberships("dana")["default"] == ("viewer", "idp")
-    # ...but the previous release wrote it with no source column at all: the
+    # JIT's tenant-claim grant is not the resync's (it never reads the claim)...
+    assert _memberships("dana")["default"] == ("viewer", "local")
+    # ...and the previous release wrote it with no source column at all: the
     # server default is what an upgraded database holds for such a row.
     with get_session(POSTGRES_URL) as session:
         session.execute(
@@ -343,7 +341,8 @@ def test_a_member_cannot_take_over_their_own_idp_membership(tmp_path, monkeypatc
     assert pin.status_code == 403, pin.text
     assert _memberships("dana") == {acme: ("admin", "idp")}
 
-    assert _login(client, provider, groups=["vm-ops"]).status_code == 200
+    # In no tenant any more: refused, not let into `default`.
+    assert _login(client, provider, groups=["vm-ops"]).status_code == 403
     assert _memberships("dana") == {}
 
 
@@ -507,9 +506,10 @@ def test_a_broken_mapping_does_not_keep_a_grant_another_group_gave(
     assert first.status_code == 200, first.text
     assert _memberships("dana") == {acme: ("admin", "idp")}
 
-    # Out of acme-admins at the IdP: the admin grant goes, broken map or not.
+    # Out of acme-admins at the IdP: the admin grant goes, broken map or not
+    # (and with it her last tenant, so the login is refused).
     second = _login(client, provider, groups=["vm-ops", "acme-analysts"])
-    assert second.status_code == 200, second.text
+    assert second.status_code == 403, second.text
     assert _memberships("dana") == {}
 
 
@@ -578,3 +578,96 @@ def test_a_token_without_the_groups_claim_is_counted_and_optionally_read_as_none
     before = skipped()
     _overage_login(client, provider, hasgroups=True)
     assert skipped() == before + 1
+
+
+def test_losing_the_last_tenant_does_not_fall_back_to_the_default_one(
+    tmp_path, monkeypatch, provider
+):
+    """Review of #316 (CR-507): an account with no membership acts in `default`
+    with its global role. Taken out of her last tenant group but still in a
+    group mapped to a global role, dana went from 403 on `default` to 200
+    there — a removal at the IdP that widened her access."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+
+    first = _login(client, provider, groups=["vm-ops", "acme-ops"])
+    assert first.status_code == 200, first.text
+    old = bearer(first.json()["access_token"])
+    assert client.get("/api/assets", headers=old, params={"tenant_id": "default"}).status_code == 403
+
+    refused = _login(client, provider, groups=["vm-ops"])
+    assert refused.status_code == 403, refused.text
+    account = _account("dana")
+    assert account.disabled_source == "idp"
+    assert account.role == "operator"
+    assert client.get("/api/assets", headers=old, params={"tenant_id": "default"}).status_code == 401
+    disables = _audit(client, admin, action="user.disable", resource_id="dana")
+    assert disables[0]["after"]["reason"] == "in no tenant"
+
+    # A group that places her again undoes the IdP's own disable.
+    back = _login(client, provider, groups=["vm-ops", "acme-ops"])
+    assert back.status_code == 200, back.text
+    assert _account("dana").disabled_at is None
+    assert _memberships("dana") == {acme: ("operator", "idp")}
+
+
+def test_jit_provisions_no_account_a_group_places_in_no_tenant(tmp_path, monkeypatch, provider):
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+
+    assert _login(client, provider, groups=["vm-ops"]).status_code == 403
+    assert users_service.get_user("dana") is None
+    # A platform admin is confined by no tenant, so the role alone lets one in.
+    admin_login = _login(client, provider, username="ada", sub="idp-ada", groups=["vm-admins"])
+    assert admin_login.status_code == 200, admin_login.text
+
+
+def test_an_installation_that_maps_default_keeps_people_there(tmp_path, monkeypatch, provider):
+    """The fallback is refused, not the tenant: mapping `default` explicitly
+    is how an installation that places people in tenants keeps one there."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {
+        "acme-ops": [{"tenant_id": acme, "role": "operator"}],
+        "staff": [{"tenant_id": "default", "role": "viewer"}],
+    }
+    response = _login(client, provider, groups=["vm-ops", "staff"])
+    assert response.status_code == 200, response.text
+    assert _memberships("dana") == {"default": ("viewer", "idp")}
+
+
+def test_a_jit_tenant_claim_grant_survives_switching_authoritative_on(
+    tmp_path, monkeypatch, provider
+):
+    """Review of #316 (CR-507): JIT's tenant-claim membership was written as
+    the IdP's, and the resync — which never reads the claim — revoked it at
+    the first login after the switch, landing ivy in `default`."""
+    settings = sso_settings(
+        tmp_path,
+        oidc_jit_provisioning=True,
+        oidc_role_claim="groups",
+        oidc_role_map={"vm-ops": "operator"},
+        oidc_tenant_claim="tenant",
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    login = dict(username="ivy", sub="idp-ivy", groups=["vm-ops"], tenant=acme)
+    assert _login(client, provider, **login).status_code == 200
+    assert _memberships("ivy") == {acme: ("operator", "local")}
+
+    settings.idp_authoritative = True
+    response = _login(client, provider, **login)
+    assert response.status_code == 200, response.text
+    assert _memberships("ivy") == {acme: ("operator", "local")}
+    token = bearer(response.json()["access_token"])
+    assert client.get("/api/assets", headers=token, params={"tenant_id": acme}).status_code == 200
+    assert client.get("/api/assets", headers=token, params={"tenant_id": "default"}).status_code == 403
