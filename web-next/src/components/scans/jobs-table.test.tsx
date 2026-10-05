@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isCancellable, isStopping, JobsTable } from "@/components/scans/jobs-table";
+import { isCancellable, isStopping, JobsTable, priorityRange } from "@/components/scans/jobs-table";
 import type { PaginationState } from "@/hooks/use-pagination";
 import * as apiModule from "@/lib/api";
 import type { JobInfo, Me } from "@/lib/api";
@@ -156,6 +156,94 @@ describe("JobsTable", () => {
     await user.click(within(dialog).getByRole("button", { name: "Cancel job" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
     expect(cancel.mock.calls[0][0]).toBe("abc123def456");
+  });
+
+  it("offers a priority range that matches what the API accepts (#365)", () => {
+    const operator = { canOperate: true, canRaise: false, username: "op" };
+    const raiser = { canOperate: true, canRaise: true, username: "boss" };
+    const mine = { status: "queued", requested_by: "op" } as const;
+    expect(priorityRange({ ...mine, priority: 0 }, operator)).toEqual({ min: -100, max: 0 });
+    expect(priorityRange(mine, operator)).toEqual({ min: -100, max: 0 });
+    // Down from where it stands: raising a demoted one back undoes whoever
+    // demoted it, and the job does not say who that was.
+    expect(priorityRange({ ...mine, priority: -30 }, operator)).toEqual({ min: -100, max: -30 });
+    // Someone with the permission raised it: undoing that is theirs too.
+    expect(priorityRange({ ...mine, priority: 5 }, operator)).toBeNull();
+    // Pushing somebody else's scan back is jumping the queue.
+    expect(
+      priorityRange({ status: "queued", priority: 0, requested_by: "someone" }, operator),
+    ).toBeNull();
+    expect(priorityRange({ ...mine, priority: 0 }, { ...operator, username: null })).toBeNull();
+    expect(priorityRange({ ...mine, priority: 5 }, raiser)).toEqual({ min: -100, max: 100 });
+    // Out of the queue, its place in it is history.
+    expect(priorityRange({ status: "claimed", priority: 0, requested_by: "op" }, raiser)).toBeNull();
+    expect(
+      priorityRange({ ...mine, priority: 0 }, { canOperate: false, canRaise: true, username: "op" }),
+    ).toBeNull();
+  });
+
+  it("lets a tenant admin raise a queued job, gated by the permission and not the global role", async () => {
+    // A global viewer who holds scan.priority.raise in this tenant.
+    useAuthStore.setState({
+      user: member("admin", ["scan.cancel", "scan.priority.raise"]),
+      canOperate: true,
+    });
+    const put = vi
+      .spyOn(apiModule, "setJobPriority")
+      .mockResolvedValue(job({ status: "queued", priority: 40 }));
+    renderTable([job({ status: "queued", priority: 5, run_id: null })]);
+    expect(screen.getByText("+5")).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Change priority" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = within(dialog).getByLabelText("Priority (-100 to 100)");
+    await user.clear(field);
+    await user.type(field, "40");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith("abc123def456", 40));
+  });
+
+  it("keeps an operator without the permission at or below 0", async () => {
+    useAuthStore.setState({ user: member("operator", ["scan.cancel"]), canOperate: true });
+    const put = vi
+      .spyOn(apiModule, "setJobPriority")
+      .mockResolvedValue(job({ job_id: "000000000010", status: "queued", priority: -4 }));
+    renderTable([
+      job({ job_id: "000000000010", status: "queued", priority: 0, requested_by: "on-call" }),
+      job({ job_id: "000000000011", status: "queued", priority: 7, requested_by: "on-call" }),
+      job({ job_id: "000000000012", status: "queued", priority: 0, requested_by: "op" }),
+    ]);
+    // The raised one is not theirs to move, nor is somebody else's.
+    expect(screen.getAllByRole("button", { name: "Change priority" })).toHaveLength(1);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Change priority" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("scan.priority.raise");
+    const field = within(dialog).getByLabelText("Priority (-100 to 0)");
+    await user.clear(field);
+    await user.type(field, "3");
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    await user.clear(field);
+    await user.type(field, "-4");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith("000000000010", -4));
+  });
+
+  it("does not let a global admin role stand in for the tenant permission", () => {
+    // `role: "admin"` on the account says nothing about this tenant; the
+    // permission list does, and here it lacks scan.priority.raise.
+    useAuthStore.setState({
+      user: { ...member("operator", ["scan.cancel"]), role: "admin" },
+      canOperate: true,
+    });
+    renderTable([job({ status: "queued", priority: 7 })]);
+    expect(screen.queryByRole("button", { name: "Change priority" })).toBeNull();
+  });
+
+  it("offers no priority change to a viewer", () => {
+    useAuthStore.setState({ user: member("viewer", []), canOperate: false });
+    renderTable([job({ status: "queued" })], { canOperate: false });
+    expect(screen.queryByRole("button", { name: "Change priority" })).toBeNull();
   });
 
   it("shows surface, intent and target counts on the row", () => {

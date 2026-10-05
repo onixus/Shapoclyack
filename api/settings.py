@@ -488,6 +488,20 @@ class Settings:
     # wants to see consumption against the number it sold for a billing period
     # or two before it starts refusing its customer's scans.
     quota_enforcement_enabled: bool = True
+    # Scan queue admission (#365). The installation-wide ceiling on jobs
+    # waiting in ``queued`` across every tenant; a new scan past it is refused
+    # with 429. 0 is unlimited, the default — the per-tenant ceilings live on
+    # the tenant row (``PUT /api/tenants/{id}/queue-limits``) and are unlimited
+    # until set. Not gated on ``quota_enforcement_enabled``: these protect the
+    # executors, not the invoice.
+    scan_queue_max_depth: int = 0
+    # The Retry-After a queue-depth refusal carries. A queue drains at the
+    # pace scans finish, which the API cannot predict, so this is a polite
+    # back-off rather than a promise.
+    scan_queue_retry_after_seconds: int = 60
+    # How often a local scan held back by its tenant's ``max_concurrent_scans``
+    # asks again for a slot. Only a tenant with a ceiling ever waits.
+    scan_queue_local_poll_seconds: float = 5.0
     # SMTP for report delivery. Separate from the scanner's alert SMTP
     # (scanner/pipeline/alerts.py): an alert goes to the operations channel and
     # a report goes to a customer, and one installation routinely needs
@@ -1940,6 +1954,15 @@ def load_settings() -> Settings:
             "OCTO_QUOTA_ENFORCEMENT_ENABLED", "true"
         ).lower()
         in {"1", "true", "yes"},
+        scan_queue_max_depth=max(0, int(os.environ.get("OCTO_SCAN_QUEUE_MAX_DEPTH", "0"))),
+        scan_queue_retry_after_seconds=max(
+            1, int(os.environ.get("OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS", "60"))
+        ),
+        # Floored: a mistyped 0 turns every waiting local scan into a busy
+        # loop against the database.
+        scan_queue_local_poll_seconds=max(
+            0.5, float(os.environ.get("OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS", "5"))
+        ),
         report_dispatch_enabled=os.environ.get("OCTO_REPORT_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         # Floored for the same reason as the webhook dispatcher's: a mistyped 0

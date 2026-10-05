@@ -4,7 +4,16 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { format } from "date-fns";
-import { ArrowUpRight, Ban, Cpu, Hourglass, Info, TriangleAlert, UserX } from "lucide-react";
+import {
+  ArrowUpDown,
+  ArrowUpRight,
+  Ban,
+  Cpu,
+  Hourglass,
+  Info,
+  TriangleAlert,
+  UserX,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,14 +25,24 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { JobDetailsDrawer, jobDuration } from "@/components/scans/job-details-drawer";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
-import { useCancelJob } from "@/hooks/use-jobs";
+import { useCancelJob, useSetJobPriority } from "@/hooks/use-jobs";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type { PaginationState } from "@/hooks/use-pagination";
-import { type JobInfo, type Page } from "@/lib/api";
+import { JOB_PRIORITY_MAX, JOB_PRIORITY_MIN, type JobInfo, type Page } from "@/lib/api";
 import { JOB_STATUS } from "@/lib/config/statuses";
 import { useT } from "@/lib/i18n";
 import { runDetailHref } from "@/lib/run-data";
@@ -42,6 +61,31 @@ import { jobSurface } from "@/lib/scan-surface";
  */
 export function isCancellable(job: Pick<JobInfo, "status">): boolean {
   return job.status === "queued" || job.status === "claimed" || job.status === "running";
+}
+
+/** The range of priorities this principal may give `job` (#365), or null when
+ * they may not move it at all.
+ *
+ * Mirrors `scan_queue.check_priority`: without `scan.priority.raise` the
+ * operator rank may only lower a queued job of its own (`requested_by` is
+ * them), from at or below 0 and down from where it stands. Somebody else's
+ * job, one someone raised, and raising a demoted one back are the
+ * permission's. The API is the boundary; this only keeps the console from
+ * offering what it would refuse.
+ */
+export function priorityRange(
+  job: Pick<JobInfo, "status" | "priority" | "requested_by">,
+  {
+    canOperate,
+    canRaise,
+    username,
+  }: { canOperate: boolean; canRaise: boolean; username: string | null | undefined },
+): { min: number; max: number } | null {
+  if (!canOperate || job.status !== "queued") return null;
+  if (canRaise) return { min: JOB_PRIORITY_MIN, max: JOB_PRIORITY_MAX };
+  const current = job.priority ?? 0;
+  if (current > 0 || !username || job.requested_by !== username) return null;
+  return { min: JOB_PRIORITY_MIN, max: current };
 }
 
 /** A job whose stop was requested and not yet confirmed by its agent. */
@@ -94,6 +138,24 @@ export function JobsTable({
   // API accepted their stop while the console hid the button docs/ui.md
   // promises them. The API is the boundary either way.
   const canCancel = useAuthStore((s) => holdsPermission(s.user, "scan.cancel", canOperate));
+  // The named permission in the active tenant (#365), with no fallback: an API
+  // that sends no permission list predates priorities and has nothing to raise.
+  const canRaise = useAuthStore((s) => holdsPermission(s.user, "scan.priority.raise", false));
+  // Without the permission only one's own job may be moved, and only down.
+  const username = useAuthStore((s) => s.user?.username ?? null);
+  const [priorityTarget, setPriorityTarget] = useState<JobInfo | null>(null);
+  const [priorityDraft, setPriorityDraft] = useState("0");
+  const setPriority = useSetJobPriority();
+  const priorityBounds = priorityTarget
+    ? priorityRange(priorityTarget, { canOperate, canRaise, username })
+    : null;
+  const draftValue = Number(priorityDraft);
+  const draftValid =
+    priorityBounds !== null &&
+    priorityDraft.trim() !== "" &&
+    Number.isInteger(draftValue) &&
+    draftValue >= priorityBounds.min &&
+    draftValue <= priorityBounds.max;
 
   const columns = useMemo<ColumnDef<JobInfo>[]>(() => {
     const cols: ColumnDef<JobInfo>[] = [
@@ -260,6 +322,46 @@ export function JobsTable({
         },
       },
       {
+        accessorKey: "priority",
+        header: t("col.priority"),
+        enableSorting: false,
+        cell: ({ row }) => {
+          const value = row.original.priority ?? 0;
+          const range = priorityRange(row.original, { canOperate, canRaise, username });
+          return (
+            <span className="inline-flex items-center gap-1" title={t("jobs.priorityHint")}>
+              <span
+                className={
+                  value > 0
+                    ? "font-mono text-xs font-semibold text-primary"
+                    : value < 0
+                      ? "font-mono text-xs text-muted-foreground"
+                      : "font-mono text-xs text-foreground"
+                }
+              >
+                {value > 0 ? `+${value}` : value}
+              </span>
+              {range ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                  aria-label={t("jobs.priorityEdit")}
+                  title={t("jobs.priorityEdit")}
+                  onClick={() => {
+                    setPriorityDraft(String(value));
+                    setPriorityTarget(row.original);
+                  }}
+                >
+                  <ArrowUpDown className="h-3 w-3" />
+                </Button>
+              ) : null}
+            </span>
+          );
+        },
+      },
+      {
         accessorKey: "requested_by",
         header: t("col.operator"),
         enableSorting: false,
@@ -312,7 +414,7 @@ export function JobsTable({
       },
     );
     return cols;
-  }, [t, showSurface, canCancel]);
+  }, [t, showSurface, canCancel, canOperate, canRaise, username]);
 
   return (
     <>
@@ -353,6 +455,59 @@ export function JobsTable({
           }
         }}
       />
+
+      <Dialog
+        open={Boolean(priorityTarget)}
+        onOpenChange={(open) => !open && setPriorityTarget(null)}
+      >
+        <DialogContent className="bg-card border-border text-foreground">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              {t("jobs.priorityTitle", { id: priorityTarget?.job_id ?? "" })}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              {t("jobs.priorityBody")}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!priorityTarget || !draftValid) return;
+              setPriority.mutate({ jobId: priorityTarget.job_id, priority: draftValue });
+              setPriorityTarget(null);
+            }}
+          >
+            <Label htmlFor="job-priority" className="text-xs text-foreground">
+              {t("jobs.priorityLabel", {
+                min: String(priorityBounds?.min ?? JOB_PRIORITY_MIN),
+                max: String(priorityBounds?.max ?? 0),
+              })}
+            </Label>
+            <Input
+              id="job-priority"
+              type="number"
+              inputMode="numeric"
+              step={1}
+              min={priorityBounds?.min}
+              max={priorityBounds?.max}
+              value={priorityDraft}
+              onChange={(event) => setPriorityDraft(event.target.value)}
+            />
+            {!canRaise ? (
+              <p className="text-[11px] text-muted-foreground">{t("jobs.priorityRaiseNeeded")}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setPriorityTarget(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button type="submit" disabled={!draftValid || setPriority.isPending}>
+                {t("common.save")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={Boolean(cancelTarget)}

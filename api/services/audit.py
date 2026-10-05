@@ -176,6 +176,12 @@ ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
 # confirmation, which is a machine reporting that it obeyed rather than a
 # person deciding anything.
 ACTION_SCAN_CANCEL = "scan.cancel"
+# The scan queue (#365). Moving a queued scan is a decision about every other
+# scan of the tenant, so it is recorded with the value before and after. The
+# ceilings are the platform's decision about a customer, like its quota, and
+# a refusal they cause is a 429 the caller sees and a counter, not a row.
+ACTION_SCAN_PRIORITY = "scan.priority"
+ACTION_TENANT_QUEUE_LIMITS = "tenant.queue_limits"
 # The two ways out of a ``dead`` run publication (#425). Both are decisions
 # about a run the installation has already told its user it accepted: one
 # gives the publication another full set of attempts, the other gives up on

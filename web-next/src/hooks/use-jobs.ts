@@ -10,6 +10,7 @@ import {
   fetchJobSummary,
   fetchJobs,
   requeueJobPublication,
+  setJobPriority,
   startScan,
   type PageParams,
   type ScanListFilters,
@@ -111,6 +112,25 @@ export function useCancelJob() {
     },
     onError: (err) => {
       toast.error("Could not cancel job", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+}
+
+export function useSetJobPriority() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, priority }: { jobId: string; priority: number }) =>
+      setJobPriority(jobId, priority),
+    onSuccess: async (job) => {
+      toast.success("Priority changed", {
+        description: `Job ${job.job_id} — priority ${job.priority ?? 0}`,
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
+    },
+    onError: (err) => {
+      toast.error("Could not change the priority", {
         description: err instanceof Error ? err.message : undefined,
       });
     },

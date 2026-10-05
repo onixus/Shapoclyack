@@ -14,13 +14,21 @@ from api.auth import (
 from api.core import permissions as permission_catalog
 from api.routes._audit import AuditDep
 from api.routes._pagination import PageParams, build_page
-from api.schemas import JobInfo, JobSummary, Page, RunPublicationInfo, StartScanRequest
+from api.schemas import (
+    JobInfo,
+    JobPriorityRequest,
+    JobSummary,
+    Page,
+    RunPublicationInfo,
+    StartScanRequest,
+)
 from api.services import job_states
 from api.services import jobs as jobs_service
 from api.services import maintenance
 from api.services import quotas
 from api.services import run_publisher
 from api.services import scan_policy
+from api.services import scan_queue
 from api.services import scan_scopes
 from api.settings import Settings
 
@@ -231,6 +239,46 @@ def cancel_job(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.put("/{job_id}/priority", response_model=JobInfo)
+def set_job_priority(
+    job_id: str,
+    body: JobPriorityRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> JobInfo:
+    """Move a queued scan within its tenant's queue (#365).
+
+    Higher is handed out first, ties by age; the bounds are -100..100 and 0
+    is the default. The operator rank may lower a scan of its own (one it
+    requested), down from where it stands and never from above 0; anything
+    else — raising a scan, moving somebody else's, or putting a demoted one
+    back up — needs ``scan.priority.raise`` in the tenant (403 without it).
+    409 once the job has left the queue: a scan out with an executor has no
+    place in it.
+    """
+    try:
+        return scan_queue.set_priority(
+            settings,
+            job_id,
+            body.priority,
+            # A platform admin may move a job in any tenant; everyone else is
+            # pinned, and a mismatch is a 404 like ``get_job``'s.
+            tenant_id=None if principal.is_platform_admin else principal.tenant_id,
+            may_raise=principal.allows(permission_catalog.SCAN_PRIORITY_RAISE),
+            username=principal.username,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found") from exc
+    except scan_queue.PriorityNotPermitted as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except scan_queue.JobNotQueued as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
 @router.post("", response_model=JobInfo, status_code=status.HTTP_202_ACCEPTED)
 def start_job(
     body: StartScanRequest,
@@ -250,6 +298,15 @@ def start_job(
         )
     tenant_id = requested if (requested and principal.is_platform_admin) else principal.tenant_id
     body = body.model_copy(update={"tenant_id": tenant_id})
+    try:
+        # Jumping the queue is a decision about the tenant's other scans
+        # (#365); the bounds are the schema's, the authority is checked here.
+        scan_queue.check_priority(
+            body.priority,
+            may_raise=principal.allows(permission_catalog.SCAN_PRIORITY_RAISE),
+        )
+    except scan_queue.PriorityNotPermitted as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     key = (idempotency_key or "").strip()[:200]
     try:
         if key:
@@ -281,7 +338,8 @@ def start_job(
         # 429 rather than 403: unlike a scope refusal this one expires by
         # itself, so the answer can say when — an integration that retries on
         # 429 with Retry-After does the right thing without being taught
-        # anything about quotas.
+        # anything about quotas. A full scan queue (#365) is one of these too,
+        # with the configured back-off as its Retry-After.
         headers = (
             {"Retry-After": str(exc.retry_after_seconds)}
             if exc.retry_after_seconds is not None
