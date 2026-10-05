@@ -15,6 +15,9 @@
 
 def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
 
+// Откуда Linux-узел берёт исходники: SCM-путь джобы локальный, маковский.
+def GITHUB_REPO = 'https://github.com/onixus/Shapoclyack.git'
+
 // Уникально на джобу, а не только на номер билда. В multibranch у каждой
 // ветки своя нумерация с #1, поэтому общий тег означал бы, что параллельные
 // сборки разных веток перетирают друг другу образ, а Smoke/E2E/Trivy молча
@@ -35,6 +38,9 @@ def PYTHON_IMAGES = [
 ]
 def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'
+// Статический kubectl для рендера оверлеев на Linux-узле (стадия Tests);
+// версия та же, что в образе контроллера (jenkins-local/Dockerfile).
+def KUBECTL_IMAGE = 'registry.k8s.io/kubectl:v1.31.4@sha256:a519329b1bf8f7889e4c902f7147e6933d6a6e1dde25e8171973642396e31f0d'
 def NODE_IMAGE = 'node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2'
 def TRIVY_IMAGE = 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
 def SYFT_IMAGE = 'anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02'
@@ -53,126 +59,170 @@ pipeline {
   }
 
   stages {
-    stage('APEX contract') {
-      agent { docker { image PYTHON_IMAGES['3.12']; reuseNode true } }
-      steps {
-        sh 'python apex-contract/validate.py'
-      }
-    }
+    // Всё до тестов и веб-гейта включительно идёт на Linux-узле gaming-amd64
+    // (VM Fedor), а не на маке. На маке две ячейки pytest по ~26 минут делили
+    // Docker-VM и VirtioFS со всеми остальными сборками контроллера: стадия
+    // Tests занимала ~54 минуты из 85 (main #75), а ветки часами стояли в
+    // очереди за executor'ами мака ещё до первой стадии.
+    //
+    // Исходники Fedor берёт с GitHub, а не со stash'а мака: stash требует
+    // executor мака, а очередь к ним и была проблемой. SCM-путь джобы —
+    // локальный /Users/onixus/Git/Shapoclyack, которого на Linux нет, поэтому
+    // implicit checkout здесь выключен, а ревизия та же самая: scm.extensions
+    // multibranch-джобы несут SpecificRevisionBuildChooser с хешем, который
+    // собирает Jenkins, и checkout с GitHub берёт ровно его. Значит, коммит
+    // должен быть запушен: ветка, которая есть только локально, на этом узле
+    // упадёт на checkout — громко, а не зелёным прогоном чужой ревизии.
+    //
+    // Стадии образа, E2E, Trivy, SBOM и нагрузки пока на маке (native arm64,
+    // daemon cache), со своим implicit checkout из локального репозитория.
 
-    stage('Lint (ruff)') {
-      agent { docker { image PYTHON_IMAGES['3.12']; args PIP_CACHE; reuseNode true } }
-      steps {
-        // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
-        // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
-        // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
-        // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
-        sh 'scripts/ci-lint.sh --install'
+    // Узел живёт, только пока включены винда и VM. Без этой стадии
+    // выключенная VM означала бы, что сборка молча висит в очереди до
+    // общего таймаута в 90 минут. Таймаут стадии в declarative считает и
+    // ожидание агента, поэтому через 10 минут без узла сборка обрывается с
+    // сообщением ниже. Запасного пути на мак нет намеренно: сборка, которая
+    // без узла позеленела бы без тестов, хуже красной.
+    stage('Linux node') {
+      agent { label 'gaming-amd64' }
+      options {
+        skipDefaultCheckout()
+        timeout(time: 10, unit: 'MINUTES')
       }
-    }
-
-    // Quality gate. Стоит до тестов и сборки образа намеренно: находка
-    // уровня ERROR роняет билд за пару минут, а не после часа сборки.
-    // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
-    // эта стадия была единственной, которой в reference workflow не было.
-    // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
-    // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
-    // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
-    stage('SAST (semgrep)') {
-      agent any
       steps {
-        sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
+        sh 'echo "[ci] node: $(uname -srm), docker $(docker version --format {{.Server.Version}})"'
       }
       post {
-        always {
-          archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true
+        unsuccessful {
+          echo 'gaming-amd64 did not take the build within 10 minutes: is VM Fedor running? ' +
+            'See the gaming-amd64 section of the local-jenkins notes (VBoxManage list runningvms on win116).'
         }
       }
     }
 
-    stage('Tests') {
-      // Сами тесты идут на Linux-узле gaming-amd64 (VM Fedor), а не на маке.
-      // На маке две ячейки по ~26 минут pytest делили Docker-VM и VirtioFS со
-      // всеми остальными сборками контроллера, и стадия занимала ~54 минуты
-      // из 85 (main #75). Чекаут остаётся на контроллере: у джобы SCM-путь
-      // /Users/onixus/Git/..., которого на Linux нет, поэтому дерево едет
-      // туда через stash.
-      //
-      // Матрица по-прежнему развёрнута в последовательный цикл. Параллельные
-      // ячейки на маке получали каждая свой воркспейс и клонировали
-      // репозиторий одновременно, и этот клон перемежающимся образом падал с
-      // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
-      // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
-      // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
-      // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
-      // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
+    stage('Checks on Linux') {
+      agent { label 'gaming-amd64' }
+      options { skipDefaultCheckout() }
       stages {
-        stage('Tests: render and stash') {
-          agent any
+        stage('Checkout from GitHub') {
           steps {
-            // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
-            // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
-            // python:slim нет kubectl — 79 из них годами тихо пропускались,
-            // и восемь мутаций манифестов прошли ревью #338. kubectl есть в
-            // образе контроллера (им пользуется стадия Kustomize), а на Fedor
-            // его нет: рендерим здесь и отдаём каталог в контейнер через
-            // OCTO_K8S_RENDER_DIR. Под OCTO_REQUIRE_INTEGRATION=1 без рендера
-            // эти тесты теперь падают.
-            sh 'rm -rf .k8s-render && OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh'
-            // git archive, а не stash по маске: в воркспейсе контроллера
-            // копятся scanner/output от E2E и нагрузки (сотни МБ), кэш Trivy,
-            // __pycache__ и отчёты прошлых билдов. Архив ревизии — ровно то
-            // дерево, что собирается (~9 МБ), без списка исключений, который
-            // пришлось бы поддерживать.
-            sh '''
-              set -eu
-              rm -f .ci-tests-tree.tar.gz
-              git archive --format=tar.gz -o .ci-tests-tree.tar.gz HEAD
-              ls -l .ci-tests-tree.tar.gz
-            '''
-            stash name: 'tests-tree', includes: '.ci-tests-tree.tar.gz,.k8s-render/**'
-            sh 'rm -f .ci-tests-tree.tar.gz'
-          }
-        }
-
-        // Узел живёт, только пока включены винда и VM. Без этой стадии
-        // выключенная VM означала бы, что сборка молча висит в очереди до
-        // общего таймаута в 90 минут. Таймаут стадии в declarative считает и
-        // ожидание агента, поэтому через 10 минут без узла сборка обрывается
-        // с сообщением ниже. Запасного пути на мак нет намеренно: сборка,
-        // которая без узла позеленела бы без тестов, хуже красной.
-        stage('Tests: Linux node') {
-          agent { label 'gaming-amd64' }
-          options { timeout(time: 10, unit: 'MINUTES') }
-          steps {
-            sh 'echo "[ci] tests node: $(uname -srm), docker $(docker version --format {{.Server.Version}})"'
-          }
-          post {
-            unsuccessful {
-              echo 'gaming-amd64 did not take the Tests stage within 10 minutes: is VM Fedor running? ' +
-                'See the gaming-amd64 section of the local-jenkins notes (VBoxManage list runningvms on win116).'
+            script {
+              // Контейнеры на этом узле идут под root (-u 0:0), как и на маке,
+              // где root — сам контроллер: pip и npm пишут в системные каталоги
+              // образа и в кэши /root/.cache/pip, /root/.npm. На Linux-агенте
+              // docker.inside по умолчанию подставляет uid агента, и pip упал
+              // бы на правах. Цена — root-файлы в воркспейсе (__pycache__,
+              // отчёты), которые агент сам не удалит, поэтому воркспейс чистит
+              // тот же образ под root, а не deleteDir(). Чистый воркспейс
+              // обязателен: checkout не удаляет неотслеживаемое, и удалённый в
+              // ревизии тест иначе прогонялся бы из прошлого билда.
+              //
+              // У этого шага есть и вторая роль. На Fedor включён SELinux, и
+              // docker run -v без :z не читает домашний каталог агента
+              // (Permission denied). docker.inside монтирует воркспейс с ,z и
+              // перемечает его в container_file_t, а файлы, созданные потом
+              // checkout'ом, метку каталога наследуют. На этом держится
+              // scripts/ci-semgrep.sh, который монтирует воркспейс без :z.
+              docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
+                sh 'find . -mindepth 1 -delete'
+              }
+              // retry — на гонку с push'ем: post-commit хук запускает сборку
+              // сразу после локального коммита, а на GitHub он попадает
+              // секундами позже.
+              retry(3) {
+                try {
+                  checkout([
+                    $class: 'GitSCM',
+                    branches: scm.branches,
+                    extensions: scm.extensions,
+                    userRemoteConfigs: [[url: GITHUB_REPO]],
+                  ])
+                } catch (err) {
+                  echo "[ci] checkout from ${GITHUB_REPO} failed (is the commit pushed?): ${err}"
+                  sleep 30
+                  throw err
+                }
+              }
+              sh 'echo "[ci] revision $(git rev-parse HEAD)"'
             }
           }
         }
 
-        stage('Tests: pytest') {
-          agent { label 'gaming-amd64' }
+        stage('APEX contract') {
           steps {
             script {
-              // Контейнеры ниже идут под root (-u 0:0), как и на маке, где
-              // root — сам контроллер: pip ставит зависимости в системный
-              // site-packages образа. На Linux-агенте docker.inside по
-              // умолчанию подставляет uid агента, и pip упал бы на правах.
-              // Цена — root-файлы в воркспейсе (__pycache__, отчёты), которые
-              // агент сам не удалит, поэтому воркспейс чистит тот же образ под
-              // root, а не deleteDir(). Чистый воркспейс обязателен: unstash
-              // только дописывает, и удалённый в ревизии тест иначе
-              // прогонялся бы из прошлого билда.
               docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
-                sh 'find . -mindepth 1 -delete'
+                sh 'python apex-contract/validate.py'
               }
-              unstash 'tests-tree'
-              sh 'tar -xzf .ci-tests-tree.tar.gz && rm -f .ci-tests-tree.tar.gz'
+            }
+          }
+        }
+
+        stage('Lint (ruff)') {
+          steps {
+            // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
+            // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
+            // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
+            // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
+            script {
+              docker.image(PYTHON_IMAGES['3.12']).inside("-u 0:0 ${PIP_CACHE}") {
+                sh 'scripts/ci-lint.sh --install'
+              }
+            }
+          }
+        }
+
+        // Quality gate. Стоит до тестов и сборки образа намеренно: находка
+        // уровня ERROR роняет билд за пару минут, а не после часа сборки.
+        // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
+        // эта стадия была единственной, которой в reference workflow не было.
+        // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
+        // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
+        // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
+        stage('SAST (semgrep)') {
+          steps {
+            sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
+          }
+          post {
+            always {
+              archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true
+            }
+          }
+        }
+
+        stage('Tests') {
+          // Матрица развёрнута в последовательный цикл. Параллельные ячейки
+          // на маке получали каждая свой воркспейс и клонировали репозиторий
+          // одновременно, и этот клон перемежающимся образом падал с
+          // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
+          // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
+          // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
+          // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
+          // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
+          steps {
+            // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
+            // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
+            // python:slim нет kubectl — 79 из них годами тихо пропускались,
+            // и восемь мутаций манифестов прошли ревью #338. На Fedor kubectl
+            // не установлен, а образ registry.k8s.io/kubectl — distroless, без
+            // bash для скрипта. Поэтому статический бинарь берётся из
+            // запиненного образа (та же версия, что в образе контроллера для
+            // стадии Kustomize), рендер идёт на самом узле, а каталог уходит
+            // в контейнер через OCTO_K8S_RENDER_DIR. Бинарь — в @tmp, не в
+            // воркспейсе: тесты обходят дерево репозитория. Под
+            // OCTO_REQUIRE_INTEGRATION=1 без рендера эти тесты падают.
+            sh """
+              set -eu
+              BIN="\$WORKSPACE@tmp/ci-bin"
+              rm -rf "\$BIN" .k8s-render
+              mkdir -p "\$BIN"
+              docker rm -f kubectl-${CI_SLUG} >/dev/null 2>&1 || true
+              docker create --name kubectl-${CI_SLUG} ${KUBECTL_IMAGE} >/dev/null
+              trap 'docker rm -f kubectl-${CI_SLUG} >/dev/null' EXIT
+              docker cp kubectl-${CI_SLUG}:/bin/kubectl "\$BIN/kubectl"
+              PATH="\$BIN:\$PATH" OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh
+            """
+            script {
               for (PY in ['3.11', '3.12']) {
                 try {
                   // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
@@ -262,39 +312,43 @@ pipeline {
             }
           }
         }
-      }
-    }
 
-    stage('Web dashboard') {
-      agent { docker { image NODE_IMAGE; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
-      steps {
-        // npm ci must not unpack node_modules into the workspace: on macOS that
-        // is a VirtioFS bind mount, which drops writes silently. Build #25 died
-        // in eslint on a 60 KB run of NUL bytes inside
-        // node_modules/language-subtag-registry/data/json/registry.json — the
-        // hole was page-aligned and the file kept its correct size, so npm saw
-        // nothing to report. #24 had passed on that same revision, which is how
-        // the same commit produced both a green and a red build.
-        //
-        // Building on the container's own filesystem avoids the mount entirely.
-        // A named volume over node_modules would too, but it has to be pinned to
-        // the workspace path, and parallel stages get their own (shapoclyack@2)
-        // — two concurrent builds would then share one node_modules.
-        //
-        // Nothing downstream consumes web-next/out from the workspace: both
-        // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
-        // web-build stage. This stage is a gate, not a producer.
-        sh '''
-          set -eu
-          BUILD_DIR=/tmp/web-next-build
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
-          cp -R web-next/. "$BUILD_DIR/"
-          rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
-          # Сами шаги (ci/lint/typecheck/test/build) — в scripts/ci-web.sh,
-          # общем с ci.yml; здесь остаётся только копия мимо VirtioFS.
-          scripts/ci-web.sh "$BUILD_DIR"
-        '''
+        stage('Web dashboard') {
+          steps {
+            // npm ci must not unpack node_modules into the workspace: on macOS that
+            // is a VirtioFS bind mount, which drops writes silently. Build #25 died
+            // in eslint on a 60 KB run of NUL bytes inside
+            // node_modules/language-subtag-registry/data/json/registry.json — the
+            // hole was page-aligned and the file kept its correct size, so npm saw
+            // nothing to report. #24 had passed on that same revision, which is how
+            // the same commit produced both a green and a red build.
+            //
+            // Building on the container's own filesystem avoids the mount entirely.
+            // On gaming-amd64 the workspace is a plain local filesystem and the copy
+            // is no longer strictly needed; it stays so the stage behaves the same
+            // on any node, and it keeps root-owned node_modules out of the
+            // workspace.
+            //
+            // Nothing downstream consumes web-next/out from the workspace: both
+            // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
+            // web-build stage. This stage is a gate, not a producer.
+            script {
+              docker.image(NODE_IMAGE).inside('-u 0:0 -v shapoclyack-npm-cache:/root/.npm') {
+                sh '''
+                  set -eu
+                  BUILD_DIR=/tmp/web-next-build
+                  rm -rf "$BUILD_DIR"
+                  mkdir -p "$BUILD_DIR"
+                  cp -R web-next/. "$BUILD_DIR/"
+                  rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
+                  # Сами шаги (ci/lint/typecheck/test/build) — в scripts/ci-web.sh,
+                  # общем с ci.yml; здесь остаётся только копия мимо VirtioFS.
+                  scripts/ci-web.sh "$BUILD_DIR"
+                '''
+              }
+            }
+          }
+        }
       }
     }
 
