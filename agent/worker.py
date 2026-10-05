@@ -430,7 +430,13 @@ def _error_detail(exc: urllib.error.HTTPError) -> str:
         with contextlib.suppress(OSError):
             exc.close()
     detail = raw[:ERROR_DETAIL_MAX_BYTES].decode("utf-8", errors="replace")
-    return detail + " [truncated]" if len(raw) > ERROR_DETAIL_MAX_BYTES else detail
+    if len(raw) > ERROR_DETAIL_MAX_BYTES:
+        detail += " [truncated]"
+    if 300 <= exc.code < 400:
+        # egress.NoRedirects: the hop is not taken, and the log says where it led.
+        location = str((exc.headers or {}).get("Location", ""))[:200]
+        detail = f"redirect to {location!r} not followed; {detail}"
+    return detail
 
 
 class AgentIdInAnotherTenant(RuntimeError):

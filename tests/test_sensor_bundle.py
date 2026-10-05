@@ -930,6 +930,42 @@ def test_abort_puts_an_interrupted_release_back_without_calling_it_failed(tmp_pa
     assert _run_cli(install, bundle, key_file, monkeypatch, "--abort") == 0
 
 
+@pytest.mark.parametrize("killed_in", ["_prune", "_clear_journal"])
+def test_a_recovery_killed_half_way_still_asks_for_the_restart(tmp_path, signing_key, monkeypatch, killed_in):
+    """The release is put back, and the run doing it dies before it can say
+    so -- pruning old trees, or removing the journal. The unit still runs the
+    release taken out, so the next ``--abort`` has to answer "restart" again,
+    although ``agent`` already points where it should."""
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    manifest, archive = _verified(bundle, signing_key)
+    update.Installer(install).install(archive, manifest, pending=True)
+
+    def killed(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patched:
+        patched.setattr(update.Installer, killed_in, killed)
+        with pytest.raises(KeyboardInterrupt):
+            update.Installer(install).recover()
+    assert _live_version(install) == "0.46-0922"
+
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--abort") == update.EXIT_RECOVERED
+    assert not (install / ".sensor-update.json").exists()
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--abort") == 0
+
+
+def test_commit_with_nothing_pending_is_not_a_success(tmp_path, monkeypatch):
+    install = _cli_install(tmp_path, "0.46-0922")
+    monkeypatch.setattr(update, "_systemd_unit_present", lambda unit: False)
+    code = update.main(
+        ["--install-dir", str(install), "--env-file", str(install / "missing.env"), "--commit"]
+    )
+    assert code == update.EXIT_NOTHING_TO_DO
+
+
 # --------------------------------------------------------------------------
 # scripts/update-agent.sh: root restarts, the account installs
 # --------------------------------------------------------------------------
@@ -980,6 +1016,17 @@ os.execvp(args[0], args)
 """
 
 
+#: macOS has no flock(1) either. ``flock -n FD`` locks the open file the
+#: script's descriptor names, so the lock stays when this process exits.
+_FAKE_FLOCK = """#!{python}
+import fcntl, sys
+try:
+    fcntl.flock(int(sys.argv[-1]), fcntl.LOCK_EX | (fcntl.LOCK_NB if "-n" in sys.argv else 0))
+except BlockingIOError:
+    sys.exit(1)
+"""
+
+
 def _real_agent_tree(root: Path, version: str) -> Path:
     tree = root / f"real-{version}" / "agent"
     shutil.copytree(REPO_ROOT / "agent", tree, ignore=shutil.ignore_patterns("__pycache__"))
@@ -998,6 +1045,9 @@ def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurveP
     if shutil.which("setsid") is None:
         (bin_dir / "setsid").write_text(_FAKE_SETSID.format(python=sys.executable))
         (bin_dir / "setsid").chmod(0o755)
+    if shutil.which("flock") is None:
+        (bin_dir / "flock").write_text(_FAKE_FLOCK.format(python=sys.executable))
+        (bin_dir / "flock").chmod(0o755)
     install = tmp_path / "install"
     shutil.copytree(_real_agent_tree(tmp_path / "old", "0.46-0922"), install / "agent")
     venv_bin = install / "venv" / "bin"
@@ -1019,6 +1069,7 @@ def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurveP
         "INSTALL_DIR": str(install),
         "CONF_DIR": str(conf),
         "HEALTH_SECONDS": "1",
+        "LOCK_FILE": str(tmp_path / "update-agent.lock"),
         update.PUBKEY_FILE_ENV: str(key_file),
         "FAKE_PYTHON": sys.executable,
         "ATTACHMENT_PROBE": _ATTACHMENT_PROBE,
@@ -1349,6 +1400,354 @@ def test_a_signal_during_the_health_check_puts_the_previous_release_back(tmp_pat
     assert not list(install.glob(".sensor-update-failed*"))
 
 
+def test_a_hangup_during_the_health_check_puts_the_previous_release_back(tmp_path, signing_key, monkeypatch):
+    """A dropped SSH session: SIGHUP to the foreground group."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["HEALTH_SECONDS"] = "30"
+    status, _took, out = _interrupt_script(
+        env, signal.SIGHUP, lambda: (state / "calls").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 129, out
+    assert _live_version(install) == "0.46-0922", out
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+
+
+def _verifier(install: Path, body: str) -> None:
+    """Replace the venv's python with a shell wrapper; ``$PY`` runs the real one."""
+    (install / "venv" / "bin" / "python").write_text(f'#!/bin/sh\nPY="{sys.executable}"\n{body}')
+
+
+def _signal_twice(env: dict, sig: int, first, second, *args: str) -> tuple[int | None, str]:
+    """``_interrupt_script`` with a second signal once ``second()`` holds."""
+    proc = subprocess.Popen(
+        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), *args],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
+    )
+    for ready in (first, second):
+        deadline = time.monotonic() + 60
+        while not ready():
+            if proc.poll() is not None or time.monotonic() > deadline:
+                proc.kill()
+                pytest.fail("the script never got there:\n" + proc.communicate()[0])
+            time.sleep(0.05)
+        os.killpg(proc.pid, sig)
+    try:
+        out, _ = proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        return None, proc.communicate()[0]
+    return proc.returncode, out
+
+
+def test_an_interruption_after_the_recovery_still_restarts_the_unit(tmp_path, signing_key, monkeypatch):
+    """The review's lost restart: an earlier run died after its restart, so
+    the unit runs the release its journal names as new. This run's ``--pending``
+    puts the previous one back -- which removes the journal -- and is stopped
+    before the restart that has to follow. The journal no longer says so; the
+    unit still needs it."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _interrupted(install, bundle, signing_key)
+    _verifier(
+        install,
+        '"$PY" "$@"; rc=$?\n'
+        'case "$*" in *--pending*) [ "$rc" -eq 4 ] && { touch "$FAKE_SYSTEMD_DIR/recovered"; sleep 30; } ;; esac\n'
+        "exit $rc\n",
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGTERM, lambda: (state / "recovered").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 143, out
+    assert _live_version(install) == "0.46-0922", out
+    assert (state / "calls").read_text().split() == ["restart"], out
+
+
+def test_an_interruption_before_anything_changed_restarts_nothing(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _verifier(
+        install,
+        'case "$*" in *--pending*) touch "$FAKE_SYSTEMD_DIR/started"; sleep 30 ;; esac\n'
+        'exec "$PY" "$@"\n',
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "started").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 130, out
+    assert _live_version(install) == "0.46-0922", out
+    assert not (state / "calls").exists(), out
+
+
+def test_an_interruption_during_check_changes_nothing(tmp_path, signing_key, monkeypatch):
+    """``--check`` never changes anything, an interrupted one included: the
+    interrupted update it found stays for a real run to put back."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    interrupted = _interrupted(install, bundle, signing_key)
+    _verifier(
+        install,
+        'case "$*" in *--check*) touch "$FAKE_SYSTEMD_DIR/checking"; sleep 30 ;; esac\n'
+        'exec "$PY" "$@"\n',
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGTERM, lambda: (state / "checking").exists(),
+        "--check", "--bundle-dir", str(bundle),
+    )
+    assert status == 143, out
+    assert os.readlink(install / "agent") == interrupted
+    assert (install / ".sensor-update.json").exists()
+    assert not (state / "calls").exists(), out
+
+
+def test_an_interruption_after_the_commit_says_the_release_was_kept(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _verifier(
+        install,
+        '"$PY" "$@"; rc=$?\n'
+        'case "$*" in *--commit*) touch "$FAKE_SYSTEMD_DIR/committed"; sleep 30 ;; esac\n'
+        "exit $rc\n",
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "committed").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 130, out
+    assert _live_version(install) == "0.47-0930", out
+    assert "putting the previous release back" not in out
+    assert "Nothing was waiting for a verdict" in out
+    assert (state / "calls").read_text().split() == ["restart"], out
+
+
+def test_a_commit_that_kept_nothing_is_not_reported_as_kept(tmp_path, signing_key, monkeypatch):
+    """Whatever took the journal away -- another run, a hand -- the script must
+    not log "kept" for a release it did not keep."""
+    install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _verifier(
+        install,
+        'case "$*" in *--commit*) rm -f "$INSTALL_DIR/.sensor-update.json" ;; esac\n'
+        'exec "$PY" "$@"\n',
+    )
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "kept." not in done.stdout
+    assert "was not kept" in done.stderr
+
+
+def test_a_second_run_stops_while_the_first_is_in_its_health_check(tmp_path, signing_key, monkeypatch):
+    """The review's race: a timer firing during a manual run's health check
+    took that run's journal, and the manual run's rollback then recorded the
+    timer's healthy install as failed. The lock is held for the whole run."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    with (tmp_path / "etc" / "agent.env").open("a") as handle:
+        handle.write("OCTO_AGENT_AUTO_UPDATE=true\n")
+    first = subprocess.Popen(
+        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", str(bundle)],
+        env={**env, "HEALTH_SECONDS": "6"}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    deadline = time.monotonic() + 60
+    while not (state / "calls").exists():
+        assert first.poll() is None and time.monotonic() < deadline, first.communicate()[0]
+        time.sleep(0.05)
+    second = _run_script(env, "--auto", "--bundle-dir", str(bundle))
+    out = first.communicate(timeout=60)[0]
+
+    assert second.returncode == 1, second.stdout + second.stderr
+    assert "Another sensor update is running" in second.stderr
+    assert first.returncode == 0, out
+    assert "kept." in out
+    assert _live_version(install) == "0.47-0930"
+    assert (state / "calls").read_text().split() == ["restart"]
+    assert not list(install.glob(".sensor-update-failed*"))
+
+
+def test_the_sensors_processes_do_not_inherit_the_lock(tmp_path, signing_key, monkeypatch):
+    """A process of the account holding the descriptor could keep every later
+    run out, or release the lock under the run that holds it."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _verifier(
+        install,
+        '{ : >&9; } 2>/dev/null && echo "$*" >> "$FAKE_SYSTEMD_DIR/fd9"\n'
+        'exec "$PY" "$@"\n',
+    )
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not (state / "fd9").exists(), (state / "fd9").read_text()
+
+
+_SLOW_SECOND_RESTART = """#!/bin/sh
+state="$FAKE_SYSTEMD_DIR"
+case "$1" in
+  restart)
+    n=$(cat "$state/calls" 2>/dev/null | wc -l)
+    echo restart >> "$state/calls"
+    if [ "$n" -ge 1 ]; then touch "$state/restarting"; sleep 3; echo done >> "$state/calls"; fi
+    echo 100 > "$state/pid"; exit 0 ;;
+  is-active|cat) exit 0 ;;
+  show) cat "$state/pid"; exit 0 ;;
+esac
+exit 1
+"""
+
+
+def test_a_second_ctrl_c_does_not_cut_the_restart_after_the_rollback_short(
+    tmp_path, signing_key, monkeypatch
+):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    (tmp_path / "bin" / "systemctl").write_text(_SLOW_SECOND_RESTART)
+    env["HEALTH_SECONDS"] = "30"
+    status, out = _signal_twice(
+        env, signal.SIGINT,
+        lambda: (state / "calls").exists(), lambda: (state / "restarting").exists(),
+        "--bundle-dir", str(bundle),
+    )
+    assert status == 130, out
+    assert _live_version(install) == "0.46-0922", out
+    assert (state / "calls").read_text().split() == ["restart", "restart", "done"], out
+    assert "did not restart" not in out
+
+
+@pytest.mark.parametrize("first_during", ["health check", "verifier"])
+def test_a_second_signal_does_not_stop_the_verifier_putting_the_release_back(
+    tmp_path, signing_key, monkeypatch, first_during
+):
+    """Interrupted during the health check, the clean-up runs inside the
+    first signal's trap, where bash holds the same signal back anyway.
+    Interrupted while the verifier runs, it runs after the trap has returned,
+    and only the clean-up's own ``trap ':'`` keeps the second one off it."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["HEALTH_SECONDS"] = "30"
+    _verifier(
+        install,
+        'case "$*" in\n'
+        '  *--abort*) touch "$FAKE_SYSTEMD_DIR/aborting"; sleep 2 ;;\n'
+        '  *--pending*) "$PY" "$@"; rc=$?; touch "$FAKE_SYSTEMD_DIR/swapped"; sleep 10; exit $rc ;;\n'
+        "esac\n"
+        'exec "$PY" "$@"\n',
+    )
+    first = "calls" if first_during == "health check" else "swapped"
+    status, out = _signal_twice(
+        env, signal.SIGTERM,
+        lambda: (state / first).exists(), lambda: (state / "aborting").exists(),
+        "--bundle-dir", str(bundle),
+    )
+    assert status == 143, out
+    assert _live_version(install) == "0.46-0922", out
+    assert not (install / ".sensor-update.json").exists()
+    # The health check's restart, if it got that far, and the one onto the
+    # release put back.
+    restarts = ["restart", "restart"] if first_during == "health check" else ["restart"]
+    assert (state / "calls").read_text().split() == restarts, out
+
+
+def test_a_verifier_that_ignores_sigterm_is_killed(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["STOP_SECONDS"] = "2"
+    _verifier(
+        install,
+        'case "$*" in *--pending*)\n'
+        "  trap '' TERM\n"
+        '  "$PY" "$@"; echo $$ > "$FAKE_SYSTEMD_DIR/lingering"; sleep 60 ;;\n'
+        "esac\n"
+        'exec "$PY" "$@"\n',
+    )
+    status, took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "lingering").exists(), "--bundle-dir", str(bundle)
+    )
+    lingering = int((state / "lingering").read_text())
+    left_running = _alive(lingering)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(lingering, signal.SIGKILL)
+    assert (status, left_running) == (130, False), out
+    assert took < 10, out
+    assert _live_version(install) == "0.46-0922", out
+
+
+def test_what_ignores_sigterm_is_killed_after_the_verifier_itself_went(
+    tmp_path, signing_key, monkeypatch
+):
+    """runuser and su go on SIGTERM and leave their child to it: one ignoring
+    SIGTERM stays behind in the verifier's process group, which is what gets
+    SIGKILL -- not only while the process the script started is alive."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["STOP_SECONDS"] = "2"
+    _verifier(
+        install,
+        'case "$*" in *--pending*)\n'
+        '  "$PY" "$@"\n'
+        "  sh -c 'trap \"\" TERM; echo $$ > \"$FAKE_SYSTEMD_DIR/lingering\"; exec sleep 60' &\n"
+        "  wait ;;\n"
+        "esac\n"
+        'exec "$PY" "$@"\n',
+    )
+    status, took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "lingering").exists(), "--bundle-dir", str(bundle)
+    )
+    lingering = int((state / "lingering").read_text())
+    time.sleep(0.5)
+    left_running = _alive(lingering)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(lingering, signal.SIGKILL)
+    assert (status, left_running) == (130, False), out
+    assert took < 10, out
+    assert _live_version(install) == "0.46-0922", out
+
+
+def test_a_process_left_holding_the_output_does_not_hold_the_script(tmp_path, signing_key, monkeypatch):
+    """The verifier exits and leaves a process behind with its output open:
+    its reader would wait for that one's end, for ever."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["DRAIN_SECONDS"] = "2"
+    _verifier(
+        install,
+        'case "$*" in *--pending*) sleep 60 & echo $! > "$FAKE_SYSTEMD_DIR/holder" ;; esac\n'
+        'exec "$PY" "$@"\n',
+    )
+    try:
+        done = _run_script(env, "--bundle-dir", str(bundle))
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int((state / "holder").read_text()), signal.SIGKILL)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _live_version(install) == "0.47-0930"
+
+
+def test_a_signal_while_the_output_drains_ends_the_wait(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["DRAIN_SECONDS"] = "60"
+    _verifier(
+        install,
+        '"$PY" "$@"; rc=$?\n'
+        'case "$*" in *--pending*)\n'
+        '  sleep 60 & echo $! > "$FAKE_SYSTEMD_DIR/holder"; touch "$FAKE_SYSTEMD_DIR/draining" ;;\n'
+        "esac\n"
+        "exit $rc\n",
+    )
+    try:
+        status, took, out = _interrupt_script(
+            env, signal.SIGINT, lambda: (state / "draining").exists(), "--bundle-dir", str(bundle)
+        )
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int((state / "holder").read_text()), signal.SIGKILL)
+    assert status == 130, out
+    assert took < 10, out
+    assert _live_version(install) == "0.46-0922", out
+
+
+def test_the_verifiers_last_words_come_before_the_scripts_next_ones(tmp_path, signing_key, monkeypatch):
+    """Its output is read to the end before the script goes on, so what it
+    printed last is not lost behind, or after, the verdict."""
+    install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    _verifier(
+        install,
+        '"$PY" "$@"; rc=$?\n'
+        'case "$*" in *--pending*) (sleep 3; echo "late line from the verifier") & ;; esac\n'
+        "exit $rc\n",
+    )
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "late line from the verifier" in done.stdout
+    assert done.stdout.index("late line from the verifier") < done.stdout.index("stayed up")
+
+
 # --------------------------------------------------------------------------
 # The sensor's HTTP path, against a server that lies
 # --------------------------------------------------------------------------
@@ -1544,6 +1943,75 @@ def test_how_much_of_an_answer_is_read_is_decided_by_the_sensor(tmp_path, call, 
             tracemalloc.stop()
     assert len(str(refused.value)) < 8 * 1024
     assert peak < 8 * 1024 * 1024
+    if status != 200:
+        assert str(refused.value).endswith("[truncated]")
+
+
+@contextlib.contextmanager
+def _redirecting_api(seen: list[tuple[str, str | None]]):
+    """An API answering everything with a 302 to another origin and 32 MiB
+    of body; ``seen`` collects what that other origin is asked, and with
+    which ``Authorization``."""
+
+    class Elsewhere(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _answer(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_GET = do_POST = _answer  # noqa: N815 - http.server's naming
+
+    other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _redirect(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{other.server_address[1]}/steal")
+            self.send_header("Content-Length", str(_FLOOD_BYTES))
+            self.end_headers()
+            chunk = b"x" * 65536
+            with contextlib.suppress(OSError):
+                for _ in range(_FLOOD_BYTES // len(chunk)):
+                    self.wfile.write(chunk)
+
+        do_GET = do_POST = _redirect  # noqa: N815 - http.server's naming
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    for srv in (server, other):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        for srv in (server, other):
+            srv.shutdown()
+            srv.server_close()
+
+
+@pytest.mark.parametrize("call", sorted(_SENSOR_CALLS))
+def test_a_redirect_is_not_followed_with_the_token_or_read_to_its_end(tmp_path, call):
+    """urllib's own redirect handler takes the bearer token to whatever host
+    the Location names, and reads the 3xx body to its end before it does."""
+    seen: list[tuple[str, str | None]] = []
+    with _redirecting_api(seen) as url:
+        client = AgentClient(url, "sensor-token")
+        tracemalloc.start()
+        try:
+            with pytest.raises(RuntimeError, match="-> 302: redirect to .* not followed") as refused:
+                _SENSOR_CALLS[call](client, tmp_path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    assert seen == []
+    assert peak < 8 * 1024 * 1024
+    assert len(str(refused.value)) < 8 * 1024
 
 
 # --------------------------------------------------------------------------

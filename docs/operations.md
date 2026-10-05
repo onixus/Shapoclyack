@@ -2301,12 +2301,30 @@ its own, so the terminal's `SIGINT` does not reach it; the script sends it
 `SIGTERM`, waits for it to go, puts back whatever this run swapped in
 (`python -m agent.update --abort`, which unlike `--rollback` does not record
 the release as failed: it was not judged), restarts the unit onto it if
-anything was put back, and exits `130`/`129`/`143`. Interrupted during
-`--check`, or before it has started changing anything, it only stops. A
-second `^C` during that clean-up is ignored; it takes a moment.
+anything was put back — or if an earlier run's recovery had put a release back
+and the unit had not been restarted onto it yet — and exits `130`/`129`/`143`.
+Interrupted during `--check`, or before it has started changing anything, it
+only stops; interrupted after `--commit` kept the release, it says that nothing
+was waiting for a verdict and leaves the release live. A second `^C`, `SIGTERM`
+or hangup during that clean-up is ignored: the verifier putting the release
+back and the restart that follows run in sessions of their own, so the
+terminal's `SIGINT` reaches neither; it takes a moment. A verifier that ignores
+`SIGTERM` has its whole process group killed after `STOP_SECONDS` (10), and a
+process it left behind still holding its output is no reason to wait: the
+script reads that output for `DRAIN_SECONDS` (5) more, or until the next
+signal, and goes on.
 
-One update runs at a time (a lock in the install directory); a second one
-started meanwhile stops with "another sensor update is running".
+**One update runs at a time, for the whole run.** The script takes an
+exclusive `flock` on `/run/shapoclyack-update-agent.lock` (`LOCK_FILE`) — root's
+file, outside every directory the sensor's account can write — before its first
+look at the journal and holds it to the verdict; nothing it runs as the
+account inherits the descriptor. A second run started meanwhile, a timer tick
+during a manual run's health check included, stops with "Another sensor update
+is running" and changes nothing. (Held only per call of the verifier, as
+before, a timer could take a manual run's journal in the middle of its health
+check, and the manual run's rollback then recorded the timer's healthy release
+as failed.) "kept" is logged only when `--commit` kept a release; one that found
+nothing pending exits `3` and the script reports an error.
 
 After an update that is kept, the live release and the one before it stay
 and older ones are removed. After one that is put back, the live release
@@ -2347,6 +2365,12 @@ Limits worth knowing:
   which genuine newer release to offer — or offers none and keeps the fleet
   where it is. Watch the fleet's versions (`GET /api/agents/summary`) rather
   than assume a published fix arrived;
+- **redirects are not followed.** Nothing the sensor calls on the API
+  redirects, so a `3xx` — to `GET /api/agent/bundle`, the download, the key
+  exchange or any other call — is an error: the bearer token is never sent on
+  to the `Location`, and the `3xx` body is read with the same limit as any other
+  error body, the `Location` logged. An API behind a proxy that redirects (to
+  HTTPS, to another path) has to be configured with the URL it ends at;
 - the install directory and its code stay owned by the sensor's account, as the
   installer leaves them: the updater does not make the sensor's own account any
   less able to change its own code, it only keeps root from running it.

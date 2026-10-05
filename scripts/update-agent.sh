@@ -42,6 +42,13 @@ CONF_DIR="${CONF_DIR:-/etc/shapoclyack}"
 SENSOR_USER="${SENSOR_USER:-shapoclyack}"
 UNIT="${UNIT:-shapoclyack-agent.service}"
 HEALTH_SECONDS="${HEALTH_SECONDS:-20}"
+# Root's own lock, in a directory only root writes: not the install directory,
+# which belongs to the sensor's account.
+LOCK_FILE="${LOCK_FILE:-/run/shapoclyack-update-agent.lock}"
+# How long the verifier has to go after SIGTERM before its process group gets
+# SIGKILL, and how long its output may outlast it.
+STOP_SECONDS="${STOP_SECONDS:-10}"
+DRAIN_SECONDS="${DRAIN_SECONDS:-5}"
 BUNDLE_DIR=""
 CHECK_ONLY=0
 RESTART_ONLY=0
@@ -119,6 +126,17 @@ if [[ ! -f "${CONF_DIR}/agent.env" ]]; then
     error "Agent config not found at ${CONF_DIR}/agent.env. Is the agent installed?"
 fi
 
+# One run at a time, from the first look at the journal to the verdict -- the
+# whole run, not each call of the verifier: a timer firing during a manual
+# run's health check would otherwise take that run's journal from under it,
+# put its release back and install it again, and the manual run's rollback
+# would then record the timer's healthy release as failed. The descriptor is
+# closed for everything run as the sensor's account (9>&- below), so none of
+# its processes can hold the lock, or release it, past its own call.
+command -v flock &>/dev/null || error "flock not found."
+exec 9>>"${LOCK_FILE}" || error "Cannot open the lock file ${LOCK_FILE}."
+flock -n 9 || error "Another sensor update is running (${LOCK_FILE} is held); not starting a second one."
+
 has_unit() {
     command -v systemctl &>/dev/null && systemctl cat "${UNIT}" &>/dev/null
 }
@@ -168,44 +186,75 @@ command -v setsid &>/dev/null \
 command -v mkfifo &>/dev/null || error "mkfifo not found."
 FIFO_DIR="$(mktemp -d)"
 trap 'rm -rf "${FIFO_DIR}"' EXIT
-FIFO="${FIFO_DIR}/out"
-mkfifo -m 0600 "${FIFO}"
+FIFO_SEQ=0
 
-# The process running as the account, while one does.
+# The process running as the account, while one does; when it was told to
+# stop; the reader of its output, once only draining it is left.
 SENSOR_PID=""
+STOP_SENT=""
+READER_PID=""
 IN_SENSOR=0
-# The signal that interrupted this run, and whether the run had started
-# changing anything an interruption has to undo.
+# The signal that interrupted this run; whether the run had started changing
+# anything an interruption has to undo; and whether the unit runs a release
+# that is no longer live, with nothing on disk left to say so.
 INTERRUPTED=""
 CHANGING=0
 ABORTING=0
+RESTART_OWED=0
+HAS_UNIT=0
 
 stop_sensor() {
     # TERM, whatever arrived here: an asynchronous command of a script starts
     # with SIGINT ignored, and Python keeps it ignored.
+    [[ -n "${STOP_SENT}" ]] || STOP_SENT="${SECONDS}"
     kill -s TERM -- "-${SENSOR_PID}" 2>/dev/null || kill -s TERM "${SENSOR_PID}" 2>/dev/null || true
 }
 
+stop_reader() {
+    # By its pid as well: one still opening the FIFO has not reached setsid,
+    # and no group bears its pid yet.
+    kill -s KILL -- "-${READER_PID}" 2>/dev/null || kill -s KILL "${READER_PID}" 2>/dev/null || true
+}
+
 as_sensor() {
-    local status=127 waited filter
-    # Immune to the signals meant for this script, so the verifier never
-    # writes into a FIFO nobody reads; draining whatever a dead terminal
-    # would not take, for the same reason.
-    (trap '' INT TERM HUP; LC_ALL=C tr -cd '\011\012\040-\176' || cat >/dev/null) <"${FIFO}" &
-    filter=$!
+    local status=127 waited fifo reader deadline
+    STOP_SENT=""
+    # A FIFO per process: whatever outlives one call keeps that FIFO's write
+    # end, and nothing it writes reaches the reader of a later call.
+    FIFO_SEQ=$((FIFO_SEQ + 1))
+    fifo="${FIFO_DIR}/out${FIFO_SEQ}"
+    mkfifo -m 0600 "${fifo}"
+    # The reader, in a session of its own like the verifier: neither ^C, a
+    # hangup nor a signal to this script's process group stops it, so the
+    # verifier never writes into a FIFO nobody reads; and it drains what a
+    # dead terminal no longer takes, for the same reason.
+    setsid sh -c 'LC_ALL=C tr -cd "$1" || cat >/dev/null' sh '\011\012\040-\176' \
+        <"${fifo}" 9>&- &
+    reader=$!
     IN_SENSOR=1
     if command -v runuser &>/dev/null; then
         (cd "${INSTALL_DIR}" && exec setsid runuser -u "${SENSOR_USER}" -- "$@") \
-            </dev/null >"${FIFO}" 2>&1 &
+            </dev/null >"${fifo}" 2>&1 9>&- &
     else
         # BusyBox (Alpine) has su but no runuser.
         (cd "${INSTALL_DIR}" && exec setsid su -s /bin/sh "${SENSOR_USER}" -c "$(printf '%q ' "$@")") \
-            </dev/null >"${FIFO}" 2>&1 &
+            </dev/null >"${fifo}" 2>&1 9>&- &
     fi
     SENSOR_PID=$!
     # A signal between the start and $! found no pid to pass on.
     [[ -z "${INTERRUPTED}" || "${ABORTING}" -eq 1 ]] || stop_sensor
     while :; do
+        # Told to stop, it is watched rather than waited for: one that
+        # ignores SIGTERM has its process group killed after STOP_SECONDS.
+        # The group, not only the pid: runuser and su go on SIGTERM and leave
+        # their child to it, and one ignoring it lives on in that group.
+        while [[ -n "${STOP_SENT}" ]] \
+            && { kill -0 "${SENSOR_PID}" || kill -0 -- "-${SENSOR_PID}"; } 2>/dev/null; do
+            if ((SECONDS - STOP_SENT >= STOP_SECONDS)); then
+                kill -s KILL -- "-${SENSOR_PID}" 2>/dev/null || kill -s KILL "${SENSOR_PID}" 2>/dev/null || true
+            fi
+            sleep 0.2
+        done
         waited=0
         wait "${SENSOR_PID}" || waited=$?
         # 127 the second time round: no child of this shell any more, and its
@@ -219,9 +268,25 @@ as_sensor() {
         fi
     done
     SENSOR_PID=""
-    wait "${filter}" || true
+    # Its output ends when the last process holding the FIFO lets go. One it
+    # left behind in a session of its own, out of reach of the kill above,
+    # would hold it for ever: the reader gets DRAIN_SECONDS, or until a
+    # signal, and is then killed.
+    READER_PID="${reader}"
+    deadline=$((SECONDS + DRAIN_SECONDS))
+    while kill -0 "${reader}" 2>/dev/null && ((SECONDS < deadline)); do
+        sleep 0.1
+    done
+    ! kill -0 "${reader}" 2>/dev/null || stop_reader
+    READER_PID=""
     IN_SENSOR=0
     return "${status}"
+}
+
+# The restart that undoes an interrupted run. In a session of its own, so the
+# next ^C or the hangup that ended the session does not cut it short.
+restart_detached() {
+    setsid systemctl restart "${UNIT}" </dev/null 9>&-
 }
 
 # Interrupted: the verifier gets the signal (it has a session of its own, so
@@ -231,24 +296,26 @@ as_sensor() {
 abort_update() {
     ABORTING=1
     set +e
-    # Noted and otherwise ignored from here: putting the release back is what
-    # the signal asked for.
+    # Noted and otherwise ignored from here: undoing the run is what the
+    # signal asked for, and the verifier doing it is not stopped.
     trap ':' INT TERM HUP
     local code=143 put_back=0
     [[ "${INTERRUPTED}" == INT ]] && code=130
     [[ "${INTERRUPTED}" == HUP ]] && code=129
     if [[ "${CHANGING}" -eq 1 ]]; then
-        echo "Interrupted (SIG${INTERRUPTED}); putting the previous release back..." >&2
+        echo "Interrupted (SIG${INTERRUPTED}); undoing whatever this run left without a verdict..." >&2
         updater --abort
         put_back=$?
-        if [[ "${put_back}" -eq "${EXIT_RECOVERED}" ]]; then
-            if has_unit; then
-                systemctl restart "${UNIT}" \
-                    || echo "${UNIT} did not restart onto the previous release. Inspect it with: journalctl -u ${UNIT} -n 50" >&2
+        if [[ "${put_back}" -eq "${EXIT_RECOVERED}" || "${RESTART_OWED}" -eq 1 ]]; then
+            if [[ "${HAS_UNIT}" -eq 1 ]]; then
+                restart_detached \
+                    || echo "${UNIT} did not restart onto the live release. Inspect it with: journalctl -u ${UNIT} -n 50" >&2
             else
                 echo "Restart the sensor process yourself: it may run the release put back." >&2
             fi
-        elif [[ "${put_back}" -ne 0 ]]; then
+        elif [[ "${put_back}" -eq 0 ]]; then
+            echo "Nothing was waiting for a verdict; the live release stays." >&2
+        else
             echo "Could not put the previous release back; the next run of this script does." >&2
         fi
     fi
@@ -258,8 +325,13 @@ abort_update() {
 on_signal() {
     INTERRUPTED="$1"
     if [[ "${IN_SENSOR}" -eq 1 ]]; then
-        # as_sensor returns once the process is gone; its caller aborts.
-        [[ -z "${SENSOR_PID}" ]] || stop_sensor
+        # as_sensor returns once the process is gone, or its output has
+        # stopped draining; its caller aborts.
+        if [[ -n "${SENSOR_PID}" ]]; then
+            stop_sensor
+        elif [[ -n "${READER_PID}" ]]; then
+            stop_reader
+        fi
         return 0
     fi
     abort_update
@@ -296,8 +368,17 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
     exit "${exec_status}"
 fi
 
+# Looked up once, before anything changes: a second ^C would otherwise cut
+# the lookup short in the clean-up and pass for "no unit".
+! has_unit || HAS_UNIT=1
 CHANGING=1
-if ! has_unit; then
+# A journal here means an earlier run was killed between its swap and its
+# verdict, and the unit may still run the release that run swapped in. Until
+# the restart below, an interruption owes the unit that restart: the journal,
+# which says so, is gone as soon as the previous release is back, and the
+# verifier may be stopped after that and before it can report it.
+[[ ! -e "${INSTALL_DIR}/.sensor-update.json" ]] || RESTART_OWED=1
+if [[ "${HAS_UNIT}" -eq 0 ]]; then
     # No systemd (OpenRC, a bare nohup start): the updater's own health check
     # is the import of the swapped-in tree; the process is restarted by hand.
     updater ${ARGS[@]+"${ARGS[@]}"}
@@ -330,6 +411,7 @@ if [[ "${status}" -eq "${EXIT_RECOVERED}" ]]; then
     log "An interrupted update was rolled back; restarting ${UNIT} onto the previous release..."
     systemctl restart "${UNIT}" \
         || error "${UNIT} did not restart onto the previous release. Inspect it with: journalctl -u ${UNIT} -n 50"
+    RESTART_OWED=0
     status=0
     updater --pending ${ARGS[@]+"${ARGS[@]}"} || status=$?
 fi
@@ -340,11 +422,18 @@ elif [[ "${status}" -ne 0 ]]; then
 fi
 
 if healthy; then
-    updater --commit
+    kept=0
+    updater --commit || kept=$?
+    if [[ "${kept}" -ne 0 ]]; then
+        error "${UNIT} stayed up, but the new release was not kept (the verifier's reason is above)."
+    fi
     log "${UNIT} stayed up for ${HEALTH_SECONDS}s on the new agent package; kept."
     exit 0
 fi
 
+# Owed from before the rollback starts: once it has put the previous release
+# back, its journal is gone, and the unit still runs the new one.
+RESTART_OWED=1
 updater --rollback || true
 systemctl restart "${UNIT}" || true
 error "${UNIT} did not stay up on the new release; the previous release is back.

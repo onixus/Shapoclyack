@@ -583,11 +583,15 @@ class Installer:
     def recover(self) -> bool:
         """Finish what a killed run left: put back the release its journal names.
 
-        Returns whether anything was put back -- the caller then restarts the
-        service, which may still be running the code the interrupted run
-        swapped in. That release's tree is kept for the same reason; every
-        other release but the one put back goes, so failed attempts do not
-        pile up between updates that are kept.
+        Returns whether the service has to be restarted: the journal named a
+        release swapped in, so the service may still run it. That is decided
+        by the journal and not by where ``agent`` points, because a recovery
+        killed after the link went back but before the journal did leaves the
+        link on the previous release and the service on the other one; the
+        journal goes last, so the next recovery still says so. The tree taken
+        out is kept for the same reason; every other release but the one put
+        back goes, so failed attempts do not pile up between updates that are
+        kept.
         """
         try:
             payload = json.loads(self.journal.read_text(encoding="utf-8"))
@@ -610,19 +614,20 @@ class Installer:
                 f"the journal names {previous} as the release to restore and it is missing; "
                 f"fix {self.install_dir} by hand"
             )
-        put_back = self.current() != previous
-        if put_back:
-            self._point_at(previous)
-            LOG.warning("An interrupted update was rolled back to %s", previous)
-        self._clear_journal()
         keep = {previous}
         if taken_out:
             # A journal naming something that is no release keeps nothing.
             with contextlib.suppress(UpdateFailed):
                 self._release_path(taken_out)
                 keep.add(taken_out)
+        restart = len(keep) == 2
+        if self.current() != previous:
+            self._point_at(previous)
+            LOG.warning("An interrupted update was rolled back to %s", previous)
+            restart = True
         self._prune(keep=keep)
-        return put_back
+        self._clear_journal()
+        return restart
 
     def rollback(self) -> bool:
         """``--rollback``: the restarted service did not stay up on the pending
@@ -1009,7 +1014,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Swap the release in and stop: the caller restarts the service and then "
         f"runs --commit or --rollback. Exit {EXIT_NOTHING_TO_DO} when there is nothing to install",
     )
-    mode.add_argument("--commit", action="store_true", help="Keep the pending release")
+    mode.add_argument(
+        "--commit",
+        action="store_true",
+        help=f"Keep the pending release. Exit {EXIT_NOTHING_TO_DO} when none was pending",
+    )
     mode.add_argument("--rollback", action="store_true", help="Put the previous release back")
     mode.add_argument(
         "--abort",
@@ -1033,6 +1042,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 #: ``--pending`` found the bundle already installed; the caller restarts nothing.
+#: ``--commit`` found no pending release to keep.
 EXIT_NOTHING_TO_DO = 3
 #: ``--pending`` found an interrupted update and put the previous release back,
 #: and stopped there: the service still runs the release taken out, so the
@@ -1095,9 +1105,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
                         read_package_version(install_dir / _LIVE),
                         kept,
                     )
-                else:
-                    LOG.info("Kept nothing: no update was pending")
-                return 0
+                    return 0
+                # Not a success to report as one: the caller judged a restart
+                # onto a release that is not pending any more.
+                LOG.error("Kept nothing: no update was pending")
+                return EXIT_NOTHING_TO_DO
             if args.rollback:
                 LOG.info("Rolled back" if installer.rollback() else "No pending update to roll back")
                 return 0
