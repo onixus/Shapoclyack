@@ -95,7 +95,12 @@ def _scim(body: Any, status_code: int = status.HTTP_200_OK) -> JSONResponse:
     return JSONResponse(body, status_code=status_code, media_type=SCIM_MEDIA_TYPE)
 
 
-def _error(status_code: int, detail: str, scim_type: str | None = None) -> JSONResponse:
+def _error(
+    status_code: int,
+    detail: str,
+    scim_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     body: dict[str, Any] = {
         "schemas": [scim_service.SCHEMA_ERROR],
         "status": str(status_code),
@@ -103,7 +108,9 @@ def _error(status_code: int, detail: str, scim_type: str | None = None) -> JSONR
     }
     if scim_type:
         body["scimType"] = scim_type
-    return _scim(body, status_code)
+    response = _scim(body, status_code)
+    response.headers.update(headers or {})
+    return response
 
 
 def _answer(call, status_code: int = status.HTTP_200_OK) -> Response:
@@ -116,6 +123,9 @@ def _answer(call, status_code: int = status.HTTP_200_OK) -> Response:
         return _error(status.HTTP_409_CONFLICT, str(exc))
     except scim_service.ScimConflict as exc:
         return _error(status.HTTP_409_CONFLICT, str(exc), "uniqueness")
+    except scim_service.ScimBusy as exc:
+        # Nothing was applied; Okta and Entra ID retry a 503 on their own.
+        return _error(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc), headers={"Retry-After": "1"})
     except scim_service.ScimError as exc:
         return _error(status.HTTP_400_BAD_REQUEST, str(exc), exc.scim_type)
     except PermissionError as exc:

@@ -1041,3 +1041,249 @@ def test_revoking_a_scim_token_neither_strips_nor_extends_what_its_groups_grant(
     # The way out is removing the group, by a token that may.
     assert client.delete(f"/scim/v2/Groups/{group_id}", headers=bearer(everywhere)).status_code == 204
     assert _memberships("frank") == {beta: ("operator", "idp")}
+
+
+# --------------------------------------------------------------------------- #
+# Review of #316 (CR-507)
+# --------------------------------------------------------------------------- #
+
+
+def _principal(name: str):
+    from api.services.scim_tokens import ScimPrincipal
+
+    with get_session(POSTGRES_URL) as session:
+        row = session.execute(
+            select(models.ScimToken).where(models.ScimToken.name == name)
+        ).scalar_one()
+        return ScimPrincipal(
+            row.token_id,
+            row.name,
+            frozenset(row.tenant_ids or []),
+            row.all_tenants,
+            row.grant_platform_admin,
+        )
+
+
+def test_a_push_that_leaves_an_account_in_no_tenant_disables_it(tmp_path, monkeypatch):
+    """Still in a group mapped to a global role, an account taken out of its
+    last tenant group would act in `default` with that role."""
+    _, client, admin, acme, _ = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    assert _create_user(client, token, "erin").status_code == 201
+    assert _create_group(client, token, "vm-ops", members=["erin"]).status_code == 201
+    group_id = _create_group(client, token, "acme-ops", members=["erin"]).json()["id"]
+    assert _account("erin").disabled_at is None
+    assert _account("erin").role == "operator"
+
+    remove = {"op": "remove", "path": 'members[value eq "erin"]'}
+    assert _patch(client, token, f"/scim/v2/Groups/{group_id}", remove).status_code == 200
+    assert _memberships("erin") == {}
+    assert _account("erin").disabled_source == "idp"
+
+    add = {"op": "add", "path": "members", "value": [{"value": "erin"}]}
+    assert _patch(client, token, f"/scim/v2/Groups/{group_id}", add).status_code == 200
+    assert _account("erin").disabled_at is None
+
+
+def test_a_tenant_bound_push_does_not_leave_an_account_it_does_not_own_in_default(
+    tmp_path, monkeypatch
+):
+    """The token may not manage the account's lifecycle (its global role acts
+    outside the binding), yet its removal emptied the account's tenants: it
+    must not leave it enabled for the `default` fallback."""
+    _, client, admin, acme, _ = _setup(tmp_path, monkeypatch)
+    hq = _scim_token(client, admin, all_tenants=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, hq, "olga").status_code == 201
+    assert _create_group(client, hq, "vm-ops", members=["olga"]).status_code == 201
+    group_id = _create_group(client, scoped, "acme-ops").json()["id"]
+    add = {"op": "add", "path": "members", "value": [{"value": "olga"}]}
+    assert _patch(client, hq, f"/scim/v2/Groups/{group_id}", add).status_code == 200
+    assert _memberships("olga") == {acme: ("operator", "idp")}
+    assert _account("olga").role == "operator"
+
+    remove = {"op": "remove", "path": 'members[value eq "olga"]'}
+    assert _patch(client, scoped, f"/scim/v2/Groups/{group_id}", remove).status_code == 200
+    assert _memberships("olga") == {}
+    assert _account("olga").disabled_source == "idp"
+
+    # Placed again by a push, she is back.
+    assert _patch(client, hq, f"/scim/v2/Groups/{group_id}", add).status_code == 200
+    assert _account("olga").disabled_at is None
+
+
+def test_with_nothing_mapped_scim_pushes_change_no_access(tmp_path, monkeypatch, provider):
+    """SCIM connected only for the lifecycle: a group push must not read as
+    "in no mapped group" and disable everybody in it — the guard an SSO login
+    already had."""
+    settings = sso_settings(tmp_path, oidc_jit_provisioning=True)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    assert not settings.oidc_role_map and not settings.idp_group_map
+    sso = dict(preferred_username="erin", sub="idp-erin")
+    assert callback(client, provider, start_login(client), **sso).status_code == 200
+    token = _scim_token(client, admin, all_tenants=True)
+
+    assert _create_group(client, token, "Everyone", members=["erin"]).status_code == 201
+    assert _account("erin").disabled_at is None
+    assert callback(client, provider, start_login(client), **sso).status_code == 200
+    assert _create_user(client, token, "fred").status_code == 201
+    assert _account("fred").disabled_at is None
+
+    # The lifecycle still works.
+    off = {"op": "replace", "path": "active", "value": False}
+    assert _patch(client, token, "/scim/v2/Users/fred", off).status_code == 200
+    assert _account("fred").disabled_source == "scim"
+    on = {"op": "replace", "path": "active", "value": True}
+    assert _patch(client, token, "/scim/v2/Users/fred", on).status_code == 200
+    assert _account("fred").disabled_at is None
+
+
+def test_a_member_grants_no_more_than_the_token_that_added_it(tmp_path, monkeypatch):
+    """A tenant-bound token added its own account to a group an all_tenants
+    token created; the group's grants were held to its creator only, so a
+    later remap plus a rename by HQ handed that account another tenant."""
+    settings, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    settings.idp_group_map["ops"] = [{"tenant_id": acme, "role": "operator"}]
+    settings.idp_group_map["ops-team"] = [{"tenant_id": acme, "role": "operator"}]
+    hq = _scim_token(client, admin, all_tenants=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, hq, "hank").status_code == 201
+    group_id = _create_group(client, hq, "ops", members=["hank"]).json()["id"]
+    assert _create_user(client, scoped, "mallory").status_code == 201
+    add = {"op": "add", "path": "members", "value": [{"value": "mallory"}]}
+    assert _patch(client, scoped, f"/scim/v2/Groups/{group_id}", add).status_code == 200
+    assert _memberships("mallory") == {acme: ("operator", "idp")}
+
+    settings.idp_group_map["ops-team"].append({"tenant_id": beta, "role": "operator"})
+    rename = {"op": "replace", "path": "displayName", "value": "ops-team"}
+    assert _patch(client, hq, f"/scim/v2/Groups/{group_id}", rename).status_code == 200
+    assert _memberships("mallory") == {acme: ("operator", "idp")}
+    # HQ's own member gets what HQ's group grants.
+    assert _memberships("hank") == {acme: ("operator", "idp"), beta: ("operator", "idp")}
+
+
+def test_concurrent_adds_of_one_account_to_two_groups_both_apply(tmp_path, monkeypatch):
+    """Each member insert held the account's row FOR KEY SHARE and the resync
+    after it asked FOR UPDATE: with both inserts in before either resync,
+    Postgres aborted one push as a deadlock, a 500 to the client."""
+    import threading
+
+    from api.services import scim as scim_service
+
+    settings, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    principal = _principal("directory")
+    assert _create_user(client, token, "hal").status_code == 201
+    ids = [_create_group(client, token, name).json()["id"] for name in ("acme-ops", "beta-ops")]
+
+    real_resync = scim_service._resync
+    both_inserted = threading.Barrier(2, timeout=3)
+
+    def _resync_once_both_inserted(*args, **kwargs):
+        # Before the fix both pushes reach this point holding their insert;
+        # after it the second waits for the first's commit, and the barrier
+        # times out instead.
+        try:
+            both_inserted.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real_resync(*args, **kwargs)
+
+    monkeypatch.setattr(scim_service, "_resync", _resync_once_both_inserted)
+    errors: list[str] = []
+
+    def _add(group_id: str) -> None:
+        operation = {"op": "add", "path": "members", "value": [{"value": "hal"}]}
+        try:
+            scim_service.patch_group(
+                principal, group_id, {"schemas": [PATCH], "Operations": [operation]}, audit=None
+            )
+        except Exception as exc:  # noqa: BLE001 - the assertion reports it
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=_add, args=(group_id,)) for group_id in ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert errors == []
+    assert _memberships("hal") == {acme: ("operator", "idp"), beta: ("operator", "idp")}
+
+
+def test_a_transaction_postgres_aborts_for_a_concurrent_one_is_a_retryable_503(
+    tmp_path, monkeypatch
+):
+    from sqlalchemy.exc import OperationalError
+
+    from api.services import scim as scim_service
+
+    _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    assert _create_user(client, token, "hal").status_code == 201
+
+    class _Deadlock(Exception):
+        sqlstate = "40P01"
+
+    def _aborted(*args, **kwargs):
+        raise OperationalError("SELECT ... FOR UPDATE", {}, _Deadlock("deadlock detected"))
+
+    monkeypatch.setattr(scim_service, "_resync", _aborted)
+    response = _create_group(client, token, "acme-ops", members=["hal"])
+    assert response.status_code == 503, response.text
+    assert response.headers["Retry-After"] == "1"
+    assert response.json()["schemas"] == [scim_service.SCHEMA_ERROR]
+    # Nothing was applied: the directory's retry starts clean.
+    assert client.get(
+        "/scim/v2/Groups", headers=bearer(token), params={"filter": 'displayName eq "acme-ops"'}
+    ).json()["totalResults"] == 0
+
+
+def test_a_person_s_disable_racing_a_push_stays_the_person_s(tmp_path, monkeypatch):
+    """The push now locks the account before it writes; a person's disable
+    that read the row before the push's IdP-disable committed wrote
+    ``disabled_at`` only, leaving ``disabled_source = 'idp'`` — and the next
+    grant re-enabled an account a person had locked."""
+    import threading
+    import time
+
+    from api.services import scim as scim_service
+
+    _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    principal = _principal("directory")
+    assert _create_user(client, token, "gus").status_code == 201
+    group_id = _create_group(client, token, "acme-ops", members=["gus"]).json()["id"]
+    assert _account("gus").disabled_at is None
+
+    real_resync = scim_service._resync
+    locked = threading.Event()
+    go = threading.Event()
+
+    def _held(*args, **kwargs):
+        locked.set()
+        go.wait(10)
+        return real_resync(*args, **kwargs)
+
+    monkeypatch.setattr(scim_service, "_resync", _held)
+    remove = {"op": "remove", "path": "members", "value": [{"value": "gus"}]}
+    push = threading.Thread(
+        target=scim_service.patch_group,
+        args=(principal, group_id, {"schemas": [PATCH], "Operations": [remove]}),
+        kwargs={"audit": None},
+    )
+    push.start()
+    assert locked.wait(10)
+    person = threading.Thread(target=users_service.set_disabled, args=("gus", True))
+    person.start()
+    time.sleep(0.5)
+    go.set()
+    push.join(20)
+    person.join(20)
+    assert _account("gus").disabled_at is not None
+    assert _account("gus").disabled_source is None
+
+    monkeypatch.setattr(scim_service, "_resync", real_resync)
+    add = {"op": "add", "path": "members", "value": [{"value": "gus"}]}
+    assert _patch(client, token, f"/scim/v2/Groups/{group_id}", add).status_code == 200
+    assert _account("gus").disabled_at is not None

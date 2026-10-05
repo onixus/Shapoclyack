@@ -34,7 +34,9 @@ Rules carrying the security value:
   rule an SSO login in authoritative mode applies. A freshly created SCIM user
   therefore cannot sign in until a group grants it something; without that it
   would fall back to the ``default`` tenant with the default role, which is
-  access no mapping gave it.
+  access no mapping gave it. Likewise an account a push leaves in no tenant
+  where the installation places accounts in tenants, even by a token that may
+  not manage it otherwise (``idp_sync`` explains why).
 
 Accounts created here sign in through SSO: the first login whose ``sub``
 equals the ``externalId`` stored here, or whose verified address equals the
@@ -45,11 +47,25 @@ token that created it, or a ``grant_platform_admin`` one, may change them.
 
 What a group grants is held to the token that **created** it (its binding,
 and ``admin`` only from a ``grant_platform_admin`` token), whatever token's
-change triggers the resync and however the name is mapped later; and a group
+change triggers the resync and however the name is mapped later — and what
+it grants one member, to the token that **added** that member as well; and a group
 mapped to ``admin`` is a ``grant_platform_admin`` token's alone to see or
 change. Without both, a plain token could plant a member for the next
 admin-capable resync to promote, and a tenant-bound token could push a group
-under a name not mapped yet and collect what it was mapped to afterwards.
+under a name not mapped yet and collect what it was mapped to afterwards, or
+add its own account to a group an ``all_tenants`` token created and collect
+the same.
+
+With **nothing mapped** (``OCTO_OIDC_ROLE_MAP`` and ``OCTO_IDP_GROUP_MAP``
+both empty) groups are stored and change nothing — the rule an SSO login
+applies (``idp_sync.is_authoritative``): every account would otherwise be "in
+no mapped group" and disabled. ``active`` still works, so a directory
+connected only for the account lifecycle can deactivate and reactivate.
+
+Two pushes touching one account at once lock its ``users`` row before either
+writes a group member, in username order; a deadlock or serialization failure
+Postgres reports anyway is :class:`ScimBusy` — a retryable ``503`` rather than
+a ``500``.
 """
 
 from __future__ import annotations
@@ -59,10 +75,12 @@ import re
 import secrets
 import urllib.parse
 from datetime import UTC, datetime
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import aliased
 
 from api.db import models
 from api.db.engine import get_session
@@ -91,6 +109,10 @@ _FILTER_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9._:-]*)\s+eq\s+"((?:[^"\\]|\\.)
 _MEMBER_PATH_RE = re.compile(r'^members\s*\[\s*value\s+eq\s+"((?:[^"\\]|\\.)*)"\s*\]$', re.I)
 _EMAIL_PATH_RE = re.compile(r"^emails(\[.*\])?(\.value)?$", re.I)
 
+#: SQLSTATEs of a transaction Postgres aborted for a concurrent one: deadlock
+#: detected and serialization failure. Sending the request again is the remedy.
+_RETRYABLE_SQLSTATES = frozenset({"40P01", "40001"})
+
 _settings: Settings | None = None
 
 
@@ -106,6 +128,10 @@ class ScimConflict(ValueError):
     """A ``userName`` or ``displayName`` already taken: ``409 uniqueness``."""
 
 
+class ScimBusy(RuntimeError):
+    """Postgres aborted the change for a concurrent one: ``503``, retry it."""
+
+
 def configure(settings: Settings) -> None:
     global _settings
     _settings = settings
@@ -118,6 +144,22 @@ def _require_settings() -> Settings:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+@contextmanager
+def _session(settings: Settings) -> Iterator[Any]:
+    """``get_session``, with a transaction Postgres aborted for a concurrent
+    one — the commit included — answered as :class:`ScimBusy`."""
+    try:
+        with get_session(settings.postgres_url) as session:
+            yield session
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) not in _RETRYABLE_SQLSTATES:
+            raise
+        logger.info("SCIM change aborted by Postgres (%s); the client retries", exc.orig.sqlstate)
+        raise ScimBusy(
+            "a concurrent change to the same account won; send the request again"
+        ) from exc
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -358,6 +400,22 @@ def _token_cap(token: models.ScimToken | None) -> idp_sync.SyncScope:
     )
 
 
+def _narrower(first: idp_sync.SyncScope, second: idp_sync.SyncScope) -> idp_sync.SyncScope:
+    """What both scopes allow."""
+    if first.tenant_ids is None:
+        tenant_ids = second.tenant_ids
+    elif second.tenant_ids is None:
+        tenant_ids = first.tenant_ids
+    else:
+        tenant_ids = first.tenant_ids & second.tenant_ids
+    return idp_sync.SyncScope(
+        tenant_ids=tenant_ids,
+        manage_role=first.manage_role and second.manage_role,
+        manage_active=first.manage_active and second.manage_active,
+        allow_admin=first.allow_admin and second.allow_admin,
+    )
+
+
 def _groups_of(session, username: str) -> dict[str, idp_sync.SyncScope]:
     """``{group name: what it may grant}`` for one account's SCIM groups.
 
@@ -366,15 +424,21 @@ def _groups_of(session, username: str) -> dict[str, idp_sync.SyncScope]:
     then. Otherwise a tenant-bound directory could push a group under a name
     nobody had mapped yet, and the operator mapping that name to another
     tenant later — the usual onboarding order — would hand that tenant to
-    whoever it had put in the group.
+    whoever it had put in the group. Nor, to this member, more than the token
+    that added the member could: a tenant-bound token adding its own account
+    to an ``all_tenants`` token's group would otherwise collect what that
+    group grants beyond its tenants, now or after a remap or a rename.
     """
+    creator = aliased(models.ScimToken)
+    adder = aliased(models.ScimToken)
     rows = session.execute(
-        select(models.ScimGroup.display_name, models.ScimToken)
+        select(models.ScimGroup.display_name, creator, adder)
         .join(models.ScimGroupMember, models.ScimGroupMember.group_id == models.ScimGroup.group_id)
-        .outerjoin(models.ScimToken, models.ScimToken.token_id == models.ScimGroup.scim_token_id)
+        .outerjoin(creator, creator.token_id == models.ScimGroup.scim_token_id)
+        .outerjoin(adder, adder.token_id == models.ScimGroupMember.added_by_token_id)
         .where(models.ScimGroupMember.username == username)
     ).all()
-    return {name: _token_cap(token) for name, token in rows}
+    return {name: _narrower(_token_cap(made), _token_cap(added)) for name, made, added in rows}
 
 
 def _resync(
@@ -384,7 +448,12 @@ def _resync(
     username: str,
     audit: "audit_service.AuditContext | None",
 ) -> None:
-    """Re-derive one account's access from its SCIM groups, under its row lock."""
+    """Re-derive one account's access from its SCIM groups, under its row lock.
+
+    Not with nothing mapped: see the module docstring.
+    """
+    if not (settings.oidc_role_map or settings.idp_group_map):
+        return
     row = session.get(models.User, username, with_for_update=True)
     if row is None or row.erased_at is not None:
         return
@@ -611,7 +680,7 @@ def list_users(
     settings = _require_settings()
     wanted = _parse_filter(filter, "userName")
     start, size = _page(start_index, count)
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         stmt = select(models.User).where(models.User.erased_at.is_(None))
         clause = _visible_users_clause(principal)
         if clause is not None:
@@ -630,7 +699,7 @@ def list_users(
 
 def get_user(principal: ScimPrincipal, user_id: str) -> dict[str, Any]:
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         row = _load_user(session, principal, user_id)
         return _user_resource(session, settings, principal, row)
 
@@ -659,7 +728,7 @@ def create_user(
         raise ScimError(str(exc), scim_type="invalidValue") from exc
     active = _bool(payload.get("active", True), "active")
     now = _now()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         if session.get(models.User, username) is not None:
             raise ScimConflict(f"userName {username!r} already exists")
         row = models.User(
@@ -717,7 +786,7 @@ def replace_user(
 ) -> dict[str, Any]:
     """``PUT``: the attributes this platform stores are ``emails`` and ``active``."""
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         row = _load_user(session, principal, user_id, lock=True)
         name = payload.get("userName")
         if name is not None and name != row.username:
@@ -773,7 +842,7 @@ def patch_user(
     """
     settings = _require_settings()
     ops = _patch_ops(payload)
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         row = _load_user(session, principal, user_id, lock=True)
         for op in ops:
             kind = str(op["op"]).lower()
@@ -818,7 +887,7 @@ def deactivate_user(
 ) -> None:
     """``DELETE``: deactivate and leave the account — see the module docstring."""
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         row = _load_user(session, principal, user_id, lock=True)
         _set_active(session, settings, principal, row, False, audit)
 
@@ -949,10 +1018,27 @@ def _set_members(
         target |= hidden
     else:
         target = (current | set(add)) - set(remove)
+    # Every account this change touches, locked before a member row is
+    # written, in one order. A member insert holds the account's row FOR KEY
+    # SHARE through the foreign key, and the resync after it asks FOR UPDATE:
+    # two pushes adding one person to two groups each held the first and
+    # waited for the other's second — a deadlock, and a 500 to the client.
+    session.execute(
+        select(models.User.username)
+        .where(models.User.username.in_(sorted(target ^ current)))
+        .order_by(models.User.username)
+        .with_for_update()
+    ).all()
     for username in target - current:
         if not _visible_user(session, principal, session.get(models.User, username)):
             raise ScimError(f"no such user: {username}", scim_type="invalidValue")
-        session.add(models.ScimGroupMember(group_id=group.group_id, username=username))
+        session.add(
+            models.ScimGroupMember(
+                group_id=group.group_id,
+                username=username,
+                added_by_token_id=principal.token_id,
+            )
+        )
     for username in current - target:
         if not _visible_user(session, principal, session.get(models.User, username)):
             raise ScimError(f"no such user: {username}", scim_type="invalidValue")
@@ -988,7 +1074,7 @@ def list_groups(
     settings = _require_settings()
     wanted = _parse_filter(filter, "displayName")
     start, size = _page(start_index, count)
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         stmt = select(models.ScimGroup).order_by(models.ScimGroup.display_name)
         if wanted is not None:
             stmt = stmt.where(models.ScimGroup.display_name == wanted)
@@ -1007,7 +1093,7 @@ def list_groups(
 
 def get_group(principal: ScimPrincipal, group_id: str) -> dict[str, Any]:
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         group = _load_group(session, settings, principal, group_id)
         return _group_resource(session, settings, principal, group)
 
@@ -1024,7 +1110,7 @@ def create_group(
         raise PermissionError(f"this token may not manage a group named {name!r}")
     members = _member_ids(payload.get("members"))
     now = _now()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         if (
             session.execute(
                 select(models.ScimGroup.group_id).where(models.ScimGroup.display_name == name)
@@ -1110,7 +1196,7 @@ def replace_group(
     settings = _require_settings()
     name = _display_name(payload.get("displayName"))
     members = _member_ids(payload.get("members"))
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         group = _load_group(session, settings, principal, group_id, lock=True)
         _apply_group_change(
             session, settings, principal, group, name=name, replace=members, audit=audit
@@ -1127,7 +1213,7 @@ def patch_group(
 ) -> dict[str, Any]:
     settings = _require_settings()
     ops = _patch_ops(payload)
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         group = _load_group(session, settings, principal, group_id, lock=True)
         for op in ops:
             kind = str(op["op"]).lower()
@@ -1214,7 +1300,7 @@ def delete_group(
 ) -> None:
     """Delete the group; each former member's access is re-derived without it."""
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         group = _load_group(session, settings, principal, group_id, lock=True)
         members = sorted(
             session.execute(
@@ -1347,5 +1433,5 @@ def schemas() -> dict[str, Any]:
 
 def reset_for_tests() -> None:
     settings = _require_settings()
-    with get_session(settings.postgres_url) as session:
+    with _session(settings) as session:
         session.query(models.ScimGroup).delete()

@@ -33,6 +33,16 @@ Decisions worth stating:
 * **No mapped group means no access.** The account is disabled with
   ``disabled_source = 'idp'``, and re-enabled when a mapped group comes back.
   Never one a person disabled (``NULL``) or a SCIM client did (``scim``).
+* **No tenant means no access either, where the installation places accounts
+  in tenants** (``OCTO_IDP_GROUP_MAP`` or ``OCTO_OIDC_TENANT_CLAIM`` set). An
+  account with no membership falls back to the ``default`` tenant with its
+  global role (``memberships.resolve_tenant``) — the pre-P0 rule a
+  single-tenant installation lives by. Here it would turn a revocation into a
+  grant: out of ``acme-ops`` but still in a group mapped to a global role, the
+  person would land in ``default``, which no mapping gave them. So such an
+  account is disabled as well, unless it is a platform ``admin`` (whom no
+  tenant confines). A group mapped to a global role keeps nobody in a tenant;
+  an installation that means ``default`` maps it in ``OCTO_IDP_GROUP_MAP``.
 * **Break-glass accounts are not touched**, at all (#315): the emergency door
   is for the day the IdP is the thing that is wrong.
 * **A reduction ends the sessions** (#314): a removed or changed membership, a
@@ -140,6 +150,34 @@ def is_authoritative(settings: Settings) -> bool:
         and settings.oidc_role_claim.strip()
         and (settings.oidc_role_map or settings.idp_group_map)
     )
+
+
+def places_tenants(settings: Settings) -> bool:
+    """Whether this installation places accounts in tenants through the IdP.
+
+    Then an account left with no membership is not let into the ``default``
+    tenant by the pre-P0 fallback — see the module docstring.
+    """
+    return bool(settings.idp_group_map or settings.oidc_tenant_claim.strip())
+
+
+def _unplaced(settings: Settings, role: str, tenant_ids: Iterable[str]) -> bool:
+    """An account that only the ``default`` fallback would let in anywhere."""
+    return places_tenants(settings) and role != "admin" and not set(tenant_ids)
+
+
+def grants_access(session, settings: Settings, groups: Iterable[str], scope: SyncScope) -> bool:
+    """Whether ``groups`` alone would leave a new account enabled.
+
+    What JIT provisioning asks before it creates an account the resync would
+    disable at once.
+    """
+    groups = sorted({str(group) for group in groups})
+    if not mapped_groups(settings, groups, scope):
+        return False
+    desired, _ = _desired_memberships(session, settings, groups, scope)
+    role = desired_role(settings, groups, allow_admin=scope.allow_admin)
+    return not _unplaced(settings, role, desired)
 
 
 def mapped_groups(
@@ -399,38 +437,41 @@ def reconcile(
             )
             row.role = role
 
+    remaining = (set(held) - set(result.revoked)) | set(result.granted)
+    unplaced = _unplaced(settings, row.role, remaining)
+    has_mapped = bool(mapped_groups(settings, groups, scope, caps))
     if scope.manage_active:
-        has_mapped = bool(mapped_groups(settings, groups, scope, caps))
-        if not has_mapped and row.disabled_at is None:
-            row.disabled_at = _now()
-            row.disabled_source = DISABLED_BY_IDP
-            result.disabled = True
-            audit_service.record(
+        if row.disabled_at is None and (not has_mapped or unplaced):
+            _disable(
                 session,
                 audit,
-                action=audit_service.ACTION_USER_DISABLE,
-                resource_type="user",
-                resource_id=username,
-                before={"disabled": False},
-                after={
-                    "disabled": True,
-                    "source": SOURCE_IDP,
-                    "reason": "in no mapped IdP group",
-                },
+                row,
+                result,
+                "in no mapped IdP group" if not has_mapped else "in no tenant",
             )
-        elif has_mapped and row.disabled_at is not None and row.disabled_source == DISABLED_BY_IDP:
-            row.disabled_at = None
-            row.disabled_source = None
-            result.enabled = True
-            audit_service.record(
-                session,
-                audit,
-                action=audit_service.ACTION_USER_DISABLE,
-                resource_type="user",
-                resource_id=username,
-                before={"disabled": True},
-                after={"disabled": False, "source": SOURCE_IDP},
-            )
+        elif (
+            has_mapped
+            and not unplaced
+            and row.disabled_at is not None
+            and row.disabled_source == DISABLED_BY_IDP
+        ):
+            _enable(session, audit, row, result)
+    elif row.disabled_at is None and unplaced and result.revoked:
+        # A scope that may not manage the account's lifecycle (a SCIM token
+        # held to some tenants, of an account it does not own) still may not
+        # leave it with no tenant and enabled: the revocation it just made
+        # would land the person in ``default``.
+        _disable(session, audit, row, result, "in no tenant")
+    elif (
+        row.disabled_at is not None
+        and row.disabled_source == DISABLED_BY_IDP
+        and result.granted
+        and has_mapped
+        and not unplaced
+    ):
+        # ...and the grant that places it again undoes that disable — the
+        # IdP's own, which any grant is meant to lift.
+        _enable(session, audit, row, result)
 
     if result.reduced or result.enabled:
         row.updated_at = _now()
@@ -446,6 +487,36 @@ def reconcile(
     elif result.granted:
         session.flush()
     return result
+
+
+def _disable(session, audit, row: models.User, result: SyncResult, reason: str) -> None:
+    row.disabled_at = _now()
+    row.disabled_source = DISABLED_BY_IDP
+    result.disabled = True
+    audit_service.record(
+        session,
+        audit,
+        action=audit_service.ACTION_USER_DISABLE,
+        resource_type="user",
+        resource_id=row.username,
+        before={"disabled": False},
+        after={"disabled": True, "source": SOURCE_IDP, "reason": reason},
+    )
+
+
+def _enable(session, audit, row: models.User, result: SyncResult) -> None:
+    row.disabled_at = None
+    row.disabled_source = None
+    result.enabled = True
+    audit_service.record(
+        session,
+        audit,
+        action=audit_service.ACTION_USER_DISABLE,
+        resource_type="user",
+        resource_id=row.username,
+        before={"disabled": True},
+        after={"disabled": False, "source": SOURCE_IDP},
+    )
 
 
 def describe(result: SyncResult) -> dict[str, Any]:

@@ -406,7 +406,11 @@ def set_disabled(
 ) -> dict[str, Any] | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        row = session.get(models.User, username)
+        # Locked: a resync that disables the account for the IdP between this
+        # read and the write would otherwise keep ``disabled_source = 'idp'``
+        # under the person's disable — the column is unchanged from what was
+        # read, so the UPDATE leaves it out — and a later grant re-enables it.
+        row = session.get(models.User, username, with_for_update=True)
         if row is None:
             return None
         _refuse_erased(row)
@@ -553,7 +557,8 @@ def link_or_provision_sso_user(
     does; in the same transaction, because a reconcile that disables the
     account has to commit even though the login it ran for is then refused.
     JIT provisioning in that mode creates no account for an identity in no
-    mapped group, and grants no ``tenant_id`` membership of its own: the group
+    mapped group (or, where accounts are placed in tenants, in none that
+    places it in one), and grants no ``tenant_id`` membership of its own: the group
     map is the only source of memberships. ``groups`` None means the ID token
     did not list them (the claim is missing, or Entra ID's overage replaced
     it): the login then changes nothing — "not listed" is not "in no group",
@@ -675,12 +680,14 @@ def link_or_provision_sso_user(
                     "the ID token does not list this identity's groups; an account "
                     "cannot be provisioned from it"
                 )
-            elif authoritative and not idp_sync.mapped_groups(
-                settings_local, groups, idp_sync.LOGIN_SCOPE
+            elif authoritative and not idp_sync.grants_access(
+                session, settings_local, groups, idp_sync.LOGIN_SCOPE
             ):
                 # Provisioning it only for the resync to disable it at once
                 # would leave an account behind for every person the IdP
-                # authenticates and this installation was never meant to see.
+                # authenticates and this installation was never meant to see —
+                # in no mapped group, or, where accounts are placed in tenants,
+                # in none that places it in one.
                 refusal = "this identity is in no group mapped to console access"
 
         if outcome is None and refusal is None:
@@ -743,8 +750,11 @@ def link_or_provision_sso_user(
                 # the installation configured: there is no granter in the
                 # tenant whose ceiling it could be held to.
                 granted_by=None,
-                # The IdP's grant, so a later authoritative resync owns it.
-                source=idp_sync.SOURCE_IDP,
+                # Not the resync's: it never reads the tenant claim, so an
+                # ``idp`` row would be revoked by the first login after
+                # OCTO_IDP_AUTHORITATIVE is switched on — the same reason every
+                # row written before migration 0076 is local.
+                source=idp_sync.SOURCE_LOCAL,
             )
         except ValueError:
             # An unknown tenant in the claim is a mapping mistake, not a reason

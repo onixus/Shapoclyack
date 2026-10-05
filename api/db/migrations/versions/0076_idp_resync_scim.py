@@ -16,11 +16,16 @@ schema, and nothing else:
     including the ones JIT provisioning wrote before this revision, because
     nothing recorded where they came from and guessing from ``created_by``
     would let the first resync after the upgrade remove grants somebody may
-    have re-granted by hand since. The server default makes an old replica's
-    insert ``local`` too, which is the direction a rolling deploy must fail in.
+    have re-granted by hand since. JIT provisioning outside authoritative mode
+    keeps writing ``local`` after it too: it is the same tenant-claim grant,
+    and an ``idp`` one would be revoked by the first login after the switch
+    while the claim it came from is no longer read. The server default makes
+    an old replica's insert ``local`` too, which is the direction a rolling
+    deploy must fail in.
 ``users.disabled_source``
     NULL (a console administrator), ``idp`` (the resync found the account in
-    no mapped group) or ``scim`` (the provisioning client set ``active:
+    no mapped group, or left it in no tenant where the installation places
+    accounts in tenants) or ``scim`` (the provisioning client set ``active:
     false``). The IdP re-enables only what it disabled. A replica still on the
     previous release does not clear it when an administrator toggles the
     account; the only consequence is that an account the IdP disabled, which
@@ -35,7 +40,9 @@ schema, and nothing else:
     so one subject never matches two accounts.
 ``scim_tokens``, ``scim_groups``, ``scim_group_members``
     The provisioning credential (its own type — see the model), and the
-    groups a SCIM client pushes with their members. No ``tenant_id`` column on
+    groups a SCIM client pushes with their members — each member with the token
+    that added it, since a member grants no more than that token could
+    either. No ``tenant_id`` column on
     any of them, so none is a row-security table: SCIM is installation-wide
     and runs in the system scope, holding a token to its tenants in the
     service (``api/services/scim.py``).
@@ -121,6 +128,9 @@ def upgrade() -> None:
         "scim_group_members",
         sa.Column("group_id", sa.String(), nullable=False),
         sa.Column("username", sa.String(), nullable=False),
+        # The token that added the member. What the membership grants is held
+        # to it as well as to the group's creator.
+        sa.Column("added_by_token_id", sa.String(), nullable=True),
         sa.ForeignKeyConstraint(["group_id"], ["scim_groups.group_id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["username"], ["users.username"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("group_id", "username"),

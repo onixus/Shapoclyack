@@ -1,5 +1,5 @@
 import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, getAccessToken, setAccessToken, setActiveTenant } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
@@ -218,5 +218,76 @@ describe("login with a second factor (#315)", () => {
     // A session, not a challenge — it just cannot do anything but enrol.
     expect(step).toEqual({ status: "signed-in", mfaPending: true });
     expect(getAccessToken()).toBe("pending.jwt");
+  });
+});
+
+describe("confinement that starts mid-session (#504)", () => {
+  // Since #504 a grant or a role edit confines a session that is already open:
+  // the API answers its next request with the enrolment 403. The console read
+  // `/auth/me` only on hydrate and on a tenant switch, so the banner that
+  // explains the wall of 403s did not appear until a reload.
+  const ENROLMENT_403 = {
+    status: 403,
+    data: {
+      detail:
+        "This installation requires multi-factor authentication for your account's role " +
+        "or for what it may do in a tenant. Enrol an authenticator with POST " +
+        "/api/auth/mfa/totp/setup before using the rest of the API.",
+    },
+  };
+
+  it("re-reads the principal once for a burst of enrolment refusals", async () => {
+    setAccessToken("open.session");
+    useAuthStore.setState({
+      user: { ...ME, role: "viewer", is_platform_admin: false, mfa_pending: false },
+      hydrated: true,
+      loading: false,
+    });
+    installTransport({
+      "/runs": [ENROLMENT_403],
+      "/findings": [ENROLMENT_403],
+      "/auth/me": [{ status: 200, data: { ...ME, role: "viewer", mfa_pending: true } }],
+    });
+
+    await Promise.allSettled([api.get("/runs"), api.get("/findings"), api.get("/runs")]);
+    await vi.waitFor(() => expect(useAuthStore.getState().user?.mfa_pending).toBe(true));
+    expect(seen.filter((call) => call.url === "/auth/me")).toHaveLength(1);
+
+    // Already confined: the polls that keep failing ask nothing more.
+    await Promise.allSettled([api.get("/runs")]);
+    expect(seen.filter((call) => call.url === "/auth/me")).toHaveLength(1);
+  });
+
+  it("re-reads on the security-key confinement too, and not on any other 403", async () => {
+    setAccessToken("open.session");
+    useAuthStore.setState({
+      user: { ...ME, role: "viewer", is_platform_admin: false },
+      hydrated: true,
+      loading: false,
+    });
+    installTransport({
+      "/scans": [{ status: 403, data: { detail: "Role 'operator' or higher required" } }],
+      "/runs": [
+        {
+          status: 403,
+          data: {
+            detail:
+              "This installation requires a security key (WebAuthn) for your account's role " +
+              "or for what it may do in a tenant.",
+          },
+        },
+      ],
+      "/auth/me": [
+        { status: 200, data: { ...ME, role: "viewer", phishing_resistant_pending: true } },
+      ],
+    });
+
+    await Promise.allSettled([api.get("/scans")]);
+    expect(seen.filter((call) => call.url === "/auth/me")).toHaveLength(0);
+
+    await Promise.allSettled([api.get("/runs")]);
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().user?.phishing_resistant_pending).toBe(true),
+    );
   });
 });

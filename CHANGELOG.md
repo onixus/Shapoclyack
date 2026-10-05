@@ -45,7 +45,16 @@ All notable changes to Shapoclyack are documented in this file.
   address the IdP verified — never by username; until that login only the
   creating token or a `grant_platform_admin` token may change those two, and
   a tenant-bound token manages no account whose global role is above
-  `viewer`. Revoking a token leaves its groups' grants in place. Every change is
+  `viewer`. A member grants no more than the token that added it could
+  either. Where the installation places accounts in tenants
+  (`OCTO_IDP_GROUP_MAP` or `OCTO_OIDC_TENANT_CLAIM` set), the resync and SCIM
+  disable a non-admin account they leave in **no tenant** instead of letting
+  the pre-P0 fallback put it in `default` with its global role; map `default`
+  explicitly to keep people there. JIT's tenant-claim membership stays
+  `local`, so switching the mode on does not revoke it. With both maps empty
+  SCIM pushes change no access (`active` still works), and a push Postgres
+  aborts for a concurrent one is a retryable `503`, not a deadlock `500`.
+  Revoking a token leaves its groups' grants in place. Every change is
   audited (`membership.*`, `user.*` with `"source": "idp"`, new
   `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
   Migration `0076_idp_resync_scim` (expand-only). Rollout order:
@@ -55,11 +64,15 @@ All notable changes to Shapoclyack are documented in this file.
   ([#365](https://github.com/onixus/Shapoclyack/issues/365)).** Jobs carry a
   `priority` (`-100..100`, default `0`) and every claim hands out the highest
   first, then the oldest; set it at `POST /api/jobs` or move a queued job with
-  `PUT /api/jobs/{id}/priority`. Raising above 0 — or moving a job somebody
-  raised — needs the new `scan.priority.raise` permission (tenant `admin`,
-  platform admin); lowering is the operator's. Per tenant,
+  `PUT /api/jobs/{id}/priority`. Without the new `scan.priority.raise`
+  permission (tenant `admin`, platform admin) the operator may only lower a
+  job of its own, downwards from at or below 0; raising one, moving somebody
+  else's, moving one somebody raised and raising a demoted one back all need
+  it. The claim order is served by the new index `ix_jobs_claim_priority`
+  rather than a sort of the tenant's queue on every poll. Per tenant,
   `PUT /api/tenants/{id}/queue-limits` (platform admin; readable with
-  `tenant.quota.read`) sets `max_concurrent_scans`, enforced at claim time for
+  `tenant.quota.read`; both fields required, `null` for unlimited) sets
+  `max_concurrent_scans`, enforced at claim time for
   sensor claims, the NATS claim of an offered job and local scans alike under a
   per-tenant advisory lock so two replicas cannot both take the last slot, and
   `max_queued_scans`, enforced at admission with `429` and `Retry-After`;
@@ -551,6 +564,13 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
 
 ### Changed
 
+- **`PUT /api/tenants/{id}/quota` requires both limits.** `max_assets` and
+  `max_scans_per_month` defaulted to `null` — unlimited — when omitted, so a
+  `PUT` naming one silently lifted the other, despite the schema saying the
+  field must be spelled out. An omitted one is now `422`; `null` is still how
+  unlimited is written, and `note` stays optional. The console always sent
+  both. Found reviewing #365, whose `queue-limits` had copied the shape.
+
 - **One post-publication sequence for local and sensor runs
   ([#454](https://github.com/onixus/Shapoclyack/issues/454)).** What a finished
   run feeds — scope-denial journal, assets, findings, service fingerprints,
@@ -793,7 +813,16 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
   /api/users/{u}/sessions/revoke-all`. A permission variable made only of
   unknown keys refuses to start instead of reading as `none`. The requirement
-  is computed once per request.
+  is computed once per request. Review round 3: `GET
+  /api/agent/deployment-command` (the dialog's placeholder snippets) is now
+  readable by a holder of `tenant.credential.manage` as well as by an
+  operator, and the console shows the **Sensors** page to a `token-admin` with
+  the **Deploy Agent** dialog and without the fleet list (`GET /api/agents`
+  stays operator) — before, the mint it was moved for was reachable through
+  the API only. The SSH push refuses below the admin rank before it asks for
+  a step-up, not after. The console notices a confinement that starts
+  mid-session: the first enrolment `403` re-reads `/api/auth/me` once, so the
+  banner appears without a reload.
 
 - **Endpoint Agent (Lariska) builds are written by the platform admin only
   ([#510](https://github.com/onixus/Shapoclyack/issues/510)).** Builds are

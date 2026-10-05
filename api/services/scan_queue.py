@@ -147,24 +147,37 @@ def claim_order() -> tuple:
     return (models.Job.priority.desc(), models.Job.queued_at, models.Job.job_id)
 
 
-def check_priority(priority: int, *, may_raise: bool, current: int = PRIORITY_DEFAULT) -> int:
+def check_priority(
+    priority: int, *, may_raise: bool, current: int = PRIORITY_DEFAULT, own: bool = True
+) -> int:
     """Validate a requested priority against its bounds and the caller's authority.
 
-    Above the default needs ``scan.priority.raise``, and so does moving a job
-    that someone who held it already put above the default: otherwise an
-    operator could undo the admin's decision by setting it back to 0, which is
-    the same decision about everybody else's scans in the other direction.
-    Anything at or below 0 on a job at or below 0 is the operator's own
-    business — making room for somebody else's scan is not jumping the queue.
+    Without ``scan.priority.raise`` the one move left is *lowering a scan of
+    one's own*: ``own``, at or below the default, and no higher than where it
+    is now — which for a new scan (``current`` 0) is anything at or below 0.
+    Everything else needs the permission, because the order is relative and
+    every move is a decision about the other scans: pushing somebody else's
+    scan back hands out one's own earlier exactly as raising it would; moving
+    a scan somebody raised undoes a decision only the permission could make;
+    and putting a demoted scan back up — to 0 included — undoes whoever
+    demoted it, which the job row does not record, so it is never assumed to
+    have been the caller.
     """
     if not PRIORITY_MIN <= priority <= PRIORITY_MAX:
         raise ValueError(
             f"priority must be between {PRIORITY_MIN} and {PRIORITY_MAX}, got {priority}"
         )
-    if (priority > PRIORITY_DEFAULT or current > PRIORITY_DEFAULT) and not may_raise:
+    if may_raise:
+        return priority
+    if not own:
         raise PriorityNotPermitted(
-            "raising a scan above the default priority, or moving one that was "
-            "raised, needs the scan.priority.raise permission in this tenant"
+            "moving somebody else's scan in the queue needs the scan.priority.raise "
+            "permission in this tenant"
+        )
+    if priority > current or current > PRIORITY_DEFAULT:
+        raise PriorityNotPermitted(
+            "raising a scan, or moving one that was raised above the default, needs "
+            "the scan.priority.raise permission in this tenant"
         )
     return priority
 
@@ -445,7 +458,12 @@ def set_priority(
                 f"Job {job_id} is {row.status}; only a queued job can change its priority"
             )
         before = row.priority or PRIORITY_DEFAULT
-        check_priority(priority, may_raise=may_raise, current=before)
+        check_priority(
+            priority,
+            may_raise=may_raise,
+            current=before,
+            own=bool(row.requested_by) and row.requested_by == username,
+        )
         if before != priority:
             row.priority = priority
             audit_service.record(
