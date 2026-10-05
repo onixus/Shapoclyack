@@ -83,6 +83,8 @@ def reset_for_tests() -> None:
 
 
 def _comparison_key(item: Any) -> str:
+    if getattr(item, "installation_identity", None):
+        return item.installation_identity
     raw = "|".join(
         [
             (item.name or "").strip().lower(),
@@ -96,11 +98,109 @@ def _comparison_key(item: Any) -> str:
 
 def _canonical_digest(request: EndpointInventorySnapshotRequest) -> str:
     payload = request.model_dump(mode="json")
+    # Preserve deployed v1 digests after adding nullable v2 fields: an old
+    # spooled snapshot must still replay against the exact original hash.
+    if request.schema_version == 1:
+        payload.pop("sources", None)
+        for item in payload["software"]:
+            for name in _IDENTITY_FIELDS:
+                item.pop(name, None)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _validate_bounds(settings: Settings, request: EndpointInventorySnapshotRequest) -> None:
+_IDENTITY_FIELDS = (
+    "product_identity",
+    "installation_identity",
+    "package_id",
+    "scope",
+    "install_instance_id",
+)
+_SOFTWARE_FIELDS = (
+    "name",
+    "version",
+    "publisher",
+    "architecture",
+    "source",
+    "install_location",
+    *_IDENTITY_FIELDS,
+)
+
+
+def _software_payload(item: Any) -> dict[str, Any]:
+    return {name: getattr(item, name, None) for name in _SOFTWARE_FIELDS}
+
+
+def _has_v2_baseline(previous_rows, previous_states, previous_schema):
+    # A downgraded receipt still carries the last v2 observations. Its wire
+    # schema cannot make a later v1 receipt authoritative over that baseline.
+    return (
+        previous_schema == 2
+        or any(getattr(row, "installation_identity", None) for row in previous_rows)
+        or any(state.get("status") for state in previous_states)
+    )
+
+
+def _effective_inventory(request, previous_rows, previous_states, previous_schema):
+    """Only a complete source replaces its last known inventory.
+
+    Failed, partial, omitted and downgraded sources retain their last accepted
+    observations. A source's last-complete timestamp is computed by the API,
+    never taken on faith from the agent's claim.
+    """
+    if request.schema_version == 1 and not _has_v2_baseline(
+        previous_rows, previous_states, previous_schema
+    ):
+        return list(request.software), []
+    previous_by_source: dict[str, list[Any]] = {}
+    for row in previous_rows:
+        previous_by_source.setdefault(row.source, []).append(row)
+    old_states = {state["source"]: state for state in previous_states}
+    reported = {state.source: state.model_dump() for state in request.sources}
+    observed: dict[str, list[Any]] = {}
+    for item in request.software:
+        observed.setdefault(item.source, []).append(item)
+    effective = []
+    states = []
+    for source in sorted(set(previous_by_source) | set(old_states) | set(reported)):
+        state = reported.get(source)
+        if state is None:
+            state = {
+                "source": source,
+                "status": "failed",
+                "collected_at": request.collected_at,
+                "collector_version": request.agent_version,
+                "diagnostic_code": "schema_downgrade"
+                if request.schema_version == 1
+                else "source_not_reported",
+            }
+        state["last_complete_at"] = (
+            state["collected_at"]
+            if state["status"] == "complete"
+            else old_states.get(source, {}).get("last_complete_at")
+        )
+        if (
+            state["last_complete_at"] is None
+            and source in previous_by_source
+            and previous_schema == 1
+        ):
+            # A legacy full snapshot is authoritative, but has no per-source
+            # timestamp. The caller supplies its snapshot's collection time.
+            state["last_complete_at"] = old_states.get(source, {}).get(
+                "legacy_collected_at"
+            )
+        effective.extend(
+            observed.get(source, [])
+            if state["status"] == "complete"
+            else previous_by_source.get(source, [])
+        )
+        states.append(state)
+    return effective, states
+
+
+def _validate_bounds(
+    settings: Settings, request: EndpointInventorySnapshotRequest
+) -> None:
     if len(request.software) > settings.endpoint_inventory_max_software_items:
         raise PayloadTooLargeError(
             f"software entry count {len(request.software)} exceeds limit "
@@ -122,7 +222,9 @@ def _validate_bounds(settings: Settings, request: EndpointInventorySnapshotReque
             raise ValueError(f"label {key!r} exceeds max string length {max_len}")
     for warning in request.collector_warnings:
         if len(warning) > max_len:
-            raise ValueError(f"collector_warnings entry exceeds max string length {max_len}")
+            raise ValueError(
+                f"collector_warnings entry exceeds max string length {max_len}"
+            )
 
     keys_seen: set[str] = set()
     for item in request.software:
@@ -135,20 +237,31 @@ def _validate_bounds(settings: Settings, request: EndpointInventorySnapshotReque
         keys_seen.add(key)
 
     collected_at = _parse_dt(request.collected_at)
+    for state in request.sources:
+        source_time = _parse_dt(state.collected_at)
+        if source_time > collected_at:
+            raise ValueError("source collected_at is later than snapshot collected_at")
     now = _now()
-    if collected_at > now + timedelta(seconds=settings.endpoint_inventory_max_future_skew_seconds):
+    if collected_at > now + timedelta(
+        seconds=settings.endpoint_inventory_max_future_skew_seconds
+    ):
         raise ValueError("collected_at is too far in the future")
-    if now - collected_at > timedelta(seconds=settings.endpoint_inventory_max_snapshot_age_seconds):
+    if now - collected_at > timedelta(
+        seconds=settings.endpoint_inventory_max_snapshot_age_seconds
+    ):
         raise ValueError("collected_at is older than the maximum accepted snapshot age")
 
 
-def _check_rate_limit(session, settings: Settings, *, tenant_id: str, agent_id: str) -> None:
+def _check_rate_limit(
+    session, settings: Settings, *, tenant_id: str, agent_id: str
+) -> None:
     cutoff = _now() - timedelta(hours=1)
     count = session.execute(
         select(models.EndpointInventorySnapshot.snapshot_id)
         .join(
             models.EndpointDevice,
-            models.EndpointInventorySnapshot.device_id == models.EndpointDevice.device_id,
+            models.EndpointInventorySnapshot.device_id
+            == models.EndpointDevice.device_id,
         )
         .where(
             models.EndpointDevice.tenant_id == tenant_id,
@@ -280,7 +393,9 @@ def ingest_snapshot(
         raise ConflictError("snapshot_id already used by a different tenant")
 
     with get_session(settings.postgres_url) as session:
-        existing_snapshot = session.get(models.EndpointInventorySnapshot, request.snapshot_id)
+        existing_snapshot = session.get(
+            models.EndpointInventorySnapshot, request.snapshot_id
+        )
         if existing_snapshot is not None:
             if existing_snapshot.tenant_id != tenant_id:
                 raise ConflictError("snapshot_id already used by a different tenant")
@@ -293,10 +408,12 @@ def ingest_snapshot(
         _check_rate_limit(session, settings, tenant_id=tenant_id, agent_id=agent_id)
 
         device = session.execute(
-            select(models.EndpointDevice).where(
+            select(models.EndpointDevice)
+            .where(
                 models.EndpointDevice.tenant_id == tenant_id,
                 models.EndpointDevice.agent_id == agent_id,
             )
+            .with_for_update()
         ).scalar_one_or_none()
         is_first_snapshot = device is None or device.latest_snapshot_id is None
         if device is None:
@@ -315,7 +432,8 @@ def ingest_snapshot(
                 last_seen=now,
             )
             session.add(device)
-        else:
+        old_os = (device.os_family, device.os_name, device.os_version, device.os_arch)
+        if not is_first_snapshot:
             device.hostname = request.hostname
             device.os_family = request.os_family
             device.os_name = request.os_name
@@ -326,7 +444,9 @@ def ingest_snapshot(
             device.last_seen = now
         session.flush()
 
-        _upsert_identifiers(session, tenant_id=tenant_id, device=device, identifiers=request.identifiers)
+        _upsert_identifiers(
+            session, tenant_id=tenant_id, device=device, identifiers=request.identifiers
+        )
         _reconcile_asset(
             session,
             tenant_id=tenant_id,
@@ -335,16 +455,69 @@ def ingest_snapshot(
             settings=settings,
         )
 
+        previous_rows: list[Any] = []
+        previous_schema = None
+        previous_snapshot = None
         previous_items: dict[str, str | None] = {}
         previous_name_by_key: dict[str, str] = {}
         if not is_first_snapshot and device.latest_snapshot_id:
-            previous_rows = session.execute(
-                select(models.EndpointSoftwareItem).where(
-                    models.EndpointSoftwareItem.snapshot_id == device.latest_snapshot_id
+            previous_rows = (
+                session.execute(
+                    select(models.EndpointSoftwareItem).where(
+                        models.EndpointSoftwareItem.snapshot_id
+                        == device.latest_snapshot_id
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             previous_items = {row.comparison_key: row.version for row in previous_rows}
-            previous_name_by_key = {row.comparison_key: row.name for row in previous_rows}
+            previous_name_by_key = {
+                row.comparison_key: row.name for row in previous_rows
+            }
+
+        if device.latest_snapshot_id:
+            previous_snapshot = session.get(
+                models.EndpointInventorySnapshot, device.latest_snapshot_id
+            )
+            previous_schema = (
+                previous_snapshot.schema_version if previous_snapshot else None
+            )
+        if previous_snapshot is not None and collected_at < _parse_dt(
+            _iso(previous_snapshot.collected_at)
+        ):
+            raise ValueError(
+                "snapshot collected_at precedes the latest accepted inventory"
+            )
+        old_states = list(device.source_states or [])
+        if not old_states and previous_snapshot is not None:
+            old_states = [
+                {
+                    "source": row.source,
+                    "legacy_collected_at": _iso(previous_snapshot.collected_at),
+                }
+                for row in previous_rows
+            ]
+        last_complete = {
+            state["source"]: state.get("last_complete_at") for state in old_states
+        }
+        for state in request.sources:
+            previous_complete = last_complete.get(state.source)
+            if (
+                state.status == "complete"
+                and previous_complete
+                and _parse_dt(state.collected_at) < _parse_dt(previous_complete)
+            ):
+                raise ValueError(
+                    "source collected_at precedes its last complete inventory"
+                )
+        effective_items, source_states = _effective_inventory(
+            request, previous_rows, old_states, previous_schema
+        )
+        if len(effective_items) > settings.endpoint_inventory_max_software_items:
+            raise PayloadTooLargeError(
+                "effective software entry count exceeds the configured limit"
+            )
 
         snapshot = models.EndpointInventorySnapshot(
             snapshot_id=request.snapshot_id,
@@ -354,7 +527,8 @@ def ingest_snapshot(
             collected_at=collected_at,
             received_at=now,
             payload_digest=digest,
-            software_count=len(request.software),
+            software_count=len(effective_items),
+            source_states=source_states,
             collector_warnings={"warnings": list(request.collector_warnings)},
             response={},
         )
@@ -362,7 +536,7 @@ def ingest_snapshot(
         session.flush()
 
         current_items: dict[str, str | None] = {}
-        for item in request.software:
+        for item in effective_items:
             key = _comparison_key(item)
             current_items[key] = item.version
             session.add(
@@ -371,18 +545,13 @@ def ingest_snapshot(
                     tenant_id=tenant_id,
                     device_id=device.device_id,
                     comparison_key=key,
-                    name=item.name,
-                    version=item.version,
-                    publisher=item.publisher,
-                    architecture=item.architecture,
-                    source=item.source,
-                    install_location=item.install_location,
+                    **_software_payload(item),
                 )
             )
 
         changes = {"installed": 0, "removed": 0, "updated": 0}
-        if not is_first_snapshot:
-            name_by_key = {_comparison_key(item): item.name for item in request.software}
+        if not is_first_snapshot and previous_schema == request.schema_version:
+            name_by_key = {_comparison_key(item): item.name for item in effective_items}
             for key, new_version in current_items.items():
                 if key not in previous_items:
                     changes["installed"] += 1
@@ -432,6 +601,32 @@ def ingest_snapshot(
                     )
 
         device.last_inventory_at = now
+        previous_effective = sorted(
+            (_comparison_key(item), json.dumps(_software_payload(item), sort_keys=True))
+            for item in previous_rows
+        )
+        current_effective = sorted(
+            (_comparison_key(item), json.dumps(_software_payload(item), sort_keys=True))
+            for item in effective_items
+        )
+        inventory_changed = (
+            (
+                request.schema_version == 1
+                and not _has_v2_baseline(previous_rows, old_states, previous_schema)
+            )
+            or previous_effective != current_effective
+            or old_os
+            != (device.os_family, device.os_name, device.os_version, device.os_arch)
+        )
+        # A successful collection is new assessment evidence even when its
+        # packages are unchanged: vendor advisories may have changed since
+        # the previous pass. Degraded-only receipts still avoid re-matching.
+        needs_assessment = inventory_changed or any(
+            state.status == "complete" for state in request.sources
+        )
+        if needs_assessment or not device.software_snapshot_id:
+            device.software_snapshot_id = snapshot.snapshot_id
+        device.source_states = source_states
         device.latest_snapshot_id = snapshot.snapshot_id
 
         if device.asset_id is not None:
@@ -459,14 +654,17 @@ def ingest_snapshot(
     try:
         from api.services import software_match_worker
 
-        software_match_worker.notify()
+        if needs_assessment:
+            software_match_worker.notify()
     except Exception:  # noqa: BLE001 - a nudge is not worth failing a submission
         _log.warning("Could not notify the software match worker", exc_info=True)
 
     metrics_service.ENDPOINT_SOFTWARE_ITEMS.observe(len(request.software))
     for event_type, count in changes.items():
         if count:
-            metrics_service.ENDPOINT_SOFTWARE_CHANGES_TOTAL.labels(event_type).inc(count)
+            metrics_service.ENDPOINT_SOFTWARE_CHANGES_TOTAL.labels(event_type).inc(
+                count
+            )
 
     # Phase S8: publish accepted endpoint inventory summary to NATS (fail-soft)
     if settings.endpoint_nats_events_enabled and settings.nats_url:
@@ -500,7 +698,9 @@ def ingest_snapshot(
     return {**response, "_replay": False}
 
 
-def device_status(last_inventory_at: datetime | None, *, now: datetime | None = None) -> str:
+def device_status(
+    last_inventory_at: datetime | None, *, now: datetime | None = None
+) -> str:
     """Derived endpoint staleness (S9, decision 7).
 
     Kept derived rather than a stored column so a threshold change takes effect
@@ -535,6 +735,7 @@ def _device_to_dict(row: models.EndpointDevice) -> dict[str, Any]:
         "last_seen": _iso(row.last_seen),
         "last_inventory_at": _iso(row.last_inventory_at),
         "latest_snapshot_id": row.latest_snapshot_id,
+        "sources": list(row.source_states or []),
     }
 
 
@@ -543,7 +744,9 @@ def list_devices(
 ) -> list[dict[str, Any]]:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        stmt = select(models.EndpointDevice).where(models.EndpointDevice.tenant_id == tenant_id)
+        stmt = select(models.EndpointDevice).where(
+            models.EndpointDevice.tenant_id == tenant_id
+        )
         if asset_id:
             stmt = stmt.where(models.EndpointDevice.asset_id == asset_id)
         rows = session.execute(stmt).scalars().all()
@@ -555,7 +758,9 @@ def list_devices(
     return items
 
 
-def device_state_counts(session: Any, *, now: datetime, stale_hours: int) -> dict[str, int]:
+def device_state_counts(
+    session: Any, *, now: datetime, stale_hours: int
+) -> dict[str, int]:
     """``{"active": n, "stale": m}`` over every tenant, in one aggregate (#334).
 
     What ``octo_endpoint_devices`` reports, read at scrape time. The rule is
@@ -569,7 +774,10 @@ def device_state_counts(session: Any, *, now: datetime, stale_hours: int) -> dic
     total, stale = session.execute(
         select(
             func.count(),
-            func.coalesce(func.sum(case((or_(last.is_(None), last < stale_before), 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(case((or_(last.is_(None), last < stale_before), 1), else_=0)),
+                0,
+            ),
         ).select_from(models.EndpointDevice)
     ).one()
     return {"active": int(total) - int(stale), "stale": int(stale)}
@@ -606,11 +814,15 @@ def list_snapshots(tenant_id: str, device_id: str) -> list[dict[str, Any]]:
         device = session.get(models.EndpointDevice, device_id)
         if device is None or device.tenant_id != tenant_id:
             return []
-        rows = session.execute(
-            select(models.EndpointInventorySnapshot).where(
-                models.EndpointInventorySnapshot.device_id == device_id
+        rows = (
+            session.execute(
+                select(models.EndpointInventorySnapshot).where(
+                    models.EndpointInventorySnapshot.device_id == device_id
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     items = [
         {
             "snapshot_id": row.snapshot_id,
@@ -619,7 +831,10 @@ def list_snapshots(tenant_id: str, device_id: str) -> list[dict[str, Any]]:
             "collected_at": _iso(row.collected_at),
             "received_at": _iso(row.received_at),
             "software_count": row.software_count,
-            "collector_warnings": list((row.collector_warnings or {}).get("warnings", [])),
+            "collector_warnings": list(
+                (row.collector_warnings or {}).get("warnings", [])
+            ),
+            "sources": list(row.source_states or []),
         }
         for row in rows
     ]
@@ -633,11 +848,15 @@ def list_changes(tenant_id: str, device_id: str) -> list[dict[str, Any]]:
         device = session.get(models.EndpointDevice, device_id)
         if device is None or device.tenant_id != tenant_id:
             return []
-        rows = session.execute(
-            select(models.EndpointSoftwareChange)
-            .where(models.EndpointSoftwareChange.device_id == device_id)
-            .order_by(models.EndpointSoftwareChange.observed_at.desc())
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(models.EndpointSoftwareChange)
+                .where(models.EndpointSoftwareChange.device_id == device_id)
+                .order_by(models.EndpointSoftwareChange.observed_at.desc())
+            )
+            .scalars()
+            .all()
+        )
     return [
         {
             "device_id": row.device_id,
@@ -670,7 +889,8 @@ def list_recent_changes(
             select(models.EndpointSoftwareChange, models.EndpointDevice)
             .join(
                 models.EndpointDevice,
-                models.EndpointDevice.device_id == models.EndpointSoftwareChange.device_id,
+                models.EndpointDevice.device_id
+                == models.EndpointSoftwareChange.device_id,
             )
             .where(models.EndpointSoftwareChange.tenant_id == tenant_id)
             .order_by(models.EndpointSoftwareChange.observed_at.desc())
@@ -699,30 +919,34 @@ def list_software_for_asset(tenant_id: str, asset_id: str) -> list[dict[str, Any
     """Latest snapshot's software for every device linked to ``asset_id``."""
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
-        devices = session.execute(
-            select(models.EndpointDevice).where(
-                models.EndpointDevice.tenant_id == tenant_id,
-                models.EndpointDevice.asset_id == asset_id,
+        devices = (
+            session.execute(
+                select(models.EndpointDevice).where(
+                    models.EndpointDevice.tenant_id == tenant_id,
+                    models.EndpointDevice.asset_id == asset_id,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         items: list[dict[str, Any]] = []
         for device in devices:
             if not device.latest_snapshot_id:
                 continue
-            rows = session.execute(
-                select(models.EndpointSoftwareItem).where(
-                    models.EndpointSoftwareItem.snapshot_id == device.latest_snapshot_id
+            rows = (
+                session.execute(
+                    select(models.EndpointSoftwareItem).where(
+                        models.EndpointSoftwareItem.snapshot_id
+                        == device.latest_snapshot_id
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for row in rows:
                 items.append(
                     {
-                        "name": row.name,
-                        "version": row.version,
-                        "publisher": row.publisher,
-                        "architecture": row.architecture,
-                        "source": row.source,
-                        "install_location": row.install_location,
+                        **_software_payload(row),
                     }
                 )
     return items

@@ -36,6 +36,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { AssetServicesPanel } from "@/components/asset/asset-services-panel";
 import { DevicePatchGapSection } from "@/components/endpoint/device-patch-gap-section";
 import { SoftwareCvePanel } from "@/components/endpoint/software-cve-panel";
+import { SourceCompleteness } from "@/components/endpoint/source-completeness";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { useAssetContextEvents, useAssetDetail, useUpdateAsset } from "@/hooks/use-assets";
 import { useTrackedVulnerabilities } from "@/hooks/use-vulnerabilities";
@@ -732,6 +733,7 @@ function SoftwareTab({
 
   return (
     <div className="space-y-3">
+      <SourceCompleteness sources={device.sources} />
       {recentChanges.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-muted-foreground">Since previous snapshot:</span>
@@ -774,8 +776,15 @@ function SoftwareTab({
             </thead>
             <tbody className="divide-y divide-border">
               {filtered.map((item, idx) => (
-                <tr key={`${item.name}-${item.version}-${idx}`} className="hover:bg-muted transition-colors">
-                  <td className="px-3.5 py-3 font-semibold text-foreground">{item.name}</td>
+                <tr key={item.installation_identity || `${item.name}-${item.version}-${idx}`} className="hover:bg-muted transition-colors">
+                  <td className="px-3.5 py-3 font-semibold text-foreground">
+                    {item.name}
+                    {item.installation_identity && (
+                      <p className="mt-1 font-mono text-[10px] font-normal text-muted-foreground" title={item.installation_identity}>
+                        {[item.scope, item.package_id, item.installation_identity.slice(0, 12)].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
+                  </td>
                   <td className="px-3.5 py-3 font-mono text-foreground">{item.version || "—"}</td>
                   <td className="px-3.5 py-3 text-foreground">{item.publisher || "—"}</td>
                   <td className="px-3.5 py-3 text-foreground">{item.source}</td>

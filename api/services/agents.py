@@ -375,6 +375,7 @@ def _to_info(row: models.Agent) -> AgentInfo:
         metrics=metrics,
         capabilities=capabilities,
         agent_kind=kind,  # type: ignore[arg-type]
+        inventory_schema_version=2,
         is_outdated=is_outdated,
         latest_version=LATEST_AGENT_VERSION if is_scanner else "",
         upgrade_requested=upgrade_requested,
@@ -900,6 +901,7 @@ def heartbeat(
 
 AGENT_SORT_FIELDS = ("hostname", "agent_id", "status", "last_seen_at", "registered_at", "tenant_id")
 AGENT_QUERY_FIELDS = ("agent_id", "hostname", "version", "status", "tenant_id", "current_job_id")
+
 
 def _reported_status_expr() -> Any:
     """The status the API will actually return, as SQL.

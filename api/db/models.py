@@ -1076,11 +1076,15 @@ class EndpointDevice(Base):
     os_arch: Mapped[str | None] = mapped_column(default=None)
     agent_version: Mapped[str]
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
-    reconciliation_status: Mapped[str] = mapped_column(default="linked")  # linked | conflict | unlinked
+    reconciliation_status: Mapped[str] = mapped_column(
+        default="linked"
+    )  # linked | conflict | unlinked
     first_seen: Mapped[datetime]
     last_seen: Mapped[datetime]
     last_inventory_at: Mapped[datetime | None] = mapped_column(default=None)
     latest_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    software_snapshot_id: Mapped[str | None] = mapped_column(default=None)
+    source_states: Mapped[list] = mapped_column(JSON, default=list)
     # The software→CVE matcher's queue marker (migration 0033). The queue used
     # to be "``latest_snapshot_id`` differs from the ``snapshot_id`` on this
     # device's ``software_cve_matches`` rows", which cannot tell "matched, and
@@ -1097,10 +1101,14 @@ class EndpointDevice(Base):
     match_retry_after: Mapped[datetime | None] = mapped_column(default=None)
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "agent_id", name="uq_endpoint_device_tenant_agent"),
+        UniqueConstraint(
+            "tenant_id", "agent_id", name="uq_endpoint_device_tenant_agent"
+        ),
         # The worker's due-devices read, which is a tenant-scoped comparison of
         # the two snapshot columns.
-        Index("ix_endpoint_devices_match_queue", "tenant_id", "last_matched_snapshot_id"),
+        Index(
+            "ix_endpoint_devices_match_queue", "tenant_id", "last_matched_snapshot_id"
+        ),
     )
 
 
@@ -1146,6 +1154,7 @@ class EndpointInventorySnapshot(Base):
     software_count: Mapped[int]
     collector_warnings: Mapped[dict] = mapped_column(JSON, default=dict)
     response: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_states: Mapped[list] = mapped_column(JSON, default=list)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "snapshot_id", name="uq_endpoint_snapshot"),
@@ -1161,7 +1170,8 @@ class EndpointSoftwareItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     snapshot_id: Mapped[str] = mapped_column(
-        ForeignKey("endpoint_inventory_snapshots.snapshot_id", ondelete="CASCADE"), index=True
+        ForeignKey("endpoint_inventory_snapshots.snapshot_id", ondelete="CASCADE"),
+        index=True,
     )
     tenant_id: Mapped[str] = mapped_column(index=True)
     device_id: Mapped[str] = mapped_column(index=True)
@@ -1172,6 +1182,12 @@ class EndpointSoftwareItem(Base):
     architecture: Mapped[str | None] = mapped_column(default=None)
     source: Mapped[str]
     install_location: Mapped[str | None] = mapped_column(default=None)
+
+    product_identity: Mapped[str | None] = mapped_column(default=None)
+    installation_identity: Mapped[str | None] = mapped_column(default=None)
+    package_id: Mapped[str | None] = mapped_column(default=None)
+    scope: Mapped[str | None] = mapped_column(default=None)
+    install_instance_id: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint(
@@ -3091,6 +3107,7 @@ class EndpointAgentRelease(Base):
     sha256: Mapped[str]
     size_bytes: Mapped[int]
     content: Mapped[bytes] = mapped_column(LargeBinary)
+    signed_manifest: Mapped[dict | None] = mapped_column(JSON, default=None)
     notes: Mapped[str | None] = mapped_column(default=None)
     uploaded_at: Mapped[datetime]
     uploaded_by: Mapped[str | None] = mapped_column(default=None)

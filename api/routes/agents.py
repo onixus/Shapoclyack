@@ -256,9 +256,14 @@ def heartbeat(
         capabilities=body.capabilities,
     )
     if info is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
     if info.tenant_id != principal.tenant_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-tenant agent access denied",
+        )
     # The agent naming a job it holds is the only evidence the API gets that
     # the scan actually started, so it is what promotes claimed → running
     # (ROADMAP P1.3). Any other state is left alone by mark_running, which also
@@ -283,6 +288,7 @@ def heartbeat(
             agent_id=body.agent_id,
             current_version=info.version,
             platform=body.platform,
+            capabilities=info.capabilities,
         )
         # ``None`` rather than ``{}`` when nothing is set: an empty object
         # would read to the agent as "reset every knob", and an installation

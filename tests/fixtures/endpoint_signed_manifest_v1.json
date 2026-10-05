@@ -1,0 +1,18 @@
+{
+  "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+  "canonical_utf8": "{\"expires_at\":2100000000,\"key_id\":\"test-key\",\"package_kind\":\"deb\",\"platform\":\"x86_64-unknown-linux-gnu\",\"schema\":1,\"sequence\":42,\"sha256\":\"bc4a71180870f7945155fbb02f4b0a2e3faa2a62d6d31b7039013055ed19869a\",\"size_bytes\":7,\"version\":\"0.4.0\"}",
+  "signed_manifest": {
+    "manifest": {
+      "schema": 1,
+      "key_id": "test-key",
+      "version": "0.4.0",
+      "platform": "x86_64-unknown-linux-gnu",
+      "package_kind": "deb",
+      "size_bytes": 7,
+      "sha256": "bc4a71180870f7945155fbb02f4b0a2e3faa2a62d6d31b7039013055ed19869a",
+      "expires_at": 2100000000,
+      "sequence": 42
+    },
+    "signature": "d9c248a4c6b96727fb6d80a52b2cebcd81def342f7056d2c9265131df77b4b9bbfa8ba71c1a53e683b6ac280747bda6d86e1c63d0b033377daf89bb006a9fb01"
+  }
+}

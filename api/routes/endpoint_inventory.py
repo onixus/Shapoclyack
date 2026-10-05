@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import json
 from typing import Annotated
 
 from fastapi import (
@@ -450,7 +451,11 @@ def list_agent_releases(
 async def upload_agent_release(
     principal: Annotated[
         TokenUser,
-        Depends(require_platform_permission(permission_catalog.PLATFORM_ENDPOINT_AGENT_RELEASE)),
+        Depends(
+            require_platform_permission(
+                permission_catalog.PLATFORM_ENDPOINT_AGENT_RELEASE
+            )
+        ),
     ],
     # What every endpoint told to move to this version will execute (#504).
     _: StepUpDep,
@@ -459,6 +464,7 @@ async def upload_agent_release(
     platform: Annotated[str, Form()],
     binary: Annotated[UploadFile, File()],
     notes: Annotated[str | None, Form()] = None,
+    signed_manifest: Annotated[str | None, Form()] = None,
 ) -> EndpointAgentReleaseInfo:
     """Store one build of the endpoint agent.
 
@@ -467,16 +473,20 @@ async def upload_agent_release(
     against before executing it, and a digest travelling beside the bytes it
     describes attests to nothing.
     """
-    content = await binary.read()
+    # Bound multipart ingestion too: refusing a huge object only after read()
+    # still allocates the attacker-controlled object in application memory.
+    content = await binary.read(endpoint_agent_mgmt.MAX_RELEASE_BYTES + 1)
     try:
+        envelope = json.loads(signed_manifest) if signed_manifest is not None else None
         row = endpoint_agent_mgmt.store_release(
             version=version,
             platform=platform,
             content=content,
             notes=notes,
             uploaded_by=principal.username,
+            signed_manifest=envelope,
         )
-    except endpoint_agent_mgmt.ReleaseError as exc:
+    except (endpoint_agent_mgmt.ReleaseError, json.JSONDecodeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

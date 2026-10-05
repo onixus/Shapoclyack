@@ -24,6 +24,9 @@ has not asked; an installation that uploads no release never answers with one.
 from __future__ import annotations
 
 import hashlib
+import copy
+import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -228,6 +231,67 @@ def _policy_info(row: models.EndpointAgentPolicy) -> dict[str, Any]:
     }
 
 
+def validate_signed_manifest(envelope, *, version, platform, digest, size_bytes):
+    """Validate the envelope shape and byte binding without receiving trust keys.
+
+    Endpoint trust is provisioned locally and endpoints verify Ed25519. The
+    platform must preserve the publisher's exact manifest and cannot manufacture
+    a signature or silently adjust a signed expiry/sequence.
+    """
+    if envelope is None:
+        return None
+    if not isinstance(envelope, dict) or set(envelope) != {"manifest", "signature"}:
+        raise ReleaseError(
+            "signed_manifest must contain exactly manifest and signature"
+        )
+    manifest = envelope["manifest"]
+    required = {
+        "schema",
+        "key_id",
+        "version",
+        "platform",
+        "package_kind",
+        "size_bytes",
+        "sha256",
+        "expires_at",
+        "sequence",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != required:
+        raise ReleaseError("invalid signed manifest fields")
+    if not isinstance(envelope["signature"], str) or not re.fullmatch(
+        r"[0-9a-f]{128}", envelope["signature"]
+    ):
+        raise ReleaseError("invalid Ed25519 signature encoding")
+    for key in ("schema", "size_bytes", "expires_at", "sequence"):
+        if type(manifest[key]) is not int or not 0 <= manifest[key] <= 2**64 - 1:
+            raise ReleaseError(f"manifest {key} must be an unsigned 64-bit integer")
+    if (
+        manifest["schema"] != 1
+        or not isinstance(manifest["package_kind"], str)
+        or manifest["package_kind"] not in {"deb", "rpm", "msi", "pkg"}
+    ):
+        raise ReleaseError("unsupported manifest schema or native package kind")
+    if not isinstance(manifest["key_id"], str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]{1,128}", manifest["key_id"]
+    ):
+        raise ReleaseError("invalid manifest key_id")
+    if manifest["expires_at"] <= int(time.time()):
+        raise ReleaseError("signed manifest has expired")
+    if any(
+        manifest[name] != value
+        for name, value in (
+            ("version", version),
+            ("platform", platform),
+            ("sha256", digest),
+            ("size_bytes", size_bytes),
+        )
+    ):
+        raise ReleaseError(
+            "signed manifest does not describe the uploaded bytes/version/platform"
+        )
+    return copy.deepcopy(envelope)
+
+
 def store_release(
     *,
     version: str,
@@ -235,6 +299,7 @@ def store_release(
     content: bytes,
     notes: str | None = None,
     uploaded_by: str | None = None,
+    signed_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store one build, replacing any build already under the same identity.
 
@@ -247,6 +312,10 @@ def store_release(
     platform = (platform or "").strip()
     if not version or not platform:
         raise ReleaseError("version and platform are both required")
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", version) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]{1,64}", platform
+    ):
+        raise ReleaseError("version and platform must be bounded path-safe identifiers")
     if not content:
         raise ReleaseError("the uploaded build is empty")
     if len(content) > MAX_RELEASE_BYTES:
@@ -255,6 +324,13 @@ def store_release(
         )
 
     digest = hashlib.sha256(content).hexdigest()
+    signed_manifest = validate_signed_manifest(
+        signed_manifest,
+        version=version,
+        platform=platform,
+        digest=digest,
+        size_bytes=len(content),
+    )
     app_settings = _require_settings()
     now = _now()
     with get_session(app_settings.postgres_url) as session:
@@ -266,12 +342,32 @@ def store_release(
                 sha256=digest,
                 size_bytes=len(content),
                 content=content,
+                signed_manifest=signed_manifest,
                 notes=notes,
                 uploaded_at=now,
                 uploaded_by=uploaded_by,
             )
             session.add(row)
         else:
+            if row.signed_manifest:
+                if not signed_manifest:
+                    raise ReleaseError(
+                        "a signed release cannot be replaced with an unsigned release"
+                    )
+                if (
+                    signed_manifest["manifest"]["sequence"]
+                    < row.signed_manifest["manifest"]["sequence"]
+                ):
+                    raise ReleaseError("release sequence cannot go backwards")
+                if (
+                    signed_manifest["manifest"]["sequence"]
+                    == row.signed_manifest["manifest"]["sequence"]
+                    and digest != row.sha256
+                ):
+                    raise ReleaseError(
+                        "different bytes require a newer signed release sequence"
+                    )
+            row.signed_manifest = signed_manifest
             row.sha256 = digest
             row.size_bytes = len(content)
             row.content = content
@@ -337,6 +433,7 @@ def _release_info(row: models.EndpointAgentRelease) -> dict[str, Any]:
         "platform": row.platform,
         "sha256": row.sha256,
         "size_bytes": row.size_bytes,
+        "signed_manifest": copy.deepcopy(row.signed_manifest),
         "notes": row.notes,
         "uploaded_at": row.uploaded_at.isoformat() + "Z" if row.uploaded_at else None,
         "uploaded_by": row.uploaded_by,
@@ -349,6 +446,7 @@ def plan_for_agent(
     agent_id: str,
     current_version: str,
     platform: str | None,
+    capabilities: list[str] | None = None,
 ) -> AgentPlan:
     """What this agent should be told now: merged settings, and an update or not.
 
@@ -413,6 +511,23 @@ def plan_for_agent(
                 ),
             )
 
+        if "signed_updates" in (capabilities or []) and not release.signed_manifest:
+            return AgentPlan(
+                settings=merged,
+                revision=revision,
+                update=None,
+                update_blocked="this agent requires a signed native package manifest",
+            )
+        if release.signed_manifest and release.signed_manifest["manifest"][
+            "expires_at"
+        ] <= int(time.time()):
+            return AgentPlan(
+                settings=merged,
+                revision=revision,
+                update=None,
+                update_blocked="the signed update manifest has expired",
+            )
+
         return AgentPlan(
             settings=merged,
             revision=revision,
@@ -421,6 +536,7 @@ def plan_for_agent(
                 "platform": release.platform,
                 "sha256": release.sha256,
                 "size_bytes": release.size_bytes,
+                "signed_manifest": copy.deepcopy(release.signed_manifest),
                 "url": f"/api/endpoint/agent/releases/{release.version}/{release.platform}/download",
             },
         )

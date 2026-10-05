@@ -137,14 +137,28 @@ def _prune_snapshots(
                 models.EndpointDevice.tenant_id == tenant_id,
                 models.EndpointDevice.latest_snapshot_id.is_not(None),
             )
-        ).scalars().all()
-    )
-    expired_snapshots = session.execute(
-        select(models.EndpointInventorySnapshot.snapshot_id).where(
-            models.EndpointInventorySnapshot.tenant_id == tenant_id,
-            models.EndpointInventorySnapshot.received_at < snapshot_cutoff,
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+    protected.update(
+        session.scalars(
+            select(models.EndpointDevice.software_snapshot_id).where(
+                models.EndpointDevice.tenant_id == tenant_id,
+                models.EndpointDevice.software_snapshot_id.is_not(None),
+            )
+        ).all()
+    )
+    expired_snapshots = (
+        session.execute(
+            select(models.EndpointInventorySnapshot.snapshot_id).where(
+                models.EndpointInventorySnapshot.tenant_id == tenant_id,
+                models.EndpointInventorySnapshot.received_at < snapshot_cutoff,
+            )
+        )
+        .scalars()
+        .all()
+    )
     prunable = [sid for sid in expired_snapshots if sid not in protected]
 
     items_deleted = 0
@@ -154,14 +168,18 @@ def _prune_snapshots(
         # Only count snapshots that still hold software rows, so a repeat
         # sweep over already-pruned history reports zero rather than
         # re-counting the same snapshots every interval.
-        with_items = session.execute(
-            select(models.EndpointSoftwareItem.snapshot_id)
-            .where(
-                models.EndpointSoftwareItem.tenant_id == tenant_id,
-                models.EndpointSoftwareItem.snapshot_id.in_(chunk),
+        with_items = (
+            session.execute(
+                select(models.EndpointSoftwareItem.snapshot_id)
+                .where(
+                    models.EndpointSoftwareItem.tenant_id == tenant_id,
+                    models.EndpointSoftwareItem.snapshot_id.in_(chunk),
+                )
+                .distinct()
             )
-            .distinct()
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not with_items:
             continue
         items_deleted += _delete_in_batches(

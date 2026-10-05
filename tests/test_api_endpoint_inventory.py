@@ -280,3 +280,21 @@ def test_recent_changes_feed_returns_hostname_and_is_tenant_scoped(tmp_path, mon
         "/api/endpoint/changes", headers=headers, params={"tenant_id": "ten_missing"}
     )
     assert other_tenant.status_code == 403
+
+def test_shared_v2_fixture_roundtrips_installations_and_source_diagnostics(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    body = _load_fixture("endpoint_inventory_v2_valid.json")
+    for source in body["sources"]:
+        source["collected_at"] = body["collected_at"]
+    submitted = client.post("/api/endpoint/inventory", headers=_agent_headers(), json=body)
+    assert submitted.status_code == 201, submitted.text
+    assert submitted.json()["software_count"] == 2
+    auth = auth_headers(client, "operator")
+    device = client.get(f"/api/endpoint/devices/{submitted.json()['device_id']}", headers=auth).json()
+    failed = next(source for source in device["sources"] if source["source"] == "pip")
+    assert failed["status"] == "failed"
+    assert failed["diagnostic_code"] == "metadata_unreadable"
+    assert failed["last_complete_at"] is None  # The server has no prior trusted collection.
+    software = client.get(f"/api/assets/{submitted.json()['asset_id']}/software", headers=auth).json()
+    assert {item["installation_identity"] for item in software} == {item["installation_identity"] for item in body["software"]}
+    assert all(item["install_location"] is None for item in software)

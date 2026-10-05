@@ -336,3 +336,31 @@ def test_counts_summarise_the_run(providers) -> None:
     assert result.packages_total == 2
     assert result.packages_assessed == 2
     assert result.packages_unassessed == 0
+
+
+def test_v2_matching_keeps_side_by_side_installations_and_the_vulnerable_copy(
+    providers,
+):
+    old = dict(
+        _pkg("openssl", "1.1.1f-1ubuntu2.4"),
+        installation_identity="a" * 64,
+        install_instance_id="c" * 64,
+        scope="system",
+        package_id="openssl",
+    )
+    new = dict(
+        _pkg("openssl", "1.1.1f-1ubuntu2.16"),
+        installation_identity="b" * 64,
+        install_instance_id="d" * 64,
+        scope="system",
+        package_id="openssl",
+    )
+    result = matcher.match_software(
+        device=FOCAL, software=[old, new], provider_for=providers
+    )
+    matches = [match for match in result.candidates if match.cve_id == "CVE-2021-3711"]
+    assert len(matches) == 2
+    assert {
+        (match.status, match.evidence["installation_identity"]) for match in matches
+    } == {(matcher.VULNERABLE, "a" * 64), (matcher.FIXED, "b" * 64)}
+    assert len({match.match_key for match in matches}) == 2

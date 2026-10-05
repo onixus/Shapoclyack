@@ -1160,6 +1160,15 @@ export type UpdateAssetBody = {
 
 export type EndpointReconciliationStatus = "linked" | "conflict" | "unlinked";
 
+export type EndpointSourceState = {
+  source: string;
+  status: "complete" | "partial" | "failed" | "not_applicable";
+  collected_at: string;
+  last_complete_at: string | null;
+  collector_version: string;
+  diagnostic_code: string | null;
+};
+
 export type EndpointDeviceInfo = {
   device_id: string;
   tenant_id: string;
@@ -1179,6 +1188,7 @@ export type EndpointDeviceInfo = {
   last_seen: string | null;
   last_inventory_at: string | null;
   latest_snapshot_id: string | null;
+  sources?: EndpointSourceState[];
 };
 
 export type EndpointSoftwareItemInfo = {
@@ -1188,6 +1198,11 @@ export type EndpointSoftwareItemInfo = {
   architecture: string | null;
   source: string;
   install_location: string | null;
+  product_identity?: string | null;
+  installation_identity?: string | null;
+  package_id?: string | null;
+  scope?: "system" | "user" | "runtime" | "container" | null;
+  install_instance_id?: string | null;
 };
 
 export type EndpointSoftwareChangeInfo = {
