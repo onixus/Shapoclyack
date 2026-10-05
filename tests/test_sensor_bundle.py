@@ -1600,7 +1600,9 @@ def test_the_sensors_processes_do_not_inherit_the_lock(tmp_path, signing_key, mo
     install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
     _verifier(
         install,
-        '{ : >&9; } 2>/dev/null && echo "$*" >> "$FAKE_SYSTEMD_DIR/fd9"\n'
+        # A subshell: dash exits on a failed redirection of the special
+        # built-in ``:``, which would take the wrapper down with it.
+        '( : >&9 ) 2>/dev/null && echo "$*" >> "$FAKE_SYSTEMD_DIR/fd9"\n'
         'exec "$PY" "$@"\n',
     )
     done = _run_script(env, "--bundle-dir", str(bundle))
