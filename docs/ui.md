@@ -226,9 +226,11 @@ creating, editing or deleting a tenant role on **Roles & members** (#504),
 disabling, deleting or signing out an account, approving, rejecting or revoking
 a risk acceptance, setting the endpoint agent policy or uploading/removing a
 build, and both actions of the **Deploy Agent** dialog on the sensors page —
-**Generate key** and the SSH push. The dialog offers them to whoever holds
-`tenant.credential.manage`, which is now also what the API asks for (#504);
-the SSH push additionally needs the tenant `admin` rank.
+**Generate key** and the SSH push. The dialog offers **Generate key** to
+whoever holds `tenant.credential.manage`, which is now also what the API asks
+for (#504); the SSH push and **Read from host** additionally need the tenant
+`admin` rank, so a `token-admin` sees the push disabled with the same notice
+an operator gets instead of a `403`.
 
 #### Security keys and passkeys
 

@@ -349,8 +349,11 @@ administration on a password alone. The cost is one membership read per request
 for an account that is **not** enrolled while a policy is configured — none when
 a role list already names its global role — and the answer is reused by
 everything else in the same request that asks (`/api/auth/me`, `/api/auth/mfa`,
-a step-up's "must it be a key"); an enrolled account is decided by the
-primary-key read it already paid for.
+a step-up's "must it be a key"); whether an enrolled account owes enrolment
+is decided by the primary-key read it already paid for. Under a key policy, a
+session an enrolled account proved with a code still reads the memberships on
+every request — "must this session have been a key" depends on them — unless
+`OCTO_MFA_PHISHING_RESISTANT_ROLES` already names its global role.
 
 `GET /api/auth/me` reports `mfa_required` and `phishing_resistant_required`
 computed this way; `GET /api/auth/mfa` adds `required_because`, one entry per
@@ -393,16 +396,18 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
   administrators out of the installation (or, re-enabling, to put an account
   back in)
 
-A **service token** is exempt from step-up: there is no human at one to
-challenge. That is why every route in the list above must also be refused a
-service token by scope — `auth`, `users`, `tenants` and `audit` are forbidden
-outright, `config` and `agent` for writes — or by permission, and why adding a
-route here means checking that list too. The risk-acceptance routes are
-refused by permission: a token carries `viewer`, `operator` or `admin`, none of
-which holds `vulnerability.exception.approve`. The endpoint-agent routes are
-**not** refused yet: an `admin`-role token with `endpoint:write` reaches them
-without a step-up — tracked with the installation-wide release table as a
-follow-up of #504.
+A **service token** cannot satisfy a step-up — there is no human at one to
+challenge — so every route in the list above refuses it with `403` (#504),
+whatever its role and scopes. Most of them never get that far: `auth`, `users`,
+`tenants` and `audit` are forbidden to a token outright and `config` and
+`agent` for writes, and the risk-acceptance routes are refused by permission (a
+token carries `viewer`, `operator` or `admin`, none of which holds
+`vulnerability.exception.approve`). The refusal in the step-up itself is what
+holds for the endpoint agent policy and builds: `endpoint` stays writable for
+a token, because `POST /api/endpoint/cve-matches/refresh` and the per-device
+refresh are automation's to call, and before #504 an `admin`-role token with
+`endpoint:write` set the policy — and with it the build every endpoint of the
+tenant runs — with no step-up.
 
 The check applies **only to accounts that have MFA enabled**; an installation
 that has not adopted MFA behaves exactly as before. A stale session gets a 403

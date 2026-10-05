@@ -708,7 +708,17 @@ All notable changes to Shapoclyack are documented in this file.
   top) instead of the rank alone, like `POST …/provisioning-keys`; migration
   **0073** writes that permission onto every tenant role at rank 3 so the roles
   that minted keys before the upgrade still can (and reach the permission's
-  other routes). New step-ups: the SSH push, the endpoint agent policy and
+  other routes). Review round 2: where such a role also holds
+  `tenant.member.manage`, its holders can now hand the credential on by itself
+  — define and grant a role carrying it, or grant `token-admin` — where before
+  it travelled only inside the role; kept on purpose, since dropping it would
+  take the console's **Deploy Agent** button from those roles, and
+  `docs/operations.md` has the query that lists them. A step-up route now
+  refuses a service token outright, so an `admin`-role token with
+  `endpoint:write` no longer sets the endpoint agent policy (`endpoint`
+  itself stays writable for the CVE-match refreshes). The console offers the
+  SSH push only to a holder of `tenant.credential.manage` at the tenant admin
+  rank, as the API checks. New step-ups: the SSH push, the endpoint agent policy and
   builds, risk-acceptance approve/reject/revoke, and `PUT
   /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
   /api/users/{u}/sessions/revoke-all`. A permission variable made only of

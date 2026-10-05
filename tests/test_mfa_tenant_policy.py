@@ -688,6 +688,53 @@ def test_a_relayed_code_cannot_add_a_key_next_to_a_tenant_admins_own(
     assert client.get("/api/auth/mfa", headers=phished).json()["webauthn_credentials"] == 1
 
 
+def test_a_key_policy_for_one_role_leaves_a_code_session_of_another_alone(
+    tmp_path, monkeypatch, clock
+):
+    """``ROLES=admin`` with ``PHISHING_RESISTANT_ROLES=operator``: an admin may use a code.
+
+    The global role answers the key question without a membership read, and it
+    must be answered from the key list. Read from the plain list instead, every
+    code session of a global admin is confined to the key banner, which the
+    configuration did not ask for.
+    """
+    client, settings = _setup(tmp_path, monkeypatch, **_RELYING_PARTY)
+    _user(client, "ops", role="operator")
+    admin_secret = _enrol(client, _admin(client), clock, "admin")
+    ops_secret = _enrol(client, bearer(_login(client, "ops")["access_token"]), clock, "ops")
+    _policy(settings, mfa_required_roles=["admin"], mfa_phishing_resistant_roles=["operator"])
+
+    admin = _signed_in_with_code(client, "admin", clock, admin_secret)
+    assert not _confined(client, admin)
+    assert client.get("/api/auth/me", headers=admin).json()["phishing_resistant_required"] is False
+    ops = _signed_in_with_code(client, "ops", clock, ops_secret)
+    assert _confined(client, ops)
+
+
+def test_a_key_policy_for_others_lets_a_step_up_be_a_code(tmp_path, monkeypatch, clock):
+    """A step-up wants a key only of an account the *key* policy covers.
+
+    ``boss`` administers ``acme`` and is held by the plain policy only; the key
+    policy names ``operator``. A fresh code is the step-up it owes — asked of
+    the plain requirement instead, it would be told to bring a key it was never
+    required to register.
+    """
+    client, settings = _setup(tmp_path, monkeypatch, **_RELYING_PARTY)
+    _tenant(client, "acme")
+    _user(client, "boss")
+    _grant(client, "acme", "boss", "admin")
+    _user(client, "colleague")
+    secret = _enrol(client, bearer(_login(client, "boss")["access_token"]), clock, "boss")
+    _policy(settings, mfa_required_roles=["admin"], mfa_phishing_resistant_roles=["operator"])
+
+    fresh = _signed_in_with_code(client, "boss", clock, secret)
+    assert client.get("/api/auth/mfa", headers=fresh).json()["stepup_phishing_resistant"] is False
+    granted = client.put(
+        "/api/tenants/acme/members/colleague", headers=fresh, json={"role": "viewer"}
+    )
+    assert granted.status_code == 200, granted.text
+
+
 # --- Step-up on the routes that hand out tenant authority ---------------------------------
 
 
@@ -780,7 +827,7 @@ def test_a_step_up_goes_stale_on_the_membership_routes(tmp_path, monkeypatch, cl
 
 
 def test_service_tokens_are_still_refused_by_the_scope_layer(tmp_path, monkeypatch):
-    """Step-up lets a service token through by design; ``tenants`` is out of its scope.
+    """``tenants`` is out of a service token's scope, before any step-up is asked.
 
     An admin-role, all-scopes token for the tenant is the strongest a tenant
     can mint. It must still reach none of the routes that grant authority.
@@ -810,6 +857,45 @@ def test_service_tokens_are_still_refused_by_the_scope_layer(tmp_path, monkeypat
     assert [response.status_code for response in attempts] == [403] * len(attempts)
     members = client.get("/api/tenants/acme/members", headers=_admin(client)).json()
     assert "colleague" not in {m["username"] for m in members}
+
+
+def test_a_service_token_cannot_set_the_endpoint_agent_policy(tmp_path, monkeypatch):
+    """The step-up routes outside the scope lists: the endpoint agent policy.
+
+    ``endpoint`` is not a forbidden resource — ``POST …/cve-matches/refresh`` is
+    an operator's write a pipeline may well make — so an admin-role token with
+    ``endpoint:write`` reached the policy routes, and naming a build there
+    replaces the binary on every endpoint of the tenant, with no person to ask
+    for a step-up. The step-up itself refuses a token now.
+    """
+    from api.services import endpoint_agent_mgmt
+
+    client = configured_client(tmp_path, monkeypatch)
+    endpoint_agent_mgmt.reset_for_tests()
+    _tenant(client, "acme")
+    minted = client.post(
+        "/api/tenants/acme/service-tokens",
+        headers=_admin(client),
+        json={"name": "fleet", "scopes": ["endpoint:write", "endpoint:read"], "role": "admin"},
+    )
+    assert minted.status_code == 201, minted.text
+    token = bearer(minted.json()["token"])
+    policy = {"settings": {"log_level": "debug"}}
+    try:
+        attempts = [
+            client.put("/api/endpoint/agent/policy", headers=token, json=policy),
+            client.put("/api/endpoint/agent/policy/lariska-01", headers=token, json=policy),
+            client.delete("/api/endpoint/agent/policy", headers=token),
+            client.delete("/api/endpoint/agent/policy/lariska-01", headers=token),
+        ]
+        assert [response.status_code for response in attempts] == [403] * len(attempts)
+        assert all("service token" in r.json()["detail"] for r in attempts), attempts[0].text
+        assert client.get("/api/endpoint/agent/policies", headers=token).json() == []
+        # The rest of ``endpoint`` stays open to automation.
+        refreshed = client.post("/api/endpoint/cve-matches/refresh", headers=token)
+        assert refreshed.status_code == 200, refreshed.text
+    finally:
+        endpoint_agent_mgmt.reset_for_tests()
 
 
 def _platform_admin_sessions(client, clock: Clock) -> tuple[dict[str, str], dict[str, str]]:
@@ -972,6 +1058,58 @@ def test_the_console_key_mint_asks_for_the_credential_permission(tmp_path, monke
     pushed = client.post("/api/agent/deploy/ssh?tenant_id=acme", headers=token_admin, json=push)
     assert pushed.status_code == 403, pushed.text
     assert "Role 'admin'" in pushed.json()["detail"]
+
+
+def test_a_rank_3_member_manager_after_0073_hands_the_credential_on(tmp_path, monkeypatch):
+    """What ``0073`` gives a rank-3 role that also manages members — on purpose.
+
+    ``people-lead`` (rank 3, ``tenant.member.manage``) minted keys from the
+    console before the upgrade, and could already pass that on: it may grant
+    its own role, and every holder minted keys too. The migration writes
+    ``tenant.credential.manage`` onto it (``tests/test_migration_0073.py``
+    asserts the row), so the button keeps working — and since
+    ``exceeds_authority`` lets a member manager hand out what it holds, the
+    permission now travels on its own as well: a narrower role carrying only
+    it, the built-in ``token-admin``, and service tokens. Documented in the
+    migration and in operations.md with the query that finds these roles.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _tenant_role(client, "acme", "people-lead", 3, ["tenant.member.manage"])
+    _user(client, "pl")
+    _grant(client, "acme", "pl", "people-lead")
+    _user(client, "friend")
+    lead = bearer(_login(client, "pl")["access_token"])
+    keyholder = {"role_id": "keyholder", "rank": 1, "permissions": ["tenant.credential.manage"]}
+
+    # Before: the role itself was delegable, the credential alone was not.
+    _grant(client, "acme", "friend", "people-lead", admin=lead)
+    refused = client.post("/api/tenants/acme/roles", headers=lead, json=keyholder)
+    assert refused.status_code == 403, refused.text
+    assert client.put(
+        "/api/tenants/acme/members/friend", headers=lead, json={"role": "token-admin"}
+    ).status_code == 403
+
+    # After: the shape 0073 writes.
+    widened = client.patch(
+        "/api/tenants/acme/roles/people-lead",
+        headers=_admin(client),
+        json={"permissions": ["tenant.member.manage", "tenant.credential.manage"]},
+    )
+    assert widened.status_code == 200, widened.text
+    minted = client.post(
+        "/api/agent/deployment-command?tenant_id=acme", headers=lead, json={"label": "x"}
+    )
+    assert minted.status_code == 201, minted.text
+    assert client.post("/api/tenants/acme/roles", headers=lead, json=keyholder).status_code == 201
+    _grant(client, "acme", "friend", "keyholder", admin=lead)
+    _grant(client, "acme", "friend", "token-admin", admin=lead)
+    token = client.post(
+        "/api/tenants/acme/service-tokens",
+        headers=lead,
+        json={"name": "t", "scopes": ["runs:read"], "role": "viewer"},
+    )
+    assert token.status_code == 201, token.text
 
 
 # --- Configuration -----------------------------------------------------------------------

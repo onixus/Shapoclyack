@@ -2455,6 +2455,32 @@ SELECT r.tenant_id, r.role_id
  ORDER BY r.tenant_id, r.role_id;
 ```
 
+For the rank-3 roles that also hold `tenant.member.manage` the permission
+brings **delegation** with it. A member manager may hand out what it holds, so
+after the upgrade its holders can define a role carrying
+`tenant.credential.manage`, grant it, and grant the built-in `token-admin` —
+the credential travels on its own, where before it came only bundled in the
+role itself (which such a holder could always grant: passing key minting on is
+not new, its narrower shape is). Leaving these roles out would take the
+console's **Deploy Agent** button from people who used it the day before, so
+the migration does not; review them instead:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND EXISTS (SELECT 1 FROM role_permissions rp
+                WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                  AND rp.permission_key = 'tenant.member.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+After the upgrade this lists every tenant role that may pass the credential
+on; before it, adding the first query's `NOT EXISTS` clause narrows it to the
+ones the migration gives that power. Where that is not meant, either take
+`tenant.credential.manage` off the role (and with it the button) or split it:
+one role that manages members, another that mints keys.
+
 A downgrade leaves those rows in place (nothing records which roles had the
 permission before); remove it from a role in the role editor if it was not
 meant.

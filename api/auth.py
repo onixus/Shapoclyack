@@ -1050,6 +1050,9 @@ def require_step_up(
     policy covers the account by role or tenant permission (#504), or
     ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` is on — the recent proof must also
     have been a WebAuthn assertion (the session's ``mfa_method``).
+
+    A service token is refused outright, MFA or not: nobody is at one to
+    re-verify, so it can never be "recent" (#504).
     """
     from api.services import mfa as mfa_service
     from api.services import passkeys as passkeys_service
@@ -1057,15 +1060,23 @@ def require_step_up(
     if getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is not None:
         # A service token is a credential with its own expiry and revocation,
         # not a session somebody left open, and there is no human at it to
-        # challenge — so step-up cannot be the control that stops one. The
-        # control that does is the scope layer, which must refuse the route
-        # outright: ``auth``, ``users``, ``tenants`` and ``audit`` are in
-        # FORBIDDEN_RESOURCES, and ``config`` and ``agent`` in
-        # FORBIDDEN_WRITE_RESOURCES. A route put behind this dependency has to
-        # be in one of those two lists as well, or a service token walks past
-        # it — which is exactly what ``POST /api/agent/deployment-command`` did
-        # until ``agent`` was added.
-        return user
+        # challenge — so it cannot satisfy a step-up, and a route that asks
+        # for one is refused to it here. The scope layer refuses most of them
+        # first (``auth``, ``users``, ``tenants`` and ``audit`` in
+        # FORBIDDEN_RESOURCES, ``config`` and ``agent`` in
+        # FORBIDDEN_WRITE_RESOURCES); this is what holds when a route sits
+        # under a resource a token may write. ``POST
+        # /api/agent/deployment-command`` walked past the lists until
+        # ``agent`` was added, and the endpoint agent policy did until this
+        # check (#504): ``endpoint`` stays writable because the CVE-match
+        # refreshes under it are automation's to call.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This operation needs a person to re-verify a second factor; "
+                "a service token cannot. Use a console session."
+            ),
+        )
     if not mfa_service.is_enabled(settings, user.username):
         return user
     deadline = mfa_service.stepup_deadline(user.mfa_verified_at, settings)

@@ -18,7 +18,19 @@ permission covers — listing and revoking the tenant's provisioning keys and
 minting service tokens up to their own authority. That is the honest form of
 what they held: a key minted from the console is the same credential as one
 minted from the API, and the role editor now shows the permission, so a tenant
-that did not mean it can take it off. Built-in roles are not touched — the
+that did not mean it can take it off.
+
+And it widens **delegation** for the rank-3 roles that also hold
+``tenant.member.manage``: ``exceeds_authority`` lets a member manager hand out
+what it holds, so once the role carries the permission its holders may write a
+role carrying it, grant that role, and grant the built-in ``token-admin``. The
+power to pass key minting on is not new — such a holder could always grant its
+own role, and every holder minted keys from the console — but it now travels
+without the member and rank authority it used to come bundled with. It cannot
+be kept apart: leaving those roles out would take the **Deploy Agent** button
+from roles that pressed it yesterday, and the gate has no shape between "holds
+the permission" and "does not" that keeps one and drops the other. The tenants
+it concerns are listed by the query in ``docs/operations.md`` (#504). Built-in roles are not touched — the
 compiled table is their source of truth (``api/core/permissions.py``) and the
 built-in ``admin`` already holds it. Rank 1 and 2 roles are not touched: they
 could not mint before.
