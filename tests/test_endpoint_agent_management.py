@@ -13,15 +13,19 @@ from pathlib import Path
 
 import pytest
 
+from api.core import permissions as permission_catalog
 from api.services import agents as agents_service
 from api.services import endpoint_agent_mgmt
 from api.services import tenants as tenants_service
 from tests.conftest import (
     auth_headers,
+    bearer,
     configured_client,
     make_settings,
     requires_postgres,
 )
+from tests.test_api_mfa import Clock, enrol
+from tests.test_tenant_lifecycle import _audit, _member
 
 pytestmark = requires_postgres
 
@@ -353,3 +357,158 @@ def test_an_agent_without_a_platform_is_not_handed_someone_elses_binary(
     ).json()
     assert beat["managed_update"] is None
     assert "reports no platform" in beat["managed_update_blocked"]
+
+
+# --------------------------------------------------------------------------- #
+# Who may write a build (#510)
+# --------------------------------------------------------------------------- #
+
+EVIL_BUILD = b"MZ\x90\x00 somebody else's idea of the agent"
+#: Spelled out rather than read from the catalogue, so the refusal is checked
+#: against the name an operator greps the audit trail and the docs for.
+RELEASE_PERMISSION = "platform.endpoint_agent_release.manage"
+
+
+def _upload(client, headers, tenant: str, content: bytes = BUILD, version: str = "0.3.0"):
+    return client.post(
+        "/api/endpoint/agent/releases",
+        data={"version": version, "platform": PLATFORM},
+        files={"binary": ("lariska.exe", content, "application/octet-stream")},
+        headers=headers,
+        params={"tenant_id": tenant},
+    )
+
+
+def _delete(client, headers, tenant: str, version: str = "0.3.0"):
+    return client.delete(
+        f"/api/endpoint/agent/releases/{version}/{PLATFORM}",
+        headers=headers,
+        params={"tenant_id": tenant},
+    )
+
+
+def test_the_release_permission_is_the_platform_admins_alone() -> None:
+    assert RELEASE_PERMISSION in permission_catalog.PLATFORM_ADMIN_PERMISSIONS
+    # Not grantable by a tenant either, built-in or custom role.
+    assert RELEASE_PERMISSION not in permission_catalog.TENANT_GRANTABLE_PERMISSIONS
+
+
+def test_a_tenant_admin_cannot_replace_the_build_every_tenant_downloads(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The defect: the table is installation-wide, the gate was a tenant's.
+
+    ``(version, platform)`` is the key, so an upload by one tenant's admin
+    replaced the bytes every other tenant's endpoints were told to run, and a
+    delete by it stopped every tenant's upgrade.
+    """
+    settings, client, key = _setup(tmp_path, monkeypatch)
+    tenants_service.create_tenant(tenant_id="evil", name="Evil")
+    admin = auth_headers(client, username="admin")
+    evil_admin = _member(client, admin, "evil-admin", "evil", role="admin")
+
+    assert _upload(client, admin, "acme").status_code == 201
+
+    refused = _upload(client, evil_admin, "evil", EVIL_BUILD)
+    assert refused.status_code == 403, refused.text
+    assert RELEASE_PERMISSION in refused.json()["detail"]
+    refused = _delete(client, evil_admin, "evil")
+    assert refused.status_code == 403, refused.text
+    assert RELEASE_PERMISSION in refused.json()["detail"]
+    # Nor a build of its own under a version nobody has uploaded yet.
+    assert _upload(client, evil_admin, "evil", EVIL_BUILD, version="9.9.9").status_code == 403
+
+    # The victim's endpoint, told by its own admin to move to 0.3.0, is handed
+    # the platform's bytes under the platform's digest.
+    headers = _agent_token(client, key, "lariska-01")
+    _register(client, headers, "lariska-01", kind="endpoint", version="0.2.0")
+    client.put(
+        "/api/endpoint/agent/policy",
+        json={"settings": {}, "desired_version": "0.3.0"},
+        headers=admin,
+        params={"tenant_id": "acme"},
+    )
+    update = client.post(
+        "/api/agent/heartbeat",
+        json={"agent_id": "lariska-01", "status": "idle", "platform": PLATFORM},
+        headers=headers,
+    ).json()["managed_update"]
+    assert update["sha256"] == hashlib.sha256(BUILD).hexdigest()
+    download = client.get(update["url"], headers=headers)
+    assert download.status_code == 200
+    assert download.content == BUILD
+    assert client.get(
+        f"/api/endpoint/agent/releases/9.9.9/{PLATFORM}/download", headers=headers
+    ).status_code == 404
+
+    # And the platform admin still removes it.
+    assert _delete(client, admin, "acme").status_code == 204
+    assert endpoint_agent_mgmt.list_releases() == []
+    # Both on the installation's record, not on whichever tenant the console
+    # was looking at: the build was never that tenant's.
+    for action in ("endpoint_agent.release.upload", "endpoint_agent.release.delete"):
+        last = _audit(settings, action)[-1]
+        assert (last.actor, last.tenant_id) == ("admin", None), action
+
+
+def test_a_tenant_admin_keeps_its_policy_and_the_list_without_the_uploader(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``endpoint_agent.manage`` still decides which build the tenant runs."""
+    _, client, _key = _setup(tmp_path, monkeypatch)
+    admin = auth_headers(client, username="admin")
+    acme_admin = _member(client, admin, "acme-admin", "acme", role="admin")
+    assert _upload(client, admin, "acme").status_code == 201
+
+    policy = client.put(
+        "/api/endpoint/agent/policy",
+        json={"settings": {}, "desired_version": "0.3.0"},
+        headers=acme_admin,
+        params={"tenant_id": "acme"},
+    )
+    assert policy.status_code == 200, policy.text
+
+    listed = client.get(
+        "/api/endpoint/agent/releases", headers=acme_admin, params={"tenant_id": "acme"}
+    )
+    assert listed.status_code == 200, listed.text
+    (row,) = listed.json()
+    assert row["sha256"] == hashlib.sha256(BUILD).hexdigest()
+    # Which platform account uploaded it is not the tenant's to know.
+    assert row["uploaded_by"] is None
+    (row,) = client.get(
+        "/api/endpoint/agent/releases", headers=admin, params={"tenant_id": "acme"}
+    ).json()
+    assert row["uploaded_by"] == "admin"
+
+
+def test_an_admin_service_token_cannot_write_a_build(tmp_path: Path, monkeypatch) -> None:
+    """An admin-role token administers its tenant, not the installation."""
+    _, client, _key = _setup(tmp_path, monkeypatch)
+    admin = auth_headers(client, username="admin")
+    minted = client.post(
+        "/api/tenants/acme/service-tokens",
+        headers=admin,
+        json={"name": "ci", "role": "admin", "scopes": ["*"], "ttl_days": 1},
+    )
+    assert minted.status_code == 201, minted.text
+    token = bearer(minted.json()["token"])
+    assert _upload(client, token, "acme").status_code == 403
+    assert endpoint_agent_mgmt.list_releases() == []
+
+
+def test_writing_a_build_needs_a_recent_second_factor(tmp_path: Path, monkeypatch) -> None:
+    clock = Clock()
+    monkeypatch.setattr("api.services.mfa._now", clock)
+    _, client, _key = _setup(tmp_path, monkeypatch)
+    admin = auth_headers(client, username="admin")
+    enrol(client, admin, clock)
+
+    refused = _upload(client, admin, "acme")
+    assert refused.status_code == 403 and "multi-factor" in refused.json()["detail"]
+    refused = _delete(client, admin, "acme")
+    assert refused.status_code == 403 and "multi-factor" in refused.json()["detail"]
+    # Reading is not a change.
+    assert client.get(
+        "/api/endpoint/agent/releases", headers=admin, params={"tenant_id": "acme"}
+    ).status_code == 200

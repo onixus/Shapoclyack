@@ -668,6 +668,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **Endpoint Agent (Lariska) builds are written by the platform admin only
+  ([#510](https://github.com/onixus/Shapoclyack/issues/510)).** Builds are
+  stored once for the installation, one per `(version, platform)`, but
+  `POST/DELETE /api/endpoint/agent/releases` were gated on the tenant
+  permission `endpoint_agent.manage`: one tenant's admin (or a custom role
+  holding it, or an admin-role service token) could replace the binary every
+  other tenant's endpoints were told to download and execute, or delete it and
+  stop their upgrades. Both routes now need the new
+  `platform.endpoint_agent_release.manage`, held by the platform admin alone
+  and not grantable to a tenant-defined role, behind a step-up; migration
+  `0078_agent_release_permission` seeds it (no schema change). The tenant
+  admin keeps its policy (`desired_version`) and the listing, which no longer
+  shows it `uploaded_by`. Uploads and deletes are audited with no tenant (a
+  delete was not audited at all). **On upgrade:** stored builds stay
+  downloadable and untouched — review their `uploaded_by` and `sha256` once as
+  the platform admin ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
+  Signing the builds, so the API is not the endpoint's only source of trust,
+  is a follow-up.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

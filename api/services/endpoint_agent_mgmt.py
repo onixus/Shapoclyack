@@ -282,7 +282,14 @@ def store_release(
         return _release_info(row)
 
 
-def list_releases() -> list[dict[str, Any]]:
+def list_releases(*, show_uploader: bool = True) -> list[dict[str, Any]]:
+    """Every stored build, newest first.
+
+    ``show_uploader=False`` blanks ``uploaded_by`` (#510): the builds are the
+    installation's and a tenant reads the list to choose one, which needs the
+    version and the digest, not the name of the platform account that put it
+    there.
+    """
     app_settings = _require_settings()
     with get_session(app_settings.postgres_url) as session:
         rows = session.scalars(
@@ -290,7 +297,11 @@ def list_releases() -> list[dict[str, Any]]:
                 models.EndpointAgentRelease.uploaded_at.desc()
             )
         ).all()
-        return [_release_info(row) for row in rows]
+        infos = [_release_info(row) for row in rows]
+    if not show_uploader:
+        for info in infos:
+            info["uploaded_by"] = None
+    return infos
 
 
 def delete_release(*, version: str, platform: str) -> bool:

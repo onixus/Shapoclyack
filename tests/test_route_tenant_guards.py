@@ -175,6 +175,16 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     ),
     "api.routes.maintenance:get_tenant_calendar": _PLATFORM_ADMIN + " (the provider's view of one customer's calendar)",
     "api.routes.config:update_config": _PLATFORM_ADMIN + " (installation-wide scanner overrides)",
+    # Endpoint-agent builds (#510): one row per (version, platform) for the
+    # whole installation, run by every tenant whose policy names the version.
+    "api.routes.endpoint_inventory:upload_agent_release": (
+        _PLATFORM_ADMIN + " (platform.endpoint_agent_release.manage): writes the "
+        "installation's endpoint_agent_releases, which has no tenant"
+    ),
+    "api.routes.endpoint_inventory:delete_agent_release": (
+        _PLATFORM_ADMIN + " (platform.endpoint_agent_release.manage): deletes from "
+        "the installation's endpoint_agent_releases, which has no tenant"
+    ),
     "api.routes.system:get_system_status": (
         "installation status for every role; the fleet counts (tenants, agents, "
         "endpoint devices) are nulls without platform.fleet.read, and only the "

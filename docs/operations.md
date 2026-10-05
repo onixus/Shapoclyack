@@ -2190,6 +2190,52 @@ with `--docker` (or roll the Kubernetes deployment).
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
 
+### Endpoint Agent (Lariska) builds
+
+Unlike a sensor, the endpoint Agent (Lariska) is upgraded by the API: a tenant's
+policy names a version (`PUT /api/endpoint/agent/policy`, `desired_version`),
+the heartbeat hands the agent that build's sha256 and URL, and the agent
+downloads it with its own token and refuses bytes that do not match. The
+builds themselves are stored once for the installation, one per
+`(version, platform)`, so:
+
+- **Uploading and deleting a build is the platform admin's**
+  (`platform.endpoint_agent_release.manage`, behind a step-up, #510). A
+  re-upload of the same pair replaces the bytes every tenant's endpoints are
+  handed; a delete stops every tenant's upgrade to it.
+- **A tenant admin** (`endpoint_agent.manage`) lists the builds and decides
+  which one its own endpoints run. It cannot upload, replace or delete one, and
+  the list it reads carries no `uploaded_by`.
+
+```bash
+curl -sS -X POST https://<api-host>/api/endpoint/agent/releases \
+  -H "Authorization: Bearer <platform-admin token, recently re-verified>" \
+  -F version=0.3.0 -F platform=x86_64-pc-windows-msvc \
+  -F binary=@lariska.exe -F notes="release notes or build id"
+```
+
+Compare the `sha256` in the response with the digest of the build you meant to
+publish before any tenant names that version.
+
+**On upgrade to the release that made this platform-only.** Builds already
+stored stay as they are and stay downloadable — nothing is migrated or
+re-hashed. Before it, any tenant's admin could have uploaded one, and the row
+would be served to every tenant. So once, as the platform admin:
+
+1. `GET /api/endpoint/agent/releases` and look at `uploaded_by`. A name that is
+   not one of your platform accounts is a build a tenant put there.
+2. For each such row, compare its `sha256` with the digest of the build you
+   published for that `(version, platform)`. If it differs, or you cannot say
+   where it came from, upload yours over it (or `DELETE` it) and treat the
+   endpoints already reporting that version (`GET /api/agents`, endpoint
+   Agents report their running version on every heartbeat) as running a binary
+   you did not publish. The audit trail has `endpoint_agent.release.upload`
+   under the uploader's tenant for uploads made before the change; from the
+   change on, uploads and deletes are recorded with no tenant.
+
+Builds are not signed yet: the API is the endpoint's only source of trust for
+what it executes, which is why the write is the platform admin's alone.
+
 ## Tenant-defined roles
 
 A tenant can define its own roles and grant them on memberships
