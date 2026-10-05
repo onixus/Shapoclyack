@@ -770,6 +770,29 @@ class CreateAgentDeploymentKeyRequest(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class SensorBundleInfo(BaseModel):
+    """``GET /api/agent/bundle`` (#363): the signed sensor bundle, as transport.
+
+    ``manifest`` is the exact bytes the release key signed, base64-encoded, and
+    ``signature`` is cosign's base64 signature over them. The sensor verifies
+    the pair against the key pinned in its own package and then reads
+    ``version``, ``sha256`` and ``size`` from the *manifest*; the copies here
+    are for the operator reading the response, and a sensor refuses a bundle
+    whose ``version`` disagrees with the signed one.
+    """
+
+    version: str
+    archive: str
+    sha256: str
+    size: int
+    manifest: str
+    signature: str
+    # OCTO_AGENT_MIN_VERSION, so a sensor refuses to install a bundle that the
+    # claim route would answer 426 to. Only ever raises the sensor's floor.
+    min_version: str | None = None
+    download_path: str = "/api/agent/bundle/download"
+
+
 class AgentClaimResponse(BaseModel):
     job_id: str
     run_id: str

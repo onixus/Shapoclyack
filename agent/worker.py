@@ -714,6 +714,44 @@ class AgentClient:
             body=json.dumps(payload).encode("utf-8"),
         )
 
+    def bundle_info(self) -> dict[str, Any]:
+        """``GET /api/agent/bundle``: the signed manifest, as transport (#363).
+
+        Nothing in the answer is trusted here; ``agent/update.py`` checks the
+        signature against the key pinned in this package before reading it.
+        """
+        info = self._request("GET", "/api/agent/bundle")
+        if not isinstance(info, dict):
+            raise RuntimeError("GET /api/agent/bundle -> no metadata in the response")
+        return info
+
+    def download_bundle(self, dest: Path, *, max_bytes: int) -> None:
+        """Stream the bundle archive into ``dest``, refusing more than ``max_bytes``.
+
+        ``max_bytes`` is the size in the signed manifest, so a server that
+        streams without end fills neither memory nor the disk.
+        """
+        url = f"{self.base_url}/api/agent/bundle/download"
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self.token}"}, method="GET"
+        )
+        try:
+            with self._opener.open(req, timeout=self.upload_timeout) as resp, dest.open("wb") as out:
+                written = 0
+                for chunk in iter(lambda: resp.read(1024 * 1024), b""):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise RuntimeError(
+                            "GET /api/agent/bundle/download -> more bytes than the signed "
+                            f"manifest's {max_bytes}"
+                        )
+                    out.write(chunk)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GET /api/agent/bundle/download -> {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"GET /api/agent/bundle/download -> network error: {exc}") from exc
+
     def claim(self, agent_id: str, *, job_id: str | None = None) -> dict[str, Any] | None:
         query = urllib.parse.urlencode(
             {"agent_id": agent_id, **({"job_id": job_id} if job_id else {})}

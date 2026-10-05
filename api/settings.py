@@ -232,6 +232,11 @@ class Settings:
     # Empty = no floor, which is the default: a gate that refuses work by
     # default would strand every fleet on the upgrade that introduced it.
     agent_min_version: str = ""
+    # Directory holding the signed sensor bundle served at GET /api/agent/bundle
+    # (OCTO_AGENT_BUNDLE_DIR, #363): sensor-bundle.json, its .sig and the
+    # archive it names. Empty = no bundle; the route answers 404. The API only
+    # hands these out -- the sensor checks the signature against its own key.
+    agent_bundle_dir: str = ""
     # TCP ports the SSH push deployer and its host-key probe may dial (#240).
     # The probe opens a connection to a host and port taken from the request
     # body and reports what answered, which over an open range is a port
@@ -1720,6 +1725,7 @@ def load_settings() -> Settings:
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=agent_stale_seconds,
         agent_min_version=os.environ.get("OCTO_AGENT_MIN_VERSION", "").strip(),
+        agent_bundle_dir=os.environ.get("OCTO_AGENT_BUNDLE_DIR", "").strip(),
         agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),
         agent_deploy_enforce_scan_scope=os.environ.get(
             "OCTO_AGENT_DEPLOY_ENFORCE_SCAN_SCOPE", "false"

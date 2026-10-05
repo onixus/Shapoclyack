@@ -288,6 +288,41 @@ pipeline {
         }
       }
     }
+
+    // Бандл сенсора (#363): пакет agent из тега, манифест с версией и sha256,
+    // подпись манифеста тем же ключом релиза, что и образы. Сенсор проверяет
+    // её ключом, зашитым в agent/update.py (= cosign.pub), и ничему с сервера
+    // на слово не верит. Скрипт сборки — из ревизии пайплайна
+    // (.release-tooling), исходник — из тега, как у образов. DRY_RUN собирает
+    // без подписи: такой бандл ни один сенсор не поставит. Результат —
+    // артефакт прогона; оператор кладёт его в OCTO_AGENT_BUNDLE_DIR
+    // (docs/operations.md, «Sensor bundle updates»).
+    stage('Sensor bundle') {
+      steps {
+        script {
+          if (params.DRY_RUN) {
+            sh '''
+              set -eu
+              .release-tooling/scripts/build-sensor-bundle.sh --source agent \
+                --out dist/sensor-bundle --revision "$(git rev-parse HEAD)"
+            '''
+          } else {
+            withCredentials([
+              file(credentialsId: 'COSIGN_PRIVATE_KEY', variable: 'COSIGN_KEY'),
+              string(credentialsId: 'COSIGN_PASSWORD', variable: 'COSIGN_PASSWORD'),
+            ]) {
+              sh '''
+                set -eu
+                PATH="$WORKSPACE/.tools:$PATH" .release-tooling/scripts/build-sensor-bundle.sh --source agent \
+                  --out dist/sensor-bundle --revision "$(git rev-parse HEAD)" \
+                  --key "$COSIGN_KEY" --pubkey .release-tooling/cosign.pub
+              '''
+            }
+          }
+          archiveArtifacts artifacts: 'dist/sensor-bundle/*', fingerprint: true
+        }
+      }
+    }
   }
 
   post {

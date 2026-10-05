@@ -1752,7 +1752,8 @@ previous release's sensor until that pin lands.
 
 Without it, the native path installs Python and a virtualenv under
 `/opt/shapoclyack-agent`, installs the sensor's Python dependencies into it from
-`requirements-agent.lock` (`nats-py`, `psutil`; the installer carries a copy)
+`requirements-agent.lock` (`nats-py`, `psutil`, `PyYAML`, and `cryptography` for the
+bundle updater; the installer carries a copy)
 with `pip install --require-hashes --only-binary :all:` — a file whose sha256 is
 not in the lock is refused, and only wheels are taken, which exist for x86_64 and
 aarch64 with glibc or musl — creates a `shapoclyack` system account in a
@@ -1781,10 +1782,12 @@ on an older interpreter is rebuilt.
 created it in `nogroup` on Alpine and then failed at `chown`. Remove that
 account (`deluser shapoclyack`) and re-run.
 
-**The native path does not ship the sensor source.** The API serves no sensor
-bundle, so the package has to come from somewhere explicit: pass
-`--bundle-url <URL>` with a tarball containing the `agent` package, or stage
-that package in the install directory beforehand. With neither, the installer
+**The native path does not ship the sensor source.** The installer takes the
+package from somewhere explicit: pass `--bundle-url <URL>` with a tarball
+containing the `agent` package, or stage that package in the install directory
+beforehand. This first install is not signature-checked — the operator running
+it is the one vouching for the tarball. Every later update can be, see
+[Sensor bundle updates](#sensor-bundle-updates). With neither, the installer
 **fails** and says why — it will not leave systemd restarting a sensor that
 cannot import its own module. Before starting the service it runs
 `import agent.worker` and checks the unit is still active three seconds after
@@ -2169,26 +2172,164 @@ Operational limits worth knowing before relying on it:
 `upgrade_requested` on the `agents` record. For a sensor that is a marker for
 the operator surface — no channel carries it to the host, and the sensor does
 not act on it.
-The upgrade itself runs on the host. `scripts/update-agent.sh` is not installed
-by the installer — copy it to the target and run it as root, telling it where
-the new package comes from:
-
-```bash
-sudo bash update-agent.sh --bundle-url https://internal.example/shapoclyack-agent.tar.gz
-```
-
-It reads `/etc/shapoclyack/agent.env`, refreshes the virtualenv's build tooling,
-replaces the `agent` package from that tarball, verifies the result imports, and
-restarts `shapoclyack-agent.service` or the `shapoclyack-agent` container. With
-no `--bundle-url` it refuses to run unless you pass `--restart-only`, which
-refreshes dependencies and restarts **without** changing the `agent` package
-and reports exactly that. There is no self-update: nothing polls the server for a
-new version. For a Docker install, pull the new image and re-run the installer
-with `--docker` (or roll the Kubernetes deployment).
+The upgrade itself runs on the host. On a native sensor that is
+`scripts/update-agent.sh` (not installed by the installer — copy it to the
+target) run as root, which installs the **signed sensor bundle**; see
+[Sensor bundle updates](#sensor-bundle-updates). `--restart-only` restarts the
+sensor without touching the package. There is no self-update: the sensor
+process never replaces itself, and nothing polls the server for a new version
+unless you install a timer for it. For a Docker install, pull the new image and
+re-run the installer with `--docker` (or roll the Kubernetes deployment).
 
 **Removing a sensor** from the Sensors page (`DELETE /api/agents/{id}`) only
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
+
+### Sensor bundle updates
+
+A native sensor updates from a **signed bundle**
+([#363](https://github.com/onixus/Shapoclyack/issues/363)): the `agent` package
+as a tarball, and a manifest naming its version, sha256 and size, signed with
+the **release key** — the cosign key pair that signs the images
+([supply-chain.md](supply-chain.md)). The publish job builds and signs it in its
+`Sensor bundle` stage (`scripts/build-sensor-bundle.sh`) and archives three
+files: `sensor-bundle.json`, `sensor-bundle.json.sig` and
+`shapoclyack-sensor-<version>.tar.gz`. A `DRY_RUN` builds them unsigned, and no
+sensor will install that.
+
+**Publishing it.** Put the three files in a directory every API replica can
+read and point `OCTO_AGENT_BUNDLE_DIR` at it. The API reads them on each
+request, so replacing them publishes a new bundle without a restart. Check what
+the sensors will be offered:
+
+```bash
+cosign verify-blob --key cosign.pub --insecure-ignore-tlog \
+  --signature sensor-bundle.json.sig sensor-bundle.json
+```
+
+(`--insecure-ignore-tlog` because the signature is not in Rekor: sensors verify
+offline against the pinned key, so a transparency-log entry is nothing they
+would look at.)
+
+**Updating a sensor.** Copy `scripts/update-agent.sh` somewhere only root can
+write — it is what runs as root — and run it there:
+
+```bash
+sudo install -m 0755 -o root -g root update-agent.sh /usr/local/sbin/shapoclyack-update-agent
+sudo shapoclyack-update-agent            # fetch from the API this sensor reports to
+sudo shapoclyack-update-agent --check    # verify and report, change nothing
+sudo shapoclyack-update-agent --bundle-dir /media/usb/sensor-bundle   # air-gapped
+```
+
+**Root does two things and nothing else**: it runs the verifier *as the
+sensor's account* (`runuser -u shapoclyack`, BusyBox `su` on Alpine) and it
+restarts the unit. The install directory belongs to that account, so root
+running the venv's interpreter or the `agent` package would hand the account a
+way to root; as the account, the updater changes nothing the account could not
+already change. Run directly as root over a tree another account owns,
+`python -m agent.update` refuses for that reason.
+
+The verifier is `python -m agent.update` from the **installed** package — the
+one already on the host, never the one arriving. It reads the URL and the
+credential from `/etc/shapoclyack/agent.env`, and only those and the proxy/CA
+variables: `OCTO_AGENT_BUNDLE_PUBKEY_FILE` and `OCTO_AGENT_PROVISIONING_KEY_FILE`
+written into that file are ignored. What it refuses, before anything on disk
+changes:
+
+- a manifest whose signature does not verify against the key pinned in
+  `agent/update.py` (the repository's `cosign.pub`; `OCTO_AGENT_BUNDLE_PUBKEY_FILE`
+  replaces it for an installation that signs its own). **The API being the
+  configured server counts for nothing**: a compromised API cannot get code onto
+  a sensor without the release key;
+- a signed document that is not a sensor bundle manifest (the release key also
+  signs image payloads);
+- an archive whose size or sha256 differs from the signed manifest, or a server
+  that streams more than the signed size;
+- a **downgrade**: a version below the installed one, by the signed version and
+  in the `dpkg` ordering `OCTO_AGENT_MIN_VERSION` uses. A replayed old bundle has
+  a genuine signature, so this check is what stops it. The installed version is
+  "nothing to do", not an error;
+- a version below `OCTO_AGENT_MIN_VERSION` — the API's (served as `min_version`)
+  or one set in the sensor's own `agent.env`, whichever is higher;
+- an archive holding anything but regular files and directories under `agent/`,
+  or an `agent` package whose `__version__` is not the signed version.
+
+**How it installs.** Each release is unpacked under
+`/opt/shapoclyack-agent/releases/<version>-<random>/agent`, and
+`/opt/shapoclyack-agent/agent` — what the unit imports, since it runs from that
+directory — becomes a symlink to it, replaced with an atomic `rename(2)`. The
+first update moves the installer's plain `agent` directory under `releases/`
+as `legacy-<version>-…`. In order:
+
+1. **stage** — unpack, check the version, import `agent.worker` from the staged
+   tree in a fresh isolated interpreter of the sensor's venv. A release that does
+   not import never goes live;
+2. **swap** — journal the previous release to `.sensor-update.json`, then swap
+   the link;
+3. **health check** — the script, as root, runs
+   `systemctl restart shapoclyack-agent.service`, and the unit must stay active
+   **as the same process** for 20 seconds (`HEALTH_SECONDS`). `Restart=always`
+   brings a crashing sensor back every five seconds and calls it active, so a
+   changing main PID is what fails it;
+4. **keep or revert** — healthy: `--commit` drops the journal. Not: `--rollback`
+   points the link back at the previous release, the unit is restarted onto it
+   and the script exits `1` with the reason. If the script is killed between
+   swap and verdict (an SSH session dropped mid-check), the next run — `--check`
+   included — finds the journal and puts the previous release back **before**
+   asking whether there is anything to install, so the same version still being
+   offered cannot leave the unverified release live.
+
+One update runs at a time (a lock in the install directory); a second one
+started meanwhile stops with "another sensor update is running".
+
+The live release and the one before it are kept; older ones are removed.
+Without systemd (OpenRC hosts) the health check is the import of the swapped-in
+tree, and the sensor process has to be restarted by hand.
+
+Limits worth knowing:
+
+- **the restart interrupts a running scan**. The job's lease runs out and it is
+  handed out again, but update an idle sensor where you can;
+- **dependencies are not updated.** A bundle that needs a Python package the
+  venv lacks fails the pre-swap import and is refused, safely; such a release
+  is installed by re-running `install-agent.sh`, which reinstalls the venv from
+  the hash-locked list;
+- **a sensor installed before this release has no verifier.** `update-agent.sh`
+  says so and stops; upgrade such a host once by re-running the installer;
+- `update-agent.sh --bundle-url` is **gone**: it installed an unsigned tarball
+  from whatever the URL served. It now stops and points here;
+- **no freshness, no revocation.** A signature does not expire, so an API in an
+  attacker's hands cannot install anything unsigned or older, but it chooses
+  which genuine newer release to offer — or offers none and keeps the fleet
+  where it is. Watch the fleet's versions (`GET /api/agents/summary`) rather
+  than assume a published fix arrived;
+- the install directory and its code stay owned by the sensor's account, as the
+  installer leaves them: the updater does not make the sensor's own account any
+  less able to change its own code, it only keeps root from running it.
+
+**Automatic updates are off, and stay off unless you turn them on twice.** The
+sensor never updates itself, and nothing runs the updater on a schedule. To opt
+in, set `OCTO_AGENT_AUTO_UPDATE=true` in `agent.env` **and** install a timer
+that runs the root-owned script with `--auto` (without the variable, `--auto`
+exits doing nothing):
+
+```ini
+# /etc/systemd/system/shapoclyack-agent-update.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shapoclyack-update-agent --auto
+
+# /etc/systemd/system/shapoclyack-agent-update.timer
+[Timer]
+OnCalendar=Sun 03:00
+RandomizedDelaySec=2h
+[Install]
+WantedBy=timers.target
+```
+
+The timer runs the script as root, and the script runs the verifier as the
+sensor's account, exactly as by hand. The same checks apply, and a refused or
+failed update leaves the running release in place.
 
 ## Tenant-defined roles
 

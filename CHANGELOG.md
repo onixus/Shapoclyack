@@ -6,6 +6,34 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Signed sensor update bundle
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)).** The publish
+  job's new `Sensor bundle` stage builds the `agent` package into a
+  reproducible tarball with a `sensor-bundle.json` manifest (version, sha256,
+  size) and signs the manifest with the release key that signs the images
+  (`scripts/build-sensor-bundle.sh`; unsigned under `DRY_RUN`). With
+  `OCTO_AGENT_BUNDLE_DIR` set, the API serves it to sensors at
+  `GET /api/agent/bundle` (manifest, signature, `min_version`) and
+  `GET /api/agent/bundle/download` — agent JWT, `403` for an endpoint agent,
+  `404` with none published, `503` when the archive does not match its
+  manifest. On the host, `scripts/update-agent.sh` now runs
+  `python -m agent.update` **as the sensor's account** — root only restarts
+  the unit and judges the restart, so it never runs code from a tree that
+  account can rewrite — and the updater installs the bundle only if the manifest
+  verifies against the release key **pinned in the installed package** (never
+  because the configured server sent it), the archive matches the signed
+  digest and size, and the signed version is above the installed one and not
+  below `OCTO_AGENT_MIN_VERSION`. The install stages the release under
+  `releases/`, import-checks it, swaps the `agent` symlink atomically, restarts
+  the unit and requires it to stay up as one process, and puts the previous
+  release back otherwise — also after a crash, from a journal, before the next
+  run asks whether anything is new. `--bundle-dir`
+  does the same from local files for air-gapped hosts. **Automatic updates stay
+  off**: nothing runs the updater unless an operator installs a timer, and its
+  `--auto` mode does nothing without `OCTO_AGENT_AUTO_UPDATE=true`. Native
+  sensors gain `cryptography` in `requirements-agent.lock`. See
+  docs/operations.md § Sensor bundle updates.
+
 - **Tenant-defined roles
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
   member managers can define roles of their own — a name, a rank and an
@@ -667,6 +695,16 @@ All notable changes to Shapoclyack are documented in this file.
   empty.
 
 ### Security
+
+- **`update-agent.sh --bundle-url` no longer installs an unsigned tarball
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)).** It downloaded
+  whatever the URL served, unpacked it over the installed sensor as root and
+  restarted it; the only check was that the result imported. The option now
+  stops with a pointer to the signed path (`--bundle-dir`, or no option to
+  fetch from the API). `--restart-only` no longer runs an unpinned
+  `pip install --upgrade pip setuptools wheel` either. Rotating the release key
+  now also means replacing the key pinned in `agent/update.py` and shipping
+  that release's bundle signed with the old key (docs/supply-chain.md).
 
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route

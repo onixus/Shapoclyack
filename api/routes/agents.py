@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from api.auth import (
     AGENT_TENANT_CLOSED_ATTR,
@@ -45,6 +46,7 @@ from api.schemas import (
     CreateAgentDeploymentKeyRequest,
     JobInfo,
     Page,
+    SensorBundleInfo,
     SetAgentGroupRequest,
     UpdateAgentStatusRequest,
 )
@@ -57,6 +59,7 @@ from api.services import audit as audit_service
 from api.services import config_override as config_override_service
 from api.services import jobs as jobs_service
 from api.services import scan_policy
+from api.services import sensor_bundle
 from api.settings import Settings
 
 router = APIRouter(tags=["agents"])
@@ -844,6 +847,80 @@ def get_deploy_status(
 # deployment had just told the target to fetch. OCTO_AGENT_INSTALLER overrides
 # it for an installation that ships its own script.
 _INSTALLER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install-agent.sh"
+
+
+def _published_bundle(
+    request: Request, principal: AgentPrincipal, settings: Settings
+) -> sensor_bundle.SensorBundle:
+    """The bundle for a sensor of this tenant, or the status that says why not (#363).
+
+    Not refused to a disabled, quarantined or below-the-floor sensor: an
+    upgrade is how such a host gets repaired, and the bundle is the release
+    every customer already has. An endpoint agent is refused -- it is not the
+    program this bundle replaces.
+    """
+    if principal.agent_id:
+        agent = _agent_for_request(request, principal, principal.agent_id)
+        if agent is not None and agent.tenant_id != principal.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+        if agent is not None and agent.agent_kind == agents_service.KIND_ENDPOINT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The sensor bundle is not for endpoint agents",
+            )
+    try:
+        return sensor_bundle.current_bundle(settings.agent_bundle_dir)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"The sensor bundle on this server is inconsistent: {exc}",
+        ) from exc
+
+
+@router.get(
+    "/agent/bundle",
+    response_model=SensorBundleInfo,
+    responses={
+        404: {"description": "No sensor bundle is published (OCTO_AGENT_BUNDLE_DIR)"},
+        503: {"description": "The published bundle's files do not match its manifest"},
+    },
+)
+def get_sensor_bundle(
+    request: Request,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SensorBundleInfo:
+    """The signed manifest of the sensor bundle, for ``python -m agent.update``.
+
+    Transport only: the sensor trusts the manifest because the release key it
+    pins signed it, not because this route returned it.
+    """
+    bundle = _published_bundle(request, principal, settings)
+    return SensorBundleInfo(
+        version=bundle.version,
+        archive=bundle.archive,
+        sha256=bundle.sha256,
+        size=bundle.size,
+        manifest=base64.b64encode(bundle.manifest).decode("ascii"),
+        signature=bundle.signature,
+        min_version=(settings.agent_min_version or "").strip() or None,
+    )
+
+
+@router.get(
+    "/agent/bundle/download",
+    response_class=FileResponse,
+    responses={404: {"description": "No sensor bundle is published"}},
+)
+def download_sensor_bundle(
+    request: Request,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> FileResponse:
+    bundle = _published_bundle(request, principal, settings)
+    return FileResponse(bundle.archive_path, media_type="application/gzip", filename=bundle.archive)
 
 
 @router.get("/agent/install.sh", response_class=PlainTextResponse)
