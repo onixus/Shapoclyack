@@ -458,6 +458,11 @@ def test_a_grant_reaches_a_session_opened_before_it(tmp_path, monkeypatch, clock
 
     _grant(client, "default", "climber", "admin", admin=admin)
     assert _confined(client, headers)
+    # The console recognises the refusal by how it opens and re-reads
+    # ``/auth/me`` for the banner (web-next/src/lib/mfa-confinement.ts).
+    assert client.get("/api/runs", headers=headers).json()["detail"].startswith(
+        "This installation requires multi-factor authentication for your account"
+    )
     me = client.get("/api/auth/me", headers=headers).json()
     assert me["mfa_pending"] is True
     assert me["mfa_required"] is True
@@ -587,7 +592,10 @@ def test_the_key_policy_follows_tenant_authority_too(tmp_path, monkeypatch, cloc
     coded = _signed_in_with_code(client, "boss", clock, secret)
     refused = client.get("/api/runs", headers=coded)
     assert refused.status_code == 403
-    assert "security key" in refused.json()["detail"]
+    # The opening the console's banner re-read keys on (mfa-confinement.ts).
+    assert refused.json()["detail"].startswith(
+        "This installation requires a security key (WebAuthn) for your account"
+    )
     me = client.get("/api/auth/me", headers=coded).json()
     assert me["phishing_resistant_required"] is True
     assert me["phishing_resistant_pending"] is True
@@ -1058,6 +1066,66 @@ def test_the_console_key_mint_asks_for_the_credential_permission(tmp_path, monke
     pushed = client.post("/api/agent/deploy/ssh?tenant_id=acme", headers=token_admin, json=push)
     assert pushed.status_code == 403, pushed.text
     assert "Role 'admin'" in pushed.json()["detail"]
+
+
+def test_a_token_admin_reads_the_snippets_it_mints_into(tmp_path, monkeypatch):
+    """The dialog's ``GET`` follows the ``POST`` it exists for, and nothing more.
+
+    The mint moved to ``tenant.credential.manage`` so that ``token-admin`` has
+    the console's button; the dialog renders the snippets from the ``GET``,
+    which stayed at operator rank, so a ``token-admin`` got 403 on opening it
+    and the mint was reachable from the API only. The fleet list is not part
+    of minting and stays at operator.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _user(client, "keys")
+    _grant(client, "acme", "keys", "token-admin")
+    _user(client, "watcher")
+    _grant(client, "acme", "watcher", "viewer")
+    token_admin = bearer(_login(client, "keys")["access_token"])
+    viewer = bearer(_login(client, "watcher")["access_token"])
+
+    snippets = client.get("/api/agent/deployment-command?tenant_id=acme", headers=token_admin)
+    assert snippets.status_code == 200, snippets.text
+    assert snippets.json()["key_minted"] is False
+
+    refused = client.get("/api/agent/deployment-command?tenant_id=acme", headers=viewer)
+    assert refused.status_code == 403, refused.text
+    assert client.get("/api/agents?tenant_id=acme", headers=token_admin).status_code == 403
+
+
+def test_the_ssh_push_refuses_on_rank_before_asking_for_a_step_up(tmp_path, monkeypatch, clock):
+    """A second factor is not demanded for an action that was never going to be allowed.
+
+    The rank check sat in the route body, after ``StepUpDep``: an enrolled
+    ``token-admin`` with a stale step-up was sent to re-verify, did, and was
+    then told the push takes the admin rank.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _user(client, "keys")
+    _grant(client, "acme", "keys", "token-admin")
+    stale = bearer(_login(client, "keys")["access_token"])
+    _enrol(client, stale, clock, "keys")
+    push = {
+        "host": "192.168.10.50",
+        "port": 22,
+        "username": "root",
+        "password": "not-sent",
+        "agent_id": "agent-remote-50",
+        "expected_host_key": "SHA256:" + "A" * 43,
+    }
+
+    pushed = client.post("/api/agent/deploy/ssh?tenant_id=acme", headers=stale, json=push)
+    assert pushed.status_code == 403, pushed.text
+    assert "Role 'admin'" in pushed.json()["detail"]
+    # The same session is stale for what it *may* do: the mint asks for the step-up.
+    _refused_for_step_up(
+        client.post(
+            "/api/agent/deployment-command?tenant_id=acme", headers=stale, json={"label": "x"}
+        )
+    )
 
 
 def test_a_rank_3_member_manager_after_0073_hands_the_credential_on(tmp_path, monkeypatch):

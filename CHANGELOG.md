@@ -723,7 +723,16 @@ All notable changes to Shapoclyack are documented in this file.
   /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
   /api/users/{u}/sessions/revoke-all`. A permission variable made only of
   unknown keys refuses to start instead of reading as `none`. The requirement
-  is computed once per request.
+  is computed once per request. Review round 3: `GET
+  /api/agent/deployment-command` (the dialog's placeholder snippets) is now
+  readable by a holder of `tenant.credential.manage` as well as by an
+  operator, and the console shows the **Sensors** page to a `token-admin` with
+  the **Deploy Agent** dialog and without the fleet list (`GET /api/agents`
+  stays operator) — before, the mint it was moved for was reachable through
+  the API only. The SSH push refuses below the admin rank before it asks for
+  a step-up, not after. The console notices a confinement that starts
+  mid-session: the first enrolment `403` re-reads `/api/auth/me` once, so the
+  banner appears without a reload.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

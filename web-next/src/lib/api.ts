@@ -1,5 +1,6 @@
 import axios from "axios";
 import { activeSinceIssued, lastActivity } from "@/lib/session";
+import { isConfinementRefusal, noteConfinement } from "@/lib/mfa-confinement";
 import { isStepUpRefusal, useStepUpStore } from "@/lib/step-up";
 import type { WebAuthnAnswer, WebAuthnOptions } from "@/lib/webauthn";
 import type { AxiosError, InternalAxiosRequestConfig } from "axios";
@@ -284,6 +285,12 @@ api.interceptors.response.use(
     const detail = error?.response?.data?.detail;
     if (isStepUpRefusal(error?.response?.status, detail)) {
       useStepUpStore.getState().request(String(detail));
+    }
+    // A 403 that means "this session may only enrol a second factor now",
+    // which since #504 can begin mid-session. Re-read the principal so the
+    // enrolment banner appears; still rejects, like the step-up above.
+    if (isConfinementRefusal(error?.response?.status, detail)) {
+      noteConfinement();
     }
     return Promise.reject(error);
   },
