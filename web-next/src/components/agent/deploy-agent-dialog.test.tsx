@@ -40,7 +40,11 @@ async function openDialog(user: Me) {
   await userEvent.click(screen.getByRole("button", { name: /Deploy Sensor/i }));
 }
 
-const REFUSED = /takes tenant admin/i;
+/** The mint notice. Names the permission rather than "tenant admin": a
+ * tenant role at rank 3 without the permission *is* at the tenant admin rank,
+ * and `token-admin` is not, yet holds it (#504). */
+const REFUSED = /Minting one takes the tenant\.credential\.manage permission/i;
+const PUSH_REFUSED = /The push takes the tenant admin rank and the tenant\.credential\.manage/i;
 
 describe("DeployAgentDialog", () => {
   beforeEach(() => {
@@ -57,7 +61,7 @@ describe("DeployAgentDialog", () => {
       principal("viewer", "token-admin", ["tenant.credential.manage"], 1),
     );
 
-    expect(screen.getByText(REFUSED)).toBeInTheDocument();
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Start Installation/i })).toBeDisabled();
     await userEvent.type(screen.getByLabelText(/Target Host/i), "192.168.10.50");
     expect(screen.getByRole("button", { name: /Read from host/i })).toBeDisabled();
@@ -71,7 +75,7 @@ describe("DeployAgentDialog", () => {
       principal("viewer", "admin", ["tenant.credential.manage", "tenant.member.manage"], 3),
     );
 
-    expect(screen.queryByText(REFUSED)).not.toBeInTheDocument();
+    expect(screen.queryByText(PUSH_REFUSED)).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/Target Host/i), "192.168.10.50");
     expect(screen.getByRole("button", { name: /Read from host/i })).toBeEnabled();
   });
@@ -80,12 +84,17 @@ describe("DeployAgentDialog", () => {
     // The other half: the rank alone used to be the gate, and minted keys.
     await openDialog(principal("viewer", "deployer", ["config.read"], 3));
 
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Linux One-Liner/i }));
     expect(screen.getByText(REFUSED)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Generate key/i })).toBeDisabled();
   });
 
   it("refuses a tenant operator, who does not", async () => {
     await openDialog(principal("viewer", "operator", ["config.read", "scan.cancel"]));
 
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Linux One-Liner/i }));
     expect(screen.getByText(REFUSED)).toBeInTheDocument();
   });
 
@@ -95,6 +104,6 @@ describe("DeployAgentDialog", () => {
     // than refusing everybody.
     await openDialog(principal("admin", "admin", undefined));
 
-    expect(screen.queryByText(REFUSED)).not.toBeInTheDocument();
+    expect(screen.queryByText(PUSH_REFUSED)).not.toBeInTheDocument();
   });
 });

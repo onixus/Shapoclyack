@@ -58,8 +58,8 @@ const ROLE_RANK: Record<string, number> = {
 const GLOBAL_ROLE_RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 
 /**
- * What one door needs. Exactly one of the three is meaningful per entry, and
- * they are checked in this order:
+ * What one door needs. Exactly one of these is meaningful per entry, and
+ * they are checked in this order (`anyOf`, below, combines them):
  *
  * - `permission` — a named permission in the active tenant, which is what
  *   anything gated by `require_permission` on the server needs;
@@ -74,6 +74,11 @@ export type Requirement = {
   permission?: string;
   minRole?: string;
   globalMinRole?: Role;
+  /** Any one of these, for a door whose route takes either of two
+   * authorities — the sensors page, where the fleet is operator's and the
+   * **Deploy Agent** dialog's key mint is `tenant.credential.manage` (#504).
+   * Checked before the other three; an empty list opens nothing. */
+  anyOf?: readonly Requirement[];
 };
 
 /** The role this principal holds in the tenant the console is scoped to.
@@ -163,6 +168,7 @@ export function withinAuthority(
 
 /** The one gate. Everything above is a named shorthand for a call to this. */
 export function can(user: Principal, requirement: Requirement): boolean {
+  if (requirement.anyOf) return requirement.anyOf.some((each) => can(user, each));
   if (requirement.permission) {
     // No list at all means an API older than #318, which sends none: fall back
     // to the global role the door used to be gated on, so an upgrade in two

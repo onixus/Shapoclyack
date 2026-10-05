@@ -16,6 +16,7 @@ import {
   type Me,
 } from "@/lib/api";
 import { canOperate as canOperateIn } from "@/lib/authz";
+import { onConfinement } from "@/lib/mfa-confinement";
 import { signWithKey } from "@/lib/webauthn";
 
 export { can, holdsPermission, isTenantAdmin, tenantRole } from "@/lib/authz";
@@ -199,3 +200,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 }));
+
+// A session confined mid-way (#504) is told so by the API on its next request;
+// the interceptor hands that here, and the re-read is what raises the banner.
+// Nothing to do once the principal already says so, or with nobody signed in.
+onConfinement(async () => {
+  const { user } = useAuthStore.getState();
+  if (!user || user.mfa_pending || user.phishing_resistant_pending) return;
+  const me = await fetchMe();
+  useAuthStore.setState({ user: me, canOperate: canOperateIn(me) });
+});
