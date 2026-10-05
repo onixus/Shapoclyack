@@ -301,3 +301,30 @@ def test_the_api_ingress_example_admits_the_executor_and_not_its_neighbours() ->
     # pod in the cluster and made its podSelector decorative.
     assert not admits(EXECUTOR_NS, {"app.kubernetes.io/component": "something-else"})
     assert not admits("default", EXECUTOR_LABELS)
+
+
+def test_the_mtls_api_patch_trusts_the_ingress_and_not_the_pod_network() -> None:
+    """#309, review of #509: the patch used to trust ``10.244.0.0/16``, the
+    whole pod CIDR — the scanner-executor and Prometheus, which may open 8080,
+    included. From a trusted address any of them could forward a "verified"
+    certificate. The placeholders must trust nobody real, a client CA must be
+    there to check what is forwarded, and the API's ingress policy must admit
+    the controller pods only."""
+    [deployment] = [d for d in _load(EXAMPLES / "agent-mtls-api-patch.yaml") if d["kind"] == "Deployment"]
+    [api] = [c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "api"]
+    env = {item["name"]: item.get("value", "") for item in api["env"]}
+    entries = [entry.strip() for entry in env["OCTO_AGENT_MTLS_TRUSTED_PROXIES"].split(",") if entry.strip()]
+    assert entries
+    for entry in entries:
+        net = ipaddress.ip_network(entry, strict=False)
+        assert any(net.version == doc.version and net.subnet_of(doc) for doc in DOCUMENTATION_PREFIXES), (
+            f"{entry} is not a documentation prefix: the example would trust a real range as shipped"
+        )
+    assert env.get("OCTO_AGENT_MTLS_CLIENT_CA")
+
+    policies = _network_policies(API_INGRESS)
+    controller = {"app.kubernetes.io/name": "ingress-nginx", "app.kubernetes.io/component": "controller"}
+    assert _ingress_admits(policies, CONTROL_PLANE_NS, API_LABELS, "ingress-nginx", controller, API_PORT)
+    assert not _ingress_admits(
+        policies, CONTROL_PLANE_NS, API_LABELS, "ingress-nginx", {"app.kubernetes.io/name": "default-backend"}, API_PORT
+    )

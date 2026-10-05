@@ -962,6 +962,11 @@ export type AgentFleetSummary = {
   client_certs_expiring?: number;
   /** Sensors whose certificates have all run out. */
   client_certs_expired?: number;
+  /** Sensors an operator's revocation locked out until their enrolment is reset. */
+  client_cert_locked?: number;
+  /** Sensors refused in the last day for presenting no certificate while
+   * holding a live one: another host enrolled with their token. */
+  client_cert_conflicts?: number;
 };
 
 export type AgentDeploySSHRequest = {

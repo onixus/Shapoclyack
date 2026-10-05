@@ -1450,8 +1450,8 @@ switches.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OCTO_AGENT_MTLS_MODE` | `off` | `off` — the token alone, as before; no certificate is read. `optional` — a presented certificate must be the token's sensor's own (`403` otherwise), a request without one passes: the migration mode. `required` — every sensor and Agent request needs one. A misspelt value refuses to start, in every environment |
-| `OCTO_AGENT_MTLS_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs of the TLS-terminating ingress (ingress-nginx controller pods). The `ssl-client-verify` / `ssl-client-cert` / `ssl-client-subject-dn` headers are believed **only** from these peers; from anywhere else they are ignored, as if nothing was presented. Separate from `OCTO_TRUSTED_PROXIES`, which only decides whose `X-Forwarded-For` keys a rate-limit bucket |
-| `OCTO_AGENT_MTLS_CLIENT_CA` | *(empty; falls back to `OCTO_AGENT_MTLS_ISSUER_CERT`)* | PEM bundle of the CA(s) that issue sensor certificates. The API's own TLS listener asks clients for a certificate from it, and a certificate an ingress forwards is checked against it again — so an `auth-tls-secret` pointed at the wrong CA does not widen who gets in. With an ingress, it must hold the **issuing** CA (the ingress forwards the leaf only) |
+| `OCTO_AGENT_MTLS_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs of the TLS-terminating ingress — the ingress-nginx controller and nothing else: its nodes' addresses if it runs on hostNetwork, or a pod range only it gets. **Never the cluster's pod CIDR**: any pod with a trusted address that can reach the API port can forward a "verified" certificate. The `ssl-client-verify` / `ssl-client-cert` / `ssl-client-subject-dn` headers are believed **only** from these peers; from anywhere else they are ignored, as if nothing was presented. Parsed once at start; an entry that is not an IP or CIDR (a host name) refuses to start. Requires `OCTO_AGENT_MTLS_CLIENT_CA`. Separate from `OCTO_TRUSTED_PROXIES`, which only decides whose `X-Forwarded-For` keys a rate-limit bucket |
+| `OCTO_AGENT_MTLS_CLIENT_CA` | *(empty; falls back to `OCTO_AGENT_MTLS_ISSUER_CERT`)* | PEM bundle of the CA(s) that issue sensor certificates. The API's own TLS listener asks clients for a certificate from it, and a certificate an ingress forwards is checked against it again — so an `auth-tls-secret` pointed at the wrong CA does not widen who gets in. With an ingress, it must hold the **issuing** CA (the ingress forwards the leaf only), and it is mandatory: without it a forwarded certificate is never believed, and `OCTO_AGENT_MTLS_TRUSTED_PROXIES` refuses to start |
 | `OCTO_AGENT_MTLS_ISSUER_CERT` / `OCTO_AGENT_MTLS_ISSUER_KEY` | *(empty)* | CA certificate and unencrypted PEM key that sign CSRs at `POST /api/agent/certificate`. Both or neither. Use an intermediate that signs sensor certificates and nothing else — the API believes any certificate it signs that names a sensor |
 | `OCTO_AGENT_MTLS_TRUST_DOMAIN` | `shapoclyack` | The SPIFFE trust domain: a certificate names its sensor as `spiffe://<domain>/tenant/<tenant_id>/sensor/<agent_id>` (`/agent/` for a Lariska Agent). URIs of any other domain are not identities here |
 | `OCTO_AGENT_MTLS_CERT_DAYS` | `30` | Lifetime of a certificate this API signs (1–365). The response says when to renew: two thirds in |
@@ -1459,8 +1459,11 @@ switches.
 
 **Refused at start**, in every environment: a mode that is not one of the
 three; `required` with no way for a certificate to arrive (neither
-`OCTO_AGENT_MTLS_TRUSTED_PROXIES` nor a TLS listener with a client CA); one
-half of the issuer pair; a path that does not exist.
+`OCTO_AGENT_MTLS_TRUSTED_PROXIES` nor a TLS listener with a client CA);
+`OCTO_AGENT_MTLS_TRUSTED_PROXIES` under `optional` or `required` without
+`OCTO_AGENT_MTLS_CLIENT_CA` (or `OCTO_AGENT_MTLS_ISSUER_CERT`), or with an
+entry that is not an IP or CIDR; one half of the issuer pair; a path that
+does not exist.
 
 **Which certificate is whose.** A certificate's identity is the SPIFFE URI in
 its SAN, in the configured trust domain — the form the API signs and the one a
@@ -1474,10 +1477,16 @@ sensor.
 `missing`, `revoked`, `expired`, `mismatch` (the certificate names, or is
 pinned to, a different sensor), `unbound` (it names nobody), `no-identity` (the
 legacy shared `OCTO_AGENT_TOKEN`, which has no sensor to bind to and is refused
-under `required`). A sensor answers `401` by re-exchanging its key, which would
-succeed and be refused again at the poll rate. Everything but `missing` is
-recorded as `agent.certificate_refused` in the audit trail; `missing` is only
-logged, because a fleet that has not enrolled yet polls every few seconds.
+under `required`), `enrolment-locked` (an operator revoked one of the sensor's
+certificates; nothing without a certificate is accepted from it, in
+`optional` as in `required`, until its enrolment is reset). A sensor answers
+`401` by re-exchanging its key, which would succeed and be refused again at
+the poll rate. Everything but `missing` and `enrolment-locked` is recorded as
+`agent.certificate_refused` in the audit trail; those two are only logged,
+because a fleet that has not enrolled yet polls every few seconds and a
+locked sensor's revocation is already recorded — except `missing` for a
+sensor that holds a live certificate on record, which is recorded once per
+sensor per hour with `agent_holds_live_certificate: true`.
 
 ### Direct TLS on the API's listener
 

@@ -18,19 +18,27 @@ All notable changes to Shapoclyack are documented in this file.
   `agent.certificate_refused` audit row. The certificate comes from the API's
   own TLS listener (`CERT_OPTIONAL` against `OCTO_AGENT_MTLS_CLIENT_CA`) or
   from ingress-nginx's `ssl-client-*` headers, believed **only** from
-  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` and cross-checked against the client CA
-  and the verified subject. `POST /api/agent/certificate` signs a CSR with
+  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` (IPs/CIDRs, parsed at start, and only
+  together with `OCTO_AGENT_MTLS_CLIENT_CA` — both refused at start
+  otherwise) and cross-checked against the client CA and the verified subject,
+  compared as a name so nginx's RFC 2253 spelling of a Cyrillic, e-mail or
+  multi-valued subject matches. `POST /api/agent/certificate` signs a CSR with
   `OCTO_AGENT_MTLS_ISSUER_*` for the token's agent (a renewal must present the
-  current certificate; two live certificates per sensor overlap a rotation);
+  current certificate; two live certificates per sensor overlap a rotation;
+  `agent_kind` lets an endpoint Agent enrol before it registers);
   `GET/POST /api/agents/{id}/certificates` and `…/revoke` (by fingerprint,
-  serial or all) take effect on the next request; the fleet summary counts
-  sensors with a certificate and those expiring or expired, and the Sensors
+  serial or all) take effect on the next request, and a revocation locks the
+  sensor out of enrolling or calling without a certificate until
+  `POST /api/agents/{id}/certificates/reset-enrolment` (admin, step-up,
+  audited); a sensor refused while another host holds its live certificate is
+  audited once an hour. The fleet summary counts sensors with a certificate,
+  those expiring or expired, locked ones and such conflicts, and the Sensors
   page warns about them. The sensor presents `OCTO_AGENT_TLS_CLIENT_CERT/KEY`,
   re-reads them when cert-manager rotates them, or enrols and renews its own
   with `OCTO_AGENT_MTLS_ENROLL=true`. cert-manager, ingress and patch examples
   are in `k8s/shapoclyack/examples/agent-mtls-*`/`ingress-agent-mtls.*`; the
   rollout is in `docs/operations.md` § Sensor client certificates. Migration
-  `0077_agent_client_certs` (new table, tenant RLS). Datastore TLS stays a
+  `0077_agent_client_certs` (two new tables, tenant RLS). Datastore TLS stays a
   `prod` warning rather than a refusal — the decision and its reasons are in
   `docs/operations.md` § Transport encryption.
 - **Tenant-defined roles

@@ -586,9 +586,10 @@ def test_renewal_needs_the_current_certificate_and_keeps_one_previous(tmp_path, 
     assert sorted(fp for fp, state in states.items() if state == "valid") == sorted(issued[-2:])
     assert sum(1 for state in states.values() if state == "revoked") == 2
 
-    # Revoking all of them is the reset: enrolment from scratch works again.
+    # Enrolment from scratch takes the operator's reset (not a revocation:
+    # see test_a_revoked_sensor_cannot_enrol_itself_back_with_its_token).
     reset = client.post(
-        "/api/agents/sensor-a/certificates/revoke", headers=bearer(admin), json={"all": True}
+        "/api/agents/sensor-a/certificates/reset-enrolment", headers=bearer(admin), json={}
     )
     assert reset.status_code == 200
     fresh = client.post("/api/agent/certificate", headers=bearer(token_a), json={"csr": _csr("a")[1]})
@@ -670,6 +671,8 @@ def test_required_with_no_way_for_a_certificate_to_arrive_is_refused(monkeypatch
     with pytest.raises(InsecureConfigurationError, match="no client certificate can reach"):
         _agent_mtls_settings()
     monkeypatch.setenv("OCTO_AGENT_MTLS_TRUSTED_PROXIES", "10.42.0.0/16")
+    ca_path, _ = CA().write(tmp_path)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_CLIENT_CA", str(ca_path))
     assert _agent_mtls_settings()["agent_mtls_mode"] == "required"
 
 
@@ -892,6 +895,10 @@ def test_sensor_renews_at_renew_after_and_backs_off_after_a_failure(tmp_path):
     # A refusal repeated on every poll must not turn into an enrolment per poll.
     cert.force_enrolment()
     assert not cert.enrolment_due(now + 1)
+    # ...and the worker waits the delay out instead of polling into the same
+    # refusal (a revoked sensor's enrolment is refused until a reset).
+    assert cert.retry_pending(now + 1)
+    assert not cert.retry_pending(now + mtls.RETRY_SECONDS + 1)
     assert cert.enrolment_due(now + mtls.RETRY_SECONDS + 1)
 
 
@@ -951,3 +958,470 @@ def test_the_worker_classifies_a_certificate_refusal_by_its_header(monkeypatch):
     with pytest.raises(worker.AgentClientCertRefused) as caught:
         client.register(agent_id="sensor-a", hostname="edge", labels={})
     assert caught.value.reason == "revoked"
+
+
+# --------------------------------------------------------------------------
+# 11. A revocation sticks until an operator resets the agent's enrolment.
+# --------------------------------------------------------------------------
+
+
+def _enrol(client: TestClient, token: str, cert: str | None = None):  # type: ignore[no-untyped-def]
+    """``POST /api/agent/certificate``: token alone, or presenting ``cert`` via the ingress."""
+    if cert is None:
+        return client.post("/api/agent/certificate", headers=bearer(token), json={"csr": _csr("a")[1]})
+    return _peer(client, INGRESS_PEER).post(
+        "/api/agent/certificate",
+        headers={**bearer(token), **_forwarded(cert)},
+        json={"csr": _csr("a")[1]},
+    )
+
+
+def _revoke(client: TestClient, admin: str, agent_id: str, **body: object):  # type: ignore[no-untyped-def]
+    return client.post(
+        f"/api/agents/{agent_id}/certificates/revoke", headers=bearer(admin), json=body
+    )
+
+
+def _reset(client: TestClient, admin: str, agent_id: str, reason: str = ""):  # type: ignore[no-untyped-def]
+    return client.post(
+        f"/api/agents/{agent_id}/certificates/reset-enrolment",
+        headers=bearer(admin),
+        json={"reason": reason},
+    )
+
+
+@requires_postgres
+def test_a_revoked_sensor_cannot_enrol_itself_back_with_its_token(tmp_path, monkeypatch):
+    """The probe from the review of #509, in the order the sensor runs it.
+
+    Before: enrol → register → revoke → old certificate 403 → enrolment by
+    the token alone **200** → the stolen host back in service under
+    ``required`` about five seconds after the operator revoked it.
+    """
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    ingress = _peer(client, INGRESS_PEER)
+
+    first = _enrol(client, token_a)
+    assert first.status_code == 200, first.text
+    cert = first.json()["certificate"]
+    assert _register(ingress, token_a, _forwarded(cert)).status_code == 200
+
+    revoked = _revoke(
+        client, admin, "sensor-a", fingerprint=first.json()["fingerprint_sha256"], reason="laptop stolen"
+    )
+    assert revoked.status_code == 200, revoked.text
+    old = _register(ingress, token_a, _forwarded(cert))
+    assert (old.status_code, old.headers["X-Client-Cert-Error"]) == (403, "revoked")
+
+    # What agent/worker.py does next: the same enrolment, without the
+    # certificate. It is the token's last way back in, and it is shut.
+    by_token = _enrol(client, token_a)
+    assert by_token.status_code == 403, by_token.text
+    assert by_token.headers["X-Client-Cert-Error"] == "enrolment-locked"
+    assert "reset" in by_token.json()["detail"]
+    renewal = _enrol(client, token_a, cert)
+    assert (renewal.status_code, renewal.headers["X-Client-Cert-Error"]) == (403, "revoked")
+    bare = _register(client, token_a)
+    assert (bare.status_code, bare.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    assert all(
+        row["state"] == "revoked"
+        for row in client.get("/api/agents/sensor-a/certificates", headers=bearer(admin)).json()
+    )
+
+    # The operator's separate, deliberate act: re-imaged host, new enrolment.
+    reset = _reset(client, admin, "sensor-a", "host re-imaged")
+    assert reset.status_code == 200, reset.text
+    [event] = _events(client, admin, "agent.certificate_enrolment_reset")
+    assert event["after"]["reason"] == "host re-imaged"
+    fresh = _enrol(client, token_a)
+    assert fresh.status_code == 200, fresh.text
+    assert _register(ingress, token_a, _forwarded(fresh.json()["certificate"])).status_code == 200
+    # One enrolment per reset: the next one by token alone is a second
+    # certificate beside a live one, refused as before.
+    twice = _enrol(client, token_a)
+    assert (twice.status_code, twice.headers["X-Client-Cert-Error"]) == (403, "missing")
+
+
+@requires_postgres
+def test_revoking_all_is_not_a_reset_any_more(tmp_path, monkeypatch):
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="off")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    assert _register(client, token_a).status_code == 200
+    assert _enrol(client, token_a).status_code == 200
+
+    assert _revoke(client, admin, "sensor-a", all=True).status_code == 200
+    locked = _enrol(client, token_a)
+    assert (locked.status_code, locked.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    # A reset with a live certificate still on record revokes it: "enrol from
+    # scratch" means the old key stops working too.
+    assert _reset(client, admin, "sensor-a").status_code == 200
+    second = _enrol(client, token_a)
+    assert second.status_code == 200
+    assert _reset(client, admin, "sensor-a", "again").status_code == 200
+    states = {
+        row["fingerprint_sha256"]: row["state"]
+        for row in client.get("/api/agents/sensor-a/certificates", headers=bearer(admin)).json()
+    }
+    assert states[second.json()["fingerprint_sha256"]] == "revoked"
+    assert _enrol(client, token_a).status_code == 200
+
+
+@requires_postgres
+def test_under_optional_a_revoked_sensor_cannot_fall_back_to_its_token(tmp_path, monkeypatch):
+    ca = CA()
+    client, admin, token_a, token_b = _fleet(tmp_path, monkeypatch, mode="optional", ca=ca)
+    ingress = _peer(client, INGRESS_PEER)
+    cert = ca.sensor("default", "sensor-a")
+    assert _register(ingress, token_a, _forwarded(cert)).status_code == 200
+    assert _register(client, token_a).status_code == 200
+    assert _register(client, token_b).status_code == 200
+
+    assert _revoke(client, admin, "sensor-a", fingerprint=cert.fingerprint, reason="copied").status_code == 200
+    without = _register(client, token_a)
+    assert (without.status_code, without.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    with_revoked = _register(ingress, token_a, _forwarded(cert))
+    assert (with_revoked.status_code, with_revoked.headers["X-Client-Cert-Error"]) == (403, "revoked")
+    # Sensor B never had a certificate revoked; optional is unchanged for it.
+    assert _register(client, token_b).status_code == 200
+
+    assert _reset(client, admin, "sensor-a").status_code == 200
+    assert _register(client, token_a).status_code == 200
+
+
+@requires_postgres
+def test_resetting_enrolment_is_an_admin_write_behind_step_up(tmp_path, monkeypatch):
+    from tests.conftest import auth_headers
+    from tests.test_api_mfa import Clock, enrol
+
+    client, admin, token_a, _ = _fleet(tmp_path, monkeypatch, mode="optional", ca=CA())
+    assert _register(client, token_a).status_code == 200
+    operator = client.post(
+        "/api/agents/sensor-a/certificates/reset-enrolment",
+        headers=bearer(login(client, "operator")),
+        json={},
+    )
+    assert operator.status_code == 403
+
+    clock = Clock()
+    monkeypatch.setattr("api.services.mfa._now", clock)
+    headers = auth_headers(client, "admin")
+    enrol(client, headers, clock)
+    stale = client.post(
+        "/api/agents/sensor-a/certificates/reset-enrolment", headers=headers, json={}
+    )
+    assert stale.status_code == 403
+    assert "multi-factor" in stale.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# 12. Headers from the ingress are checked against our CA, always.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["optional", "required"])
+def test_trusted_proxies_without_a_client_ca_are_refused_at_start(monkeypatch, tmp_path, mode):
+    from api.settings import _agent_mtls_settings
+
+    for name in ("OCTO_API_TLS_CERT", "OCTO_AGENT_MTLS_CLIENT_CA", "OCTO_AGENT_MTLS_ISSUER_CERT", "OCTO_AGENT_MTLS_ISSUER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", mode)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_TRUSTED_PROXIES", "10.42.0.7")
+    with pytest.raises(InsecureConfigurationError, match="OCTO_AGENT_MTLS_CLIENT_CA"):
+        _agent_mtls_settings()
+    ca_path, _ = CA().write(tmp_path)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_CLIENT_CA", str(ca_path))
+    assert _agent_mtls_settings()["agent_mtls_mode"] == mode
+
+
+def test_an_unparsable_trusted_proxy_is_refused_at_start_by_its_own_name(monkeypatch, tmp_path):
+    from api.settings import _agent_mtls_settings
+
+    ca_path, _ = CA().write(tmp_path)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", "required")
+    monkeypatch.setenv("OCTO_AGENT_MTLS_CLIENT_CA", str(ca_path))
+    monkeypatch.setenv("OCTO_AGENT_MTLS_TRUSTED_PROXIES", "10.42.0.7, ingress-nginx-controller")
+    with pytest.raises(InsecureConfigurationError) as caught:
+        _agent_mtls_settings()
+    assert "OCTO_AGENT_MTLS_TRUSTED_PROXIES" in str(caught.value)
+    assert "ingress-nginx-controller" in str(caught.value)
+    assert "OCTO_TRUSTED_PROXIES " not in str(caught.value)
+
+
+@requires_postgres
+def test_a_forwarded_certificate_is_not_believed_without_a_ca_to_check_it(tmp_path, monkeypatch):
+    """Settings built around the start-up check (as every test here does) must
+    still not turn "a pod in the trusted range said SUCCESS" into a sensor."""
+    client, _admin, token_a, _ = _fleet(tmp_path, monkeypatch, mode="required", ca=None)
+    attacker = CA("Attacker CA").sensor("default", "sensor-a")
+    forged = _register(_peer(client, INGRESS_PEER), token_a, _forwarded(attacker))
+    assert forged.status_code == 403
+    assert "OCTO_AGENT_MTLS_CLIENT_CA" in forged.json()["detail"]
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "usage, not_before_days, problem",
+    [
+        ("server", -1, "not issued for client authentication"),
+        ("client", 1, "not valid yet"),
+    ],
+)
+def test_a_forwarded_certificate_must_be_for_clients_and_already_valid(
+    tmp_path, monkeypatch, usage, not_before_days, problem
+):
+    from cryptography.x509.oid import ExtendedKeyUsageOID
+
+    ca = CA()
+    client, _admin, token_a, _ = _fleet(tmp_path, monkeypatch, mode="required", ca=ca)
+    cert = ca.sensor(
+        "default",
+        "sensor-a",
+        usage=ExtendedKeyUsageOID.SERVER_AUTH if usage == "server" else ExtendedKeyUsageOID.CLIENT_AUTH,
+        not_before=datetime.now(UTC) + timedelta(days=not_before_days),
+    )
+    refused = _register(_peer(client, INGRESS_PEER), token_a, _forwarded(cert))
+    assert refused.status_code == 403
+    assert problem in refused.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# 13. The subject nginx forwards is compared as a name, not as a string.
+# --------------------------------------------------------------------------
+
+
+def _name(*rdns: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
+    from cryptography import x509
+    from cryptography.x509.oid import ObjectIdentifier
+
+    return x509.Name(
+        [
+            x509.RelativeDistinguishedName(
+                [x509.NameAttribute(ObjectIdentifier(oid), value) for oid, value in rdn]
+            )
+            for rdn in rdns
+        ]
+    )
+
+
+CN, O_, OU, C, ST, L = "2.5.4.3", "2.5.4.10", "2.5.4.11", "2.5.4.6", "2.5.4.8", "2.5.4.7"
+EMAIL = "1.2.840.113549.1.9.1"
+
+#: ``$ssl_client_s_dn`` exactly as nginx 1.27 (nginx:alpine, OpenSSL 3) wrote
+#: it for a certificate with that subject, captured from a live
+#: ``ssl_verify_client optional`` server during the review of #509.
+NGINX_SUBJECTS = {
+    "cyrillic O and emailAddress": (
+        [[(C, "RU")], [(O_, "ООО «Ромашка»")], [(CN, "edge-01")], [(EMAIL, "ops@example.ru")]],
+        "emailAddress=ops@example.ru,CN=edge-01,"
+        r"O=\D0\9E\D0\9E\D0\9E \C2\AB\D0\A0\D0\BE\D0\BC\D0\B0\D1\88\D0\BA\D0\B0\C2\BB,C=RU",
+    ),
+    "multi-valued RDN": (
+        [[(OU, "IT"), (CN, "sensor-a")], [(O_, "Corp")]],
+        "O=Corp,CN=sensor-a+OU=IT",
+    ),
+    "escapes, Russian OIDs, short names": (
+        [
+            [(CN, 'a, b+c "q" <x>;\\z ')],
+            [(O_, "#hash")],
+            [("0.9.2342.19200300.100.1.25", "corp")],
+            [("0.9.2342.19200300.100.1.1", "u1")],
+            [("1.2.643.3.131.1.1", "7700000000")],
+            [("1.2.643.100.1", "1027700000000")],
+            [("2.5.4.5", "SN-1")],
+            [(ST, "Москва")],
+            [(L, "Moscow")],
+        ],
+        r"L=Moscow,ST=\D0\9C\D0\BE\D1\81\D0\BA\D0\B2\D0\B0,serialNumber=SN-1,"
+        r"OGRN=1027700000000,INN=7700000000,UID=u1,DC=corp,O=\#hash,"
+        r'CN=a\, b\+c \"q\" \<x\>\;\\z\ ',
+    ),
+    "unknown OID dumped as DER": (
+        [[("1.3.6.1.4.1.99999.1", "custom")], [(CN, "bmp")]],
+        "CN=bmp,1.3.6.1.4.1.99999.1=#0C06637573746F6D",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NGINX_SUBJECTS))
+def test_the_subject_nginx_forwards_matches_the_certificate(case):
+    from api.core import client_cert
+
+    rdns, nginx_dn = NGINX_SUBJECTS[case]
+    cert = CA().sensor("default", "sensor-a", subject=_name(*rdns)).cert
+    assert client_cert.subject_matches(nginx_dn, cert.subject)
+    # What uvicorn hands the app after HTTP trimmed the header's trailing
+    # whitespace — the space of a trailing backslash-space escape included.
+    assert client_cert.subject_matches(nginx_dn.rstrip(), cert.subject)
+    # And cryptography's own spelling of it, which the older tests forward.
+    assert client_cert.subject_matches(cert.subject.rfc4514_string(), cert.subject)
+
+
+@pytest.mark.parametrize(
+    "lying",
+    [
+        "emailAddress=ops@example.ru,CN=edge-02,"
+        r"O=\D0\9E\D0\9E\D0\9E \C2\AB\D0\A0\D0\BE\D0\BC\D0\B0\D1\88\D0\BA\D0\B0\C2\BB,C=RU",
+        # The same attributes in another order is another name.
+        "CN=edge-01,emailAddress=ops@example.ru,"
+        r"O=\D0\9E\D0\9E\D0\9E \C2\AB\D0\A0\D0\BE\D0\BC\D0\B0\D1\88\D0\BA\D0\B0\C2\BB,C=RU",
+        # One RDN fewer.
+        "CN=edge-01,"
+        r"O=\D0\9E\D0\9E\D0\9E \C2\AB\D0\A0\D0\BE\D0\BC\D0\B0\D1\88\D0\BA\D0\B0\C2\BB,C=RU",
+        # Two RDNs merged into one multi-valued RDN.
+        "emailAddress=ops@example.ru+CN=edge-01,"
+        r"O=\D0\9E\D0\9E\D0\9E \C2\AB\D0\A0\D0\BE\D0\BC\D0\B0\D1\88\D0\BA\D0\B0\C2\BB,C=RU",
+        # Broken escapes and garbage are no name at all.
+        r"emailAddress=ops@example.ru,CN=edge-01,O=\D0\9,C=RU",
+        "not a dn",
+        "",
+    ],
+)
+def test_a_different_subject_does_not_match(lying):
+    from api.core import client_cert
+
+    rdns, _ = NGINX_SUBJECTS["cyrillic O and emailAddress"]
+    cert = CA().sensor("default", "sensor-a", subject=_name(*rdns)).cert
+    assert not client_cert.subject_matches(lying, cert.subject)
+
+
+@requires_postgres
+def test_a_corporate_subject_forwarded_by_nginx_is_accepted(tmp_path, monkeypatch):
+    """Before: 403 ``missing`` — the RFC 2253 string nginx writes and the one
+    cryptography writes differ for exactly the certificates a pin is for."""
+    ca = CA()
+    client, _admin, token_a, _ = _fleet(tmp_path, monkeypatch, mode="required", ca=ca)
+    ingress = _peer(client, INGRESS_PEER)
+    rdns, nginx_dn = NGINX_SUBJECTS["cyrillic O and emailAddress"]
+    cert = ca.sensor("default", "sensor-a", subject=_name(*rdns))
+    accepted = _register(ingress, token_a, {**_forwarded(cert), "ssl-client-subject-dn": nginx_dn})
+    assert accepted.status_code == 200, accepted.text
+
+
+# --------------------------------------------------------------------------
+# 14. A sensor shut out by somebody else's first enrolment shows up.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+def test_a_sensor_locked_out_by_an_earlier_enrolment_is_audited_once_and_counted(tmp_path, monkeypatch):
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    ingress = _peer(client, INGRESS_PEER)
+
+    # Whoever holds a copy of the token enrols first...
+    thief = _enrol(client, token_a)
+    assert thief.status_code == 200
+    assert _register(ingress, token_a, _forwarded(thief.json()["certificate"])).status_code == 200
+    # ...and the real sensor, polling, is refused every time.
+    for _ in range(3):
+        real = _enrol(client, token_a)
+        assert (real.status_code, real.headers["X-Client-Cert-Error"]) == (403, "missing")
+        assert _register(client, token_a).status_code == 403
+
+    [event] = _events(client, admin, "agent.certificate_refused")
+    assert event["resource_id"] == "sensor-a"
+    assert event["after"]["reason"] == "missing"
+    assert event["after"]["agent_holds_live_certificate"] is True
+    summary = client.get("/api/agents/summary", headers=bearer(admin)).json()
+    assert summary["client_cert_conflicts"] == 1
+
+    # The operator's answer: revoke what the other host holds, reset, let
+    # the real sensor enrol. The conflict is over.
+    assert _revoke(client, admin, "sensor-a", all=True, reason="enrolled elsewhere").status_code == 200
+    assert _reset(client, admin, "sensor-a").status_code == 200
+    summary = client.get("/api/agents/summary", headers=bearer(admin)).json()
+    assert summary["client_cert_conflicts"] == 0
+    assert summary["client_cert_locked"] == 0
+
+
+# --------------------------------------------------------------------------
+# 15. What the review's surviving mutations left unpinned.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+def test_a_certificate_that_ran_out_while_offline_needs_no_operator(tmp_path, monkeypatch):
+    """operations.md promises it: expiry is not revocation, enrolment by token
+    is open again once nothing live is on record."""
+    from sqlalchemy import update
+
+    from api.db import models
+    from api.db.engine import get_session
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    first = _enrol(client, token_a)
+    assert first.status_code == 200
+    assert _enrol(client, token_a).status_code == 403  # live: renewal needs it
+
+    with get_session(settings.postgres_url) as session:
+        session.execute(
+            update(models.AgentClientCert)
+            .where(models.AgentClientCert.agent_id == "sensor-a")
+            .values(not_after=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1))
+        )
+    again = _enrol(client, token_a)
+    assert again.status_code == 200, again.text
+
+
+@requires_postgres
+def test_an_issued_certificate_cannot_sign_others(tmp_path, monkeypatch):
+    from cryptography import x509
+
+    ca = CA()
+    client = _client(tmp_path, monkeypatch, _issuer_settings(tmp_path, ca, agent_mtls_mode="off"))
+    token_a = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+    enrolled = _enrol(client, token_a)
+    assert enrolled.status_code == 200
+    issued = x509.load_pem_x509_certificate(enrolled.json()["certificate"].encode("ascii"))
+    constraints = issued.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert constraints.critical and constraints.value.ca is False
+    usage = issued.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert not usage.key_cert_sign and not usage.crl_sign
+
+
+@requires_postgres
+def test_an_endpoint_agent_can_follow_its_contract_under_required(tmp_path, monkeypatch):
+    """The order docs/operations.md gives Lariska: token, enrol (no
+    certificate yet, so before register — register needs one under
+    ``required``), then register and everything else with the certificate.
+    The certificate names an ``/agent/``, not a ``/sensor/``."""
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    token = _token(client, _mint_key(client, login(client, "admin")), "laptop-7")
+
+    enrolled = client.post(
+        "/api/v1/agent/certificate",
+        headers=bearer(token),
+        json={"csr": _csr("laptop-7")[1], "agent_kind": "endpoint"},
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    assert enrolled.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")
+    registered = _peer(client, INGRESS_PEER).post(
+        "/api/v1/agent/register",
+        headers={**bearer(token), **_forwarded(enrolled.json()["certificate"])},
+        json={"hostname": "laptop-7", "agent_kind": "endpoint"},
+    )
+    assert registered.status_code == 200, registered.text
+    # Once the agent is on record, its kind is the record's, not the CSR body's.
+    renewed = _peer(client, INGRESS_PEER).post(
+        "/api/v1/agent/certificate",
+        headers={**bearer(token), **_forwarded(enrolled.json()["certificate"])},
+        json={"csr": _csr("laptop-7")[1], "agent_kind": "scanner"},
+    )
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["spiffe_id"] == spiffe("default", "laptop-7", kind="agent")

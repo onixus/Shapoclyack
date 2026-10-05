@@ -459,7 +459,8 @@ class AgentResultInFlight(AgentResultRejected):
 #: ``no-identity`` — see ``api/services/agent_certs.py``.
 _CLIENT_CERT_ERROR_HEADER = "X-Client-Cert-Error"
 #: The reasons a fresh enrolment can cure. ``mismatch`` and ``unbound`` are
-#: the wrong certificate on this host, which only an operator can sort out.
+#: the wrong certificate on this host, which only an operator can sort out;
+#: so is ``enrolment-locked`` — a revocation, until the operator resets it.
 _RENEWABLE_CERT_REASONS = frozenset({"missing", "revoked", "expired"})
 
 
@@ -2081,10 +2082,15 @@ def run_loop(args: argparse.Namespace) -> int:
                         "enrolling a new one" if renewable else message,
                     )
                 last_cert_message = message
-                if renewable:
+                if renewable and not client_cert.retry_pending():
                     client_cert.force_enrolment()
                     cert_check_at = 0.0
                     shutdown_event.wait(min(args.poll_interval, 5.0))
+                elif renewable:
+                    # The enrolment itself was refused — locked by a
+                    # revocation until an operator resets it. Wait it out.
+                    client_cert.force_enrolment()
+                    shutdown_event.wait(mtls.RETRY_SECONDS)
                 else:
                     shutdown_event.wait(DISABLED_BACKOFF_SECONDS)
             except AgentDisabled as exc:

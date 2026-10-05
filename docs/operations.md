@@ -2029,15 +2029,40 @@ this is how to get a fleet onto them without stopping it.
 - *Behind ingress-nginx* (every shipped Kubernetes layout): the ingress
   verifies the certificate and forwards it in `ssl-client-*` headers —
   `examples/ingress-agent-mtls.example.yaml`. Set
-  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` to the controller pods' addresses; headers
-  from anything else are ignored. Every Ingress host that routes to the API
+  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` to the controller's addresses and nothing
+  else — the nodes of a hostNetwork controller, or a pod range only the
+  controller gets (a Calico IPPool / Cilium pool bound to its namespace) —
+  **never the cluster's pod CIDR**: the scanner-executor and Prometheus may
+  open the API port too, and from a trusted address any pod can forward a
+  "verified" certificate. Apply `examples/networkpolicy-api-ingress.example.yaml`
+  with it, so only the controller pods reach port 8080 from that side.
+  `OCTO_AGENT_MTLS_CLIENT_CA` is mandatory with the list (the API refuses to
+  start without it, and an entry that is not an IP or CIDR): every forwarded
+  certificate is checked against it. Every Ingress host that routes to the API
   must carry the `auth-tls-*` annotations, with
   `auth-tls-pass-certificate-to-upstream: "true"` — on a host without them the
   headers are whatever the client wrote, and the controller is still a trusted
   peer.
-- *On the API's own listener* (`OCTO_API_TLS_CERT`, a lab stand or an
-  appliance): set `OCTO_AGENT_MTLS_CLIENT_CA`; the handshake verifies the
-  certificate itself.
+- *On the API's own listener* (`OCTO_API_TLS_CERT`, a lab stand, an appliance,
+  or a TLS-passthrough / L4 path to the API): set `OCTO_AGENT_MTLS_CLIENT_CA`;
+  the handshake verifies the certificate itself.
+
+**What the header path proves, and what it does not.** The ingress checked
+that the client held the key; the API sees only the certificate the ingress
+says it was, and cannot check possession itself. So behind an ingress, a
+sensor's identity is as good as two things outside the API: that every host
+routing to it verifies (`auth-tls-*`), and that nothing but the controller
+reaches the API port from a trusted address — anything that does needs only a
+sensor's *public* certificate and its token. For `required` where that
+matters, prefer the API's own listener (it makes the handshake), or a
+dedicated sensor host on the ingress with `auth-tls-verify-client: "on"`, so
+no request on that host gets through without a verified certificate. The
+subject the ingress forwards (`ssl-client-subject-dn`) is compared with the
+certificate's as a name, not as a string: nginx writes it in OpenSSL's
+RFC 2253 form (`emailAddress=`, `\D0\9E…` for non-ASCII, `INN=`/`OGRN=`),
+which a corporate subject in Cyrillic, with an e-mail address or a
+multi-valued RDN reaches exactly. nginx older than 1.11.6 writes the legacy
+`/C=…/O=…` form, which is not read — upgrade it.
 
 **Where certificates come from.**
 
@@ -2092,15 +2117,51 @@ cert-manager's renewals overlap the same way (`renewBefore`).
 presents a certificate:
 
 ```bash
+# a stolen or copied host: everything this sensor holds
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"all": true, "reason": "laptop stolen"}'
 # one certificate, by fingerprint (colons optional) or serial
 curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
-  -d '{"fingerprint": "ab12…", "reason": "laptop stolen"}'
+  -d '{"fingerprint": "ab12…", "reason": "old key found on a share"}'
 curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
   -d '{"serial": "4f2a…"}'
-# everything this sensor holds — also the reset for a sensor that lost its key
-curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
-  -d '{"all": true, "reason": "re-imaged"}'
 ```
+
+**A revocation also locks the sensor.** Without that, revoking would undo
+itself: with nothing live left on record, the host's token would enrol a new
+certificate on its next poll (the review of #509 timed it at five seconds).
+After any revocation, until an operator resets it, the sensor:
+
+- cannot enrol by token alone (`403`, `X-Client-Cert-Error: enrolment-locked`) —
+  in every mode, `off` included, since enrolment does not depend on the mode;
+- cannot call anything without a certificate under `optional` as under
+  `required` (the same `enrolment-locked`), so a revoked host does not simply
+  fall back to its token;
+- still works with a certificate that is live and its own — revoking one old
+  certificate after a rotation does not stop the sensor holding the new one.
+  For a stolen host revoke `{"all": true}`, so it holds nothing live.
+
+Revoking the provisioning key or token is still the step that takes the
+token itself away (`docs/api-and-rbac.md`); the lock is what keeps a
+certificate revocation from being undone by it in the meantime. The sensor
+logs the refusal and retries every five minutes. `client_cert_locked` in
+`GET /api/agents/summary` counts locked sensors.
+
+**Resetting the enrolment** is the separate, deliberate act that lets the
+sensor enrol from scratch by its token — tenant admin, behind the same
+multi-factor step-up as minting a provisioning key, audited as
+`agent.certificate_enrolment_reset`:
+
+```bash
+curl -X POST "$API/api/agents/edge-01/certificates/reset-enrolment" -H "$AUTH" \
+  -d '{"reason": "host re-imaged, new key"}'
+```
+
+It revokes whatever of the sensor's certificates is still live ("from
+scratch" means the old key stops working too), lifts the lock, and allows one
+enrolment without a certificate: the next one is a renewal again. Whoever
+enrols first after a reset wins it, so if the token may be elsewhere, revoke
+the provisioning key and give the host a new one *before* resetting.
 
 A fingerprint the platform has never seen is recorded as a revocation all the
 same (`source: tombstone`), so a certificate can be revoked before its first
@@ -2110,27 +2171,54 @@ here, not by editing the ingress CA.
 
 **A sensor that lost its key** (re-imaged host, an emptyDir that went with its
 pod) cannot enrol again while its old certificate is live, because that rule
-is what stops a stolen token. Revoke with `{"all": true}`; the sensor's next
+is what stops a stolen token. Reset its enrolment (above); the sensor's next
 enrolment then succeeds without a certificate. A sensor whose certificate ran
-out while it was offline needs nothing: with no live certificate left it may
-enrol from scratch.
+out while it was offline needs nothing: expiry is not revocation, nothing
+locks, and with no live certificate left it enrols from scratch.
+
+**A sensor shut out by somebody else's enrolment.** The first enrolment of a
+sensor needs only its token, so whoever holds a copy of the token and enrols
+first gets the certificate; the real sensor is then refused with `missing` on
+every poll. That refusal — nothing presented while a live certificate of the
+same sensor is on record — is the one event that says the token is somewhere
+else, so it is recorded: `agent.certificate_refused` with
+`agent_holds_live_certificate: true`, at most once per sensor per hour, and
+`client_cert_conflicts` in `GET /api/agents/summary` counts the sensors with
+one in the last day (the Sensors page raises it). The same event fires for a
+sensor that lost its key or whose certificate the ingress stopped forwarding,
+so check the host first. If the certificate on record is not the host's:
+revoke the provisioning key, revoke `{"all": true}` on the sensor (which
+locks it), install a new key on the real host, then reset the enrolment.
+A cert-manager certificate the API has not seen yet does not count as live
+here — the first request with it records it.
 
 **Expiry** shows in the fleet summary: `client_certs_expiring` counts sensors
 whose newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`,
 `client_certs_expired` those whose certificates all have. Each sensor's list
 (`GET /api/agents/{id}/certificates`) says which is which.
 
-**Lariska.** The endpoint Agent has no client-certificate support yet; nothing
-in the API needs changing for it. Its contract: present a certificate whose SAN
-carries `spiffe://<domain>/tenant/<tenant_id>/agent/<agent_id>` (or one an
-operator pinned), on every request it already makes with its token; enrol by
-`POST /api/v1/agent/certificate` with `{"csr": "<PEM>"}` after
-`/api/v1/agent/register`, renewing at `renew_after` with the current
-certificate presented; treat `403` with `X-Client-Cert-Error` as "replace the
-certificate" for `missing`/`revoked`/`expired` and as an operator's problem
-otherwise. Until it does, `required` — an installation-wide mode — refuses
-every Agent: stay at `optional` while Agents are deployed, or pin certificates
-an MDM puts on the endpoints.
+**Lariska does not support client certificates yet.** Until it does,
+`required` — an installation-wide mode — refuses every Agent: stay at
+`optional` while Agents are deployed, or pin certificates an MDM puts on the
+endpoints. The contract it is to implement, in this order (the API side is in
+place and tested):
+
+1. Exchange the provisioning key for a token, as today.
+2. Enrol **before** registering — under `required`, register needs a
+   certificate: `POST /api/v1/agent/certificate` with
+   `{"csr": "<PEM>", "agent_kind": "endpoint"}` and no certificate. The answer
+   names `spiffe://<domain>/tenant/<tenant_id>/agent/<agent_id>`; without
+   `agent_kind` an agent not on record yet enrols as a sensor (`/sensor/`),
+   which binds the same but reads wrong. Once the agent is registered its
+   recorded kind wins.
+3. Present that certificate on every request from then on, `register` first.
+4. Renew at `renew_after`, presenting the current certificate.
+5. On `403` with `X-Client-Cert-Error`: `missing`/`revoked`/`expired` mean
+   "enrol again" — one attempt, then back off for minutes, because
+   `enrolment-locked` (a revocation, until an operator resets it) and
+   `missing` for an agent that already holds a live certificate do not clear
+   by retrying. `mismatch`, `unbound` and `no-identity` are an operator's
+   problem.
 
 ### SSH push deployment
 

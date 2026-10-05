@@ -1868,6 +1868,42 @@ class AgentClientCert(Base):
     )
 
 
+class AgentCertEnrolment(Base):
+    """Whether one agent may get a certificate by its token alone (#309).
+
+    Revoking a certificate is not enough to stop the host that holds it: with
+    no live certificate left on record, the token alone would enrol a new one
+    seconds later. So an operator's revocation also *locks* the agent
+    (``locked_at``): enrolment without a certificate is refused, and so is
+    every request without one, under ``optional`` as under ``required``,
+    until an operator resets the enrolment (``reset_at``) — a separate,
+    audited act.
+
+    ``conflict_at`` is the last time the agent was refused for presenting no
+    certificate while it holds a live one: somebody else enrolled first, or
+    the real sensor lost its key. Kept here so the audit row for it is written
+    once per window across replicas, and so the fleet view can count it.
+
+    A row exists only for an agent something has happened to; no row is "never
+    locked, never reset". Not a foreign key to ``agents``, for the reason
+    :class:`AgentClientCert` gives.
+    """
+
+    __tablename__ = "agent_cert_enrolments"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[str] = mapped_column(primary_key=True)
+    locked_at: Mapped[datetime | None] = mapped_column(default=None)
+    locked_by: Mapped[str | None] = mapped_column(default=None)
+    locked_reason: Mapped[str | None] = mapped_column(default=None)
+    reset_at: Mapped[datetime | None] = mapped_column(default=None)
+    reset_by: Mapped[str | None] = mapped_column(default=None)
+    reset_reason: Mapped[str | None] = mapped_column(default=None)
+    conflict_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
 class AgentSshHostKey(Base):
     """Pinned SSH host key for one deployment target, per tenant (#232).
 

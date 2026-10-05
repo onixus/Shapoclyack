@@ -1112,6 +1112,8 @@ def get_fleet_summary(
         client_cert_agents=certificates.agents_with_cert,
         client_certs_expiring=certificates.expiring,
         client_certs_expired=certificates.expired,
+        client_cert_locked=certificates.locked,
+        client_cert_conflicts=certificates.conflicts,
     )
 
 

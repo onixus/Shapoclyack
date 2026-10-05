@@ -1677,6 +1677,28 @@ def _agent_mtls_settings() -> dict[str, Any]:
     ):
         if path and not os.path.isfile(path):
             raise InsecureConfigurationError(f"{variable} names {path}, which does not exist.")
+    if mode != "off" and proxies:
+        from api.core.client_cert import parse_trusted_proxies
+
+        try:
+            parse_trusted_proxies(proxies)
+        except ValueError as exc:
+            raise InsecureConfigurationError(
+                f"OCTO_AGENT_MTLS_TRUSTED_PROXIES: {exc}. Every sensor behind that "
+                "ingress would be refused."
+            ) from exc
+        if not (client_ca or issuer_cert):
+            # The ingress's "SUCCESS" means "chained to the CA in my
+            # auth-tls-secret" — and from a trusted address that is not the
+            # ingress, nothing at all. Our own CA is the only check of a
+            # forwarded certificate the API can make.
+            raise InsecureConfigurationError(
+                "OCTO_AGENT_MTLS_TRUSTED_PROXIES is set, but OCTO_AGENT_MTLS_CLIENT_CA "
+                "(or OCTO_AGENT_MTLS_ISSUER_CERT) is not:\n"
+                "    a certificate forwarded in ssl-client-* headers would be believed\n"
+                "    whoever issued it. Set OCTO_AGENT_MTLS_CLIENT_CA to the CA that issues\n"
+                "    sensor certificates (the one in the ingress auth-tls-secret)."
+            )
     direct_tls = bool(os.environ.get("OCTO_API_TLS_CERT", "").strip()) and bool(
         client_ca or issuer_cert
     )

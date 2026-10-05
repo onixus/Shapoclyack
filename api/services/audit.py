@@ -112,6 +112,9 @@ ACTION_AGENT_CERT_ISSUE = "agent.certificate_issue"
 ACTION_AGENT_CERT_PIN = "agent.certificate_pin"
 ACTION_AGENT_CERT_REVOKE = "agent.certificate_revoke"
 ACTION_AGENT_CERT_REFUSED = "agent.certificate_refused"
+# Lifting the lock a revocation puts on enrolment by token alone: the act that
+# lets a host with only the token get a certificate again.
+ACTION_AGENT_CERT_ENROLMENT_RESET = "agent.certificate_enrolment_reset"
 # Agent groups (#361). Membership decides which worker may execute which of a
 # tenant's scans, so moving an agent between groups is an access-control change
 # and belongs in the same trail as granting a membership — "which agent was

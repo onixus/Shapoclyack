@@ -4,9 +4,12 @@ Revision ID: 0077_agent_client_certs
 Revises: 0072_run_publication_projected
 Create Date: 2026-10-05
 
-One new table, ``agent_client_certs``: the certificates a sensor or a Lariska
+Two new tables. ``agent_client_certs``: the certificates a sensor or a Lariska
 endpoint agent may authenticate with next to its bearer token, and their
-revocations. Read on every agent request that presents a certificate (when
+revocations. ``agent_cert_enrolments``: per agent, whether an operator's
+revocation has locked it out of enrolling by token alone, when it was last
+reset, and when it was last refused while another host held its certificate
+(see the model). Read on every agent request that presents a certificate (when
 ``OCTO_AGENT_MTLS_MODE`` is not ``off``), written when the API signs a CSR,
 when an operator pins or revokes one, and the first time a cert-manager
 certificate naming its sensor is seen.
@@ -17,7 +20,8 @@ certificate into another tenant's sensor's way (see the model).
 
 Tenant RLS as 0067 and 0068 lay it down for a table added after them: the
 permissive ``shapoclyack_unscoped`` for every role that is not the tenant role,
-the restrictive ``shapoclyack_tenant_isolation`` for it, and its grants.
+the restrictive ``shapoclyack_tenant_isolation`` for it, and its grants — on
+both tables.
 
 **Expand only.** Nothing existing changes meaning, and with the mode left at
 ``off`` — the default — nothing reads the table. A replica still on the
@@ -26,9 +30,10 @@ rolling deploy to ``required`` the old replicas therefore still accept a token
 alone, so switch the mode only once the rollout is complete
 (docs/operations.md § Sensor client certificates).
 
-Rollback is a plain drop: it forgets every issued and revoked certificate, and
-a revoked certificate becomes good again on the next upgrade only if a SPIFFE
-URI binds it — revoke the provisioning key as well if that matters.
+Rollback is a plain drop: it forgets every issued and revoked certificate and
+every lock, and a revoked certificate becomes good again on the next upgrade
+only if a SPIFFE URI binds it — revoke the provisioning key as well if that
+matters.
 
 The revision number leaves room for the parallel branches of the same wave;
 ``down_revision`` is re-chained when they merge.
@@ -78,6 +83,20 @@ def upgrade() -> None:
         "agent_client_certs",
         ["tenant_id", "agent_id"],
     )
+    op.create_table(
+        "agent_cert_enrolments",
+        sa.Column("tenant_id", sa.String(), nullable=False),
+        sa.Column("agent_id", sa.String(), nullable=False),
+        sa.Column("locked_at", sa.DateTime(), nullable=True),
+        sa.Column("locked_by", sa.String(), nullable=True),
+        sa.Column("locked_reason", sa.String(), nullable=True),
+        sa.Column("reset_at", sa.DateTime(), nullable=True),
+        sa.Column("reset_by", sa.String(), nullable=True),
+        sa.Column("reset_reason", sa.String(), nullable=True),
+        sa.Column("conflict_at", sa.DateTime(), nullable=True),
+        sa.ForeignKeyConstraint(["tenant_id"], ["tenants.tenant_id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("tenant_id", "agent_id"),
+    )
     if op.get_bind().dialect.name == "postgresql":
         op.execute(sa.text("ALTER TABLE agent_client_certs ENABLE ROW LEVEL SECURITY"))
         op.execute(sa.text(
@@ -93,8 +112,23 @@ def upgrade() -> None:
         op.execute(sa.text(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON agent_client_certs TO shapoclyack_tenant"
         ))
+        op.execute(sa.text("ALTER TABLE agent_cert_enrolments ENABLE ROW LEVEL SECURITY"))
+        op.execute(sa.text(
+            "CREATE POLICY shapoclyack_unscoped ON agent_cert_enrolments "
+            "AS PERMISSIVE FOR ALL TO PUBLIC USING (true) WITH CHECK (true)"
+        ))
+        op.execute(sa.text(
+            "CREATE POLICY shapoclyack_tenant_isolation ON agent_cert_enrolments "
+            "AS RESTRICTIVE FOR ALL TO shapoclyack_tenant "
+            "USING (tenant_id = shapoclyack_current_tenant()) "
+            "WITH CHECK (tenant_id = shapoclyack_current_tenant())"
+        ))
+        op.execute(sa.text(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON agent_cert_enrolments TO shapoclyack_tenant"
+        ))
 
 
 def downgrade() -> None:
+    op.drop_table("agent_cert_enrolments")
     op.drop_index("ix_agent_client_certs_tenant_agent", table_name="agent_client_certs")
     op.drop_table("agent_client_certs")

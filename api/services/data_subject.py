@@ -159,6 +159,8 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     # agent's own id, for one it enrolled or that superseded its predecessor.
     ("agent_client_certs", "created_by"): (PSEUDONYM, "certificate register"),
     ("agent_client_certs", "revoked_by"): (PSEUDONYM, "certificate register"),
+    ("agent_cert_enrolments", "locked_by"): (PSEUDONYM, "certificate register"),
+    ("agent_cert_enrolments", "reset_by"): (PSEUDONYM, "certificate register"),
     # JSON documents (review round 1): no column name says a document holds an
     # address, so every JSON column is decided here or below.
     ("notification_channels", "config"): (

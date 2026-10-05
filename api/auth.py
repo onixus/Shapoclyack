@@ -1483,6 +1483,7 @@ def _bind_client_certificate(
         )
     except agent_certs.ClientCertRefused as exc:
         agent_certs.record_refusal(
+            settings,
             audit_service.context_from_request(
                 request,
                 settings,

@@ -178,6 +178,15 @@ class ClientCertificate:
     def enrolment_failed(self, now: float | None = None) -> None:
         self._next_attempt = (time.time() if now is None else now) + RETRY_SECONDS
 
+    def retry_pending(self, now: float | None = None) -> bool:
+        """Whether a failed enrolment's retry delay is still running.
+
+        A revoked sensor's enrolment is refused until an operator resets it;
+        polling the API every few seconds in the meantime only fills the
+        audit trail with the same refusal.
+        """
+        return (time.time() if now is None else now) < self._next_attempt
+
     # --- writing ---------------------------------------------------------------
 
     def install(self, key_pem: bytes, issued: Mapping[str, Any]) -> None:

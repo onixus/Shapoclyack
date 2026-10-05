@@ -117,12 +117,15 @@ class CA:
         *,
         not_before: datetime | None = None,
         not_after: datetime | None = None,
+        subject: x509.Name | None = None,
     ) -> Issued:
         key = ec.generate_private_key(ec.SECP256R1())
         now = datetime.now(UTC)
         builder = (
             x509.CertificateBuilder()
-            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]))
+            .subject_name(
+                subject or x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+            )
             .issuer_name(self.cert.subject)
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
@@ -146,13 +149,19 @@ class CA:
         *,
         kind: str = "sensor",
         domain: str = TRUST_DOMAIN,
+        not_before: datetime | None = None,
         not_after: datetime | None = None,
+        subject: x509.Name | None = None,
+        usage: x509.ObjectIdentifier = ExtendedKeyUsageOID.CLIENT_AUTH,
     ) -> Issued:
+        """A sensor's certificate; ``subject`` for one an enterprise PKI shaped."""
         return self._issue(
             agent_id,
             [x509.UniformResourceIdentifier(spiffe(tenant_id, agent_id, kind, domain))],
-            ExtendedKeyUsageOID.CLIENT_AUTH,
+            usage,
+            not_before=not_before,
             not_after=not_after,
+            subject=subject,
         )
 
     def plain_client(self, common_name: str = "host-17.corp.example") -> Issued:

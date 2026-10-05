@@ -41,4 +41,13 @@ describe("ClientCertExpiryAlert", () => {
     expect(alert.textContent).toMatch(/1/);
     expect(alert.textContent).toMatch(/required/);
   });
+
+  it("raises a sensor shut out by another host's enrolment, and a locked one", () => {
+    render(
+      <ClientCertExpiryAlert summary={summary({ client_cert_conflicts: 1, client_cert_locked: 3 })} />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/another host/);
+    expect(alert.textContent).toMatch(/3 locked/);
+  });
 });

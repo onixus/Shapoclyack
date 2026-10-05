@@ -19,9 +19,21 @@ socket peer is in ``OCTO_AGENT_MTLS_TRUSTED_PROXIES`` — deliberately a list of
 its own rather than ``OCTO_TRUSTED_PROXIES``: that one decides whose
 ``X-Forwarded-For`` keys a rate-limit bucket, this one decides whose word
 authenticates a sensor. From any other peer the headers are ignored, and the
-request is treated as one that presented no certificate at all. When a client
-CA is configured, a forwarded certificate is also checked against it here, so
-an ingress pointed at the wrong CA Secret does not quietly widen who gets in.
+request is treated as one that presented no certificate at all. A forwarded
+certificate is also checked against ``OCTO_AGENT_MTLS_CLIENT_CA`` here — and
+without one it is not believed at all (start-up refuses that configuration;
+this is the same rule for a ``Settings`` built around start-up) — so an
+ingress pointed at the wrong CA Secret, or a pod in the trusted range that is
+not the ingress, does not quietly widen who gets in.
+
+What the header path proves is weaker than the API's own handshake: the
+ingress verified that *somebody* held the key, and the API sees the
+certificate it says that was. The API cannot check possession itself, so a
+host the ingress does not front, but that can reach the API port from a
+trusted address, needs only a sensor's public certificate and its token.
+That is why the trusted list should name the ingress controller and nothing
+else, and why a NetworkPolicy should keep everything else off the port
+(``k8s/shapoclyack/examples/agent-mtls-api-patch.yaml``).
 
 Nothing here decides *whether* a certificate is required or *whom* it belongs
 to — that is ``api/services/agent_certs.py``. This module answers "what was
@@ -44,7 +56,6 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from api.core.client_ip import parse_trusted_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +272,216 @@ def is_usable_now(cert: x509.Certificate, now: datetime) -> str | None:
     return None
 
 
+# --- the subject nginx forwards ----------------------------------------------
+#
+# ``$ssl_client_s_dn`` is OpenSSL's ``X509_NAME_print_ex(…, XN_FLAG_RFC2253)``:
+# RDNs last-first, OpenSSL's short names (``emailAddress``, ``INN``), every
+# byte past ASCII as ``\XX`` of its UTF-8, an attribute of a type it does not
+# know as ``#`` + the DER of its value in hex, and the AVAs of a multi-valued
+# RDN in whatever order it likes. cryptography's ``rfc4514_string`` agrees on
+# none of that, so the two are compared as names: a list of RDNs, each a set
+# of (OID, value).
+
+#: Attribute names either spelling uses, lower-cased, to their OIDs. One that
+#: is not here and is not a dotted OID makes the subject unreadable, which is
+#: a refusal, never a match.
+_DN_ATTRIBUTE_OIDS = {
+    "cn": "2.5.4.3",
+    "sn": "2.5.4.4",
+    "serialnumber": "2.5.4.5",
+    "c": "2.5.4.6",
+    "l": "2.5.4.7",
+    "st": "2.5.4.8",
+    "street": "2.5.4.9",
+    "o": "2.5.4.10",
+    "ou": "2.5.4.11",
+    "title": "2.5.4.12",
+    "businesscategory": "2.5.4.15",
+    "postalcode": "2.5.4.17",
+    "gn": "2.5.4.42",
+    "givenname": "2.5.4.42",
+    "initials": "2.5.4.43",
+    "generationqualifier": "2.5.4.44",
+    "dnqualifier": "2.5.4.46",
+    "pseudonym": "2.5.4.65",
+    "organizationidentifier": "2.5.4.97",
+    "emailaddress": "1.2.840.113549.1.9.1",
+    "dc": "0.9.2342.19200300.100.1.25",
+    "uid": "0.9.2342.19200300.100.1.1",
+    "jurisdictionl": "1.3.6.1.4.1.311.60.2.1.1",
+    "jurisdictionst": "1.3.6.1.4.1.311.60.2.1.2",
+    "jurisdictionc": "1.3.6.1.4.1.311.60.2.1.3",
+    # The Russian qualified-certificate attributes OpenSSL names.
+    "inn": "1.2.643.3.131.1.1",
+    "ogrn": "1.2.643.100.1",
+    "snils": "1.2.643.100.3",
+    "innle": "1.2.643.100.4",
+    "ogrnip": "1.2.643.100.5",
+}
+_HEX = frozenset("0123456789abcdefABCDEF")
+#: DER string tags a ``#``-dumped value may carry, and how their bytes read.
+_DER_STRING_CODECS = {
+    0x0C: "utf-8",  # UTF8String
+    0x12: "ascii",  # NumericString
+    0x13: "ascii",  # PrintableString
+    0x14: "latin-1",  # T61String, as OpenSSL reads it
+    0x16: "ascii",  # IA5String
+    0x1A: "ascii",  # VisibleString
+    0x1C: "utf-32-be",  # UniversalString
+    0x1E: "utf-16-be",  # BMPString
+}
+
+DistinguishedName = tuple[tuple[tuple[str, str], ...], ...]
+
+
+def _attribute_oid(name: str) -> str | None:
+    cleaned = name.strip()
+    if cleaned and all(part.isdigit() for part in cleaned.split(".")) and "." in cleaned:
+        return cleaned
+    return _DN_ATTRIBUTE_OIDS.get(cleaned.lower())
+
+
+def _der_string(hex_value: str) -> str | None:
+    """The text of a ``#``-dumped DER string, or ``None``."""
+    try:
+        data = bytes.fromhex(hex_value)
+    except ValueError:
+        return None
+    if len(data) < 2 or data[0] not in _DER_STRING_CODECS:
+        return None
+    length, offset = data[1], 2
+    if length & 0x80:
+        count = length & 0x7F
+        if count == 0 or count > 4 or len(data) < 2 + count:
+            return None
+        length, offset = int.from_bytes(data[2 : 2 + count], "big"), 2 + count
+    if len(data) != offset + length:
+        return None
+    try:
+        return data[offset:].decode(_DER_STRING_CODECS[data[0]])
+    except UnicodeDecodeError:
+        return None
+
+
+def _read_value(text: str, start: int) -> tuple[str | None, int]:
+    """One attribute value from ``start`` up to an unescaped ``,`` or ``+``."""
+    end = len(text)
+    if start < end and text[start] == "#":
+        stop = start + 1
+        while stop < end and text[stop] not in ",+":
+            stop += 1
+        return _der_string(text[start + 1 : stop]), stop
+    raw = bytearray()
+    index = start
+    while index < end and text[index] not in ",+":
+        char = text[index]
+        if char != "\\":
+            raw += char.encode("utf-8")
+            index += 1
+            continue
+        pair = text[index + 1 : index + 3]
+        if len(pair) == 2 and pair[0] in _HEX and pair[1] in _HEX:
+            raw.append(int(pair, 16))
+            index += 3
+        elif index + 1 < end:
+            raw += text[index + 1].encode("utf-8")
+            index += 2
+        else:
+            return None, end
+    try:
+        return raw.decode("utf-8"), index
+    except UnicodeDecodeError:
+        return None, index
+
+
+def parse_rfc2253(text: str) -> DistinguishedName | None:
+    """An RFC 2253 / 4514 string as RDNs in the order written; ``None`` if unreadable."""
+    if not text.strip():
+        return None
+    rdns: list[tuple[tuple[str, str], ...]] = []
+    avas: list[tuple[str, str]] = []
+    index = 0
+    while True:
+        equals = text.find("=", index)
+        if equals < 0:
+            return None
+        oid = _attribute_oid(text[index:equals])
+        if oid is None:
+            return None
+        value, index = _read_value(text, equals + 1)
+        if value is None:
+            return None
+        avas.append((oid, value))
+        if index >= len(text) or text[index] == ",":
+            rdns.append(tuple(sorted(avas)))
+            avas = []
+        if index >= len(text):
+            return tuple(rdns)
+        index += 1
+
+
+def _name_as_written(name: x509.Name) -> DistinguishedName:
+    """``name`` in the shape :func:`parse_rfc2253` gives, RDNs last-first as both write them."""
+    return tuple(
+        tuple(
+            sorted(
+                (attribute.oid.dotted_string, attribute.value)
+                if isinstance(attribute.value, str)
+                # A bit-string attribute (x500UniqueIdentifier) has no text
+                # either side could agree on: never equal to anything parsed.
+                else (attribute.oid.dotted_string, "\x00" + attribute.value.hex())
+                for attribute in rdn
+            )
+        )
+        for rdn in reversed(name.rdns)
+    )
+
+
+def subject_matches(dn: str, subject: x509.Name) -> bool:
+    """Whether the forwarded ``dn`` names ``subject``, as a name rather than as a string."""
+    text = dn.strip()
+    trailing = len(text) - len(text.rstrip("\\"))
+    if trailing % 2:
+        # A value ending in an escaped space (a backslash, then a space) loses the space to the
+        # HTTP layer, which trims header values; it was a space.
+        text += " "
+    parsed = parse_rfc2253(text)
+    return parsed is not None and parsed == _name_as_written(subject)
+
+
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def parse_trusted_proxies(entries: Sequence[str]) -> tuple[Network, ...]:
+    """``OCTO_AGENT_MTLS_TRUSTED_PROXIES`` as networks; ``ValueError`` names a bad entry.
+
+    Strict, unlike ``api.core.client_ip.parse_trusted_proxies``: dropping an
+    entry there only makes a rate limiter coarser, while here it is an
+    ingress whose sensors are all refused — so start-up refuses it instead
+    (``api.settings``), and a host name, which this list cannot hold, is said
+    to be one.
+    """
+    networks: list[Network] = []
+    for entry in entries:
+        cleaned = entry.strip()
+        if not cleaned:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(cleaned, strict=False))
+        except ValueError as exc:
+            raise ValueError(
+                f"{cleaned!r} is not an IP address or CIDR (a host name cannot be trusted "
+                "here: name the ingress controller's pod or node addresses)"
+            ) from exc
+    return tuple(networks)
+
+
+@lru_cache(maxsize=8)
+def _trusted_networks(entries: tuple[str, ...]) -> tuple[Network, ...]:
+    """Parsed once per distinct list, not once per request."""
+    return parse_trusted_proxies(entries)
+
+
 def _is_trusted(peer: str | None, networks: Sequence[Any]) -> bool:
     try:
         address = ipaddress.ip_address((peer or "").strip())
@@ -305,7 +526,11 @@ def presented_certificate(
     raw = headers.get(CERT_HEADER) or ""
     if not verify and not raw:
         return Presentation()
-    networks = parse_trusted_proxies(trusted_proxies)
+    try:
+        networks = _trusted_networks(tuple(trusted_proxies))
+    except ValueError:
+        # Start-up refuses this list; a Settings built around it trusts nobody.
+        networks = ()
     if not _is_trusted(peer, networks):
         return Presentation(
             note=(
@@ -319,6 +544,16 @@ def presented_certificate(
         return Presentation(
             note=f"the ingress did not verify a client certificate ({verify[:80] or 'no verdict'})"
         )
+    if not client_ca_path:
+        # The ingress's SUCCESS says the chain ended at *its* CA. Without ours
+        # to check against, a pod in the trusted range could forward any
+        # self-signed certificate naming any sensor.
+        return Presentation(
+            note=(
+                "a forwarded client certificate is believed only when OCTO_AGENT_MTLS_CLIENT_CA "
+                "is set to check it against, and it is not"
+            )
+        )
     if len(raw) > MAX_FORWARDED_CERT_BYTES:
         return Presentation(note="the forwarded client certificate is too large")
     try:
@@ -329,7 +564,7 @@ def presented_certificate(
     if problem:
         return Presentation(note=problem)
     subject_dn = headers.get(SUBJECT_HEADER)
-    if subject_dn is not None and subject_dn.strip() != cert.subject.rfc4514_string():
+    if subject_dn is not None and not subject_matches(subject_dn, cert.subject):
         # nginx overwrites ``ssl-client-subject-dn`` from the handshake, but
         # sets ``ssl-client-cert`` only with auth-tls-pass-certificate-to-
         # upstream: without it, the certificate header is whatever the client
@@ -343,23 +578,22 @@ def presented_certificate(
         return Presentation(
             note="the forwarded client certificate does not match the subject the ingress verified"
         )
-    if client_ca_path:
-        try:
-            bundle = load_ca_bundle(client_ca_path)
-        except (OSError, ValueError):
-            logger.exception("OCTO_AGENT_MTLS_CLIENT_CA %s is unreadable", client_ca_path)
-            return Presentation(note="the API cannot read its client CA bundle")
-        if not issued_by_bundle(cert, bundle):
-            # The ingress verified it against *some* CA, and not ours: the
-            # auth-tls-secret and OCTO_AGENT_MTLS_CLIENT_CA disagree.
-            logger.warning(
-                "A client certificate forwarded by %s as verified was not issued by "
-                "OCTO_AGENT_MTLS_CLIENT_CA; check the ingress auth-tls-secret",
-                peer,
-            )
-            return Presentation(
-                note="the forwarded client certificate is not issued by the configured client CA"
-            )
+    try:
+        bundle = load_ca_bundle(client_ca_path)
+    except (OSError, ValueError):
+        logger.exception("OCTO_AGENT_MTLS_CLIENT_CA %s is unreadable", client_ca_path)
+        return Presentation(note="the API cannot read its client CA bundle")
+    if not issued_by_bundle(cert, bundle):
+        # The ingress verified it against *some* CA, and not ours: the
+        # auth-tls-secret and OCTO_AGENT_MTLS_CLIENT_CA disagree.
+        logger.warning(
+            "A client certificate forwarded by %s as verified was not issued by "
+            "OCTO_AGENT_MTLS_CLIENT_CA; check the ingress auth-tls-secret",
+            peer,
+        )
+        return Presentation(
+            note="the forwarded client certificate is not issued by the configured client CA"
+        )
     return Presentation(cert=describe(cert, source=SOURCE_PROXY))
 
 

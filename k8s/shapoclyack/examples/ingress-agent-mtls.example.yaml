@@ -10,8 +10,12 @@
 #   ssl-client-cert        the certificate, URL-escaped PEM
 #
 # The API believes those headers only from OCTO_AGENT_MTLS_TRUSTED_PROXIES —
-# set it to the controller pods' addresses (agent-mtls-api-patch.yaml). From
-# anywhere else they are ignored, as if no certificate had been presented.
+# set it to the controller's addresses and nothing else, never the pod CIDR
+# (agent-mtls-api-patch.yaml), and apply networkpolicy-api-ingress.example.yaml
+# with it. From anywhere else they are ignored, as if no certificate had been
+# presented. The API sees only the certificate, not proof of its key: that
+# proof is this ingress's handshake. Where sensors alone use a host, give them
+# their own Ingress with auth-tls-verify-client "on".
 #
 # Three things that must hold, or the headers stop meaning anything:
 #

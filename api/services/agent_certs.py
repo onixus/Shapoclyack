@@ -28,6 +28,16 @@ sensor could ever get its first. That makes the floor of ``required`` "the
 provisioning key, for an agent that holds no certificate yet", which is what
 it was before; everything past enrolment needs the key *and* the certificate.
 
+**Revocation locks.** That exception would undo a revocation: once the
+operator revokes the stolen host's certificate nothing live is left, and the
+host's token enrols it a new one on its next poll. So an operator's
+revocation also locks the agent (``agent_cert_enrolments``): enrolment without
+a certificate is refused, and so is any request without one under
+``optional`` too, until an operator resets the enrolment — a separate,
+audited act (:func:`reset_enrolment`). A certificate that merely ran out
+locks nothing: a sensor that was offline past its expiry enrols again by
+itself, as operations.md promises.
+
 **Refusals are 403, never 401,** with the reason in the
 :data:`REFUSAL_HEADER` header: a sensor answers 401 by re-exchanging its
 provisioning key, which succeeds and is refused again, at the poll rate.
@@ -45,12 +55,12 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select, update
 
 from api.core import client_cert
 from api.core.client_cert import Presentation, PresentedCert
 from api.db import models
-from api.db.engine import get_session, insert_if_absent
+from api.db.engine import get_session, insert_if_absent, insert_or_skip
 from api.services import audit as audit_service
 from api.settings import Settings
 
@@ -74,6 +84,15 @@ REASON_MISMATCH = "mismatch"
 REASON_UNBOUND = "unbound"
 REASON_EXPIRED = "expired"
 REASON_NO_IDENTITY = "no-identity"
+REASON_LOCKED = "enrolment-locked"
+
+#: A sensor refused for presenting nothing while it holds a live certificate
+#: on record — somebody else enrolled first, or it lost its key — is written
+#: to the audit trail at most once per agent per this interval, across
+#: replicas; it polls every few seconds and the trail is not a poll log.
+CONFLICT_AUDIT_INTERVAL = timedelta(hours=1)
+#: How long the fleet view keeps counting such an agent after the last row.
+CONFLICT_WINDOW = timedelta(days=1)
 
 #: Certificates this API signs for one agent that stay live after a new one is
 #: issued: the new one and the one before it, which is the overlap a rotation
@@ -91,9 +110,12 @@ _BACKDATE = timedelta(minutes=5)
 class ClientCertRefused(PermissionError):
     """The request's certificate (or its absence) does not authenticate this agent."""
 
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(self, reason: str, message: str, *, holds_live_cert: bool = False) -> None:
         super().__init__(message)
         self.reason = reason
+        #: Refused for presenting nothing while a live certificate of this
+        #: agent is on record (see :data:`CONFLICT_AUDIT_INTERVAL`).
+        self.holds_live_cert = holds_live_cert
 
 
 @dataclass(frozen=True)
@@ -130,21 +152,67 @@ def _is_live(row: models.AgentClientCert, now: datetime) -> bool:
     )
 
 
+def _has_live_cert(session: Any, *, tenant_id: str, agent_id: str, now: datetime) -> bool:
+    rows = session.execute(
+        select(models.AgentClientCert).where(
+            models.AgentClientCert.tenant_id == tenant_id,
+            models.AgentClientCert.agent_id == agent_id,
+            models.AgentClientCert.revoked_at.is_(None),
+        )
+    ).scalars().all()
+    return any(_is_live(row, now) for row in rows)
+
+
 def has_live_cert(settings: Settings, *, tenant_id: str, agent_id: str) -> bool:
     """Whether the agent holds an unrevoked, unexpired certificate on record."""
-    now = _now()
     with get_session(settings.postgres_url) as session:
-        rows = session.execute(
-            select(models.AgentClientCert).where(
-                models.AgentClientCert.tenant_id == tenant_id,
-                models.AgentClientCert.agent_id == agent_id,
-                models.AgentClientCert.revoked_at.is_(None),
-            )
-        ).scalars().all()
-        return any(_is_live(row, now) for row in rows)
+        return _has_live_cert(session, tenant_id=tenant_id, agent_id=agent_id, now=_now())
 
 
-def _refuse_missing(presentation: Presentation) -> ClientCertRefused:
+def _is_locked(session: Any, *, tenant_id: str, agent_id: str) -> bool:
+    locked_at = session.execute(
+        select(models.AgentCertEnrolment.locked_at).where(
+            models.AgentCertEnrolment.tenant_id == tenant_id,
+            models.AgentCertEnrolment.agent_id == agent_id,
+        )
+    ).scalar_one_or_none()
+    return locked_at is not None
+
+
+def is_locked(settings: Settings, *, tenant_id: str, agent_id: str) -> bool:
+    """Whether an operator's revocation keeps this agent from working without a certificate."""
+    with get_session(settings.postgres_url) as session:
+        return _is_locked(session, tenant_id=tenant_id, agent_id=agent_id)
+
+
+def _enrolment_row(session: Any, *, tenant_id: str, agent_id: str) -> models.AgentCertEnrolment:
+    """The agent's ``agent_cert_enrolments`` row, created blank if absent, locked for update."""
+    insert_or_skip(
+        session,
+        models.AgentCertEnrolment(tenant_id=tenant_id, agent_id=agent_id),
+        conflict=["tenant_id", "agent_id"],
+    )
+    return session.execute(
+        select(models.AgentCertEnrolment)
+        .where(
+            models.AgentCertEnrolment.tenant_id == tenant_id,
+            models.AgentCertEnrolment.agent_id == agent_id,
+        )
+        .with_for_update()
+    ).scalar_one()
+
+
+def _refuse_locked(agent_id: str) -> ClientCertRefused:
+    return ClientCertRefused(
+        REASON_LOCKED,
+        f"A client certificate of agent {agent_id} was revoked by an operator, which also "
+        "stops it enrolling or calling without a certificate. An operator must reset its "
+        "enrolment (POST /api/agents/{id}/certificates/reset-enrolment) before it can "
+        "enrol again (docs/operations.md § Sensor client certificates).",
+    )
+
+
+def _refuse_missing(presentation: Presentation, *, holds_live_cert: bool = False) -> ClientCertRefused:
     message = (
         "This installation requires sensors and endpoint agents to present a "
         "client certificate (OCTO_AGENT_MTLS_MODE=required), and this request "
@@ -152,6 +220,15 @@ def _refuse_missing(presentation: Presentation) -> ClientCertRefused:
     )
     if presentation.note:
         message += f": {presentation.note}"
+    if holds_live_cert:
+        return ClientCertRefused(
+            REASON_MISSING,
+            message + ". This agent already holds a live certificate on record, so a new "
+            "one is issued only to a request presenting it; if this host does not have "
+            "it, an operator must revoke it and reset the enrolment "
+            "(docs/operations.md § Sensor client certificates).",
+            holds_live_cert=True,
+        )
     return ClientCertRefused(
         REASON_MISSING,
         message + ". Enrol with POST /api/agent/certificate or mount the "
@@ -192,11 +269,15 @@ def bind(
             )
         return None
     if cert is None:
-        if effective == MODE_OPTIONAL:
+        with get_session(settings.postgres_url) as session:
+            if _is_locked(session, tenant_id=tenant_id, agent_id=agent_id):
+                raise _refuse_locked(agent_id)
+            if effective == MODE_OPTIONAL:
+                return None
+            live = _has_live_cert(session, tenant_id=tenant_id, agent_id=agent_id, now=_now())
+        if bootstrap and not live:
             return None
-        if bootstrap and not has_live_cert(settings, tenant_id=tenant_id, agent_id=agent_id):
-            return None
-        raise _refuse_missing(presentation)
+        raise _refuse_missing(presentation, holds_live_cert=live)
 
     now = _now()
     if cert.not_after <= now:
@@ -269,7 +350,28 @@ def bind(
         return cert
 
 
+def _claim_conflict_row(settings: Settings, *, tenant_id: str, agent_id: str) -> bool:
+    """Stamp ``conflict_at``; True when no replica has written the row this interval."""
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        _enrolment_row(session, tenant_id=tenant_id, agent_id=agent_id)
+        claimed = session.execute(
+            update(models.AgentCertEnrolment)
+            .where(
+                models.AgentCertEnrolment.tenant_id == tenant_id,
+                models.AgentCertEnrolment.agent_id == agent_id,
+                or_(
+                    models.AgentCertEnrolment.conflict_at.is_(None),
+                    models.AgentCertEnrolment.conflict_at <= now - CONFLICT_AUDIT_INTERVAL,
+                ),
+            )
+            .values(conflict_at=now)
+        )
+        return bool(claimed.rowcount)
+
+
 def record_refusal(
+    settings: Settings,
     context: audit_service.AuditContext,
     *,
     tenant_id: str,
@@ -287,18 +389,29 @@ def record_refusal(
 
     A request that presented *nothing* under ``required`` is not recorded: a
     fleet that has not enrolled yet polls every few seconds, and a row per poll
-    would bury the trail; it is logged instead.
+    would bury the trail; it is logged instead. Except when the agent holds a
+    live certificate on record: then another host enrolled with its token
+    first (or it lost its key), which is the one event that says the token is
+    somewhere else — recorded once per :data:`CONFLICT_AUDIT_INTERVAL` and
+    counted in the fleet view. A ``enrolment-locked`` refusal repeats what the
+    revocation already recorded, so it is logged only.
     """
-    if refusal.reason == REASON_MISSING:
+    if refusal.reason in (REASON_MISSING, REASON_LOCKED):
         _log.info(
-            "Agent %s in tenant %s refused: no client certificate (%s)",
+            "Agent %s in tenant %s refused: no client certificate (%s; %s)",
             agent_id,
             tenant_id,
+            refusal.reason,
             presentation.note or "none presented",
         )
-        return
+        if not (refusal.holds_live_cert and agent_id):
+            return
     cert = presentation.cert
     try:
+        if refusal.holds_live_cert and agent_id and not _claim_conflict_row(
+            settings, tenant_id=tenant_id, agent_id=agent_id
+        ):
+            return
         audit_service.record_standalone(
             context,
             action=audit_service.ACTION_AGENT_CERT_REFUSED,
@@ -312,6 +425,7 @@ def record_refusal(
                 "serial": cert.serial_hex if cert else "",
                 "presented_identities": [i.uri for i in cert.identities] if cert else [],
                 "via": cert.source if cert else "",
+                "agent_holds_live_certificate": refusal.holds_live_cert,
             },
         )
     except Exception:  # noqa: BLE001 - see docstring
@@ -627,8 +741,12 @@ def revoke(
     the platform has never seen is recorded as a ``tombstone``, so a
     certificate can be revoked before its first use; a serial has to match a
     certificate on record (``LookupError``), because a serial alone does not
-    say which CA issued it. ``revoke_all`` is the re-enrolment reset: with no
-    live certificate left, the agent may enrol from scratch under ``required``.
+    say which CA issued it.
+
+    Any revocation also locks the agent (see the module doc): no enrolment by
+    token alone, and no request without a certificate, until
+    :func:`reset_enrolment`. ``revoke_all`` is what a stolen or copied host
+    calls for; it is not a reset.
     """
     chosen = [bool(fingerprint), bool(serial), bool(revoke_all)]
     if sum(chosen) != 1:
@@ -688,8 +806,14 @@ def revoke(
             row.revoked_at = now
             row.revoked_by = actor
             row.revoked_reason = cleaned_reason
+        enrolment = _enrolment_row(session, tenant_id=tenant_id, agent_id=agent_id)
+        newly_locked = enrolment.locked_at is None
+        if newly_locked:
+            enrolment.locked_at = now
+            enrolment.locked_by = actor
+            enrolment.locked_reason = cleaned_reason
         session.flush()
-        if changed:
+        if changed or newly_locked:
             audit_service.record(
                 session,
                 audit,
@@ -701,8 +825,72 @@ def revoke(
                     "fingerprints": [row.fingerprint_sha256 for row in changed],
                     "serials": [row.serial_hex for row in changed if row.serial_hex],
                     "reason": cleaned_reason or "",
+                    "enrolment_locked": True,
                 },
             )
+        return [_to_dict(row, now, settings.agent_mtls_expiry_warn_days) for row in rows]
+
+
+def reset_enrolment(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    reason: str = "",
+    audit: audit_service.AuditContext | None = None,
+) -> list[dict[str, Any]]:
+    """Let one agent enrol from scratch by its token again; the operator's deliberate act.
+
+    Revokes every certificate of the agent still unrevoked — "from scratch"
+    means the old key stops working too — lifts the lock a revocation set,
+    and clears the conflict marker. The next ``POST /api/agent/certificate``
+    by this agent's token, without a certificate, is issued one; the one
+    after that is a renewal again. Whoever enrols first wins that race, so
+    revoke a leaked provisioning key *before* resetting
+    (docs/operations.md § Sensor client certificates).
+    """
+    now = _now()
+    actor = audit.actor if audit else "system"
+    cleaned_reason = (reason or "").strip()[:512] or None
+    with get_session(settings.postgres_url) as session:
+        rows = list(
+            session.execute(
+                select(models.AgentClientCert)
+                .where(
+                    models.AgentClientCert.tenant_id == tenant_id,
+                    models.AgentClientCert.agent_id == agent_id,
+                )
+                .order_by(models.AgentClientCert.created_at.desc())
+            ).scalars()
+        )
+        revoked = [row for row in rows if row.revoked_at is None]
+        for row in revoked:
+            row.revoked_at = now
+            row.revoked_by = actor
+            row.revoked_reason = "enrolment reset" + (f": {cleaned_reason}" if cleaned_reason else "")
+        enrolment = _enrolment_row(session, tenant_id=tenant_id, agent_id=agent_id)
+        was_locked = enrolment.locked_at is not None
+        enrolment.locked_at = None
+        enrolment.locked_by = None
+        enrolment.locked_reason = None
+        enrolment.reset_at = now
+        enrolment.reset_by = actor
+        enrolment.reset_reason = cleaned_reason
+        enrolment.conflict_at = None
+        session.flush()
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_AGENT_CERT_ENROLMENT_RESET,
+            resource_type="agent",
+            resource_id=agent_id,
+            tenant_id=tenant_id,
+            after={
+                "reason": cleaned_reason or "",
+                "was_locked": was_locked,
+                "revoked_fingerprints": [row.fingerprint_sha256 for row in revoked],
+            },
+        )
         return [_to_dict(row, now, settings.agent_mtls_expiry_warn_days) for row in rows]
 
 
@@ -716,6 +904,11 @@ class FleetCertificates:
     expiring: int = 0
     #: Agents whose certificates have all run out (none revoked-only).
     expired: int = 0
+    #: Agents an operator's revocation locked, waiting for a reset.
+    locked: int = 0
+    #: Agents refused within :data:`CONFLICT_WINDOW` for presenting nothing
+    #: while holding a live certificate — another host has their token.
+    conflicts: int = 0
 
 
 def fleet_certificates(
@@ -755,4 +948,25 @@ def fleet_certificates(
         live += 1
         if newest <= horizon:
             expiring += 1
-    return FleetCertificates(agents_with_cert=live, expiring=expiring, expired=expired)
+    enrolments = select(
+        models.AgentCertEnrolment.locked_at, models.AgentCertEnrolment.conflict_at
+    ).join(
+        models.Agent,
+        and_(
+            models.Agent.agent_id == models.AgentCertEnrolment.agent_id,
+            models.Agent.tenant_id == models.AgentCertEnrolment.tenant_id,
+        ),
+    )
+    if tenant_id:
+        enrolments = enrolments.where(models.AgentCertEnrolment.tenant_id == tenant_id)
+    locked = conflicts = 0
+    for locked_at, conflict_at in session.execute(enrolments):
+        locked += locked_at is not None
+        conflicts += conflict_at is not None and conflict_at > now - CONFLICT_WINDOW
+    return FleetCertificates(
+        agents_with_cert=live,
+        expiring=expiring,
+        expired=expired,
+        locked=locked,
+        conflicts=conflicts,
+    )

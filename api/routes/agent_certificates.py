@@ -2,7 +2,8 @@
 
 ``POST /agent/certificate`` is the agent's own: it trades a CSR for a
 certificate naming the token's agent. The rest are the operator's view of one
-agent's certificates — list, pin, revoke. The rules live in
+agent's certificates — list, pin, revoke, and reset the enrolment a
+revocation locked. The rules live in
 ``api/services/agent_certs.py``; the certificate a request presented is
 read and bound in ``api.auth`` before any of these run.
 """
@@ -16,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from api.auth import (
     AgentPrincipal,
     Role,
+    StepUpDep,
     TenantPrincipal,
     get_settings,
     require_agent_enrolment,
@@ -28,6 +30,7 @@ from api.schemas import (
     AgentClientCertInfo,
     AgentInfo,
     PinAgentCertificateRequest,
+    ResetAgentCertEnrolmentRequest,
     RevokeAgentCertificatesRequest,
 )
 from api.services import agent_certs
@@ -75,9 +78,10 @@ def enrol_certificate(
             settings,
             tenant_id=principal.tenant_id,
             agent_id=principal.agent_id,
-            # An agent that has not registered yet enrols as a sensor; an
-            # endpoint agent registers before it enrols (docs/api-and-rbac.md).
-            agent_kind=agent.agent_kind if agent is not None else "scanner",
+            # An agent that has not registered yet — under ``required`` it
+            # cannot, without a certificate — says what it is; once on
+            # record, the record says (docs/api-and-rbac.md).
+            agent_kind=agent.agent_kind if agent is not None else (body.agent_kind or "scanner"),
             csr_pem=body.csr,
             audit=audit,
         )
@@ -172,7 +176,12 @@ def revoke_agent_certificates(
     settings: Annotated[Settings, Depends(get_settings)],
     audit: AuditDep,
 ) -> list[AgentClientCertInfo]:
-    """Revoke by fingerprint, by serial, or all of them; effective on the next request."""
+    """Revoke by fingerprint, by serial, or all of them; effective on the next request.
+
+    Also locks the agent out of enrolling or calling without a certificate
+    until ``reset-enrolment`` — otherwise the host holding the revoked one
+    would enrol itself a new one by its token on the next poll.
+    """
     agent = _agent_in_scope(principal, agent_id)
     try:
         rows = agent_certs.revoke(
@@ -191,4 +200,34 @@ def revoke_agent_certificates(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    return [AgentClientCertInfo.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/agents/{agent_id}/certificates/reset-enrolment",
+    response_model=list[AgentClientCertInfo],
+)
+def reset_agent_certificate_enrolment(
+    agent_id: str,
+    body: ResetAgentCertEnrolmentRequest,
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    # Same step-up as minting a provisioning key (#315): what this hands out
+    # is the next certificate to whoever holds the agent's token first.
+    _: StepUpDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> list[AgentClientCertInfo]:
+    """Let this agent enrol from scratch by its token (tenant ``admin``, step-up).
+
+    Revokes whatever of its certificates is still live and lifts the lock a
+    revocation set. Every certificate on record is returned, as by revoke.
+    """
+    agent = _agent_in_scope(principal, agent_id)
+    rows = agent_certs.reset_enrolment(
+        settings,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.agent_id,
+        reason=body.reason,
+        audit=audit,
+    )
     return [AgentClientCertInfo.model_validate(row) for row in rows]

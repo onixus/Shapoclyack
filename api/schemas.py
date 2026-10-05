@@ -689,6 +689,11 @@ class AgentFleetSummary(BaseModel):
     client_cert_agents: int = 0
     client_certs_expiring: int = 0
     client_certs_expired: int = 0
+    # Agents an operator's revocation locked out of enrolling by token alone,
+    # waiting for a reset; and agents refused in the last day for presenting
+    # no certificate while holding a live one — another host has their token.
+    client_cert_locked: int = 0
+    client_cert_conflicts: int = 0
 
 
 class AgentCertificateRequest(BaseModel):
@@ -699,6 +704,12 @@ class AgentCertificateRequest(BaseModel):
     """
 
     csr: str = Field(min_length=1, max_length=16 * 1024)
+    #: Which SPIFFE path segment the certificate gets (``sensor`` or
+    #: ``agent``) for an agent not on record yet: under ``required`` an
+    #: endpoint agent must enrol *before* it can register. Ignored once the
+    #: agent is on record — its registered kind wins. Binding does not depend
+    #: on it either way.
+    agent_kind: Literal["scanner", "endpoint"] | None = None
 
 
 class AgentCertificateResponse(BaseModel):
@@ -742,14 +753,20 @@ class PinAgentCertificateRequest(BaseModel):
 class RevokeAgentCertificatesRequest(BaseModel):
     """Exactly one of ``fingerprint``, ``serial`` or ``all``.
 
-    ``all`` revokes every certificate of the agent, after which it may enrol
-    again from scratch under ``required`` — the reset for a sensor whose key
-    was lost or copied.
+    ``all`` revokes every certificate of the agent — what a lost or copied
+    host calls for. Any revocation also locks the agent out of enrolling (or
+    calling) without a certificate until ``reset-enrolment``.
     """
 
     fingerprint: str | None = Field(default=None, max_length=128)
     serial: str | None = Field(default=None, max_length=128)
     all: bool = False
+    reason: str = Field(default="", max_length=512)
+
+
+class ResetAgentCertEnrolmentRequest(BaseModel):
+    """Why the agent may enrol from scratch again (the audit row carries it)."""
+
     reason: str = Field(default="", max_length=512)
 
 
