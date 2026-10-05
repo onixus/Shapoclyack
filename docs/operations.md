@@ -651,8 +651,9 @@ already queued. If a window has to hold in the data plane as well, cancel the
 jobs (`POST /api/jobs/{id}/cancel` — since
 [#360](https://github.com/onixus/Shapoclyack/issues/360) this also stops a scan
 a sensor is already running, through `cancelling`) or stop the sensors for its
-duration;
-#352 stays open for the claim-time gate.
+duration.
+#352 was closed on 2026-09-21 without a claim-time gate, and none is filed:
+`claim_job` still does not read the calendar.
 
 A refused **schedule** is deferred rather than skipped: `next_run_at` moves to
 the end of the blackout (or the start of the next allowed window), so the
@@ -4573,9 +4574,12 @@ every row of scan data. As of
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
 | API / sensors ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
-Mutual TLS exists on one link: sensor and Agent → API, opt-in
-([Sensor client certificates](#sensor-client-certificates)). Every other link
-is TLS one-way at most.
+Mutual TLS bound to a sensor's identity exists on one link: sensor and Agent →
+API, opt-in ([Sensor client certificates](#sensor-client-certificates)), and
+Lariska Agents cannot take part in it yet. NATS can also require a client
+certificate (`OCTO_NATS_TLS_CERT`, with `verify_and_map` on the broker), but
+that certificate authenticates a NATS user, not a particular sensor. Every other
+link in the table is TLS one-way at most.
 
 **Datastore links stay warned about, not enforced** — the decision #309 asked
 for. A `prod` start keeps *warning* when `OCTO_POSTGRES_URL` has no `sslmode=`

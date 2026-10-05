@@ -53,6 +53,9 @@ corresponding invariant:
 - `scan_admission.py` decides whether a scan may enter the queue and where it
   may run: tenant state, quota, maintenance windows, approved scope, scan policy,
   promoted domains and agent-group placement.
+- `scan_queue.py` owns the queue policy of #365: the claim order (priority,
+  then age), the per-tenant concurrency ceiling taken at claim time under an
+  advisory lock, and the queued-scan ceilings checked at admission.
 - `job_submission.py` creates jobs, applies start idempotency, materializes the
   admitted request and hands it to the selected executor.
 - `job_repository.py` owns queue reads, summaries, legacy import and startup
@@ -488,9 +491,11 @@ NATS JetStream is a messaging layer, not the authoritative database for job or d
 
 | Boundary | Main controls |
 |---|---|
-| Browser → API | JWT, server-side tenant/role checks, TLS at ingress, no secret values in status responses |
-| Sensor → API/broker | Provisioning exchange, short-lived agent JWT, tenant match, claim fencing |
-| Agent (Lariska) → API | Same provisioning exchange and agent JWT; inventory-only routes, no job claim |
+| Browser → API | JWT, server-side tenant/role checks, MFA and step-up by role or by a permission held in any tenant, request rate limits and a body cap, TLS at ingress, no secret values in status responses |
+| Identity provider → API | OIDC with PKCE; optionally authoritative for roles and memberships (`OCTO_IDP_AUTHORITATIVE`); SCIM 2.0 under its own `octo_scim_` token type, bound to tenants and accepted on `/scim/v2` only |
+| Sensor → API/broker | Provisioning exchange, short-lived agent JWT bound to the sensor's id, tenant match, claim fencing; opt-in client certificate bound to the same sensor (`OCTO_AGENT_MTLS_MODE`, checked on the API routes — the NATS connection authenticates a NATS user, not the sensor) |
+| Release → sensor host | Native updates install only a bundle whose manifest verifies against the release key pinned in the installed package, never a downgrade; the first install is not signature-checked |
+| Agent (Lariska) → API | Same provisioning exchange and agent JWT; inventory-only routes, no job claim. Cannot present a client certificate yet; builds it is told to run are uploaded by the platform admin only and verified by a digest from the same API, not by a signature |
 | API → databases | Dedicated credentials, network policy, least privilege |
 | API → external integrations | Tenant-admin authorization for writes, signed payloads, bounded retries/timeouts, write-only secrets, destination validation |
 | Scanner → targets | Explicit scope, rate caps, timeouts, isolated workers |

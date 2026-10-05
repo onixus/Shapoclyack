@@ -110,6 +110,10 @@ Official release workflows include these controls:
 - release images signed by digest with cosign, with signed SLSA provenance and
   an SPDX SBOM in the image index — how to verify them, and admission policy
   examples, are in [Supply chain](../docs/supply-chain.md);
+- the native sensor update bundle, whose manifest is signed with the same
+  release key and verified by the sensor against the key pinned in its
+  installed package (on `main`, not yet in a tagged release; see
+  [Sensor bundle updates](../docs/operations.md#sensor-bundle-updates));
 - digest-pinned base, build-stage and CI images, hash-locked Python
   dependencies, tool checksums, and selected upstream revisions;
 - non-root runtime users and workload-specific Linux capabilities.
@@ -138,7 +142,10 @@ At minimum:
 - enforce tenant membership and role checks server-side rather than trusting
   client-supplied tenant identifiers;
 - use TLS and authenticated transport for sensors, Agents and external service
-  integrations;
+  integrations, and consider sensor client certificates
+  (`OCTO_AGENT_MTLS_MODE`) where sensors cross an untrusted network;
+- require a second factor for administrators, including tenant administrators
+  (`OCTO_MFA_REQUIRED_ROLES`, `OCTO_MFA_REQUIRED_PERMISSIONS`);
 - pin official image tags and review release notes before upgrading;
 - back up persistent data and test restoration before relying on retention or
   migration procedures.

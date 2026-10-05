@@ -99,9 +99,9 @@ A vulnerability cannot be marked resolved on an operator's say-so or a closed ta
 * **Audit Transparency**: Manual closures by administrators are explicitly marked with `machine_verified = false`, exposing unverified closures on adoption dashboards.  
 *See [Vulnerability Lifecycle & SLA](docs/vulnerability-lifecycle.md).*
 
-### 4. Distro-Aware Vendor Advisory Matching (Zero Upstream False Positives)
+### 4. Distro-Aware Vendor Advisory Matching (Backports, Not Upstream Versions)
 Debian, Ubuntu, and enterprise Linux distributions backport security fixes into stable package versions without updating the upstream version number (e.g., OpenSSL `1.1.1f-1ubuntu2.16` on Ubuntu 20.04 retains `1.1.1f`). Naive NVD CPE matching marks every host permanently vulnerable to every historical CVE.  
-Shapoclyack matches installed packages against **official vendor security trackers** (Ubuntu USN, Debian Security Tracker) using native distribution Epoch-Version-Release (EVR) logic. Windows hosts are assessed on a different axis — the **operating system build** (`10.0.<build>.<ubr>`) against Microsoft's Security Update Guide remediations, because a Microsoft advisory is written about a build rather than a package version; third-party Windows products are reported as inventory and explicitly not matched. It aggregates vulnerabilities into **Patch Gaps** providing copy-paste remediation commands (`apt-get install --only-upgrade <pkg>=<version>`), saving hundreds of hours of manual triage.  
+Shapoclyack matches installed packages against **official vendor security trackers** (Ubuntu USN, Debian Security Tracker; Red Hat, SUSE and Amazon Linux advisories for explicitly bound products and channels — that half is merged and still awaiting feed acceptance, [#358](https://github.com/onixus/Shapoclyack/issues/358)) using native distribution Epoch-Version-Release (EVR) logic, and reports a package as `unknown` rather than clean when no advisory data covers the host's release. Windows hosts are assessed on a different axis — the **operating system build** (`10.0.<build>.<ubr>`) against Microsoft's Security Update Guide remediations, because a Microsoft advisory is written about a build rather than a package version; third-party Windows products are reported as inventory and explicitly not matched. It aggregates vulnerabilities into **Patch Gaps** providing copy-paste remediation commands (`apt-get install --only-upgrade <pkg>=<version>`), saving hundreds of hours of manual triage.  
 *See [Software → CVE Matching](docs/software-cve-matching.md).*
 
 ### 5. Auditor-Ready Compliance Signals (PCI DSS 4.0, CIS v8, ISO 27001, FSTEC, GOST R 57580.1)
@@ -113,8 +113,9 @@ Technical findings and estate metadata are evaluated against a closed vocabulary
 *See [Reports and Compliance Mapping](docs/reports-and-compliance.md).*
 
 ### 6. Distributed Sensors (NATS JetStream & Zero Inbound Ports)
-Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Sensors — remote scanning nodes (API resource `agents`, `agent_kind = scanner`) — pull tenant-scoped jobs over **NATS JetStream** or, without a broker, by claiming them over HTTPS from the API. Both are outbound connections authenticated by a per-tenant agent JWT; NATS transport encryption is [#309](https://github.com/onixus/Shapoclyack/issues/309)/[#359](https://github.com/onixus/Shapoclyack/issues/359) and mutual TLS is on the roadmap, not in the build. Sensors require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery.  
-*See [Architecture](docs/architecture.md).*
+Scan segmented VPCs, private clouds, and DMZ enclaves without exposing internal networks. Sensors — remote scanning nodes (API resource `agents`, `agent_kind = scanner`) — pull tenant-scoped jobs over **NATS JetStream** or, without a broker, by claiming them over HTTPS from the API. Both are outbound connections authenticated by a per-sensor JWT bound to the sensor's identity. TLS to NATS is opt-in (`tls://` plus `OCTO_NATS_TLS_*`). **Sensor client certificates** (mTLS to the API) are opt-in too — `OCTO_AGENT_MTLS_MODE=optional|required`, off by default: the certificate must name the token's sensor, and the API can issue, rotate and revoke them. Lariska endpoint Agents cannot present a certificate yet, and revocation is the API's own list (no CRL/OCSP). Sensors require **zero inbound listening ports**, communicate entirely outbound, and feature heartbeat leases, distributed claim serialization (`SELECT ... FOR UPDATE SKIP LOCKED`), and automatic orphan recovery. Jobs carry a **priority**, and a tenant can be held to a number of concurrent and queued scans (a full queue answers `429`).  
+**Signed sensor updates:** a native sensor installs a new release only from a bundle whose manifest verifies against the release key pinned in the installed package, never a downgrade, with an atomic swap and rollback on a failed health check. Updating is operator-run (`scripts/update-agent.sh`); it becomes automatic only with a timer you install and `OCTO_AGENT_AUTO_UPDATE=true`.  
+*See [Architecture](docs/architecture.md), [Sensor client certificates](docs/operations.md#sensor-client-certificates) and [Sensor bundle updates](docs/operations.md#sensor-bundle-updates).*
 
 ### 7. Branded Multi-Tenant Report Factory
 Generate polished, executive-ready artifacts delivered automatically via cron schedules or on-demand:
@@ -227,16 +228,16 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 | Domain | What Shapoclyack Delivers |
 |---|---|
 | **External Attack Surface (EASM)** | CIDR, IP, and FQDN discovery; passive Certificate Transparency (CT) monitoring, DNS hygiene, ASN mapping, cloud-resource enumeration, and domain takeover detection. |
-| **Cyber Asset Management (CAASM)** | Persistent asset inventory keyed to canonical assets; tracks IP drift, ownership metadata, environment tags, business criticality, and hardware/OS lifecycle. |
+| **Cyber Asset Management (CAASM)** | Persistent asset inventory keyed to canonical assets; tracks IP drift, ownership metadata, environment tags, business criticality, and first/last seen and decommissioned state; business context from a CMDB/AD export file (`POST /api/assets/import`). |
 | **Risk-Based VM (RBVM)** | Full lifecycle state machine (`OPEN` → `ACKNOWLEDGED` → `PLANNED` → `FIXING` → `VERIFYING` → `CLOSED`); SLA timers by severity; NIST SP 800-30 Rev. 1 risk scoring with exploit maturity ceilings. |
 | **Mechanical Verification** | Automated re-scans via `POST /api/vulnerabilities/{id}/verify` validate that network flaws are remediated before closing. Prevents unverified ticket closures. |
-| **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker) and Windows hosts against Microsoft's Security Update Guide; generates actionable package upgrade commands. |
+| **Endpoint Patch Gaps** | Endpoint software matched against distribution vendor advisories (Ubuntu USN, Debian Security Tracker; RHEL, SLES and Amazon Linux RPM advisories pending feed acceptance) and Windows hosts against Microsoft's Security Update Guide; generates actionable package upgrade commands. |
 | **Threat Intelligence** | Integrated feeds for CISA KEV (Known Exploited Vulnerabilities), EPSS (Exploit Prediction Scoring System), CVSS v4/v3.1, GeoIP, and autonomous system data. |
 | **Compliance Signals** | Continuous posture monitoring and audit-ready evidence for **PCI DSS 4.0**, **CIS Controls v8**, **ISO/IEC 27001:2022**, **FSTEC orders 117 / 21 / 239** and **GOST R 57580.1-2017**. |
 | **Adoption & Outcome Metrics** | Telemetry on verified closures, SLA compliance, Mean Time to Remediation (MTTR), scan coverage, and false-positive suppression rates. |
 | **Branded Report Factory** | Automated generation of Executive, Technical, and Compliance reports in PDF, HTML, and JSON, with scheduled email and webhook delivery. |
-| **Distributed Fleet** | Scalable sensor fleet fed over NATS JetStream or HTTPS claim polling; sensors require zero inbound ports and operate securely across DMZs and private VPCs. |
-| **Enterprise Platform** | Multi-tenancy with strict data isolation, role-based access control (RBAC), OIDC single sign-on, non-interactive service tokens, PostgreSQL OLTP, and ClickHouse analytics. |
+| **Distributed Fleet** | Sensor fleet fed over NATS JetStream or HTTPS claim polling, with zero inbound ports; opt-in client certificates bound to each sensor; signed, downgrade-proof updates that roll back on failure (operator-run unless you enable a timer); scan priority and per-tenant concurrent/queued-scan limits. |
+| **Enterprise Platform** | Multi-tenancy with database row-level security behind the tenant predicates, RBAC with named permissions and tenant-defined roles, OIDC single sign-on with an optional IdP-authoritative mode and SCIM 2.0 provisioning, TOTP and passkey MFA required by global role or by a permission held in any tenant, step-up on sensitive operations, non-interactive service tokens, PostgreSQL OLTP, and ClickHouse analytics. No SAML or LDAP yet ([#317](https://github.com/onixus/Shapoclyack/issues/317)). |
 
 ---
 
@@ -338,10 +339,22 @@ and `risk-approver`. Any of them can be granted per tenant on a membership, in
 the console or over `PUT /api/tenants/{tenant_id}/members/{username}`; the
 console reads the list from the platform's own catalogue
 (`GET /api/rbac/roles`) rather than keeping a copy — see
-[API and RBAC Documentation](docs/api-and-rbac.md#roles).
+[API and RBAC Documentation](docs/api-and-rbac.md#roles). A tenant's member
+managers can also define **roles of their own** (a name, a rank and a set of
+permissions); a few platform permissions, such as uploading Lariska Agent
+builds, are never grantable to them.
+
+A second factor (TOTP, security keys or passkeys) can be required by global
+role (`OCTO_MFA_REQUIRED_ROLES`) or by a permission held in **any** tenant
+(`OCTO_MFA_REQUIRED_PERMISSIONS`), so a tenant admin whose global role is
+`viewer` is covered too; member and role administration, credential issuance
+and other sensitive operations ask for a recent step-up — see
+[Multi-factor authentication](docs/api-and-rbac.md#multi-factor-authentication).
 
 ### Enterprise Integrations
-* **Ticket Synchronization**: Push findings to Jira, ServiceNow, and DefectDojo automatically. The pull direction — noticing that a ticket was resolved and triggering mechanical re-verification — is an on-demand action today; a poller is [#347](https://github.com/onixus/Shapoclyack/issues/347).
+* **Ticket Synchronization**: Push findings to Jira, ServiceNow, and DefectDojo automatically; a background poller reads the tracker's status back onto findings (`OCTO_TICKET_SYNC_*`, [#347](https://github.com/onixus/Shapoclyack/issues/347)). Field mapping is fixed and GitLab/GitHub/Azure DevOps are not supported ([#353](https://github.com/onixus/Shapoclyack/issues/353)).
+* **Identity Provisioning**: SCIM 2.0 (`/scim/v2` Users and Groups, its own `octo_scim_` token type) and an IdP-authoritative mode (`OCTO_IDP_AUTHORITATIVE`) in which every SSO login recomputes the account's role and tenant memberships from its groups — see [API and RBAC](docs/api-and-rbac.md#scim-20-provisioning).
+* **CMDB/AD Context Import**: `POST /api/assets/import` takes a CSV/JSON export with a dry-run conflict report; scheduled ServiceNow and LDAP/AD connectors are not built ([#350](https://github.com/onixus/Shapoclyack/issues/350)).
 * **Asset Event Webhooks**: Subscribed endpoints receive signed HMAC payloads for events (`new_asset`, `new_open_port`, `new_cve`, `cert_expiring`, `decommissioned_host`) over a durable JetStream fan-out queue.
 
 See [API and RBAC Documentation](docs/api-and-rbac.md) for endpoint details and token authentication.

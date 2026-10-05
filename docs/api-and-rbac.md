@@ -771,7 +771,7 @@ history. Whether *an operator holding the API's credentials* can is a
 deployment question, not a code one — it depends on `audit_events` being owned
 by a role the API does not run as, which the shipped `k8s/` manifests do **not**
 do and the GRANT layout in
-[operations.md](operations.md#audit-trail-immutability-and-retention) does.
+[operations.md](operations.md#audit-trail-immutability-and-retention-327-329) does.
 Retention is a separate privileged job, documented in the same place.
 
 **Getting the trail out of the API.** This endpoint is the read model, not a
@@ -2014,8 +2014,9 @@ the run — which passes it to `scanner.main` as
 the scanner accepts only the settings listed in
 `scanner/pipeline/config_overlay.py`, and the tenant's scan policy is applied
 after it. A job with neither an intent nor overrides carries none and goes to
-any sensor. For both capabilities the claim hands a sensor the oldest job it
-*can* run, and answers `426` only when the jobs waiting for it are all ones it
+any sensor. For both capabilities the claim hands a sensor the job it *can*
+run that comes first in the queue order — highest `priority`, then oldest
+([Queue priority, concurrency and admission](#queue-priority-concurrency-and-admission)) — and answers `426` only when the jobs waiting for it are all ones it
 cannot — a job it could run is never stuck behind one it cannot.
 `capabilities` has three states on both `register` and `heartbeat`, and
 they mean different things. **Omitted** leaves the stored list alone — an

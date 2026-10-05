@@ -8,6 +8,27 @@ This file tracks delivery status and is not a deployment manual.
 
 Visual overview: [shapoclyack.html](shapoclyack.html) · Release history: [CHANGELOG.md](CHANGELOG.md)
 
+> **Status as of 2026-10-06** — checked against the code at `main @ 3ade4529`, not against
+> issue titles or `CHANGELOG.md`. The last tag is `shapoclyack-0.46-0922`; `main` is that tag
+> plus 482 commits, all under `## Unreleased`. Two merge waves landed since the previous
+> revision of this file: on 2026-10-04 —
+> custom compliance catalogues, БДУ and signed evidence ([#497](https://github.com/onixus/Shapoclyack/pull/497), W11/~~#356~~),
+> shared rate limiting and a body cap on every route ([#499](https://github.com/onixus/Shapoclyack/pull/499), ~~#320~~),
+> tenant-defined roles ([#501](https://github.com/onixus/Shapoclyack/pull/501), ~~#318~~, migration `0070`),
+> CMDB/AD *file* import ([#502](https://github.com/onixus/Shapoclyack/pull/502), #350 stage 1 only, migration `0071`);
+> and on 2026-10-05 —
+> MFA and step-up by authority in a tenant ([#508](https://github.com/onixus/Shapoclyack/pull/508), ~~#504~~, migration `0073`),
+> scan priority, per-tenant concurrency and queue admission ([#505](https://github.com/onixus/Shapoclyack/pull/505), ~~#365~~, migration `0074`),
+> IdP-authoritative resync and SCIM 2.0 ([#507](https://github.com/onixus/Shapoclyack/pull/507), ~~#316~~, migration `0076`),
+> sensor client certificates ([#509](https://github.com/onixus/Shapoclyack/pull/509), ~~#309~~, migration `0077`),
+> Lariska build upload/delete for the platform admin only ([#511](https://github.com/onixus/Shapoclyack/pull/511), ~~#510~~, migration `0078`)
+> and the signed sensor update bundle ([#506](https://github.com/onixus/Shapoclyack/pull/506), ~~#363~~, no migration).
+> There is no migration `0075`. What each of them leaves open is in
+> [the EPIC #370 table](#enterprise-readiness-review-epic-370). CI for the 2026-10-05 wave is
+> **not verified**: the last finished `main` builds are SUCCESS on `365ae2c` (merge of #500) and
+> FAILURE on `a596351` (merge of #503, one test, see [below](#current-baseline-done)); the build
+> for `3ade4529` had not run when this was written.
+
 ---
 
 ## How to read this file
@@ -21,8 +42,8 @@ yet production-ready.
 | **A — Platform capability** | *What can the platform do?* | This file: [Phases 1–6](#execution-phases), [7–11](#easm-evolution-phases-711), [P0–P4](#next-priority-order-post-phase-11) | Nearly complete — see [remaining scope](#track-a--what-is-actually-left) |
 | **B — Production readiness** | *May it be run for real?* | [EPIC #154](https://github.com/onixus/Shapoclyack/issues/154) → summarized [below](#track-b--production-readiness-ga-blockers) | **Done** — EPIC #154 closed; Waves 0–2 shipped in `0.43-0828`. The next readiness pass is the enterprise-readiness review, [EPIC #370](https://github.com/onixus/Shapoclyack/issues/370) (Track E) |
 | **C — VM/Exposure product** | *Is it a vulnerability-management product, or a scanner?* | [EPIC #134](https://github.com/onixus/Shapoclyack/issues/134), [docs/ui-ux-redesign-roadmap.md](docs/ui-ux-redesign-roadmap.md) → summarized [below](#track-c--vulnerability-management-product) | **Done** — EPIC #134 closed; the historical score snapshots leftover of #144 is merged (migration `0023`, `/api/vulnerabilities/risk-history`) |
-| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2, Windows/MSRC matching and console-driven Agent management, migration `0057`) recorded in the same file |
-| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, enterprise IAM (OIDC + service tokens), closed-loop remediation (#183), the Sprint 4 report factory / compliance mapping, and the first wave of the enterprise-readiness review ([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370): MFA, revocable sessions, named permissions, sensor identity/quarantine, encrypted integration secrets, maintenance windows, object-storage artifacts, Russian compliance catalogues) merged and still in `## Unreleased` |
+| **D — Endpoint inventory (Lariska)** | *What is installed on the endpoints?* | [Agent_plan.md](Agent_plan.md) — its own design record, not a phase | **Done** — S1–S10 merged; extended by the Track E assessment layer (software→CVE M1, patch gap M2, Windows/MSRC matching and console-driven Agent management, migration `0057`) recorded in the same file. Since 2026-10-05 Agent builds are written by the platform admin only (~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~, migration `0078`). Open on the Agent side: the builds are not signed (the API is the endpoint's only source of trust), and Lariska cannot present a client certificate yet, so `OCTO_AGENT_MTLS_MODE=required` refuses every Agent |
+| **E — Product direction** | *What is worth building once the base is complete?* | [below](#track-e--product-direction) | In progress — `org_profile` M1–M5, software→CVE M1–M3, closed-loop remediation (#183), the Sprint 4 report factory / compliance mapping, and the enterprise-readiness review ([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370)): of its 61 original issues (#308–#368) 39 are closed and 22 open on 2026-10-06 — see [its table](#enterprise-readiness-review-epic-370). Everything after `0.46-0922` is in `## Unreleased` |
 | **F — FSTEC certification** | *Can a frozen Shapoclyack profile be prepared for formal FSTEC conformity assessment?* | [docs/fstec-certification.ru.md](docs/fstec-certification.ru.md) | Planned — certification boundary, УД4 gap analysis, certified release train, supply-chain inventory and traceability |
 
 **Terminology.** A **sensor** is a remote scanning node — it runs `agent/worker.py`, claims scan
@@ -44,8 +65,17 @@ map and each source stays authoritative for its own scope.
 
 ## Current baseline (done)
 
-Shipped through **[shapoclyack-0.44-0907](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.44-0907)**
-(2026-09-07; `0.43-0828` before it). Includes all capabilities of Phases 1–11 and P0–P4, full EASM
+Shipped through **[shapoclyack-0.46-0922](https://github.com/onixus/Shapoclyack/releases/tag/shapoclyack-0.46-0922)**
+(2026-09-22; `0.45-0916` on 2026-09-16 and `0.44-0907` before it). `0.45-0916` carried the first
+wave of the enterprise-readiness review — TOTP MFA and step-up, revocable sessions, named
+permissions, sensor identity bound to its token and quarantine, encrypted integration secrets,
+NATS TLS, per-tenant job subjects, object-storage artifacts, Windows/MSRC matching, console
+management of the Agent, the Russian compliance catalogues and the tenant scan-policy ceilings
+(migrations up to `0057`); `0.46-0922` added the server installer, durable run publication with
+the ingest lease and the outbox (migrations `0058`, `0059`) and the digest-pinned Pulse binary.
+The paragraph below is the `0.44-0907` baseline as it was recorded.
+
+`0.44-0907` includes all capabilities of Phases 1–11 and P0–P4, full EASM
 lifecycle & NIST risk scoring, Track B Wave 0, Wave 1 and Wave 2 GA hardening (#151–#159,
 #185–#188, #222–#231), ClickHouse TTL and run retention (#187), multi-replica load validation
 (#188), and the Track E work recorded under `[0.44-0907]` in `CHANGELOG.md`: `org_profile`
@@ -63,28 +93,35 @@ Everything this section listed on 2026-08-26 as merged-but-untagged shipped in
 in-UI viewer, endpoint-inventory NATS events and the end-to-end lifecycle suite completing
 **Track D** (S8/S10), sensor fleet monitoring and UI-driven SSH deployment, a UX/UI refactor
 with a redesigned remediation kanban, and JWT-algorithm / request-body hardening.
-Auto-update was claimed in that list in error and does not exist — the bundle route the
+Auto-update was claimed in that list in error and did not exist then — the bundle route the
 scripts fetched was never implemented and `upgrade_requested` is a flag nothing on the sensor host
 reads (~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~, corrected in
-[#233](https://github.com/onixus/Shapoclyack/pull/233)).
-`CHANGELOG.md` has an open `## Unreleased` section again, and a large one: `main` is the
-`0.44-0907` tag plus ~210 commits — the first wave of the enterprise-readiness review
-([EPIC #370](https://github.com/onixus/Shapoclyack/issues/370)), migrations `0046`–`0057` (there is no `0054`;
-workflow events, notification channels, maintenance windows, named permissions, exception
-approval, job cancellation, sensor groups, tenant scan policy, idempotency actor, sensor
-`healthy_since`, endpoint Agent management), object-storage artifacts, the Russian compliance
-catalogues, the light console theme and the Russian translation. The review's issues stay open
-in GitHub until the release that ships them is cut, so an open issue whose fix is listed under
-`## Unreleased` is not a contradiction — the code is the arbiter, not the issue state.
+[#233](https://github.com/onixus/Shapoclyack/pull/233)). A **signed** update path exists since
+2026-10-05 (~~[#363](https://github.com/onixus/Shapoclyack/issues/363)~~, `GET /api/agent/bundle`,
+`agent/update.py`, `scripts/update-agent.sh`); it is still operator-run — nothing updates a sensor
+unless an operator runs the script or installs a timer and sets `OCTO_AGENT_AUTO_UPDATE=true`, and
+`upgrade_requested` is still only a marker for the console.
+
+`CHANGELOG.md` has an open `## Unreleased` section: `main` is the `0.46-0922` tag plus 482
+commits — migrations `0060`–`0078` (`0058`/`0059`, the ingest lease and the NATS outbox, shipped
+in `0.46-0922`; there is no `0075`; refresh tokens, WebAuthn, run publication lease, retro CVE matching, retention and legal hold, tenant lifecycle,
+tenant RLS, compliance frameworks, rate-limit buckets, tenant-defined roles, asset-import
+permission, the rank-3 credential permission, scan queue admission, IdP resync and SCIM, sensor
+client certificates, the Lariska release permission), plus the signed sensor bundle and
+release-image signing. An enterprise-readiness issue is closed when its PR merges; the code is
+still the arbiter, not the issue state — several closed issues leave a named remainder, listed
+in [the EPIC #370 table](#enterprise-readiness-review-epic-370).
 
 Local CI is the multibranch job `shapoclyack-branches`, branch `main` — the single-branch
 `shapoclyack` job is disabled and its last builds are stale, so it is not evidence of
-anything. Build **#45** (2026-09-15, revision `f16055b`, merge of #405) is SUCCESS: 2998
-pytest on 3.11 and 3.12, coverage 88% against a 74% gate, vitest in 71 files, kustomize, image,
-smoke and load stages green. Build #46 (revision `14d26b9`, merge of #406) is **FAILURE** on
-one test, `tests/test_sla_escalation.py::test_the_owner_digest_is_sent_once_a_day_to_the_asset_owner`
-(`assert 2 == 1`), with the same 88% coverage — not yet diagnosed at the time of writing, so
-`main` is amber until it is.
+anything. The Python coverage gate is **85%** (raised from 74% on 2026-09-30). Build **#75**
+(2026-10-05, revision `365ae2c`, merge of #500) is SUCCESS: 6041 pytest passed and 89 skipped,
+coverage 89.97%, vitest 613 tests in 85 files. Build **#76** (revision `a596351`, merge of #503)
+is **FAILURE** on one test in its second pytest run,
+`tests/test_auth_rate_limit.py::test_window_decays_without_operator_intervention`
+(`assert 401 == 429`), the first run of the same revision having passed — not diagnosed at the
+time of writing. The six merges of 2026-10-05 after it (#508, #505, #507, #511, #506, #509; tip `3ade4529`) have **no
+finished CI build yet** (#77 was waiting for an executor), so `main` is unverified, not green.
 
 
 | Area | Status |
@@ -391,7 +428,7 @@ and redaction are in its title rather than a follow-up.
 | 4.1 | TLS hostname/SAN-CN mismatch | `scanner/pipeline/cert_names.py` (new), `scanner/pipeline/tls_posture.py`, `tls_probe.py`, `config_schema.py`, `scanner/main.py` | `cert_name_mismatch` (medium) when a certificate's DNS identities (subject CN + `DNS:` SANs) cover none of the names the scan used to reach the endpoint. RFC 6125 matching (leftmost `*` = exactly one label, never a public suffix; partial-label wildcards do not match). Applied as one pass over the finished findings, so nmap NSE / `pulse-tls` / stdlib probe are checked identically. The expected-name set is the **forward** half of `hostnames.json` plus the host a Pulse/probe record was dialled by; PTR names are excluded on purpose (a reverse name belongs to the address-block owner, not the service owner, so it would fire on most of the internet), and an IP-only endpoint or an unparsed certificate yields no finding rather than a mismatch. `tls_posture.hostname_mismatch`, default true inside the already opt-in stage | **Done** |
 | 4.2 | IP↔FQDN↔certificate correlation | `scanner/pipeline/asset_identity.py`, `api/services/assets.py`, migration `0020` | An IP observation and a bare-FQDN observation become one asset only when forward DNS (`hostnames.json` / `dns_resolution.json`) *and* a certificate on that IP (P4.1 name data) cover the FQDN. Shared hosting (two high-confidence FQDNs on one IP) is recorded and **not** merged. PTR is not evidence. `asset_identity_links` is the named trail; IP lookups go through identifiers so a merged survivor still answers. Docs: [docs/asset-identity.md](docs/asset-identity.md) | **Done** |
 | 4.3 | Ownership graph | `api/services/runs.py`, `api/services/assets.py`, `web-next/src/components/attack-surface-graph.tsx` | Group the 11.2 graph by operator-set `business_unit` / `owner_email` (joined through P4.2 identifiers). Unowned names cluster by registrable domain and are labelled as a domain — ASN/org stays a topology colour, not an owner. Filter answers "what does this unit expose" | **Done** |
-| 4.4 | Web screenshots + retention/redaction | `scanner/pipeline/screenshots.py`, `api/services/screenshot_retention.py`, `api/routes/runs.py`, run view | Closes [9.3](#phase-9--exposure-fingerprinting). Headless capture of already-known open web ports (no new scope), opt-in (`screenshots.enabled`), capped like `fingerprint.py`. Playwright missing → skip, no pixels. DOM overlay redacts obvious form fields before disk; a heading name is not redacted. PNG access is operator-only; viewers 404. A reaper deletes `runs/*/screenshots/*.png` after `OCTO_SCREENSHOT_RETENTION_DAYS` (default 14); `screenshots.json` stays. Unredacted bytes are never written | **Done** |
+| 4.4 | Web screenshots + retention/redaction | `scanner/pipeline/screenshots.py`, `api/services/screenshot_retention.py`, `api/routes/runs.py`, run view | Closes [9.3](#phase-9--exposure-fingerprinting). Headless capture of already-known open web ports (no new scope), opt-in (`screenshots.enabled`), capped like `fingerprint.py`. Playwright missing → skip, no pixels. DOM overlay redacts obvious form fields before disk; a heading name is not redacted. PNG access is operator-only; viewers 404. A reaper deletes `runs/*/screenshots/*.png` after `OCTO_SCREENSHOT_RETENTION_DAYS` (default 14); `screenshots.json` stays. Unredacted bytes are never written. The published images ship no Playwright, so outside a custom image the stage always skips ([#367](https://github.com/onixus/Shapoclyack/issues/367)) | **Done** (code) |
 
 Suggested order: 4.1 (done) → 4.2 (done) → 4.3 (done) → 4.4 (done; the only item that adds a new data-protection surface).
 
@@ -408,9 +445,9 @@ read as one list than as five *Partial* rows spread over 40 KB:
 | OpenTelemetry tracing | [P3](#p3-breakdown--scale--observability) | **Done** — opt-in OTLP HTTP on the API; [3.9](#p3-breakdown--scale--observability) stage timings remain the scanner-side answer |
 | IP↔FQDN↔certificate correlation | [P4.2](#p4-breakdown--differentiating-features) | **Done** — feeds Track C's asset model ([#146](https://github.com/onixus/Shapoclyack/issues/146)); see [docs/asset-identity.md](docs/asset-identity.md) |
 | Ownership graph | [P4.3](#p4-breakdown--differentiating-features) | **Done** — groups the 11.2 graph by operator-set unit/owner; unowned names by registrable domain |
-| Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Done** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it |
+| Web screenshots + retention/redaction | [P4.4](#p4-breakdown--differentiating-features) | **Done in code, not in the images** — Phase [9.3](#phase-9--exposure-fingerprinting) is the same work and defers to it. No Dockerfile or lock file installs Playwright, so in every published image the stage writes `skipped_reason: playwright.unavailable` and captures nothing; shipping a runtime or withdrawing the feature is [#367](https://github.com/onixus/Shapoclyack/issues/367) |
 | Endpoint-inventory NATS event (S8), cross-repo e2e test (S10) | [Agent_plan.md](Agent_plan.md) (Track D) | **Done** — merged |
-| Idempotency key `actor` — contract step | not filed (originated in ~~[#346](https://github.com/onixus/Shapoclyack/issues/346)~~, bulk actions, closed; migration `0055`) | **Open** — one release after `0055` ships, drop the `actor IS NULL` fallback in `api/services/idempotency.py`, the `uq_idempotency_legacy_tenant_endpoint_key` index and the `idempotency_records_cross_generation` trigger. Until then a key reserved before the upgrade is still read tenant-wide; see [docs/operations.md](docs/operations.md) |
+| Idempotency key `actor` — contract step | not filed (originated in ~~[#346](https://github.com/onixus/Shapoclyack/issues/346)~~, bulk actions, closed; migration `0055`) | **Open, now due** — `0055` shipped in `0.45-0916` and `0.46-0922` was the release after it, yet the fallback is still in the code on 2026-10-06. Drop the `actor IS NULL` fallback in `api/services/idempotency.py`, the `uq_idempotency_legacy_tenant_endpoint_key` index and the `idempotency_records_cross_generation` trigger. Until then a key reserved before the upgrade is still read tenant-wide; see [docs/operations.md](docs/operations.md) |
 
 Everything else in Phases 1–11 and P0–P3 is merged.
 
@@ -572,7 +609,7 @@ Not GA blockers, but they are the reason Wave 2 exists: the status columns in th
 
 | Issue | Theme |
 |-------|-------|
-| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Sensor auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one |
+| ~~[#227](https://github.com/onixus/Shapoclyack/issues/227)~~ | Sensor auto-update does not exist — no bundle route, installers report success regardless, `upgrade_requested` latches. **Fixed** in [#233](https://github.com/onixus/Shapoclyack/pull/233): the promise is removed rather than implemented, because a bundle route without a signed payload is unsigned code delivery to root shells. The installers now take an explicit `--bundle-url` and fail loudly without one. **Later implemented properly** in [#506](https://github.com/onixus/Shapoclyack/pull/506) (~~[#363](https://github.com/onixus/Shapoclyack/issues/363)~~): a manifest signed with the release key pinned in the installed package, downgrade refusal, atomic install with rollback; `update-agent.sh --bundle-url` is gone (the first install by `install-agent.sh --bundle-url` is still not signature-checked). Updates stay operator-run unless a timer and `OCTO_AGENT_AUTO_UPDATE=true` are set |
 | ~~[#228](https://github.com/onixus/Shapoclyack/issues/228)~~ | `risk-history` returns the *oldest* snapshots — the Risk Overview trend freezes on the system's first week. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): `DESC` with the limit, reversed for the chart. The cross-tenant series is gone too — `risk-history` is one tenant now, because snapshots are written per finished run rather than on a shared clock, so any bucketing would invent the time axis |
 | ~~[#229](https://github.com/onixus/Shapoclyack/issues/229)~~ | `risk_score_snapshots` grows unbounded — migration `0023` landed after [#187](https://github.com/onixus/Shapoclyack/issues/187) and was never covered by it. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235) and [#237](https://github.com/onixus/Shapoclyack/pull/237). The sweep is one half and the lifespan wiring is the other: an unwired worker is the same defect one layer up |
 | ~~[#230](https://github.com/onixus/Shapoclyack/issues/230)~~ | `ch_ingest_worker` consumes S8 endpoint-inventory events and inflates the SLO 6 denominator. **Fixed** in [#235](https://github.com/onixus/Shapoclyack/pull/235): the consumer filters `ingest.results.>` under a new durable name, since JetStream will not narrow an existing one |
@@ -627,20 +664,22 @@ and SLA, asset identity with an evidence trail, and the operational hardening of
 
 | Gap | Why it blocks |
 |-----|---------------|
-| No authenticated assessment | **Partly closed (M1–M3).** Endpoint software is matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). M3 made the matches *work* rather than data: a `vulnerable` match with a published fix folds into `vulnerabilities` (migration `0032`, `source = "endpoint_software"`), so it carries SLA, owner, ticket and NIST risk, and it closes on an observation — the next inventory after the upgrade, which is verification a re-scan cannot perform for an installed package. The advisory feeds also have a delivery path now; before it the matcher ran against an 18-statement seed on every install. Windows joined them in #358, on its own axis: a Microsoft advisory is about an operating system *build*, not a package version, so a host is matched on `10.0.<build>.<ubr>` against the `FixedBuild` of each remediation — cumulative servicing makes the revision the whole answer — and the image ships the Security Update Guide rather than a seed. What is still missing is the rest of the estate: language ecosystems, macOS, non-distribution software on Windows, and every distribution other than those two |
-| No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). TOTP MFA (`OCTO_MFA_REQUIRED_ROLES`, step-up on credential-issuing operations), revocable console sessions (`api/services/sessions.py`, migration `0038`) and a permission model finer than three roles — named permissions, an `auditor` role, a tenant admin and a `token-admin` (migration `0049`) — followed in `## Unreleased`. SAML, LDAP and SCIM have not ([#317](https://github.com/onixus/Shapoclyack/issues/317), [#316](https://github.com/onixus/Shapoclyack/issues/316)) |
+| No authenticated assessment | **Partly closed (M1–M3).** Endpoint software is matched against Debian and Ubuntu vendor advisories, with purl/CPE identities, correct dpkg/rpm EVR comparison and an explicit `unknown` status — see [docs/software-cve-matching.md](docs/software-cve-matching.md). M3 made the matches *work* rather than data: a `vulnerable` match with a published fix folds into `vulnerabilities` (migration `0032`, `source = "endpoint_software"`), so it carries SLA, owner, ticket and NIST risk, and it closes on an observation — the next inventory after the upgrade, which is verification a re-scan cannot perform for an installed package. The advisory feeds also have a delivery path now; before it the matcher ran against an 18-statement seed on every install. Windows joined them in #358, on its own axis: a Microsoft advisory is about an operating system *build*, not a package version, so a host is matched on `10.0.<build>.<ubr>` against the `FixedBuild` of each remediation — cumulative servicing makes the revision the whole answer — and the image ships the Security Update Guide rather than a seed. RHEL, SLES and Amazon Linux binary-RPM providers followed ([#494](https://github.com/onixus/Shapoclyack/pull/494), [docs/rpm-advisories.md](docs/rpm-advisories.md)) for explicitly bound products and channels; [#358](https://github.com/onixus/Shapoclyack/issues/358) stays open for acceptance of those feeds against a real fleet. What is still missing is the rest of the estate: language ecosystems, macOS, non-distribution software on Windows, Rocky/Alma/CentOS/Fedora/openSUSE and other unbound RPM channels |
+| No SSO | **Partly closed.** OIDC single sign-on (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with scopes have landed — see [docs/api-and-rbac.md](docs/api-and-rbac.md#single-sign-on-oidc). TOTP MFA (`OCTO_MFA_REQUIRED_ROLES`, step-up on credential-issuing operations), revocable console sessions (`api/services/sessions.py`, migration `0038`) and a permission model finer than three roles — named permissions, an `auditor` role, a tenant admin and a `token-admin` (migration `0049`) — followed in `0.45-0916`; refresh-token rotation and an idle timeout (~~#314~~), WebAuthn passkeys (~~#315~~), tenant-defined roles (~~#318~~), MFA and step-up required by permissions held in *any* tenant rather than by the global role alone (~~#504~~, `OCTO_MFA_REQUIRED_PERMISSIONS`), and an IdP-authoritative mode with SCIM 2.0 provisioning (~~#316~~, `OCTO_IDP_AUTHORITATIVE`, `/scim/v2`) after it. The resync runs at each SSO login and on SCIM pushes — removing someone from a group without SCIM takes effect at their next login, not at once. Still missing: SAML 2.0 and LDAP/AD ([#317](https://github.com/onixus/Shapoclyack/issues/317)), password lifecycle ([#322](https://github.com/onixus/Shapoclyack/issues/322)), service-token overlap rotation and allowlists ([#323](https://github.com/onixus/Shapoclyack/issues/323)), invitations and access recertification ([#324](https://github.com/onixus/Shapoclyack/issues/324)) |
 | No report factory | **Closed (Sprint 4).** Executive / technical / compliance templates, per-tenant branding, cron-scheduled delivery over SMTP and webhook with a per-recipient delivery trail, and PDF / HTML / JSON off one report body — see [docs/reports-and-compliance.md](docs/reports-and-compliance.md). Signed point-in-time evidence packages landed in #356; per-control ownership is still missing |
 | No compliance mapping | **Closed (Sprint 4).** PCI DSS 4.0, CIS Controls v8 and ISO/IEC 27001:2022 control status over this tenant's findings, asset context and endpoint inventory, with `not_assessed` for anything the platform cannot observe and a score that is explicitly the share of *assessed* controls rather than compliance with the standard. The Russian regulators followed (#356, catalogue half): ФСТЭК № 117 / 21 / 239 and ГОСТ Р 57580.1-2017 on the regulators' own measure codes and FSTEC's remediation windows. W11/#356 added tenant custom frameworks with JSON/CSV import, CVE↔БДУ ФСТЭК provenance and signed archivable evidence packages; legal/policy-only controls remain deliberately outside automated assessment |
-| Asset context filled by hand | `business_service`/`environment`/`owner_email` only via PATCH. At 50k assets the dashboard's "unowned assets" will read ~45k and the whole owner/SLA workflow never starts |
+| Asset context filled by hand | **Partly closed** ([#350](https://github.com/onixus/Shapoclyack/issues/350) stage 1, [#502](https://github.com/onixus/Shapoclyack/pull/502)): besides the PATCH, a CMDB/AD *export* can be imported (`POST /api/assets/import`, CSV/JSON, dry-run with a conflict report, an import dialog on `/assets`). Something still has to produce and post that file: there is no scheduled ServiceNow connector and no LDAP/AD sync, so at 50k assets the owner/SLA workflow starts only where a customer wires up an export job |
 | The loop is not closed | **Partly closed (#183).** A finding can be sent for **mechanical verification** — a targeted re-scan whose result, not an operator's assertion, moves it out of `VERIFYING` — and ticket status is now synchronized both ways — a poller since `## Unreleased`, not only a refresh button (#347). What is still missing is verification for finding classes a re-scan cannot observe, and remediation SLAs measured against the verified close rather than the state change |
-| No MSSP operations | **Partly closed.** Per-tenant quotas (`max_assets`, `max_scans_per_month`) and consumption metering have landed: `GET /api/usage`, `GET /api/usage/tenants`, platform-admin `GET/PUT /api/tenants/{id}/quota`, a **Usage** console page, and enforcement at scan admission (429 + `Retry-After`) and at asset ingest — see [docs/api-and-rbac.md](docs/api-and-rbac.md). White-label is covered by the report factory's per-tenant branding. What is still missing is an onboarding wizard and a customer read-only portal |
-| Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. What is still missing is an offline bundle, and a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
+| No MSSP operations | **Partly closed.** Per-tenant quotas (`max_assets`, `max_scans_per_month`) and consumption metering have landed: `GET /api/usage`, `GET /api/usage/tenants`, platform-admin `GET/PUT /api/tenants/{id}/quota`, a **Usage** console page, and enforcement at scan admission (429 + `Retry-After`) and at asset ingest — see [docs/api-and-rbac.md](docs/api-and-rbac.md). White-label is covered by the report factory's per-tenant branding. Scan queue priority, a per-tenant concurrency ceiling (`max_concurrent_scans`, enforced at claim) and a queued-scan ceiling with a 429 at admission (`max_queued_scans`, `OCTO_SCAN_QUEUE_MAX_DEPTH`) followed (~~[#365](https://github.com/onixus/Shapoclyack/issues/365)~~, migration `0074`) — priority orders the HTTP claim, not the NATS offer, which stays FIFO. What is still missing is an onboarding wizard, a customer read-only portal and an organization → tenant hierarchy ([#326](https://github.com/onixus/Shapoclyack/issues/326)) |
+| Enrichment data has no air-gapped bundle | The overlays are no longer stubs — the image ships EPSS 365,017, KEV 1,676, exploit maturity 25,943 and CVSS4 31,715 entries, and `GET /api/system` reports each dataset's source, feed date, entry count and whether the build fetched it or fell back. An offline enrichment bundle and feed mirrors landed with ~~[#339](https://github.com/onixus/Shapoclyack/issues/339)~~ ([docs/air-gap.md](docs/air-gap.md), `scripts/build-enrichment-bundle.sh`). What is still missing is a product-level judgement that turns overlay age into "your priorities are wrong" rather than a date on a status page |
 
 ### Order
 
 **Now** — remove the reasons a buyer stops: enterprise IAM — **OIDC single sign-on
 (authorization code + PKCE, JIT provisioning off by default) and per-tenant service tokens with
-scopes have landed**; SAML and LDAP have not, and are the remainder of this item —
+scopes have landed**, and so have MFA, passkeys, tenant-defined roles, the IdP-authoritative
+resync and SCIM 2.0 (2026-09/10, see the gap table above); SAML and LDAP have not, and are the
+remainder of this item ([#317](https://github.com/onixus/Shapoclyack/issues/317)) —
 software→CVE matching over the endpoint inventory (5–7 sprints, starting with
 vendor advisories for two distributions, because naive version matching on backports produces a
 false-positive storm — **M1–M3 landed**: Debian + Ubuntu providers, offline-first advisory
@@ -652,7 +691,11 @@ an owner and a ticket, it was not work. Two things landed with it that the miles
 name — the advisory feeds had no delivery path at all (`fetch.py` was called from nothing but
 its own tests, so every install matched against an 18-statement seed), and closure now has a
 machine verification the network path cannot do, because an inventory genuinely observes a
-package's absence. **Remaining milestones:** more distributions, language ecosystems, macOS. Windows landed in `## Unreleased` (MSRC matching by OS build, migration `0057`; [#358](https://github.com/onixus/Shapoclyack/issues/358) stays open until the release).
+package's absence. **Remaining milestones:** language ecosystems, macOS, and acceptance of
+the RPM feeds. Windows shipped in `0.45-0916` (MSRC matching by OS build, migration `0057`);
+RHEL/SLES/Amazon Linux providers are merged ([#494](https://github.com/onixus/Shapoclyack/pull/494))
+and [#358](https://github.com/onixus/Shapoclyack/issues/358) stays open for their feed and
+fleet acceptance.
 Two limits of M3 are recorded rather than implied: behaviour at 50k hosts against a full feed
 was never run, and a source package that drops out of a vendor's dump still reads as
 "patched" — there is no narrower signal in the data);
@@ -686,6 +729,43 @@ ProjectDiscovery `httpx`/`tlsx` (2–3 sprints); false-positive feedback and
 coverage analytics (2 sprints). `httpx` is deliberately late: it raises
 finding volume and precision, and more findings before the loop is closed is
 just more noise.
+
+### Enterprise-readiness review (EPIC #370)
+
+**Source of truth:** [EPIC #370](https://github.com/onixus/Shapoclyack/issues/370) and
+`gh issue list --label enterprise`. Status as of **2026-10-06**, checked against the code at
+`main @ 3ade4529`: of the 61 original issues (#308–#368) **39 are closed and 22 open**; the
+follow-ups filed during the review (#384, #424–#427, #504, #510) are all closed. A closed issue
+below is closed in code, not in a release — everything since `0.46-0922` is under
+`## Unreleased`.
+
+**Delivered in the waves of 2026-10-04/05, and what each leaves open:**
+
+| Issue | PR | What is in `main` | What remains |
+|-------|----|-------------------|--------------|
+| ~~[#504](https://github.com/onixus/Shapoclyack/issues/504)~~ | [#508](https://github.com/onixus/Shapoclyack/pull/508) | MFA policy and step-up by permissions held in any tenant (`OCTO_MFA_REQUIRED_PERMISSIONS`, `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS`); step-up on member and tenant-role administration; migration `0073` | Nothing filed. **Behaviour change on upgrade:** with `OCTO_MFA_REQUIRED_ROLES=admin` the permission list is derived, and unenrolled holders are confined to the Security page — staging is in [operations.md](docs/operations.md#upgrading-with-an-mfa-policy-tenant-admins-are-now-covered-504) |
+| ~~[#365](https://github.com/onixus/Shapoclyack/issues/365)~~ | [#505](https://github.com/onixus/Shapoclyack/pull/505) | `jobs.priority` and `PUT /api/jobs/{id}/priority` (`scan.priority.raise`), per-tenant `max_concurrent_scans` at claim under an advisory lock, `max_queued_scans` and `OCTO_SCAN_QUEUE_MAX_DEPTH` at admission (429 + `Retry-After`); migration `0074` | The NATS offer is FIFO — priority orders the HTTP claim only; admission is a soft bound (simultaneous starts can overshoot). Both stated in `api/services/scan_queue.py` |
+| ~~[#316](https://github.com/onixus/Shapoclyack/issues/316)~~ | [#507](https://github.com/onixus/Shapoclyack/pull/507) | `OCTO_IDP_AUTHORITATIVE` recomputes role and memberships from groups at every SSO login; `/scim/v2` Users and Groups under `octo_scim_` tokens; membership `source` (`local`/`idp`); migration `0076` | The resync happens at login and on SCIM pushes, not on a schedule; SAML/LDAP is [#317](https://github.com/onixus/Shapoclyack/issues/317) |
+| ~~[#510](https://github.com/onixus/Shapoclyack/issues/510)~~ (P0) | [#511](https://github.com/onixus/Shapoclyack/pull/511) | Lariska build upload/delete needs `platform.endpoint_agent_release.manage` (platform admin only, not grantable to a tenant role) + step-up; migration `0078` | **Signing the Lariska builds** — the API is still the endpoint's only source of trust for a build; not filed as an issue. Operators should review the `endpoint_agent.release.upload` history ([operations.md](docs/operations.md#endpoint-agent-lariska-builds)) |
+| ~~[#363](https://github.com/onixus/Shapoclyack/issues/363)~~ | [#506](https://github.com/onixus/Shapoclyack/pull/506) | `Sensor bundle` stage in `Jenkinsfile.publish`, manifest signed with the release key; `GET /api/agent/bundle[/download]` with `OCTO_AGENT_BUNDLE_DIR`; `agent/update.py` verifies against the key pinned in the package, refuses downgrades and `OCTO_AGENT_MIN_VERSION`; atomic symlink swap with health check and rollback; `update-agent.sh --bundle-url` removed | **Updates are operator-run**: automatic update needs a timer the operator installs *and* `OCTO_AGENT_AUTO_UPDATE=true`. Only the `agent` package is in the bundle (not `scanner/` or the venv); the first native install is not signature-checked; prerelease bundles are unsigned; container sensors update by image. No release has published a signed bundle yet — the first one is the next tag |
+| ~~[#309](https://github.com/onixus/Shapoclyack/issues/309)~~ | [#509](https://github.com/onixus/Shapoclyack/pull/509) | Client certificates bound to the sensor's token (`OCTO_AGENT_MTLS_MODE=off\|optional\|required`, default `off`), SPIFFE URI or pinned fingerprint, API-side issuance at `POST /api/agent/certificate`, revocation and enrolment lock; migration `0077` | **Lariska cannot present a certificate yet**, so `required` refuses every Agent (the API contract is in [operations.md](docs/operations.md#sensor-client-certificates)); revocation is the API's own table — no CRL or OCSP, and the ingress does not consult it; the NATS link authenticates a NATS user (`OCTO_NATS_TLS_CERT`), not the sensor; datastore TLS stays a warning, not a refusal. None of these is filed as an issue |
+| ~~[#318](https://github.com/onixus/Shapoclyack/issues/318)~~ | [#501](https://github.com/onixus/Shapoclyack/pull/501) | Tenant-defined roles (name, rank, named permissions); migration `0070` | — |
+| ~~[#320](https://github.com/onixus/Shapoclyack/issues/320)~~ | [#499](https://github.com/onixus/Shapoclyack/pull/499) | Shared rate limiting and a request-body cap on every route; migration `0069` | — |
+| ~~[#356](https://github.com/onixus/Shapoclyack/issues/356)~~ | [#497](https://github.com/onixus/Shapoclyack/pull/497) | Custom compliance catalogues, БДУ ФСТЭК provenance, signed evidence packages ([docs/custom-compliance.md](docs/custom-compliance.md)); migration `0068` | Legal and policy-only controls remain outside automated assessment by design |
+| [#350](https://github.com/onixus/Shapoclyack/issues/350) (open) | [#502](https://github.com/onixus/Shapoclyack/pull/502) | Stage 1: `POST /api/assets/import` (CSV/JSON, dry-run, conflict report) and the import dialog; migration `0071` | Scheduled ServiceNow CMDB connector and LDAP/AD computer sync |
+
+**Still open (22):**
+
+| Area | Issues | What remains (verified against `main`) |
+|------|--------|-----------------------------------------|
+| Isolation and supply chain | [#311](https://github.com/onixus/Shapoclyack/issues/311), [#313](https://github.com/onixus/Shapoclyack/issues/313), [#345](https://github.com/onixus/Shapoclyack/issues/345) | RLS (`0067`) and signed images exist; open are legacy artifact ownership and the remaining boundaries, production signing/admission evidence and release-key operation, and making the PR gate a required check on `main` |
+| IAM breadth | [#317](https://github.com/onixus/Shapoclyack/issues/317), [#322](https://github.com/onixus/Shapoclyack/issues/322), [#323](https://github.com/onixus/Shapoclyack/issues/323), [#324](https://github.com/onixus/Shapoclyack/issues/324), [#326](https://github.com/onixus/Shapoclyack/issues/326) | No SAML or LDAP code; no password history, `must_change_password` or reset; no service-token rotation or `allowed_cidrs`; no `last_login_at` or invitations; no organization/parent tenant in the schema |
+| DR, sizing, platforms | [#333](https://github.com/onixus/Shapoclyack/issues/333), [#337](https://github.com/onixus/Shapoclyack/issues/337), [#340](https://github.com/onixus/Shapoclyack/issues/340), [#341](https://github.com/onixus/Shapoclyack/issues/341), [#342](https://github.com/onixus/Shapoclyack/issues/342) | Tools and a local 10k drill exist, a cluster/real-storage drill does not; the sizing model is uncalibrated on a production-durability stand; the Pulse distribution ADR is still *Proposed*; no Helm chart and no OpenShift SCC in the tree |
+| Integrations | [#350](https://github.com/onixus/Shapoclyack/issues/350), [#353](https://github.com/onixus/Shapoclyack/issues/353), [#354](https://github.com/onixus/Shapoclyack/issues/354), [#355](https://github.com/onixus/Shapoclyack/issues/355), [#357](https://github.com/onixus/Shapoclyack/issues/357) | CMDB/AD connectors (above); ticket transports are Jira/ServiceNow/DefectDojo with a fixed field mapping; `/api/v1` is an alias for the auth, sensor and endpoint routers only, with no deprecation policy, finding/asset export or client; reports are PDF/HTML/JSON only, with no S3/SFTP delivery; saved views and a WCAG pass |
+| Fleet and scanning | [#358](https://github.com/onixus/Shapoclyack/issues/358), [#366](https://github.com/onixus/Shapoclyack/issues/366), [#367](https://github.com/onixus/Shapoclyack/issues/367), [#368](https://github.com/onixus/Shapoclyack/issues/368) | RPM providers are merged, feed and fleet acceptance is not; uploaded results are not schema-validated or signed and the sensor has no `/metrics`; the images ship no Playwright, so screenshots never run; credentialed scanning still needs a do-or-don't decision |
+
+Follow-ups that the 2026-10-05 wave named but nobody filed: signed Lariska builds, client-certificate
+support in Lariska, and certificate revocation beyond the API's own list (CRL/OCSP).
 
 ### Not doing, and why
 

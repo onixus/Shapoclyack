@@ -695,7 +695,9 @@ For an installation moving from a pre-#338 release:
   `OCTO_AGENT_RUN_MAX_BYTES` in docs/configuration.md.
 - **Delta and report-diff baselines live in the executor's `emptyDir`**: a
   restart makes the next delta run a full one, and each replica keeps its own.
-- **Queued jobs are claimed oldest first, per tenant**, whatever built up while
+- **Queued jobs are claimed highest priority first, then oldest, per tenant**
+  (the order of [#365](https://github.com/onixus/Shapoclyack/issues/365); with
+  no priorities set that is oldest first), whatever built up while
   no executor was enrolled; a schedule that fired meanwhile is one job each
   time, not a backlog of one per interval (an overlapping run is skipped). The
   maintenance calendar is checked when a scan is started, not again when the
