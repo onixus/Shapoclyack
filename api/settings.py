@@ -1788,6 +1788,44 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
 AGENT_MTLS_MODES = ("off", "optional", "required")
 
 
+def _check_issuer_in_client_ca(client_ca: str, issuer_cert: str) -> None:
+    """Refuse an issuer whose certificates the client CA would not accept (#309).
+
+    In any mode, ``off`` included: the API's own listener asks for client
+    certificates whenever it has a CA (``api.__main__``), so a sensor that
+    enrols from this issuer and presents the result would be cut off in the
+    handshake — every request, not just the ones that need a certificate —
+    and through an ingress its certificate would be "not issued by the client
+    CA". Either is found at the first renewal, weeks after the change that
+    caused it; at start it is one line.
+    """
+    from api.core.client_cert import fingerprint, issued_by_bundle, load_ca_bundle
+
+    try:
+        bundle = load_ca_bundle(client_ca)
+        issuer_chain = load_ca_bundle(issuer_cert)
+    except ValueError as exc:
+        raise InsecureConfigurationError(
+            f"OCTO_AGENT_MTLS_CLIENT_CA / OCTO_AGENT_MTLS_ISSUER_CERT: not a PEM bundle ({exc})."
+        ) from exc
+    if not bundle or not issuer_chain:
+        empty = "OCTO_AGENT_MTLS_CLIENT_CA" if not bundle else "OCTO_AGENT_MTLS_ISSUER_CERT"
+        raise InsecureConfigurationError(f"{empty} holds no PEM certificate.")
+    issuer, rest = issuer_chain[0], issuer_chain[1:]
+    if fingerprint(issuer) in {fingerprint(ca) for ca in bundle}:
+        return
+    if issued_by_bundle(issuer, bundle, rest):
+        return
+    raise InsecureConfigurationError(
+        f"OCTO_AGENT_MTLS_ISSUER_CERT ({issuer.subject.rfc4514_string()}) does not chain to "
+        "OCTO_AGENT_MTLS_CLIENT_CA:\n"
+        "    every certificate the API issues would be refused by its own listener's\n"
+        "    handshake and by the client CA check of a forwarded one. Put the issuer\n"
+        "    (or the root it was signed by) in OCTO_AGENT_MTLS_CLIENT_CA, or follow it\n"
+        "    in OCTO_AGENT_MTLS_ISSUER_CERT with the intermediates up to that root."
+    )
+
+
 def _agent_mtls_settings() -> dict[str, Any]:
     """``agent_mtls_*`` from the environment, refused when it cannot work (#309).
 
@@ -1823,6 +1861,8 @@ def _agent_mtls_settings() -> dict[str, Any]:
     ):
         if path and not os.path.isfile(path):
             raise InsecureConfigurationError(f"{variable} names {path}, which does not exist.")
+    if client_ca and issuer_cert:
+        _check_issuer_in_client_ca(client_ca, issuer_cert)
     if mode != "off" and proxies:
         from api.core.client_cert import parse_trusted_proxies
 

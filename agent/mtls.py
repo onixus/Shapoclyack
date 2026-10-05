@@ -13,7 +13,24 @@ sensor makes its own key, sends a CSR to ``POST /api/agent/certificate`` and
 writes what comes back to those paths, then renews at the ``renew_after`` the
 API answered with (two thirds of the lifetime). A renewal presents the current
 certificate, which is what the API requires of an agent that already holds
-one. The key never leaves the host and is written ``0600``.
+one. The key never leaves the host and is written ``0600``. The certificate
+file holds the issuing CA after the leaf, so a listener whose client CA is a
+root above that issuer can build the chain.
+
+**Never presented past its end.** A certificate within
+:data:`EXPIRY_MARGIN_SECONDS` of ``not_after`` is left out of the handshake:
+the API's listener (and ingress-nginx, with a 400) refuses an expired one
+before any route runs, so presenting it would cut the sensor off under
+``optional`` too, and an enrolled sensor could not even ask for a new one.
+Without it the sensor is a sensor with no certificate — fine under
+``optional``, enrolled again by its token, or refused ``missing`` under
+``required`` with a log line that says the mounted file needs renewing.
+
+**A new key and certificate replace the old ones as a pair.** Both are staged
+next to their final names first (``*.next``, the certificate last), then
+moved in; a crash in between is finished by the next start, and a pair that
+still does not match — left by an earlier release — is dropped and enrolled
+again rather than ending the process.
 
 Key generation uses ``cryptography`` when it is importable (it is in the
 container image) and the ``openssl`` binary otherwise — a native sensor's
@@ -54,6 +71,12 @@ ENROL_VAR = "OCTO_AGENT_MTLS_ENROLL"
 #: minute, not that it is free.
 CHECK_INTERVAL_SECONDS = 60.0
 
+#: A certificate this close to its ``not_after`` is not presented, and is
+#: renewed: past it the API's handshake refuses it outright, and the two
+#: clocks need not agree to the second. The API backdates what it issues by
+#: the same five minutes.
+EXPIRY_MARGIN_SECONDS = 300.0
+
 #: After a failed enrolment, how long before the next try — enough that a
 #: refusing API is not asked at the poll rate, short enough that a sensor whose
 #: certificate is running out tries several times before it does.
@@ -70,6 +93,11 @@ def _meta_path(cert_path: Path) -> Path:
     return cert_path.with_name(cert_path.name + ".json")
 
 
+def _staged(path: Path) -> Path:
+    """Where :meth:`ClientCertificate.install` writes ``path``'s new content first."""
+    return path.with_name(path.name + ".next")
+
+
 def _parse_time(value: Any) -> float | None:
     if not value:
         return None
@@ -82,16 +110,28 @@ def _parse_time(value: Any) -> float | None:
 class ClientCertificate:
     """One sensor's certificate and key on disk, and the decision to renew them."""
 
-    def __init__(self, cert_path: Path, key_path: Path, *, enrol: bool = False) -> None:
+    def __init__(
+        self, cert_path: Path, key_path: Path, *, enrol: bool = False, repair: bool = True
+    ) -> None:
         self.cert_path = cert_path
         self.key_path = key_path
         self.enrol = enrol
+        #: Whether this process may finish an interrupted install and drop a
+        #: pair that does not load — the worker, which owns the files. Not a
+        #: reader beside it (``agent.update``), which could catch the worker
+        #: between the two renames and must not delete what it just wrote.
+        self.repair = enrol and repair
+        #: Whether the last :meth:`ssl_context` presents the certificate.
+        self.presenting = False
+        self._presented_until: float | None = None
         self._loaded_stamp: tuple[int, int] | None = None
         self._forced = False
         self._next_attempt = 0.0
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "ClientCertificate | None":
+    def from_env(
+        cls, env: Mapping[str, str] | None = None, *, repair: bool = True
+    ) -> "ClientCertificate | None":
         source = os.environ if env is None else env
         cert = (source.get(CERT_VAR) or "").strip()
         key = (source.get(KEY_VAR) or "").strip()
@@ -109,7 +149,7 @@ class ClientCertificate:
                 f"The client certificate is half-configured: {missing} is unset. "
                 "Set both, or neither."
             )
-        instance = cls(Path(cert), Path(key), enrol=enrol)
+        instance = cls(Path(cert), Path(key), enrol=enrol, repair=repair)
         if not enrol and not instance.present():
             raise ClientCertConfigError(
                 f"{CERT_VAR}={cert} / {KEY_VAR}={key}: the files do not exist, and "
@@ -128,22 +168,113 @@ class ClientCertificate:
         except OSError:
             return None
 
-    def ssl_context(self) -> ssl.SSLContext:
-        """The egress context, presenting this certificate when it exists."""
-        context = egress.ssl_context()
-        if self.present():
+    def not_after(self) -> float | None:
+        """When the certificate on disk runs out (epoch seconds), if that can be read.
+
+        From the certificate when ``cryptography`` is importable (the
+        container image; a mounted certificate has no metadata), else from
+        the metadata :meth:`install` wrote.
+        """
+        try:
+            from cryptography import x509
+        except ImportError:
+            x509 = None  # type: ignore[assignment]
+        if x509 is not None:
             try:
-                context.load_cert_chain(certfile=str(self.cert_path), keyfile=str(self.key_path))
-            except (OSError, ssl.SSLError) as exc:
-                raise ClientCertConfigError(
-                    f"Cannot load the client certificate {self.cert_path} / {self.key_path}: {exc}"
-                ) from exc
+                leaf = x509.load_pem_x509_certificate(self.cert_path.read_bytes())
+            except (OSError, ValueError):
+                pass
+            else:
+                return leaf.not_valid_after_utc.timestamp()
+        try:
+            meta = json.loads(_meta_path(self.cert_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return _parse_time(meta.get("not_after"))
+
+    def _runs_out(self, now: float) -> float | None:
+        """``not_after`` when ``now`` is already within the margin of it, else ``None``."""
+        expiry = self.not_after()
+        if expiry is not None and now >= expiry - EXPIRY_MARGIN_SECONDS:
+            return expiry
+        return None
+
+    def ssl_context(self) -> ssl.SSLContext:
+        """The egress context, presenting this certificate when it can be presented.
+
+        Not when it is missing, or within :data:`EXPIRY_MARGIN_SECONDS` of
+        its end. A pair that does not load is :class:`ClientCertConfigError`
+        for a mounted certificate — somebody else's files — and dropped, for
+        an enrolment to replace, when this process owns them.
+        """
+        context = egress.ssl_context()
+        if self.repair:
+            self._finish_interrupted_install()
+        self.presenting = False
+        self._presented_until = None
+        if self.present():
+            expiry = self._runs_out(time.time())
+            if expiry is not None:
+                self._not_presenting_expired(expiry)
+            else:
+                try:
+                    context.load_cert_chain(certfile=str(self.cert_path), keyfile=str(self.key_path))
+                except ssl.SSLError as exc:
+                    if not self.repair:
+                        raise ClientCertConfigError(
+                            f"Cannot load the client certificate {self.cert_path} / {self.key_path}: {exc}"
+                        ) from exc
+                    LOG.error(
+                        "Client certificate %s / %s does not load (%s); discarding the pair "
+                        "and enrolling a new one",
+                        self.cert_path,
+                        self.key_path,
+                        exc,
+                    )
+                    self._discard()
+                    self._forced = True
+                except OSError as exc:
+                    raise ClientCertConfigError(
+                        f"Cannot load the client certificate {self.cert_path} / {self.key_path}: {exc}"
+                    ) from exc
+                else:
+                    self.presenting = True
+                    self._presented_until = self.not_after()
         self._loaded_stamp = self._stamp()
         return context
+
+    def _not_presenting_expired(self, expiry: float) -> None:
+        when = datetime.fromtimestamp(expiry).astimezone().isoformat(timespec="seconds")
+        if self.enrol:
+            LOG.warning(
+                "Client certificate %s runs out at %s; not presenting it, enrolling a new one",
+                self.cert_path,
+                when,
+            )
+            return
+        LOG.error(
+            "Client certificate %s runs out at %s; not presenting it. Whatever mounts it "
+            "(cert-manager, the host's PKI agent) has to renew it: until then the API "
+            "treats this sensor as one without a certificate, which "
+            "OCTO_AGENT_MTLS_MODE=required refuses",
+            self.cert_path,
+            when,
+        )
 
     def changed_on_disk(self) -> bool:
         """Whether the files differ from what the current context was built from."""
         return self._stamp() != self._loaded_stamp
+
+    def needs_reload(self, now: float | None = None) -> bool:
+        """Whether the context must be rebuilt: new files, or the presented one ran out."""
+        if self.changed_on_disk():
+            return True
+        current = time.time() if now is None else now
+        return (
+            self.presenting
+            and self._presented_until is not None
+            and current >= self._presented_until - EXPIRY_MARGIN_SECONDS
+        )
 
     def renew_after(self) -> float | None:
         """When this enrolled certificate should be replaced, from its metadata."""
@@ -161,6 +292,8 @@ class ClientCertificate:
         if current < self._next_attempt:
             return False
         if self._forced or not self.present():
+            return True
+        if self._runs_out(current) is not None:
             return True
         due = self.renew_after()
         # A certificate with no metadata was not written by this module (or
@@ -190,17 +323,27 @@ class ClientCertificate:
     # --- writing ---------------------------------------------------------------
 
     def install(self, key_pem: bytes, issued: Mapping[str, Any]) -> None:
-        """Write a new key, certificate and metadata, each atomically.
+        """Replace key, certificate and metadata with an enrolment's answer, as a pair.
 
-        Key first: a crash between the two leaves a new key with the old
-        certificate, which fails to load and is replaced at the next check —
-        never an old key with a certificate for a different one being sent.
+        Each is written to its staged name (:func:`_staged`) and moved in only
+        once all three are there; the certificate is staged last, so its
+        staged copy is what says the stage is complete. A crash before that
+        leaves the old pair as it was; after it, the next start finishes the
+        moves (:meth:`_finish_interrupted_install`). Writing the key in place
+        first — as before — left a new key beside the old certificate, which
+        never loads again.
+
+        The certificate file is the leaf and then ``ca_certificate``, the CA
+        that issued it: a listener whose client CA is a root above that issuer
+        needs it in the handshake to build the chain.
         """
         certificate = str(issued.get("certificate") or "")
         if "BEGIN CERTIFICATE" not in certificate:
             raise ClientCertConfigError("The API's enrolment answer carries no certificate")
-        _atomic_write(self.key_path, key_pem, mode=0o600)
-        _atomic_write(self.cert_path, certificate.encode("ascii"), mode=0o644)
+        chain = certificate.strip() + "\n"
+        issuer = str(issued.get("ca_certificate") or "")
+        if "BEGIN CERTIFICATE" in issuer and issuer.strip() != certificate.strip():
+            chain += issuer.strip() + "\n"
         meta = {
             "fingerprint_sha256": issued.get("fingerprint_sha256"),
             "serial": issued.get("serial"),
@@ -208,11 +351,42 @@ class ClientCertificate:
             "not_after": issued.get("not_after"),
             "renew_after": issued.get("renew_after"),
         }
+        _atomic_write(_staged(self.key_path), key_pem, mode=0o600)
         _atomic_write(
-            _meta_path(self.cert_path), json.dumps(meta, indent=2).encode("utf-8"), mode=0o644
+            _staged(_meta_path(self.cert_path)),
+            json.dumps(meta, indent=2).encode("utf-8"),
+            mode=0o644,
         )
+        _atomic_write(_staged(self.cert_path), chain.encode("ascii"), mode=0o644)
+        self._move_staged_in()
         self._forced = False
         self._next_attempt = 0.0
+
+    def _move_staged_in(self) -> None:
+        # Key first and certificate last, the order install() staged them in:
+        # until the certificate moves, its staged copy says there is more to
+        # finish. Another process finishing the same install may have moved
+        # one already.
+        for path in (self.key_path, _meta_path(self.cert_path), self.cert_path):
+            with contextlib.suppress(FileNotFoundError):
+                os.replace(_staged(path), path)
+
+    def _finish_interrupted_install(self) -> None:
+        """Complete an install a crash cut short, or drop one that never got going."""
+        if _staged(self.cert_path).is_file():
+            LOG.warning(
+                "Finishing the client certificate install interrupted at %s", self.cert_path
+            )
+            self._move_staged_in()
+            return
+        for path in (self.key_path, _meta_path(self.cert_path)):
+            with contextlib.suppress(FileNotFoundError):
+                _staged(path).unlink()
+
+    def _discard(self) -> None:
+        for path in (self.cert_path, self.key_path, _meta_path(self.cert_path)):
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
 
 
 def _atomic_write(path: Path, data: bytes, *, mode: int) -> None:

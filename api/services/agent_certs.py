@@ -34,7 +34,11 @@ host's token enrols it a new one on its next poll. So an operator's
 revocation of a certificate the agent held also locks the agent
 (``agent_cert_enrolments``): enrolment without a certificate is refused, and
 so is any request without one under ``optional`` too, until an operator
-resets the enrolment — a separate, audited act (:func:`reset_enrolment`). A
+resets the enrolment — a separate, audited act (:func:`reset_enrolment`).
+Nor does a certificate the platform has never seen get in while the lock
+holds — one cert-manager issued the stolen host after the revocation would
+otherwise be recorded as ``observed`` on first use; only a certificate on
+record and not revoked still works. A
 certificate that merely ran out locks nothing: a sensor that was offline past
 its expiry enrols again by itself, as operations.md promises. Neither does a
 tombstone, nor revoking what is already revoked. The lock is keyed by
@@ -217,7 +221,8 @@ def _refuse_locked(agent_id: str) -> ClientCertRefused:
     return ClientCertRefused(
         REASON_LOCKED,
         f"A client certificate of agent {agent_id} was revoked by an operator, which also "
-        "stops it enrolling or calling without a certificate. An operator must reset its "
+        "stops it enrolling, and calling without a certificate or with one not on record. "
+        "An operator must reset its "
         "enrolment (POST /api/agents/{id}/certificates/reset-enrolment) before it can "
         "enrol again (docs/operations.md § Sensor client certificates).",
     )
@@ -323,6 +328,15 @@ def bind(
                     REASON_MISMATCH,
                     "The client certificate is pinned to a different agent than the token's",
                 )
+            if row is None and _is_locked(session, tenant_id=tenant_id, agent_id=agent_id):
+                # A certificate the platform has never seen, for an agent an
+                # operator locked: cert-manager reissuing to the stolen host
+                # after "revoke all" (a CSI volume on a pod restart, a
+                # rotation external-secrets delivers to a VM). Recording it as
+                # observed would undo the revocation the way enrolment by
+                # token did before the lock; what the lock lets through is
+                # what is on record and not revoked.
+                raise _refuse_locked(agent_id)
             if row is None:
                 # First sight of a certificate cert-manager (or any CA we trust)
                 # issued for this agent: recorded so it is listed, counted for
@@ -575,6 +589,9 @@ def issue(
                     f"Client certificate {presented.fingerprint_sha256[:16]}… was revoked"
                     + (f": {held.revoked_reason}" if held.revoked_reason else ""),
                 )
+            if held is None and enrolment.locked_at is not None:
+                # As in ``bind``: under the lock only a certificate on record counts.
+                raise _refuse_locked(agent_id)
         elif enrolment.locked_at is not None:
             raise _refuse_locked(agent_id)
         elif _has_live_cert(session, tenant_id=tenant_id, agent_id=agent_id, now=now):
@@ -716,7 +733,14 @@ def pin(
         ):
             raise ValueError(f"the certificate names {identity.uri}, not this agent")
     ca_path = settings.agent_mtls_ca_path()
-    if ca_path and not client_cert.issued_by_bundle(cert, client_cert.load_ca_bundle(ca_path)):
+    issuer_path = settings.agent_mtls_issuer_cert
+    # Through the issuer as well, as a forwarded certificate is checked.
+    intermediates = (
+        client_cert.load_ca_bundle(issuer_path) if issuer_path and issuer_path != ca_path else ()
+    )
+    if ca_path and not client_cert.issued_by_bundle(
+        cert, client_cert.load_ca_bundle(ca_path), intermediates
+    ):
         raise ValueError("the certificate is not issued by OCTO_AGENT_MTLS_CLIENT_CA")
     with get_session(settings.postgres_url) as session:
         existing = session.execute(

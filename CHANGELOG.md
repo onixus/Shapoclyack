@@ -16,20 +16,24 @@ All notable changes to Shapoclyack are documented in this file.
   certificate does not make sensor B's token good. Refusals are `403` with
   `X-Client-Cert-Error` and, except for a missing certificate, an
   `agent.certificate_refused` audit row. The certificate comes from the API's
-  own TLS listener (`CERT_OPTIONAL` against `OCTO_AGENT_MTLS_CLIENT_CA`) or
-  from ingress-nginx's `ssl-client-*` headers, believed **only** from
-  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` (IPs/CIDRs, parsed at start, and only
+  own TLS listener (`CERT_OPTIONAL` against `OCTO_AGENT_MTLS_CLIENT_CA`
+  whenever one is set, in every mode; an intermediate counts as an anchor) or
+  from ingress-nginx's `ssl-client-*` headers, believed **only** when the
+  socket's own peer — never an address uvicorn took from `X-Forwarded-For` —
+  is in `OCTO_AGENT_MTLS_TRUSTED_PROXIES` (IPs/CIDRs, parsed at start, and only
   together with `OCTO_AGENT_MTLS_CLIENT_CA` — both refused at start
   otherwise) and cross-checked against the client CA and the verified subject,
   compared as a name so nginx's RFC 2253 spelling of a Cyrillic, e-mail or
   multi-valued subject matches. `POST /api/agent/certificate` signs a CSR with
-  `OCTO_AGENT_MTLS_ISSUER_*` for the token's agent (a renewal must present the
+  `OCTO_AGENT_MTLS_ISSUER_*` for the token's agent (an issuer that does not
+  chain to the client CA refuses to start; a forwarded leaf may chain to a
+  root in the client CA through it; a renewal must present the
   current certificate; two live certificates per sensor overlap a rotation;
   `agent_kind` lets an endpoint Agent enrol before it registers);
   `GET/POST /api/agents/{id}/certificates` and `…/revoke` (by fingerprint,
   serial or all) take effect on the next request, and revoking a certificate
-  the sensor held locks it out of enrolling or calling without a certificate
-  until `POST /api/agents/{id}/certificates/reset-enrolment` (admin, step-up,
+  the sensor held locks it out of enrolling, calling without a certificate or
+  with one not on record (a reissue by cert-manager included) until `POST /api/agents/{id}/certificates/reset-enrolment` (admin, step-up,
   audited; also by id for a deleted sensor, whose lock outlives it unless its
   provisioning key is revoked or expired by then — the delete answers
   `client_cert_lock_lifted`) — a
@@ -42,7 +46,12 @@ All notable changes to Shapoclyack are documented in this file.
   those expiring or expired, locked ones (with their ids) and such conflicts, and the Sensors
   page warns about them. The sensor presents `OCTO_AGENT_TLS_CLIENT_CERT/KEY`,
   re-reads them when cert-manager rotates them, or enrols and renews its own
-  with `OCTO_AGENT_MTLS_ENROLL=true`; the sensor updater
+  with `OCTO_AGENT_MTLS_ENROLL=true` — staging key and certificate (followed
+  by its issuer) as a pair, finishing an interrupted install at start and
+  enrolling again over a pair that does not load; it never presents a
+  certificate within five minutes of its expiry, so one that ran out while
+  offline leaves the sensor without a certificate instead of failing every
+  handshake; the sensor updater
   (`python -m agent.update`, #363) presents the same certificate, read from
   `agent.env`, so signed updates still reach a sensor under `required`. cert-manager, ingress and patch examples
   are in `k8s/shapoclyack/examples/agent-mtls-*`/`ingress-agent-mtls.*`; the

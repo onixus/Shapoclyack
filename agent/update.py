@@ -994,9 +994,10 @@ def _server_manifest(public_key: ec.EllipticCurvePublicKey) -> tuple[AgentClient
         raise UpdateFailed("OCTO_API_URL is not set (in the environment or the env file)")
     # The sensor's certificate, as the worker presents it (#309): under
     # OCTO_AGENT_MTLS_MODE=required the bundle routes refuse a request without
-    # it. Presented only -- enrolling and renewing stay the worker's.
+    # it. Presented only -- enrolling, renewing and repairing a torn install
+    # stay the worker's, which owns the files.
     try:
-        client_cert = mtls.ClientCertificate.from_env()
+        client_cert = mtls.ClientCertificate.from_env(repair=False)
     except mtls.ClientCertConfigError as exc:
         raise UpdateFailed(str(exc)) from exc
     client = AgentClient(

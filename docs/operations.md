@@ -2140,10 +2140,17 @@ this is how to get a fleet onto them without stopping it.
   must carry the `auth-tls-*` annotations, with
   `auth-tls-pass-certificate-to-upstream: "true"` — on a host without them the
   headers are whatever the client wrote, and the controller is still a trusted
-  peer.
+  peer. The trusted address is the socket's own: uvicorn's
+  `FORWARDED_ALLOW_IPS` (which rewrites the client address from
+  `X-Forwarded-For`) does not enter into it, so setting it to `*` behind the
+  ingress does not let a pod name the controller's address, and setting it to
+  the controller's does not hide the controller.
 - *On the API's own listener* (`OCTO_API_TLS_CERT`, a lab stand, an appliance,
   or a TLS-passthrough / L4 path to the API): set `OCTO_AGENT_MTLS_CLIENT_CA`;
-  the handshake verifies the certificate itself.
+  the handshake verifies the certificate itself. The listener asks for a
+  certificate whenever it has a client CA (or an issuer), whatever the mode —
+  optional per connection, so the console is unaffected, but a browser holding
+  a certificate from that CA may offer it.
 
 **What the header path proves, and what it does not.** The ingress checked
 that the client held the key; the API sees only the certificate the ingress
@@ -2173,7 +2180,17 @@ multi-valued RDN reaches exactly. nginx older than 1.11.6 writes the legacy
   revocable like any other.
 - *The API*: give it `OCTO_AGENT_MTLS_ISSUER_CERT`/`_KEY` (an intermediate for
   this and nothing else) and set `OCTO_AGENT_MTLS_ENROLL=true` with the two
-  file paths on the sensor. The sensor sends a CSR to
+  file paths on the sensor. With `OCTO_AGENT_MTLS_CLIENT_CA` set too, the
+  issuer must be in it or signed by a CA in it — start-up refuses an issuer
+  the client CA would not accept, since every certificate it signs would be
+  cut off in the handshake. The sensor writes the issuer after its leaf and
+  presents both, so a terminator that trusts only the root (an
+  `auth-tls-secret` holding the root, with `auth-tls-verify-depth: "2"`) can
+  build the chain; the API's own listener also takes the issuer as an anchor
+  for sensors that still present the leaf alone. A cert-manager issuer that is
+  an intermediate belongs in `OCTO_AGENT_MTLS_CLIENT_CA` itself: the ingress
+  forwards only the leaf, and the API links a leaf to a root only through its
+  own issuer. The sensor sends a CSR to
   `POST /api/agent/certificate`, gets a certificate naming its token's agent —
   whatever the CSR asked for — and renews at two thirds of the lifetime. The
   first enrolment needs only the token; **every later one must present the
@@ -2192,7 +2209,9 @@ multi-valued RDN reaches exactly. nginx older than 1.11.6 writes the legacy
    `OCTO_AGENT_MTLS_ENROLL=true` get their certificates now. Its renewals do
    need the certificate path — a renewal must present the current
    certificate whatever the mode, and without `OCTO_AGENT_MTLS_TRUSTED_PROXIES`
-   (or the listener's client CA) the API never sees one.
+   (or the listener's client CA) the API never sees one. The API's own
+   listener asks for it under `off` as well, as soon as it has a client CA or
+   an issuer.
 3. `OCTO_AGENT_MTLS_MODE=optional`. Sensors without a certificate keep
    working; one that presents a wrong one is refused and shows up as
    `agent.certificate_refused` in the audit trail — investigate those, they are
@@ -2241,9 +2260,14 @@ revocation, until an operator resets it, the sensor:
 - cannot call anything without a certificate under `optional` as under
   `required` (the same `enrolment-locked`), so *this sensor's token* does not
   simply fall back to working without one;
-- still works with a certificate that is live and its own — revoking one old
-  certificate after a rotation does not stop the sensor holding the new one.
-  For a stolen host revoke `{"all": true}`, so it holds nothing live.
+- still works with a certificate that is live and its own *and on record* —
+  revoking one old certificate after a rotation does not stop the sensor
+  holding the new one. A certificate the platform has never seen is refused
+  `enrolment-locked`, however valid: cert-manager reissuing to the stolen host
+  (the CSI driver on a pod restart, a renewal that external-secrets delivers
+  to a VM) does not bring it back. For a stolen host revoke `{"all": true}`, so
+  it holds nothing live; the CA can keep issuing, the API keeps refusing, and
+  deleting the `Certificate` (or the pod's CSI volume) stops the noise.
 
 A tombstone (below) and a certificate that was already revoked — a
 `superseded` one, say — lock nothing: the sensor never held the first, and
@@ -2311,8 +2335,23 @@ here, not by editing the ingress CA.
 pod) cannot enrol again while its old certificate is live, because that rule
 is what stops a stolen token. Reset its enrolment (above); the sensor's next
 enrolment then succeeds without a certificate. A sensor whose certificate ran
-out while it was offline needs nothing: expiry is not revocation, nothing
-locks, and with no live certificate left it enrols from scratch.
+out while it was offline needs nothing: it stops presenting a certificate
+five minutes before `not_after` (the handshake — the API's, or
+ingress-nginx's with a `400` — refuses an expired one before any route runs),
+expiry is not revocation, nothing locks, and with no live certificate left
+it enrols from scratch by its token. Until then it is a sensor without a
+certificate: working under `optional`, refused `missing` under `required`. A
+*mounted* certificate that runs out is the same, except that nothing on the
+sensor can renew it: the sensor logs that the file has run out, and under
+`required` is refused until cert-manager (or the host's PKI agent) replaces
+it.
+
+**An enrolled sensor's key and certificate change together.** The new pair is
+staged as `<file>.next` and moved in after both are on disk; a crash in
+between is completed at the next start. A pair that still does not match —
+left by a release before this — is deleted and the sensor enrols again; if
+the API holds the certificate the lost key belonged to as live, that
+enrolment is refused `missing` and needs the reset above.
 
 **A sensor shut out by somebody else's enrolment.** The first enrolment of a
 sensor needs only its token, so whoever holds a copy of the token and enrols

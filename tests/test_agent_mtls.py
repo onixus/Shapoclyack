@@ -687,18 +687,23 @@ def test_half_configured_issuance_is_refused(monkeypatch, tmp_path):
         _agent_mtls_settings()
 
 
-def test_the_listener_asks_for_a_certificate_only_when_sensors_use_one(monkeypatch, tmp_path):
+def test_the_listener_asks_for_a_certificate_whenever_it_has_a_client_ca(monkeypatch, tmp_path):
+    """``off`` included: renewals present the current certificate whatever the
+    mode (rollout step 2), and a listener that never asks never gets one."""
     from api.__main__ import client_certificate_options
 
+    for name in ("OCTO_AGENT_MTLS_CLIENT_CA", "OCTO_AGENT_MTLS_ISSUER_CERT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", "optional")
+    assert client_certificate_options() == {}
     ca_path, _ = CA().write(tmp_path)
     monkeypatch.setenv("OCTO_AGENT_MTLS_CLIENT_CA", str(ca_path))
-    monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", "off")
-    assert client_certificate_options() == {}
-    monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", "optional")
-    options = client_certificate_options()
-    # Optional per connection: the console shares this port and has none.
-    assert options["ssl_cert_reqs"] == ssl.CERT_OPTIONAL
-    assert options["ssl_ca_certs"] == str(ca_path)
+    for mode in ("off", "optional", "required"):
+        monkeypatch.setenv("OCTO_AGENT_MTLS_MODE", mode)
+        options = client_certificate_options()
+        # Optional per connection: the console shares this port and has none.
+        assert options["ssl_cert_reqs"] == ssl.CERT_OPTIONAL, mode
+        assert options["ssl_ca_certs"] == str(ca_path), mode
 
 
 # --------------------------------------------------------------------------
@@ -712,34 +717,66 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
-class _TLSServer:
-    """uvicorn on 127.0.0.1 over TLS, asking for client certificates the way
-    ``python -m api`` does (``api.__main__.client_certificate_options``)."""
+#: Every variable ``python -m api`` reads to build its listener; cleared
+#: before each server so one test's layout cannot leak into the next.
+_LISTENER_ENV = (
+    "OCTO_API_TLS_CERT",
+    "OCTO_API_TLS_KEY",
+    "OCTO_AGENT_MTLS_MODE",
+    "OCTO_AGENT_MTLS_CLIENT_CA",
+    "OCTO_AGENT_MTLS_ISSUER_CERT",
+)
 
-    def __init__(self, app, tmp_path: Path, ca: CA) -> None:  # type: ignore[no-untyped-def]
+
+class _TLSServer:
+    """uvicorn on 127.0.0.1, built the way ``python -m api`` builds it
+    (``api.__main__.listener_options``) from the variables in ``env``.
+
+    By default: TLS with a server certificate from ``ca``, and ``ca`` as the
+    client CA under ``optional``. ``tls=False`` is the plain-HTTP listener an
+    ingress talks to; ``config`` goes to uvicorn as is.
+    """
+
+    def __init__(  # type: ignore[no-untyped-def]
+        self,
+        app,
+        tmp_path: Path,
+        ca: CA,
+        monkeypatch,
+        *,
+        env: dict[str, str] | None = None,
+        tls: bool = True,
+        **config: object,
+    ) -> None:
         import uvicorn
 
-        from api.core.client_cert import listener_protocol_class
+        from api.__main__ import listener_options
 
-        server_cert, server_key = ca.server().write(tmp_path, "server")
         ca_path, _ = ca.write(tmp_path, "listener-ca")
+        for name in _LISTENER_ENV:
+            monkeypatch.delenv(name, raising=False)
+        if tls:
+            server_cert, server_key = ca.server().write(tmp_path, "server")
+            monkeypatch.setenv("OCTO_API_TLS_CERT", str(server_cert))
+            monkeypatch.setenv("OCTO_API_TLS_KEY", str(server_key))
+        defaults = {"OCTO_AGENT_MTLS_MODE": "optional", "OCTO_AGENT_MTLS_CLIENT_CA": str(ca_path)}
+        for name, value in (defaults if env is None else env).items():
+            monkeypatch.setenv(name, value)
         self.port = _free_port()
-        self.server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                host="127.0.0.1",
-                port=self.port,
-                lifespan="off",
-                log_level="warning",
-                ssl_certfile=str(server_cert),
-                ssl_keyfile=str(server_key),
-                ssl_ca_certs=str(ca_path),
-                ssl_cert_reqs=ssl.CERT_OPTIONAL,
-                http=listener_protocol_class(),
-            )
-        )
+        options = {
+            **listener_options(),
+            "host": "127.0.0.1",
+            "port": self.port,
+            "lifespan": "off",
+            "log_level": "warning",
+            "log_config": None,
+            **config,
+        }
+        self.server = uvicorn.Server(uvicorn.Config(app, **options))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
+        #: What a client trusts the server by.
         self.ca_path = ca_path
+        self.scheme = "https" if tls else "http"
 
     def __enter__(self) -> "_TLSServer":
         self.thread.start()
@@ -782,7 +819,7 @@ def test_direct_tls_binds_the_handshake_certificate(tmp_path, monkeypatch):
     cert_a = ca.sensor("default", "sensor-a").write(tmp_path, "sensor-a")
     body = {"hostname": "edge"}
 
-    with _TLSServer(client.app, tmp_path, ca) as server:
+    with _TLSServer(client.app, tmp_path, ca, monkeypatch) as server:
         status, _headers, answer = server.post("/api/agent/register", token_a, body, cert=cert_a)
         assert status == 200, answer
         assert answer["agent_id"] == "sensor-a"
@@ -832,7 +869,7 @@ def test_the_sensor_enrols_over_direct_tls_and_then_presents_its_certificate(tmp
     client = _client(tmp_path, monkeypatch, settings)
     token = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
 
-    with _TLSServer(client.app, tmp_path, ca) as server:
+    with _TLSServer(client.app, tmp_path, ca, monkeypatch) as server:
         monkeypatch.setenv("OCTO_CA_BUNDLE", str(server.ca_path))
         monkeypatch.setenv("OCTO_NO_PROXY", "127.0.0.1")
         state = tmp_path / "sensor-state"
@@ -892,7 +929,7 @@ def test_the_sensor_updater_presents_the_sensors_certificate(tmp_path, monkeypat
             ["--install-dir", str(install), "--env-file", str(env_file), "--check"]
         )
 
-    with _TLSServer(client.app, tmp_path, ca) as server:
+    with _TLSServer(client.app, tmp_path, ca, monkeypatch) as server:
         env = {
             "OCTO_API_URL": f"https://127.0.0.1:{server.port}",
             "OCTO_AGENT_TOKEN": token,
@@ -2165,3 +2202,374 @@ def test_a_dumped_value_that_is_not_a_well_formed_der_string_matches_nothing(dn)
     cert = CA().sensor("default", "sensor-a", subject=_name([(CN, "bmp")], [("1.3.6.1.4.1.99999.1", "custom")])).cert
     assert client_cert.parse_rfc2253(dn) is None
     assert not client_cert.subject_matches(dn, cert.subject)
+
+
+# --------------------------------------------------------------------------
+# 21. Review 4 of #509: intermediates, expiry, the lock, ``off``, a torn
+#     write, and whose address the trusted-proxy check reads.
+# --------------------------------------------------------------------------
+
+
+def _sensor_trusts(monkeypatch, server: _TLSServer) -> None:
+    monkeypatch.setenv("OCTO_CA_BUNDLE", str(server.ca_path))
+    monkeypatch.setenv("OCTO_NO_PROXY", "127.0.0.1")
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+@requires_postgres
+@pytest.mark.parametrize("layout", ["issuer-only", "root-and-issuer", "terminator-knows-the-root"])
+def test_a_certificate_from_an_intermediate_issuer_passes_the_api_listener(tmp_path, monkeypatch, layout):
+    """operations.md asks for an intermediate as the issuer. Before: the
+    enrolment by token went through (nothing presented yet), and every request
+    after it was cut off in the handshake — "Remote end closed connection",
+    under ``optional`` as under ``required`` — because OpenSSL does not take an
+    intermediate as a trust anchor and the sensor sent its leaf alone.
+
+    ``terminator-knows-the-root``: a TLS terminator that trusts the root and
+    nothing else (an ingress's auth-tls-secret, an L4 proxy's own listener) —
+    the chain the sensor sends is the only way it can link the two."""
+    from cryptography import x509
+
+    from agent import mtls
+    from agent.worker import AgentClient
+
+    root = CA("Sensor Root")
+    issuer = CA("Sensor Issuer", parent=root)
+    issuer_cert, issuer_key = issuer.write(tmp_path, "issuer")
+    env = {"OCTO_AGENT_MTLS_MODE": "required", "OCTO_AGENT_MTLS_ISSUER_CERT": str(issuer_cert)}
+    overrides: dict[str, object] = {}
+    if layout != "issuer-only":
+        root_path, _ = root.write(tmp_path, "client-ca")
+        env["OCTO_AGENT_MTLS_CLIENT_CA"] = str(root_path)
+        overrides["agent_mtls_client_ca"] = str(root_path)
+    if layout == "terminator-knows-the-root":
+        del env["OCTO_AGENT_MTLS_ISSUER_CERT"]
+    settings = _settings(
+        tmp_path,
+        None,
+        agent_mtls_mode="required",
+        agent_mtls_trusted_proxies=[],
+        agent_mtls_issuer_cert=str(issuer_cert),
+        agent_mtls_issuer_key=str(issuer_key),
+        **overrides,
+    )
+    client = _client(tmp_path, monkeypatch, settings)
+    token = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+
+    with _TLSServer(client.app, tmp_path, root, monkeypatch, env=env) as server:
+        _sensor_trusts(monkeypatch, server)
+        state = tmp_path / "sensor-state"
+        cert = mtls.ClientCertificate(state / "client.crt", state / "client.key", enrol=True)
+        agent = AgentClient(f"https://127.0.0.1:{server.port}", token, client_cert=cert)
+        issued = agent.enrol_client_certificate("sensor-a")
+        on_disk = x509.load_pem_x509_certificates((state / "client.crt").read_bytes())
+        assert [c.subject for c in on_disk] == [on_disk[0].subject, issuer.cert.subject]
+        assert agent.register(agent_id="sensor-a", hostname="edge", labels={})["agent_id"] == "sensor-a"
+        # The renewal presents it too, and is answered.
+        renewed = agent.enrol_client_certificate("sensor-a")
+        assert renewed["fingerprint_sha256"] != issued["fingerprint_sha256"]
+        if layout == "terminator-knows-the-root":
+            return
+        # A sensor enrolled before the chain was written: the leaf alone.
+        leaf_only = tmp_path / "leaf-only.crt"
+        leaf_only.write_text(renewed["certificate"], encoding="ascii")
+        status, _headers, answer = server.post(
+            "/api/agent/register",
+            token,
+            {"hostname": "edge"},
+            cert=(str(leaf_only), str(state / "client.key")),
+        )
+        assert status == 200, answer
+
+
+@requires_postgres
+def test_a_forwarded_certificate_from_the_issuer_chains_to_a_root_client_ca(tmp_path, monkeypatch):
+    """Before: CLIENT_CA = the root, ISSUER = an intermediate under it, and
+    every certificate the API issued was "not issued by the configured client
+    CA" through the ingress — ``missing`` for a sensor holding a live one."""
+    root = CA("Sensor Root")
+    issuer = CA("Sensor Issuer", parent=root)
+    issuer_cert, issuer_key = issuer.write(tmp_path, "issuer")
+    root_path, _ = root.write(tmp_path, "client-ca")
+    settings = _settings(
+        tmp_path,
+        None,
+        agent_mtls_mode="required",
+        agent_mtls_client_ca=str(root_path),
+        agent_mtls_issuer_cert=str(issuer_cert),
+        agent_mtls_issuer_key=str(issuer_key),
+    )
+    client = _client(tmp_path, monkeypatch, settings)
+    token_a = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+    first = _enrol(client, token_a)
+    assert first.status_code == 200, first.text
+    registered = _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first.json()["certificate"]))
+    assert registered.status_code == 200, registered.text
+    # Another intermediate under the same root is not ours to vouch for.
+    stranger = CA("Other Issuer", parent=root).sensor("default", "sensor-a")
+    refused = _register(_peer(client, INGRESS_PEER), token_a, _forwarded(stranger))
+    assert refused.status_code == 403
+    assert "not issued by the configured client CA" in refused.json()["detail"]
+
+
+def test_an_issuer_outside_the_client_ca_is_refused_at_start(monkeypatch, tmp_path):
+    from api.settings import _agent_mtls_settings
+
+    root = CA("Sensor Root")
+    root_path, _ = root.write(tmp_path, "root")
+    monkeypatch.setenv("OCTO_AGENT_MTLS_CLIENT_CA", str(root_path))
+    for name, issuer in (
+        ("intermediate", CA("Sensor Issuer", parent=root)),
+        ("the-root-itself", root),
+    ):
+        cert, key = issuer.write(tmp_path, name)
+        monkeypatch.setenv("OCTO_AGENT_MTLS_ISSUER_CERT", str(cert))
+        monkeypatch.setenv("OCTO_AGENT_MTLS_ISSUER_KEY", str(key))
+        assert _agent_mtls_settings()["agent_mtls_issuer_cert"] == str(cert)
+    cert, key = CA("Unrelated").write(tmp_path, "unrelated")
+    monkeypatch.setenv("OCTO_AGENT_MTLS_ISSUER_CERT", str(cert))
+    monkeypatch.setenv("OCTO_AGENT_MTLS_ISSUER_KEY", str(key))
+    with pytest.raises(InsecureConfigurationError, match="does not chain to OCTO_AGENT_MTLS_CLIENT_CA"):
+        _agent_mtls_settings()
+
+
+@requires_postgres
+@pytest.mark.parametrize("layout", ["enrolled-optional", "enrolled-required", "mounted-required"])
+def test_an_expired_certificate_is_not_presented(tmp_path, monkeypatch, layout):
+    """Before: the sensor kept presenting it, the handshake (or nginx, with a
+    400) refused it, and the sensor retried every five minutes forever — under
+    ``optional`` too, which promises that no certificate is fine."""
+    from agent import mtls
+    from agent.worker import AgentClient, AgentClientCertRefused
+
+    mode = layout.split("-")[1]
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode=mode, agent_mtls_trusted_proxies=[])
+    client = _client(tmp_path, monkeypatch, settings)
+    token = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+    now = datetime.now(UTC)
+    expired = ca.sensor(
+        "default", "sensor-a", not_before=now - timedelta(days=40), not_after=now - timedelta(hours=1)
+    )
+    state = tmp_path / "sensor-state"
+    enrolled = layout.startswith("enrolled")
+    cert = mtls.ClientCertificate(state / "client.crt", state / "client.key", enrol=enrolled)
+    cert.install(
+        expired.key_pem,
+        {
+            "certificate": expired.pem,
+            "not_after": _iso(now - timedelta(hours=1)),
+            "renew_after": _iso(now - timedelta(days=10)),
+        },
+    )
+
+    with _TLSServer(client.app, tmp_path, ca, monkeypatch) as server:
+        _sensor_trusts(monkeypatch, server)
+        agent = AgentClient(f"https://127.0.0.1:{server.port}", token, client_cert=cert)
+        if layout == "mounted-required":
+            # Nothing to enrol with: refused as "missing", which says what to
+            # do, instead of a connection closed in the handshake.
+            with pytest.raises(AgentClientCertRefused) as caught:
+                agent.register(agent_id="sensor-a", hostname="edge", labels={})
+            assert caught.value.reason == "missing"
+            return
+        if mode == "optional":
+            assert agent.register(agent_id="sensor-a", hostname="edge", labels={})["agent_id"] == "sensor-a"
+        assert cert.enrolment_due()
+        issued = agent.enrol_client_certificate("sensor-a")
+        assert issued["spiffe_id"] == spiffe("default", "sensor-a")
+        assert agent.register(agent_id="sensor-a", hostname="edge", labels={})["agent_id"] == "sensor-a"
+
+
+def test_a_certificate_about_to_run_out_is_not_presented_either(tmp_path):
+    """Within the clock-skew margin of ``not_after`` the API's clock may
+    already be past it."""
+    from agent import mtls
+
+    ca = CA()
+    now = datetime.now(UTC)
+    cert = mtls.ClientCertificate(tmp_path / "c.crt", tmp_path / "c.key", enrol=True)
+    soon = ca.sensor("default", "sensor-a", not_after=now + timedelta(seconds=mtls.EXPIRY_MARGIN_SECONDS / 2))
+    cert.install(soon.key_pem, {"certificate": soon.pem, "renew_after": _iso(now + timedelta(days=1))})
+    cert.ssl_context()
+    assert not cert.presenting
+    assert cert.enrolment_due()
+    fresh = ca.sensor("default", "sensor-a")
+    cert.install(fresh.key_pem, {"certificate": fresh.pem, "renew_after": _iso(now + timedelta(days=1))})
+    cert.ssl_context()
+    assert cert.presenting
+    assert not cert.needs_reload(now.timestamp())
+    # Crossing the margin later is a reload, with nothing changed on disk.
+    assert cert.needs_reload((now + timedelta(days=31)).timestamp())
+
+
+@requires_postgres
+def test_a_locked_sensor_is_not_let_back_in_by_a_certificate_it_never_showed(tmp_path, monkeypatch):
+    """The review's sequence: cert-manager (or the CSI driver) issues the
+    stolen host a fresh certificate after "revoke all". Before: the first
+    request with it recorded it as ``observed`` and was answered 200, while
+    the summary still counted the sensor as locked."""
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token_a = _token(client, _mint_key(client, admin), "sensor-a")
+    ingress = _peer(client, INGRESS_PEER)
+    first = ca.sensor("default", "sensor-a")
+    assert _register(ingress, token_a, _forwarded(first)).status_code == 200
+
+    assert _revoke(client, admin, "sensor-a", all=True, reason="stolen").status_code == 200
+    old = _register(ingress, token_a, _forwarded(first))
+    assert (old.status_code, old.headers["X-Client-Cert-Error"]) == (403, "revoked")
+    bare = _register(client, token_a)
+    assert (bare.status_code, bare.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    reissued = ca.sensor("default", "sensor-a")
+    again = _register(ingress, token_a, _forwarded(reissued))
+    assert (again.status_code, again.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    renewal = _enrol(client, token_a, ca.sensor("default", "sensor-a").pem)
+    assert (renewal.status_code, renewal.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
+    assert all(
+        row["state"] == "revoked"
+        for row in client.get("/api/agents/sensor-a/certificates", headers=bearer(admin)).json()
+    )
+
+    # Issuance re-checks it under the row lock, for a renewal that got past
+    # ``bind`` before the revocation committed.
+    from api.services import agent_certs
+
+    with pytest.raises(agent_certs.ClientCertRefused) as caught:
+        _issue(settings, ca.sensor("default", "sensor-a").pem)()
+    assert caught.value.reason == "enrolment-locked"
+
+    assert _reset(client, admin, "sensor-a", "host re-imaged").status_code == 200
+    assert _register(ingress, token_a, _forwarded(reissued)).status_code == 200
+
+
+@requires_postgres
+def test_renewal_on_the_api_listener_works_under_off(tmp_path, monkeypatch):
+    """Rollout step 2: enrol under ``off``, renew under ``off``. Before: the
+    listener asked for no certificate under ``off``, the renewal arrived with
+    none, and every sensor was refused ``missing`` and audited as a conflict."""
+    from agent import mtls
+    from agent.worker import AgentClient
+
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="off", agent_mtls_trusted_proxies=[])
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    token = _token(client, _mint_key(client, admin), "sensor-a")
+    issuer_cert = settings.agent_mtls_issuer_cert
+    env = {"OCTO_AGENT_MTLS_MODE": "off", "OCTO_AGENT_MTLS_ISSUER_CERT": issuer_cert}
+
+    with _TLSServer(client.app, tmp_path, ca, monkeypatch, env=env) as server:
+        _sensor_trusts(monkeypatch, server)
+        state = tmp_path / "sensor-state"
+        cert = mtls.ClientCertificate(state / "client.crt", state / "client.key", enrol=True)
+        agent = AgentClient(f"https://127.0.0.1:{server.port}", token, client_cert=cert)
+        first = agent.enrol_client_certificate("sensor-a")
+        renewed = agent.enrol_client_certificate("sensor-a")
+        assert renewed["fingerprint_sha256"] != first["fingerprint_sha256"]
+    assert _events(client, admin, "agent.certificate_refused") == []
+
+
+def test_a_crash_between_the_key_and_the_certificate_leaves_a_pair_that_loads(tmp_path, monkeypatch):
+    """Before: the key was replaced and the certificate never was; the next
+    start failed ``KEY_VALUES_MISMATCH`` and exited 2, under systemd forever."""
+    import errno
+    import os
+
+    from agent import mtls
+
+    ca = CA()
+    paths = (tmp_path / "client.crt", tmp_path / "client.key")
+    cert = mtls.ClientCertificate(*paths, enrol=True)
+    old = ca.sensor("default", "sensor-a")
+    cert.install(old.key_pem, {"certificate": old.pem})
+    new = ca.sensor("default", "sensor-a")
+    real_replace = os.replace
+
+    def crash_on_the_certificate(src, dst):  # type: ignore[no-untyped-def]
+        if Path(dst) == paths[0]:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(mtls.os, "replace", crash_on_the_certificate)
+    with pytest.raises(OSError):
+        cert.install(new.key_pem, {"certificate": new.pem})
+    monkeypatch.setattr(mtls.os, "replace", real_replace)
+
+    restarted = mtls.ClientCertificate(*paths, enrol=True)
+    restarted.ssl_context()
+    assert restarted.presenting
+    on_disk = paths[0].read_text(encoding="ascii")
+    assert on_disk.startswith(old.pem) or on_disk.startswith(new.pem)
+
+
+@pytest.mark.parametrize("enrol", [True, False])
+def test_a_key_that_does_not_match_its_certificate_at_start(tmp_path, enrol):
+    """The review's half-write probe: a new key next to the old certificate,
+    from a release that wrote them one at a time. An enrolled sensor drops the
+    pair and enrols again; a mounted one is the operator's to fix."""
+    from agent import mtls
+    from agent.worker import AgentClient
+
+    ca = CA()
+    cert_path, key_path = ca.sensor("default", "sensor-a").write(tmp_path, "client")
+    key_path.write_bytes(ca.sensor("default", "sensor-a").key_pem)
+    cert = mtls.ClientCertificate(cert_path, key_path, enrol=enrol)
+    if not enrol:
+        with pytest.raises(mtls.ClientCertConfigError, match="KEY_VALUES_MISMATCH|key values mismatch"):
+            AgentClient("https://127.0.0.1:1", "token", client_cert=cert)
+        return
+    AgentClient("https://127.0.0.1:1", "token", client_cert=cert)
+    assert not cert.presenting
+    assert not cert.present()
+    assert cert.enrolment_due()
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    ("trusted", "forwarded_for", "expected"),
+    [
+        # A pod that reaches the port claims to be the ingress.
+        (["10.42.0.0/16"], "10.42.0.7", 403),
+        # The ingress itself, naming the sensor it forwards for.
+        (["127.0.0.1/32"], "203.0.113.9", 200),
+    ],
+)
+def test_the_trusted_proxy_is_the_socket_peer_not_x_forwarded_for(
+    tmp_path, monkeypatch, trusted, forwarded_for, expected
+):
+    """uvicorn rewrites ``request.client`` from ``X-Forwarded-For`` for peers
+    in ``FORWARDED_ALLOW_IPS``. Before, with it at ``*``: any client could name
+    the ingress's address and have its forged ``ssl-client-*`` headers
+    believed — and with it at the ingress's address, every forwarded
+    certificate was ignored."""
+    ca = CA()
+    client, _admin, token_a, _token_b = _fleet(
+        tmp_path, monkeypatch, mode="required", ca=ca, agent_mtls_trusted_proxies=trusted
+    )
+    cert = ca.sensor("default", "sensor-a")
+    with _TLSServer(
+        client.app, tmp_path, ca, monkeypatch, env={}, tls=False, forwarded_allow_ips="*"
+    ) as server:
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+        try:
+            conn.request(
+                "POST",
+                "/api/agent/register",
+                body=json.dumps({"hostname": "edge"}),
+                headers={
+                    **bearer(token_a),
+                    "Content-Type": "application/json",
+                    "X-Forwarded-For": forwarded_for,
+                    **_forwarded(cert),
+                },
+            )
+            response = conn.getresponse()
+            assert response.status == expected, response.read()
+        finally:
+            conn.close()

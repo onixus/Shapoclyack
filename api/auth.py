@@ -1519,7 +1519,7 @@ def _bind_client_certificate(
     never turned this on pays no query for it. ``ssl-client-*`` headers count
     only from ``OCTO_AGENT_MTLS_TRUSTED_PROXIES`` (``api/core/client_cert.py``).
     """
-    from api.core.client_cert import presented_certificate
+    from api.core.client_cert import presented_certificate, socket_peer
     from api.services import agent_certs
     from api.services import audit as audit_service
 
@@ -1527,10 +1527,13 @@ def _bind_client_certificate(
         return
     presentation = presented_certificate(
         scope_state=request.scope.get("state"),
-        peer=request.client.host if request.client else None,
+        # The socket's address, not request.client: uvicorn rewrites that
+        # from X-Forwarded-For, which the caller writes.
+        peer=socket_peer(request.scope),
         headers=request.headers,
         trusted_proxies=settings.agent_mtls_trusted_proxies,
         client_ca_path=settings.agent_mtls_ca_path(),
+        intermediates_path=settings.agent_mtls_issuer_cert,
     )
     try:
         bound = agent_certs.bind(

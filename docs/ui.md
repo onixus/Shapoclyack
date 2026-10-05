@@ -767,7 +767,10 @@ attention ([#309](https://github.com/onixus/Shapoclyack/issues/309)): how many
 sensors' newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`
 (amber) and how many have run out altogether (red, since under
 `OCTO_AGENT_MTLS_MODE=required` those sensors are refused), with the mode the
-installation runs in. It also names sensors refused in the last day while
+installation runs in. The hint under it says what an expired certificate does
+on the sensor: it is no longer presented, an enrolled sensor enrols again by
+itself, and one with a mounted certificate works without it under `optional`
+and is refused under `required` until the certificate is renewed. It also names sensors refused in the last day while
 another host holds their certificate (red: somebody else enrolled with their
 token, or they lost their key) and sensors a revocation locked until their
 enrolment is reset. A fleet without certificates, or one whose certificates

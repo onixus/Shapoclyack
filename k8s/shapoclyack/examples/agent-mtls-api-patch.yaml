@@ -36,7 +36,9 @@ spec:
             defaultMode: 0444
         # Only for OCTO_AGENT_MTLS_ISSUER_* (CSR enrolment by the API itself,
         # instead of or next to cert-manager): an intermediate that signs
-        # sensor certificates and nothing else, as tls.crt / tls.key.
+        # sensor certificates and nothing else, as tls.crt / tls.key. It must
+        # be in, or be signed by a CA in, the client CA bundle below — the API
+        # refuses to start otherwise; the sensors present it after their leaf.
         # - name: sensor-issuer
         #   secret:
         #     secretName: shapoclyack-sensor-issuer
@@ -78,7 +80,10 @@ spec:
             # Required whenever the list above is set (the API refuses to start
             # without it): every forwarded certificate is checked against it,
             # so an auth-tls-secret pointing at the wrong CA does not widen
-            # access.
+            # access. A root is enough for certificates OCTO_AGENT_MTLS_ISSUER_*
+            # signs (the API knows that intermediate); a cert-manager issuer
+            # that is an intermediate goes in this bundle too, since the
+            # ingress forwards the leaf alone.
             - name: OCTO_AGENT_MTLS_CLIENT_CA
               value: /etc/shapoclyack/sensor-client-ca/ca.crt
             # - name: OCTO_AGENT_MTLS_ISSUER_CERT

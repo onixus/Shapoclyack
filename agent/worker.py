@@ -75,6 +75,9 @@ RATE_LIMIT_WAIT_SECONDS = 30.0
 BUNDLE_INFO_MAX_BYTES = 256 * 1024
 # A token and its expiry; the exchange's answer is a few hundred bytes.
 EXCHANGE_MAX_BYTES = 64 * 1024
+# An enrolled client certificate, its issuer's and their metadata (#309):
+# two PEM certificates, a few KiB between them.
+ENROLMENT_MAX_BYTES = 64 * 1024
 # How much of an error answer is read, and so ends up in the exception and the
 # log line it becomes. The API's refusals are a short JSON ``detail``.
 ERROR_DETAIL_MAX_BYTES = 4 * 1024
@@ -607,16 +610,21 @@ class AgentClient:
         """Trade a fresh key's CSR for a certificate and start presenting it (#309).
 
         A renewal presents the current certificate, which the API requires of
-        an agent that holds one. When the API refuses *that* — revoked, or run
-        out while the sensor was offline — the request is repeated without it:
-        an agent with no live certificate on record may enrol from scratch,
-        and one that still has another is refused, which is the API's call.
+        an agent that holds one. When the API refuses *that* — revoked — the
+        request is repeated without it: an agent with no live certificate on
+        record may enrol from scratch, and one that still has another is
+        refused, which is the API's call. One that ran out while the sensor
+        was offline is not presented in the first place
+        (:meth:`mtls.ClientCertificate.ssl_context`): the handshake would
+        refuse it before the API could say so.
         """
         assert self.client_cert is not None
         key_pem, csr_pem = mtls.generate_key_and_csr(agent_id or "sensor")
         body = json.dumps({"csr": csr_pem}).encode("utf-8")
         try:
-            issued = self._request("POST", "/api/agent/certificate", body=body)
+            issued = self._request(
+                "POST", "/api/agent/certificate", body=body, max_response_bytes=ENROLMENT_MAX_BYTES
+            )
         except AgentClientCertRefused as exc:
             if exc.reason not in _RENEWABLE_CERT_REASONS - {"missing"}:
                 raise
@@ -624,7 +632,12 @@ class AgentClient:
             presenting = self._opener
             self._opener = self._build_opener(with_certificate=False)
             try:
-                issued = self._request("POST", "/api/agent/certificate", body=body)
+                issued = self._request(
+                    "POST",
+                    "/api/agent/certificate",
+                    body=body,
+                    max_response_bytes=ENROLMENT_MAX_BYTES,
+                )
             finally:
                 self._opener = presenting
         self.client_cert.install(key_pem, issued)
@@ -1985,8 +1998,10 @@ def run_loop(args: argparse.Namespace) -> int:
         """
         if client_cert is None:
             return
-        if client_cert.changed_on_disk():
-            LOG.info("Client certificate %s changed on disk; reloading", client_cert.cert_path)
+        if client_cert.needs_reload():
+            # New files, or the one presented reached the end of its life
+            # (which ssl_context() then leaves out of the handshake).
+            LOG.info("Client certificate %s changed; reloading", client_cert.cert_path)
             client.reload_client_certificate()
         if not client_cert.enrolment_due():
             return

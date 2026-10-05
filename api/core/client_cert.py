@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 #: ``scope["state"]`` key the TLS listener's protocol fills (see module doc).
 TLS_PEER_CERT_STATE_KEY = "shapoclyack_tls_peer_cert_der"
+#: ``scope["state"]`` key for the socket's own peer address, which the same
+#: protocol fills on every connection, TLS or not (:func:`socket_peer`).
+SOCKET_PEER_STATE_KEY = "shapoclyack_socket_peer"
 
 #: The headers ingress-nginx sets with ``auth-tls-verify-client`` and
 #: ``auth-tls-pass-certificate-to-upstream: "true"``. The certificate is
@@ -238,22 +241,64 @@ def load_ca_bundle(path: str) -> tuple[x509.Certificate, ...]:
     return _bundle_at(path, os.stat(path).st_mtime_ns).certs
 
 
-def issued_by_bundle(cert: x509.Certificate, bundle: Sequence[x509.Certificate]) -> bool:
-    """Whether one certificate of ``bundle`` signed ``cert`` directly.
+#: How many intermediates :func:`issued_by_bundle` follows from a leaf to the
+#: bundle. Sensor PKIs are a root and one issuing CA; the bound is so that a
+#: cycle in an operator's bundle cannot loop.
+MAX_CHAIN_INTERMEDIATES = 4
 
-    A forwarded certificate is the leaf alone — ingress-nginx passes nothing
-    else — so the bundle must hold the CA that issues sensor certificates
-    (the cert-manager Issuer's CA, or ``OCTO_AGENT_MTLS_ISSUER_CERT``), not
-    only a root above it.
+
+def _directly_issued(cert: x509.Certificate, ca: x509.Certificate) -> bool:
+    if ca.subject != cert.issuer:
+        return False
+    try:
+        cert.verify_directly_issued_by(ca)
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+    return True
+
+
+def _is_ca(cert: x509.Certificate, now: datetime) -> bool:
+    try:
+        constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound:
+        return False
+    return (
+        constraints.ca
+        and _naive_utc(cert.not_valid_before_utc) <= now < _naive_utc(cert.not_valid_after_utc)
+    )
+
+
+def issued_by_bundle(
+    cert: x509.Certificate,
+    bundle: Sequence[x509.Certificate],
+    intermediates: Sequence[x509.Certificate] = (),
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Whether ``cert`` chains to a certificate of ``bundle``.
+
+    Directly, or through ``intermediates`` — CA certificates the API knows
+    for itself, which is ``OCTO_AGENT_MTLS_ISSUER_CERT``: a forwarded
+    certificate is the leaf alone (ingress-nginx passes nothing else), so with
+    a root as the client CA and an intermediate as the issuer the link between
+    the two has to come from here. An intermediate counts only while it is a
+    CA and valid, and only up to :data:`MAX_CHAIN_INTERMEDIATES` of them.
+    A leaf from another intermediate under the same root is not believed:
+    put that intermediate in the bundle.
     """
-    for ca in bundle:
-        if ca.subject != cert.issuer:
-            continue
-        try:
-            cert.verify_directly_issued_by(ca)
-        except (InvalidSignature, ValueError, TypeError):
-            continue
+    current = now or _now()
+    if any(_directly_issued(cert, ca) for ca in bundle):
         return True
+    candidates = [ca for ca in intermediates if _is_ca(ca, current)]
+    child = cert
+    for _ in range(MAX_CHAIN_INTERMEDIATES):
+        parent = next((ca for ca in candidates if _directly_issued(child, ca)), None)
+        if parent is None:
+            return False
+        if any(_directly_issued(parent, ca) for ca in bundle):
+            return True
+        candidates.remove(parent)
+        child = parent
     return False
 
 
@@ -627,6 +672,7 @@ def presented_certificate(
     headers: Any,
     trusted_proxies: Sequence[str],
     client_ca_path: str,
+    intermediates_path: str = "",
     now: datetime | None = None,
 ) -> Presentation:
     """The verified client certificate behind one request, if there is one.
@@ -634,6 +680,9 @@ def presented_certificate(
     ``headers`` is anything with a case-insensitive ``get`` (Starlette's
     ``Headers``). The order is the direct TLS peer first — the socket's own
     handshake is the stronger statement — then the trusted proxy's headers.
+    ``peer`` is the socket's address (:func:`socket_peer`), never one a
+    proxy header named. ``intermediates_path`` is the issuer certificate a
+    forwarded leaf may chain through (:func:`issued_by_bundle`).
     """
     current = now or _now()
     der = (scope_state or {}).get(TLS_PEER_CERT_STATE_KEY)
@@ -706,10 +755,19 @@ def presented_certificate(
         )
     try:
         bundle = load_ca_bundle(client_ca_path)
+        intermediates = (
+            load_ca_bundle(intermediates_path)
+            if intermediates_path and intermediates_path != client_ca_path
+            else ()
+        )
     except (OSError, ValueError):
-        logger.exception("OCTO_AGENT_MTLS_CLIENT_CA %s is unreadable", client_ca_path)
+        logger.exception(
+            "The client CA bundle %s (or the issuer certificate %s) is unreadable",
+            client_ca_path,
+            intermediates_path,
+        )
         return Presentation(note="the API cannot read its client CA bundle")
-    if not issued_by_bundle(cert, bundle):
+    if not issued_by_bundle(cert, bundle, intermediates, now=current):
         # The ingress verified it against *some* CA, and not ours: the
         # auth-tls-secret and OCTO_AGENT_MTLS_CLIENT_CA disagree.
         logger.warning(
@@ -723,23 +781,47 @@ def presented_certificate(
     return Presentation(cert=describe(cert, source=SOURCE_PROXY))
 
 
-def peer_certificate_protocol(base: type) -> type:
-    """``base`` (a uvicorn HTTP protocol) that exposes the TLS peer certificate.
+def socket_peer(scope: Any) -> str | None:
+    """The address of the socket a request came in on.
 
-    uvicorn copies its ``app_state`` into every request's ``scope["state"]``;
-    replacing it per connection with a copy that carries the peer's DER is the
-    one hook that needs no change to how uvicorn builds a scope. The asyncio
-    SSL transport calls ``connection_made`` after the handshake, so the
-    certificate is final by then.
+    Not ``scope["client"]``: uvicorn's proxy-headers middleware (on by
+    default) rewrites that from ``X-Forwarded-For`` for any peer in
+    ``FORWARDED_ALLOW_IPS``, and set to ``*`` — the usual advice for uvicorn
+    behind an ingress — it lets any client name the ingress's address and have
+    its ``ssl-client-*`` headers believed. The protocol below records the
+    socket's address before any middleware runs; ``scope["client"]`` is the
+    answer only where that protocol is not in use (the test client, an
+    embedding server), and there nothing rewrites it.
+    """
+    state = scope.get("state") or {}
+    if SOCKET_PEER_STATE_KEY in state:
+        return state[SOCKET_PEER_STATE_KEY] or None
+    client = scope.get("client")
+    return client[0] if client else None
+
+
+def peer_certificate_protocol(base: type) -> type:
+    """``base`` (a uvicorn HTTP protocol) that exposes the socket's peer.
+
+    Its address always (:func:`socket_peer`), and the TLS peer certificate
+    when there is one. uvicorn copies its ``app_state`` into every request's
+    ``scope["state"]``; replacing it per connection with a copy that carries
+    both is the one hook that needs no change to how uvicorn builds a scope.
+    The asyncio SSL transport calls ``connection_made`` after the handshake,
+    so the certificate is final by then.
     """
 
     class PeerCertificateProtocol(base):  # type: ignore[valid-type, misc]
         def connection_made(self, transport):  # type: ignore[no-untyped-def]
             super().connection_made(transport)
+            peername = transport.get_extra_info("peername")
+            peer = peername[0] if isinstance(peername, (tuple, list)) and peername else ""
+            state = {**self.app_state, SOCKET_PEER_STATE_KEY: str(peer)}
             ssl_object = transport.get_extra_info("ssl_object")
             der = ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
             if der:
-                self.app_state = {**self.app_state, TLS_PEER_CERT_STATE_KEY: der}
+                state[TLS_PEER_CERT_STATE_KEY] = der
+            self.app_state = state
 
     PeerCertificateProtocol.__name__ = f"PeerCertificate{base.__name__}"
     PeerCertificateProtocol.__qualname__ = PeerCertificateProtocol.__name__
