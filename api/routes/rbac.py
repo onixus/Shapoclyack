@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import (
     Role,
+    StepUpDep,
     TenantPrincipal,
     TokenUser,
     require_path_tenant_permission,
@@ -82,14 +83,17 @@ def list_roles(
 def _refusal(exc: Exception) -> HTTPException:
     """The status each service refusal answers with.
 
-    Order matters: :class:`rbac_service.RoleExists` and
-    :class:`rbac_service.RoleInUse` are ValueErrors too.
+    Order matters: :class:`rbac_service.RoleExists`,
+    :class:`rbac_service.RoleInUse` and :class:`rbac_service.RoleMapped` are
+    ValueErrors too.
     """
     if isinstance(exc, LookupError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    if isinstance(exc, (rbac_service.RoleExists, rbac_service.RoleInUse)):
+    if isinstance(
+        exc, (rbac_service.RoleExists, rbac_service.RoleInUse, rbac_service.RoleMapped)
+    ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -106,6 +110,9 @@ def create_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Defining a role is defining what a grant can hand out: a recent second
+    # factor, as on the membership routes (#504). No effect without MFA.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> RoleInfo:
     """Define a role of this tenant: a name, a rank and an explicit permission set.
@@ -139,6 +146,8 @@ def update_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Editing a role changes every holder's authority at once (#504).
+    __: StepUpDep,
     audit: AuditDep,
 ) -> RoleInfo:
     """Rename a role of this tenant or change what it may do.
@@ -146,7 +155,8 @@ def update_role(
     A new ``role_id`` carries every member holding the role along with it. A
     changed definition is what every holder may do from their next request,
     so the role before *and* after must be within the caller's authority.
-    Built-in roles are not this tenant's to edit: ``404``.
+    Built-in roles are not this tenant's to edit: ``404``. A rename of a role
+    ``OCTO_IDP_GROUP_MAP`` names is ``409`` (#316): the map changes first.
     """
     try:
         updated = rbac_service.update_role(
@@ -173,6 +183,8 @@ def delete_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Deleting with ``reassign_to`` regrants every holder (#504).
+    __: StepUpDep,
     audit: AuditDep,
     reassign_to: Annotated[
         str | None,
@@ -183,7 +195,8 @@ def delete_role(
 
     ``409`` while any member holds it — nobody's access disappears with a role
     as a side effect. ``reassign_to`` names where they go instead, a role the
-    caller may grant; each move is recorded as a ``membership.grant``.
+    caller may grant; each move is recorded as a ``membership.grant``. Also
+    ``409`` for a role ``OCTO_IDP_GROUP_MAP`` names (#316).
     """
     try:
         deleted = rbac_service.delete_role(

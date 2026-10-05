@@ -463,6 +463,9 @@ def start_scan(
         ),
         idempotency_key=(idempotency_key or None),
         quota_exempt=quota_exempt,
+        # Validated against the caller's authority by the route (#365); the
+        # schedule dispatcher and the verification re-scans send the default.
+        priority=request.priority,
         queued_at=_now(),
     )
 

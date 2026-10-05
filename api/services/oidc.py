@@ -700,6 +700,42 @@ def email_verified_from_claims(claims: dict[str, Any]) -> bool:
     return False
 
 
+def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str] | None:
+    """The values of ``OCTO_OIDC_ROLE_CLAIM`` in these claims (#316).
+
+    A string is one group and a list is several. **None** where the token does
+    not list the groups at all: the claim is missing, or the provider replaced
+    it by a pointer because there were too many — Entra ID's "overage"
+    (``_claim_names`` naming the claim, or ``hasgroups``) — except that with
+    ``OCTO_IDP_GROUPS_CLAIM_REQUIRED`` a missing claim is no groups. That is
+    "the groups are not here", not "in no group", and an IdP-authoritative resync must not
+    read it as the second (it would disable the account). What the groups grant
+    is the maps' business (:func:`role_from_claims`,
+    ``api/services/idp_sync.py``), so this only reads.
+    """
+    claim = settings.oidc_role_claim.strip()
+    if not claim:
+        return []
+    # ``hasgroups`` (the implicit flow's overage marker) comes instead of the
+    # claim, so the absence test covers it.
+    claim_names = claims.get("_claim_names")
+    if isinstance(claim_names, dict) and claim in claim_names:
+        return None
+    if claim not in claims:
+        # Missing: "not listed", unless the installation says its IdP always
+        # sends the claim (``OCTO_IDP_GROUPS_CLAIM_REQUIRED``). Okta leaves an
+        # empty one out. ``hasgroups`` is Entra's overage either way.
+        if settings.idp_groups_claim_required and not claims.get("hasgroups"):
+            return []
+        return None
+    raw = claims.get(claim)
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(item) for item in raw]
+    return []
+
+
 def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     """Console role for these claims: the highest mapped value, else the default.
 
@@ -707,17 +743,9 @@ def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     adding a group at the identity provider cannot quietly grant console
     access on its own.
     """
-    claim = settings.oidc_role_claim.strip()
-    if not claim or not settings.oidc_role_map:
+    if not settings.oidc_role_claim.strip() or not settings.oidc_role_map:
         return settings.oidc_default_role
-    raw = claims.get(claim)
-    values: list[str]
-    if isinstance(raw, str):
-        values = [raw]
-    elif isinstance(raw, (list, tuple)):
-        values = [str(item) for item in raw]
-    else:
-        values = []
+    values = groups_from_claims(settings, claims) or []
     mapped = [settings.oidc_role_map[value] for value in values if value in settings.oidc_role_map]
     if not mapped:
         return settings.oidc_default_role

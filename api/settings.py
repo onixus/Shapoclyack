@@ -488,6 +488,20 @@ class Settings:
     # wants to see consumption against the number it sold for a billing period
     # or two before it starts refusing its customer's scans.
     quota_enforcement_enabled: bool = True
+    # Scan queue admission (#365). The installation-wide ceiling on jobs
+    # waiting in ``queued`` across every tenant; a new scan past it is refused
+    # with 429. 0 is unlimited, the default — the per-tenant ceilings live on
+    # the tenant row (``PUT /api/tenants/{id}/queue-limits``) and are unlimited
+    # until set. Not gated on ``quota_enforcement_enabled``: these protect the
+    # executors, not the invoice.
+    scan_queue_max_depth: int = 0
+    # The Retry-After a queue-depth refusal carries. A queue drains at the
+    # pace scans finish, which the API cannot predict, so this is a polite
+    # back-off rather than a promise.
+    scan_queue_retry_after_seconds: int = 60
+    # How often a local scan held back by its tenant's ``max_concurrent_scans``
+    # asks again for a slot. Only a tenant with a ceiling ever waits.
+    scan_queue_local_poll_seconds: float = 5.0
     # SMTP for report delivery. Separate from the scanner's alert SMTP
     # (scanner/pipeline/alerts.py): an alert goes to the operations channel and
     # a report goes to a customer, and one installation routinely needs
@@ -869,6 +883,27 @@ class Settings:
     # which is what an API-only install wants; a console install points this at
     # the UI, which reads the token out of the URL fragment.
     oidc_post_login_redirect: str = ""
+    # "IdP authoritative" (#316). Off by default, which leaves every SSO login
+    # exactly as before: the role and the tenant are decided once, when the
+    # account is provisioned. On, every SSO login recomputes the global role
+    # from ``oidc_role_map`` and the IdP-sourced memberships from
+    # ``idp_group_map``, removes the ones the groups no longer grant, and
+    # deactivates an account that is in no mapped group. Memberships granted
+    # locally are never touched (api/services/idp_sync.py says why).
+    idp_authoritative: bool = False
+    # Whether the ID token always carries ``OCTO_OIDC_ROLE_CLAIM`` (#316). Off,
+    # a token without the claim is "the groups are not listed" and the resync
+    # is skipped for that login — the safe reading where the IdP drops an
+    # empty claim (Okta) or the claim is not configured on the client. On, the
+    # installation says its IdP sends the claim every time, even empty, so
+    # its absence is "in no group". Entra ID's overage pointer is "not
+    # listed" either way: the groups exist, they are just elsewhere.
+    idp_groups_claim_required: bool = False
+    # Group -> tenant membership map shared by the SSO resync and SCIM,
+    # ``{"acme-ops": [{"tenant_id": "acme", "role": "operator"}]}``. A group
+    # may grant several tenants; the role is a built-in tenant role or one the
+    # tenant defined (#318). Unknown tenants and roles grant nothing.
+    idp_group_map: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
     # --- Enterprise IAM: service tokens (ROADMAP Track E) --------------------
     # Non-interactive API credentials, admin-issued per tenant with a scope
@@ -911,6 +946,17 @@ class Settings:
     # register a key — rather than refused, so the requirement is a guided
     # enrolment and not a lockout. Empty by default.
     mfa_phishing_resistant_roles: list[str] = field(default_factory=list)
+    # The same two requirements by *authority in a tenant* rather than by the
+    # global role (#504). An account holding any listed permission in at least
+    # one tenant — through a built-in membership role, a role the tenant
+    # defined, or the global ``admin``, which holds them all — is covered.
+    # ``None`` (unset) derives the list: the tenant-authority set in
+    # api/core/permissions.py (``TENANT_AUTHORITY_PERMISSIONS``) when the
+    # matching role list names ``admin``, nothing otherwise — so "MFA for
+    # admins" covers the admins of tenants, and an installation with no MFA
+    # policy is unchanged. ``[]`` (``none``) turns the permission half off.
+    mfa_required_permissions: list[str] | None = None
+    mfa_phishing_resistant_permissions: list[str] | None = None
     # Whether the step-up that credential-issuing and account-administration
     # routes demand must itself be a WebAuthn assertion, for every account that
     # has MFA enabled — not only the roles above. Off by default; turning it on
@@ -1112,6 +1158,50 @@ def _oidc_role_map() -> dict[str, str]:
     return mapping
 
 
+def _idp_group_map() -> dict[str, list[dict[str, str]]]:
+    """``{group: [{"tenant_id": ..., "role": ...}, ...]}`` from ``OCTO_IDP_GROUP_MAP``.
+
+    A group's value may be one object or a list of them. Entries without a
+    tenant or a role are dropped with a warning, and so is a malformed value as
+    a whole — the reasoning of :func:`_oidc_role_map`: this is parsed on every
+    start whether or not SSO is configured, and dropping a mapping can only
+    cost access, never grant it. Which tenants and roles exist is the
+    database's to say, so that is checked where the map is applied
+    (``api/services/idp_sync.py``), not here.
+    """
+    raw = os.environ.get("OCTO_IDP_GROUP_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        logger.warning("OCTO_IDP_GROUP_MAP is not valid JSON (%s); ignoring it.", exc)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "OCTO_IDP_GROUP_MAP must be a JSON object of {group: [{tenant_id, role}]}; "
+            "ignoring it."
+        )
+        return {}
+    mapping: dict[str, list[dict[str, str]]] = {}
+    for group, value in parsed.items():
+        entries = value if isinstance(value, list) else [value]
+        grants: list[dict[str, str]] = []
+        for entry in entries:
+            tenant_id = str(entry.get("tenant_id", "")).strip() if isinstance(entry, dict) else ""
+            role = str(entry.get("role", "")).strip() if isinstance(entry, dict) else ""
+            if not tenant_id or not role:
+                logger.warning(
+                    "OCTO_IDP_GROUP_MAP entry for %r needs a tenant_id and a role; ignoring it.",
+                    group,
+                )
+                continue
+            grants.append({"tenant_id": tenant_id[:64], "role": role[:64]})
+        if grants:
+            mapping[str(group)] = grants
+    return mapping
+
+
 #: The stores a tenant purge may be told this installation does not run (#325).
 TENANT_PURGE_OPTIONAL_STORES = ("clickhouse", "jetstream")
 
@@ -1192,6 +1282,50 @@ def _mfa_required_roles(variable: str = "OCTO_MFA_REQUIRED_ROLES") -> list[str]:
         if role not in roles:
             roles.append(role)
     return roles
+
+
+def _mfa_permissions(variable: str) -> list[str] | None:
+    """``OCTO_MFA_REQUIRED_PERMISSIONS`` and its phishing-resistant twin (#504).
+
+    Unset or blank is ``None`` — derive from the role list, see
+    :attr:`Settings.mfa_required_permissions` — and ``none`` is an explicit
+    empty list. Otherwise comma-separated catalogue keys; an unknown one is
+    dropped with a warning, for the reason :func:`_mfa_required_roles` gives.
+
+    Except when nothing is left: a value made only of unknown keys would come
+    out as ``[]``, which is ``none`` — the derived default switched off and
+    every tenant admin back outside the policy, over a typo, with a log line
+    as the only trace. That one refuses to start instead.
+    """
+    from api.core.permissions import PERMISSIONS
+
+    raw = os.environ.get(variable, "").strip()
+    if not raw:
+        return None
+    if raw.lower() == "none":
+        return []
+    keys: list[str] = []
+    for item in raw.split(","):
+        key = item.strip().lower()
+        if not key:
+            continue
+        if key not in PERMISSIONS:
+            logger.warning(
+                "%s names an unknown permission %r; ignoring it. GET /api/rbac/permissions "
+                "lists the catalogue.",
+                variable,
+                key,
+            )
+            continue
+        if key not in keys:
+            keys.append(key)
+    if not keys:
+        raise ValueError(
+            f"{variable} names no known permission ({raw!r}); write `none` to turn the "
+            "permission policy off, or unset it for the default. GET /api/rbac/permissions "
+            "lists the catalogue."
+        )
+    return keys
 
 
 def _local_login() -> str:
@@ -1525,11 +1659,17 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     # A phishing-resistant requirement with no relying party to register a key
     # against confines every listed role to a page whose one action answers
     # 409 — an administrator lockout that starts at the first login (#315).
-    if settings.mfa_phishing_resistant_roles or settings.mfa_stepup_phishing_resistant:
+    # An explicit permission list does the same to whoever holds one (#504).
+    if (
+        settings.mfa_phishing_resistant_roles
+        or settings.mfa_phishing_resistant_permissions
+        or settings.mfa_stepup_phishing_resistant
+    ):
         rp_id, origins = settings.webauthn_relying_party()
         if not rp_id or not origins:
             problems.append(
-                "OCTO_MFA_PHISHING_RESISTANT_ROLES / OCTO_MFA_STEPUP_PHISHING_RESISTANT\n"
+                "OCTO_MFA_PHISHING_RESISTANT_ROLES / OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS /\n"
+                "    OCTO_MFA_STEPUP_PHISHING_RESISTANT\n"
                 "    require WebAuthn, but no relying party could be derived.\n"
                 "    Set OCTO_PUBLIC_BASE_URL, or OCTO_WEBAUTHN_RP_ID and\n"
                 "    OCTO_WEBAUTHN_ORIGINS, to the console's domain and origin."
@@ -1543,6 +1683,7 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
         settings.webauthn_rp_id
         or settings.webauthn_origins
         or settings.mfa_phishing_resistant_roles
+        or settings.mfa_phishing_resistant_permissions
         or settings.mfa_stepup_phishing_resistant
     )
     if webauthn_in_use:
@@ -1878,6 +2019,15 @@ def load_settings() -> Settings:
             "OCTO_QUOTA_ENFORCEMENT_ENABLED", "true"
         ).lower()
         in {"1", "true", "yes"},
+        scan_queue_max_depth=max(0, int(os.environ.get("OCTO_SCAN_QUEUE_MAX_DEPTH", "0"))),
+        scan_queue_retry_after_seconds=max(
+            1, int(os.environ.get("OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS", "60"))
+        ),
+        # Floored: a mistyped 0 turns every waiting local scan into a busy
+        # loop against the database.
+        scan_queue_local_poll_seconds=max(
+            0.5, float(os.environ.get("OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS", "5"))
+        ),
         report_dispatch_enabled=os.environ.get("OCTO_REPORT_DISPATCH_ENABLED", "true").lower()
         in {"1", "true", "yes"},
         # Floored for the same reason as the webhook dispatcher's: a mistyped 0
@@ -2169,6 +2319,13 @@ def load_settings() -> Settings:
         oidc_state_ttl_seconds=max(30, int(os.environ.get("OCTO_OIDC_STATE_TTL_SECONDS", "600"))),
         oidc_http_timeout_seconds=max(1, int(os.environ.get("OCTO_OIDC_HTTP_TIMEOUT_SECONDS", "10"))),
         oidc_post_login_redirect=os.environ.get("OCTO_OIDC_POST_LOGIN_REDIRECT", "").strip(),
+        idp_authoritative=os.environ.get("OCTO_IDP_AUTHORITATIVE", "false").strip().lower()
+        in {"1", "true", "yes", "on"},
+        idp_groups_claim_required=os.environ.get("OCTO_IDP_GROUPS_CLAIM_REQUIRED", "false")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"},
+        idp_group_map=_idp_group_map(),
         service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         service_token_default_ttl_days=max(
@@ -2186,6 +2343,10 @@ def load_settings() -> Settings:
         # people to keep an authenticator open next to the console.
         mfa_stepup_minutes=max(1, int(os.environ.get("OCTO_MFA_STEPUP_MINUTES", "15"))),
         mfa_phishing_resistant_roles=_mfa_required_roles("OCTO_MFA_PHISHING_RESISTANT_ROLES"),
+        mfa_required_permissions=_mfa_permissions("OCTO_MFA_REQUIRED_PERMISSIONS"),
+        mfa_phishing_resistant_permissions=_mfa_permissions(
+            "OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS"
+        ),
         mfa_stepup_phishing_resistant=os.environ.get(
             "OCTO_MFA_STEPUP_PHISHING_RESISTANT", "false"
         ).lower()
@@ -2206,6 +2367,31 @@ def load_settings() -> Settings:
             if item.strip()
         ],
     )
+
+    if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
+        # Not a refusal, and not obeyed either: with nothing mapped, every SSO
+        # account is "in no mapped group", and obeying the switch would
+        # deactivate the whole console at its next login (#316).
+        logger.warning(
+            "OCTO_IDP_AUTHORITATIVE=true with neither OCTO_OIDC_ROLE_MAP nor "
+            "OCTO_IDP_GROUP_MAP set: nothing is mapped, so the IdP resync stays off "
+            "rather than deactivating every SSO account. Map the groups first."
+        )
+    elif settings.idp_authoritative and not settings.oidc_role_claim:
+        # The same reasoning: no claim configured, no login lists a group, and
+        # every SSO account would be "in no mapped group".
+        logger.warning(
+            "OCTO_IDP_AUTHORITATIVE=true with OCTO_OIDC_ROLE_CLAIM empty: no login "
+            "carries the groups, so the IdP resync stays off rather than deactivating "
+            "every SSO account. Name the groups claim first."
+        )
+    elif settings.idp_authoritative and not settings.idp_groups_claim_required:
+        logger.info(
+            "OCTO_IDP_AUTHORITATIVE=true: a login whose ID token does not carry %r is "
+            "not resynced (counted in octo_idp_resync_skipped_total). If the IdP always "
+            "sends the claim, set OCTO_IDP_GROUPS_CLAIM_REQUIRED=true.",
+            settings.oidc_role_claim,
+        )
 
     if settings.env == ENV_PROD:
         _validate_production(settings, postgres_url_env=postgres_url_env)

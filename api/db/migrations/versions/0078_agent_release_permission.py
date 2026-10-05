@@ -1,7 +1,7 @@
 """Endpoint-agent builds are the platform admin's to write (#510)
 
 Revision ID: 0078_agent_release_permission
-Revises: 0072_run_publication_projected
+Revises: 0076_idp_resync_scim
 Create Date: 2026-10-05
 
 ``endpoint_agent_releases`` is one row per ``(version, platform)`` for the
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0078_agent_release_permission"
-down_revision: Union[str, None] = "0072_run_publication_projected"
+down_revision: Union[str, None] = "0076_idp_resync_scim"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -21,6 +21,7 @@ from api.services import maintenance
 from api.services import promoted_domains
 from api.services import quotas
 from api.services import scan_policy
+from api.services import scan_queue
 from api.services import scan_scopes
 from api.services import tenants as tenants_service
 from api.services.targets import ParsedTargets, parse_target_payload
@@ -72,6 +73,12 @@ def admit_scan(
     # reach the route — a quota only one entry point honours is not a quota.
     if not quota_exempt:
         quotas.assert_scan_quota(settings, tenant_id=tenant_id)
+    # How much is already waiting (#365), here for the same reason: the
+    # dispatcher must be held to it too. A refusal is a ``QuotaExceeded`` as
+    # well, so it reaches the caller as the same 429 with ``Retry-After``.
+    # Exempt scans are exempt here as they are from the quota — a verification
+    # re-scan refused because the queue was busy leaves its finding stuck.
+    scan_queue.assert_admitted(settings, tenant_id=tenant_id, exempt=quota_exempt)
 
     # Loaded once here and handed to both barriers below: the scope cannot
     # change inside this call frame, and each load is a round trip.

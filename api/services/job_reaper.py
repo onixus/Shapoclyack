@@ -12,7 +12,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -44,6 +44,19 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     - **local** jobs are failed outright. Their only executor was the thread in
       the process that died; no other replica will ever pick the row up, so
       requeueing it would just park it in the queue for good.
+    - **local** jobs still ``queued`` are failed the same way once their
+      waiting mark lapses (#365). A local scan held back by its tenant's
+      ``max_concurrent_scans`` waits in its replica's thread, which renews the
+      mark as it asks for the slot (``job_leases.renew_waiting_mark``);
+      a mark nobody renewed means that replica is gone. Whose row it is does
+      not matter — a pod replaced by a rollout returns under a new
+      ``instance_id``, so ``job_repository.load_jobs`` never reconciles it —
+      and a live replica's waiter is not touched while its mark is fresh. One
+      that cannot reach the database for what is left of its mark is written
+      off like a running job whose lease lapsed. A row with no mark at all is one whose
+      thread never asked: it is given one lease from ``queued_at``. Agent jobs
+      wait in ``queued`` for a sensor as long as they must and are never
+      reaped there.
 
     Safe to run in every replica (there is no leader election until P1.6): rows
     are taken with ``FOR UPDATE SKIP LOCKED``, so two reapers sweeping at once
@@ -61,17 +74,34 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     # emitter there does not see it, and a lease that expired is exactly the
     # failure nobody is watching a console for.
     failed_events: list[dict[str, Any]] = []
+    never_asked = now - timedelta(seconds=max(settings.job_lease_seconds, 1))
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
             select(models.Job)
             .where(
-                models.Job.status.in_(tuple(job_states.IN_FLIGHT)),
-                models.Job.claimed_until.is_not(None),
-                models.Job.claimed_until < now,
+                or_(
+                    and_(
+                        models.Job.status.in_(tuple(job_states.IN_FLIGHT)),
+                        models.Job.claimed_until.is_not(None),
+                        models.Job.claimed_until < now,
+                    ),
+                    and_(
+                        models.Job.execution == "local",
+                        models.Job.status == job_states.QUEUED,
+                        or_(
+                            models.Job.claimed_until < now,
+                            and_(
+                                models.Job.claimed_until.is_(None),
+                                models.Job.queued_at < never_asked,
+                            ),
+                        ),
+                    ),
+                )
             )
             .with_for_update(skip_locked=True)
         ).scalars().all()
         for row in rows:
+            waiting = row.status == job_states.QUEUED
             retriable = row.execution == "agent" and row.attempts < settings.job_max_attempts
             # Whatever was being ingested under this row's lease is void: the
             # job is either going back on the queue or being written off, and
@@ -103,7 +133,10 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
                 row.finished_at = now
                 row.claimed_until = None
                 row.error = (
-                    f"Lease expired after {row.attempts} attempt(s): the {row.execution} "
+                    f"Waited for a scan slot on replica {row.owner_id or 'unknown'}, "
+                    "which stopped reporting; the scan never started"
+                    if waiting
+                    else f"Lease expired after {row.attempts} attempt(s): the {row.execution} "
                     "executor stopped reporting and never returned"
                 )
                 outcome["failed"] += 1

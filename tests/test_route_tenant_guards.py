@@ -71,6 +71,11 @@ _PLATFORM_ADMIN = (
     "installation-wide by definition; the gate declares system scope for the "
     "platform admin and nobody else"
 )
+_SCIM = (
+    "SCIM 2.0 provisioning (#316): accounts and memberships across the token's "
+    "tenants, authenticated by an octo_scim_ token only; require_scim_token "
+    "declares system scope and the service enforces the token's tenant binding"
+)
 #: Enforced, not only stated: test_routes_said_to_read_no_table_read_no_tenant_table
 #: requests each such route in the undeclared scope, where any read of a tenant
 #: table fails the request.
@@ -137,6 +142,10 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.auth:create_tenant": _PLATFORM_ADMIN,
     "api.routes.auth:set_tenant_quota": _PLATFORM_ADMIN,
     "api.routes.auth:clear_tenant_quota": _PLATFORM_ADMIN,
+    # Scan queue ceilings (#365): platform.quota.manage, for the quota's
+    # reason — they share out executors every tenant uses. The read is behind
+    # require_path_tenant_permission.
+    "api.routes.auth:set_tenant_queue_limits": _PLATFORM_ADMIN,
     # Legal hold (#332): platform.legal_hold.manage, which no tenant role holds
     # — a tenant that could release its own hold could let evidence age out.
     # (A tenant's own retention routes are behind require_path_tenant_permission.)
@@ -213,6 +222,28 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.users:export_user_data": _PLATFORM_ADMIN + " (a data-subject access request)",
     "api.routes.users:erase_user": _PLATFORM_ADMIN + " (a data-subject erasure request)",
     "api.routes.users:change_own_password": _ACCOUNT,
+    # SCIM provisioning (#316). The token administration is account
+    # administration; the protocol routes are authenticated by a SCIM token
+    # alone, declare system scope in require_scim_token, and hold the token to
+    # its tenant binding in api/services/scim.py on every call.
+    "api.routes.scim_tokens:create_scim_token": _PLATFORM_ADMIN,
+    "api.routes.scim_tokens:list_scim_tokens": _PLATFORM_ADMIN,
+    "api.routes.scim_tokens:revoke_scim_token": _PLATFORM_ADMIN,
+    "api.routes.scim:scim_service_provider_config": _SCIM + "; static document, no table read",
+    "api.routes.scim:scim_resource_types": _SCIM + "; static document, no table read",
+    "api.routes.scim:scim_schemas": _SCIM + "; static document, no table read",
+    "api.routes.scim:scim_list_users": _SCIM,
+    "api.routes.scim:scim_create_user": _SCIM,
+    "api.routes.scim:scim_get_user": _SCIM,
+    "api.routes.scim:scim_replace_user": _SCIM,
+    "api.routes.scim:scim_patch_user": _SCIM,
+    "api.routes.scim:scim_delete_user": _SCIM,
+    "api.routes.scim:scim_list_groups": _SCIM,
+    "api.routes.scim:scim_create_group": _SCIM,
+    "api.routes.scim:scim_get_group": _SCIM,
+    "api.routes.scim:scim_replace_group": _SCIM,
+    "api.routes.scim:scim_patch_group": _SCIM,
+    "api.routes.scim:scim_delete_group": _SCIM,
     "api.routes.mfa:mfa_status": _ACCOUNT,
     "api.routes.mfa:setup_totp": _ACCOUNT,
     "api.routes.mfa:confirm_totp": _ACCOUNT,

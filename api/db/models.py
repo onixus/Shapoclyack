@@ -83,6 +83,16 @@ class Tenant(Base):
     change_freeze_note: Mapped[str | None] = mapped_column(default=None)
     change_freeze_at: Mapped[datetime | None] = mapped_column(default=None)
     change_freeze_by: Mapped[str | None] = mapped_column(default=None)
+    # Scan queue ceilings (#365, migration 0074). NULL is unlimited — every
+    # tenant until somebody sets one. ``max_concurrent_scans`` bounds how many
+    # of the tenant's jobs may be out with an executor at once (claimed,
+    # running or being cancelled) and is enforced at claim time;
+    # ``max_queued_scans`` bounds how many may wait, and is enforced at
+    # admission with a 429. Here and not in ``tenant_quotas``: a quota row's
+    # NULLs override the platform's billing defaults, so creating one to set
+    # a ceiling would exempt the tenant from its quota.
+    max_concurrent_scans: Mapped[int | None] = mapped_column(default=None)
+    max_queued_scans: Mapped[int | None] = mapped_column(default=None)
 
 
 class User(Base):
@@ -162,9 +172,28 @@ class User(Base):
     # pseudonym and can never be issued to somebody else. See
     # api/services/data_subject.py for what erasure removes.
     erased_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Who disabled the account, when the identity provider did (migration
+    # 0076, #316): ``idp`` — the SSO resync or a SCIM group change found it in
+    # no mapped group — or ``scim`` — the provisioning client set
+    # ``active: false``. NULL is a console administrator, or no disable at all.
+    # The IdP may undo only its own: a resync never re-enables an account a
+    # person locked, which is what keeps an incident response from being
+    # reverted by somebody's next login.
+    disabled_source: Mapped[str | None] = mapped_column(default=None)
+    # The ``externalId`` a SCIM client sent for an account it created
+    # (migration 0076, #316): the directory's key for the person, which
+    # carries the IdP subject. An SSO login whose ``sub`` equals it links the
+    # account; the login's username claim never does. Unique where set.
+    scim_external_id: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+        Index(
+            "uq_users_scim_external_id",
+            "scim_external_id",
+            unique=True,
+            postgresql_where=text("scim_external_id IS NOT NULL"),
+        ),
     )
 
 
@@ -305,12 +334,86 @@ class UserTenant(Base):
     role: Mapped[str] = mapped_column(default="viewer")
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
+    # ``local`` — granted by a person over the API, or written before
+    # migration 0076 — or ``idp``: granted by the identity provider's group
+    # mapping (SSO resync, SCIM, JIT provisioning). An IdP-authoritative
+    # resync adds, changes and removes ``idp`` rows only (#316), so turning it
+    # on never takes away what an administrator granted by hand.
+    source: Mapped[str] = mapped_column(default="local", server_default="local")
 
     __table_args__ = (
         UniqueConstraint("username", "tenant_id", name="uq_user_tenant"),
         # "Who holds this role here" — asked before a tenant role is deleted
         # and by the rename that carries its holders along (migration 0070).
         Index("ix_user_tenants_tenant_role", "tenant_id", "role"),
+    )
+
+
+class ScimToken(Base):
+    """The credential a SCIM 2.0 provisioning client presents (#316).
+
+    Not a service token, on purpose. A service token is pinned to one tenant
+    and can never reach ``users`` or ``tenants``; provisioning is exactly
+    those, and across tenants. So it is its own credential type with its own
+    prefix (``octo_scim_``), accepted on ``/scim/v2`` and nowhere else — and a
+    console JWT or a service token is accepted nowhere on ``/scim/v2``.
+
+    What it may manage is stored with it: ``tenant_ids`` are the tenants whose
+    memberships it writes, and an account it may deactivate must belong to
+    none but those. ``all_tenants`` lifts that to the installation, and
+    ``grant_platform_admin`` — which needs ``all_tenants`` — is the only way a
+    group mapped to the global ``admin`` role takes effect through SCIM. Same
+    storage rules as :class:`ServiceToken`: a bcrypt hash and a public prefix.
+    """
+
+    __tablename__ = "scim_tokens"
+
+    token_id: Mapped[str] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(default="")
+    token_prefix: Mapped[str] = mapped_column(unique=True, index=True)
+    token_hash: Mapped[str]
+    # Tenant ids, not a foreign key: a tenant deleted later simply stops
+    # being manageable, and the token keeps the rest of its scope.
+    tenant_ids: Mapped[list] = mapped_column(JSON, default=list)
+    all_tenants: Mapped[bool] = mapped_column(default=False)
+    grant_platform_admin: Mapped[bool] = mapped_column(default=False)
+    created_by: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class ScimGroup(Base):
+    """A group a SCIM client pushed (#316). Its name is what the maps read.
+
+    ``display_name`` is looked up in ``OCTO_OIDC_ROLE_MAP`` and
+    ``OCTO_IDP_GROUP_MAP`` exactly as an SSO ``groups`` claim value is, so one
+    mapping serves both ways in. ``scim_token_id`` is the token that created
+    it, which is what lets a tenant-bound token see an unmapped group of its
+    own and nobody else's.
+    """
+
+    __tablename__ = "scim_groups"
+
+    group_id: Mapped[str] = mapped_column(primary_key=True)
+    display_name: Mapped[str] = mapped_column(unique=True)
+    external_id: Mapped[str | None] = mapped_column(default=None)
+    scim_token_id: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class ScimGroupMember(Base):
+    """One account in one SCIM group. Goes with either side (FK cascades)."""
+
+    __tablename__ = "scim_group_members"
+
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("scim_groups.group_id", ondelete="CASCADE"), primary_key=True
+    )
+    username: Mapped[str] = mapped_column(
+        ForeignKey("users.username", ondelete="CASCADE"), primary_key=True, index=True
     )
 
 
@@ -1964,6 +2067,12 @@ class Job(Base):
     # by ``jobs.reap_stale_cancellations`` instead of sitting in `cancelling`
     # forever. NULL for every job nobody has asked to stop.
     cancel_requested_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Claim order within a tenant (#365): higher first, then ``queued_at``.
+    # 0 is the default and what every job before migration 0074 reads, so a
+    # queue nobody prioritised is the FIFO it always was. Bounded by
+    # ``scan_queue.PRIORITY_MIN``/``PRIORITY_MAX``; above 0 needs
+    # ``scan.priority.raise``.
+    priority: Mapped[int] = mapped_column(default=0, server_default="0")
     queued_at: Mapped[datetime]
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)

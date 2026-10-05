@@ -85,7 +85,7 @@ Two claims and one header carry this:
 POST /api/auth/refresh                          # cookie only — next access token, rotated cookie
 POST /api/auth/logout                           # any role — ends this session only
 POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
-POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
+POST /api/users/{username}/sessions/revoke-all  # admin + step-up — ends every session of that account
 ```
 
 The last three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
@@ -299,6 +299,69 @@ hours; a promotion into a covered role would have done the same. It also means
 finishing an enrolment lifts the confinement on the *existing* token, with no
 sign-out in the middle.
 
+#### Coverage by authority in a tenant (#504)
+
+Since #318 the power to run a tenant comes from a **membership**, not from
+`users.role`: a global `viewer` can be `admin` of one tenant, `scope-approver`
+of another, or hold a role the tenant defined itself. Comparing the policy with
+the global role alone left all of them out. An account is now covered when
+**either** of these holds:
+
+- **by global role** — `OCTO_MFA_REQUIRED_ROLES` names its `users.role`,
+  exactly as before (a membership's role *name* is not matched: a tenant role
+  is covered by what it carries, whatever it is called);
+- **by permission** — it holds a permission listed in
+  `OCTO_MFA_REQUIRED_PERMISSIONS` in **at least one** tenant, through any role:
+  a built-in, a [tenant-defined role](#tenant-defined-roles), or the global
+  `admin`, which holds every permission everywhere.
+
+`OCTO_MFA_REQUIRED_PERMISSIONS` left unset is **derived**: when
+`OCTO_MFA_REQUIRED_ROLES` names `admin` it is the tenant-authority set —
+`tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+`vulnerability.exception.approve`, `endpoint_agent.manage` — and otherwise
+empty. Under the derived default a role at the **admin rank (3)** in a tenant
+is covered as well, whatever permissions it lists: rank 3 alone passes every
+route gated on the tenant `admin` rank — webhooks, notification channels, SLA
+policies, the SSH push — so a tenant role written as `rank: 3, permissions: []`
+administers the tenant as surely as the built-in `admin` does. So "MFA for
+admins" now covers the tenant `admin`, `token-admin`, `scope-approver`,
+`risk-approver`, any tenant role at rank 3 and any tenant role carrying one of
+those permissions, while an installation with no MFA policy is unchanged. An
+**explicit** list means exactly what it names — the rank does not widen it —
+and `none` turns the permission half off, which is exactly the behaviour
+before #504. A value made only of unknown keys refuses to start rather than
+being read as `none`.
+
+The requirement is about what one password can do, so it is computed across
+**every** tenant the account belongs to, not the tenant a request happens to
+name: a session confined for its admin membership in `acme` is confined in
+`default` as well. An account with no membership is judged by its global role
+in `default`, as everywhere else; a membership naming a tenant role that no
+longer resolves confers nothing, and so requires nothing.
+
+**Open sessions follow the authority immediately.** Like `mfa_pending` itself,
+the requirement is re-read per request: granting `admin` (or a role carrying a
+listed permission), or widening such a role, confines the holder's **already
+open** session on its next request until it enrols; revoking or narrowing lifts
+it the same way. The alternative — waiting for the session to expire — would
+have given a freshly promoted account up to `OCTO_JWT_EXPIRE_MINUTES` of tenant
+administration on a password alone. The cost is one membership read per request
+for an account that is **not** enrolled while a policy is configured — none when
+a role list already names its global role — and the answer is reused by
+everything else in the same request that asks (`/api/auth/me`, `/api/auth/mfa`,
+a step-up's "must it be a key"); whether an enrolled account owes enrolment
+is decided by the primary-key read it already paid for. Under a key policy, a
+session an enrolled account proved with a code still reads the memberships on
+every request — "must this session have been a key" depends on them — unless
+`OCTO_MFA_PHISHING_RESISTANT_ROLES` already names its global role.
+
+`GET /api/auth/me` reports `mfa_required` and `phishing_resistant_required`
+computed this way; `GET /api/auth/mfa` adds `required_because`, one entry per
+source — `{"tenant_id": "acme", "role": "admin", "permissions":
+["tenant.credential.manage", "tenant.member.manage"], "phishing_resistant":
+false}`, with `tenant_id` `null` for the global role — which the console's
+security page renders instead of the global role name.
+
 ### Step-up
 
 Operations that create or destroy a credential, or widen what a tenant may
@@ -308,19 +371,45 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
 - `POST`/`DELETE /api/tenants/{id}/service-tokens…`
 - `POST`/`DELETE /api/tenants/{id}/provisioning-keys…` **and**
   `POST /api/agent/deployment-command`, which mints the same key and is the one
-  the console uses
+  the console uses, and `POST /api/agent/deploy/ssh`, whose run mints one too
+  (#504)
 - `PUT /api/tenants/{id}/scan-scope`
 - `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`,
   `PUT /api/users/{u}/email` and `POST /api/users/{u}/mfa/reset` — each of them
   a way to end up holding an admin account that carries no second factor
   (a verified address is what an SSO identity is linked to an account by),
   which would otherwise be a one-request path around every line above
+- `POST /api/auth/scim-tokens` and `POST /api/auth/scim-tokens/{id}/revoke`
+  — a SCIM token creates accounts and grants memberships (#316)
+- `PUT`/`DELETE /api/tenants/{id}/members/{u}` and
+  `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles…` (#504) — granting,
+  changing and revoking a membership, and defining, editing or deleting the
+  roles a grant hands out, including a delete with `reassign_to`, which
+  regrants every holder. Without these an open tab of a tenant admin was
+  enough to make anyone that tenant's admin or approver
+- `PUT`/`DELETE /api/endpoint/agent/policy[/{agent_id}]` and
+  `POST`/`DELETE /api/endpoint/agent/releases…` (#504) — naming or replacing
+  the build every endpoint of the tenant installs
+- `POST /api/vulnerabilities/{id}/exception/approve`, `…/reject` and
+  `DELETE /api/vulnerabilities/{id}/exception` (#504) — the risk-acceptance
+  decisions, the pair of the scan-scope approval
+- `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` and
+  `POST /api/users/{u}/sessions/revoke-all` (#504) — the ways to take the other
+  administrators out of the installation (or, re-enabling, to put an account
+  back in)
 
-A **service token** is exempt from step-up: there is no human at one to
-challenge. That is why every route in the list above must also be refused a
-service token by scope — `auth`, `users`, `tenants` and `audit` are forbidden
-outright, `config` and `agent` for writes — and why adding a route here means
-checking that list too.
+A **service token** cannot satisfy a step-up — there is no human at one to
+challenge — so every route in the list above refuses it with `403` (#504),
+whatever its role and scopes. Most of them never get that far: `auth`, `users`,
+`tenants` and `audit` are forbidden to a token outright and `config` and
+`agent` for writes, and the risk-acceptance routes are refused by permission (a
+token carries `viewer`, `operator` or `admin`, none of which holds
+`vulnerability.exception.approve`). The refusal in the step-up itself is what
+holds for the endpoint agent policy and builds: `endpoint` stays writable for
+a token, because `POST /api/endpoint/cve-matches/refresh` and the per-device
+refresh are automation's to call, and before #504 an `admin`-role token with
+`endpoint:write` set the policy — and with it the build every endpoint of the
+tenant runs — with no step-up.
 
 The check applies **only to accounts that have MFA enabled**; an installation
 that has not adopted MFA behaves exactly as before. A stale session gets a 403
@@ -409,7 +498,15 @@ code) is confined exactly like `mfa_pending` — 403 on everything but
 the security key — and `GET /api/auth/me` reports `phishing_resistant_pending`.
 From there it can register a key (bootstrapped by the code it signed in with:
 there is no other factor to prove) and then verify with it. Decided per
-request from the policy and the token's `mfa_method` claim, with no query.
+request from the token's `mfa_method` claim — a session proved with a key owes
+nothing and costs no query — and otherwise from the policy as it applies to
+what the account holds now.
+
+`OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` is the same requirement by
+[authority in a tenant](#coverage-by-authority-in-a-tenant-504), with the same
+rules as `OCTO_MFA_REQUIRED_PERMISSIONS`: unset is derived (the tenant-authority
+set when `OCTO_MFA_PHISHING_RESISTANT_ROLES` names `admin`) and `none` turns
+it off. A covered account's step-ups must be a key too.
 
 `OCTO_MFA_STEPUP_PHISHING_RESISTANT=true` makes every [step-up](#step-up) —
 the credential and account-administration list above, and removing a key —
@@ -601,6 +698,8 @@ One row per administrative change, with the resource before and after it:
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
+| `scan.priority` | `PUT /api/jobs/{id}/priority` ([#365](https://github.com/onixus/Shapoclyack/issues/365)) — `before.priority`, `after.priority` and who asked. A `PUT` of the value the job already has writes nothing. A priority given at `POST /api/jobs` is on the job itself and writes no row |
+| `tenant.queue_limits` | `PUT /api/tenants/{id}/queue-limits` — both ceilings before and after, `null` for unlimited. A refusal they cause is a `429` and `octo_scan_queue_throttled_total`, not a row |
 | `asset.import` | `POST /api/assets/import` with `dry_run: false` — one row per applied import, `resource_id` = `import:<first 16 hex of the content's SHA-256>`. `after` carries the format, the full SHA-256, `context_source`, `overwrite_operator_edits`, the per-status `counts`, and the first 100 `created` and `updated` asset ids (`created_omitted`/`updated_omitted` count the rest). A dry run writes no row. The per-field history is in `asset_context_events` with the import's source |
 
 Every row carries the actor and what kind of principal it is (`user`,
@@ -743,10 +842,199 @@ In order, and stopping at the first match:
 A disabled account is refused at every step: SSO proves who you are, it is not
 a way around a revocation.
 
+An account a SCIM client created (below) is linked at its first SSO login by
+an identifier the identity provider asserts for that login — **never by the
+username**, which can come from an `email` claim nobody verified:
+
+- its SCIM `externalId` equal to the ID token's `sub` (Okta sends its user id
+  as both by default; with another IdP, map the attribute that carries the
+  subject to `externalId`), or
+- its address equal to the token's `email` with `email_verified: true` (SCIM
+  stores addresses unverified, so this is the only way one links).
+
+Only an account with no password, linked to no identity yet, not erased, and
+created by a SCIM token is matched. One a **tenant-bound** token created is
+matched only once it holds a membership: until then it is a placeholder that
+one tenant's directory alone controls, and the login goes on as if it were not
+there. `externalId` is unique across accounts (`409 uniqueness`).
+
+Until that first login the two keys decide whose login lands in the account,
+with whatever role and memberships it holds, so changing them (`PUT`/`PATCH`
+of `emails` or `externalId`) is the **creating token's**, or a
+`grant_platform_admin` token's — not any token that otherwise manages the
+account (`403`). After it, the stored `(issuer, sub)` is the identity and they
+are ordinary attributes. `externalId` is compared with `sub` alone: an
+installation has one `OCTO_OIDC_ISSUER`, and after changing it, clear or
+re-push the `externalId`s of accounts nobody has signed in to yet. Uniqueness
+is global, so a `409` tells a tenant-bound token that some account somewhere
+holds that exact address or `externalId` — nothing about which; a value a
+tenant-bound directory took first is freed by re-keying that account with a
+`grant_platform_admin` token (`PATCH` of `externalId`/`emails`), or by a
+platform admin's `DELETE /api/users/{u}`.
+
 Every outcome lands in the auth trail (`GET /api/auth/events`): `success` with
 reason `sso_signin` / `sso_linked` / `sso_provisioned`, and `denied` with
 `sso_denied` (a refused callback) or `sso_not_provisioned` (an identity this
 installation has no account for).
+
+### IdP-authoritative resync
+
+Without it, the identity provider decides an account's role and tenant once,
+when JIT provisioning creates it, and never again. With
+`OCTO_IDP_AUTHORITATIVE=true` (#316) every SSO login brings the account in
+line with the groups in the ID token (`OCTO_OIDC_ROLE_CLAIM`), in the same
+transaction as the login and **before** the disabled check:
+
+- **global role** — the highest `OCTO_OIDC_ROLE_MAP` match, else
+  `OCTO_OIDC_DEFAULT_ROLE`. Map the admin group before turning the mode on:
+  from the next login every SSO account's role follows the map;
+- **memberships** — `OCTO_IDP_GROUP_MAP` (`{group: [{tenant_id, role}]}`, a
+  built-in tenant role or one the tenant defined; several groups granting one
+  tenant resolve to the highest rank). Missing ones are granted, changed ones
+  updated, and ones no group grants any more **removed** — but only rows the
+  IdP itself granted. A group mapped to a role the tenant does not have (a
+  typo, or a role renamed while the map did not name it — a mapped role
+  cannot be renamed or deleted) grants nothing, and the resync logs an error
+  naming the group, role and tenant until the map is fixed. In that tenant it
+  leaves alone only a membership the broken entry may have granted: one whose
+  role no entry of the map names. A membership holding a role an
+  entry names is recomputed as usual — removed or lowered when the
+  person left the group that gave it — so one stale entry does not freeze the
+  person's other grants;
+- **access** — an account in no mapped group is disabled
+  (`disabled_source = idp`, the login answered `403`); a later login with a
+  mapped group re-enables it. JIT provisioning creates no account for an
+  identity in no mapped group, and grants no `OCTO_OIDC_TENANT_CLAIM`
+  membership: the group map is the only source of memberships in this mode.
+
+A token that **does not list the groups** changes nothing: the claim is
+missing, or Entra ID replaced it by an overage pointer (`_claim_names` naming
+the claim; `hasgroups` in the implicit flow) because the person is in too many
+groups. That is "the groups are not here", not "in no group" — the login
+proceeds on the account as it stands, the skipped resync is logged, and JIT
+provisions nothing from such a token; each skip is counted in
+`octo_idp_resync_skipped_total`. An IdP that removes someone from their last
+group should send an empty claim (`"groups": []`). **Okta** leaves an empty
+groups claim out of the token instead: removal from the last mapped group then
+does not take effect at login. If your IdP always sends the claim — or you
+configure it to, e.g. an Okta groups claim with a filter that always matches —
+set `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true`, and a token without the claim
+means "in no group". Otherwise deprovision through SCIM. **Entra ID**'s
+overage pointer is "not listed" whatever the setting: filter the groups claim
+to the mapped groups ("groups assigned to the application") so it stays under
+the limit. With `OCTO_OIDC_ROLE_CLAIM` empty no login lists a group, so the
+mode stays off and warns at startup, as with nothing mapped.
+
+**Which memberships the IdP owns.** Each `user_tenants` row has a `source`:
+`idp` for what the group mapping, SCIM or JIT provisioning granted, `local` for
+what a person granted over the API — and for **every row that existed before
+migration 0076**, JIT ones included, because nothing recorded where those came
+from. The resync never adds to, changes or removes a `local` row, and where one
+exists for a tenant the groups also grant, it stands. So turning the mode on
+never wipes the grants an administrator made by hand; the cost is that such a
+grant outlives the person's IdP groups until somebody revokes it (the member
+list shows `source`). A person re-granting an `idp` membership
+(`PUT /api/tenants/{id}/members/{u}`) takes it over: it becomes `local`, and
+the `membership.grant` row carries `source` in `before` and `after`, so a
+takeover with the same role does not read as a no-op. **Never its holder**: a
+re-grant of one's own `idp` membership is `403` — otherwise a tenant admin by
+IdP group could pin the grant with one request and outlive their removal from
+the group. Another member manager has to make that decision.
+
+What the resync will not do:
+
+- re-enable an account a **person** disabled (`PUT /api/users/{u}/disabled`) or
+  a SCIM client deactivated — the IdP undoes only its own;
+- touch a **break-glass** account (`OCTO_BREAK_GLASS_USERS`) at all: the
+  emergency door is for the day the IdP is what is wrong;
+- run with nothing mapped: with both maps empty the switch stays off and warns
+  at startup, since every account would be "in no mapped group".
+
+Every change is an `audit_events` row in the account's or the tenant's trail
+(`membership.grant` / `membership.revoke`, `user.role_change`, `user.disable`)
+with actor `oidc:<issuer>`, actor type `system`, and `"source": "idp"` in the
+document. A removed or changed membership, a changed role and a disable **end
+the account's sessions** (`token_version` and every refresh-token family, as
+`PUT /api/users/{u}/role` does) — the login that caused it gets a fresh one. A
+new grant alone ends nothing.
+
+## SCIM 2.0 provisioning
+
+`/scim/v2` speaks the subset of SCIM 2.0 (RFC 7643/7644) that Okta, Entra ID
+and Keycloak send (#316):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /scim/v2/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | Discovery |
+| `GET /scim/v2/Users?filter=userName eq "…"&startIndex=&count=` | List / find (`count` ≤ 200) |
+| `POST /scim/v2/Users` | Create an IdP-managed account: no password, the default role (never `admin` unless the token may grant it), `emails` stored **unverified** |
+| `GET`/`PUT`/`PATCH /scim/v2/Users/{id}` | `id` is the username and is immutable. `PATCH` handles `active` (booleans as Entra's `"False"` too), `emails` and `externalId` (what a first SSO login links by — see [single sign-on](#single-sign-on-oidc); `PUT` changes it only when the body carries it); `name`, `displayName` and the enterprise extension are accepted and not stored |
+| `DELETE /scim/v2/Users/{id}` | **Deactivates** (`active: false`); the account and its history stay — the audit trail attributes by username, and a deleted name could be reissued |
+| `GET /scim/v2/Groups?filter=displayName eq "…"`, `POST`, `GET`/`PUT`/`PATCH`/`DELETE /scim/v2/Groups/{id}` | Groups and their `members`; `PATCH` handles `add`/`remove`/`replace` of `members` (including `members[value eq "…"]`) and `displayName` |
+
+A group's `displayName` is read through the same `OCTO_OIDC_ROLE_MAP` and
+`OCTO_IDP_GROUP_MAP` as an SSO groups claim, and every change to an account's
+groups re-derives its role, IdP memberships and access exactly as the
+[resync](#idp-authoritative-resync) does — including **disabling an account in
+no mapped group**, so a freshly created SCIM user cannot sign in until a group
+push grants it something (otherwise it would fall back to the `default` tenant
+with the default role, which no mapping gave it). `active` in responses is
+`false` only where SCIM or a person disabled the account. Errors are SCIM error
+bodies (`scimType` `uniqueness`, `mutability`, `invalidFilter`, …). Not
+supported: bulk, sort, ETags, password changes.
+
+**The credential is its own type**, `octo_scim_<prefix>_<secret>`, bcrypt-hashed
+like a service token, and accepted on `/scim/v2` and nowhere else; a console
+JWT or a service token is a `401` there.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/auth/scim-tokens` | platform admin + step-up | `{"name", "tenant_ids": [...] \| "all_tenants": true, "grant_platform_admin"?, "expires_in_days"?}`. The plaintext is in this response only. Lifetime bounds are `OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS`/`MAX_TTL_DAYS` |
+| `GET /api/auth/scim-tokens` | platform admin | Every token, without secrets |
+| `POST /api/auth/scim-tokens/{id}/revoke` | platform admin + step-up | Immediate, idempotent |
+
+**What a token may manage is part of it**, checked by the service on every call:
+
+| Binding | Sees | Memberships | Global role | Deactivate / re-enable |
+|---|---|---|---|---|
+| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that holds at least one membership, all of them in its tenants, and whose global role is `viewer` — a higher global role acts outside the binding |
+| `all_tenants` | every account | every tenant | below `admin`; a group mapped to `admin` is `403` to create and invisible otherwise | every IdP-managed account but a platform admin |
+| `all_tenants` + `grant_platform_admin` | every account | every tenant | including `admin` | every IdP-managed account |
+
+**A group grants no more than the token that created it could**, whichever
+token's change triggers the resync and whatever its name is mapped to later: a
+tenant-bound token's group grants only in that token's tenants and never a
+global role, and only a `grant_platform_admin` token's group can grant `admin`.
+So a directory cannot push a group under a name nobody has mapped yet and
+collect what the operator maps that name to afterwards. **Map group names
+before you connect a tenant-bound directory**; a name it took first stays
+its group (`409` for anyone else's push) until an `all_tenants` token deletes
+it and the right directory pushes again. Likewise, an account in no tenant is
+not "inside" a tenant-bound token's binding: such a token cannot deactivate
+or re-address an account it has granted nothing yet (`POST /Users` with
+`active: false` included), only leave it disabled for having no mapped group,
+which any later grant undoes. It can still reserve a username that way — a
+later JIT login under that name is refused, as for any taken name; a platform
+admin frees it with `DELETE /api/users/{u}`.
+
+An unmapped group is visible only to the token that created it. An account
+with a **password** (a local account) is visible, but its role, address and
+enabled state are never SCIM's (`403`; a group push can still give it IdP
+memberships in the token's tenants, where a local row for the same tenant
+stands). A **break-glass** account is not touched at all, and an account a
+person disabled is not re-enabled (`403`). Every change is audited with actor `scim-token:<name>`
+and actor type `service_token`: `user.create`, `user.disable`,
+`membership.grant`/`revoke` and `user.role_change` with `"source": "idp"`,
+`scim_group.create`/`update`/`delete`, and the token's own
+`scim_token.create`/`revoke`. A deactivation, a removed membership or a role
+change ends the account's sessions.
+
+**Revoking a token** stops it authenticating; it does not undo what it did.
+The groups it created stay, keep granting what that token's binding allowed
+(never more), and other tokens' pushes resync their members as before — a
+revocation is not a mass removal of access. To take the access away as well,
+delete the groups with a token that may (`all_tenants`, plus
+`grant_platform_admin` for a group mapped to `admin`).
 
 ## Service tokens
 
@@ -848,6 +1136,7 @@ it is only supposed to approve.
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
+| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, or moving a queued one above 0 — or moving one somebody already raised (#365). Lowering a scan, or putting one back to 0 that nobody raised, is the operator rank's. Seeded by migration `0074_scan_queue_admission` |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
@@ -883,6 +1172,11 @@ PATCH  /api/tenants/{tenant_id}/roles/{role_id}    {"role_id": "…", "descripti
 DELETE /api/tenants/{tenant_id}/roles/{role_id}[?reassign_to=viewer]
 ```
 
+All three need a recent second factor from an account with MFA enabled
+([Step-up](#step-up), #504): a role is what a grant hands out, and editing one
+changes every holder at once. A role carrying a permission of the MFA policy
+puts its holders under it ([coverage by authority](#coverage-by-authority-in-a-tenant-504)).
+
 `GET /api/rbac/roles` lists them after the built-ins, with `member_count` (how
 many of the tenant's members hold each role) and who created and last changed
 them; `GET /api/rbac/permissions` marks each permission `tenant_grantable`.
@@ -898,6 +1192,14 @@ included:
 | Every permission is in the catalogue, and is one some built-in **tenant** role carries — never `config.write` or a `platform.*` permission | A tenant cannot write a role that reaches the installation |
 | `scan_scope.approve` and `vulnerability.exception.approve` only at rank 1, and never together with `tenant.member.manage` | The separation of duties the built-ins have by construction: an approver who can write acts on their own approval, and one who grants memberships can hand the approved work to an account of their own |
 | Rank is 1, 2 or 3; at most 64 roles per tenant | |
+
+**A role `OCTO_IDP_GROUP_MAP` names** for this tenant can be neither renamed
+nor deleted — `409` for everybody (#316). The map names roles by name, and an
+entry naming a role that is gone leaves the IdP memberships that entry may
+have granted where they are; a tenant administrator renaming a role could
+otherwise stop removals from IdP groups from taking effect. The operator
+changes the map first. Editing the description, rank or permissions of such a
+role is allowed.
 
 **Nobody hands out more than they hold** — `403`. A role may not carry a rank
 above the caller's own rank in the tenant, nor a permission the caller does not
@@ -997,7 +1299,8 @@ sets the status yet — see
 
 | Prefix | Purpose |
 |---|---|
-| `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, the authentication audit trail (`/api/auth/events`, admin) and SCIM token administration (`/api/auth/scim-tokens`, platform admin) |
+| `/scim/v2` | SCIM 2.0 provisioning of users and groups, under an `octo_scim_` token only — see [SCIM 2.0 provisioning](#scim-20-provisioning) |
 | `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (`audit.read` in the tenant, so an `auditor` too; CSV/NDJSON export) |
 | `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`). A tenant's own roles are written under `/api/tenants/{id}/roles` (`tenant.member.manage`, see [Tenant-defined roles](#tenant-defined-roles)) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
@@ -1066,6 +1369,60 @@ the sensor reports is appended to it rather than written over it, so a finished
 to `audit_events` carrying the actor and the status the job was in. See the job
 lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
 set.
+
+### Queue priority, concurrency and admission
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). Three controls on the
+scan queue, all inactive until somebody sets them — an upgraded installation
+hands out work exactly as before.
+
+**Priority.** Every job carries `priority` (`-100..100`, default `0`) and the
+claim hands out the highest first, the oldest within it — the HTTP claim, the
+sensor's periodic fallback claim and a local scan waiting for its slot alike.
+Set it at `POST /api/jobs` (`"priority": 20`) or move a queued job:
+
+```http
+PUT /api/jobs/{job_id}/priority   {"priority": -10}
+```
+
+`operator` rank in the job's tenant; above `0` — or touching a job somebody
+already put above `0` — needs **`scan.priority.raise`** (`403` without it, both
+on the `PUT` and on `POST /api/jobs`). `404` for a job in another tenant, `409`
+once the job has left `queued`, `422` outside the bounds. `priority` is not
+part of the idempotency digest: a retry that changed only its priority is the
+same scan. A NATS offer is published at submission and is FIFO; a sensor that
+claims an offered job by name is held to the concurrency ceiling below but not
+to the priority order.
+
+**Concurrency** and **queue depth**, per tenant:
+
+```http
+GET /api/tenants/{tenant_id}/queue-limits
+PUT /api/tenants/{tenant_id}/queue-limits   {"max_concurrent_scans": 4, "max_queued_scans": 200}
+```
+
+`GET` needs `tenant.quota.read`; `PUT` is `platform.quota.manage` (platform
+admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
+`0` is unlimited, `422` above `10000`. The answer also carries
+`global_max_queued_scans`, the installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`.
+
+- `max_concurrent_scans` — how many of the tenant's jobs may be out at once
+  (`claimed`, `running` or `cancelling`, local and sensor alike). Enforced at
+  **claim**: a sensor of a tenant at its ceiling gets `204` as for an empty
+  queue, and a local scan stays `queued` in its thread and asks again every
+  `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. The decision is taken under a
+  per-tenant advisory lock inside the claim's transaction, so two API replicas
+  claiming at once cannot both take the last slot. Lowering it leaves scans
+  already out running.
+- `max_queued_scans` — how many may wait in `queued`. Enforced at
+  **admission**: `POST /api/jobs` answers **`429`** with `Retry-After:
+  OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS`, and the recurring dispatcher defers the
+  occurrence by that back-off instead of skipping it as it does for a spent
+  monthly quota. The same `429` for the installation-wide
+  `OCTO_SCAN_QUEUE_MAX_DEPTH`, counted across every tenant whatever the caller
+  (a tenant user, a tenant's service token or the platform admin), without the
+  numbers of other tenants in the message. A soft bound: N simultaneous starts can overshoot it
+  by N-1. Verification re-scans are exempt, as from the monthly quota.
 
 `POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
 carrying a key an earlier request already used returns that job with **200**
@@ -1428,19 +1785,19 @@ retry that crosses the upgrade still replays instead of re-applying its batch.
 | `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. The name in the path is normalised the same way `POST` normalises it, so `DELETE /api/agent-groups/PCI` deletes the group that `POST {"name": "PCI"}` created; `422` for a name no group could have. `409` while a sensor, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any sensor". A reference cannot be written *while* the group is being deleted either: all four writers that name a group (`PUT /api/tenants/{id}/scan-scope`, `POST /api/jobs`, `POST /api/schedules`, `PUT /api/agents/{id}/group`) check the name inside the transaction that stores the reference and hold the group row while they do, so one of the two requests sees the other's result rather than the state that preceded it. The scan or schedule that loses is answered `422` with the group named; the deletion that loses is the `409` above |
 | `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the sensor into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the sensor as it now stands. The sensor's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the sensor already holds is not recalled; the move applies from its next claim |
 | `GET /api/endpoint/agent/policies` | `endpoint_agent.manage` | Every Agent (Lariska) policy the tenant has set: the tenant-wide default first (`agent_id: null`), then the per-agent overrides |
-| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` | Set the default every Agent (Lariska) inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
-| `PUT /api/endpoint/agent/policy/{agent_id}` | `endpoint_agent.manage` | The same, for one agent, merged over the default field by field. `404` for an agent that is not this tenant's |
-| `DELETE /api/endpoint/agent/policy[/{agent_id}]` | `endpoint_agent.manage` | Remove the default, or one override. `204` whether or not there was one |
+| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` + step-up | Set the default every Agent (Lariska) inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
+| `PUT /api/endpoint/agent/policy/{agent_id}` | `endpoint_agent.manage` + step-up | The same, for one agent, merged over the default field by field. `404` for an agent that is not this tenant's |
+| `DELETE /api/endpoint/agent/policy[/{agent_id}]` | `endpoint_agent.manage` + step-up | Remove the default, or one override. `204` whether or not there was one |
 | `GET /api/endpoint/agent/releases` | `endpoint_agent.manage` | Builds this installation can hand out — version, platform, sha256, size. Installation-wide rather than per tenant: it is the same program, and one version meaning two binaries is a version meaning nothing. `uploaded_by` is `null` for everyone but the platform admin: which platform account uploaded a build is not the tenant's to know (#510) |
 | `POST /api/endpoint/agent/releases` | `platform.endpoint_agent_release.manage` + step-up | Upload one build (multipart: `version`, `platform`, `binary`, optional `notes`). `platform` is the agent's target triple, e.g. `x86_64-pc-windows-msvc`; a version is identified by both, because a version alone does not identify a binary. The `sha256` in the response is computed here from the stored bytes and is **not** accepted from the uploader: it is what an endpoint verifies a download against before executing it, and a digest travelling beside the bytes it describes attests to nothing. Re-uploading the same (version, platform) replaces it — for every tenant, which is why this is the platform admin's and not `endpoint_agent.manage` (#510); a tenant admin and an admin-role service token get `403`. Audited as `endpoint_agent.release.upload` with no tenant. `422` over 64 MiB or with an empty body |
 | `DELETE /api/endpoint/agent/releases/{version}/{platform}` | `platform.endpoint_agent_release.manage` + step-up | Remove one build, for every tenant. An agent already told to move to it is then told nothing, with the reason on its heartbeat. Audited as `endpoint_agent.release.delete` with no tenant when there was a build to remove, with the removed build's `version`, `platform`, `sha256`, `size_bytes` and `uploaded_by` in `before` — the row is gone, so the trail is what is left of it. A tenant admin and an admin-role service token get `403`; `204` either way |
 | `GET /api/endpoint/agent/releases/{version}/{platform}/download` | agent JWT | The bytes, for an agent that has been told to move to this build. Authenticated as the agent with the same token it heartbeats with, so the digest and the bytes come from one channel: substituting the download would mean substituting the heartbeat that named its digest |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the sensor record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#sensor-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing. `kubernetes_yaml` never carries the key, placeholder or real: it reads it from a Secret, which `kubernetes_secret_command` creates |
-| `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deployment-command` | `tenant.credential.manage` + step-up | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
 | `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
 | `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
-| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side, unless the host already runs one of the tenant's sensors: that one is reinstalled as itself with the key it holds, and a sensor moved to a host that lacks its key has that key revoked (refused while the sensor is online or the key has other holders; the run's log says which case, see operations.md, "SSH push deployment"). The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `POST /api/agent/deploy/ssh` | **admin** rank + `tenant.credential.manage` + step-up | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side, unless the host already runs one of the tenant's sensors: that one is reinstalled as itself with the key it holds, and a sensor moved to a host that lacks its key has that key revoked (refused while the sensor is online or the key has other holders; the run's log says which case, see operations.md, "SSH push deployment"). The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
 | `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
@@ -1518,10 +1875,16 @@ from a never-registered one. Making a delete permanent is therefore
 A provisioning key registers sensors into the tenant, which makes handing one
 out an authorization decision rather than a read. `POST` on
 `/api/agent/deployment-command` and `/api/agent/deploy/ssh` therefore take
-tenant **`admin`** — the same bar as
+`tenant.credential.manage` — the same bar as
 `POST /api/tenants/{tenant_id}/provisioning-keys`, which mints the identical
-credential, and the SSH push additionally installs software as root on another
-machine.
+credential — and the SSH push keeps the tenant **`admin`** rank on top, because
+it additionally installs software as root on another machine. Until #504 both
+were gated on the rank alone, which refused `token-admin` the console's own
+**Generate key** button and let a tenant role at rank 3 with no credential
+authority mint keys; migration `0073` wrote `tenant.credential.manage` onto
+every tenant role at rank 3 that existed then, so none of them lost the button
+(and they now reach the permission's other routes — the role editor shows it,
+and a tenant can take it off).
 
 This replaces the earlier rule, which set both at `operator` on the grounds
 that the SSH push already minted a key at `operator`. That reasoned from the
@@ -1857,9 +2220,9 @@ POST   /api/users                               # admin  {"username","password",
 PUT    /api/users/{username}/password           # admin — reset, no old password needed
 PUT    /api/users/{username}/role               # admin
 PUT    /api/users/{username}/email              # admin  {"email": …, "verified": bool}
-PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
-DELETE /api/users/{username}                    # admin
-POST   /api/users/{username}/sessions/revoke-all # admin — sign that account out everywhere
+PUT    /api/users/{username}/disabled           # admin + step-up  {"disabled": true}
+DELETE /api/users/{username}                    # admin + step-up
+POST   /api/users/{username}/sessions/revoke-all # admin + step-up — sign that account out everywhere
 POST   /api/auth/password                       # any role — change your own
 ```
 
@@ -2279,7 +2642,14 @@ own authority in the tenant: `403` for a role above it, and for changing or
 revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
-Membership rows hold no credential material.
+`PUT` and `DELETE` also need a recent second factor from an account with MFA
+enabled ([Step-up](#step-up), #504), and a grant moves the member's
+[MFA requirement](#coverage-by-authority-in-a-tenant-504) from their next
+request. Membership rows hold no credential material. Each carries `source`: `local`
+for a person's grant, `idp` for one the identity provider's group mapping made
+— the only kind an [IdP-authoritative resync](#idp-authoritative-resync) or a
+SCIM push changes or removes. Granting over a membership the IdP holds makes it
+`local`.
 
 Every tenant-scoped route resolves its tenant server-side from the
 authenticated username. The `tenant_id` query parameter still exists, but it

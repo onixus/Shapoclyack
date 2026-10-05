@@ -72,6 +72,16 @@ def run_scanner(job_id: str, command: list[str]) -> subprocess.CompletedProcess[
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
+def wait_unless_draining(seconds: float) -> bool:
+    """Sleep ``seconds``, waking early when :func:`stop_all` begins.
+
+    For a local scan waiting for its tenant's slot (#365): ``True`` means the
+    process is stopping its scans and the waiting thread should give up
+    rather than hold :func:`stop_all` for the rest of its budget.
+    """
+    return _draining.wait(seconds)
+
+
 def _terminate(proc: "subprocess.Popen[str]") -> None:
     """Put down one scanner and everything it started.
 

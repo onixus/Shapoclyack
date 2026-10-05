@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -156,6 +156,9 @@ class TenantSnapshot:
     sla_breached: dict[str, int]
     #: ``(tenant, status) -> scans that finished in the last 24 hours``.
     scans_finished: dict[tuple[str, str], int]
+    #: ``tenant -> scans waiting in queued`` right now (#365): the depth the
+    #: tenant's ``max_queued_scans`` admission is measured against.
+    jobs_queued: dict[str, int] = field(default_factory=dict)
 
 
 def _nameable(tenant_id: str) -> bool:
@@ -226,6 +229,11 @@ def tenant_snapshot(now: datetime | None = None) -> TenantSnapshot | None:
             .where(job.status.in_(TENANT_SCAN_STATUSES), job.finished_at >= now - TENANT_SCAN_WINDOW)
             .group_by(job.tenant_id, job.status)
         ).all()
+        waiting = session.execute(
+            select(job.tenant_id, func.count())
+            .where(job.status == job_states.QUEUED)
+            .group_by(job.tenant_id)
+        ).all()
 
     ranking: dict[str, int] = {}
     for tenant_id, _severity, _open, _breached, open_at_start in findings:
@@ -250,6 +258,12 @@ def tenant_snapshot(now: datetime | None = None) -> TenantSnapshot | None:
         sla_breached[label(tenant_id)] += int(breached_count or 0)
     for tenant_id, status, count in scans:
         scans_finished[(label(tenant_id), status)] += int(count)
+    jobs_queued = dict.fromkeys(labels, 0)
+    for tenant_id, count in waiting:
+        jobs_queued[label(tenant_id)] += int(count)
     return TenantSnapshot(
-        open_findings=open_findings, sla_breached=sla_breached, scans_finished=scans_finished
+        open_findings=open_findings,
+        sla_breached=sla_breached,
+        scans_finished=scans_finished,
+        jobs_queued=jobs_queued,
     )
