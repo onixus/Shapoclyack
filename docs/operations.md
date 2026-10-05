@@ -2380,11 +2380,49 @@ replica still accepts a tenant's upload, and a check made earlier misses it.
    `GET /api/endpoint/agent/releases/<version>/<platform>/download`, with client
    IP and time, if your logs reach back that far). So treat every endpoint
    that reports that version, or reported it during the window, in any tenant
-   whose policy named it, as suspect, and settle it on the host:
-   `Get-FileHash "C:\Program Files\Lariska\lariska.exe"` against your digest.
+   whose policy named it, as suspect, and settle it on the host. Hash the
+   binary the service runs (the default install paths below; use the one your
+   service unit or Windows service points at if you installed elsewhere) and
+   compare it with your digest:
 
-6. Then fix the build itself: upload yours over any row whose current `sha256`
-   is not yours (or `DELETE` it), and move the suspect endpoints to it.
+   ```bash
+   sha256sum /usr/bin/lariska                    # Linux
+   shasum -a 256 /usr/local/bin/lariska          # macOS
+   ```
+
+   ```powershell
+   Get-FileHash "C:\Program Files\Lariska\lariska.exe"
+   ```
+
+   A managed update keeps the binary it replaced beside the new one, with
+   `.old` appended to the full name (`/usr/bin/lariska.old`,
+   `/usr/local/bin/lariska.old`, `C:\Program Files\Lariska\lariska.exe.old`),
+   until the next update overwrites it. Hash that file too: an endpoint that
+   ran the foreign build and was then moved on can still have it there. A
+   match on the running binary does not clear a host whose `.old` is foreign.
+
+6. Then fix the build and the endpoints. Re-uploading the official bytes under
+   the same version repairs neither: an endpoint already running the foreign
+   binary reports that version, and the heartbeat offers no update when
+   `desired_version` equals the version the agent reports.
+
+   - **The build.** `DELETE` every row whose current `sha256` is not yours, and
+     publish the official build under a **new** version (bump the patch, e.g.
+     `0.3.0` -> `0.3.1`). Do not reuse the compromised version number.
+   - **Endpoints that never ran the foreign bytes** (the host check in step 5
+     came back clean, `.old` included): point their tenant's policy at the new
+     version with `desired_version` and let the managed update move them.
+   - **Endpoints that ran the foreign binary**, or that you cannot check:
+     treat the host as compromised. That binary ran as the agent's service
+     account with the agent's token, and nothing it reports is trustworthy —
+     not its version, and not whether it applied an update, since it need not
+     honour `managed_update` at all. Reinstall the official build on the host
+     by hand (Lariska's install procedure) and remove the `.old` file. The
+     foreign binary had the host's provisioning key and JWT, so revoke them —
+     `DELETE /api/agents/{id}?revoke_key=true` (check `other_agents_on_key`
+     first: the revocation stops every agent enrolled with that key) — and
+     enrol the reinstalled agent with a fresh key. Handle the host under your
+     incident process.
 
 Builds are not signed yet: the API is the endpoint's only source of trust for
 what it executes, which is why the write is the platform admin's alone.
