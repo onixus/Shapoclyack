@@ -42,7 +42,9 @@ All notable changes to Shapoclyack are documented in this file.
   those expiring or expired, locked ones (with their ids) and such conflicts, and the Sensors
   page warns about them. The sensor presents `OCTO_AGENT_TLS_CLIENT_CERT/KEY`,
   re-reads them when cert-manager rotates them, or enrols and renews its own
-  with `OCTO_AGENT_MTLS_ENROLL=true`. cert-manager, ingress and patch examples
+  with `OCTO_AGENT_MTLS_ENROLL=true`; the sensor updater
+  (`python -m agent.update`, #363) presents the same certificate, read from
+  `agent.env`, so signed updates still reach a sensor under `required`. cert-manager, ingress and patch examples
   are in `k8s/shapoclyack/examples/agent-mtls-*`/`ingress-agent-mtls.*`; the
   rollout is in `docs/operations.md` § Sensor client certificates. Migration
   `0077_agent_client_certs` (two new tables, tenant RLS). Datastore TLS stays a

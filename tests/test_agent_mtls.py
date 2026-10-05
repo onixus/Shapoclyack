@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import socket
 import ssl
 import threading
@@ -850,6 +851,65 @@ def test_the_sensor_enrols_over_direct_tls_and_then_presents_its_certificate(tmp
         renewed = agent.enrol_client_certificate("sensor-a")
         assert renewed["fingerprint_sha256"] != issued["fingerprint_sha256"]
         assert agent.register(agent_id="sensor-a", hostname="edge", labels={})["agent_id"] == "sensor-a"
+
+
+@requires_postgres
+def test_the_sensor_updater_presents_the_sensors_certificate(tmp_path, monkeypatch, caplog):
+    """``python -m agent.update`` asks the API with the sensor's credential, so
+    under ``required`` it must present the sensor's certificate too (#363):
+    without it the bundle route answers 403 ``missing`` and no update is ever
+    fetched. The paths come from ``agent.env``, as on a host. 404 here is "past
+    the certificate check, nothing published"."""
+    from agent import logging_setup, update
+    from tests.test_sensor_bundle import _cli_install
+
+    # update.main configures the root logger, as a CLI should; left in place
+    # it would outlive this test (see tests/test_sensor_bundle.py).
+    monkeypatch.setattr(logging_setup, "configure_logging", lambda **_kwargs: None)
+
+    ca = CA()
+    settings = _settings(tmp_path, ca, agent_mtls_mode="required", agent_mtls_trusted_proxies=[])
+    client = _client(tmp_path, monkeypatch, settings)
+    token = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+    cert_path, key_path = ca.sensor("default", "sensor-a").write(tmp_path, "sensor-a")
+    install = _cli_install(tmp_path, "0.46-0922")
+    monkeypatch.setattr(update, "_systemd_unit_present", lambda unit: False)
+    names = (
+        "OCTO_API_URL", "OCTO_AGENT_TOKEN", "OCTO_CA_BUNDLE", "OCTO_NO_PROXY",
+        "OCTO_AGENT_TLS_CLIENT_CERT", "OCTO_AGENT_TLS_CLIENT_KEY", "OCTO_AGENT_MTLS_ENROLL",
+        "OCTO_AGENT_PROVISIONING_KEY", "OCTO_AGENT_PROVISIONING_KEY_FILE", update.PUBKEY_FILE_ENV,
+    )
+
+    def check(env: dict[str, str]) -> int:
+        # set-then-delete, so whatever main() takes from the file is undone too
+        for name in names:
+            monkeypatch.setenv(name, "")
+            monkeypatch.delenv(name)
+        env_file = tmp_path / "agent.env"
+        env_file.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+        caplog.clear()
+        return update.main(
+            ["--install-dir", str(install), "--env-file", str(env_file), "--check"]
+        )
+
+    with _TLSServer(client.app, tmp_path, ca) as server:
+        env = {
+            "OCTO_API_URL": f"https://127.0.0.1:{server.port}",
+            "OCTO_AGENT_TOKEN": token,
+            "OCTO_CA_BUNDLE": str(server.ca_path),
+            "OCTO_NO_PROXY": "127.0.0.1",
+            "OCTO_AGENT_TLS_CLIENT_CERT": str(cert_path),
+            "OCTO_AGENT_TLS_CLIENT_KEY": str(key_path),
+        }
+        with caplog.at_level(logging.ERROR, logger="octo-agent.update"):
+            assert check(env) == 1
+            assert "GET /api/agent/bundle -> 404" in caplog.text, caplog.text
+
+            # Configured but not there: the updater says so instead of asking
+            # without it and being refused.
+            assert check({**env, "OCTO_AGENT_TLS_CLIENT_KEY": str(tmp_path / "absent.key")}) == 1
+            assert "OCTO_AGENT_TLS_CLIENT_CERT" in caplog.text, caplog.text
+            assert "-> 403" not in caplog.text, caplog.text
 
 
 # --------------------------------------------------------------------------

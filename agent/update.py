@@ -917,13 +917,20 @@ def read_env_file(path: Path) -> dict[str, str]:
 #: path pointing at ``/etc/shadow``, a public-key override replacing the
 #: release key -- would be the service account choosing what this process
 #: does. ``OCTO_AGENT_BUNDLE_PUBKEY_FILE`` is read from the process
-#: environment only, for the same reason.
+#: environment only, for the same reason. The client certificate's two paths
+#: are taken (#309): under ``OCTO_AGENT_MTLS_MODE=required`` the bundle routes
+#: refuse a request without the sensor's certificate, and the files are the
+#: sensor account's own -- this process runs as that account, and a key file is
+#: used for the TLS handshake, never sent.
 ENV_FILE_NAMES = frozenset(
     {
         "OCTO_API_URL",
         "OCTO_AGENT_PROVISIONING_KEY",
         "OCTO_AGENT_TOKEN",
         "OCTO_AGENT_ID",
+        "OCTO_AGENT_TLS_CLIENT_CERT",
+        "OCTO_AGENT_TLS_CLIENT_KEY",
+        "OCTO_AGENT_MTLS_ENROLL",
         AUTO_UPDATE_ENV,
         MIN_VERSION_ENV,
         "OCTO_HTTP_PROXY",
@@ -949,12 +956,22 @@ def _server_manifest(public_key: ec.EllipticCurvePublicKey) -> tuple[AgentClient
     The archive is fetched separately (``client.download_bundle``), once the
     signed manifest has said it is worth fetching.
     """
+    from agent import mtls
     from agent.worker import AgentClient
 
     api_url = os.environ.get("OCTO_API_URL", "").strip()
     if not api_url:
         raise UpdateFailed("OCTO_API_URL is not set (in the environment or the env file)")
-    client = AgentClient(api_url, os.environ.get("OCTO_AGENT_TOKEN", "").strip())
+    # The sensor's certificate, as the worker presents it (#309): under
+    # OCTO_AGENT_MTLS_MODE=required the bundle routes refuse a request without
+    # it. Presented only -- enrolling and renewing stay the worker's.
+    try:
+        client_cert = mtls.ClientCertificate.from_env()
+    except mtls.ClientCertConfigError as exc:
+        raise UpdateFailed(str(exc)) from exc
+    client = AgentClient(
+        api_url, os.environ.get("OCTO_AGENT_TOKEN", "").strip(), client_cert=client_cert
+    )
     key_file = os.environ.get("OCTO_AGENT_PROVISIONING_KEY_FILE", "").strip()
     key = Path(key_file).read_text(encoding="utf-8").strip() if key_file else ""
     key = key or os.environ.get("OCTO_AGENT_PROVISIONING_KEY", "").strip()

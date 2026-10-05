@@ -2582,8 +2582,11 @@ script keeps root out of that code.
 
 The verifier is `python -m agent.update` from the **installed** package — the
 one already on the host, never the one arriving. It reads the URL and the
-credential from `/etc/shapoclyack/agent.env`, and only those and the proxy/CA
-variables: `OCTO_AGENT_BUNDLE_PUBKEY_FILE` and `OCTO_AGENT_PROVISIONING_KEY_FILE`
+credential from `/etc/shapoclyack/agent.env`, and only those, the proxy/CA
+variables and the sensor's client certificate (`OCTO_AGENT_TLS_CLIENT_CERT`/`_KEY`,
+presented as the sensor presents it, so the update works under
+`OCTO_AGENT_MTLS_MODE=required`; enrolling and renewing stay the sensor's):
+`OCTO_AGENT_BUNDLE_PUBKEY_FILE` and `OCTO_AGENT_PROVISIONING_KEY_FILE`
 written into that file are ignored. What it refuses, before anything on disk
 changes:
 
