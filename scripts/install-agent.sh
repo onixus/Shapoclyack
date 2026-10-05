@@ -709,6 +709,40 @@ fi
 # host, so it cannot also be the one fetching from the API. Anything else is a failed
 # install and says so, rather than leaving systemd to restart an agent that
 # cannot import its own module.
+#
+# unpack_agent_bundle ARCHIVE INSTALL_DIR PYTHON unpacks the tarball over
+# INSTALL_DIR only once a copy of it, unpacked aside, has shown an importable
+# agent package. Whatever is live is touched after that and not before: a
+# wrong URL used to remove the live package first and put nothing in its
+# place, and the unit, running from memory, crash-looped at its next restart.
+# tests/test_sensor_bundle.py runs this function.
+unpack_agent_bundle() {
+    local archive="$1" install_dir="$2" python="$3" staging output
+    staging="$(mktemp -d "${install_dir}/.bundle-XXXXXX")" \
+        || error "Could not create a staging directory in ${install_dir}."
+    if ! tar -xzf "${archive}" -C "${staging}" \
+            || [[ -L "${staging}/agent" || ! -f "${staging}/agent/__init__.py" ]]; then
+        rm -rf "${staging}" "${archive}"
+        error "The tarball holds no 'agent' package (agent/__init__.py); nothing in
+  ${install_dir} was changed."
+    fi
+    if ! output="$(cd "${staging}" && "${python}" -c "import agent.worker" 2>&1)"; then
+        rm -rf "${staging}" "${archive}"
+        error "The agent package in the tarball cannot be imported ('import agent.worker' failed):
+$(printf '%s\n' "${output}" | tail -n 5 | sed 's/^/    /')
+  Nothing in ${install_dir} was changed."
+    fi
+    rm -rf "${staging}"
+    # After a bundle update, agent is a symlink into releases/ (#363). Extract
+    # a plain directory in its place rather than through the link into a
+    # release the updater keeps for rollback; BusyBox tar would follow it.
+    if [[ -L "${install_dir}/agent" ]]; then
+        rm -f "${install_dir}/agent"
+    fi
+    tar -xzf "${archive}" -C "${install_dir}"
+    rm -f "${archive}"
+}
+
 if [[ -n "${BUNDLE_URL}" ]]; then
     log "Fetching agent package from ${BUNDLE_URL}..."
     if ! curl -fsSL "${BUNDLE_URL}" -o "${INSTALL_DIR}/bundle.tar.gz"; then
@@ -718,14 +752,7 @@ if [[ -n "${BUNDLE_URL}" ]]; then
         rm -f "${INSTALL_DIR}/bundle.tar.gz"
         error "The file at ${BUNDLE_URL} is not a readable tarball."
     fi
-    # After a bundle update, agent is a symlink into releases/ (#363). Extract
-    # a plain directory in its place rather than through the link into a
-    # release the updater keeps for rollback; BusyBox tar would follow it.
-    if [[ -L "${INSTALL_DIR}/agent" ]]; then
-        rm -f "${INSTALL_DIR}/agent"
-    fi
-    tar -xzf "${INSTALL_DIR}/bundle.tar.gz" -C "${INSTALL_DIR}"
-    rm -f "${INSTALL_DIR}/bundle.tar.gz"
+    unpack_agent_bundle "${INSTALL_DIR}/bundle.tar.gz" "${INSTALL_DIR}" "${INSTALL_DIR}/venv/bin/python"
 elif [[ -d "${INSTALL_DIR}/agent" ]]; then
     log "Using the agent package already staged in ${INSTALL_DIR}."
 else

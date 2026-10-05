@@ -870,10 +870,13 @@ def _published_bundle(
 ) -> sensor_bundle.SensorBundle:
     """The bundle for a sensor of this tenant, or the status that says why not (#363).
 
-    Not refused to a disabled, quarantined or below-the-floor sensor: an
-    upgrade is how such a host gets repaired, and the bundle is the release
-    every customer already has. An endpoint agent is refused -- it is not the
-    program this bundle replaces.
+    Not refused to a below-the-floor sensor: an upgrade is how such a host
+    gets repaired, and the bundle is the release every customer already has.
+    Nor checked here for a disabled or quarantined one, but that does not make
+    the bundle reachable for it: the native updater gets its token by the key
+    exchange, which refuses a sensor that is not active. Such a host is
+    re-enabled first, or updated from ``--bundle-dir``. An endpoint agent is
+    refused -- it is not the program this bundle replaces.
     """
     if principal.agent_id:
         agent = _agent_for_request(request, principal, principal.agent_id)

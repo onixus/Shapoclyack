@@ -294,13 +294,19 @@ pipeline {
     // её ключом, зашитым в agent/update.py (= cosign.pub), и ничему с сервера
     // на слово не верит. Скрипт сборки — из ревизии пайплайна
     // (.release-tooling), исходник — из тега, как у образов. DRY_RUN собирает
-    // без подписи: такой бандл ни один сенсор не поставит. Результат —
+    // без подписи: такой бандл ни один сенсор не поставит. Пререлиз — тоже
+    // без подписи: OCTO_AGENT_BUNDLE_DIR один на весь флот, и подписанная
+    // бета ушла бы каждому сенсору с --auto. Бету на тестовый сенсор
+    // подписывают руками (docs/operations.md). Результат —
     // артефакт прогона; оператор кладёт его в OCTO_AGENT_BUNDLE_DIR
     // (docs/operations.md, «Sensor bundle updates»).
     stage('Sensor bundle') {
       steps {
         script {
-          if (params.DRY_RUN) {
+          if (params.DRY_RUN || env.IS_PRERELEASE == 'true') {
+            if (env.IS_PRERELEASE == 'true') {
+              echo "Пререлиз ${params.TAG}: бандл сенсора собирается БЕЗ подписи, ни один сенсор его не поставит."
+            }
             sh '''
               set -eu
               .release-tooling/scripts/build-sensor-bundle.sh --source agent \

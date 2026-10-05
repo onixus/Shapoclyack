@@ -21,9 +21,13 @@
 # credential that is not the key the sensors pin.
 #
 # Usage:
-#   build-sensor-bundle.sh [--source DIR] [--out DIR] [--revision SHA] [--key REF --pubkey FILE]
+#   build-sensor-bundle.sh [--source DIR [--whole-tree]] [--out DIR] [--revision SHA] [--key REF --pubkey FILE]
 #
-#   --source DIR   the agent package to bundle (default: agent/ next to this script)
+#   --source DIR   the agent package to bundle (default: agent/ next to this script).
+#                  Only the files git tracks in it go in: a working copy also
+#                  holds what was never committed (an .env, editor leftovers)
+#   --whole-tree   every file under --source instead, for a source that is
+#                  not a git checkout
 #   --out DIR      where the archive, manifest and signature go (default dist/sensor-bundle)
 #   --revision SHA source revision recorded in the manifest
 #   --key REF      cosign key file (password in COSIGN_PASSWORD) or KMS URI.
@@ -38,6 +42,7 @@ out="dist/sensor-bundle"
 revision=""
 key=""
 pubkey=""
+whole_tree=""
 
 die() {
   echo "[sensor-bundle] $*" >&2
@@ -51,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --revision) revision="${2:?--revision needs a value}"; shift 2 ;;
     --key) key="${2:?--key needs a value}"; shift 2 ;;
     --pubkey) pubkey="${2:?--pubkey needs a value}"; shift 2 ;;
+    --whole-tree) whole_tree="--whole-tree"; shift ;;
     *) die "unknown argument $1" ;;
   esac
 done
@@ -60,7 +66,7 @@ done
 # A stale signature next to a fresh manifest would read as signed.
 rm -f "${out}/sensor-bundle.json.sig"
 python3 "${SCRIPT_DIR}/sensor_bundle.py" build --source "${source_dir}" --out "${out}" \
-  ${revision:+--revision "${revision}"}
+  ${revision:+--revision "${revision}"} ${whole_tree:+"${whole_tree}"}
 
 if [[ -z "${key}" ]]; then
   echo "[sensor-bundle] built ${out} UNSIGNED: no sensor will install it"

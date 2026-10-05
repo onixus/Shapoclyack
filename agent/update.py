@@ -64,6 +64,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -234,8 +235,11 @@ def read_verified_archive(path: Path, manifest: Manifest) -> bytes:
     path and then opening it again by name leaves a window for whoever can
     write that directory to put something else there.
     """
-    with path.open("rb") as handle:
-        data = handle.read(manifest.size + 1)
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(manifest.size + 1)
+    except OSError as exc:
+        raise UpdateFailed(f"cannot read the bundle archive {path}: {exc.strerror or exc}") from exc
     if len(data) != manifest.size:
         raise BundleRefused(
             f"the bundle archive is not the {manifest.size} bytes the signed manifest says"
@@ -333,6 +337,26 @@ def compare_versions(left: str, right: str) -> int:
     return _verrevcmp(a[1], b[1]) or _verrevcmp(a[2], b[2])
 
 
+#: A release tag's prerelease suffix (``0.47-1005-beta1``), see
+#: Jenkinsfile.publish. dpkg reads it as a revision *above* the release it
+#: precedes.
+_PRERELEASE_RE = re.compile(r"^(.*[0-9])-(alpha|beta|rc)([0-9]+)$")
+_TILDE = r"\1~\2\3"
+
+
+def compare_releases(left: str, right: str) -> int:
+    """:func:`compare_versions` with a prerelease below the release it precedes.
+
+    ``0.47-1005-beta1`` is rewritten to ``0.47-1005~beta1`` first, which dpkg
+    orders below ``0.47-1005``. Without it a host that installed the beta
+    would refuse the final release as a downgrade and stay on the beta. Used
+    for the downgrade check only: the floors keep :func:`compare_versions`, the
+    ordering ``OCTO_AGENT_MIN_VERSION`` is judged by on the API, where a
+    prerelease of the required release is deliberately not below it.
+    """
+    return compare_versions(_PRERELEASE_RE.sub(_TILDE, left), _PRERELEASE_RE.sub(_TILDE, right))
+
+
 def check_version_policy(candidate: str, *, current: str, min_versions: list[str]) -> None:
     """Refuse a downgrade and anything below a floor; say so when already current.
 
@@ -341,7 +365,7 @@ def check_version_policy(candidate: str, *, current: str, min_versions: list[str
     not a downgrade, and this is the check a replayed old bundle has to pass.
     """
     try:
-        order = compare_versions(candidate, current)
+        order = compare_releases(candidate, current)
     except VersionError as exc:
         raise BundleRefused(
             f"cannot order bundle version {candidate!r} against installed {current!r}: {exc}"
@@ -458,15 +482,21 @@ def _fsync_dir(path: Path) -> None:
 
 
 def import_check(python: str, root: Path, expected_version: str, *, timeout: float = 120.0) -> None:
-    """Import ``agent.worker`` from ``root`` in a fresh, isolated interpreter.
+    """Import ``agent.worker`` and ``agent.update`` from ``root`` in a fresh, isolated interpreter.
 
     ``-I`` keeps the caller's ``PYTHONPATH``, user site and working directory
     out of it, so what is imported is the tree under ``root`` and the venv's
     dependencies, and nothing that happens to be lying around.
+
+    ``agent.update`` too, though the service never imports it: it is the
+    updater the next update runs. A release whose updater does not import in
+    this venv would start, pass its health check and be kept, and every later
+    bundle -- including the one fixing it -- would then have nothing to install
+    it.
     """
     code = (
         "import sys; sys.path.insert(0, sys.argv[1]); "
-        "import agent, agent.worker; print(agent.__version__)"
+        "import agent, agent.worker, agent.update; print(agent.__version__)"
     )
     try:
         result = subprocess.run(
@@ -997,11 +1027,16 @@ def _server_manifest(public_key: ec.EllipticCurvePublicKey) -> tuple[AgentClient
 
 
 def _read_bundle_dir(bundle_dir: Path, public_key: ec.EllipticCurvePublicKey) -> tuple[Manifest, Path]:
-    manifest = verify_manifest(
-        (bundle_dir / MANIFEST_NAME).read_bytes(),
-        (bundle_dir / SIGNATURE_NAME).read_bytes(),
-        public_key,
-    )
+    try:
+        manifest_bytes = (bundle_dir / MANIFEST_NAME).read_bytes()
+        signature = (bundle_dir / SIGNATURE_NAME).read_bytes()
+    except OSError as exc:
+        # This runs as the sensor's account, not as whoever typed the path.
+        raise UpdateFailed(
+            f"cannot read the bundle in {bundle_dir}: {exc.strerror or exc} ({exc.filename}); "
+            "the directory and its files must be readable by the sensor's account"
+        ) from exc
+    manifest = verify_manifest(manifest_bytes, signature, public_key)
     return manifest, bundle_dir / manifest.archive
 
 
@@ -1068,12 +1103,39 @@ EXIT_NOTHING_TO_DO = 3
 EXIT_RECOVERED = 4
 
 
+def _exit_on_sigterm() -> None:
+    """Turn SIGTERM into ``SystemExit`` so ``finally`` blocks and ``with`` exits run.
+
+    ``scripts/update-agent.sh`` stops this process with TERM when it is
+    interrupted, and so does systemd stopping the timer's oneshot unit. Python's
+    default for TERM is to die on the spot, which left the download directory
+    -- up to the bundle's size -- in the install directory for good, and put
+    nothing back. Raised as an exception it unwinds like ^C does.
+    """
+
+    def _terminate(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _terminate)
+
+
+def _remove_stale_downloads(install_dir: Path) -> None:
+    """What a run killed outright (SIGKILL, power loss) left mid-download.
+
+    Called under :func:`update_lock`, so no other run is using one.
+    """
+    for entry in install_dir.glob(".download-*"):
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _owned_by_someone_else(path: Path) -> bool:
     return os.geteuid() == 0 and path.stat().st_uid != 0
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its modes in a row
     args = build_parser().parse_args(argv)
+    _exit_on_sigterm()
     from agent import logging_setup
 
     logging_setup.configure_logging()
@@ -1115,6 +1177,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
 
     try:
         with update_lock(install_dir):
+            _remove_stale_downloads(install_dir)
             installer = Installer(install_dir, python=str(venv_python))
             if args.commit:
                 kept = installer.commit()

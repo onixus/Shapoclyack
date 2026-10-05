@@ -15,6 +15,7 @@ import contextlib
 import http.server
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -32,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from agent import logging_setup, update
 from agent.worker import AgentClient
+from api.services import sensor_bundle as sensor_bundle_service
 from api.services import version_compare
 from scripts import sensor_bundle as bundle_builder
 from tests.conftest import bearer, configured_client, login, requires_postgres
@@ -60,18 +62,21 @@ def _pem(key: ec.EllipticCurvePrivateKey) -> bytes:
     )
 
 
-def _agent_tree(root: Path, version: str, *, worker: str = "MARKER = 'ok'\n") -> Path:
+def _agent_tree(
+    root: Path, version: str, *, worker: str = "MARKER = 'ok'\n", updater: str = "MARKER = 'ok'\n"
+) -> Path:
     source = root / f"src-{version}" / "agent"
     source.mkdir(parents=True)
     (source / "__init__.py").write_text(f'__version__ = "{version}"  # test build\n')
     (source / "worker.py").write_text(worker)
+    (source / "update.py").write_text(updater)
     return source
 
 
 def _bundle(root: Path, key: ec.EllipticCurvePrivateKey, version: str, **tree: str) -> Path:
     """A signed bundle directory, built by the release script itself."""
     out = root / f"bundle-{version}"
-    bundle_builder.build(_agent_tree(root, version, **tree), out, revision="test")
+    bundle_builder.build(_agent_tree(root, version, **tree), out, revision="test", whole_tree=True)
     manifest = (out / update.MANIFEST_NAME).read_bytes()
     (out / update.SIGNATURE_NAME).write_text(_sign(key, manifest) + "\n")
     return out
@@ -195,7 +200,7 @@ def test_the_cosign_cli_signature_verifies_here(tmp_path):
         pytest.skip("cosign is not installed")
     env = {**os.environ, "COSIGN_PASSWORD": "test-only"}
     subprocess.run([cosign, "generate-key-pair"], cwd=tmp_path, env=env, check=True, capture_output=True)
-    bundle_builder.build(_agent_tree(tmp_path, "0.50-1001"), tmp_path / "b")
+    bundle_builder.build(_agent_tree(tmp_path, "0.50-1001"), tmp_path / "b", whole_tree=True)
     manifest = tmp_path / "b" / update.MANIFEST_NAME
     subprocess.run(
         [cosign, "sign-blob", "--yes", "--key", "cosign.key", "--tlog-upload=false",
@@ -212,11 +217,57 @@ def test_the_cosign_cli_signature_verifies_here(tmp_path):
 
 def test_the_bundle_build_is_reproducible(tmp_path):
     source = _agent_tree(tmp_path, "0.50-1001")
-    first = bundle_builder.build(source, tmp_path / "a")
-    second = bundle_builder.build(source, tmp_path / "b")
+    first = bundle_builder.build(source, tmp_path / "a", whole_tree=True)
+    second = bundle_builder.build(source, tmp_path / "b", whole_tree=True)
     assert first["sha256"] == second["sha256"]
     with tarfile.open(tmp_path / "a" / first["archive"]) as tar:
-        assert sorted(tar.getnames()) == ["agent", "agent/__init__.py", "agent/worker.py"]
+        assert sorted(tar.getnames()) == ["agent", "agent/__init__.py", "agent/update.py", "agent/worker.py"]
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def test_only_what_git_tracks_goes_into_the_bundle(tmp_path):
+    """A working copy also holds what was never committed. Signed with the
+    release key, an ``agent/.env`` with a development key would reach every
+    sensor."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    source = _agent_tree(tmp_path, "0.50-1001")
+    _git(source.parent, "init", "-q")
+    _git(source.parent, "add", "agent")
+    (source / ".env").write_text("OCTO_AGENT_PROVISIONING_KEY=dev-only\n")
+    (source / "worker.py.orig").write_text("stale\n")
+    (source.parent / ".gitignore").write_text("*.local\n")
+    (source / "settings.local").write_text("ignored\n")
+    built = bundle_builder.build(source, tmp_path / "out")
+    with tarfile.open(tmp_path / "out" / built["archive"]) as tar:
+        assert sorted(tar.getnames()) == ["agent", "agent/__init__.py", "agent/update.py", "agent/worker.py"]
+
+
+def test_a_source_outside_a_git_checkout_is_refused_unless_asked_for(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    source = _agent_tree(tmp_path, "0.50-1001")
+    with pytest.raises(SystemExit, match="not in a git checkout"):
+        bundle_builder.build(source, tmp_path / "out")
+    assert bundle_builder.build(source, tmp_path / "out", whole_tree=True)["version"] == "0.50-1001"
+
+
+def _publish_stage() -> str:
+    text = (REPO_ROOT / "Jenkinsfile.publish").read_text(encoding="utf-8")
+    start = text.index("stage('Sensor bundle')")
+    return text[start:text.index("archiveArtifacts", start)]
+
+
+def test_a_prerelease_bundle_is_not_signed_by_the_publish_job():
+    """One OCTO_AGENT_BUNDLE_DIR serves the whole fleet: a beta signed with the
+    release key would reach every sensor updating with --auto."""
+    stage = _publish_stage()
+    unsigned = stage.index("if (params.DRY_RUN || env.IS_PRERELEASE == 'true')")
+    assert unsigned < stage.index("withCredentials")
+    assert "--key" not in stage[unsigned:stage.index("} else {", unsigned)]
 
 
 # --------------------------------------------------------------------------
@@ -245,6 +296,24 @@ def test_a_bundle_below_the_minimum_is_refused():
 def test_an_unknown_installed_version_refuses_rather_than_assumes():
     with pytest.raises(update.BundleRefused, match="cannot order"):
         update.check_version_policy("0.47-0930", current="", min_versions=[])
+
+
+@pytest.mark.parametrize(
+    ("candidate", "installed"),
+    [
+        ("0.47-1005", "0.47-1005-beta1"),
+        ("0.47-1005", "0.47-1005-rc1"),
+        ("0.47-1005-rc1", "0.47-1005-beta2"),
+        ("0.47-1005-rc10", "0.47-1005-rc2"),
+        ("0.47-1005-beta1", "0.46-0922"),
+    ],
+)
+def test_a_prerelease_is_below_the_release_it_precedes(candidate, installed):
+    """dpkg alone puts ``-beta1`` above the release: a host that installed the
+    beta would refuse the final release as a downgrade and stay on the beta."""
+    update.check_version_policy(candidate, current=installed, min_versions=[])
+    with pytest.raises(update.BundleRefused, match="downgrades are refused"):
+        update.check_version_policy(installed, current=candidate, min_versions=[])
 
 
 @pytest.mark.parametrize(
@@ -366,11 +435,29 @@ def test_a_release_that_does_not_import_never_goes_live(tmp_path, signing_key):
     assert _live_version(install) == "0.46-0922"
 
 
+def test_a_release_whose_updater_does_not_import_never_goes_live(tmp_path, signing_key):
+    """The service never imports agent.update, so its health check would pass
+    and the release be kept -- and every later bundle, the fix included, would
+    then have no updater to install it."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(
+        _bundle(
+            tmp_path, signing_key, "0.47-0930",
+            updater="raise ImportError('cannot import name X from cryptography')\n",
+        ),
+        signing_key,
+    )
+    with pytest.raises(update.UpdateFailed, match="does not import.*cryptography"):
+        update.Installer(install).install(archive, manifest)
+    assert not (install / "agent").is_symlink()
+    assert _live_version(install) == "0.46-0922"
+
+
 def test_an_archive_whose_package_disagrees_with_the_signed_version_is_refused(tmp_path, signing_key):
     """Signed as 0.47 but built from a 0.45 tree: refused before the swap."""
     install = _installed(tmp_path, "0.46-0922")
     out = tmp_path / "mislabelled"
-    built = bundle_builder.build(_agent_tree(tmp_path, "0.45-0901"), out)
+    built = bundle_builder.build(_agent_tree(tmp_path, "0.45-0901"), out, whole_tree=True)
     raw = json.dumps({**built, "version": "0.47-0930"}).encode()
     (out / update.MANIFEST_NAME).write_bytes(raw)
     (out / update.SIGNATURE_NAME).write_text(_sign(signing_key, raw))
@@ -695,6 +782,15 @@ def test_a_unit_in_a_restart_loop_fails_the_health_check(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _keep_sigterm_as_it_was():
+    """``update.main`` turns SIGTERM into ``SystemExit``; not for the rest of
+    the session."""
+    handler = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, handler)
+
+
+@pytest.fixture(autouse=True)
 def _keep_logging_as_it_was(monkeypatch):
     """``update.main`` configures the root logger, as a CLI should. Left in
     place it turns on INFO records for every later test in the session, and
@@ -734,6 +830,68 @@ def test_cli_refuses_a_downgrade_and_changes_nothing(tmp_path, signing_key, monk
     assert _run_cli(install, _bundle(tmp_path, signing_key, "0.45-0901"), key_file, monkeypatch) == 1
     assert _live_version(install) == "0.46-0922"
     assert not (install / "agent").is_symlink()
+
+
+def test_cli_reports_a_bundle_dir_it_cannot_read_without_a_traceback(tmp_path, signing_key, monkeypatch, caplog):
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    assert _run_cli(install, tmp_path / "no-such-bundle", key_file, monkeypatch) == 1
+    assert "cannot read the bundle in" in caplog.text
+    assert _live_version(install) == "0.46-0922"
+
+
+def test_cli_removes_downloads_a_killed_run_left_behind(tmp_path, signing_key, monkeypatch):
+    install = _cli_install(tmp_path, "0.46-0922")
+    leftover = install / ".download-k1ll3d"
+    leftover.mkdir()
+    (leftover / "shapoclyack-sensor-0.47-0930.tar.gz").write_bytes(b"x" * 1024)
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    assert _run_cli(install, _bundle(tmp_path, signing_key, "0.47-0930"), key_file, monkeypatch) == 0
+    assert list(install.glob(".download-*")) == []
+
+
+_STALLED_UPDATE = """
+import sys, time
+from agent import update
+update._systemd_unit_present = lambda unit: False
+def _stall(*_args):
+    print("downloading", flush=True)
+    time.sleep(60)
+update.verify_archive = _stall
+sys.exit(update.main(sys.argv[1:]))
+"""
+
+
+def test_sigterm_mid_download_leaves_no_download_directory(tmp_path, signing_key):
+    """How update-agent.sh and systemd stop the verifier. Python's default for
+    TERM skips every ``finally``, and the download stayed for good."""
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    child = subprocess.Popen(
+        [sys.executable, "-c", _STALLED_UPDATE, "--install-dir", str(install),
+         "--env-file", str(install / "missing.env"), "--bundle-dir", str(bundle)],
+        cwd=REPO_ROOT, env={**os.environ, update.PUBKEY_FILE_ENV: str(key_file)},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        for line in child.stdout:
+            if line.strip() == "downloading":
+                break
+        else:
+            pytest.fail(child.stderr.read())
+        assert len(list(install.glob(".download-*"))) == 1
+        child.send_signal(signal.SIGTERM)
+        child.wait(timeout=30)
+    finally:
+        child.kill()
+        child.wait()
+    assert child.returncode == 128 + signal.SIGTERM
+    assert list(install.glob(".download-*")) == []
+    assert _live_version(install) == "0.46-0922"
 
 
 def test_cli_refuses_a_bundle_below_the_local_floor(tmp_path, signing_key, monkeypatch):
@@ -1062,7 +1220,7 @@ def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurveP
     key_file = tmp_path / "release.pub"
     key_file.write_bytes(_pem(key))
     bundle = tmp_path / "bundle"
-    bundle_builder.build(_real_agent_tree(tmp_path / "new", "0.47-0930"), bundle)
+    bundle_builder.build(_real_agent_tree(tmp_path / "new", "0.47-0930"), bundle, whole_tree=True)
     manifest = (bundle / update.MANIFEST_NAME).read_bytes()
     (bundle / update.SIGNATURE_NAME).write_text(_sign(key, manifest))
     env = {
@@ -1135,6 +1293,86 @@ def test_update_script_restarts_nothing_for_a_refused_bundle(tmp_path, signing_k
     assert "signature does not verify" in done.stdout + done.stderr
     assert _live_version(install) == "0.46-0922"
     assert not (state / "calls").exists()
+
+
+def test_update_script_reads_a_relative_bundle_dir_from_where_it_was_run(tmp_path, signing_key, monkeypatch):
+    """The verifier runs from the install directory; the path was typed elsewhere."""
+    install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    done = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", bundle.name],
+        cwd=bundle.parent, env=env, capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _live_version(install) == "0.47-0930"
+
+
+def test_update_script_names_a_missing_bundle_dir_without_a_traceback(tmp_path, signing_key, monkeypatch):
+    install, _bundle_dir, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    done = _run_script(env, "--bundle-dir", str(tmp_path / "not-there"))
+    assert done.returncode == 1
+    assert "is not a directory" in done.stderr
+    assert "Traceback" not in done.stdout + done.stderr
+    assert _live_version(install) == "0.46-0922"
+    assert not (state / "calls").exists()
+
+
+def _unpack_with_installer(archive: Path, install: Path) -> subprocess.CompletedProcess:
+    """``unpack_agent_bundle`` from install-agent.sh, run on its own."""
+    text = (REPO_ROOT / "scripts" / "install-agent.sh").read_text(encoding="utf-8")
+    function = re.search(r"^unpack_agent_bundle\(\) \{\n.*?^\}\n", text, re.M | re.S)
+    assert function, "unpack_agent_bundle() moved in install-agent.sh"
+    stubs = 'error() { echo "$*" >&2; exit 1; }\n'
+    return subprocess.run(
+        ["bash", "-c", stubs + function.group(0) + 'unpack_agent_bundle "$@"', "bash",
+         str(archive), str(install), sys.executable],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+
+
+def _updated_install(tmp_path: Path) -> Path:
+    """An install directory after a bundle update: ``agent`` links into releases/."""
+    install = tmp_path / "install"
+    release = install / "releases" / "0.46-0922-0123abcd"
+    release.mkdir(parents=True)
+    shutil.copytree(_agent_tree(tmp_path / "old", "0.46-0922"), release / "agent")
+    (install / "agent").symlink_to("releases/0.46-0922-0123abcd/agent")
+    return install
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"README": b"not a sensor"},
+        {"agent/worker.py": b"MARKER = 1\n"},
+        {"agent/__init__.py": b'__version__ = "0.47-0930"\n', "agent/worker.py": b"import nonexistent_dep\n"},
+    ],
+)
+def test_the_installer_leaves_the_live_package_alone_for_a_tarball_without_one(tmp_path, files):
+    """A wrong --bundle-url used to remove the live link first and put nothing
+    in its place: the unit crash-looped at its next restart."""
+    install = _updated_install(tmp_path)
+    archive = tmp_path / "bundle.tar.gz"
+    _archive_of(archive, files)
+    done = _unpack_with_installer(archive, install)
+    assert done.returncode == 1
+    assert "nothing in" in done.stderr.lower()
+    assert (install / "agent").is_symlink()
+    assert _live_version(install) == "0.46-0922"
+    assert list(install.glob(".bundle-*")) == []
+
+
+def test_the_installer_replaces_the_live_link_with_the_tarballs_package(tmp_path):
+    install = _updated_install(tmp_path)
+    archive = tmp_path / "bundle.tar.gz"
+    _archive_of(
+        archive, {"agent/__init__.py": b'__version__ = "0.47-0930"\n', "agent/worker.py": b"MARKER = 1\n"}
+    )
+    done = _unpack_with_installer(archive, install)
+    assert done.returncode == 0, done.stderr
+    assert not (install / "agent").is_symlink()
+    assert _live_version(install) == "0.47-0930"
+    # Not written through the link into the release kept for rollback.
+    assert update.read_package_version(install / "releases" / "0.46-0922-0123abcd" / "agent") == "0.46-0922"
 
 
 def test_update_script_refuses_the_unsigned_bundle_url(tmp_path, signing_key, monkeypatch):
@@ -2129,6 +2367,38 @@ def test_an_inconsistent_bundle_directory_is_503(tmp_path, monkeypatch, signing_
     response = client.get("/api/agent/bundle", headers=AGENT)
     assert response.status_code == 503
     assert "sha256" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("breakage", ["directory", "unreadable"])
+def test_a_bundle_file_the_api_cannot_read_is_a_reason_not_a_crash(tmp_path, signing_key, breakage):
+    """Copied as root with umask 077 (cosign itself writes the .sig 0600), or
+    a directory where a file should be: a 503 that names it, not a bare 500."""
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    sig = bundle / update.SIGNATURE_NAME
+    if breakage == "directory":
+        sig.unlink()
+        sig.mkdir()
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root reads a file whatever its mode")
+        sig.chmod(0)
+    try:
+        with pytest.raises(ValueError, match=f"{update.SIGNATURE_NAME} cannot be read"):
+            sensor_bundle_service.current_bundle(str(bundle))
+    finally:
+        if breakage == "unreadable":
+            sig.chmod(0o644)
+
+
+@requires_postgres
+def test_an_unreadable_bundle_file_is_503(tmp_path, monkeypatch, signing_key):
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    (bundle / update.SIGNATURE_NAME).unlink()
+    (bundle / update.SIGNATURE_NAME).mkdir()
+    client = _api(tmp_path, monkeypatch, agent_bundle_dir=str(bundle))
+    response = client.get("/api/agent/bundle", headers=AGENT)
+    assert response.status_code == 503
+    assert "cannot be read" in response.json()["detail"]
 
 
 @requires_postgres
