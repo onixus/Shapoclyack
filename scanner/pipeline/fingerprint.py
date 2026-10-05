@@ -1,30 +1,48 @@
-"""Tech stack fingerprinting (Phase 9.1).
+"""Tech stack fingerprinting (Phase 9.1, catalogue since DQ4).
 
 Reuses the already-discovered ``open_ports.txt`` endpoints from the ports
 stage — this module never scans a new port itself. For each open TCP
 endpoint that looks like a web port (``http_ports`` / ``https_ports``), it
-issues a single, size-capped HTTP GET and classifies the response against a
-small, hand-picked set of signatures:
+issues a single, size-capped HTTP GET and classifies the response against the
+data-driven catalogue in ``fingerprint_catalogue.json`` (format, matcher
+grammar and confidence levels: ``fingerprint_catalogue.py``):
 
-  * CDN / WAF detection from response headers (``cf-ray``, ``x-akamai-*``,
-    ``x-sucuri-id``, ``via``, ``x-amz-cf-id``, ``x-served-by``, ...).
-  * CMS / framework detection from a mix of headers and lightweight
-    body/meta-tag markers (WordPress, Drupal, Joomla, Next.js, generic PHP).
+  * every technology the response identifies -- CDN/WAF, load balancer, web
+    and application server, framework, CMS, shop, admin and database UI,
+    devops and monitoring console, VPN and remote-access portal, webmail,
+    network appliance -- with its version where the product states one
+    reliably and its NVD CPE where there is a single key for it;
+  * the two lists consumers read since Phase 9.1, derived from the above:
+    ``cdn_waf`` (CDN/WAF matches of *high* confidence only) and
+    ``cms_framework`` (CMS, framework and e-commerce matches). Their names
+    for the original eleven signatures are unchanged;
+  * exposure findings (``exposures`` in ``fingerprint.json``): an admin,
+    database, devops or monitoring console or a network appliance's
+    management UI answering (``exposed_admin_interface``, medium), a VPN,
+    remote-access or webmail portal (``exposed_remote_access_gateway``, info
+    -- meant to be reachable, and the products with the most KEV entries, so
+    each carries its ``cpe`` for a later join), and a version stated in a
+    response header (``version_disclosure``, info).
 
 NSE (``nse.py``) drives nmap's own ``-sV``/NSE script checks, but does not
 currently emit structured, parseable HTTP header/body data this module could
 reuse -- reusing it would mean scraping nmap's text output instead of doing
 one dedicated GET per candidate endpoint. To avoid a *second* independent
 HTTP client stack duplicating requests against the same hosts, this module
-performs exactly one GET per endpoint and derives both CDN/WAF and CMS
-signals from that single response.
+performs exactly one GET per endpoint and derives every signal from that
+single response. The catalogue adds no request: a ``/favicon.ico`` hash or a
+probe of a known login path would identify more, and would also be a second
+request per endpoint; that trade is not made here.
 
-HONESTY NOTE: the signature set here is intentionally small and not meant to
-be exhaustive fingerprinting (à la Wappalyzer/BuiltWith) -- it is a first
-pass covering the handful of CDN/WAF providers and CMS/frameworks common
-enough to matter for prioritization. Add signatures incrementally in
-``_CDN_WAF_SIGNATURES`` / ``_CMS_FRAMEWORK_SIGNATURES`` rather than trying to
-cover everything up front.
+Redirects are followed as before. When they end on a different host than the
+endpoint's, the technologies are still listed (with ``final_url`` and
+``redirected_off_host``), but no exposure is raised: a root that redirects to
+a hosted SSO or a SaaS tracker says nothing about what *this* address exposes.
+
+HONESTY NOTE: the catalogue is a curated perimeter-first list (~140 entries),
+not Wappalyzer. Its markers are public knowledge checked against synthetic
+fixtures, not against a corpus of live captures; a product the catalogue does
+not know, or one that hides its markers, is simply absent from the output.
 
 SAFETY: disabled by default (``fingerprint.enabled = false``). Requests are
 capped by ``concurrency`` (in-flight) and ``body_max_bytes`` (per-response,
@@ -36,19 +54,21 @@ asset identity (same non-escalation principle as ``cloud_discovery.py``).
 Risk scoring may apply a small named likelihood discount when ``cdn_waf``
 was observed on the same host:port (#173); that is not a claim the
 control blocks the CVE, and it is not merging the fingerprint into scope.
+Only the six providers ``risk_scoring.CDN_WAF_PROVIDERS`` names earn it -- a
+CDN/WAF the catalogue learned later is reported, not discounted.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
 from .config_schema import FingerprintConfig
+from .fingerprint_catalogue import Catalogue, Match, load_catalogue, page_title
 from .protocol import is_ipv6, parse_endpoint
 from .utils import save_json, write_lines
 
@@ -56,58 +76,31 @@ LOG = logging.getLogger("shapoclyack.fingerprint")
 
 USER_AGENT = "shapoclyack/fingerprint"
 
+#: Categories whose match is itself a finding: ``(kind, severity)``. Every
+#: other category is inventory only. Webmail is a remote-access portal to the
+#: mailbox and is filed with them; the category stays on the finding.
+EXPOSURE_BY_CATEGORY: dict[str, tuple[str, str]] = {
+    "admin_panel": ("exposed_admin_interface", "medium"),
+    "database_ui": ("exposed_admin_interface", "medium"),
+    "database": ("exposed_admin_interface", "medium"),
+    "devops": ("exposed_admin_interface", "medium"),
+    "monitoring": ("exposed_admin_interface", "medium"),
+    "network_appliance": ("exposed_admin_interface", "medium"),
+    "remote_access": ("exposed_remote_access_gateway", "info"),
+    "mail_webmail": ("exposed_remote_access_gateway", "info"),
+}
+VERSION_DISCLOSURE = ("version_disclosure", "info")
 
-def _header_has_prefix(headers: httpx.Headers, prefix: str) -> bool:
-    return any(key.lower().startswith(prefix) for key in headers.keys())
+#: Categories that make up the Phase 9.1 ``cms_framework`` list.
+CMS_FRAMEWORK_CATEGORIES = frozenset({"cms", "framework", "ecommerce"})
 
 
-def _cookies_contain(headers: httpx.Headers, needles: tuple[str, ...]) -> bool:
-    blob = " ".join(headers.get_list("set-cookie")).lower()
-    return any(needle in blob for needle in needles)
-
-
-# Each entry: (name, predicate(headers) -> bool). Headers lookups are
-# case-insensitive (httpx.Headers). Keep this list small and add signatures
-# one at a time rather than trying to be exhaustive -- see module docstring.
-_CDN_WAF_SIGNATURES: list[tuple[str, Callable[[httpx.Headers], bool]]] = [
-    ("cloudflare", lambda h: "cf-ray" in h or "cloudflare" in h.get("server", "").lower()),
-    (
-        "akamai",
-        lambda h: _header_has_prefix(h, "x-akamai") or "akamai" in h.get("server", "").lower(),
-    ),
-    ("sucuri", lambda h: "x-sucuri-id" in h or "x-sucuri-cache" in h),
-    (
-        "imperva_incapsula",
-        lambda h: "x-iinfo" in h or _cookies_contain(h, ("incap_ses", "visid_incap")),
-    ),
-    ("cloudfront", lambda h: "x-amz-cf-id" in h or "cloudfront" in h.get("via", "").lower()),
-    (
-        "fastly",
-        lambda h: "x-fastly-request-id" in h or "fastly" in h.get("x-served-by", "").lower(),
-    ),
-]
-
-# Each entry: (name, predicate(headers, lowercased_body) -> bool).
-_CMS_FRAMEWORK_SIGNATURES: list[tuple[str, Callable[[httpx.Headers, str], bool]]] = [
-    (
-        "wordpress",
-        lambda h, b: "wordpress" in h.get("x-generator", "").lower()
-        or "wp-content" in b
-        or "wp-includes" in b,
-    ),
-    (
-        "drupal",
-        lambda h, b: "drupal" in h.get("x-generator", "").lower()
-        or "drupal.settings" in b
-        or 'content="drupal' in b,
-    ),
-    ("joomla", lambda h, b: "joomla" in b),
-    (
-        "nextjs",
-        lambda h, b: "next.js" in h.get("x-powered-by", "").lower() or "__next_data__" in b,
-    ),
-    ("generic_php", lambda h, b: h.get("x-powered-by", "").lower().startswith("php")),
-]
+class _Fetched(NamedTuple):
+    status: int
+    headers: httpx.Headers
+    body: str
+    #: Where the response actually came from, after redirects.
+    url: str
 
 
 def _candidate_endpoints(
@@ -153,9 +146,25 @@ def _build_url(host: str, port: int, scheme: str) -> str:
     return f"{scheme}://{hostpart}:{port}/"
 
 
+def _without_query(url: str) -> str:
+    """``url`` minus query and fragment: where the answer came from, not what it carried."""
+    try:
+        return str(httpx.URL(url).copy_with(query=None, fragment=None))
+    except httpx.InvalidURL:
+        return ""
+
+
+def _same_host(url: str, host: str) -> bool:
+    try:
+        landed = httpx.URL(url).host
+    except httpx.InvalidURL:
+        return False
+    return landed.lower().rstrip(".") == host.lower().rstrip(".")
+
+
 async def _fetch(
     client: httpx.AsyncClient, url: str, timeout: float, max_bytes: int
-) -> tuple[int, httpx.Headers, str] | None:
+) -> _Fetched | None:
     try:
         async with client.stream("GET", url, timeout=timeout) as resp:
             chunks: list[bytes] = []
@@ -166,10 +175,52 @@ async def _fetch(
                 if total >= max_bytes:
                     break
             body = b"".join(chunks).decode("utf-8", errors="ignore")
-            return resp.status_code, resp.headers, body
+            return _Fetched(resp.status_code, resp.headers, body, str(resp.url))
     except httpx.HTTPError as exc:
         LOG.debug("fingerprint: request failed for %s: %s", url, exc)
         return None
+
+
+def _finding(kind: str, severity: str, outcome: dict[str, Any], match: Match, **extra: Any) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "severity": severity,
+        "host": outcome["host"],
+        "port": outcome["port"],
+        "url": outcome["final_url"] or outcome["url"],
+        "technology": match.technology.id,
+        "evidence": list(match.evidence),
+        "name": match.technology.name,
+        "category": match.technology.category,
+        "version": match.version,
+        "cpe": match.cpe,
+        "confidence": match.confidence,
+        **extra,
+    }
+
+
+def _exposures(outcome: dict[str, Any], matches: list[Match], headers: httpx.Headers) -> list[dict[str, Any]]:
+    """Exposure findings for one endpoint; none when the answer came from elsewhere."""
+    if outcome["redirected_off_host"]:
+        return []
+    found: list[dict[str, Any]] = []
+    disclosed: set[str] = set()
+    for match in matches:
+        exposure = EXPOSURE_BY_CATEGORY.get(match.technology.category)
+        if exposure is not None:
+            found.append(_finding(*exposure, outcome, match))
+        source = match.version_source or ""
+        if not match.version or not source.startswith("header "):
+            continue
+        header = source.removeprefix("header ")
+        if header in disclosed:
+            continue
+        disclosed.add(header)
+        value = ", ".join(headers.get_list(header))
+        disclosure = _finding(*VERSION_DISCLOSURE, outcome, match, header=header)
+        disclosure["evidence"] = [f"{header}: {value}"[:160]]
+        found.append(disclosure)
+    return found
 
 
 async def _fingerprint_one(
@@ -179,35 +230,47 @@ async def _fingerprint_one(
     scheme: str,
     timeout: float,
     max_bytes: int,
-) -> dict[str, Any]:
+    catalogue: Catalogue,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     url = _build_url(host, port, scheme)
     outcome: dict[str, Any] = {
         "host": host,
         "port": port,
         "scheme": scheme,
         "url": url,
+        "final_url": None,
+        "redirected_off_host": False,
         "http_status": None,
         "server": "",
         "x_powered_by": "",
+        "title": "",
         "cdn_waf": [],
         "cms_framework": [],
+        "technologies": [],
         "error": None,
     }
     fetched = await _fetch(client, url, timeout, max_bytes)
     if fetched is None:
         outcome["error"] = "request_failed"
-        return outcome
+        return outcome, []
 
-    status, headers, body = fetched
-    body_lower = body.lower()
-    outcome["http_status"] = status
-    outcome["server"] = headers.get("server", "")
-    outcome["x_powered_by"] = headers.get("x-powered-by", "")
-    outcome["cdn_waf"] = [name for name, matches in _CDN_WAF_SIGNATURES if matches(headers)]
-    outcome["cms_framework"] = [
-        name for name, matches in _CMS_FRAMEWORK_SIGNATURES if matches(headers, body_lower)
+    matches = catalogue.classify(fetched.status, fetched.headers, fetched.body, fetched.url)
+    outcome["final_url"] = _without_query(fetched.url)
+    outcome["redirected_off_host"] = not _same_host(fetched.url, host)
+    outcome["http_status"] = fetched.status
+    outcome["server"] = fetched.headers.get("server", "")
+    outcome["x_powered_by"] = fetched.headers.get("x-powered-by", "")
+    outcome["title"] = page_title(fetched.body)[:200]
+    outcome["technologies"] = [match.as_dict() for match in matches]
+    # Phase 9.1 consumers: the risk model reads cdn_waf for the #173 discount,
+    # so only a CDN/WAF the catalogue is sure of may appear in it.
+    outcome["cdn_waf"] = [
+        m.technology.id for m in matches if m.technology.category == "cdn_waf" and m.confidence == "high"
     ]
-    return outcome
+    outcome["cms_framework"] = [
+        m.technology.id for m in matches if m.technology.category in CMS_FRAMEWORK_CATEGORIES
+    ]
+    return outcome, _exposures(outcome, matches, fetched.headers)
 
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
@@ -231,6 +294,7 @@ async def fingerprint_hosts(
         "targets_considered": 0,
         "checked_count": 0,
         "findings": [],
+        "exposures": [],
         "truncated": False,
         "skipped_reason": None,
     }
@@ -248,6 +312,12 @@ async def fingerprint_hosts(
         _persist(output_dir, result)
         return result
 
+    catalogue = load_catalogue()
+    result["catalogue"] = {
+        "schema": catalogue.schema_version,
+        "updated": catalogue.updated,
+        "technologies": len(catalogue.technologies),
+    }
     truncated = len(candidates) > config.max_targets
     candidates = candidates[: config.max_targets]
 
@@ -257,24 +327,29 @@ async def fingerprint_hosts(
 
     async with httpx.AsyncClient(headers=headers, verify=config.verify_tls, follow_redirects=True) as client:
 
-        async def _guarded(host: str, port: int, scheme: str) -> dict[str, Any]:
+        async def _guarded(host: str, port: int, scheme: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             async with semaphore:
-                return await _fingerprint_one(client, host, port, scheme, timeout, config.body_max_bytes)
+                return await _fingerprint_one(
+                    client, host, port, scheme, timeout, config.body_max_bytes, catalogue
+                )
 
-        findings = await asyncio.gather(
+        outcomes = await asyncio.gather(
             *(_guarded(host, port, scheme) for host, port, scheme in candidates)
         )
 
+    findings = [outcome for outcome, _ in outcomes]
     result["checked_count"] = len(findings)
-    result["findings"] = list(findings)
+    result["findings"] = findings
+    result["exposures"] = [exposure for _, exposures in outcomes for exposure in exposures]
     result["truncated"] = truncated
 
-    matched = sum(1 for f in findings if f["cdn_waf"] or f["cms_framework"])
+    matched = sum(1 for f in findings if f["technologies"])
     _persist(output_dir, result)
     LOG.info(
-        "fingerprint: %d endpoint(s) checked -> %d with cdn/waf or cms/framework signal(s)%s",
+        "fingerprint: %d endpoint(s) checked -> %d with an identified technology, %d exposure(s)%s",
         len(findings),
         matched,
+        len(result["exposures"]),
         " [truncated]" if truncated else "",
     )
     return result
