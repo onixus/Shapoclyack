@@ -668,6 +668,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **MFA policy and step-up by authority in a tenant
+  ([#504](https://github.com/onixus/Shapoclyack/issues/504)).** The second-factor
+  policy compared `OCTO_MFA_REQUIRED_ROLES` with the account's global role only,
+  so under "MFA for admins" a tenant's `admin` whose global role is `viewer` —
+  or a `scope-approver`, `risk-approver`, `token-admin`, or a tenant-defined
+  role holding `tenant.member.manage` — signed in with a password alone, and
+  then granted memberships and wrote roles without a step-up. Two new
+  variables, `OCTO_MFA_REQUIRED_PERMISSIONS` and
+  `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS`, cover an account that holds a
+  listed permission in **any** tenant, through any role; the role lists keep
+  meaning the global role exactly as before. `PUT`/`DELETE
+  /api/tenants/{id}/members/{u}` and `POST`/`PATCH`/`DELETE
+  /api/tenants/{id}/roles…` (a delete with `reassign_to` included) now require
+  a recent step-up from an account with MFA enabled; service tokens remain
+  refused on all of them by scope. `GET /api/auth/mfa` adds
+  `required_because` (which tenant and role put the requirement there), and
+  the console's Security page shows it instead of the global role name.
+  **Behaviour change for existing installations:** with
+  `OCTO_MFA_REQUIRED_ROLES=admin` (or `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`)
+  and the new variables unset, the permission list is **derived** —
+  `tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+  `vulnerability.exception.approve` — so after the upgrade every holder of
+  one of those in any tenant who has not enrolled is confined to the Security
+  page, **including on sessions already open**: the requirement is re-read per
+  request, so a grant, a revoke or an edited role applies from the member's
+  next call rather than at the end of the session. Nobody is locked out — the
+  confined session can enrol. Installations without an MFA policy see no
+  change apart from the step-up on member and role administration, which, as
+  every step-up, applies only to accounts that have MFA enabled. To stage the
+  rollout, set both new variables to `none` (exactly the old behaviour) and
+  remove them once the affected people have enrolled; `docs/operations.md`
+  has a query listing who they are.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

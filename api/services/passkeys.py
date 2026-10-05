@@ -174,14 +174,20 @@ def session_binding(session_id: str | None, jti: str | None) -> str | None:
     return jti or None
 
 
-def phishing_resistant_required(settings: Settings, role: str) -> bool:
-    """Whether ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` names this role."""
-    return str(role or "").lower() in settings.mfa_phishing_resistant_roles
+def stepup_requires_webauthn(settings: Settings, username: str, role: str) -> bool:
+    """Whether a step-up of this account must be a WebAuthn assertion.
 
+    ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` for everyone, or the
+    phishing-resistant policy covering this account — by its global role or by
+    what it holds in any tenant (:func:`api.services.mfa.requirement`, #504).
+    """
+    if settings.mfa_stepup_phishing_resistant:
+        return True
+    from api.services import mfa as mfa_service
 
-def stepup_requires_webauthn(settings: Settings, role: str) -> bool:
-    """Whether a step-up for this role must be a WebAuthn assertion."""
-    return settings.mfa_stepup_phishing_resistant or phishing_resistant_required(settings, role)
+    if not mfa_service.phishing_resistant_policy(settings):
+        return False
+    return mfa_service.requirement(settings, username, role).phishing_resistant
 
 
 def credential_count(session: Any, username: str) -> int:
@@ -398,7 +404,7 @@ def check_registration_proof(
         )
     if (
         mfa_method != FACTOR_WEBAUTHN
-        and stepup_requires_webauthn(settings, role)
+        and stepup_requires_webauthn(settings, username, role)
         and has_credentials(settings, username)
     ):
         raise PermissionError(
@@ -427,7 +433,9 @@ def check_disable_proof(
     """
     from api.services import mfa as mfa_service
 
-    if not stepup_requires_webauthn(settings, role) or not has_credentials(settings, username):
+    if not stepup_requires_webauthn(settings, username, role) or not has_credentials(
+        settings, username
+    ):
         return
     deadline = mfa_service.stepup_deadline(mfa_verified_at, settings)
     if (

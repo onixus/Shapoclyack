@@ -196,8 +196,16 @@ prompt leaves a browser that is signed out rather than half signed in. **Use a
 recovery code instead** switches the field, and **Start again** drops the
 challenge rather than reusing it.
 
-When `OCTO_MFA_REQUIRED_ROLES` names your role and you have not enrolled, the
-API confines the session to the enrolment flow. An amber banner above the header
+When the MFA policy covers your account — `OCTO_MFA_REQUIRED_ROLES` names
+your global role, or you hold a permission of `OCTO_MFA_REQUIRED_PERMISSIONS`
+in any tenant (#504) — and you have not enrolled, the API confines the session
+to the enrolment flow. The console never decides this from `user.role`: it
+reads `mfa_required`/`mfa_pending` from `/api/auth/me`, and `/security`
+says *why* from the API's `required_because` — "role admin in tenant acme:
+tenant.credential.manage, tenant.member.manage", or "your account role admin"
+— instead of naming the global role, which for a tenant admin with a global
+`viewer` role used to be the wrong answer. A membership granted while you are
+signed in can confine the session you already have on its next request. An amber banner above the header
 says so and offers the one route that works; the login form sends such a session
 straight to `/security` rather than to a dashboard of 403s. Confirming the
 enrolment re-reads `/api/auth/me`, so the banner and the confinement lift on the
@@ -213,8 +221,9 @@ replayed: the dialog says to repeat the action, because a `POST` nobody saw
 succeed is not a thing to repeat silently. That covers the whole step-up set,
 which is wider than the credential screens — creating an account, resetting a
 password, changing a role, setting a verified address, resetting somebody's
-MFA, replacing a scan scope, and the **Deploy Agent** button on the sensors
-page.
+MFA, replacing a scan scope, granting, changing or revoking a membership and
+creating, editing or deleting a tenant role on **Roles & members** (#504), and
+the **Deploy Agent** button on the sensors page.
 
 #### Security keys and passkeys
 
@@ -243,8 +252,9 @@ shown as the error line if not. A prompt the user cancels or lets time out (the 
 English. A refused key or code on a step-up is a `403` from the API, so it
 stays in the dialog as an error instead of signing the console out.
 
-When `OCTO_MFA_PHISHING_RESISTANT_ROLES` names your role and the session was
-verified with a code, the API confines it like an unfinished enrolment
+When the phishing-resistant policy covers your account (by global role, or by
+`OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` in any tenant) and the session was
+verified with a code — the keys panel lists which sources ask for a key — the API confines it like an unfinished enrolment
 (`phishing_resistant_pending` on `/api/auth/me`). The same amber banner says so
 in its own words and sends you to `/security`; once a key is registered, **Verify
 with your key now** re-proves the session with it, and the confinement lifts

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.auth import (
     Role,
+    StepUpDep,
     TenantPrincipal,
     TokenUser,
     require_path_tenant_permission,
@@ -106,6 +107,9 @@ def create_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Defining a role is defining what a grant can hand out: a recent second
+    # factor, as on the membership routes (#504). No effect without MFA.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> RoleInfo:
     """Define a role of this tenant: a name, a rank and an explicit permission set.
@@ -139,6 +143,8 @@ def update_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Editing a role changes every holder's authority at once (#504).
+    __: StepUpDep,
     audit: AuditDep,
 ) -> RoleInfo:
     """Rename a role of this tenant or change what it may do.
@@ -173,6 +179,8 @@ def delete_role(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Deleting with ``reassign_to`` regrants every holder (#504).
+    __: StepUpDep,
     audit: AuditDep,
     reassign_to: Annotated[
         str | None,

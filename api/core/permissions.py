@@ -355,6 +355,24 @@ APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
     {SCAN_SCOPE_APPROVE, VULNERABILITY_EXCEPTION_APPROVE}
 )
 
+#: The authorities that decide *who else* may act in a tenant or what it may
+#: be pointed at: granting memberships and writing roles, issuing the tenant's
+#: credentials, and the two approvals. What ``OCTO_MFA_REQUIRED_PERMISSIONS``
+#: defaults to when ``OCTO_MFA_REQUIRED_ROLES`` names ``admin`` (#504): "MFA
+#: for administrators" has to mean whoever holds these in any tenant, not
+#: whoever has the word ``admin`` in ``users.role``. Every role holding one —
+#: the tenant ``admin``, ``token-admin``, ``scope-approver``,
+#: ``risk-approver``, a tenant-defined role carrying any of them — is one a
+#: stolen password would turn into somebody else's access.
+TENANT_AUTHORITY_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        TENANT_MEMBER_MANAGE,
+        TENANT_CREDENTIAL_MANAGE,
+        SCAN_SCOPE_APPROVE,
+        VULNERABILITY_EXCEPTION_APPROVE,
+    }
+)
+
 #: Ranks a role may sit at: read, write, administer.
 RANKS: tuple[int, ...] = (1, 2, 3)
 

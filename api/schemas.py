@@ -1292,6 +1292,21 @@ _MFA_CODE = Field(default=None, max_length=16)
 _RECOVERY_CODE = Field(default=None, max_length=32)
 
 
+class MfaRequirementReason(BaseModel):
+    """One place the MFA requirement of an account comes from (#504).
+
+    ``tenant_id`` is None for the global role (``users.role``, or the global
+    ``admin``'s authority everywhere). ``permissions`` are the ones of the
+    policy this role carries — empty when it was named by role alone.
+    ``phishing_resistant`` is whether this one asks for a security key.
+    """
+
+    tenant_id: str | None = None
+    role: str
+    permissions: list[str] = Field(default_factory=list)
+    phishing_resistant: bool = False
+
+
 class MfaStatus(BaseModel):
     """What the console's security page shows about one account (#315).
 
@@ -1305,9 +1320,12 @@ class MfaStatus(BaseModel):
     enabled_at: str | None = None
     setup_pending: bool = False
     recovery_codes_remaining: int = 0
-    # Whether OCTO_MFA_REQUIRED_ROLES names this account's role. The console
-    # uses it to say "your organisation requires this" rather than "optional".
+    # Whether the policy covers this account — by its global role, or by what
+    # it holds in any tenant (#504). The console uses it to say "your
+    # organisation requires this" rather than "optional", and
+    # ``required_because`` to say why.
     required: bool = False
+    required_because: list[MfaRequirementReason] = Field(default_factory=list)
     stepup_minutes: int = 15
     # Whether ``POST /api/auth/mfa/totp/confirm`` will ask for the password.
     # False for an account that has none (SSO-provisioned).

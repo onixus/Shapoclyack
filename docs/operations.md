@@ -2392,6 +2392,41 @@ their phone does not need an admin: they remove the lost key themselves on the
 Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
 recorded as `user.webauthn_revoke`.
 
+### Upgrading with an MFA policy: tenant admins are now covered (#504)
+
+An installation running with `OCTO_MFA_REQUIRED_ROLES=admin` (or
+`OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`) covers more accounts after this
+upgrade: everyone holding `tenant.member.manage`, `tenant.credential.manage`,
+`scan_scope.approve` or `vulnerability.exception.approve` in **any** tenant —
+the tenant `admin`, `token-admin`, `scope-approver`, `risk-approver`, and
+tenant-defined roles carrying one of those — whatever their global role
+([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)).
+Nobody is locked out: a newly covered account that has not enrolled gets a
+session confined to the Security page, **on its open session as well**, from
+the first request after the rollout. To see who that will be before upgrading:
+
+```sql
+SELECT ut.username, ut.tenant_id, ut.role
+  FROM user_tenants ut
+  JOIN users u ON u.username = ut.username
+ WHERE u.mfa_enabled_at IS NULL
+   AND u.role <> 'admin'
+   AND (ut.role IN ('admin', 'token-admin', 'scope-approver', 'risk-approver')
+        OR EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = ut.tenant_id AND rp.role_id = ut.role
+                      AND rp.permission_key IN ('tenant.member.manage',
+                          'tenant.credential.manage', 'scan_scope.approve',
+                          'vulnerability.exception.approve')))
+ ORDER BY ut.tenant_id, ut.username;
+```
+
+To stage it — tell those people first, then cover them — deploy with
+`OCTO_MFA_REQUIRED_PERMISSIONS=none` (and `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS=none`
+under a key policy), which is exactly the old global-role behaviour, and
+remove the override once they have enrolled. Granting and revoking memberships and editing tenant roles
+also needs a recent step-up from an enrolled account now, like minting a
+credential.
+
 ### Rolling out security keys
 
 WebAuthn needs a relying party the browser agrees with, and getting it wrong

@@ -299,6 +299,55 @@ hours; a promotion into a covered role would have done the same. It also means
 finishing an enrolment lifts the confinement on the *existing* token, with no
 sign-out in the middle.
 
+#### Coverage by authority in a tenant (#504)
+
+Since #318 the power to run a tenant comes from a **membership**, not from
+`users.role`: a global `viewer` can be `admin` of one tenant, `scope-approver`
+of another, or hold a role the tenant defined itself. Comparing the policy with
+the global role alone left all of them out. An account is now covered when
+**either** of these holds:
+
+- **by global role** — `OCTO_MFA_REQUIRED_ROLES` names its `users.role`,
+  exactly as before (a membership's role *name* is not matched: a tenant role
+  is covered by what it carries, whatever it is called);
+- **by permission** — it holds a permission listed in
+  `OCTO_MFA_REQUIRED_PERMISSIONS` in **at least one** tenant, through any role:
+  a built-in, a [tenant-defined role](#tenant-defined-roles), or the global
+  `admin`, which holds every permission everywhere.
+
+`OCTO_MFA_REQUIRED_PERMISSIONS` left unset is **derived**: when
+`OCTO_MFA_REQUIRED_ROLES` names `admin` it is the tenant-authority set —
+`tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+`vulnerability.exception.approve` — and otherwise empty. So "MFA for admins"
+now covers the tenant `admin`, `token-admin`, `scope-approver`,
+`risk-approver` and any tenant role carrying one of those, while an
+installation with no MFA policy is unchanged. `none` turns the permission half
+off, which is exactly the behaviour before #504.
+
+The requirement is about what one password can do, so it is computed across
+**every** tenant the account belongs to, not the tenant a request happens to
+name: a session confined for its admin membership in `acme` is confined in
+`default` as well. An account with no membership is judged by its global role
+in `default`, as everywhere else; a membership naming a tenant role that no
+longer resolves confers nothing, and so requires nothing.
+
+**Open sessions follow the authority immediately.** Like `mfa_pending` itself,
+the requirement is re-read per request: granting `admin` (or a role carrying a
+listed permission), or widening such a role, confines the holder's **already
+open** session on its next request until it enrols; revoking or narrowing lifts
+it the same way. The alternative — waiting for the session to expire — would
+have given a freshly promoted account up to `OCTO_JWT_EXPIRE_MINUTES` of tenant
+administration on a password alone. The cost is one membership read per request
+for an account that is **not** enrolled while a policy is configured; an
+enrolled account is decided by the primary-key read it already paid for.
+
+`GET /api/auth/me` reports `mfa_required` and `phishing_resistant_required`
+computed this way; `GET /api/auth/mfa` adds `required_because`, one entry per
+source — `{"tenant_id": "acme", "role": "admin", "permissions":
+["tenant.credential.manage", "tenant.member.manage"], "phishing_resistant":
+false}`, with `tenant_id` `null` for the global role — which the console's
+security page renders instead of the global role name.
+
 ### Step-up
 
 Operations that create or destroy a credential, or widen what a tenant may
@@ -315,6 +364,12 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
   a way to end up holding an admin account that carries no second factor
   (a verified address is what an SSO identity is linked to an account by),
   which would otherwise be a one-request path around every line above
+- `PUT`/`DELETE /api/tenants/{id}/members/{u}` and
+  `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles…` (#504) — granting,
+  changing and revoking a membership, and defining, editing or deleting the
+  roles a grant hands out, including a delete with `reassign_to`, which
+  regrants every holder. Without these an open tab of a tenant admin was
+  enough to make anyone that tenant's admin or approver
 
 A **service token** is exempt from step-up: there is no human at one to
 challenge. That is why every route in the list above must also be refused a
@@ -409,7 +464,15 @@ code) is confined exactly like `mfa_pending` — 403 on everything but
 the security key — and `GET /api/auth/me` reports `phishing_resistant_pending`.
 From there it can register a key (bootstrapped by the code it signed in with:
 there is no other factor to prove) and then verify with it. Decided per
-request from the policy and the token's `mfa_method` claim, with no query.
+request from the token's `mfa_method` claim — a session proved with a key owes
+nothing and costs no query — and otherwise from the policy as it applies to
+what the account holds now.
+
+`OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` is the same requirement by
+[authority in a tenant](#coverage-by-authority-in-a-tenant-504), with the same
+rules as `OCTO_MFA_REQUIRED_PERMISSIONS`: unset is derived (the tenant-authority
+set when `OCTO_MFA_PHISHING_RESISTANT_ROLES` names `admin`) and `none` turns
+it off. A covered account's step-ups must be a key too.
 
 `OCTO_MFA_STEPUP_PHISHING_RESISTANT=true` makes every [step-up](#step-up) —
 the credential and account-administration list above, and removing a key —
@@ -881,6 +944,11 @@ POST   /api/tenants/{tenant_id}/roles              {"role_id": "soc-lead", "desc
 PATCH  /api/tenants/{tenant_id}/roles/{role_id}    {"role_id": "…", "description": "…", "rank": 1, "permissions": [...]}   (every field optional)
 DELETE /api/tenants/{tenant_id}/roles/{role_id}[?reassign_to=viewer]
 ```
+
+All three need a recent second factor from an account with MFA enabled
+([Step-up](#step-up), #504): a role is what a grant hands out, and editing one
+changes every holder at once. A role carrying a permission of the MFA policy
+puts its holders under it ([coverage by authority](#coverage-by-authority-in-a-tenant-504)).
 
 `GET /api/rbac/roles` lists them after the built-ins, with `member_count` (how
 many of the tenant's members hold each role) and who created and last changed
@@ -2278,7 +2346,10 @@ own authority in the tenant: `403` for a role above it, and for changing or
 revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
-Membership rows hold no credential material.
+`PUT` and `DELETE` also need a recent second factor from an account with MFA
+enabled ([Step-up](#step-up), #504), and a grant moves the member's
+[MFA requirement](#coverage-by-authority-in-a-tenant-504) from their next
+request. Membership rows hold no credential material.
 
 Every tenant-scoped route resolves its tenant server-side from the
 authenticated username. The `tenant_id` query parameter still exists, but it

@@ -767,54 +767,63 @@ _MFA_PENDING_ALLOWED_PATHS = (
 
 
 def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
-    """Whether this caller is in a role that must enrol, and has not (#315).
+    """Whether this caller must enrol a second factor, and has not (#315, #504).
 
     Asked per request rather than once at login, and gated on the policy being
     configured at all so that an installation which has not adopted MFA pays
-    nothing for it: with ``OCTO_MFA_REQUIRED_ROLES`` empty this is a comparison
-    against an empty list and no query. When it is set it costs one extra
+    nothing for it: with no role or permission list set this is a comparison
+    against empty lists and no query. When one is set it costs one
     ``SELECT`` by primary key per request — a second short transaction, not a
-    re-read of the one ``decode_token`` already opened. That is the price of
-    the policy applying to sessions that predate it; the alternative was a
-    claim, and a claim is a promise made once about a fact that changes.
+    re-read of the one ``decode_token`` already opened — and, for an account
+    that has not enrolled, the membership read that decides whether it must.
+    That is the price of the policy applying to sessions that predate it, and
+    to a membership granted while the session is open (#504); the alternative
+    was a claim, and a claim is a promise made once about a fact that changes.
     """
-    # Either list makes a role MFA-required (``mfa.required_for_role``): a
-    # role that must hold a key must hold a factor at all.
-    if not (settings.mfa_required_roles or settings.mfa_phishing_resistant_roles):
-        return False
     from api.services import mfa as mfa_service
 
-    if not mfa_service.required_for_role(settings, user.role.value):
+    if not mfa_service.policy_configured(settings):
         return False
-    return not mfa_service.is_enabled(settings, user.username)
+    # Enrolled first: it is one primary-key read, and an enrolled account
+    # owes nothing here whatever it holds, so the common case under a policy
+    # never reads the memberships.
+    if mfa_service.is_enabled(settings, user.username):
+        return False
+    return mfa_service.requirement(settings, user.username, user.role.value).required
 
 
 def _owes_phishing_resistant_factor(settings: Settings, user: TokenUser) -> bool:
     """Whether this session was proved with a code where a key is required (#315).
 
-    Decided from the policy and the session's own ``mfa_method`` claim, with no
-    query: which factor *this* session was proved with is a fact about the
-    token, and the policy is configuration. An account that has not enrolled at
-    all is :func:`_owes_enrolment`'s case and is confined there first.
+    Which factor *this* session was proved with is a fact about the token (its
+    ``mfa_method`` claim), checked first and with no query: a session proved
+    with a key owes nothing. Otherwise whether a key is required is the policy
+    as it applies to what the account holds now (#504) — a read of its
+    memberships, made only under a phishing-resistant policy and only for a
+    session that was not proved with a key. An account that has not enrolled
+    at all is :func:`_owes_enrolment`'s case and is confined there first.
     """
-    if not settings.mfa_phishing_resistant_roles:
-        return False
+    from api.services import mfa as mfa_service
     from api.services import passkeys as passkeys_service
 
-    if not passkeys_service.phishing_resistant_required(settings, user.role.value):
+    if not mfa_service.phishing_resistant_policy(settings):
         return False
-    return user.mfa_method != passkeys_service.FACTOR_WEBAUTHN
+    if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN:
+        return False
+    return mfa_service.requirement(settings, user.username, user.role.value).phishing_resistant
 
 
 _ENROLMENT_REQUIRED_DETAIL = (
-    "This installation requires multi-factor authentication for your role. "
+    "This installation requires multi-factor authentication for your account's "
+    "role or for what it may do in a tenant. "
     "Enrol an authenticator with POST /api/auth/mfa/totp/setup before using "
     "the rest of the API."
 )
 #: Worded for the console as well as for a script: "security key" is what the
 #: banner keys on, the two endpoints are what a script needs.
 _PHISHING_RESISTANT_REQUIRED_DETAIL = (
-    "This installation requires a security key (WebAuthn) for your role. "
+    "This installation requires a security key (WebAuthn) for your account's "
+    "role or for what it may do in a tenant. "
     "Register one with POST /api/auth/mfa/webauthn/register/options, then sign "
     "in with it through POST /api/auth/mfa/verify."
 )
@@ -823,9 +832,9 @@ _PHISHING_RESISTANT_REQUIRED_DETAIL = (
 def _enforce_mfa_enrolment(request: Request, detail: str = _ENROLMENT_REQUIRED_DETAIL) -> None:
     """Confine a session that owes this installation a second factor (#315).
 
-    The account is in a role ``OCTO_MFA_REQUIRED_ROLES`` names and has not
-    enrolled — or, with ``detail`` naming it, a role
-    ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` names whose session was proved with a
+    The policy covers the account — by its global role, or by what it holds in
+    a tenant (#504) — and it has not enrolled; or, with ``detail`` naming it,
+    the phishing-resistant policy covers it and this session was proved with a
     code rather than a key. Refusing the *login* would leave nobody able to
     enrol, so the session exists and is worth exactly one thing: setting up
     the factor. Everything else is a 403 that names the endpoint to go to,
@@ -1002,8 +1011,8 @@ def require_step_up(
     adopted MFA behaves exactly as it did, which is what makes this safe to
     turn on for everyone at once rather than behind a flag.
 
-    Where policy asks for a phishing-resistant factor — the account's role is
-    in ``OCTO_MFA_PHISHING_RESISTANT_ROLES``, or
+    Where policy asks for a phishing-resistant factor — the phishing-resistant
+    policy covers the account by role or tenant permission (#504), or
     ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` is on — the recent proof must also
     have been a WebAuthn assertion (the session's ``mfa_method``).
     """
@@ -1031,7 +1040,7 @@ def require_step_up(
     # tests is a setting that can quietly stop meaning anything.
     if deadline is not None and deadline > mfa_service.now_utc():
         if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN or not (
-            passkeys_service.stepup_requires_webauthn(settings, user.role.value)
+            passkeys_service.stepup_requires_webauthn(settings, user.username, user.role.value)
         ):
             return user
         # Recent, but proved with a code where policy wants a key. Same marker
