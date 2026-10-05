@@ -441,6 +441,120 @@ def test_a_journal_naming_a_path_outside_releases_is_not_followed(tmp_path):
         update.Installer(install).recover()
 
 
+def _archive_of(path: Path, files: dict[str, bytes]) -> None:
+    import io
+
+    with tarfile.open(path, "w:gz") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+
+def test_an_archive_unpacking_past_the_size_cap_is_refused(tmp_path, monkeypatch):
+    """A gzip bomb is small on the wire; the cap is on what it unpacks to."""
+    _archive_of(
+        tmp_path / "x.tar.gz",
+        {"agent/__init__.py": b'__version__ = "1"\n', "agent/big.py": b"#" * 4096},
+    )
+    monkeypatch.setattr(update, "MAX_UNPACKED_BYTES", 1024)
+    (tmp_path / "dest").mkdir()
+    with pytest.raises(update.BundleRefused, match="unpacks to more"):
+        update.extract_agent_package(tmp_path / "x.tar.gz", tmp_path / "dest")
+
+
+def test_an_archive_with_too_many_members_is_refused(tmp_path, monkeypatch):
+    files = {"agent/__init__.py": b'__version__ = "1"\n'}
+    files.update({f"agent/m{index}.py": b"" for index in range(4)})
+    _archive_of(tmp_path / "x.tar.gz", files)
+    monkeypatch.setattr(update, "MAX_MEMBERS", 3)
+    (tmp_path / "dest").mkdir()
+    with pytest.raises(update.BundleRefused, match="too many members"):
+        update.extract_agent_package(tmp_path / "x.tar.gz", tmp_path / "dest")
+
+
+@pytest.mark.parametrize("kind", [tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE])
+def test_a_link_or_device_member_is_refused_not_only_a_symlink(tmp_path, kind):
+    """Regular files and directories only: a hard link, a FIFO or a device is
+    not a symlink and is still not something a release is made of."""
+    import io
+
+    path = tmp_path / "x.tar.gz"
+    with tarfile.open(path, "w:gz") as tar:
+        init = b'__version__ = "1"\n'
+        info = tarfile.TarInfo("agent/__init__.py")
+        info.size = len(init)
+        tar.addfile(info, io.BytesIO(init))
+        odd = tarfile.TarInfo("agent/odd.py")
+        odd.type = kind
+        odd.linkname = "agent/__init__.py" if kind == tarfile.LNKTYPE else ""
+        tar.addfile(odd)
+    (tmp_path / "dest").mkdir()
+    with pytest.raises(update.BundleRefused, match="not a regular file"):
+        update.extract_agent_package(path, tmp_path / "dest")
+
+
+def test_the_bytes_hashed_are_the_bytes_unpacked(tmp_path, signing_key, monkeypatch):
+    """Whoever can write the download directory swaps the archive between the
+    digest check and the unpack. What goes live is still what was verified."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    evil = next(_bundle(tmp_path / "evil", signing_key, "0.47-0930", worker="MARKER = 'evil'\n").glob("*.tar.gz"))
+    real_read = update.read_verified_archive
+
+    def read_then_swap(path, signed):
+        data = real_read(path, signed)
+        shutil.copyfile(evil, path)
+        return data
+
+    monkeypatch.setattr(update, "read_verified_archive", read_then_swap)
+    update.Installer(install).install(archive, manifest)
+    assert (install / "agent" / "worker.py").read_text() == "MARKER = 'ok'\n"
+
+
+def test_the_import_check_ignores_the_callers_pythonpath(tmp_path, signing_key, monkeypatch):
+    """A release that imports only because of something on the updater's own
+    ``PYTHONPATH`` would not import under the unit."""
+    crutch = tmp_path / "crutch"
+    crutch.mkdir()
+    (crutch / "i363_only_on_pythonpath.py").write_text("")
+    monkeypatch.setenv("PYTHONPATH", str(crutch))
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(
+        _bundle(tmp_path, signing_key, "0.47-0930", worker="import i363_only_on_pythonpath\n"),
+        signing_key,
+    )
+    with pytest.raises(update.UpdateFailed, match="does not import"):
+        update.Installer(install).install(archive, manifest)
+    assert _live_version(install) == "0.46-0922"
+
+
+def test_a_releases_symlink_is_not_installed_through(tmp_path, signing_key):
+    install = _installed(tmp_path, "0.46-0922")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (install / "releases").symlink_to(elsewhere)
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    with pytest.raises(update.UpdateFailed, match="is a symlink"):
+        update.Installer(install).install(archive, manifest)
+    assert list(elsewhere.iterdir()) == []
+    assert _live_version(install) == "0.46-0922"
+
+
+def test_commit_refuses_when_the_live_release_is_not_the_pending_one(tmp_path, signing_key):
+    """Something put the old release back between swap and verdict: keeping
+    "the pending release" would drop the journal for a release that is not live."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    installer = update.Installer(install)
+    installer.install(archive, manifest, pending=True)
+    journal = json.loads((install / ".sensor-update.json").read_text())
+    installer._point_at(journal["previous"])
+    with pytest.raises(update.UpdateFailed, match="not the pending release"):
+        installer.commit()
+    assert (install / ".sensor-update.json").exists()
+
+
 # --------------------------------------------------------------------------
 # The systemd health check, against a systemctl that behaves like one
 # --------------------------------------------------------------------------
@@ -647,6 +761,25 @@ def test_the_server_floor_refuses_a_bundle_below_it(tmp_path, signing_key, monke
         code = update.main(["--install-dir", str(install), "--env-file", str(tmp_path / "none")])
     assert code == 1
     assert _live_version(install) == "0.46-0922"
+
+
+def test_root_will_not_run_the_update_over_a_tree_another_account_owns(tmp_path, signing_key, monkeypatch):
+    """The accident guard: ``sudo python -m agent.update`` by hand, on a tree
+    the sensor's account owns, stops before it touches anything."""
+    install = _cli_install(tmp_path, "0.46-0922")
+    assert install.stat().st_uid != 0
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    state = _fake_systemd(tmp_path, monkeypatch, "stable")
+    monkeypatch.setenv(update.PUBKEY_FILE_ENV, str(key_file))
+    monkeypatch.setattr(update.os, "geteuid", lambda: 0)
+    code = update.main(
+        ["--install-dir", str(install), "--env-file", str(install / "missing.env"),
+         "--bundle-dir", str(_bundle(tmp_path, signing_key, "0.47-0930")), "--health-seconds", "1"]
+    )
+    assert code == 2
+    assert _live_version(install) == "0.46-0922"
+    assert not (state / "calls").exists()
 
 
 # --------------------------------------------------------------------------
@@ -919,3 +1052,29 @@ def test_an_endpoint_agent_is_not_handed_the_sensor_bundle(tmp_path, monkeypatch
     refused = client.get("/api/agent/bundle", headers=bearer(tokens["endpoint"]))
     assert refused.status_code == 403
     assert client.get("/api/agent/bundle/download", headers=bearer(tokens["endpoint"])).status_code == 403
+
+
+
+def test_a_sensor_of_another_tenant_is_not_handed_the_bundle(tmp_path, monkeypatch, signing_key):
+    """The route's own tenant check, without a database: the agent row the
+    request resolves to belongs to another tenant than the credential."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from api.auth import AgentPrincipal
+    from api.routes import agents as agent_routes
+    from api.schemas import AgentInfo
+
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    settings = SimpleNamespace(agent_bundle_dir=str(bundle))
+    principal = AgentPrincipal(tenant_id="ten_a", agent_id="sensor_1")
+    rows = {"ten_a": AgentInfo(agent_id="sensor_1", tenant_id="ten_a")}
+    monkeypatch.setattr(agent_routes, "_agent_for_request", lambda _r, _p, _id: rows["current"])
+
+    rows["current"] = rows["ten_a"]
+    assert agent_routes._published_bundle(None, principal, settings).version == "0.47-0930"
+    rows["current"] = AgentInfo(agent_id="sensor_1", tenant_id="ten_b")
+    with pytest.raises(HTTPException) as refused:
+        agent_routes._published_bundle(None, principal, settings)
+    assert refused.value.status_code == 403
