@@ -34,6 +34,30 @@ The bare word "agent" always means the Lariska endpoint Agent; anything that cla
 | Hand the firewall team what sensors and the API open | [Network requirements](network-requirements.md) |
 | Develop or review changes | [Development](development.md) |
 | Plan product certification under FSTEC requirements | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 |
+| Install on a single Linux server from prebuilt images | [Server installation](server-install.ru.md) 🇷🇺 |
+
+## Identity, fleet trust and the scan queue
+
+Where the procedures for the enterprise features live. Each row links the
+operator procedure first, then the API contract and the variables; all of it is
+on `main` after `shapoclyack-0.46-0922` (see `## Unreleased` in the changelog).
+
+| Task | Procedure | API and configuration |
+|---|---|---|
+| Require MFA by role or by a permission held in any tenant, and upgrade an existing MFA policy | [Operations § Upgrading with an MFA policy](operations.md#upgrading-with-an-mfa-policy-tenant-admins-are-now-covered-504) | [Multi-factor authentication](api-and-rbac.md#multi-factor-authentication), [coverage by authority in a tenant](api-and-rbac.md#coverage-by-authority-in-a-tenant-504) |
+| Define roles of a tenant's own | [Operations § Tenant-defined roles](operations.md#tenant-defined-roles) | [Tenant-defined roles](api-and-rbac.md#tenant-defined-roles) |
+| Make the IdP authoritative and connect SCIM 2.0 | [Operations § Making the IdP authoritative, and SCIM](operations.md#making-the-idp-authoritative-and-scim) | [IdP-authoritative resync](api-and-rbac.md#idp-authoritative-resync), [SCIM 2.0 provisioning](api-and-rbac.md#scim-20-provisioning) |
+| Prioritise scans and cap a tenant's concurrent and queued scans | [Operations § Scan queue](operations.md#scan-queue-priority-and-per-tenant-ceilings) | [Queue priority, concurrency and admission](api-and-rbac.md#queue-priority-concurrency-and-admission) |
+| Put sensors on client certificates (mTLS) | [Operations § Sensor client certificates](operations.md#sensor-client-certificates) | [Configuration § Sensor and Agent client certificates](configuration.md#sensor-and-agent-client-certificates-mtls) |
+| Update native sensors from the signed bundle | [Operations § Sensor bundle updates](operations.md#sensor-bundle-updates) | [Supply chain § The sensor bundle](supply-chain.md#the-sensor-bundle), `OCTO_AGENT_BUNDLE_DIR` / `OCTO_AGENT_AUTO_UPDATE` in [Configuration](configuration.md#environment-variables) |
+| Publish and audit Lariska Agent builds (platform admin) | [Operations § Endpoint Agent (Lariska) builds](operations.md#endpoint-agent-lariska-builds) | [Sensor fleet, deployment and upgrade](api-and-rbac.md#sensor-fleet-deployment-and-upgrade) |
+| Import business context from a CMDB/AD export | [Asset business context](asset-context.md) | `POST /api/assets/import` |
+| Understand request rate limits and the body cap | [Operations § When callers start getting 429](operations.md#when-callers-start-getting-429) | [Request rate limiting and body size](api-and-rbac.md#request-rate-limiting-and-body-size) |
+
+What these do **not** cover yet is recorded in
+[ROADMAP.md § Enterprise-readiness review](../ROADMAP.md#enterprise-readiness-review-epic-370) —
+among others, Lariska cannot present a client certificate, sensor updates are
+operator-run unless you enable a timer, and there is no SAML or LDAP.
 
 ## Product and UX direction
 
@@ -75,11 +99,17 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Risk scoring](risk-scoring.md) | NIST SP 800-30 model, exploit maturity (PoC vs theoretical), asset criticality |
 | [Vulnerability lifecycle](vulnerability-lifecycle.md) | Tracked findings, states, SLA, exceptions, audit trail |
 | [Software → CVE matching](software-cve-matching.md) | Endpoint inventory matched against vendor advisories; statuses, offline datasets, and what it does not cover |
+| [Advisory coverage](advisory-coverage.md) | When a package reads `unknown` (no advisory data for the host's release) rather than assessed, and what a loaded dataset does not guarantee |
+| [RPM advisories](rpm-advisories.md) | RHEL, SLES and Amazon Linux binary-RPM providers: supported inputs, explicit channel bindings, dataset overrides (#358, feed acceptance still open) |
+| [Retro CVE matching](retro-cve-matching.md) | Matching stored service fingerprints against CVEs published after the scan |
 | [Reports and compliance](reports-and-compliance.md) | Branded report factory (templates, schedules, delivery) and PCI DSS / CIS / ISO 27001 / ФСТЭК / ГОСТ Р 57580.1 control mapping, with what it deliberately does not claim |
+| [Custom compliance catalogues](custom-compliance.md) | A customer's own control catalogue mapped onto the platform's evidence signals (W11 / #356), БДУ provenance and signed evidence packages |
 | [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD file import (`POST /api/assets/import`) and audit trail |
 | [Asset identity](asset-identity.md) | When an IP observation and an FQDN observation are treated as one asset, and when they deliberately are not |
 | [Troubleshooting](troubleshooting.md) | Startup, authentication, scanner, broker, database, UI diagnostics |
 | [Pulse backend](pulse-backend.md) | Pulse service-probe backend and Nmap compatibility choices |
+| [Exact Naabu → Pulse endpoints](pulse-endpoints.md) | The exact-endpoint planner and resume between port discovery and Pulse (#448) |
+| [Server installation](server-install.ru.md) 🇷🇺 | `scripts/install-server.py`: prebuilt all-in-one image and PostgreSQL via Docker Compose, no build on the server |
 
 ## Platform and integration documentation
 
@@ -102,6 +132,8 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [FSTEC certification roadmap](fstec-certification.ru.md) 🇷🇺 | Certified boundary, УД4 planning baseline, evidence set, supply-chain and test traceability |
 | [Architecture review — 2026-09-18](architecture-review-2026-09-18.ru.md) 🇷🇺 | Source-based assessment, ingestion risks, priorities, and local validation limits |
 | [Scale profile](scale-profile.md) | Measured behavior at 1k/10k/50k assets and resulting fixes |
+| [Sizing calibration](sizing-calibration.md) | Checking stand calibration artifacts for the sizing model (#337) — preparation, not the calibration itself |
+| [Finding evidence: shadow contract](finding-evidence.md) | Stage 1 of #449: an offline evidence projection beside the production first-wins path, not a replacement for it |
 | [Scan performance](scan-performance.md) | Faster scans without more hardware: stage timings, intents, delta |
 | [UI/UX redesign roadmap](ui-ux-redesign-roadmap.md) | Planned VM/Exposure Management UI and backend dependencies |
 | [Endpoint inventory design record](../Agent_plan.md) | Lariska integration history and design decisions; not the general product roadmap |

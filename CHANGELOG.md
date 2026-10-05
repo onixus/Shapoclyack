@@ -184,11 +184,11 @@ All notable changes to Shapoclyack are documented in this file.
   `max_queued_scans`, enforced at admission with `429` and `Retry-After`;
   `OCTO_SCAN_QUEUE_MAX_DEPTH` is the installation-wide depth ceiling. A local
   scan of a tenant at its ceiling now waits in `queued` instead of starting,
-renewing a waiting mark the job reaper of any replica uses to fail it once its
-replica is gone (or cut off from the database for longer than the mark, as a
-running job's lease would be); a scheduled scan that meets a full queue is
-deferred by the `Retry-After`, not skipped (`deferred_queue_full`), up to its
-next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
+  renewing a waiting mark the job reaper of any replica uses to fail it once its
+  replica is gone (or cut off from the database for longer than the mark, as a
+  running job's lease would be); a scheduled scan that meets a full queue is
+  deferred by the `Retry-After`, not skipped (`deferred_queue_full`), up to its
+  next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   New series `octo_scan_queue_throttled_total{reason}` and the opt-in
   `octo_tenant_jobs_queued{tenant}`. The console's job table shows and sets
   the priority, gated by the permission in the active tenant. Migration
@@ -962,6 +962,7 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
   Signing the builds, so the API is not the endpoint's only source of trust,
   is a follow-up.
+
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body
@@ -1365,6 +1366,19 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
     of starting a second one beside it.
   - A failed `import agent.worker` check now prints the last lines of the
     traceback instead of discarding them.
+
+### Documentation
+
+- **ROADMAP, READMEs and the wiki checked against the code after the 2026-10
+  enterprise wave.** `ROADMAP.md` gains a dated status note and an EPIC #370
+  table saying what each of #504, #365, #316, #510, #363, #309, #318, #320,
+  #356 and #350 (stage 1) left open; corrected claims include "mutual TLS is
+  not in the build", "SCIM has not landed", the ticket poller still being
+  "on demand", web screenshots marked Done although no image installs
+  Playwright (#367), "hardware/OS lifecycle" in the CAASM row, and the claim
+  order described as oldest-first after #365 made it priority-first.
+  `docs/README.md` indexes the new operator procedures and eight guides it
+  did not list.
 
 ## [0.46-0922] — 2026-09-22
 

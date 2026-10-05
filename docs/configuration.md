@@ -1006,6 +1006,16 @@ it is fresh, so a failure is recorded on the channel (`last_status`, visible in
 `GET /api/notification-channels`) and in the job log instead of being replayed.
 For the DefectDojo import that is a real limitation — a `503` from the tracker
 loses that run's import, and the next scan's import is what recovers it.
+
+### Environment variables by area
+
+The tables below continue the [environment variable reference](#environment-variables)
+area by area — workflow events, quotas and the scan queue, logging, rate limits,
+audit forwarding, single sign-on and the IdP-authoritative mode, MFA, service
+tokens, job leases, the endpoint Agent, advisories, high availability and
+retention. Sensor and Agent client certificates have
+[their own section](#sensor-and-agent-client-certificates-mtls).
+
 Remediation-workflow events and SLA escalation
 ([#349](https://github.com/onixus/Shapoclyack/issues/349), see
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md#workflow-events-and-sla-escalation)).
