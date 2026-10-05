@@ -370,7 +370,7 @@ def _inventory_assessment_complete(device: models.EndpointDevice) -> bool:
         distro = package_identity.resolve_distro(os_family=device.os_family, os_name=device.os_name,
                                                  os_version=device.os_version).distro
         relevant = {"rpm"} if distro in rpm_identity.RPM_DISTROS else {"apt", "dpkg"}
-    return all(state.get("status") == "complete" for state in (device.source_states or [])
+    return all(state.get("status") == "complete" for state in (getattr(device, "source_states", None) or [])
                if state.get("source") in relevant)
 
 
@@ -385,6 +385,7 @@ def _fold_device(
     """Reconcile one device's matches against its tracked findings."""
     stats = SoftwareFindingStats(devices=1, matches_seen=len(context.matches))
     device = context.device
+    software_snapshot_id = getattr(device, "software_snapshot_id", None) or device.latest_snapshot_id
     asset = context.asset
     observed_at = context.observed_at
 
@@ -415,16 +416,23 @@ def _fold_device(
         match_service.FIXED: 1,
         match_service.NOT_APPLICABLE: 0,
     }
+
+    def tracking_rank(candidate):
+        # Severity breaks ties between vulnerable installations. A fixed or
+        # unknown verdict carries no positive severity evidence to rank.
+        severity = (
+            _SEVERITY_RANK[_severity_of(candidate)]
+            if candidate.status == match_service.VULNERABLE
+            else 0
+        )
+        return ranks.get(candidate.status, 0), severity
+
     for candidate in context.matches:
         cve = str(candidate.cve_id or "").strip().upper()
         if not cve:
             continue
         old = tracking_matches.get(cve)
-        rank = (ranks.get(candidate.status, 0), _SEVERITY_RANK[_severity_of(candidate)])
-        if old is None or rank > (
-            ranks.get(old.status, 0),
-            _SEVERITY_RANK[_severity_of(old)],
-        ):
+        if old is None or tracking_rank(candidate) > tracking_rank(old):
             tracking_matches[cve] = candidate
     for match in tracking_matches.values():
         if match.status == match_service.VULNERABLE and (match.cve_id or "").strip():
@@ -517,9 +525,7 @@ def _fold_device(
                     "source": SOURCE,
                     "first_seen": True,
                     "device_id": device.device_id,
-                    "snapshot_id": (
-                        device.software_snapshot_id or device.latest_snapshot_id
-                    ),
+                    "snapshot_id": software_snapshot_id,
                     "severity": severity,
                     "installed_package": match.installed_package,
                     "installed_version": match.installed_version,
@@ -550,9 +556,7 @@ def _fold_device(
                 detail={
                     "source": SOURCE,
                     "device_id": device.device_id,
-                    "snapshot_id": (
-                        device.software_snapshot_id or device.latest_snapshot_id
-                    ),
+                    "snapshot_id": software_snapshot_id,
                     "severity": severity,
                 },
             )
@@ -601,9 +605,7 @@ def _fold_device(
             reopen_detail: dict[str, Any] = {
                 "source": SOURCE,
                 "device_id": device.device_id,
-                "snapshot_id": (
-                    device.software_snapshot_id or device.latest_snapshot_id
-                ),
+                "snapshot_id": software_snapshot_id,
             }
             # Either the suppression ran out or an escalation broke it. Both
             # mean the verdict no longer holds, and leaving it on an open row
@@ -642,9 +644,7 @@ def _fold_device(
                 detail={
                     "source": SOURCE,
                     "device_id": device.device_id,
-                    "snapshot_id": (
-                        device.software_snapshot_id or device.latest_snapshot_id
-                    ),
+                    "snapshot_id": software_snapshot_id,
                     "severity": severity,
                 },
             )
@@ -694,7 +694,7 @@ def _fold_device(
             if match.status == match_service.FIXED
             and match.cve_id
             and match.snapshot_id
-            == (device.software_snapshot_id or device.latest_snapshot_id)
+            == software_snapshot_id
             and (match.evidence or {}).get("assessment_scope") == "installed_binary_rpm"
         }
         if rpm_device
@@ -747,14 +747,12 @@ def _fold_device(
             actor="system:inventory",
             note=(
                 f"No longer matched by inventory snapshot "
-                f"{(device.software_snapshot_id or device.latest_snapshot_id)} on {device.hostname}"
+                f"{software_snapshot_id} on {device.hostname}"
             ),
             detail={
                 "source": SOURCE,
                 "device_id": device.device_id,
-                "snapshot_id": (
-                    device.software_snapshot_id or device.latest_snapshot_id
-                ),
+                "snapshot_id": software_snapshot_id,
                 "assessment_possible": True,
                 "machine_verified": True,
                 "closure_reason": "patched",
@@ -842,7 +840,7 @@ def _fold_one(
     if asset is None:
         return SoftwareFindingStats(skipped_unlinked=1)
     observed_at = _snapshot_received_at(
-        session, (device.software_snapshot_id or device.latest_snapshot_id)
+        session, (getattr(device, "software_snapshot_id", None) or device.latest_snapshot_id)
     )
     if observed_at is None:
         return SoftwareFindingStats()
@@ -879,7 +877,7 @@ def _mark_matched(device: models.EndpointDevice) -> None:
     rest of its life. See migration ``0033``.
     """
     device.last_matched_snapshot_id = (
-        device.software_snapshot_id or device.latest_snapshot_id
+        getattr(device, "software_snapshot_id", None) or device.latest_snapshot_id
     )
     device.match_failure_count = 0
     device.match_retry_after = None
