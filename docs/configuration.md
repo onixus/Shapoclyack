@@ -45,7 +45,7 @@ value on the System page rather than assuming the file was applied.
 | `service_probe` | Service/version detection backend: `pulse` (default), `nmap`, `hybrid`, and shadow comparison | [Pulse backend](pulse-backend.md) |
 | `reporting` | Which report formats a run writes (Markdown, HTML, CSV, JSON, PDF) and the PDF's title/org | [Operations](operations.md), [Reports and compliance](reports-and-compliance.md) |
 | `enrichment` | CVSS v4, GeoIP and ASN datasets | [Enrichment sources](#enrichment-sources) |
-| `fingerprint` | HTTP fingerprinting of already-open web ports | [Scan performance](scan-performance.md) |
+| `fingerprint` | HTTP fingerprinting of already-open web ports: technology catalogue, versions, CPE, exposed consoles and gateways | [Web fingerprinting](web-fingerprinting.md), [Scan performance](scan-performance.md) |
 | `screenshots` | Viewport PNGs of open web ports | [Web screenshots](#web-screenshots) |
 | `dns` | Resolvers nuclei is told to use (`-resolvers`); empty = the host's `/etc/resolv.conf` | [Network requirements](network-requirements.md#dns-resolvers) |
 | `nuclei` | Nuclei stage: template directory, severities, caps, rate limit, OAST server | [NSE and vulnerability checks](#nse-and-vulnerability-checks) |

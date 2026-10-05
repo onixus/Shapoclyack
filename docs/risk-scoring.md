@@ -136,8 +136,15 @@ findings have no job behind them and are unaffected.
 A WAF in front of a vulnerable service is only a likelihood input when
 fingerprint (Phase 9.1) actually saw a CDN/WAF header on **that** host:port
 ([#173](https://github.com/onixus/Shapoclyack/issues/173)). The providers
-are the ones `fingerprint.py` already names: Cloudflare, Akamai, Sucuri,
-Imperva/Incapsula, CloudFront, Fastly. A CMS match is not a control.
+are the six fingerprint shipped with: Cloudflare, Akamai, Sucuri,
+Imperva/Incapsula, CloudFront, Fastly (`CDN_WAF_PROVIDERS`). The
+[fingerprint catalogue](web-fingerprinting.md) knows more CDN/WAFs (Qrator,
+DDoS-Guard, Variti, Azure Front Door, …) and reports them, but they earn no
+discount until the risk model is changed to say so; a medium-confidence match
+(a Barracuda cookie, an F5 ASM block page) does not even reach the `cdn_waf`
+list. Imperva is matched by its cookie *names* — a cookie whose value merely
+contains `incap_ses` used to count and no longer does. A CMS match is not a
+control.
 
 The discount is small (−6) and named in `risk_explanation`, with the caveat
 that seeing Cloudflare is **not** evidence it blocks this CVE. Several

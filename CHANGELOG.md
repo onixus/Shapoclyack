@@ -6,6 +6,34 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Web fingerprinting from a catalogue: versions, CPE and exposed consoles
+  (DQ4).** The `fingerprint` stage's eleven hard-coded signatures are replaced
+  by `scanner/pipeline/fingerprint_catalogue.json` — 140 technologies across
+  CDN/WAF, load balancers, web and application servers, frameworks, CMS
+  (1C-Bitrix, Tilda, MODX among them), shops, admin and database UIs, devops
+  and monitoring consoles, SSL-VPN and remote-access portals (FortiGate,
+  Ivanti, Citrix, GlobalProtect, Cisco ASA, F5 APM), webmail (Exchange,
+  Zimbra, Roundcube, Kerio, CommuniGate), network appliances (MikroTik,
+  BIG-IP TMUI, iLO) and the 1C:Enterprise web client — validated at load,
+  matched against the same single GET (headers, cookie *names*, body
+  markers, `<title>`, meta generator, the path redirects ended on; no new
+  request). Each endpoint gains `technologies[]` with `version` where the
+  product states one reliably and an NVD-verified CPE 2.3 name, plus
+  `final_url`, `redirected_off_host` and `title`; `fingerprint.json` gains
+  `exposures[]`: `exposed_admin_interface` (medium),
+  `exposed_remote_access_gateway` (info, carrying the `cpe` a KEV join
+  needs) and `version_disclosure` (info, header-stated versions only), none
+  raised after a redirect to another host. `cdn_waf` and `cms_framework` keep
+  their names; `cdn_waf` lists high-confidence CDN/WAF only, and the risk
+  discount (#173) still applies to the original six providers alone. Two
+  matches narrowed on purpose: Joomla is no longer the word "joomla"
+  anywhere in the body, and an `incap_ses` inside some other cookie's value
+  no longer counts as Imperva on path (it used to take the −6). The
+  *Технологии сайта* control counts an exposed console as medium and lists
+  gateways and header versions without changing its status. See
+  [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
+  synthetic, not live captures.
+
 - **Client certificates for sensors and endpoint Agents
   ([#309](https://github.com/onixus/Shapoclyack/issues/309)).** With
   `OCTO_AGENT_MTLS_MODE=optional|required` (default `off`, unchanged
