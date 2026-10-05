@@ -2464,6 +2464,59 @@ is usually doing it because something is already broken, and a database that
 cannot take the row is a realistic version of that — refusing the login would
 turn a degraded installation into an unreachable one.
 
+### Making the IdP authoritative, and SCIM
+
+`OCTO_IDP_AUTHORITATIVE=true` makes every SSO login recompute the account's
+global role and IdP-granted memberships from its groups, and disable an account
+in no mapped group ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync),
+#316). It changes what people can do at their next login, so turn it on in
+this order:
+
+1. **Map before you switch.** `OCTO_OIDC_ROLE_CLAIM` (e.g. `groups`),
+   `OCTO_OIDC_ROLE_MAP` with the admin group in it, and `OCTO_IDP_GROUP_MAP` for
+   the tenants. An SSO admin whose groups map to nothing is a viewer — or
+   disabled — after their next login.
+2. **Have the break-glass account in place** (above). It is never resynced, so
+   it is how you get back in if the map is wrong.
+3. **Know what stays.** Every membership that existed before migration 0076,
+   and every one a person grants afterwards, is `source: local` and is never
+   removed by the resync (`GET /api/tenants/{id}/members` shows the source).
+   Revoke the hand-made grants you want the IdP to own; the next login
+   re-grants them as `idp`.
+4. Switch it on and watch the trail:
+   `GET /api/audit?action=membership.revoke`, `…?action=user.disable` and
+   `…?action=user.role_change` — the resync's rows carry actor `oidc:<issuer>`
+   and `"source": "idp"`.
+
+Rolling it back is setting the variable to `false`: nothing is undone, and
+logins go back to deciding nothing after provisioning. An account the resync
+disabled stays disabled until an administrator re-enables it
+(`PUT /api/users/{u}/disabled`) or a login with the mode on finds a mapped
+group again.
+
+**SCIM** needs no switch — `/scim/v2` answers only an `octo_scim_` token, and
+there are none until a platform admin issues one:
+
+```bash
+curl -sS -X POST "$API/api/auth/scim-tokens" -H "Authorization: Bearer $ADMIN_JWT" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "okta", "all_tenants": true, "expires_in_days": 365}'
+```
+
+Give the directory `https://<console>/scim/v2` as the base URL and the returned
+`token` as its bearer token (it is shown once). Bind a token to the tenants a
+directory serves (`"tenant_ids": [...]`) rather than `all_tenants` wherever one
+directory belongs to one customer; add `"grant_platform_admin": true` only if
+the directory is meant to make platform admins. Rotate by issuing a second
+token, switching the directory over, then
+`POST /api/auth/scim-tokens/{id}/revoke` on the old one. A SCIM user can sign
+in through SSO once a group has granted it something; the first login links it
+by username.
+
+The migration (`0076_idp_resync_scim`) is expand-only. Rolling it back drops
+the `source` column — every membership is local again — and every SCIM token
+and group; re-issue the token and let the directory push again.
+
 ### Rotating the JWT signing key
 
 `OCTO_JWT_SECRET` used to be unrotatable in practice: changing it invalidated

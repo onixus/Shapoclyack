@@ -94,6 +94,9 @@ def _to_dict(row: models.UserTenant) -> dict[str, Any]:
         "role": row.role,
         "created_at": _iso(row.created_at),
         "created_by": row.created_by,
+        # ``local`` or ``idp`` (#316): whether an IdP-authoritative resync may
+        # change or remove this grant.
+        "source": row.source or "local",
     }
 
 
@@ -139,6 +142,7 @@ def grant(
     created_by: str | None = None,
     granted_by: permission_catalog.Authority | None,
     audit: "audit_service.AuditContext | None" = None,
+    source: str = "local",
 ) -> dict[str, Any]:
     """Create or update one membership. Idempotent on (username, tenant_id).
 
@@ -148,6 +152,10 @@ def grant(
     (PermissionError). Required and not defaulted, like the service-token
     issuer: ``None`` is a decision — the platform granting on its own account,
     as OIDC provisioning does — and a new caller has to make it out loud.
+
+    ``source`` is ``local`` for a person's grant and ``idp`` for the identity
+    provider's (#316). A person re-granting a membership the IdP holds takes it
+    over: it becomes ``local``, and an authoritative resync stops managing it.
     """
     settings = _require_settings()
     username = username.strip()
@@ -195,11 +203,13 @@ def grant(
                 role=role,
                 created_at=_now(),
                 created_by=created_by,
+                source=source,
             )
             session.add(row)
             session.flush()
         else:
             row.role = role
+            row.source = source
         granted = _to_dict(row)
         # One action for the grant and the re-grant, distinguished by
         # ``before``: NULL where the membership is new, the old role where an
@@ -212,7 +222,9 @@ def grant(
             resource_id=username,
             tenant_id=tenant_id,
             before=previous,
-            after={"role": role},
+            # The source only where it is not a person's: the trail of an
+            # ordinary grant reads exactly as it did before #316.
+            after={"role": role} if source == "local" else {"role": role, "source": source},
         )
         return granted
 

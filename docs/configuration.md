@@ -614,6 +614,8 @@ OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS
 OCTO_ENDPOINT_STALE_HOURS
 OCTO_ENV
 OCTO_HSTS_ENABLED
+OCTO_IDP_AUTHORITATIVE
+OCTO_IDP_GROUP_MAP
 OCTO_INSTANCE_ID
 OCTO_JOB_CANCEL_GRACE_SECONDS
 OCTO_JOB_EXECUTION_MODE
@@ -1161,7 +1163,9 @@ SSO stays **off** until the first three are all set:
 | `OCTO_OIDC_DEFAULT_ROLE` | `viewer` | Role for a provisioned account when no claim maps to one. The lowest privileged role on purpose — a higher default grants it to everyone the IdP knows. An unrecognised value falls back to `viewer` with a warning |
 | `OCTO_OIDC_ROLE_CLAIM` | *(empty)* | Claim holding the caller's groups, e.g. `groups` |
 | `OCTO_OIDC_ROLE_MAP` | *(empty)* | JSON object mapping those values to console roles, e.g. `{"vm-admins":"admin","vm-ops":"operator"}`. The **highest** match wins; an unmapped group grants nothing, and an entry naming an unknown role is dropped rather than downgraded. Malformed JSON is logged and ignored rather than refused at startup: this is parsed on every boot whether or not SSO is configured, so a typo here must not stop the whole API |
-| `OCTO_OIDC_TENANT_CLAIM` | *(empty)* | Claim naming the tenant a provisioned account is granted membership in |
+| `OCTO_OIDC_TENANT_CLAIM` | *(empty)* | Claim naming the tenant a provisioned account is granted membership in. Ignored when `OCTO_IDP_AUTHORITATIVE` is on: the group map is then the only source of memberships |
+| `OCTO_IDP_AUTHORITATIVE` | `false` | Make the identity provider authoritative ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync), #316): every SSO login recomputes the global role from `OCTO_OIDC_ROLE_MAP` and the IdP-granted memberships from `OCTO_IDP_GROUP_MAP`, removes the ones the groups no longer grant, and disables an account in no mapped group. Memberships granted by a person are never touched; break-glass accounts are skipped. **Map the admin group in `OCTO_OIDC_ROLE_MAP` first** — the global role of every SSO account follows the map from the next login. With both maps empty it stays off and warns at startup, because obeying it would disable every SSO account |
+| `OCTO_IDP_GROUP_MAP` | *(empty)* | JSON object mapping IdP groups (values of `OCTO_OIDC_ROLE_CLAIM`, or SCIM group names) to tenant memberships, e.g. `{"acme-ops": [{"tenant_id": "acme", "role": "operator"}], "acme-audit": {"tenant_id": "acme", "role": "auditor"}}`. The role is a built-in tenant role or one the tenant defined. Several groups granting one tenant resolve to the highest-ranked role. An unknown tenant or role grants nothing (logged where it is applied); malformed JSON is logged and ignored, like `OCTO_OIDC_ROLE_MAP`. Shared by the SSO resync and SCIM |
 | `OCTO_OIDC_DEFAULT_TENANT` | `default` | Tenant used when that claim is missing |
 | `OCTO_OIDC_CACHE_TTL_SECONDS` | `3600` | Discovery/JWKS cache lifetime. Rotation is also handled out of band: an unknown `kid` forces one refresh before the token is refused |
 | `OCTO_OIDC_STATE_TTL_SECONDS` | `600` | How long one authorization request stays valid — it only has to cover a human typing a password at the provider. It is also the whole bound on the `oidc_pending_states` table: the record is a row shared by every replica (#321), single-use, and swept once it expires. No session affinity is needed, and nothing evicts a *live* pending login the way the old 10,000-per-replica cap did |

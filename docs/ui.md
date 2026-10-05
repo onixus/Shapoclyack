@@ -1061,7 +1061,11 @@ signed in, this one is what they changed. One row per change, newest first, with
 API replaces every credential-shaped field before storing it.
 
 Filters are exact matches (action from a fixed list, actor, resource id) plus a
-time window; the two export buttons stream **every** matching event as CSV or
+time window. The action list includes the SCIM token and group actions
+(`scim_token.*`, `scim_group.*`, #316); what an identity-provider resync or a
+SCIM push did to accounts is under the ordinary `user.*` and `membership.*`
+actions, told apart by the actor (`oidc:<issuer>`, `scim-token:<name>`) and
+`"source": "idp"` in the document; the two export buttons stream **every** matching event as CSV or
 NDJSON, not the page on screen. The export goes through axios like the run
 artifacts do, because a plain `<a href>` would not carry the bearer token.
 

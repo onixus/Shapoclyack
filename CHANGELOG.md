@@ -6,6 +6,37 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The identity provider can be authoritative, and SCIM 2.0 provisioning
+  ([#316](https://github.com/onixus/Shapoclyack/issues/316)).** With
+  `OCTO_IDP_AUTHORITATIVE=true` every SSO login recomputes the account's global
+  role (`OCTO_OIDC_ROLE_MAP`) and its tenant memberships (new
+  `OCTO_IDP_GROUP_MAP`, `{group: [{tenant_id, role}]}`, tenant-defined roles
+  included) from the token's groups, removes the memberships the groups no
+  longer grant, and disables an account in no mapped group — re-enabling it
+  when a mapped group returns. Before, the IdP decided role and tenant once, at
+  JIT provisioning, and removing somebody from a group changed nothing. Only
+  memberships the IdP granted are its to change: each membership now carries
+  `source` (`local`/`idp`, in `GET /api/tenants/{id}/members`), **every row
+  that existed before the upgrade is `local`**, and a local grant is never
+  removed — so switching the mode on does not wipe hand-made grants. The resync
+  never touches a break-glass account, never re-enables an account a person
+  disabled, stays off (with a startup warning) when nothing is mapped, and ends
+  the account's sessions on any reduction. `/scim/v2/Users` and
+  `/scim/v2/Groups` (list with `userName eq`/`displayName eq`, get, create,
+  `PUT`, `PATCH` incl. `active: false`, `DELETE` = deactivate) plus
+  `ServiceProviderConfig`/`ResourceTypes`/`Schemas`, under a new credential
+  type (`octo_scim_…`, issued by a platform admin with step-up under
+  `/api/auth/scim-tokens`) that works on `/scim/v2` only. A token is bound to
+  tenants (or `all_tenants`); a tenant-bound token never changes the global
+  role, cannot see or deactivate accounts of other tenants, and no token makes
+  a platform admin unless issued with `grant_platform_admin`. SCIM accounts
+  sign in through SSO, linked by username at the first login. Every change is
+  audited (`membership.*`, `user.*` with `"source": "idp"`, new
+  `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
+  Migration `0076_idp_resync_scim` (expand-only; chained after 0072 on its
+  branch and renumbered at merge). Rollout order:
+  [operations.md](docs/operations.md#making-the-idp-authoritative-and-scim).
+
 - **Tenant-defined roles
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
   member managers can define roles of their own — a name, a rank and an

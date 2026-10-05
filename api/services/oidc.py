@@ -700,6 +700,25 @@ def email_verified_from_claims(claims: dict[str, Any]) -> bool:
     return False
 
 
+def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str]:
+    """The values of ``OCTO_OIDC_ROLE_CLAIM`` in these claims (#316).
+
+    A string is one group and a list is several; anything else — the claim
+    missing included — is none. What the groups grant is the maps' business
+    (:func:`role_from_claims`, ``api/services/idp_sync.py``), so this only
+    reads.
+    """
+    claim = settings.oidc_role_claim.strip()
+    if not claim:
+        return []
+    raw = claims.get(claim)
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(item) for item in raw]
+    return []
+
+
 def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     """Console role for these claims: the highest mapped value, else the default.
 
@@ -707,17 +726,9 @@ def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     adding a group at the identity provider cannot quietly grant console
     access on its own.
     """
-    claim = settings.oidc_role_claim.strip()
-    if not claim or not settings.oidc_role_map:
+    if not settings.oidc_role_claim.strip() or not settings.oidc_role_map:
         return settings.oidc_default_role
-    raw = claims.get(claim)
-    values: list[str]
-    if isinstance(raw, str):
-        values = [raw]
-    elif isinstance(raw, (list, tuple)):
-        values = [str(item) for item in raw]
-    else:
-        values = []
+    values = groups_from_claims(settings, claims)
     mapped = [settings.oidc_role_map[value] for value in values if value in settings.oidc_role_map]
     if not mapped:
         return settings.oidc_default_role

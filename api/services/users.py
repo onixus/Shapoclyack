@@ -412,6 +412,10 @@ def set_disabled(
         was_disabled = row.disabled_at is not None
         changed = was_disabled != disabled
         row.disabled_at = _now() if disabled else None
+        # A person's decision either way (#316): an account an administrator
+        # disabled is not the IdP's to re-enable, and one they re-enabled is no
+        # longer "disabled by the IdP" for a later resync to act on.
+        row.disabled_source = None
         row.updated_at = _now()
         # Both directions, but only on a real transition. Disabling must end
         # the sessions — that is the whole point of the operation — and
@@ -467,6 +471,7 @@ def link_or_provision_sso_user(
     role: str,
     tenant_id: str,
     jit_enabled: bool,
+    groups: list[str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Resolve an OIDC identity to a console account.
 
@@ -491,83 +496,169 @@ def link_or_provision_sso_user(
 
     A disabled account is refused at every step: SSO is a way to prove who you
     are, not a way around a revocation.
+
+    With ``OCTO_IDP_AUTHORITATIVE`` on (#316) the account found by any of the
+    three is then brought in line with ``groups`` — role, IdP-sourced
+    memberships, enabled state — by :func:`api.services.idp_sync.reconcile`,
+    *before* the disabled check, in the same transaction. Before, because an
+    account the IdP disabled for being in no group must come back when a group
+    does; in the same transaction, because a reconcile that disables the
+    account has to commit even though the login it ran for is then refused.
+    JIT provisioning in that mode creates no account for an identity in no
+    mapped group, and grants no ``tenant_id`` membership of its own: the group
+    map is the only source of memberships.
     """
+    from api.services import idp_sync
+
     settings_local = settings
     email = _normalise_email(email)
     now = _now()
+    authoritative = idp_sync.is_authoritative(settings_local)
+    groups = list(groups or [])
+    context = audit_service.AuditContext(
+        actor=f"oidc:{issuer}"[:128], actor_type=audit_service.ACTOR_SYSTEM
+    )
+    refusal: str | None = None
+    outcome: tuple[dict[str, Any], str] | None = None
 
     with get_session(settings_local.postgres_url) as session:
-        linked = session.execute(
-            select(models.User).where(
-                models.User.oidc_issuer == issuer,
-                models.User.oidc_subject == subject,
-            )
-        ).scalar_one_or_none()
-        if linked is not None:
-            if linked.disabled_at is not None:
-                raise SsoLinkError("account is disabled")
-            # Keep the address current: it is what the console displays, and a
-            # stale one would misidentify the person behind the account.
-            if email and email_verified:
-                linked.email = email
-                linked.email_verified = True
-            linked.updated_at = now
-            session.flush()
-            return _to_dict(linked), "signin"
 
-        if email and email_verified:
-            candidate = session.execute(
-                select(models.User).where(
+        def _resync(row: models.User) -> None:
+            result = idp_sync.reconcile(
+                session, settings_local, row, groups, scope=idp_sync.LOGIN_SCOPE, audit=context
+            )
+            if result.reduced or result.granted or result.enabled:
+                logger.info(
+                    "IdP resync of %r at SSO login: %s", row.username, idp_sync.describe(result)
+                )
+
+        lookup = select(models.User).where(
+            models.User.oidc_issuer == issuer,
+            models.User.oidc_subject == subject,
+        )
+        if authoritative:
+            # Two logins of one person at once would otherwise both compute
+            # the same grants and race each other's inserts.
+            lookup = lookup.with_for_update()
+        linked = session.execute(lookup).scalar_one_or_none()
+        if linked is not None:
+            if authoritative:
+                _resync(linked)
+            if linked.disabled_at is not None:
+                refusal = "account is disabled"
+            else:
+                # Keep the address current: it is what the console displays,
+                # and a stale one would misidentify the person behind the
+                # account.
+                if email and email_verified:
+                    linked.email = email
+                    linked.email_verified = True
+                linked.updated_at = now
+                session.flush()
+                outcome = (_to_dict(linked), "signin")
+
+        if outcome is None and refusal is None:
+            candidate = None
+            if email and email_verified:
+                candidate_lookup = select(models.User).where(
                     models.User.email == email,
                     models.User.email_verified.is_(True),
                     models.User.oidc_subject.is_(None),
                 )
-            ).scalars().first()
+                if authoritative:
+                    candidate_lookup = candidate_lookup.with_for_update()
+                candidate = session.execute(candidate_lookup).scalars().first()
+            if candidate is None:
+                # An account a SCIM client created for this person (#316). The
+                # provisioning client is the identity provider speaking through
+                # a credential a platform admin issued, so its ``userName`` is
+                # as good an assertion as a verified address — and the only one
+                # it has, since SCIM addresses are stored unverified. Accounts
+                # with a password, and accounts already linked, never match.
+                scim_lookup = select(models.User).where(
+                    models.User.username == (username or "").strip(),
+                    models.User.oidc_subject.is_(None),
+                    models.User.password_hash == "",
+                    models.User.created_by.like("scim:%"),
+                    models.User.erased_at.is_(None),
+                )
+                if authoritative:
+                    scim_lookup = scim_lookup.with_for_update()
+                candidate = session.execute(scim_lookup).scalars().first()
             if candidate is not None:
-                if candidate.disabled_at is not None:
-                    raise SsoLinkError("account is disabled")
-                candidate.oidc_issuer = issuer
-                candidate.oidc_subject = subject
-                candidate.updated_at = now
+                if candidate.disabled_at is not None and not (
+                    authoritative and candidate.disabled_source == idp_sync.DISABLED_BY_IDP
+                ):
+                    refusal = "account is disabled"
+                else:
+                    candidate.oidc_issuer = issuer
+                    candidate.oidc_subject = subject
+                    candidate.updated_at = now
+                    if authoritative:
+                        _resync(candidate)
+                    if candidate.disabled_at is not None:
+                        refusal = "account is disabled"
+                    else:
+                        session.flush()
+                        outcome = (_to_dict(candidate), "link")
+
+        if outcome is None and refusal is None:
+            if not jit_enabled:
+                refusal = (
+                    "no console account is linked to this identity and just-in-time "
+                    "provisioning is disabled"
+                )
+            elif authoritative and not idp_sync.mapped_groups(
+                settings_local, groups, idp_sync.LOGIN_SCOPE
+            ):
+                # Provisioning it only for the resync to disable it at once
+                # would leave an account behind for every person the IdP
+                # authenticates and this installation was never meant to see.
+                refusal = "this identity is in no group mapped to console access"
+
+        if outcome is None and refusal is None:
+            role = _validate_role(role)
+            name = _validate_username(username)
+            existing = session.get(models.User, name)
+            if existing is not None:
+                # The name is taken by a *local* account we were not allowed to
+                # link to (unverified address, or a different address
+                # entirely). Provisioning over it would be an account takeover
+                # by whoever controls that name at the identity provider.
+                refusal = (
+                    "a local account already uses this username and cannot be linked "
+                    "to this identity"
+                )
+            else:
+                row = models.User(
+                    username=name,
+                    # No password, ever: this account authenticates through the
+                    # provider only, and authenticate() refuses an empty hash.
+                    password_hash="",
+                    role=role,
+                    created_at=now,
+                    updated_at=now,
+                    password_changed_at=None,
+                    created_by=f"oidc:{issuer}",
+                    email=email,
+                    email_verified=bool(email and email_verified),
+                    oidc_issuer=issuer,
+                    oidc_subject=subject,
+                )
+                session.add(row)
                 session.flush()
-                return _to_dict(candidate), "link"
+                if authoritative:
+                    _resync(row)
+                outcome = (_to_dict(row), "provision")
 
-        if not jit_enabled:
-            raise SsoLinkError(
-                "no console account is linked to this identity and just-in-time "
-                "provisioning is disabled"
-            )
-
-        role = _validate_role(role)
-        name = _validate_username(username)
-        existing = session.get(models.User, name)
-        if existing is not None:
-            # The name is taken by a *local* account we were not allowed to
-            # link to (unverified address, or a different address entirely).
-            # Provisioning over it would be an account takeover by whoever
-            # controls that name at the identity provider.
-            raise SsoLinkError(
-                "a local account already uses this username and cannot be linked "
-                "to this identity"
-            )
-        row = models.User(
-            username=name,
-            # No password, ever: this account authenticates through the
-            # provider only, and authenticate() refuses an empty hash.
-            password_hash="",
-            role=role,
-            created_at=now,
-            updated_at=now,
-            password_changed_at=None,
-            created_by=f"oidc:{issuer}",
-            email=email,
-            email_verified=bool(email and email_verified),
-            oidc_issuer=issuer,
-            oidc_subject=subject,
-        )
-        session.add(row)
-        session.flush()
-        provisioned = _to_dict(row)
+    # After the transaction: a reconcile that disabled the account committed
+    # above, and the refusal is the answer to this login.
+    if refusal is not None:
+        raise SsoLinkError(refusal)
+    assert outcome is not None
+    provisioned, action = outcome
+    if action != "provision" or authoritative:
+        return provisioned, action
 
     # Outside the transaction above: the membership lives in another service
     # with its own session, and a failure to grant it must not roll back the
@@ -585,6 +676,8 @@ def link_or_provision_sso_user(
                 # the installation configured: there is no granter in the
                 # tenant whose ceiling it could be held to.
                 granted_by=None,
+                # The IdP's grant, so a later authoritative resync owns it.
+                source=idp_sync.SOURCE_IDP,
             )
         except ValueError:
             # An unknown tenant in the claim is a mapping mistake, not a reason
@@ -594,7 +687,7 @@ def link_or_provision_sso_user(
                 "OIDC tenant claim named an unknown tenant for a provisioned user; "
                 "no membership was granted."
             )
-    return provisioned, "provision"
+    return provisioned, action
 
 
 def set_email(username: str, email: str | None, *, verified: bool = False) -> dict[str, Any] | None:

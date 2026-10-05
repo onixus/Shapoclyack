@@ -315,6 +315,8 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
   a way to end up holding an admin account that carries no second factor
   (a verified address is what an SSO identity is linked to an account by),
   which would otherwise be a one-request path around every line above
+- `POST /api/auth/scim-tokens` and `POST /api/auth/scim-tokens/{id}/revoke`
+  — a SCIM token creates accounts and grants memberships (#316)
 
 A **service token** is exempt from step-up: there is no human at one to
 challenge. That is why every route in the list above must also be refused a
@@ -743,10 +745,122 @@ In order, and stopping at the first match:
 A disabled account is refused at every step: SSO proves who you are, it is not
 a way around a revocation.
 
+An account a SCIM client created (below) is linked at its first SSO login by
+**username**: the one whose `userName` equals the login's username claim, has
+no password, and is linked to no identity yet. The provisioning client is the
+identity provider speaking through a credential a platform admin issued, so its
+`userName` is the assertion; addresses it sends are stored unverified and never
+link anything.
+
 Every outcome lands in the auth trail (`GET /api/auth/events`): `success` with
 reason `sso_signin` / `sso_linked` / `sso_provisioned`, and `denied` with
 `sso_denied` (a refused callback) or `sso_not_provisioned` (an identity this
 installation has no account for).
+
+### IdP-authoritative resync
+
+Without it, the identity provider decides an account's role and tenant once,
+when JIT provisioning creates it, and never again. With
+`OCTO_IDP_AUTHORITATIVE=true` (#316) every SSO login brings the account in
+line with the groups in the ID token (`OCTO_OIDC_ROLE_CLAIM`), in the same
+transaction as the login and **before** the disabled check:
+
+- **global role** — the highest `OCTO_OIDC_ROLE_MAP` match, else
+  `OCTO_OIDC_DEFAULT_ROLE`. Map the admin group before turning the mode on:
+  from the next login every SSO account's role follows the map;
+- **memberships** — `OCTO_IDP_GROUP_MAP` (`{group: [{tenant_id, role}]}`, a
+  built-in tenant role or one the tenant defined; several groups granting one
+  tenant resolve to the highest rank). Missing ones are granted, changed ones
+  updated, and ones no group grants any more **removed** — but only rows the
+  IdP itself granted;
+- **access** — an account in no mapped group is disabled
+  (`disabled_source = idp`, the login answered `403`); a later login with a
+  mapped group re-enables it. JIT provisioning creates no account for an
+  identity in no mapped group, and grants no `OCTO_OIDC_TENANT_CLAIM`
+  membership: the group map is the only source of memberships in this mode.
+
+**Which memberships the IdP owns.** Each `user_tenants` row has a `source`:
+`idp` for what the group mapping, SCIM or JIT provisioning granted, `local` for
+what a person granted over the API — and for **every row that existed before
+migration 0076**, JIT ones included, because nothing recorded where those came
+from. The resync never adds to, changes or removes a `local` row, and where one
+exists for a tenant the groups also grant, it stands. So turning the mode on
+never wipes the grants an administrator made by hand; the cost is that such a
+grant outlives the person's IdP groups until somebody revokes it (the member
+list shows `source`). A person re-granting an `idp` membership
+(`PUT /api/tenants/{id}/members/{u}`) takes it over: it becomes `local`.
+
+What the resync will not do:
+
+- re-enable an account a **person** disabled (`PUT /api/users/{u}/disabled`) or
+  a SCIM client deactivated — the IdP undoes only its own;
+- touch a **break-glass** account (`OCTO_BREAK_GLASS_USERS`) at all: the
+  emergency door is for the day the IdP is what is wrong;
+- run with nothing mapped: with both maps empty the switch stays off and warns
+  at startup, since every account would be "in no mapped group".
+
+Every change is an `audit_events` row in the account's or the tenant's trail
+(`membership.grant` / `membership.revoke`, `user.role_change`, `user.disable`)
+with actor `oidc:<issuer>`, actor type `system`, and `"source": "idp"` in the
+document. A removed or changed membership, a changed role and a disable **end
+the account's sessions** (`token_version` and every refresh-token family, as
+`PUT /api/users/{u}/role` does) — the login that caused it gets a fresh one. A
+new grant alone ends nothing.
+
+## SCIM 2.0 provisioning
+
+`/scim/v2` speaks the subset of SCIM 2.0 (RFC 7643/7644) that Okta, Entra ID
+and Keycloak send (#316):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /scim/v2/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | Discovery |
+| `GET /scim/v2/Users?filter=userName eq "…"&startIndex=&count=` | List / find (`count` ≤ 200) |
+| `POST /scim/v2/Users` | Create an IdP-managed account: no password, the default role (never `admin` unless the token may grant it), `emails` stored **unverified** |
+| `GET`/`PUT`/`PATCH /scim/v2/Users/{id}` | `id` is the username and is immutable. `PATCH` handles `active` (booleans as Entra's `"False"` too) and `emails`; `name`, `displayName`, `externalId` and the enterprise extension are accepted and not stored |
+| `DELETE /scim/v2/Users/{id}` | **Deactivates** (`active: false`); the account and its history stay — the audit trail attributes by username, and a deleted name could be reissued |
+| `GET /scim/v2/Groups?filter=displayName eq "…"`, `POST`, `GET`/`PUT`/`PATCH`/`DELETE /scim/v2/Groups/{id}` | Groups and their `members`; `PATCH` handles `add`/`remove`/`replace` of `members` (including `members[value eq "…"]`) and `displayName` |
+
+A group's `displayName` is read through the same `OCTO_OIDC_ROLE_MAP` and
+`OCTO_IDP_GROUP_MAP` as an SSO groups claim, and every change to an account's
+groups re-derives its role, IdP memberships and access exactly as the
+[resync](#idp-authoritative-resync) does — including **disabling an account in
+no mapped group**, so a freshly created SCIM user cannot sign in until a group
+push grants it something (otherwise it would fall back to the `default` tenant
+with the default role, which no mapping gave it). `active` in responses is
+`false` only where SCIM or a person disabled the account. Errors are SCIM error
+bodies (`scimType` `uniqueness`, `mutability`, `invalidFilter`, …). Not
+supported: bulk, sort, ETags, password changes.
+
+**The credential is its own type**, `octo_scim_<prefix>_<secret>`, bcrypt-hashed
+like a service token, and accepted on `/scim/v2` and nowhere else; a console
+JWT or a service token is a `401` there.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/auth/scim-tokens` | platform admin + step-up | `{"name", "tenant_ids": [...] \| "all_tenants": true, "grant_platform_admin"?, "expires_in_days"?}`. The plaintext is in this response only. Lifetime bounds are `OCTO_SERVICE_TOKEN_DEFAULT_TTL_DAYS`/`MAX_TTL_DAYS` |
+| `GET /api/auth/scim-tokens` | platform admin | Every token, without secrets |
+| `POST /api/auth/scim-tokens/{id}/revoke` | platform admin + step-up | Immediate, idempotent |
+
+**What a token may manage is part of it**, checked by the service on every call:
+
+| Binding | Sees | Memberships | Global role | Deactivate / re-enable |
+|---|---|---|---|---|
+| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that belongs to none but its tenants and is not a platform admin |
+| `all_tenants` | every account | every tenant | below `admin` | every IdP-managed account but a platform admin |
+| `all_tenants` + `grant_platform_admin` | every account | every tenant | including `admin` | every IdP-managed account |
+
+An unmapped group is visible only to the token that created it. An account
+with a **password** (a local account) is visible, but its role, address and
+enabled state are never SCIM's (`403`; a group push can still give it IdP
+memberships in the token's tenants, where a local row for the same tenant
+stands). A **break-glass** account is not touched at all, and an account a
+person disabled is not re-enabled (`403`). Every change is audited with actor `scim-token:<name>`
+and actor type `service_token`: `user.create`, `user.disable`,
+`membership.grant`/`revoke` and `user.role_change` with `"source": "idp"`,
+`scim_group.create`/`update`/`delete`, and the token's own
+`scim_token.create`/`revoke`. A deactivation, a removed membership or a role
+change ends the account's sessions.
 
 ## Service tokens
 
@@ -996,7 +1110,8 @@ sets the status yet — see
 
 | Prefix | Purpose |
 |---|---|
-| `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, and the authentication audit trail (`/api/auth/events`, admin) |
+| `/api/auth` | Login, single sign-on (`/api/auth/sso`, `/api/auth/oidc/*`), current principal, the authentication audit trail (`/api/auth/events`, admin) and SCIM token administration (`/api/auth/scim-tokens`, platform admin) |
+| `/scim/v2` | SCIM 2.0 provisioning of users and groups, under an `octo_scim_` token only — see [SCIM 2.0 provisioning](#scim-20-provisioning) |
 | `/api/audit` | Administrative audit trail: what was changed, by whom, with the value before and after (`audit.read` in the tenant, so an `auditor` too; CSV/NDJSON export) |
 | `/api/rbac` | The role and permission catalogue: `GET /api/rbac/permissions` (any authenticated caller) and `GET /api/rbac/roles` (`tenant.member.read`). A tenant's own roles are written under `/api/tenants/{id}/roles` (`tenant.member.manage`, see [Tenant-defined roles](#tenant-defined-roles)) |
 | `/api/runs` | Run summaries, details, hosts, ports, findings, artifacts |
@@ -2278,7 +2393,11 @@ own authority in the tenant: `403` for a role above it, and for changing or
 revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
-Membership rows hold no credential material.
+Membership rows hold no credential material. Each carries `source`: `local`
+for a person's grant, `idp` for one the identity provider's group mapping made
+— the only kind an [IdP-authoritative resync](#idp-authoritative-resync) or a
+SCIM push changes or removes. Granting over a membership the IdP holds makes it
+`local`.
 
 Every tenant-scoped route resolves its tenant server-side from the
 authenticated username. The `tenant_id` query parameter still exists, but it
