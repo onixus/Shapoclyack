@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
+import { DetectorsCard } from "@/components/vulnerability/detectors-card";
 import { LifecycleStepper } from "@/components/vulnerability/lifecycle-stepper";
 import { SlaIndicator } from "@/components/vulnerability/sla-indicator";
 import { VulnerabilityTimeline } from "@/components/vulnerability/timeline";
@@ -405,6 +406,7 @@ function VulnerabilityDetailInner() {
           </section>
 
           {vuln.source === "retro_match" ? <RetroEvidenceCard vuln={vuln} /> : null}
+          {vuln.source === "scan" ? <DetectorsCard vuln={vuln} /> : null}
 
           <section className="rounded-xl border border-border bg-card p-5 shadow-lg backdrop-blur">
             <h2 className="text-sm font-semibold text-foreground">{t("ui.evidence")}</h2>

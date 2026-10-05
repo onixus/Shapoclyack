@@ -2855,6 +2855,19 @@ export type RetroMatchEvidence = {
   } | null;
 };
 
+/** One detector that observed a tracked finding (#451): `pulse`, `nuclei` or
+ * `nmap-nse`, the template / script / pulse origin, and the host as the scanner
+ * addressed it — null on an entry migrated from `script_id`, which never
+ * recorded one. */
+export type VulnerabilityDetector = {
+  detector: string;
+  ref: string | null;
+  host: string | null;
+  port: string | null;
+  last_run_id: string | null;
+  last_seen_at: string | null;
+};
+
 export type TrackedVulnerability = {
   vuln_id: string;
   tenant_id: string;
@@ -2865,7 +2878,10 @@ export type TrackedVulnerability = {
   device_id: string | null;
   cve: string | null;
   cwe: string[];
+  /** The first detector's id only; `detectors` has all of them. */
   script_id: string | null;
+  /** Newest first. Absent from an API older than #451. */
+  detectors?: VulnerabilityDetector[];
   title: string;
   port: string | null;
   severity: string;

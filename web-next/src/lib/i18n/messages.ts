@@ -851,6 +851,33 @@ export const en = {
   "vuln.reason.ticketResolved": "Resolved in tracker",
   "vuln.verificationRate": "Machine verification rate",
   "vuln.verifiedClosedCount": "{count} verified closures",
+  // Which detectors observed a finding (#451). A verification closes it only
+  // once every one of them has looked again.
+  "vuln.detectors.title": "Detectors",
+  "vuln.detectors.subtitle":
+    "Every check that has observed this finding. A verification re-scan closes it only once each of them has demonstrably re-checked the endpoint.",
+  "vuln.detectors.empty":
+    "No detector recorded (a finding from before detectors were tracked). Its verification is held to the older rule: Pulse with CVE matching on the port.",
+  "vuln.detectors.detector": "Detector",
+  "vuln.detectors.ref": "Template / script",
+  "vuln.detectors.where": "Observed on",
+  "vuln.detectors.lastSeen": "Last seen",
+  "vuln.detectors.anyAddress": "any address of the asset",
+  // Audit-trail event kinds (api/services/vulnerabilities.py VULN_EVENT_KINDS).
+  "vuln.event.observed": "Observed",
+  "vuln.event.state_change": "State changed",
+  "vuln.event.reopened": "Reopened",
+  "vuln.event.assigned": "Assigned",
+  "vuln.event.exception_set": "Risk accepted",
+  "vuln.event.exception_cleared": "Acceptance revoked",
+  "vuln.event.exception_request_withdrawn": "Request withdrawn",
+  "vuln.event.comment": "Comment",
+  "vuln.event.ticket_set": "Ticket linked",
+  "vuln.event.ticket_cleared": "Ticket unlinked",
+  "vuln.event.verification_started": "Verification started",
+  "vuln.event.verification_passed": "Verified fixed",
+  "vuln.event.verification_failed": "Still present",
+  "vuln.event.verification_inconclusive": "Verification inconclusive",
 
   // Endpoint software findings (Track E, M3).
   "vuln.reason.patched": "Patched on the endpoint",
@@ -2682,6 +2709,30 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticketResolved": "Решено в трекере",
   "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
   "vuln.verifiedClosedCount": "{count} подтверждено сканом",
+  "vuln.detectors.title": "Детекторы",
+  "vuln.detectors.subtitle":
+    "Все проверки, которые видели эту находку. Повторный скан закрывает её, только если каждая из них заново проверила этот адрес и порт.",
+  "vuln.detectors.empty":
+    "Детектор не записан (находка старше учёта детекторов). Её проверка идёт по прежнему правилу: Pulse с сопоставлением CVE на этом порту.",
+  "vuln.detectors.detector": "Детектор",
+  "vuln.detectors.ref": "Шаблон / скрипт",
+  "vuln.detectors.where": "Где обнаружено",
+  "vuln.detectors.lastSeen": "Последнее наблюдение",
+  "vuln.detectors.anyAddress": "любой адрес актива",
+  "vuln.event.observed": "Обнаружено",
+  "vuln.event.state_change": "Смена статуса",
+  "vuln.event.reopened": "Открыто заново",
+  "vuln.event.assigned": "Назначено",
+  "vuln.event.exception_set": "Риск принят",
+  "vuln.event.exception_cleared": "Принятие отозвано",
+  "vuln.event.exception_request_withdrawn": "Запрос отозван",
+  "vuln.event.comment": "Комментарий",
+  "vuln.event.ticket_set": "Тикет привязан",
+  "vuln.event.ticket_cleared": "Тикет отвязан",
+  "vuln.event.verification_started": "Проверка запущена",
+  "vuln.event.verification_passed": "Исправление подтверждено",
+  "vuln.event.verification_failed": "Всё ещё обнаруживается",
+  "vuln.event.verification_inconclusive": "Проверка не дала результата",
 
   // Находки из инвентаря ПО на хостах (Track E, M3).
   "vuln.reason.patched": "Обновлено на хосте",
