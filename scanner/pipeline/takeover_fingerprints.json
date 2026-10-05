@@ -4,7 +4,7 @@
   "sources": {
     "ciotx": "EdOverflow/can-i-take-over-xyz, README table and fingerprints.json at master (last commit 2025-02-08), read 2026-10-06. CC BY 4.0: https://github.com/EdOverflow/can-i-take-over-xyz",
     "nuclei": "projectdiscovery/nuclei-templates http/takeovers/*.yaml at main, read 2026-10-06. MIT: https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers",
-    "msdocs": "Microsoft Learn, 'Prevent dangling DNS entries and avoid subdomain takeover' (resource types and their DNS names): https://learn.microsoft.com/azure/security/fundamentals/subdomain-takeover",
+    "msdocs": "Microsoft Learn, 'Prevent dangling DNS entries and avoid subdomain takeover' (page dated 2026-07-20, read 2026-10-06): the Azure resource types at risk and their DNS names. https://learn.microsoft.com/azure/security/fundamentals/subdomain-takeover",
     "dnsreaper": "punk-security/dnsReaper signatures at main, read 2026-10-06 -- used only to cross-check which CNAME target a provider hands out; no fingerprint text is taken from it"
   },
   "services": [
@@ -17,7 +17,7 @@
       "fingerprints": [],
       "source": ["ciotx", "msdocs"],
       "checked": "2026-10-06",
-      "note": "App names are global and first-come; NXDOMAIN on the app name means it is free to create."
+      "note": "App names are global and first-come; NXDOMAIN on the app name means it is free to create. An asuid.<subdomain> TXT record (custom-domain verification) stops another subscription from binding the org's name even then."
     },
     {
       "id": "azure_cloud_services",
@@ -28,7 +28,7 @@
       "fingerprints": [],
       "source": ["ciotx", "msdocs"],
       "checked": "2026-10-06",
-      "note": "cloudapp.azure.com labels are per region; the label is claimable in that region."
+      "note": "cloudapp.azure.com labels are per region; the label is claimable in that region. A deleted classic cloudapp.net name is reserved for the owning tenant for a while before anyone can claim it."
     },
     {
       "id": "azure_traffic_manager",
@@ -61,7 +61,7 @@
       "fingerprints": [],
       "source": ["ciotx", "msdocs"],
       "checked": "2026-10-06",
-      "note": "Status as published before the Edgio-backed CDN profiles were retired; not re-verified since."
+      "note": "Microsoft still lists azureedge.net (page dated 2026-07-20), but the Edgio-backed profiles behind most of these names were retired in 2025; whether a freed name can still be created was not verified."
     },
     {
       "id": "azure_front_door",
@@ -72,7 +72,7 @@
       "fingerprints": [],
       "source": ["msdocs"],
       "checked": "2026-10-06",
-      "note": "Classic endpoints are <name>.azurefd.net and claimable; Standard/Premium endpoints carry a random hash suffix and are not."
+      "note": "Listed by Microsoft. Not in ciotx. Classic endpoints are <name>.azurefd.net; Standard/Premium endpoint names carry a generated hash, so a freed one should not be re-creatable -- that part is not from the sources and was not verified."
     },
     {
       "id": "azure_api_management",
