@@ -41,6 +41,7 @@ from api.auth import (
     decode_token,
     get_current_user,
     get_settings,
+    mfa_requirement,
     require_role,
 )
 from api.core.client_ip import parse_trusted_proxies, resolve_client_ip
@@ -143,12 +144,17 @@ def _not_found(username: str) -> HTTPException:
 
 @router.get("/auth/mfa", response_model=MfaStatus)
 def mfa_status(
+    request: Request,
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> MfaStatus:
     """The caller's own second-factor state. Carries nothing secret."""
     try:
-        return MfaStatus.model_validate(mfa_service.status(settings, user.username))
+        return MfaStatus.model_validate(
+            mfa_service.status(
+                settings, user.username, policy=mfa_requirement(request, settings, user)
+            )
+        )
     except LookupError as exc:
         raise _not_found(user.username) from exc
 

@@ -1519,6 +1519,16 @@ export async function verifyMfa(body: {
   }
 }
 
+/** One source of an account's MFA requirement (#504): its global role
+ * (`tenant_id` null) or a role it holds in a tenant, with the policy's
+ * permissions that role carries. */
+export type MfaRequirementReason = {
+  tenant_id: string | null;
+  role: string;
+  permissions: string[];
+  phishing_resistant: boolean;
+};
+
 /** Second-factor state of one account. Carries nothing secret (#315). */
 export type MfaStatus = {
   username: string;
@@ -1526,7 +1536,12 @@ export type MfaStatus = {
   enabled_at: string | null;
   setup_pending: boolean;
   recovery_codes_remaining: number;
+  /** Computed by the API from the global role *and* what the account holds in
+   * every tenant (#504) — never derived here from `user.role`. */
   required: boolean;
+  /** Where `required` comes from. Optional so an API older than #504 still
+   * renders the panel, without the list. */
+  required_because?: MfaRequirementReason[];
   stepup_minutes: number;
   /** Whether confirming an enrolment will ask for the password. False for an
    * SSO-provisioned account, which has none to give. */

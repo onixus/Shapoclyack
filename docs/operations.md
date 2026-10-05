@@ -2104,7 +2104,8 @@ order itself, and refuses where revoking would stop other sensors; see
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
-[#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
+[#231](https://github.com/onixus/Shapoclyack/issues/231), plus
+`tenant.credential.manage` and a recent step-up since #504, and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
 the API: verify the target's host key → connect → read the target's
 `/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
@@ -2476,6 +2477,98 @@ working the moment the reset lands. Somebody who still holds another key or
 their phone does not need an admin: they remove the lost key themselves on the
 Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
 recorded as `user.webauthn_revoke`.
+
+### Upgrading with an MFA policy: tenant admins are now covered (#504)
+
+An installation running with `OCTO_MFA_REQUIRED_ROLES=admin` (or
+`OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`) covers more accounts after this
+upgrade: everyone holding `tenant.member.manage`, `tenant.credential.manage`,
+`scan_scope.approve`, `vulnerability.exception.approve` or
+`endpoint_agent.manage` in **any** tenant — the tenant `admin`, `token-admin`,
+`scope-approver`, `risk-approver`, and tenant-defined roles carrying one of
+those — and everyone holding a tenant-defined role at the admin rank (3),
+whatever their global role
+([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)).
+Nobody is locked out: a newly covered account that has not enrolled gets a
+session confined to the Security page, **on its open session as well**, from
+the first request after the rollout. To see who that will be before upgrading:
+
+```sql
+SELECT ut.username, ut.tenant_id, ut.role
+  FROM user_tenants ut
+  JOIN users u ON u.username = ut.username
+ WHERE u.mfa_enabled_at IS NULL
+   AND u.role <> 'admin'
+   AND (ut.role IN ('admin', 'token-admin', 'scope-approver', 'risk-approver')
+        OR EXISTS (SELECT 1 FROM roles r
+                    WHERE r.tenant_id = ut.tenant_id AND r.role_id = ut.role
+                      AND r.rank >= 3)
+        OR EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = ut.tenant_id AND rp.role_id = ut.role
+                      AND rp.permission_key IN ('tenant.member.manage',
+                          'tenant.credential.manage', 'scan_scope.approve',
+                          'vulnerability.exception.approve',
+                          'endpoint_agent.manage')))
+ ORDER BY ut.tenant_id, ut.username;
+```
+
+To stage it — tell those people first, then cover them — deploy with
+`OCTO_MFA_REQUIRED_PERMISSIONS=none` (and `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS=none`
+under a key policy), which is exactly the old global-role behaviour, and
+remove the override once they have enrolled. Granting and revoking memberships and editing tenant roles
+also needs a recent step-up from an enrolled account now, like minting a
+credential — and so do the endpoint agent policy and builds, the risk-acceptance
+decisions, and disabling, deleting or signing out an account. A typo'd
+`OCTO_MFA_REQUIRED_PERMISSIONS` that names no known permission at all now
+refuses to start instead of reading as `none`.
+
+Migration `0073` writes `tenant.credential.manage` onto every tenant-defined
+role at rank 3, because `POST /api/agent/deployment-command` and the SSH push
+now ask for that permission rather than the rank: the roles that minted keys
+from the console before the upgrade still can. They also gain the
+permission's other routes (listing and revoking provisioning keys, service
+tokens up to their own authority). To see which roles the migration touched
+before running it:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND NOT EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                      AND rp.permission_key = 'tenant.credential.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+For the rank-3 roles that also hold `tenant.member.manage` the permission
+brings **delegation** with it. A member manager may hand out what it holds, so
+after the upgrade its holders can define a role carrying
+`tenant.credential.manage`, grant it, and grant the built-in `token-admin` —
+the credential travels on its own, where before it came only bundled in the
+role itself (which such a holder could always grant: passing key minting on is
+not new, its narrower shape is). Leaving these roles out would take the
+console's **Deploy Agent** button from people who used it the day before, so
+the migration does not; review them instead:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND EXISTS (SELECT 1 FROM role_permissions rp
+                WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                  AND rp.permission_key = 'tenant.member.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+After the upgrade this lists every tenant role that may pass the credential
+on; before it, adding the first query's `NOT EXISTS` clause narrows it to the
+ones the migration gives that power. Where that is not meant, either take
+`tenant.credential.manage` off the role (and with it the button) or split it:
+one role that manages members, another that mints keys.
+
+A downgrade leaves those rows in place (nothing records which roles had the
+permission before); remove it from a role in the role editor if it was not
+meant.
 
 ### Rolling out security keys
 

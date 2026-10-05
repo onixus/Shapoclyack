@@ -783,7 +783,12 @@ def unpin_ssh_host_key(
 @router.post("/agent/deploy/ssh", response_model=AgentDeployStatusResponse)
 def deploy_agent_ssh(
     body: AgentDeploySSHRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
+    # The run mints a provisioning key, as the route below does (#504).
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
     audit: AuditDep,
@@ -793,7 +798,18 @@ def deploy_agent_ssh(
     A host that already runs one of this tenant's sensors gets that sensor
     back, with its ID and its key; the run's log says which case it was
     (docs/operations.md, "SSH push deployment").
+
+    ``tenant.credential.manage``, because a run mints a provisioning key, *and*
+    the admin rank, because it also hands the platform a login on the target
+    and opens a connection to it — which ``token-admin`` was never given. The
+    rank alone used to be the gate, so a tenant role at rank 3 with no
+    credential authority minted keys through here (#504).
     """
+    if not principal.at_least(Role.admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role 'admin' or higher required in tenant '{principal.tenant_id}'",
+        )
     # Ensure tenant alignment
     tenant_id = principal.tenant_id if not principal.is_platform_admin else (body.tenant_id or principal.tenant_id)
     body.tenant_id = tenant_id
@@ -880,7 +896,10 @@ def get_deployment_command(
 )
 def create_deployment_command(
     body: CreateAgentDeploymentKeyRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # Same credential, therefore same step-up (#315). This is the route the
     # console actually uses to mint a provisioning key — the one under
     # /api/tenants is the API-first path — so gating only that one would have
@@ -891,10 +910,14 @@ def create_deployment_command(
 ) -> AgentDeploymentSnippetResponse:
     """Mint one provisioning key for this tenant and return the snippets.
 
-    Tenant ``admin``, the same bar as
+    ``tenant.credential.manage``, the same bar as
     ``POST /api/tenants/{id}/provisioning-keys``, because it mints the same
-    credential: a key that registers agents into this tenant (#231). The
-    plaintext is in this response only.
+    credential: a key that registers agents into this tenant (#231). It was
+    the admin *rank* until #504 — which refused ``token-admin`` the console's
+    own button and let a tenant role at rank 3 mint keys without the
+    permission; migration 0073 gave that permission to the rank-3 tenant roles
+    that existed then, so none of them lost the button. The plaintext is in
+    this response only.
     """
     try:
         snippets = agents_service.mint_deployment_snippets(
