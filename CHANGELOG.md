@@ -27,7 +27,12 @@ All notable changes to Shapoclyack are documented in this file.
   `releases/`, import-checks it, swaps the `agent` symlink atomically, restarts
   the unit and requires it to stay up as one process, and puts the previous
   release back otherwise — also after a crash, from a journal, before the next
-  run asks whether anything is new. `--bundle-dir`
+  run asks whether anything is new, restarting the unit onto the release put
+  back. The verifier runs detached from root's terminal (`setsid`, stdin from
+  `/dev/null`, output through a pipe), so the sensor's account cannot type into
+  root's shell with `TIOCSTI`. A release that failed its health check is
+  recorded and not retried by `--auto`. Only the `agent` package is in the
+  bundle; `scanner/` and the venv are not. `--bundle-dir`
   does the same from local files for air-gapped hosts. **Automatic updates stay
   off**: nothing runs the updater unless an operator installs a timer, and its
   `--auto` mode does nothing without `OCTO_AGENT_AUTO_UPDATE=true`. Native

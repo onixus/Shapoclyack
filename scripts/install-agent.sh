@@ -862,7 +862,8 @@ fi
 
 log "================================================================="
 log "Shapoclyack Agent ${AGENT_ID} installed."
-log "Connecting to ${SERVER_URL}. Confirm it appears in the agent fleet view;"
-log "the host has no self-update mechanism, so upgrades are a reinstall,"
-log "which keeps this agent ID."
+log "Connecting to ${SERVER_URL}. Confirm it appears in the agent fleet view."
+log "Later releases install with scripts/update-agent.sh (the signed sensor"
+log "bundle; docs/operations.md, \"Sensor bundle updates\"). The sensor never"
+log "updates itself; a reinstall also upgrades and keeps this agent ID."
 log "================================================================="
