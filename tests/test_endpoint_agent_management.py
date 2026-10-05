@@ -496,6 +496,42 @@ def test_an_admin_service_token_cannot_write_a_build(tmp_path: Path, monkeypatch
     assert _upload(client, token, "acme").status_code == 403
     assert endpoint_agent_mgmt.list_releases() == []
 
+    # Nor delete one the platform admin put there.
+    assert _upload(client, admin, "acme").status_code == 201
+    refused = _delete(client, token, "acme")
+    assert refused.status_code == 403, refused.text
+    assert RELEASE_PERMISSION in refused.json()["detail"]
+    (row,) = endpoint_agent_mgmt.list_releases()
+    assert row["sha256"] == hashlib.sha256(BUILD).hexdigest()
+
+
+def test_deleting_a_build_records_what_was_deleted(tmp_path: Path, monkeypatch) -> None:
+    """The row is gone afterwards, so the trail is the only place it survives.
+
+    Which bytes endpoints were being handed under that version, and who put
+    them there, is the question a delete raises after the fact — and the one
+    the post-upgrade check in docs/operations.md has to answer.
+    """
+    settings, client, _key = _setup(tmp_path, monkeypatch)
+    admin = auth_headers(client, username="admin")
+    assert _upload(client, admin, "acme").status_code == 201
+
+    assert _delete(client, admin, "acme").status_code == 204
+    (event,) = _audit(settings, "endpoint_agent.release.delete")
+    assert event.resource_id == f"0.3.0/{PLATFORM}"
+    assert event.before == {
+        "version": "0.3.0",
+        "platform": PLATFORM,
+        "sha256": hashlib.sha256(BUILD).hexdigest(),
+        "size_bytes": len(BUILD),
+        "uploaded_by": "admin",
+    }
+    assert event.after is None
+
+    # Deleting what is not there changes nothing and records nothing.
+    assert _delete(client, admin, "acme").status_code == 204
+    assert len(_audit(settings, "endpoint_agent.release.delete")) == 1
+
 
 def test_writing_a_build_needs_a_recent_second_factor(tmp_path: Path, monkeypatch) -> None:
     clock = Clock()

@@ -500,12 +500,18 @@ def delete_agent_release(
     audit: AuditDep,
 ) -> Response:
     """Remove one build — every tenant's, since there is only one (#510)."""
-    if endpoint_agent_mgmt.delete_release(version=version, platform=platform):
+    deleted = endpoint_agent_mgmt.delete_release(version=version, platform=platform)
+    if deleted is not None:
         audit_service.record_standalone(
             audit,
             action="endpoint_agent.release.delete",
             resource_type="endpoint_agent_release",
             resource_id=f"{version}/{platform}",
+            # The bytes are gone with the row; this is what is left of them.
+            before={
+                key: deleted[key]
+                for key in ("version", "platform", "sha256", "size_bytes", "uploaded_by")
+            },
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

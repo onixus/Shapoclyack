@@ -680,10 +680,14 @@ All notable changes to Shapoclyack are documented in this file.
   and not grantable to a tenant-defined role, behind a step-up; migration
   `0078_agent_release_permission` seeds it (no schema change). The tenant
   admin keeps its policy (`desired_version`) and the listing, which no longer
-  shows it `uploaded_by`. Uploads and deletes are audited with no tenant (a
-  delete was not audited at all). **On upgrade:** stored builds stay
-  downloadable and untouched — review their `uploaded_by` and `sha256` once as
-  the platform admin ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
+  shows it `uploaded_by`. Uploads and deletes are audited with no tenant, a
+  delete with the removed build in `before` (a delete was not audited at all).
+  **On upgrade:** stored builds stay downloadable and untouched. Once the last
+  old replica is gone, review the `endpoint_agent.release.upload` audit
+  history as the platform admin — every event carrying a tenant predates the
+  change — against your published digests; the current rows alone hide a
+  build that was replaced and restored, or uploaded and deleted
+  ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
   Signing the builds, so the API is not the endpoint's only source of trust,
   is a follow-up.
 - **General request rate limiting and a body cap on every route

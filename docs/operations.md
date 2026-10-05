@@ -2220,18 +2220,85 @@ publish before any tenant names that version.
 **On upgrade to the release that made this platform-only.** Builds already
 stored stay as they are and stay downloadable — nothing is migrated or
 re-hashed. Before it, any tenant's admin could have uploaded one, and the row
-would be served to every tenant. So once, as the platform admin:
+would be served to every tenant. Check this once, as the platform admin, and
+check it **from the audit trail, not from the current rows**: the rows show
+only the last write, so a build a tenant replaced, that endpoints downloaded,
+and that it then re-uploaded with the official bytes looks clean; and a build
+a tenant uploaded and then deleted is not there at all. Before this release a
+delete was not audited either, so for a deleted build the upload event is the
+only trace left.
 
-1. `GET /api/endpoint/agent/releases` and look at `uploaded_by`. A name that is
-   not one of your platform accounts is a build a tenant put there.
-2. For each such row, compare its `sha256` with the digest of the build you
-   published for that `(version, platform)`. If it differs, or you cannot say
-   where it came from, upload yours over it (or `DELETE` it) and treat the
-   endpoints already reporting that version (`GET /api/agents`, endpoint
-   Agents report their running version on every heartbeat) as running a binary
-   you did not publish. The audit trail has `endpoint_agent.release.upload`
-   under the uploader's tenant for uploads made before the change; from the
-   change on, uploads and deletes are recorded with no tenant.
+Run it **after the last replica on the previous release is gone** (`kubectl
+rollout status`, or no old pod left in `kubectl get pods`): until then an old
+replica still accepts a tenant's upload, and a check made earlier misses it.
+
+1. Export the upload history. `GET /api/audit` lists every tenant for the
+   platform admin when no `tenant_id` is named, and `format=ndjson` streams
+   all of it rather than one page:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.upload&format=ndjson" \
+     > release-uploads.ndjson
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.delete&format=ndjson" \
+     > release-deletes.ndjson
+   ```
+
+2. Every upload event **with a `tenant_id`** was made before the change — this
+   release records uploads and deletes with none. The `tenant_id` is the tenant
+   the console was looking at, not proof a tenant did it: the platform admin's
+   own uploads from before carry one too, so `actor` says who it was. List them:
+
+   ```bash
+   jq -c 'select(.tenant_id != null)
+          | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+3. Compare each one's `sha256` with the build you published. Put your digests
+   in `official-builds.json` as `{"<version>/<platform>": "<sha256>", ...}`;
+   this prints every pre-change upload that was not one of them, including a
+   version you never published:
+
+   ```bash
+   jq -c --slurpfile official official-builds.json \
+     'select(.tenant_id != null and .after.sha256 != $official[0][.resource_id])
+      | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+   Any line here is a binary you did not publish that was served to every
+   tenant whose policy named that version, **whatever the build holds now**.
+   That covers both cases the current rows hide: *replaced then restored* (a
+   foreign digest followed later by yours under the same `build`) and
+   *uploaded then deleted* (a `build` with no row left in
+   `GET /api/endpoint/agent/releases`).
+
+4. For each `build` printed, read its whole history, oldest first, to get the
+   window during which the foreign bytes were the ones handed out — from that
+   event to the next upload of that build, or to now if the build is still
+   stored. Deletes from this release on carry the removed row in `before`:
+
+   ```bash
+   cat release-uploads.ndjson release-deletes.ndjson \
+     | jq -s -c --arg build "0.3.0/x86_64-pc-windows-msvc" \
+         'map(select(.resource_id == $build)) | sort_by(.occurred_at) | .[]
+          | {occurred_at, tenant_id, actor, action, sha256: (.after.sha256 // .before.sha256)}'
+   ```
+
+5. Find the endpoints that may have run it. The server keeps **no** record of
+   which bytes an endpoint installed: the heartbeat reports only the running
+   version (`GET /api/agents`, `version` on endpoint Agents), and a download is
+   not audited (the only server-side trace is the access-log line for
+   `GET /api/endpoint/agent/releases/<version>/<platform>/download`, with client
+   IP and time, if your logs reach back that far). So treat every endpoint
+   that reports that version, or reported it during the window, in any tenant
+   whose policy named it, as suspect, and settle it on the host:
+   `Get-FileHash "C:\Program Files\Lariska\lariska.exe"` against your digest.
+
+6. Then fix the build itself: upload yours over any row whose current `sha256`
+   is not yours (or `DELETE` it), and move the suspect endpoints to it.
 
 Builds are not signed yet: the API is the endpoint's only source of trust for
 what it executes, which is why the write is the platform admin's alone.
