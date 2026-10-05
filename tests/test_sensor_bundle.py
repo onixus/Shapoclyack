@@ -333,15 +333,18 @@ def test_a_failed_health_check_puts_the_previous_release_back(tmp_path, signing_
         seen.append(_live_version(install))
         raise RuntimeError("unit restarted on its own")
 
-    installer = update.Installer(
-        install, health_check=unhealthy, on_rollback=lambda: restarts.append("restart")
-    )
+    def restart() -> None:
+        # The unit is restarted while the tree it ran from is still there.
+        new = [p for p in (install / "releases").iterdir() if p.name.startswith("0.47-0930-")]
+        restarts.append(f"restart with {len(new)} new tree")
+
+    installer = update.Installer(install, health_check=unhealthy, on_rollback=restart)
     with pytest.raises(update.UpdateFailed, match="rolled back"):
         installer.install(archive, manifest)
 
     assert seen == ["0.47-0930"]  # the check ran against the new code ...
     assert _live_version(install) == "0.46-0922"  # ... and the old one is back
-    assert restarts == ["restart"]
+    assert restarts == ["restart with 1 new tree"]
     assert [p.name for p in (install / "releases").iterdir() if not p.name.startswith("legacy-")] == []
     assert not (install / ".sensor-update.json").exists()
 
