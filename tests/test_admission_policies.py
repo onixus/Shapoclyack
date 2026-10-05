@@ -188,10 +188,10 @@ def test_the_key_authority_is_the_release_key_secret():
 
 
 def test_the_release_pipeline_signs_and_checks_with_the_committed_public_key():
-    # The pre-flight and the signing step both name cosign.pub — the one in
-    # the pipeline's own checkout; the policies' secret is documented as
-    # created from that same file.
-    assert JENKINS_PUBLISH.count(f"--pubkey {TOOLING}/cosign.pub") == 2
+    # The pre-flight, the image signing step and the sensor bundle stage all
+    # name cosign.pub — the one in the pipeline's own checkout; the policies'
+    # secret is documented as created from that same file.
+    assert JENKINS_PUBLISH.count(f"--pubkey {TOOLING}/cosign.pub") == 3
     for example in EXAMPLES.glob("image-signature-*.example.yaml"):
         assert f"secret generic {KEY_SECRET}" in example.read_text()
         assert "--from-file=cosign.pub=cosign.pub" in example.read_text()
