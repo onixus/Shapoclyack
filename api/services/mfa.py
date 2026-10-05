@@ -149,6 +149,17 @@ def phishing_resistant_permissions(settings: Settings) -> frozenset[str]:
     return frozenset()
 
 
+def _admin_rank_covered(explicit: list[str] | None, roles: list[str]) -> bool:
+    """Whether the admin rank counts as authority by itself (#504).
+
+    Only under the derived default: "MFA for admins" covers whoever
+    administers a tenant, and rank 3 passes every ``require_tenant(Role.admin)``
+    gate whatever permissions the role lists. An explicit permission list is
+    the operator naming exactly what they mean, and the rank does not widen it.
+    """
+    return explicit is None and permission_catalog.ROLE_ADMIN in roles
+
+
 def phishing_resistant_policy(settings: Settings) -> bool:
     """Whether any account can be required to sign in with a key. No query."""
     return bool(settings.mfa_phishing_resistant_roles or phishing_resistant_permissions(settings))
@@ -176,7 +187,9 @@ def requirement(settings: Settings, username: str, role: str) -> Requirement:
       exactly as it always has;
     * **by permission** — the account holds a permission of
       :func:`required_permissions` in **any** tenant, through whichever role:
-      a built-in, a role the tenant wrote (#318), the platform admin's.
+      a built-in, a role the tenant wrote (#318), the platform admin's. Under
+      the derived default a role at the admin rank counts whatever it lists
+      (:func:`_admin_rank_covered`).
 
     A role that must carry a *phishing-resistant* factor must carry a factor
     at all: the ``…PHISHING_RESISTANT…`` lists imply the plain ones rather
@@ -194,6 +207,11 @@ def requirement(settings: Settings, username: str, role: str) -> Requirement:
     key_roles = set(settings.mfa_phishing_resistant_roles)
     plain_keys = required_permissions(settings)
     key_keys = phishing_resistant_permissions(settings)
+    plain_rank = _admin_rank_covered(settings.mfa_required_permissions, settings.mfa_required_roles)
+    key_rank = _admin_rank_covered(
+        settings.mfa_phishing_resistant_permissions, settings.mfa_phishing_resistant_roles
+    )
+    admin_rank = permission_catalog.ROLE_RANKS[permission_catalog.ROLE_ADMIN]
     found: dict[tuple[str | None, str], dict[str, Any]] = {}
 
     def _note(tenant_id: str | None, name: str, keys: frozenset[str], by_key: bool) -> None:
@@ -212,11 +230,14 @@ def requirement(settings: Settings, username: str, role: str) -> Requirement:
         # the role lists: those keep meaning ``users.role`` exactly as before,
         # so ``OCTO_MFA_REQUIRED_PERMISSIONS=none`` is a true return to the
         # old behaviour, and a tenant role is covered by what it carries
-        # whatever it is called.
-        matched = held.permissions & (plain_keys | key_keys)
-        if not matched:
+        # whatever it is called. Its rank is the exception, and only under the
+        # derived default: rank 3 administers the tenant through every
+        # rank-gated route, so it is covered with an empty permission list.
+        administers = held.rank >= admin_rank
+        by_key = bool(held.permissions & key_keys) or (administers and key_rank)
+        if not (by_key or held.permissions & plain_keys or (administers and plain_rank)):
             continue
-        _note(tenant_id, held.name, matched, bool(held.permissions & key_keys))
+        _note(tenant_id, held.name, held.permissions & (plain_keys | key_keys), by_key)
     reasons = sorted(
         found.values(), key=lambda entry: (entry["tenant_id"] is not None, entry["tenant_id"] or "")
     )
@@ -227,12 +248,19 @@ def requirement(settings: Settings, username: str, role: str) -> Requirement:
     )
 
 
-def _state(row: models.User, settings: Settings, session: Any) -> dict[str, Any]:
-    """Public shape. Never carries the secret, a code, or a hash of either."""
+def _state(
+    row: models.User, settings: Settings, session: Any, policy: Requirement | None = None
+) -> dict[str, Any]:
+    """Public shape. Never carries the secret, a code, or a hash of either.
+
+    ``policy`` is the account's :func:`requirement` when the caller already
+    has it for this request; otherwise it is computed here.
+    """
     from api.services import passkeys as passkeys_service
 
     enabled = row.mfa_enabled_at is not None
-    policy = requirement(settings, row.username, row.role)
+    if policy is None:
+        policy = requirement(settings, row.username, row.role)
     return {
         "username": row.username,
         "enabled": enabled,
@@ -288,13 +316,15 @@ def password_required(settings: Settings, username: str, password_hash: str | No
     return True
 
 
-def status(settings: Settings, username: str) -> dict[str, Any]:
+def status(
+    settings: Settings, username: str, *, policy: Requirement | None = None
+) -> dict[str, Any]:
     """What the console shows on the account's security page."""
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             raise LookupError(f"user '{username}' not found")
-        return _state(row, settings, session)
+        return _state(row, settings, session, policy)
 
 
 def is_enabled(settings: Settings, username: str) -> bool:

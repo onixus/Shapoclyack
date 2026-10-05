@@ -180,6 +180,9 @@ def set_user_disabled(
     username: str,
     body: SetUserDisabledRequest,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    # Disabling the other admins keeps the installation to whoever holds this
+    # tab, and re-enabling an account hands its access back (#504).
+    __: StepUpDep,
     audit: AuditDep,
 ) -> UserInfo:
     """Disable rather than delete: memberships and history survive the revocation."""
@@ -201,6 +204,7 @@ def set_user_disabled(
 def revoke_user_sessions(
     username: str,
     _: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    __: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
     """Sign one account out of everywhere, without changing anything else (#314).
@@ -225,6 +229,7 @@ def revoke_user_sessions(
 def delete_user(
     username: str,
     admin: Annotated[TokenUser, Depends(require_role(Role.admin))],
+    _: StepUpDep,
     audit: AuditDep,
 ) -> None:
     if username == admin.username:

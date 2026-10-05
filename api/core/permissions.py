@@ -355,21 +355,31 @@ APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
     {SCAN_SCOPE_APPROVE, VULNERABILITY_EXCEPTION_APPROVE}
 )
 
-#: The authorities that decide *who else* may act in a tenant or what it may
-#: be pointed at: granting memberships and writing roles, issuing the tenant's
-#: credentials, and the two approvals. What ``OCTO_MFA_REQUIRED_PERMISSIONS``
-#: defaults to when ``OCTO_MFA_REQUIRED_ROLES`` names ``admin`` (#504): "MFA
-#: for administrators" has to mean whoever holds these in any tenant, not
-#: whoever has the word ``admin`` in ``users.role``. Every role holding one —
-#: the tenant ``admin``, ``token-admin``, ``scope-approver``,
-#: ``risk-approver``, a tenant-defined role carrying any of them — is one a
-#: stolen password would turn into somebody else's access.
+#: The named authorities that decide *who else* may act in a tenant, what it
+#: may be pointed at, or what runs on its endpoints: granting memberships and
+#: writing roles, minting its provisioning keys and service tokens, the two
+#: approvals, and choosing the endpoint agent build every endpoint installs.
+#: What ``OCTO_MFA_REQUIRED_PERMISSIONS`` defaults to when
+#: ``OCTO_MFA_REQUIRED_ROLES`` names ``admin`` (#504): "MFA for
+#: administrators" has to mean whoever holds these in any tenant, not whoever
+#: has the word ``admin`` in ``users.role``. Every role holding one — the
+#: tenant ``admin``, ``token-admin``, ``scope-approver``, ``risk-approver``, a
+#: tenant-defined role carrying any of them — is one a stolen password would
+#: turn into somebody else's access.
+#:
+#: Not the whole of a tenant administrator's power, and not meant to be: the
+#: routes still gated on the admin *rank* (webhooks, notification channels,
+#: SLA policies, the SSH push's target) are reached by rank 3 whatever the
+#: role lists, so the derived default covers rank 3 by itself as well
+#: (:func:`api.services.mfa.requirement`). Every route that issues a tenant
+#: credential asks for ``tenant.credential.manage`` by name.
 TENANT_AUTHORITY_PERMISSIONS: frozenset[str] = frozenset(
     {
         TENANT_MEMBER_MANAGE,
         TENANT_CREDENTIAL_MANAGE,
         SCAN_SCOPE_APPROVE,
         VULNERABILITY_EXCEPTION_APPROVE,
+        ENDPOINT_AGENT_MANAGE,
     }
 )
 

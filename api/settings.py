@@ -1212,6 +1212,11 @@ def _mfa_permissions(variable: str) -> list[str] | None:
     :attr:`Settings.mfa_required_permissions` — and ``none`` is an explicit
     empty list. Otherwise comma-separated catalogue keys; an unknown one is
     dropped with a warning, for the reason :func:`_mfa_required_roles` gives.
+
+    Except when nothing is left: a value made only of unknown keys would come
+    out as ``[]``, which is ``none`` — the derived default switched off and
+    every tenant admin back outside the policy, over a typo, with a log line
+    as the only trace. That one refuses to start instead.
     """
     from api.core.permissions import PERMISSIONS
 
@@ -1235,6 +1240,12 @@ def _mfa_permissions(variable: str) -> list[str] | None:
             continue
         if key not in keys:
             keys.append(key)
+    if not keys:
+        raise ValueError(
+            f"{variable} names no known permission ({raw!r}); write `none` to turn the "
+            "permission policy off, or unset it for the default. GET /api/rbac/permissions "
+            "lists the catalogue."
+        )
     return keys
 
 

@@ -699,7 +699,21 @@ All notable changes to Shapoclyack are documented in this file.
   every step-up, applies only to accounts that have MFA enabled. To stage the
   rollout, set both new variables to `none` (exactly the old behaviour) and
   remove them once the affected people have enrolled; `docs/operations.md`
-  has a query listing who they are.
+  has a query listing who they are. Review round 1: the derived set also
+  holds `endpoint_agent.manage`, and under the derived default a tenant role
+  at the admin rank (3) is covered whatever permissions it lists — rank 3
+  alone reaches webhooks, notification channels, SLA policies and the SSH
+  push. `POST /api/agent/deployment-command` and `POST /api/agent/deploy/ssh`
+  now ask for `tenant.credential.manage` (the SSH push keeps the admin rank on
+  top) instead of the rank alone, like `POST …/provisioning-keys`; migration
+  **0073** writes that permission onto every tenant role at rank 3 so the roles
+  that minted keys before the upgrade still can (and reach the permission's
+  other routes). New step-ups: the SSH push, the endpoint agent policy and
+  builds, risk-acceptance approve/reject/revoke, and `PUT
+  /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
+  /api/users/{u}/sessions/revoke-all`. A permission variable made only of
+  unknown keys refuses to start instead of reading as `none`. The requirement
+  is computed once per request.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

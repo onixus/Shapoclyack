@@ -2019,7 +2019,8 @@ order itself, and refuses where revoking would stop other sensors; see
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
-[#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
+[#231](https://github.com/onixus/Shapoclyack/issues/231), plus
+`tenant.credential.manage` and a recent step-up since #504, and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
 the API: verify the target's host key → connect → read the target's
 `/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
@@ -2397,9 +2398,11 @@ recorded as `user.webauthn_revoke`.
 An installation running with `OCTO_MFA_REQUIRED_ROLES=admin` (or
 `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`) covers more accounts after this
 upgrade: everyone holding `tenant.member.manage`, `tenant.credential.manage`,
-`scan_scope.approve` or `vulnerability.exception.approve` in **any** tenant —
-the tenant `admin`, `token-admin`, `scope-approver`, `risk-approver`, and
-tenant-defined roles carrying one of those — whatever their global role
+`scan_scope.approve`, `vulnerability.exception.approve` or
+`endpoint_agent.manage` in **any** tenant — the tenant `admin`, `token-admin`,
+`scope-approver`, `risk-approver`, and tenant-defined roles carrying one of
+those — and everyone holding a tenant-defined role at the admin rank (3),
+whatever their global role
 ([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)).
 Nobody is locked out: a newly covered account that has not enrolled gets a
 session confined to the Security page, **on its open session as well**, from
@@ -2412,11 +2415,15 @@ SELECT ut.username, ut.tenant_id, ut.role
  WHERE u.mfa_enabled_at IS NULL
    AND u.role <> 'admin'
    AND (ut.role IN ('admin', 'token-admin', 'scope-approver', 'risk-approver')
+        OR EXISTS (SELECT 1 FROM roles r
+                    WHERE r.tenant_id = ut.tenant_id AND r.role_id = ut.role
+                      AND r.rank >= 3)
         OR EXISTS (SELECT 1 FROM role_permissions rp
                     WHERE rp.tenant_id = ut.tenant_id AND rp.role_id = ut.role
                       AND rp.permission_key IN ('tenant.member.manage',
                           'tenant.credential.manage', 'scan_scope.approve',
-                          'vulnerability.exception.approve')))
+                          'vulnerability.exception.approve',
+                          'endpoint_agent.manage')))
  ORDER BY ut.tenant_id, ut.username;
 ```
 
@@ -2425,7 +2432,32 @@ To stage it — tell those people first, then cover them — deploy with
 under a key policy), which is exactly the old global-role behaviour, and
 remove the override once they have enrolled. Granting and revoking memberships and editing tenant roles
 also needs a recent step-up from an enrolled account now, like minting a
-credential.
+credential — and so do the endpoint agent policy and builds, the risk-acceptance
+decisions, and disabling, deleting or signing out an account. A typo'd
+`OCTO_MFA_REQUIRED_PERMISSIONS` that names no known permission at all now
+refuses to start instead of reading as `none`.
+
+Migration `0073` writes `tenant.credential.manage` onto every tenant-defined
+role at rank 3, because `POST /api/agent/deployment-command` and the SSH push
+now ask for that permission rather than the rank: the roles that minted keys
+from the console before the upgrade still can. They also gain the
+permission's other routes (listing and revoking provisioning keys, service
+tokens up to their own authority). To see which roles the migration touched
+before running it:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND NOT EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                      AND rp.permission_key = 'tenant.credential.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+A downgrade leaves those rows in place (nothing records which roles had the
+permission before); remove it from a role in the role editor if it was not
+meant.
 
 ### Rolling out security keys
 

@@ -45,6 +45,7 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -174,12 +175,17 @@ def session_binding(session_id: str | None, jti: str | None) -> str | None:
     return jti or None
 
 
-def stepup_requires_webauthn(settings: Settings, username: str, role: str) -> bool:
+def stepup_requires_webauthn(
+    settings: Settings, username: str, role: str, *, policy: Callable[[], Any] | None = None
+) -> bool:
     """Whether a step-up of this account must be a WebAuthn assertion.
 
     ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` for everyone, or the
     phishing-resistant policy covering this account — by its global role or by
     what it holds in any tenant (:func:`api.services.mfa.requirement`, #504).
+    ``policy`` returns that requirement when the caller already holds it for
+    this request (:func:`api.auth.mfa_requirement`); it is only called when
+    the answer depends on it.
     """
     if settings.mfa_stepup_phishing_resistant:
         return True
@@ -187,6 +193,8 @@ def stepup_requires_webauthn(settings: Settings, username: str, role: str) -> bo
 
     if not mfa_service.phishing_resistant_policy(settings):
         return False
+    if policy is not None:
+        return policy().phishing_resistant
     return mfa_service.requirement(settings, username, role).phishing_resistant
 
 

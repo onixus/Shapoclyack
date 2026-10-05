@@ -311,6 +311,130 @@ def test_an_explicit_empty_permission_list_turns_the_permission_policy_off(
     assert _login(client, "approver")["mfa_required"] is False
 
 
+def _tenant_role(client, tenant_id: str, role_id: str, rank: int, permissions: list[str]) -> None:
+    defined = client.post(
+        f"/api/tenants/{tenant_id}/roles",
+        headers=_admin(client),
+        json={"role_id": role_id, "rank": rank, "permissions": permissions},
+    )
+    assert defined.status_code == 201, defined.text
+
+
+def test_a_rank_3_tenant_role_is_held_by_its_rank_under_the_derived_default(
+    tmp_path, monkeypatch
+):
+    """The tenant-admin rank is authority whatever permissions the role lists.
+
+    Rank 3 alone passes every ``require_tenant(Role.admin)`` gate — the SSH
+    push, webhooks, notification channels, SLA policies — so a tenant role
+    written as ``rank: 3, permissions: []`` administers the tenant as surely as
+    the built-in ``admin`` does. "MFA for admins" has to cover it. An explicit
+    permission list is the operator saying exactly what it means, and the rank
+    does not widen it.
+    """
+    client, settings = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _tenant_role(client, "acme", "deployer", 3, [])
+    _user(client, "dep")
+    _grant(client, "acme", "dep", "deployer")
+    _policy(settings, mfa_required_roles=["admin"])
+
+    session = _login(client, "dep")
+    assert session["mfa_required"] is True
+    headers = bearer(session["access_token"])
+    assert _confined(client, headers)
+    assert client.get("/api/auth/mfa", headers=headers).json()["required_because"] == [
+        {"tenant_id": "acme", "role": "deployer", "permissions": [], "phishing_resistant": False}
+    ]
+
+    _policy(settings, mfa_required_permissions=["scan_scope.approve"])
+    assert _login(client, "dep")["mfa_required"] is False
+
+    _policy(
+        settings,
+        mfa_required_roles=[],
+        mfa_required_permissions=None,
+        mfa_phishing_resistant_roles=["admin"],
+    )
+    assert client.get("/api/auth/me", headers=headers).json()["phishing_resistant_required"] is True
+
+
+def test_the_endpoint_agent_authority_is_held_to_mfa_for_admins(tmp_path, monkeypatch):
+    """``endpoint_agent.manage`` replaces the binary every endpoint runs.
+
+    A rank-1 tenant role carrying only that permission is outside every rank
+    rule, so the permission itself has to be in the derived set.
+    """
+    client, settings = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _tenant_role(client, "acme", "agent-release", 1, ["endpoint_agent.manage"])
+    _user(client, "rel")
+    _grant(client, "acme", "rel", "agent-release")
+    _policy(settings, mfa_required_roles=["admin"])
+
+    session = _login(client, "rel")
+    assert session["mfa_required"] is True
+    assert _confined(client, bearer(session["access_token"]))
+
+
+def test_the_authority_counts_in_whichever_tenant_holds_it(tmp_path, monkeypatch):
+    """Not the first membership: a viewer in ``aaa`` who administers ``zzz``.
+
+    Memberships are read in tenant order, so a requirement taken from the first
+    one alone would look at ``aaa`` and let the password through.
+    """
+    client, settings = _setup(tmp_path, monkeypatch)
+    _tenant(client, "aaa")
+    _tenant(client, "zzz")
+    _user(client, "split")
+    _grant(client, "aaa", "split", "viewer")
+    _grant(client, "zzz", "split", "admin")
+    _policy(settings, mfa_required_roles=["admin"])
+
+    session = _login(client, "split")
+    assert session["mfa_required"] is True
+    headers = bearer(session["access_token"])
+    assert client.get("/api/runs?tenant_id=aaa", headers=headers).status_code == 403
+    reasons = client.get("/api/auth/mfa", headers=headers).json()["required_because"]
+    assert [(reason["tenant_id"], reason["role"]) for reason in reasons] == [("zzz", "admin")]
+
+
+def test_the_requirement_is_read_once_per_request(tmp_path, monkeypatch):
+    """The confinement check and the route answer from one membership read.
+
+    ``/api/auth/me`` and ``/api/auth/mfa`` both decide the requirement after
+    ``get_current_user`` already has for the same request; the second read is
+    the same answer at the same moment, so it is taken from the request.
+    """
+    from api.services import rbac as rbac_service
+
+    client, settings = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _user(client, "boss")
+    _grant(client, "acme", "boss", "admin")
+    _policy(settings, mfa_required_roles=["admin"])
+    headers = bearer(_login(client, "boss")["access_token"])
+
+    reads: list[str] = []
+    real = rbac_service.held_by
+
+    def counted(username, *, global_role):
+        reads.append(username)
+        return real(username, global_role=global_role)
+
+    monkeypatch.setattr(rbac_service, "held_by", counted)
+    assert client.get("/api/auth/me", headers=headers).json()["mfa_pending"] is True
+    assert reads == ["boss"]
+    reads.clear()
+    assert client.get("/api/auth/mfa", headers=headers).json()["required"] is True
+    assert reads == ["boss"]
+    reads.clear()
+    # A global role the list names decides "must enrol" without the memberships.
+    _policy(settings, mfa_required_roles=["admin", "viewer"])
+    assert _confined(client, headers)
+    assert reads == []
+
+
 # --- Sessions that are already open -----------------------------------------------
 
 
@@ -529,6 +653,41 @@ def test_a_relayed_code_cannot_strip_a_tenant_admins_keys(tmp_path, monkeypatch,
     assert client.get("/api/auth/mfa", headers=phished).json()["webauthn_credentials"] == 1
 
 
+def test_a_relayed_code_cannot_add_a_key_next_to_a_tenant_admins_own(
+    tmp_path, monkeypatch, clock
+):
+    """The other half of the side door: enrolling the phisher's key.
+
+    Under a key policy a session proved with a code may register a key only
+    while the account has none. A tenant admin who already holds one must
+    prove the new key with it — asked of what the account holds in its
+    tenants, not of the global ``viewer`` role.
+    """
+    from tests.soft_authenticator import SoftAuthenticator
+    from tests.test_api_webauthn import ORIGIN, RP_ID, _register
+
+    client, settings = _setup(
+        tmp_path, monkeypatch, webauthn_rp_id=RP_ID, webauthn_origins=[ORIGIN]
+    )
+    _tenant(client, "acme")
+    _user(client, "boss")
+    _grant(client, "acme", "boss", "admin")
+    first = bearer(_login(client, "boss")["access_token"])
+    secret = _enrol(client, first, clock, "boss")
+    stepped_up = client.post(
+        "/api/auth/mfa/verify", headers=first, json={"code": clock.next_code(secret)}
+    )
+    assert stepped_up.status_code == 200, stepped_up.text
+    _register(client, bearer(stepped_up.json()["access_token"]), SoftAuthenticator(ORIGIN))
+    _policy(settings, mfa_phishing_resistant_roles=["admin"])
+
+    phished = _signed_in_with_code(client, "boss", clock, secret)
+    refused = client.post("/api/auth/mfa/webauthn/register/options", headers=phished)
+    assert refused.status_code == 403, refused.text
+    assert "one you already hold" in refused.json()["detail"]
+    assert client.get("/api/auth/mfa", headers=phished).json()["webauthn_credentials"] == 1
+
+
 # --- Step-up on the routes that hand out tenant authority ---------------------------------
 
 
@@ -653,6 +812,168 @@ def test_service_tokens_are_still_refused_by_the_scope_layer(tmp_path, monkeypat
     assert "colleague" not in {m["username"] for m in members}
 
 
+def _platform_admin_sessions(client, clock: Clock) -> tuple[dict[str, str], dict[str, str]]:
+    """The platform admin, enrolled: (session never stepped up, fresh step-up)."""
+    stale = _admin(client)
+    secret = _enrol(client, stale, clock, "admin")
+    return stale, _signed_in_with_code(client, "admin", clock, secret)
+
+
+def test_the_endpoint_agent_build_and_policy_need_a_step_up(tmp_path, monkeypatch, clock):
+    """Replacing what every endpoint runs costs what minting a credential does."""
+    from api.services import endpoint_agent_mgmt
+
+    client, _ = _setup(tmp_path, monkeypatch)
+    endpoint_agent_mgmt.reset_for_tests()
+    stale, fresh = _platform_admin_sessions(client, clock)
+    upload = {
+        "data": {"version": "9.9.9", "platform": "x86_64-pc-windows-msvc"},
+        "files": {"binary": ("a.exe", b"MZ-step-up", "application/octet-stream")},
+    }
+    policy = {"settings": {"log_level": "debug"}}
+    try:
+        _refused_for_step_up(client.post("/api/endpoint/agent/releases", headers=stale, **upload))
+        _refused_for_step_up(client.put("/api/endpoint/agent/policy", headers=stale, json=policy))
+        _refused_for_step_up(
+            client.put("/api/endpoint/agent/policy/lariska-01", headers=stale, json=policy)
+        )
+        _refused_for_step_up(client.delete("/api/endpoint/agent/policy", headers=stale))
+        _refused_for_step_up(client.delete("/api/endpoint/agent/policy/lariska-01", headers=stale))
+        _refused_for_step_up(
+            client.delete(
+                "/api/endpoint/agent/releases/9.9.9/x86_64-pc-windows-msvc", headers=stale
+            )
+        )
+
+        stored = client.post("/api/endpoint/agent/releases", headers=fresh, **upload)
+        assert stored.status_code == 201, stored.text
+        assert (
+            client.put("/api/endpoint/agent/policy", headers=fresh, json=policy).status_code
+            == 200
+        )
+        assert client.delete("/api/endpoint/agent/policy", headers=fresh).status_code == 204
+        removed = client.delete(
+            "/api/endpoint/agent/releases/9.9.9/x86_64-pc-windows-msvc", headers=fresh
+        )
+        assert removed.status_code == 204
+    finally:
+        endpoint_agent_mgmt.reset_for_tests()
+
+
+def test_deciding_a_risk_acceptance_needs_a_step_up(tmp_path, monkeypatch, clock):
+    """Approving, rejecting and revoking an acceptance: the paired approval of scan-scope.
+
+    The step-up is a dependency, so it answers before the finding is looked
+    up; the fresh session gets past it to the route's own 404.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    stale, fresh = _platform_admin_sessions(client, clock)
+    calls = (
+        ("post", "/api/vulnerabilities/no-such-finding/exception/approve", {"note": "ok"}),
+        ("post", "/api/vulnerabilities/no-such-finding/exception/reject", {"note": "no"}),
+        ("delete", "/api/vulnerabilities/no-such-finding/exception", None),
+    )
+    for method, path, body in calls:
+        kwargs = {"json": body} if body is not None else {}
+        _refused_for_step_up(getattr(client, method)(path, headers=stale, **kwargs))
+        assert getattr(client, method)(path, headers=fresh, **kwargs).status_code == 404
+
+
+def test_disabling_deleting_and_signing_out_an_account_need_a_step_up(
+    tmp_path, monkeypatch, clock
+):
+    """The account-administration step-ups had a gap: these three end other admins' access.
+
+    Disabling or deleting the other admins, or signing them out, is how an
+    open tab keeps an installation to itself — the reason membership revoke
+    takes a step-up (#504) applies here word for word.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    _user(client, "leaver")
+    stale, fresh = _platform_admin_sessions(client, clock)
+
+    _refused_for_step_up(
+        client.put("/api/users/leaver/disabled", headers=stale, json={"disabled": True})
+    )
+    _refused_for_step_up(client.post("/api/users/leaver/sessions/revoke-all", headers=stale))
+    _refused_for_step_up(client.delete("/api/users/leaver", headers=stale))
+
+    assert (
+        client.put("/api/users/leaver/disabled", headers=fresh, json={"disabled": True}).status_code
+        == 200
+    )
+    assert client.post("/api/users/leaver/sessions/revoke-all", headers=fresh).status_code == 204
+    assert client.delete("/api/users/leaver", headers=fresh).status_code == 204
+
+
+def test_the_ssh_push_needs_a_step_up(tmp_path, monkeypatch, clock):
+    """The push mints a key on the target, so it costs what the key mint costs.
+
+    The step-up answers before the deployment policy or the target is
+    consulted; nothing is sent anywhere.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    stale, _ = _platform_admin_sessions(client, clock)
+    push = {
+        "host": "192.168.10.50",
+        "port": 22,
+        "username": "root",
+        "password": "not-sent",
+        "agent_id": "agent-remote-50",
+        "expected_host_key": "SHA256:" + "A" * 43,
+    }
+    _refused_for_step_up(client.post("/api/agent/deploy/ssh", headers=stale, json=push))
+
+
+# --- Minting a provisioning key is a named permission, not a rank ----------------------
+
+
+def test_the_console_key_mint_asks_for_the_credential_permission(tmp_path, monkeypatch):
+    """``POST /api/agent/deployment-command`` mints what ``POST …/provisioning-keys`` does.
+
+    Its twin has asked for ``tenant.credential.manage`` since #318; this one
+    asked for rank 3. So ``token-admin`` — whose whole role is that permission —
+    was refused by the console's own button, and a tenant role at rank 3 that
+    carries no credential authority minted keys. Same credential, same gate.
+    The SSH push mints one as well, and keeps the admin rank on top: it also
+    hands the platform a root login on the target.
+    """
+    client, _ = _setup(tmp_path, monkeypatch)
+    _tenant(client, "acme")
+    _tenant_role(client, "acme", "deployer", 3, [])
+    _user(client, "dep")
+    _grant(client, "acme", "dep", "deployer")
+    _user(client, "keys")
+    _grant(client, "acme", "keys", "token-admin")
+    rank_only = bearer(_login(client, "dep")["access_token"])
+    token_admin = bearer(_login(client, "keys")["access_token"])
+
+    refused = client.post(
+        "/api/agent/deployment-command?tenant_id=acme", headers=rank_only, json={"label": "x"}
+    )
+    assert refused.status_code == 403, refused.text
+    assert "tenant.credential.manage" in refused.json()["detail"]
+    minted = client.post(
+        "/api/agent/deployment-command?tenant_id=acme", headers=token_admin, json={"label": "y"}
+    )
+    assert minted.status_code == 201, minted.text
+
+    push = {
+        "host": "192.168.10.50",
+        "port": 22,
+        "username": "root",
+        "password": "not-sent",
+        "agent_id": "agent-remote-50",
+        "expected_host_key": "SHA256:" + "A" * 43,
+    }
+    pushed = client.post("/api/agent/deploy/ssh?tenant_id=acme", headers=rank_only, json=push)
+    assert pushed.status_code == 403, pushed.text
+    assert "tenant.credential.manage" in pushed.json()["detail"]
+    pushed = client.post("/api/agent/deploy/ssh?tenant_id=acme", headers=token_admin, json=push)
+    assert pushed.status_code == 403, pushed.text
+    assert "Role 'admin'" in pushed.json()["detail"]
+
+
 # --- Configuration -----------------------------------------------------------------------
 
 
@@ -674,6 +995,20 @@ def test_the_permission_variables_parse_unset_none_and_typos(monkeypatch, caplog
         "audit.read",
     ]
     assert "tenant.membr.manage" in caplog.text
+
+
+def test_a_permission_variable_of_only_typos_refuses_to_start(monkeypatch):
+    """Every key unknown is not ``none``: the operator asked for a policy.
+
+    Dropping the typos would leave ``[]``, which is the explicit off switch —
+    the derived default suppressed, tenant admins back outside the policy, and
+    nothing but a warning to say so.
+    """
+    from api.settings import _mfa_permissions
+
+    monkeypatch.setenv("OCTO_MFA_REQUIRED_PERMISSIONS", "tenant.members.manage, audit.reed")
+    with pytest.raises(ValueError, match="OCTO_MFA_REQUIRED_PERMISSIONS"):
+        _mfa_permissions("OCTO_MFA_REQUIRED_PERMISSIONS")
 
 
 def test_the_derived_default_follows_the_admin_role_only(tmp_path):

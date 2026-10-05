@@ -222,8 +222,13 @@ succeed is not a thing to repeat silently. That covers the whole step-up set,
 which is wider than the credential screens — creating an account, resetting a
 password, changing a role, setting a verified address, resetting somebody's
 MFA, replacing a scan scope, granting, changing or revoking a membership and
-creating, editing or deleting a tenant role on **Roles & members** (#504), and
-the **Deploy Agent** button on the sensors page.
+creating, editing or deleting a tenant role on **Roles & members** (#504),
+disabling, deleting or signing out an account, approving, rejecting or revoking
+a risk acceptance, setting the endpoint agent policy or uploading/removing a
+build, and both actions of the **Deploy Agent** dialog on the sensors page —
+**Generate key** and the SSH push. The dialog offers them to whoever holds
+`tenant.credential.manage`, which is now also what the API asks for (#504);
+the SSH push additionally needs the tenant `admin` rank.
 
 #### Security keys and passkeys
 

@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import jwt
 from fastapi import Depends, HTTPException, Query, Request, status
@@ -16,6 +16,9 @@ from pydantic import BaseModel, Field
 from api.core import permissions as permission_catalog
 from api.db import tenant_scope
 from api.settings import Settings, load_settings
+
+if TYPE_CHECKING:
+    from api.services.mfa import Requirement
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -766,7 +769,29 @@ _MFA_PENDING_ALLOWED_PATHS = (
 )
 
 
-def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
+#: Where :func:`mfa_requirement` keeps the answer for the rest of the request.
+MFA_REQUIREMENT_STATE_ATTR = "mfa_requirement"
+
+
+def mfa_requirement(request: Request, settings: Settings, user: TokenUser) -> Requirement:
+    """:func:`api.services.mfa.requirement` for this request's caller, decided once.
+
+    The confinement check in :func:`get_current_user`, the step-up's "must it
+    be a key", and ``/api/auth/me`` and ``/api/auth/mfa`` all ask the same
+    question about the same account within one request; the membership read
+    behind it is paid for by the first of them. Per request and never longer,
+    which is what keeps a grant or a revoke effective from the next call.
+    """
+    from api.services import mfa as mfa_service
+
+    cached = getattr(request.state, MFA_REQUIREMENT_STATE_ATTR, None)
+    if cached is None:
+        cached = mfa_service.requirement(settings, user.username, user.role.value)
+        setattr(request.state, MFA_REQUIREMENT_STATE_ATTR, cached)
+    return cached
+
+
+def _owes_enrolment(request: Request, settings: Settings, user: TokenUser) -> bool:
     """Whether this caller must enrol a second factor, and has not (#315, #504).
 
     Asked per request rather than once at login, and gated on the policy being
@@ -789,10 +814,18 @@ def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
     # never reads the memberships.
     if mfa_service.is_enabled(settings, user.username):
         return False
-    return mfa_service.requirement(settings, user.username, user.role.value).required
+    # A global role the lists name is enough on its own; the memberships would
+    # only add reasons, which nothing on this path reads.
+    if user.role.value in settings.mfa_required_roles or (
+        user.role.value in settings.mfa_phishing_resistant_roles
+    ):
+        return True
+    return mfa_requirement(request, settings, user).required
 
 
-def _owes_phishing_resistant_factor(settings: Settings, user: TokenUser) -> bool:
+def _owes_phishing_resistant_factor(
+    request: Request, settings: Settings, user: TokenUser
+) -> bool:
     """Whether this session was proved with a code where a key is required (#315).
 
     Which factor *this* session was proved with is a fact about the token (its
@@ -810,7 +843,9 @@ def _owes_phishing_resistant_factor(settings: Settings, user: TokenUser) -> bool
         return False
     if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN:
         return False
-    return mfa_service.requirement(settings, user.username, user.role.value).phishing_resistant
+    if user.role.value in settings.mfa_phishing_resistant_roles:
+        return True
+    return mfa_requirement(request, settings, user).phishing_resistant
 
 
 _ENROLMENT_REQUIRED_DETAIL = (
@@ -914,10 +949,10 @@ def get_current_user(
     # Before the MFA confinement below: a session that may only reach the
     # enrolment routes is still somebody's session, and its requests count.
     _charge_rate_limit(request, rate_limit.SCOPE_USER, user.username)
-    if _owes_enrolment(settings, user):
+    if _owes_enrolment(request, settings, user):
         user.mfa_pending = True
         _enforce_mfa_enrolment(request)
-    elif _owes_phishing_resistant_factor(settings, user):
+    elif _owes_phishing_resistant_factor(request, settings, user):
         user.phishing_resistant_pending = True
         _enforce_mfa_enrolment(request, _PHISHING_RESISTANT_REQUIRED_DETAIL)
     return user
@@ -1040,7 +1075,12 @@ def require_step_up(
     # tests is a setting that can quietly stop meaning anything.
     if deadline is not None and deadline > mfa_service.now_utc():
         if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN or not (
-            passkeys_service.stepup_requires_webauthn(settings, user.username, user.role.value)
+            passkeys_service.stepup_requires_webauthn(
+                settings,
+                user.username,
+                user.role.value,
+                policy=lambda: mfa_requirement(request, settings, user),
+            )
         ):
             return user
         # Recent, but proved with a code where policy wants a key. Same marker

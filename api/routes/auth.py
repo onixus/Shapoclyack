@@ -22,6 +22,7 @@ from api.auth import (
     get_current_user,
     get_current_user_if_any,
     get_settings,
+    mfa_requirement,
     require_path_tenant_permission,
     require_platform_permission,
     require_role,
@@ -437,6 +438,7 @@ def list_auth_events(
     dependencies=[Depends(tenant_scope.cross_tenant("the caller's own tenants"))],
 )
 def me(
+    request: Request,
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
     tenant_id: Annotated[
@@ -482,7 +484,7 @@ def me(
     # Unlike ``permissions`` above, not about ``scoped_tenant``: the MFA policy
     # covers an account by what it holds in *any* tenant (#504), because one
     # password signs in to all of them.
-    policy = mfa_service.requirement(settings, user.username, user.role.value)
+    policy = mfa_requirement(request, settings, user)
     return MeResponse(
         username=user.username,
         role=user.role,
