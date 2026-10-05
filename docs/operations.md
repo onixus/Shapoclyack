@@ -2509,13 +2509,38 @@ directory serves (`"tenant_ids": [...]`) rather than `all_tenants` wherever one
 directory belongs to one customer; add `"grant_platform_admin": true` only if
 the directory is meant to make platform admins. Rotate by issuing a second
 token, switching the directory over, then
-`POST /api/auth/scim-tokens/{id}/revoke` on the old one. A SCIM user can sign
-in through SSO once a group has granted it something; the first login links it
-by username.
+`POST /api/auth/scim-tokens/{id}/revoke` on the old one. A group grants no
+more than the token that created it could, so rotate to a token with the same
+binding: groups an old tenant-bound or plain token created keep that token's
+limits after the switch.
+
+A SCIM user can sign in through SSO once a group has granted it something.
+The first login links it by **`externalId` = the ID token's `sub`**, or by an
+address the IdP marks verified — never by username. Before connecting, check
+that the directory sends the subject as `externalId` (Okta does by default);
+otherwise every first login of a SCIM user is refused (JIT off) or provisioned
+as a second account (JIT on).
+
+**Map group names before you connect a tenant-bound directory.** A group it
+pushes while its name is unmapped stays limited to its tenants even after the
+operator maps that name elsewhere, and the name answers `409` to anyone else's
+push. To give the name to the right directory: find the group with an
+`all_tenants` token (`GET /scim/v2/Groups?filter=displayName eq "…"`),
+`DELETE` it, and let the right directory push again. A username a tenant-bound
+directory reserved with an account it never granted anything is freed by a
+platform admin with `DELETE /api/users/{u}`.
+
+With `OCTO_IDP_AUTHORITATIVE` on, watch the log for `IdP resync … skipped at
+SSO login: the ID token does not list the groups` (Entra ID's group overage,
+or an IdP that drops an empty claim): those logins change nothing, so filter
+the groups claim to the mapped groups. And for `OCTO_IDP_GROUP_MAP maps group
+… to role …, which tenant … does not have`: a renamed or deleted tenant role
+under the map, which freezes the IdP memberships in that tenant until fixed.
 
 The migration (`0076_idp_resync_scim`) is expand-only. Rolling it back drops
-the `source` column — every membership is local again — and every SCIM token
-and group; re-issue the token and let the directory push again.
+the `source` column — every membership is local again — the stored
+`externalId`s, and every SCIM token and group; re-issue the token and let the
+directory push again.
 
 ### Rotating the JWT signing key
 

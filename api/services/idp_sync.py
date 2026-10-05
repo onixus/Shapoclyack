@@ -49,7 +49,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from sqlalchemy import select
 
@@ -96,6 +96,23 @@ class SyncScope:
 #: An SSO login in authoritative mode: the IdP decides everything.
 LOGIN_SCOPE = SyncScope()
 
+#: A group whose grants nothing vouches for (see ``caps`` in :func:`reconcile`).
+GRANTS_NOTHING = SyncScope(
+    tenant_ids=frozenset(), manage_role=False, manage_active=False, allow_admin=False
+)
+
+
+def _cap(caps: "Mapping[str, SyncScope] | None", group: str) -> SyncScope:
+    """What one group may grant: everything where nothing narrows it (an SSO
+    login's groups), else its entry in ``caps``, else nothing."""
+    if caps is None:
+        return LOGIN_SCOPE
+    return caps.get(group, GRANTS_NOTHING)
+
+
+def _role_allowed(cap: SyncScope, role: str) -> bool:
+    return cap.manage_role and (role != "admin" or cap.allow_admin)
+
 
 @dataclass
 class SyncResult:
@@ -119,30 +136,53 @@ def is_authoritative(settings: Settings) -> bool:
     return bool(settings.idp_authoritative and (settings.oidc_role_map or settings.idp_group_map))
 
 
-def mapped_groups(settings: Settings, groups: Iterable[str], scope: SyncScope) -> list[str]:
+def mapped_groups(
+    settings: Settings,
+    groups: Iterable[str],
+    scope: SyncScope,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> list[str]:
     """The groups that grant something inside ``scope``, in a stable order.
 
     A group mapped only to a global role counts only where the scope manages
     the role: a token held to two tenants cannot keep an account alive on the
-    strength of a mapping it is not allowed to apply.
+    strength of a mapping it is not allowed to apply. Nor does a group count
+    for what its ``caps`` entry does not let it grant.
     """
     found = []
     for group in sorted(set(groups)):
-        if scope.manage_role and group in settings.oidc_role_map:
+        cap = _cap(caps, group)
+        role = settings.oidc_role_map.get(group)
+        if scope.manage_role and role is not None and _role_allowed(cap, role):
             found.append(group)
             continue
-        if any(scope.covers(entry["tenant_id"]) for entry in settings.idp_group_map.get(group, [])):
+        if any(
+            scope.covers(entry["tenant_id"]) and cap.covers(entry["tenant_id"])
+            for entry in settings.idp_group_map.get(group, [])
+        ):
             found.append(group)
     return found
 
 
-def desired_role(settings: Settings, groups: Iterable[str], *, allow_admin: bool) -> str:
+def desired_role(
+    settings: Settings,
+    groups: Iterable[str],
+    *,
+    allow_admin: bool,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> str:
     """The global role the groups map to: the highest, else the default.
 
     With ``allow_admin`` false a group mapped to ``admin`` contributes nothing,
-    so the answer falls to the next mapped role rather than to ``admin``.
+    so the answer falls to the next mapped role rather than to ``admin``. A
+    group contributes only the roles its ``caps`` entry allows.
     """
-    mapped = [settings.oidc_role_map[group] for group in groups if group in settings.oidc_role_map]
+    mapped = [
+        settings.oidc_role_map[group]
+        for group in groups
+        if group in settings.oidc_role_map
+        and _role_allowed(_cap(caps, group), settings.oidc_role_map[group])
+    ]
     if not allow_admin:
         mapped = [role for role in mapped if role != "admin"]
     if not mapped:
@@ -151,20 +191,31 @@ def desired_role(settings: Settings, groups: Iterable[str], *, allow_admin: bool
 
 
 def _desired_memberships(
-    session, settings: Settings, groups: Iterable[str], scope: SyncScope
-) -> dict[str, str]:
-    """``{tenant_id: role}`` the groups grant inside ``scope``.
+    session,
+    settings: Settings,
+    groups: Iterable[str],
+    scope: SyncScope,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> tuple[dict[str, str], set[str]]:
+    """``({tenant_id: role}, {tenant_id, ...})``: what the groups grant inside
+    ``scope``, and the tenants a mapping names a role of that does not exist.
 
     Several groups granting one tenant resolve to the highest-ranked role, the
     rule ``role_from_claims`` already applies to the global role. A tenant that
-    does not exist or a role it does not have grants nothing, with a warning:
-    a mapping mistake must not be a reason to refuse a login.
+    does not exist grants nothing, with a warning: a mapping mistake must not
+    be a reason to refuse a login. A role the tenant does not have — a tenant
+    role renamed or deleted under the map — grants nothing either, and the
+    tenant is returned as unresolved so the caller leaves what the person holds
+    there alone: the mapping is what is wrong, not the person's groups, and
+    acting on it would revoke every membership it used to grant.
     """
     best: dict[str, tuple[int, str]] = {}
+    unresolved: set[str] = set()
     for group in sorted(set(groups)):
+        cap = _cap(caps, group)
         for entry in settings.idp_group_map.get(group, []):
             tenant_id, role = entry["tenant_id"], entry["role"]
-            if not scope.covers(tenant_id):
+            if not scope.covers(tenant_id) or not cap.covers(tenant_id):
                 continue
             if session.get(models.Tenant, tenant_id) is None:
                 logger.warning(
@@ -175,18 +226,20 @@ def _desired_memberships(
                 continue
             resolved = rbac_service.role_in_session(session, tenant_id, role, lock="share")
             if resolved is None:
-                logger.warning(
+                logger.error(
                     "OCTO_IDP_GROUP_MAP maps group %r to role %r, which tenant %r does "
-                    "not have; ignoring it.",
+                    "not have; the IdP memberships in that tenant are left as they are "
+                    "until the map is fixed.",
                     group,
                     role,
                     tenant_id,
                 )
+                unresolved.add(tenant_id)
                 continue
             current = best.get(tenant_id)
             if current is None or resolved.rank > current[0]:
                 best[tenant_id] = (resolved.rank, role)
-    return {tenant_id: role for tenant_id, (_, role) in best.items()}
+    return {tenant_id: role for tenant_id, (_, role) in best.items()}, unresolved
 
 
 def reconcile(
@@ -197,6 +250,7 @@ def reconcile(
     *,
     scope: SyncScope,
     audit: "audit_service.AuditContext | None",
+    caps: Mapping[str, SyncScope] | None = None,
 ) -> SyncResult:
     """Bring ``row``'s role, memberships and enabled state in line with ``groups``.
 
@@ -204,6 +258,13 @@ def reconcile(
     session revocation commit together — or none of them do. The caller holds
     the account's row (``FOR UPDATE`` where it can race), which is what keeps
     two concurrent logins of one person from interleaving their writes.
+
+    ``scope`` is what the caller may change; ``caps`` (group -> scope) is what
+    each group may grant, whoever applies it. None means every group may grant
+    its whole mapping — an SSO login, whose groups the IdP signed. SCIM passes
+    the binding of the token that created each group, so a group cannot grant
+    beyond that token whatever token's change triggers the resync, and a
+    group missing from ``caps`` grants nothing.
     """
     groups = sorted({str(group) for group in groups})
     result = SyncResult()
@@ -219,7 +280,7 @@ def reconcile(
         return result
 
     username = row.username
-    desired = _desired_memberships(session, settings, groups, scope)
+    desired, unresolved = _desired_memberships(session, settings, groups, scope, caps)
     current = (
         session.execute(select(models.UserTenant).where(models.UserTenant.username == username))
         .scalars()
@@ -229,6 +290,9 @@ def reconcile(
 
     for membership in current:
         if membership.source != SOURCE_IDP or not scope.covers(membership.tenant_id):
+            continue
+        if membership.tenant_id in unresolved:
+            # Logged in _desired_memberships; see there.
             continue
         want = desired.get(membership.tenant_id)
         if want is None:
@@ -288,7 +352,7 @@ def reconcile(
         )
 
     if scope.manage_role:
-        role = desired_role(settings, groups, allow_admin=scope.allow_admin)
+        role = desired_role(settings, groups, allow_admin=scope.allow_admin, caps=caps)
         # A scope that may not grant admin may not take it away either: the
         # demotion of a platform admin is a platform admin's decision.
         if role != row.role and (scope.allow_admin or row.role != "admin"):
@@ -305,7 +369,7 @@ def reconcile(
             row.role = role
 
     if scope.manage_active:
-        has_mapped = bool(mapped_groups(settings, groups, scope))
+        has_mapped = bool(mapped_groups(settings, groups, scope, caps))
         if not has_mapped and row.disabled_at is None:
             row.disabled_at = _now()
             row.disabled_source = DISABLED_BY_IDP

@@ -156,6 +156,9 @@ def grant(
     ``source`` is ``local`` for a person's grant and ``idp`` for the identity
     provider's (#316). A person re-granting a membership the IdP holds takes it
     over: it becomes ``local``, and an authoritative resync stops managing it.
+    Never its holder (``created_by == username``, PermissionError): a tenant
+    admin by IdP group could otherwise re-grant themselves the same role and
+    outlive their removal from the group, which is what the resync is for.
     """
     settings = _require_settings()
     username = username.strip()
@@ -189,7 +192,20 @@ def grant(
                 models.UserTenant.tenant_id == tenant_id,
             )
         ).scalar_one_or_none()
+        previous_source = (row.source or "local") if row is not None else None
+        if (
+            previous_source == "idp"
+            and source != "idp"
+            and created_by is not None
+            and created_by == username
+        ):
+            raise PermissionError(
+                "a membership the identity provider granted cannot be taken over by "
+                "its holder; another member manager has to re-grant it"
+            )
         previous = {"role": row.role} if row is not None else None
+        if previous is not None and (previous_source != "local" or source != "local"):
+            previous["source"] = previous_source
         if row is not None and row.role != role:
             # Replacing a role is also taking it away: a member manager below
             # the member's current role cannot demote them either.
@@ -222,9 +238,15 @@ def grant(
             resource_id=username,
             tenant_id=tenant_id,
             before=previous,
-            # The source only where it is not a person's: the trail of an
-            # ordinary grant reads exactly as it did before #316.
-            after={"role": role} if source == "local" else {"role": role, "source": source},
+            # The source where either side is not a person's — a takeover of
+            # an IdP grant included, which with the same role would otherwise
+            # read as a no-op. The trail of an ordinary grant reads exactly as
+            # it did before #316.
+            after=(
+                {"role": role}
+                if source == "local" and previous_source in (None, "local")
+                else {"role": role, "source": source}
+            ),
         )
         return granted
 

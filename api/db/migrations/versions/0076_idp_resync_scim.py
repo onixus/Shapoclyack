@@ -27,6 +27,12 @@ schema, and nothing else:
     an administrator then re-enabled and disabled again *on an old replica*,
     can be re-enabled by the IdP afterwards — a window that closes with the
     rollout.
+``users.scim_external_id``
+    The ``externalId`` a SCIM client sent for an account it created — the
+    directory's key for the person, which carries the IdP subject. The first
+    SSO login whose ``sub`` equals it links the account; a login's username
+    claim never does (it can be an address nobody verified). Unique where set,
+    so one subject never matches two accounts.
 ``scim_tokens``, ``scim_groups``, ``scim_group_members``
     The provisioning credential (its own type — see the model), and the
     groups a SCIM client pushes with their members. No ``tenant_id`` column on
@@ -69,6 +75,14 @@ def upgrade() -> None:
         "ck_users_disabled_source",
         "users",
         "disabled_source IS NULL OR disabled_source IN ('idp', 'scim')",
+    )
+    op.add_column("users", sa.Column("scim_external_id", sa.String(), nullable=True))
+    op.create_index(
+        "uq_users_scim_external_id",
+        "users",
+        ["scim_external_id"],
+        unique=True,
+        postgresql_where=sa.text("scim_external_id IS NOT NULL"),
     )
 
     op.create_table(
@@ -123,6 +137,8 @@ def downgrade() -> None:
     op.drop_table("scim_groups")
     op.drop_index("ix_scim_tokens_token_prefix", table_name="scim_tokens")
     op.drop_table("scim_tokens")
+    op.drop_index("uq_users_scim_external_id", table_name="users")
+    op.drop_column("users", "scim_external_id")
     op.drop_constraint("ck_users_disabled_source", "users", type_="check")
     op.drop_column("users", "disabled_source")
     op.drop_constraint("ck_user_tenants_source", "user_tenants", type_="check")

@@ -18,19 +18,27 @@ All notable changes to Shapoclyack are documented in this file.
   memberships the IdP granted are its to change: each membership now carries
   `source` (`local`/`idp`, in `GET /api/tenants/{id}/members`), **every row
   that existed before the upgrade is `local`**, and a local grant is never
-  removed — so switching the mode on does not wipe hand-made grants. The resync
-  never touches a break-glass account, never re-enables an account a person
-  disabled, stays off (with a startup warning) when nothing is mapped, and ends
-  the account's sessions on any reduction. `/scim/v2/Users` and
+  removed — so switching the mode on does not wipe hand-made grants; nobody
+  takes over their own IdP membership (`403`), and a takeover by another
+  member manager shows `source` in the trail. The resync never touches a
+  break-glass account, never re-enables an account a person disabled, stays
+  off (with a startup warning) when nothing is mapped, changes nothing on a
+  token that does not list the groups (Entra ID's overage, a missing claim),
+  removes nothing in a tenant whose mapped role no longer exists, and ends the
+  account's sessions on any reduction. `/scim/v2/Users` and
   `/scim/v2/Groups` (list with `userName eq`/`displayName eq`, get, create,
   `PUT`, `PATCH` incl. `active: false`, `DELETE` = deactivate) plus
   `ServiceProviderConfig`/`ResourceTypes`/`Schemas`, under a new credential
   type (`octo_scim_…`, issued by a platform admin with step-up under
   `/api/auth/scim-tokens`) that works on `/scim/v2` only. A token is bound to
   tenants (or `all_tenants`); a tenant-bound token never changes the global
-  role, cannot see or deactivate accounts of other tenants, and no token makes
-  a platform admin unless issued with `grant_platform_admin`. SCIM accounts
-  sign in through SSO, linked by username at the first login. Every change is
+  role, cannot see or deactivate accounts of other tenants or accounts it has
+  granted nothing yet, and no token makes a platform admin unless issued with
+  `grant_platform_admin` — a group mapped to `admin` is such a token's alone,
+  and any group grants no more than the token that created it could, however
+  its name is mapped later. SCIM accounts sign in through SSO, linked at the
+  first login by `externalId` = the token's `sub` (stored, unique) or by an
+  address the IdP verified — never by username. Every change is
   audited (`membership.*`, `user.*` with `"source": "idp"`, new
   `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
   Migration `0076_idp_resync_scim` (expand-only; chained after 0072 on its

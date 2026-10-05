@@ -18,6 +18,7 @@ from sqlalchemy import select
 from api.db import models
 from api.db.engine import get_session
 from api.services import oidc
+from api.services import users as users_service
 from tests.conftest import (
     POSTGRES_URL,
     auth_headers,
@@ -270,11 +271,11 @@ def test_leaving_a_group_ends_the_membership_and_the_sessions(tmp_path, monkeypa
     settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
     token = _scim_token(client, admin, all_tenants=True)
 
-    assert _create_user(client, token, "erin").status_code == 201
+    assert _create_user(client, token, "erin", externalId="idp-erin").status_code == 201
     group_id = _create_group(client, token, "acme-ops", members=["erin"]).json()["id"]
 
-    # The SCIM account signs in through SSO: linked by the username the
-    # provisioning client asserted, JIT off.
+    # The SCIM account signs in through SSO: linked by the subject the
+    # provisioning client sent as externalId, JIT off.
     login = callback(
         client, provider, start_login(client), preferred_username="erin", sub="idp-erin"
     )
@@ -298,29 +299,63 @@ def test_a_scim_token_cannot_make_an_admin_unless_issued_to(tmp_path, monkeypatc
     _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
     plain = _scim_token(client, admin, all_tenants=True, name="plain")
     assert _create_user(client, plain, "erin").status_code == 201
-    assert _create_group(client, plain, "vm-admins", members=["erin"]).status_code == 201
-    # Mapped to admin, and ignored: the next best mapping is none, so the
-    # default role — and the account stays without access.
+    # A group mapped to admin is not the plain token's to hold: holding it
+    # would be choosing who the next admin-capable push promotes.
+    assert _create_group(client, plain, "vm-admins", members=["erin"]).status_code == 403
     assert _account("erin").role == "viewer"
 
     strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True, name="strong")
     assert _create_user(client, strong, "fred").status_code == 201
-    group_id = client.get(
-        '/scim/v2/Groups?filter=displayName eq "vm-admins"', headers=bearer(strong)
-    ).json()["Resources"][0]["id"]
-    assert (
-        _patch(
-            client,
-            strong,
-            f"/scim/v2/Groups/{group_id}",
-            {"op": "add", "path": "members", "value": [{"value": "fred"}]},
-        ).status_code
-        == 200
-    )
+    group_id = _create_group(client, strong, "vm-admins", members=["fred"]).json()["id"]
     assert _account("fred").role == "admin"
     # And the plain token may not take the admin away again either.
     assert client.delete("/scim/v2/Users/fred", headers=bearer(plain)).status_code == 403
     assert _account("fred").disabled_at is None
+    assert client.delete(f"/scim/v2/Groups/{group_id}", headers=bearer(plain)).status_code == 404
+    assert _account("fred").role == "admin"
+
+
+def test_a_plain_token_cannot_plant_a_member_in_the_admin_group(tmp_path, monkeypatch):
+    """Two tokens, neither enough alone (review of #316).
+
+    The plain token's change used to be stored and ignored; the next resync of
+    the account by an admin-capable token — about anything at all — then read
+    the planted membership and promoted it.
+    """
+    _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    plain = _scim_token(client, admin, all_tenants=True, name="plain")
+    strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True, name="strong")
+    assert _create_user(client, strong, "fred").status_code == 201
+    group_id = _create_group(client, strong, "vm-admins", members=["fred"]).json()["id"]
+    assert _create_user(client, plain, "erin").status_code == 201
+
+    planted = _patch(
+        client,
+        plain,
+        f"/scim/v2/Groups/{group_id}",
+        {"op": "add", "path": "members", "value": [{"value": "erin"}]},
+    )
+    assert planted.status_code == 404
+    # An unrelated push about erin by the admin-capable directory.
+    assert _create_group(client, strong, "acme-view", members=["erin"]).status_code == 201
+    assert _account("erin").role == "viewer"
+
+
+def test_a_group_mapped_to_admin_after_it_was_pushed_grants_no_admin(tmp_path, monkeypatch):
+    """A group grants no more than the token that created it could.
+
+    Pushed unmapped by the plain token, mapped to admin by an operator later:
+    the admin-capable token's next resync of a member must not promote them.
+    """
+    settings, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    plain = _scim_token(client, admin, all_tenants=True, name="plain")
+    strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True, name="strong")
+    assert _create_user(client, plain, "erin").status_code == 201
+    assert _create_group(client, plain, "vm-root", members=["erin"]).status_code == 201
+    settings.oidc_role_map["vm-root"] = "admin"
+
+    assert _create_group(client, strong, "acme-view", members=["erin"]).status_code == 201
+    assert _account("erin").role == "viewer"
 
 
 def test_local_and_break_glass_accounts_are_not_scim_s(tmp_path, monkeypatch):
@@ -478,3 +513,405 @@ def test_erasure_takes_the_scim_group_memberships(tmp_path, monkeypatch):
     assert client.post("/api/users/erin/erase", headers=admin).status_code == 200
     assert client.get(f"/scim/v2/Groups/{group_id}", headers=bearer(token)).json()["members"] == []
     assert client.get("/scim/v2/Users/erin", headers=bearer(token)).status_code == 404
+
+
+def test_a_person_s_disable_over_scim_s_own_is_the_person_s(tmp_path, monkeypatch):
+    """An administrator disabling an account SCIM already deactivated makes
+    the lock theirs: the directory's ``active: true`` no longer lifts it."""
+    _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    assert _create_user(client, token, "erin").status_code == 201
+    assert _create_group(client, token, "acme-ops", members=["erin"]).status_code == 201
+    assert client.delete("/scim/v2/Users/erin", headers=bearer(token)).status_code == 204
+    assert _account("erin").disabled_source == "scim"
+    assert (
+        client.put("/api/users/erin/disabled", headers=admin, json={"disabled": True}).status_code
+        == 200
+    )
+    assert _account("erin").disabled_source is None
+
+    refused = _patch(
+        client, token, "/scim/v2/Users/erin", {"op": "replace", "path": "active", "value": True}
+    )
+    assert refused.status_code == 403
+    assert _account("erin").disabled_at is not None
+
+
+def test_a_concurrent_create_of_one_username_is_a_conflict(tmp_path, monkeypatch):
+    """Two creates of one ``userName`` racing past the existence check: the
+    loser is a ``409 uniqueness``, which a directory retries as a lookup, not
+    a ``500``."""
+    from api.services import scim as scim_service
+
+    _, client, admin, _, _ = _setup(tmp_path, monkeypatch)
+    token = _scim_token(client, admin, all_tenants=True)
+    real_set_email = scim_service._set_email
+
+    def _the_other_request_commits_first(session, row, email):
+        with get_session(POSTGRES_URL) as other:
+            other.add(
+                models.User(
+                    username=row.username,
+                    password_hash="",
+                    role="viewer",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    created_by="scim:other",
+                )
+            )
+        return real_set_email(session, row, email)
+
+    monkeypatch.setattr(scim_service, "_set_email", _the_other_request_commits_first)
+    response = _create_user(client, token, "erin")
+    assert response.status_code == 409, response.text
+    assert response.json()["scimType"] == "uniqueness"
+
+
+# --------------------------------------------------------------------------- #
+# What a token held to some tenants may not do (review of #316)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_group_grants_no_more_than_the_tenants_of_the_token_that_created_it(
+    tmp_path, monkeypatch
+):
+    """acme's directory pushes a group under a name nobody has mapped yet; the
+    operator later maps that name to beta. The group must not start granting
+    beta — through any token's resync of its members."""
+    settings, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    everywhere = _scim_token(client, admin, all_tenants=True, name="hq")
+    assert _create_user(client, scoped, "mallory").status_code == 201
+    assert _create_group(client, scoped, "acme-ops", members=["mallory"]).status_code == 201
+    assert _create_group(client, scoped, "beta-admins", members=["mallory"]).status_code == 201
+
+    settings.idp_group_map["beta-admins"] = [{"tenant_id": beta, "role": "admin"}]
+    assert _create_group(client, everywhere, "acme-view", members=["mallory"]).status_code == 201
+    assert _memberships("mallory") == {acme: ("operator", "idp")}
+
+
+def test_a_tenant_bound_token_cannot_deactivate_a_platform_admin_in_its_tenant(
+    tmp_path, monkeypatch
+):
+    _, client, admin, acme, _ = _setup(tmp_path, monkeypatch)
+    strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, strong, "boss").status_code == 201
+    assert _create_group(client, strong, "vm-admins", members=["boss"]).status_code == 201
+    assert _create_group(client, strong, "acme-ops", members=["boss"]).status_code == 201
+    # Every membership boss holds is in acme, and still: a platform admin.
+    assert set(_memberships("boss")) == {acme}
+    assert client.get("/scim/v2/Users/boss", headers=bearer(scoped)).status_code == 200
+    assert client.delete("/scim/v2/Users/boss", headers=bearer(scoped)).status_code == 403
+    assert _account("boss").disabled_at is None
+
+
+def test_a_tenant_bound_token_cannot_put_another_tenant_s_account_in_its_group(
+    tmp_path, monkeypatch
+):
+    _, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    everywhere = _scim_token(client, admin, all_tenants=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, everywhere, "bob").status_code == 201
+    assert _create_group(client, everywhere, "beta-ops", members=["bob"]).status_code == 201
+
+    created = _create_group(client, scoped, "acme-ops", members=["bob"])
+    assert created.status_code == 400, created.text
+    group_id = _create_group(client, scoped, "acme-ops").json()["id"]
+    added = _patch(
+        client,
+        scoped,
+        f"/scim/v2/Groups/{group_id}",
+        {"op": "add", "path": "members", "value": [{"value": "bob"}]},
+    )
+    assert added.status_code == 400, added.text
+    assert _memberships("bob") == {beta: ("operator", "idp")}
+
+
+def test_a_tenant_bound_token_cannot_remove_a_member_it_cannot_see(tmp_path, monkeypatch):
+    """bob sits in an acme-mapped group whose role acme does not have, so the
+    group grants him nothing in acme and acme's directory cannot see him."""
+    settings, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    settings.idp_group_map["acme-odd"] = [{"tenant_id": acme, "role": "no-such-role"}]
+    everywhere = _scim_token(client, admin, all_tenants=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, everywhere, "bob").status_code == 201
+    assert _create_group(client, everywhere, "beta-ops", members=["bob"]).status_code == 201
+    group_id = _create_group(client, everywhere, "acme-odd", members=["bob"]).json()["id"]
+    assert client.get("/scim/v2/Users/bob", headers=bearer(scoped)).status_code == 404
+
+    removed = _patch(
+        client,
+        scoped,
+        f"/scim/v2/Groups/{group_id}",
+        {"op": "remove", "path": 'members[value eq "bob"]'},
+    )
+    assert removed.status_code == 400, removed.text
+    members = client.get(f"/scim/v2/Groups/{group_id}", headers=bearer(everywhere)).json()
+    assert [member["value"] for member in members["members"]] == ["bob"]
+
+
+def test_a_tenant_bound_token_does_not_own_an_account_in_no_tenant(
+    tmp_path, monkeypatch, provider
+):
+    """An account in no membership is inside every binding (the empty set is a
+    subset of anything). Owning it on that strength let one tenant's directory
+    create ``ciso`` deactivated and lock the real one out of SSO for good."""
+    settings = sso_settings(
+        tmp_path,
+        oidc_jit_provisioning=True,
+        oidc_role_claim="groups",
+        oidc_role_map={"vm-ops": "operator"},
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    scoped = _scim_token(client, admin, tenant_ids=[acme])
+
+    assert _create_user(client, scoped, "ciso", active=False).status_code == 403
+    assert users_service.get_user("ciso") is None
+    login = callback(
+        client, provider, start_login(client), preferred_username="ciso", sub="idp-ciso",
+        groups=["vm-ops"],
+    )
+    assert login.status_code == 200, login.text
+
+
+def test_a_placeholder_of_a_tenant_bound_token_does_not_capture_a_login(
+    tmp_path, monkeypatch, provider
+):
+    """An account a tenant-bound token created and never granted anything is
+    not linked to the identity it names: the login goes on as if it were not
+    there, rather than into an account that directory alone controls."""
+    settings = sso_settings(
+        tmp_path,
+        oidc_jit_provisioning=True,
+        oidc_role_claim="groups",
+        oidc_role_map={"vm-ops": "operator"},
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    scoped = _scim_token(client, admin, tenant_ids=[acme])
+    assert _create_user(client, scoped, "holder", externalId="idp-ciso").status_code == 201
+    # In no group: disabled as the IdP's, so it is not the default tenant's.
+    assert _account("holder").disabled_source == "idp"
+
+    login = callback(
+        client, provider, start_login(client), preferred_username="ciso", sub="idp-ciso",
+        groups=["vm-ops"],
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["username"] == "ciso"
+    assert _account("holder").oidc_subject is None
+
+
+# --------------------------------------------------------------------------- #
+# Linking a SCIM account at its first SSO login (review of #316)
+# --------------------------------------------------------------------------- #
+
+
+def _sso_with_scim(tmp_path, monkeypatch, **overrides):
+    settings = sso_settings(
+        tmp_path,
+        oidc_role_claim="groups",
+        oidc_role_map={"vm-admins": "admin", "vm-ops": "operator"},
+        **overrides,
+    )
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True)
+    return settings, client, admin, strong
+
+
+def test_an_unverified_address_does_not_link_a_scim_account(tmp_path, monkeypatch, provider):
+    """The username of a login can come from an ``email`` claim nobody
+    verified (no ``preferred_username``, or ``OCTO_OIDC_USERNAME_CLAIM=email``).
+    Linking by it handed a SCIM-provisioned platform admin to whoever typed
+    that address into their IdP profile."""
+    _, client, _, strong = _sso_with_scim(tmp_path, monkeypatch)
+    assert (
+        _create_user(
+            client, strong, "root@corp.example", emails=[{"value": "root@corp.example"}]
+        ).status_code
+        == 201
+    )
+    assert (
+        _create_group(client, strong, "vm-admins", members=["root@corp.example"]).status_code
+        == 201
+    )
+    assert _account("root@corp.example").role == "admin"
+
+    response = callback(
+        client,
+        provider,
+        start_login(client),
+        sub="attacker-sub",
+        email="root@corp.example",
+        email_verified=False,
+    )
+    assert response.status_code == 403, response.text
+    assert _account("root@corp.example").oidc_subject is None
+
+
+def test_a_scim_account_is_not_linked_by_username_alone(tmp_path, monkeypatch, provider):
+    _, client, _, strong = _sso_with_scim(tmp_path, monkeypatch)
+    assert _create_user(client, strong, "erin", externalId="idp-erin").status_code == 201
+    assert _create_group(client, strong, "vm-ops", members=["erin"]).status_code == 201
+    response = callback(
+        client, provider, start_login(client), preferred_username="erin", sub="someone-else"
+    )
+    assert response.status_code == 403, response.text
+    assert _account("erin").oidc_subject is None
+
+
+def test_a_scim_account_links_by_its_external_id(tmp_path, monkeypatch, provider):
+    """``externalId`` is the directory's key for the person; where it carries
+    the IdP subject it links whatever the login's username claim says."""
+    _, client, _, strong = _sso_with_scim(tmp_path, monkeypatch)
+    created = _create_user(client, strong, "erin", externalId="idp-erin")
+    assert created.json()["externalId"] == "idp-erin"
+    assert _create_group(client, strong, "vm-ops", members=["erin"]).status_code == 201
+    response = callback(
+        client, provider, start_login(client), preferred_username="e.smith", sub="idp-erin"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["username"] == "erin"
+    assert _account("erin").oidc_subject == "idp-erin"
+    # Another account cannot claim the same key.
+    clash = _create_user(client, strong, "erin2", externalId="idp-erin")
+    assert clash.status_code == 409
+
+
+def test_a_scim_account_links_by_a_verified_address(tmp_path, monkeypatch, provider):
+    _, client, _, strong = _sso_with_scim(tmp_path, monkeypatch)
+    assert (
+        _create_user(client, strong, "erin", emails=[{"value": "erin@corp.example"}]).status_code
+        == 201
+    )
+    assert _create_group(client, strong, "vm-ops", members=["erin"]).status_code == 201
+    response = callback(
+        client,
+        provider,
+        start_login(client),
+        preferred_username="e.smith",
+        sub="idp-erin",
+        email="erin@corp.example",
+        email_verified=True,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["username"] == "erin"
+
+
+def test_a_scim_account_given_a_password_is_no_longer_linked_by_scim(
+    tmp_path, monkeypatch, provider
+):
+    _, client, _, strong = _sso_with_scim(tmp_path, monkeypatch)
+    assert _create_user(client, strong, "erin", externalId="idp-erin").status_code == 201
+    assert _create_group(client, strong, "vm-ops", members=["erin"]).status_code == 201
+    with get_session(POSTGRES_URL) as session:
+        session.get(models.User, "erin").password_hash = "$2b$12$not-a-real-hash"
+    response = callback(client, provider, start_login(client), sub="idp-erin")
+    assert response.status_code == 403, response.text
+    assert _account("erin").oidc_subject is None
+
+
+def test_only_an_account_scim_created_is_linked_by_scim_s_identifiers(
+    tmp_path, monkeypatch, provider
+):
+    """An account without a password that something else made, carrying an
+    unverified address, is not SCIM's to hand to a login."""
+    _, client, _, _ = _sso_with_scim(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    with get_session(POSTGRES_URL) as session:
+        session.add(
+            models.User(
+                username="ops-bot",
+                password_hash="",
+                role="operator",
+                created_at=now,
+                updated_at=now,
+                created_by="admin",
+                email="ops@corp.example",
+                email_verified=False,
+                scim_external_id="idp-ops",
+            )
+        )
+        session.flush()
+        session.add(
+            models.UserTenant(
+                username="ops-bot", tenant_id="default", role="viewer", created_at=now
+            )
+        )
+    response = callback(
+        client,
+        provider,
+        start_login(client),
+        sub="idp-ops",
+        email="ops@corp.example",
+        email_verified=True,
+    )
+    assert response.status_code == 403, response.text
+    assert _account("ops-bot").oidc_subject is None
+
+
+def test_an_erased_scim_account_is_never_linked(tmp_path, monkeypatch, provider):
+    _, client, admin, strong = _sso_with_scim(tmp_path, monkeypatch)
+    assert _create_user(client, strong, "erin", externalId="idp-erin").status_code == 201
+    assert _create_group(client, strong, "vm-ops", members=["erin"]).status_code == 201
+    assert client.post("/api/users/erin/erase", headers=admin).status_code == 200
+    assert _account("erin").scim_external_id is None
+    # Even with the identifiers left behind, a tombstone links nothing.
+    with get_session(POSTGRES_URL) as session:
+        row = session.get(models.User, "erin")
+        row.scim_external_id = "idp-erin"
+        row.email = "erin@corp.example"
+        row.disabled_at = None
+        row.disabled_source = None
+    response = callback(
+        client,
+        provider,
+        start_login(client),
+        sub="idp-erin",
+        email="erin@corp.example",
+        email_verified=True,
+    )
+    assert response.status_code == 403, response.text
+    assert _account("erin").oidc_subject is None
+
+
+def test_a_tenant_bound_token_edits_its_new_account_but_cannot_lock_it(tmp_path, monkeypatch):
+    """Directories send attributes in a ``PATCH`` right after the create; that
+    is the creator's to make on an account it has granted nothing yet. A
+    deactivation is not, and neither is any change to another tenant's
+    account it can see."""
+    _, client, admin, acme, _ = _setup(tmp_path, monkeypatch)
+    everywhere = _scim_token(client, admin, all_tenants=True, name="hq")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, scoped, "carol").status_code == 201
+    edited = _patch(
+        client,
+        scoped,
+        "/scim/v2/Users/carol",
+        {"op": "replace", "path": "externalId", "value": "idp-carol"},
+        {"op": "replace", "path": "emails", "value": [{"value": "carol@acme.example"}]},
+    )
+    assert edited.status_code == 200, edited.text
+    assert _account("carol").scim_external_id == "idp-carol"
+    locked = _patch(
+        client, scoped, "/scim/v2/Users/carol", {"op": "replace", "path": "active", "value": False}
+    )
+    assert locked.status_code == 403
+
+    # bob: HQ's, in acme and beta. Visible to acme's token, not its to re-key.
+    assert _create_user(client, everywhere, "bob", externalId="idp-bob").status_code == 201
+    assert _create_group(client, everywhere, "acme-ops", members=["bob"]).status_code == 201
+    assert _create_group(client, everywhere, "beta-ops", members=["bob"]).status_code == 201
+    rekeyed = _patch(
+        client,
+        scoped,
+        "/scim/v2/Users/bob",
+        {"op": "replace", "path": "externalId", "value": "idp-mallory"},
+    )
+    assert rekeyed.status_code == 403
+    assert _account("bob").scim_external_id == "idp-bob"

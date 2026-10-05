@@ -23,7 +23,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 
 from api.auth import hash_password, verify_password
 from api.db import models
@@ -460,6 +460,53 @@ def _normalise_email(email: str | None) -> str | None:
     return cleaned[:320] or None
 
 
+def _scim_link_candidate(
+    session, *, subject: str, verified_email: str | None, lock: bool
+) -> models.User | None:
+    """The account a SCIM client created for this login's identity, if any.
+
+    Matched by ``externalId == subject`` first, then by an address the
+    provider verified — see :func:`link_or_provision_sso_user`. Every other
+    condition here is what makes the account SCIM's and still unclaimed.
+    """
+    identity = [models.User.scim_external_id == subject]
+    if verified_email:
+        identity.append(models.User.email == verified_email)
+    lookup = (
+        select(models.User)
+        .where(
+            or_(*identity),
+            models.User.oidc_subject.is_(None),
+            models.User.password_hash == "",
+            models.User.created_by.like("scim:%"),
+            models.User.erased_at.is_(None),
+        )
+        # The subject before the address: it is the stronger assertion.
+        .order_by(case((models.User.scim_external_id == subject, 0), else_=1))
+    )
+    if lock:
+        lookup = lookup.with_for_update()
+    for row in session.execute(lookup).scalars():
+        token = session.get(models.ScimToken, row.created_by.removeprefix("scim:"))
+        tenant_bound = token is None or not token.all_tenants
+        if tenant_bound and not _holds_a_membership(session, row.username):
+            # A tenant-bound directory's account with no grant yet: linking it
+            # would put this person in an account that directory alone
+            # controls, on the strength of nothing it has granted.
+            continue
+        return row
+    return None
+
+
+def _holds_a_membership(session, username: str) -> bool:
+    return (
+        session.execute(
+            select(models.UserTenant.tenant_id).where(models.UserTenant.username == username)
+        ).first()
+        is not None
+    )
+
+
 def link_or_provision_sso_user(
     settings: Settings,
     *,
@@ -506,7 +553,21 @@ def link_or_provision_sso_user(
     account has to commit even though the login it ran for is then refused.
     JIT provisioning in that mode creates no account for an identity in no
     mapped group, and grants no ``tenant_id`` membership of its own: the group
-    map is the only source of memberships.
+    map is the only source of memberships. ``groups`` None means the ID token
+    did not list them (the claim is missing, or Entra ID's overage replaced
+    it): the login then changes nothing — "not listed" is not "in no group",
+    and reading it as that would disable the account — and provisions nothing.
+
+    Between 2 and 3, **an account a SCIM client created** (#316) is linked by
+    an identifier the IdP asserts for this login: its ``externalId`` equal to
+    ``subject``, or its address equal to one the provider marks verified (SCIM
+    addresses are stored unverified, so step 2 never matches them). Never by
+    the login's username, which can come from an ``email`` claim nobody
+    verified — linking on it handed a SCIM-provisioned admin to whoever typed
+    that address into their IdP profile. An account with a password, one
+    already linked, an erased one, and one a tenant-bound SCIM token created
+    and has granted nothing yet (a placeholder that directory alone controls)
+    are never matched.
     """
     from api.services import idp_sync
 
@@ -514,6 +575,7 @@ def link_or_provision_sso_user(
     email = _normalise_email(email)
     now = _now()
     authoritative = idp_sync.is_authoritative(settings_local)
+    groups_listed = groups is not None
     groups = list(groups or [])
     context = audit_service.AuditContext(
         actor=f"oidc:{issuer}"[:128], actor_type=audit_service.ACTOR_SYSTEM
@@ -524,6 +586,14 @@ def link_or_provision_sso_user(
     with get_session(settings_local.postgres_url) as session:
 
         def _resync(row: models.User) -> None:
+            if not groups_listed:
+                logger.warning(
+                    "IdP resync of %r skipped at SSO login: the ID token does not list "
+                    "the groups (claim %r missing or replaced by an overage pointer)",
+                    row.username,
+                    settings_local.oidc_role_claim,
+                )
+                return
             result = idp_sync.reconcile(
                 session, settings_local, row, groups, scope=idp_sync.LOGIN_SCOPE, audit=context
             )
@@ -569,22 +639,12 @@ def link_or_provision_sso_user(
                     candidate_lookup = candidate_lookup.with_for_update()
                 candidate = session.execute(candidate_lookup).scalars().first()
             if candidate is None:
-                # An account a SCIM client created for this person (#316). The
-                # provisioning client is the identity provider speaking through
-                # a credential a platform admin issued, so its ``userName`` is
-                # as good an assertion as a verified address — and the only one
-                # it has, since SCIM addresses are stored unverified. Accounts
-                # with a password, and accounts already linked, never match.
-                scim_lookup = select(models.User).where(
-                    models.User.username == (username or "").strip(),
-                    models.User.oidc_subject.is_(None),
-                    models.User.password_hash == "",
-                    models.User.created_by.like("scim:%"),
-                    models.User.erased_at.is_(None),
+                candidate = _scim_link_candidate(
+                    session,
+                    subject=subject,
+                    verified_email=email if email_verified else None,
+                    lock=authoritative,
                 )
-                if authoritative:
-                    scim_lookup = scim_lookup.with_for_update()
-                candidate = session.execute(scim_lookup).scalars().first()
             if candidate is not None:
                 if candidate.disabled_at is not None and not (
                     authoritative and candidate.disabled_source == idp_sync.DISABLED_BY_IDP
@@ -607,6 +667,11 @@ def link_or_provision_sso_user(
                 refusal = (
                     "no console account is linked to this identity and just-in-time "
                     "provisioning is disabled"
+                )
+            elif authoritative and not groups_listed:
+                refusal = (
+                    "the ID token does not list this identity's groups; an account "
+                    "cannot be provisioned from it"
                 )
             elif authoritative and not idp_sync.mapped_groups(
                 settings_local, groups, idp_sync.LOGIN_SCOPE

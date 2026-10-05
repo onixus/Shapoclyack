@@ -700,17 +700,26 @@ def email_verified_from_claims(claims: dict[str, Any]) -> bool:
     return False
 
 
-def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str]:
+def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str] | None:
     """The values of ``OCTO_OIDC_ROLE_CLAIM`` in these claims (#316).
 
-    A string is one group and a list is several; anything else — the claim
-    missing included — is none. What the groups grant is the maps' business
-    (:func:`role_from_claims`, ``api/services/idp_sync.py``), so this only
-    reads.
+    A string is one group and a list is several. **None** where the token does
+    not list the groups at all: the claim is missing, or the provider replaced
+    it by a pointer because there were too many — Entra ID's "overage"
+    (``_claim_names`` naming the claim, or ``hasgroups``). That is "the groups
+    are not here", not "in no group", and an IdP-authoritative resync must not
+    read it as the second (it would disable the account). What the groups grant
+    is the maps' business (:func:`role_from_claims`,
+    ``api/services/idp_sync.py``), so this only reads.
     """
     claim = settings.oidc_role_claim.strip()
     if not claim:
         return []
+    # ``hasgroups`` (the implicit flow's overage marker) comes instead of the
+    # claim, so the absence test covers it.
+    claim_names = claims.get("_claim_names")
+    if claim not in claims or (isinstance(claim_names, dict) and claim in claim_names):
+        return None
     raw = claims.get(claim)
     if isinstance(raw, str):
         return [raw]
@@ -728,7 +737,7 @@ def role_from_claims(settings: Settings, claims: dict[str, Any]) -> str:
     """
     if not settings.oidc_role_claim.strip() or not settings.oidc_role_map:
         return settings.oidc_default_role
-    values = groups_from_claims(settings, claims)
+    values = groups_from_claims(settings, claims) or []
     mapped = [settings.oidc_role_map[value] for value in values if value in settings.oidc_role_map]
     if not mapped:
         return settings.oidc_default_role

@@ -746,11 +746,20 @@ A disabled account is refused at every step: SSO proves who you are, it is not
 a way around a revocation.
 
 An account a SCIM client created (below) is linked at its first SSO login by
-**username**: the one whose `userName` equals the login's username claim, has
-no password, and is linked to no identity yet. The provisioning client is the
-identity provider speaking through a credential a platform admin issued, so its
-`userName` is the assertion; addresses it sends are stored unverified and never
-link anything.
+an identifier the identity provider asserts for that login — **never by the
+username**, which can come from an `email` claim nobody verified:
+
+- its SCIM `externalId` equal to the ID token's `sub` (Okta sends its user id
+  as both by default; with another IdP, map the attribute that carries the
+  subject to `externalId`), or
+- its address equal to the token's `email` with `email_verified: true` (SCIM
+  stores addresses unverified, so this is the only way one links).
+
+Only an account with no password, linked to no identity yet, not erased, and
+created by a SCIM token is matched. One a **tenant-bound** token created is
+matched only once it holds a membership: until then it is a placeholder that
+one tenant's directory alone controls, and the login goes on as if it were not
+there. `externalId` is unique across accounts (`409 uniqueness`).
 
 Every outcome lands in the auth trail (`GET /api/auth/events`): `success` with
 reason `sso_signin` / `sso_linked` / `sso_provisioned`, and `denied` with
@@ -772,12 +781,26 @@ transaction as the login and **before** the disabled check:
   built-in tenant role or one the tenant defined; several groups granting one
   tenant resolve to the highest rank). Missing ones are granted, changed ones
   updated, and ones no group grants any more **removed** — but only rows the
-  IdP itself granted;
+  IdP itself granted. A group mapped to a role the tenant does not have (a
+  tenant role renamed or deleted under the map) grants nothing and **removes
+  nothing** in that tenant: the map is wrong, not the person's groups, and the
+  resync logs an error naming the group, role and tenant until it is fixed;
 - **access** — an account in no mapped group is disabled
   (`disabled_source = idp`, the login answered `403`); a later login with a
   mapped group re-enables it. JIT provisioning creates no account for an
   identity in no mapped group, and grants no `OCTO_OIDC_TENANT_CLAIM`
   membership: the group map is the only source of memberships in this mode.
+
+A token that **does not list the groups** changes nothing: the claim is
+missing, or Entra ID replaced it by an overage pointer (`_claim_names` naming
+the claim; `hasgroups` in the implicit flow) because the person is in too many
+groups. That is "the groups are not here", not "in no group" — the login
+proceeds on the account as it stands, the skipped resync is logged, and JIT
+provisions nothing from such a token. An IdP that removes someone from their
+last group should send an empty claim (`"groups": []`); one that drops the
+claim instead deprovisions through SCIM only. For Entra, filter the groups
+claim to the mapped groups ("groups assigned to the application") so it stays
+under the limit.
 
 **Which memberships the IdP owns.** Each `user_tenants` row has a `source`:
 `idp` for what the group mapping, SCIM or JIT provisioning granted, `local` for
@@ -788,7 +811,12 @@ exists for a tenant the groups also grant, it stands. So turning the mode on
 never wipes the grants an administrator made by hand; the cost is that such a
 grant outlives the person's IdP groups until somebody revokes it (the member
 list shows `source`). A person re-granting an `idp` membership
-(`PUT /api/tenants/{id}/members/{u}`) takes it over: it becomes `local`.
+(`PUT /api/tenants/{id}/members/{u}`) takes it over: it becomes `local`, and
+the `membership.grant` row carries `source` in `before` and `after`, so a
+takeover with the same role does not read as a no-op. **Never its holder**: a
+re-grant of one's own `idp` membership is `403` — otherwise a tenant admin by
+IdP group could pin the grant with one request and outlive their removal from
+the group. Another member manager has to make that decision.
 
 What the resync will not do:
 
@@ -817,7 +845,7 @@ and Keycloak send (#316):
 | `GET /scim/v2/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | Discovery |
 | `GET /scim/v2/Users?filter=userName eq "…"&startIndex=&count=` | List / find (`count` ≤ 200) |
 | `POST /scim/v2/Users` | Create an IdP-managed account: no password, the default role (never `admin` unless the token may grant it), `emails` stored **unverified** |
-| `GET`/`PUT`/`PATCH /scim/v2/Users/{id}` | `id` is the username and is immutable. `PATCH` handles `active` (booleans as Entra's `"False"` too) and `emails`; `name`, `displayName`, `externalId` and the enterprise extension are accepted and not stored |
+| `GET`/`PUT`/`PATCH /scim/v2/Users/{id}` | `id` is the username and is immutable. `PATCH` handles `active` (booleans as Entra's `"False"` too), `emails` and `externalId` (what a first SSO login links by — see [single sign-on](#single-sign-on-oidc); `PUT` changes it only when the body carries it); `name`, `displayName` and the enterprise extension are accepted and not stored |
 | `DELETE /scim/v2/Users/{id}` | **Deactivates** (`active: false`); the account and its history stay — the audit trail attributes by username, and a deleted name could be reissued |
 | `GET /scim/v2/Groups?filter=displayName eq "…"`, `POST`, `GET`/`PUT`/`PATCH`/`DELETE /scim/v2/Groups/{id}` | Groups and their `members`; `PATCH` handles `add`/`remove`/`replace` of `members` (including `members[value eq "…"]`) and `displayName` |
 
@@ -846,9 +874,25 @@ JWT or a service token is a `401` there.
 
 | Binding | Sees | Memberships | Global role | Deactivate / re-enable |
 |---|---|---|---|---|
-| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that belongs to none but its tenants and is not a platform admin |
-| `all_tenants` | every account | every tenant | below `admin` | every IdP-managed account but a platform admin |
+| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that holds at least one membership, all of them in its tenants, and is not a platform admin |
+| `all_tenants` | every account | every tenant | below `admin`; a group mapped to `admin` is `403` to create and invisible otherwise | every IdP-managed account but a platform admin |
 | `all_tenants` + `grant_platform_admin` | every account | every tenant | including `admin` | every IdP-managed account |
+
+**A group grants no more than the token that created it could**, whichever
+token's change triggers the resync and whatever its name is mapped to later: a
+tenant-bound token's group grants only in that token's tenants and never a
+global role, and only a `grant_platform_admin` token's group can grant `admin`.
+So a directory cannot push a group under a name nobody has mapped yet and
+collect what the operator maps that name to afterwards. **Map group names
+before you connect a tenant-bound directory**; a name it took first stays
+its group (`409` for anyone else's push) until an `all_tenants` token deletes
+it and the right directory pushes again. Likewise, an account in no tenant is
+not "inside" a tenant-bound token's binding: such a token cannot deactivate
+or re-address an account it has granted nothing yet (`POST /Users` with
+`active: false` included), only leave it disabled for having no mapped group,
+which any later grant undoes. It can still reserve a username that way — a
+later JIT login under that name is refused, as for any taken name; a platform
+admin frees it with `DELETE /api/users/{u}`.
 
 An unmapped group is visible only to the token that created it. An account
 with a **password** (a local account) is visible, but its role, address and

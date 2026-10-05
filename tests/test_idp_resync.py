@@ -319,3 +319,150 @@ def test_the_mode_with_nothing_mapped_stays_off(tmp_path, monkeypatch, provider)
     assert _login(client, provider, groups=[]).status_code == 200
     assert _login(client, provider, groups=[]).status_code == 200
     assert _account("dana").disabled_at is None
+
+
+def test_a_member_cannot_take_over_their_own_idp_membership(tmp_path, monkeypatch, provider):
+    """Review of #316: a tenant admin by IdP group re-granted herself the same
+    role, the row became ``local``, and taking her out of the group at the IdP
+    no longer removed it — the one thing the mode exists for, undone by the
+    person it is meant to cut off."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-admins": [{"tenant_id": acme, "role": "admin"}]}
+
+    first = _login(client, provider, groups=["vm-ops", "acme-admins"])
+    assert first.status_code == 200, first.text
+    assert _memberships("dana") == {acme: ("admin", "idp")}
+    pin = client.put(
+        f"/api/tenants/{acme}/members/dana",
+        headers=bearer(first.json()["access_token"]),
+        json={"role": "admin"},
+    )
+    assert pin.status_code == 403, pin.text
+    assert _memberships("dana") == {acme: ("admin", "idp")}
+
+    assert _login(client, provider, groups=["vm-ops"]).status_code == 200
+    assert _memberships("dana") == {}
+
+
+def test_taking_over_an_idp_membership_shows_in_the_trail(tmp_path, monkeypatch, provider):
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+    assert _login(client, provider, groups=["vm-ops", "acme-ops"]).status_code == 200
+
+    # The same role: without the source in the document this row read as a
+    # no-op, and the takeover was invisible.
+    assert (
+        client.put(
+            f"/api/tenants/{acme}/members/dana", headers=admin, json={"role": "operator"}
+        ).status_code
+        == 200
+    )
+    grants = _audit(client, admin, action="membership.grant", resource_id="dana", actor="admin")
+    assert grants[0]["before"] == {"role": "operator", "source": "idp"}
+    assert grants[0]["after"] == {"role": "operator", "source": "local"}
+
+
+def _overage_login(client, provider, **claims):
+    return callback(
+        client, provider, start_login(client), preferred_username="dana", sub="idp-dana", **claims
+    )
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        # Entra ID over its group limit: the claim is replaced by a pointer.
+        {"_claim_names": {"groups": "src1"}, "_claim_sources": {"src1": {"endpoint": "x"}}},
+        {"hasgroups": True},
+        # A pointer next to a list is still a pointer: the list is not all of them.
+        {"groups": [], "_claim_names": {"groups": "src1"}},
+        # Not sent at all.
+        {},
+    ],
+    ids=["claim-names", "hasgroups", "pointer-and-list", "absent"],
+)
+def test_a_token_that_does_not_list_the_groups_changes_nothing(
+    tmp_path, monkeypatch, provider, claims
+):
+    """No groups claim is "the groups are not here", not "in no group": acting
+    on it disabled every Entra user over the group limit at each login."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+    assert _login(client, provider, groups=["vm-ops", "acme-ops"]).status_code == 200
+
+    response = _overage_login(client, provider, **claims)
+    assert response.status_code == 200, response.text
+    assert _memberships("dana") == {acme: ("operator", "idp")}
+    account = _account("dana")
+    assert account.disabled_at is None
+    assert account.role == "operator"
+
+
+def test_jit_does_not_provision_from_a_token_that_does_not_list_the_groups(
+    tmp_path, monkeypatch, provider
+):
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    response = _overage_login(client, provider, hasgroups=True)
+    assert response.status_code == 403
+    assert users_service.get_user("dana") is None
+
+
+def test_a_group_mapped_to_a_role_the_tenant_no_longer_has_revokes_nothing(
+    tmp_path, monkeypatch, provider
+):
+    """A tenant role renamed under ``OCTO_IDP_GROUP_MAP``: the mapping is
+    wrong, not the person's groups, and the resync must not act on it."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    defined = client.post(
+        f"/api/tenants/{acme}/roles",
+        headers=admin,
+        json={"role_id": "analyst", "rank": 1, "permissions": ["audit.read"]},
+    )
+    assert defined.status_code == 201, defined.text
+    settings.idp_group_map = {"acme-analysts": [{"tenant_id": acme, "role": "analyst"}]}
+    assert _login(client, provider, groups=["vm-ops", "acme-analysts"]).status_code == 200
+    assert _memberships("dana") == {acme: ("analyst", "idp")}
+
+    renamed = client.patch(
+        f"/api/tenants/{acme}/roles/analyst", headers=admin, json={"role_id": "soc-analyst"}
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert _memberships("dana") == {acme: ("soc-analyst", "idp")}
+    assert _login(client, provider, groups=["vm-ops", "acme-analysts"]).status_code == 200
+    assert _memberships("dana") == {acme: ("soc-analyst", "idp")}
+
+
+def test_a_scope_that_may_not_grant_admin_does_not_demote_one(tmp_path, monkeypatch):
+    """The reconcile contract itself, below the callers that today never ask
+    it to: a role change from ``admin`` is an admin-capable scope's only."""
+    from api.services import idp_sync
+
+    settings = _authoritative(tmp_path)
+    configured_client(tmp_path, monkeypatch, settings=settings)
+    with get_session(POSTGRES_URL) as session:
+        row = session.get(models.User, "admin")
+        row.password_hash = ""
+        result = idp_sync.reconcile(
+            session,
+            settings,
+            row,
+            ["vm-ops"],
+            scope=idp_sync.SyncScope(allow_admin=False),
+            audit=None,
+        )
+        assert result.role is None
+        assert row.role == "admin"
+        session.rollback()

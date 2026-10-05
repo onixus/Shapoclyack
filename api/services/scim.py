@@ -35,9 +35,18 @@ Rules carrying the security value:
   would fall back to the ``default`` tenant with the default role, which is
   access no mapping gave it.
 
-Accounts created here sign in through SSO: the first login whose username
-matches one that a SCIM token created, and that no identity is linked to yet,
-links it (``api/services/users.py:link_or_provision_sso_user``).
+Accounts created here sign in through SSO: the first login whose ``sub``
+equals the ``externalId`` stored here, or whose verified address equals the
+account's, links it — never the login's username, which can be an address
+nobody verified (``api/services/users.py:link_or_provision_sso_user``).
+
+What a group grants is held to the token that **created** it (its binding,
+and ``admin`` only from a ``grant_platform_admin`` token), whatever token's
+change triggers the resync and however the name is mapped later; and a group
+mapped to ``admin`` is a ``grant_platform_admin`` token's alone to see or
+change. Without both, a plain token could plant a member for the next
+admin-capable resync to promote, and a tenant-bound token could push a group
+under a name not mapped yet and collect what it was mapped to afterwards.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from api.db import models
 from api.db.engine import get_session
@@ -190,48 +200,88 @@ def _visible_user(session, principal: ScimPrincipal, row: models.User | None) ->
     return bool(_memberships_of(session, row.username) & principal.tenant_ids)
 
 
+def _owns(session, settings: Settings, principal: ScimPrincipal, row: models.User) -> bool:
+    """Whether this token may change the account itself: its enabled state,
+    address and ``externalId``.
+
+    A tenant-bound token owns an account only where it holds at least one
+    membership and every one is inside the binding. "Every one" alone was true
+    of an account in no tenant at all — the empty set is inside any binding —
+    and let one tenant's directory create ``ciso`` deactivated, holding the
+    name against the real one's first SSO login.
+    """
+    idp_managed = not row.password_hash and row.username not in settings.break_glass_users
+    if principal.all_tenants:
+        return idp_managed and (row.role != "admin" or principal.grant_platform_admin)
+    held = _memberships_of(session, row.username)
+    return idp_managed and row.role != "admin" and bool(held) and held <= principal.tenant_ids
+
+
 def _account_scope(
     session, settings: Settings, principal: ScimPrincipal, row: models.User
 ) -> idp_sync.SyncScope:
-    """What this token may change about this account, beyond memberships.
+    """What this token's resync may change about this account, beyond memberships.
 
     The membership half of the scope is the token's own; the role and the
     lifecycle depend on the account too — see the module docstring.
     """
-    idp_managed = not row.password_hash and row.username not in settings.break_glass_users
+    owned = _owns(session, settings, principal, row)
     if principal.all_tenants:
-        account = idp_managed and (row.role != "admin" or principal.grant_platform_admin)
         return idp_sync.SyncScope(
             tenant_ids=None,
-            manage_role=account,
-            manage_active=account,
+            manage_role=owned,
+            manage_active=owned,
             allow_admin=principal.grant_platform_admin,
         )
-    owned = (
-        idp_managed
-        and row.role != "admin"
-        and _memberships_of(session, row.username) <= principal.tenant_ids
-    )
+    # The "no mapped group" disable of an account this token created and has
+    # granted nothing yet: the IdP's own disable, undone by the first group
+    # that grants anything — by any token or login — so it holds no name
+    # against anybody, and without it the account would fall back to the
+    # ``default`` tenant.
     return idp_sync.SyncScope(
         tenant_ids=frozenset(principal.tenant_ids),
         manage_role=False,
-        manage_active=owned,
+        manage_active=owned or _fresh(session, settings, principal, row),
         allow_admin=False,
     )
 
 
+def _fresh(session, settings: Settings, principal: ScimPrincipal, row: models.User) -> bool:
+    """An account this token created and nothing has granted anything yet."""
+    return (
+        row.created_by == principal.created_by_marker
+        and not row.password_hash
+        and row.username not in settings.break_glass_users
+        and row.role != "admin"
+        and not _memberships_of(session, row.username)
+    )
+
+
 def _require_lifecycle(
-    session, settings: Settings, principal: ScimPrincipal, row: models.User
+    session,
+    settings: Settings,
+    principal: ScimPrincipal,
+    row: models.User,
+    *,
+    attributes: bool = False,
 ) -> None:
-    """Refuse a change to the account itself that this token may not make."""
+    """Refuse a change to the account itself that this token may not make.
+
+    ``attributes`` (the address, ``externalId``) are also the creator's to
+    change on an account it has granted nothing yet — what it could have sent
+    in the create, and directories do send them in a ``PATCH`` right after it.
+    Deactivating one is not: a lock only its maker could lift.
+    """
     if row.username in settings.break_glass_users:
         raise PermissionError("a break-glass account is not managed by SCIM")
     if row.password_hash:
         raise PermissionError("a local account with a password is not managed by SCIM")
-    if not _account_scope(session, settings, principal, row).manage_active:
+    if attributes and _fresh(session, settings, principal, row):
+        return
+    if not _owns(session, settings, principal, row):
         raise PermissionError(
-            "this token may not change this account: it is a platform admin or "
-            "belongs to tenants outside the token's binding"
+            "this token may not change this account: it is a platform admin, belongs "
+            "to tenants outside the token's binding, or to no tenant yet"
         )
 
 
@@ -251,10 +301,13 @@ def _group_in_scope(
     A tenant-bound token may hold a group whose mapping lands inside its
     tenants and nowhere else — never one mapped to a global role, which acts
     in every tenant. An unmapped group is visible only to the token that made
-    it, so one tenant's directory cannot read another's group names.
+    it, so one tenant's directory cannot read another's group names. A group
+    mapped to the global ``admin`` role is only a ``grant_platform_admin``
+    token's: a plain token adding somebody to it chose whom the next
+    admin-capable resync of that account would promote.
     """
     if principal.all_tenants:
-        return True
+        return principal.grant_platform_admin or settings.oidc_role_map.get(name) != "admin"
     global_role, tenants = _group_targets(settings, name)
     if global_role:
         return False
@@ -263,16 +316,36 @@ def _group_in_scope(
     return owner == principal.token_id
 
 
-def _group_names_of(session, username: str) -> list[str]:
-    return list(
-        session.execute(
-            select(models.ScimGroup.display_name)
-            .join(
-                models.ScimGroupMember, models.ScimGroupMember.group_id == models.ScimGroup.group_id
-            )
-            .where(models.ScimGroupMember.username == username)
-        ).scalars()
+def _token_cap(token: models.ScimToken | None) -> idp_sync.SyncScope:
+    """What a group may grant: what the token that created it could."""
+    if token is None:
+        return idp_sync.GRANTS_NOTHING
+    if token.all_tenants:
+        return idp_sync.SyncScope(
+            tenant_ids=None, manage_role=True, allow_admin=token.grant_platform_admin
+        )
+    return idp_sync.SyncScope(
+        tenant_ids=frozenset(token.tenant_ids or []), manage_role=False, allow_admin=False
     )
+
+
+def _groups_of(session, username: str) -> dict[str, idp_sync.SyncScope]:
+    """``{group name: what it may grant}`` for one account's SCIM groups.
+
+    A group grants no more than the token that created it could have, whatever
+    token's change triggers the resync and whatever the name is mapped to by
+    then. Otherwise a tenant-bound directory could push a group under a name
+    nobody had mapped yet, and the operator mapping that name to another
+    tenant later — the usual onboarding order — would hand that tenant to
+    whoever it had put in the group.
+    """
+    rows = session.execute(
+        select(models.ScimGroup.display_name, models.ScimToken)
+        .join(models.ScimGroupMember, models.ScimGroupMember.group_id == models.ScimGroup.group_id)
+        .outerjoin(models.ScimToken, models.ScimToken.token_id == models.ScimGroup.scim_token_id)
+        .where(models.ScimGroupMember.username == username)
+    ).all()
+    return {name: _token_cap(token) for name, token in rows}
 
 
 def _resync(
@@ -286,13 +359,15 @@ def _resync(
     row = session.get(models.User, username, with_for_update=True)
     if row is None or row.erased_at is not None:
         return
+    groups = _groups_of(session, username)
     result = idp_sync.reconcile(
         session,
         settings,
         row,
-        _group_names_of(session, username),
+        list(groups),
         scope=_account_scope(session, settings, principal, row),
         audit=audit,
+        caps=groups,
     )
     if result.reduced or result.granted or result.enabled:
         logger.info("SCIM resync of %r: %s", username, idp_sync.describe(result))
@@ -346,6 +421,8 @@ def _user_resource(session, settings: Settings, principal: ScimPrincipal, row: m
     }
     if row.email:
         resource["emails"] = [{"value": row.email, "primary": True}]
+    if row.scim_external_id:
+        resource["externalId"] = row.scim_external_id
     return resource
 
 
@@ -380,7 +457,8 @@ def _set_email(session, row: models.User, email: str | None) -> bool:
 
     Unverified on purpose: a verified address is what an SSO identity is
     linked to an account by (#156), and that assertion stays a console
-    administrator's. SCIM accounts are linked by username instead.
+    administrator's. A SCIM address links an SSO login only when the provider
+    marks the login's address verified (``users.link_or_provision_sso_user``).
     """
     cleaned = _normalise_email(email)
     if cleaned == row.email:
@@ -395,6 +473,33 @@ def _set_email(session, row: models.User, email: str | None) -> bool:
             raise ScimConflict("email is already used by another account")
     row.email = cleaned
     row.email_verified = False
+    return True
+
+
+def _clean_external_id(value: Any) -> str | None:
+    cleaned = str(value).strip()[:256] if value is not None else ""
+    return cleaned or None
+
+
+def _set_external_id(session, row: models.User, value: Any) -> bool:
+    """Store the directory's ``externalId``. True when it changed.
+
+    It is what an SSO login links this account by (its ``sub`` equal to it),
+    so it is unique across accounts and changing it is the account's owner's
+    (``_require_lifecycle``, checked by the caller), like the address.
+    """
+    cleaned = _clean_external_id(value)
+    if cleaned == row.scim_external_id:
+        return False
+    if cleaned is not None:
+        clash = session.execute(
+            select(models.User.username).where(
+                models.User.scim_external_id == cleaned, models.User.username != row.username
+            )
+        ).first()
+        if clash is not None:
+            raise ScimConflict("externalId is already used by another account")
+    row.scim_external_id = cleaned
     return True
 
 
@@ -454,6 +559,17 @@ def _set_active(
     # Back to what the groups say: a re-enabled account in no mapped group is
     # disabled again, this time as the IdP's.
     _resync(session, settings, principal, row.username, audit)
+
+
+def _change_external_id(
+    session, settings: Settings, principal: ScimPrincipal, row: models.User, value: Any
+) -> None:
+    """A ``PUT``/``PATCH`` of ``externalId``: the owner's change, like the address."""
+    if _clean_external_id(value) == row.scim_external_id:
+        return
+    _require_lifecycle(session, settings, principal, row, attributes=True)
+    _set_external_id(session, row, value)
+    row.updated_at = _now()
 
 
 def list_users(
@@ -534,16 +650,28 @@ def create_user(
             email=None,
             email_verified=False,
         )
-        session.add(row)
-        _set_email(session, row, _email_from(payload.get("emails")))
-        session.flush()
+        try:
+            session.add(row)
+            _set_email(session, row, _email_from(payload.get("emails")))
+            _set_external_id(session, row, payload.get("externalId"))
+            session.flush()
+        except IntegrityError as exc:
+            # A concurrent create of the same name, address or externalId won
+            # the race past the checks above: the same answer they give.
+            raise ScimConflict(f"userName {username!r} already exists") from exc
         audit_service.record(
             session,
             audit,
             action=audit_service.ACTION_USER_CREATE,
             resource_type="user",
             resource_id=username,
-            after={"username": username, "role": row.role, "email": row.email, "source": "scim"},
+            after={
+                "username": username,
+                "role": row.role,
+                "email": row.email,
+                "external_id": row.scim_external_id,
+                "source": "scim",
+            },
         )
         if not active:
             _set_active(session, settings, principal, row, False, audit)
@@ -567,9 +695,13 @@ def replace_user(
             raise ScimError("userName cannot be changed", scim_type="mutability")
         email = _email_from(payload.get("emails"))
         if _normalise_email(email) != row.email:
-            _require_lifecycle(session, settings, principal, row)
+            _require_lifecycle(session, settings, principal, row, attributes=True)
             _set_email(session, row, email)
             row.updated_at = _now()
+        # Only where sent: a PUT that leaves it out is not a statement that the
+        # person has no key in the directory any more.
+        if "externalId" in payload:
+            _change_external_id(session, settings, principal, row, payload["externalId"])
         if "active" in payload:
             _set_active(
                 session, settings, principal, row, _bool(payload["active"], "active"), audit
@@ -603,10 +735,10 @@ def patch_user(
     *,
     audit: "audit_service.AuditContext | None",
 ) -> dict[str, Any]:
-    """``PATCH``: ``active`` and ``emails``; ``userName`` only to itself.
+    """``PATCH``: ``active``, ``emails`` and ``externalId``; ``userName`` only to itself.
 
     The other core attributes a directory sends — ``name``, ``displayName``,
-    ``externalId``, the enterprise extension — are accepted and not stored:
+    the enterprise extension — are accepted and not stored:
     this platform has nowhere to keep them, and refusing them would refuse
     every real client's update along with them.
     """
@@ -635,10 +767,14 @@ def patch_user(
                     if kind == "remove":
                         raise ScimError("active cannot be removed", scim_type="mutability")
                     _set_active(session, settings, principal, row, _bool(item, "active"), audit)
+                elif key == "externalid":
+                    _change_external_id(
+                        session, settings, principal, row, None if kind == "remove" else item
+                    )
                 elif _EMAIL_PATH_RE.match(key):
                     email = None if kind == "remove" else _email_from(item)
                     if _normalise_email(email) != row.email:
-                        _require_lifecycle(session, settings, principal, row)
+                        _require_lifecycle(session, settings, principal, row, attributes=True)
                         _set_email(session, row, email)
                         row.updated_at = _now()
         session.flush()
@@ -877,7 +1013,11 @@ def create_group(
             updated_at=now,
         )
         session.add(group)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            # A concurrent create of the same name won the race past the check.
+            raise ScimConflict(f"displayName {name!r} already exists") from exc
         touched = _set_members(session, principal, group, add=members)
         _record_group(
             session,

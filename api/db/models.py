@@ -170,9 +170,20 @@ class User(Base):
     # person locked, which is what keeps an incident response from being
     # reverted by somebody's next login.
     disabled_source: Mapped[str | None] = mapped_column(default=None)
+    # The ``externalId`` a SCIM client sent for an account it created
+    # (migration 0076, #316): the directory's key for the person, which
+    # carries the IdP subject. An SSO login whose ``sub`` equals it links the
+    # account; the login's username claim never does. Unique where set.
+    scim_external_id: Mapped[str | None] = mapped_column(default=None)
 
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+        Index(
+            "uq_users_scim_external_id",
+            "scim_external_id",
+            unique=True,
+            postgresql_where=text("scim_external_id IS NOT NULL"),
+        ),
     )
 
 

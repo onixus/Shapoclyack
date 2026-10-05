@@ -89,6 +89,10 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("users", "email"): (CLEARED, "contact data"),
     ("users", "email_verified"): (CLEARED, "goes with the address"),
+    ("users", "scim_external_id"): (
+        CLEARED,
+        "the directory's key for the person, which an SSO login links by (#316)",
+    ),
     ("users", "created_by"): (PSEUDONYM, "who created the account"),
     ("webauthn_credentials", "username"): (DELETED, "the account's security keys"),
     ("webauthn_challenges", "username"): (DELETED, "ceremonies in flight"),
@@ -397,6 +401,8 @@ def _account(row: models.User) -> dict[str, Any]:
             if row.oidc_subject
             else None
         ),
+        # The directory's key for the person (#316), which a login links by.
+        "scim_external_id": row.scim_external_id,
         # That a factor exists and when; never the secret, never a code hash.
         "mfa_enabled_at": _iso(row.mfa_enabled_at),
         "recovery_codes_remaining": sum(1 for code in codes if not code.get("used_at")),
@@ -724,6 +730,7 @@ def _erase(
         row.email_verified = False
         row.oidc_issuer = None
         row.oidc_subject = None
+        row.scim_external_id = None
         row.mfa_secret = None
         row.mfa_enabled_at = None
         row.mfa_last_step = None
