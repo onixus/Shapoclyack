@@ -681,7 +681,7 @@ def run_pulse_probe(
         "stats": {},
         "chunks": [],
         "completion": completion_manifest({host: grouped[host] for host in done}),
-        "adapter": {"chunk_hosts": size, **diagnostics},
+        "adapter": {"chunk_hosts": size, "cve": cve, "cve_online": cve_online, **diagnostics},
     }
 
     pulse_dir = output_dir / "pulse"
@@ -916,6 +916,13 @@ def run_pulse_probe(
         "pulse_bin": pulse_bin,
         "os_detect": os_detect_effective,
         "os_detect_degraded": os_detect_degraded,
+        # Whether CVE matching was asked of pulse at all. Together with the
+        # ``completion`` receipts this is what lets the API say a verification
+        # run re-checked a pulse finding (api/services/verification_coverage.py):
+        # a receipt alone proves the endpoint was probed, not that its banner
+        # was matched against anything.
+        "cve": cve,
+        "cve_online": cve_online,
         "chunk_hosts": size,
         **diagnostics,
     }

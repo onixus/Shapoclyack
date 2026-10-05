@@ -18,6 +18,22 @@ def test_dedupe_keeps_first_host_port_cve():
     assert out[1]["port"] == "443"
 
 
+def test_dedupe_keeps_the_dropped_rows_detectors():
+    """One finding, but both stages looked: a verification has to re-check
+    both (#451), so the kept row names the other one."""
+    rows = [
+        {"host": "10.0.0.1", "port": "443", "cve": "CVE-2023-0001", "source": "pulse", "script_id": "pulse:local"},
+        {"host": "10.0.0.1", "port": "443", "cve": "CVE-2023-0001", "source": "nuclei", "script_id": "nuclei:CVE-2023-0001"},
+        {"host": "10.0.0.1", "port": "443", "cve": "CVE-2023-0001", "source": "nuclei", "script_id": "nuclei:CVE-2023-0001"},
+        {"host": "10.0.0.1", "port": "443", "cve": "CVE-2023-0001", "source": "pulse", "script_id": "pulse:local"},
+        {"host": "10.0.0.1", "port": "80", "cve": "CVE-2023-0002", "source": "pulse", "script_id": "pulse:local"},
+    ]
+    out = _dedupe_vulnerabilities(rows)
+    assert [row["port"] for row in out] == ["443", "80"]
+    assert out[0]["also_detected_by"] == [{"source": "nuclei", "script_id": "nuclei:CVE-2023-0001"}]
+    assert "also_detected_by" not in out[1]
+
+
 def test_dedupe_non_cve_uses_script_id():
     rows = [
         {"host": "10.0.0.1", "port": "80", "cve": None, "script_id": "http-vuln-x", "severity": "unknown"},

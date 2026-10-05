@@ -366,3 +366,183 @@ def test_the_pipeline_hands_nuclei_the_configured_resolvers():
     assert len(calls) == 1, "expected exactly one run_nuclei_scan call in scanner/main.py"
     passed = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords}
     assert passed.get("resolvers") == "config.dns.resolvers"
+
+
+# ---------------------------------------------------------------------------
+# A verification run pins the templates that found the finding (#451)
+# ---------------------------------------------------------------------------
+
+
+def _template(directory: Path, template_id: str, *, severity: str = "medium", tags: str = "cve") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{template_id}.yaml").write_text(
+        f"id: {template_id}\n\ninfo:\n  name: {template_id}\n  author: tests\n"
+        f"  severity: {severity}\n  description: |\n    A template.\n  tags: {tags}\n\n"
+        "http:\n  - method: GET\n    path:\n      - '{{BaseURL}}/'\n",
+        encoding="utf-8",
+    )
+
+
+def _clean_exit(seen: dict | None = None):
+    import subprocess
+
+    def fake_run_command(command, **kwargs):
+        if seen is not None:
+            seen["argv"] = list(command)
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    return fake_run_command
+
+
+def test_pinned_templates_run_by_id_whatever_their_severity(tmp_path: Path, monkeypatch):
+    """A medium template re-checked under a critical/high floor was never
+    loaded, and its silence closed the finding as verified-fixed."""
+    templates = tmp_path / "templates"
+    _template(templates / "http" / "cves" / "2024", "CVE-2024-0001", severity="medium")
+    _template(templates / "http" / "misc", "unrelated-detect", severity="info")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    out = tmp_path / "out"
+    out.mkdir()
+    config = NucleiConfig(
+        templates_dir=str(templates),
+        template_ids=["CVE-2024-0001"],
+        severities=["critical", "high"],
+        tags=["panel"],
+    )
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, out)
+
+    argv = seen["argv"]
+    assert argv[argv.index("-id") + 1] == "CVE-2024-0001"
+    assert "-severity" not in argv
+    assert "-tags" not in argv
+    # The host's own exclusions still apply to a platform-sent id.
+    assert "-exclude-tags" in argv
+    coverage = result["coverage"]
+    assert coverage == {
+        "ran": True,
+        "returncode": 0,
+        "targets": ["https://10.0.0.5:443/"],
+        "template_ids_requested": ["CVE-2024-0001"],
+        "template_ids_missing": [],
+        "template_ids_excluded": [],
+        "severities": None,
+    }
+    assert json.loads((out / "nuclei.json").read_text(encoding="utf-8"))["coverage"] == coverage
+
+
+def test_a_pinned_id_the_host_does_not_have_is_recorded_missing(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001", "CVE-2099-9999"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert seen["argv"][seen["argv"].index("-id") + 1] == "CVE-2024-0001"
+    assert result["coverage"]["template_ids_missing"] == ["CVE-2099-9999"]
+    assert result["coverage"]["ran"] is True
+
+
+def test_no_pinned_id_on_the_host_means_nuclei_does_not_run(tmp_path: Path, monkeypatch):
+    """nuclei given ``-id`` that matches nothing either errors or, beside a
+    match, says nothing; neither may read as "looked and found nothing"."""
+    templates = tmp_path / "templates"
+    _template(templates, "something-else")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr(
+        "scanner.pipeline.nuclei_scan.run_command",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("nuclei must not run")),
+    )
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2099-9999"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert result["skipped_reason"] == "template_ids_missing"
+    assert result["coverage"]["ran"] is False
+    assert result["coverage"]["template_ids_missing"] == ["CVE-2099-9999"]
+
+
+def test_a_pinned_template_the_host_excludes_is_not_run(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001", tags="cve,intrusive")
+    _template(templates, "CVE-2024-0002", tags="cve")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001", "CVE-2024-0002"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert seen["argv"][seen["argv"].index("-id") + 1] == "CVE-2024-0002"
+    assert result["coverage"]["template_ids_excluded"] == ["CVE-2024-0001"]
+
+    only_excluded = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"])
+    skipped = run_nuclei_scan(["10.0.0.5:443/tcp"], only_excluded, tmp_path)
+    assert skipped["skipped_reason"] == "template_ids_excluded"
+    assert skipped["coverage"]["ran"] is False
+
+
+def test_an_unpinned_run_keeps_its_severity_floor(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+
+    result = run_nuclei_scan(
+        ["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(templates), severities=["critical"]), tmp_path
+    )
+
+    assert "-id" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("-severity") + 1] == "critical"
+    assert result["coverage"]["severities"] == ["critical"]
+
+
+def test_a_skipped_or_failed_nuclei_is_not_coverage(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda name: None)
+    skipped = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(tmp_path)), tmp_path)
+    assert skipped["skipped_reason"] == "nuclei_binary_missing"
+    assert skipped["coverage"]["ran"] is False
+
+    import subprocess
+
+    def exits_one(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, "", "[FTL] Could not run nuclei")
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", exits_one)
+    failed = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(tmp_path)), tmp_path)
+    # Its findings are kept as before; it is just not a run that looked.
+    assert failed["skipped_reason"] is None
+    assert failed["coverage"]["ran"] is False
+    assert failed["coverage"]["returncode"] == 1
+
+
+def test_a_template_id_outside_the_alphabet_is_refused():
+    """The id crosses the platform-to-sensor boundary and lands in argv."""
+    import pytest
+    from pydantic import ValidationError
+
+    for bad in ("a,b", "*", "../etc/passwd", "-tags", "", "id with space", "x" * 201):
+        with pytest.raises(ValidationError):
+            NucleiConfig(template_ids=[bad])
+    assert NucleiConfig(template_ids=["CVE-2021-44228", "tech_detect.v2", "CVE-2021-44228"]).template_ids == [
+        "CVE-2021-44228",
+        "tech_detect.v2",
+    ]
+
+
+def test_the_template_index_reads_ids_not_file_names(tmp_path: Path):
+    from scanner.pipeline.nuclei_scan import index_template_ids
+
+    (tmp_path / "renamed.yaml").write_text("# header\nid: CVE-2024-0001\ninfo:\n  tags: cve, rce\n", encoding="utf-8")
+    (tmp_path / "CVE-2024-0002.yaml").write_text("id: other-id\n", encoding="utf-8")
+    found = index_template_ids(["CVE-2024-0001", "CVE-2024-0002"], [tmp_path])
+    assert found == {"CVE-2024-0001": {"cve", "rce"}}

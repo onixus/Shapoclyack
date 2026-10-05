@@ -388,6 +388,9 @@ nuclei:
   templates_dir: /usr/share/nuclei-templates
   severities: [critical, high, medium]
   exclude_tags: [intrusive, fuzz, dos]
+  # template_ids is set per job, by a verification re-scan, to pin the
+  # templates that found the finding (nuclei -id): severities and tags then do
+  # not apply, exclude_tags above still does. Not an installation setting.
   max_targets: 1000
   concurrency: 10
   rate_limit: 150

@@ -536,6 +536,16 @@ def test_os_detection_degrades_when_raw_sockets_are_unavailable(tmp_path, monkey
     assert [row["ip"] for row in raw["open"]] == ["10.0.0.1"]
 
 
+@pytest.mark.parametrize("cve", [True, False])
+def test_raw_json_says_whether_cve_matching_was_asked_for(tmp_path, monkeypatch, cve):
+    """A completion receipt proves the port was probed, not that its banner
+    was matched against anything; a verification closure needs both (#451)."""
+    _run_probe(tmp_path, monkeypatch, [_ONE_SERVICE], cve=cve)
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["cve"] is cve
+    assert raw["completion"]["hosts"]["10.0.0.1"] == {"ports": [22], "returncode": 0}
+
+
 def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):
     """Every later chunk would hit the same refusal; do not pay it per chunk."""
     calls, _ = _run_probe(

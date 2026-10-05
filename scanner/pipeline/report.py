@@ -181,16 +181,29 @@ def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
 
     Rows without a CVE id are keyed by host:port:script_id so non-CVE
     VULNERABLE scripts still appear once.
+
+    The detectors of a dropped row are not dropped with it: the kept row
+    lists them under ``also_detected_by`` (``source`` and ``script_id`` each,
+    only when there were any). One CVE seen by Pulse and by a nuclei template
+    is one finding, but the API has to know both looked -- a verification
+    re-scan is only allowed to close it once both have looked again
+    (docs/vulnerability-lifecycle.md).
     """
-    seen: set[tuple[str, str, str]] = set()
+    kept: dict[tuple[str, str, str], dict] = {}
     out: list[dict] = []
     for item in vulnerabilities:
         cve = item.get("cve")
         cve_key = str(cve).upper() if cve else f"script:{(item.get('script_id') or '')}"
         key = (str(item.get("host") or ""), str(item.get("port") or ""), cve_key)
-        if key in seen:
+        first = kept.get(key)
+        if first is not None:
+            detector = {"source": item.get("source"), "script_id": item.get("script_id")}
+            if detector != {"source": first.get("source"), "script_id": first.get("script_id")}:
+                others = first.setdefault("also_detected_by", [])
+                if detector not in others:
+                    others.append(detector)
             continue
-        seen.add(key)
+        kept[key] = item
         out.append(item)
     return out
 
