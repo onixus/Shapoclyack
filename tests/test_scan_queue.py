@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from api.db import models
 from api.db import tenant_scope
@@ -143,6 +143,38 @@ def test_a_queue_nobody_prioritised_is_still_the_fifo_it_was(svc):
         assert {row.priority for row in session.execute(select(models.Job)).scalars()} == {0}
 
     assert [_claim(svc, "agent-fifo") for _ in range(3)] == ["fifo-0", "fifo-2", "fifo-1"]
+
+
+def test_the_claim_order_is_read_off_an_index_not_sorted(svc):
+    """``ORDER BY priority DESC, queued_at, job_id`` over ``ix_jobs_claim``
+    sorted the tenant's whole queue on every poll of every sensor — under the
+    tenant's claim lock when it has a ceiling. With seq scans priced out the
+    plan must be an ordered index scan with no ``Sort`` above it."""
+    for index in range(50):
+        _queue(svc, f"plan-{index}", priority=index % 3 - 1, age_seconds=index)
+    claim = (
+        select(models.Job.job_id)
+        .where(
+            models.Job.execution == "agent",
+            models.Job.status == job_states.QUEUED,
+            models.Job.assigned_agent_id.is_(None),
+            models.Job.tenant_id == DEFAULT,
+            models.Job.agent_group.is_(None),
+        )
+        .order_by(*scan_queue.claim_order())
+        .limit(1)
+    )
+    with get_session(svc.postgres_url) as session:
+        session.execute(text("ANALYZE jobs"))
+        session.execute(text("SET LOCAL enable_seqscan = off"))
+        session.execute(text("SET LOCAL enable_bitmapscan = off"))
+        compiled = claim.compile(session.get_bind(), compile_kwargs={"literal_binds": True})
+        plan = "\n".join(
+            row[0] for row in session.execute(text(f"EXPLAIN {compiled}")).all()
+        )
+
+    assert "ix_jobs_claim_priority" in plan, plan
+    assert "Sort" not in plan, plan
 
 
 # --- Concurrency ceiling: sensor claims --------------------------------------
@@ -708,7 +740,9 @@ def test_queue_limits_are_the_platforms_to_set_and_the_tenant_admins_to_read(
     url = f"/api/tenants/{DEFAULT}/queue-limits"
 
     assert client.get(url, headers=tenant_admin).json()["max_concurrent_scans"] is None
-    refused = client.put(url, headers=tenant_admin, json={"max_concurrent_scans": 50})
+    refused = client.put(
+        url, headers=tenant_admin, json={"max_concurrent_scans": 50, "max_queued_scans": None}
+    )
     assert refused.status_code == 403
 
     written = client.put(
@@ -727,6 +761,28 @@ def test_queue_limits_are_the_platforms_to_set_and_the_tenant_admins_to_read(
     assert [(row.actor, row.after) for row in trail] == [
         ("admin", {"max_concurrent_scans": 3, "max_queued_scans": None})
     ]
+
+
+def test_a_queue_limits_put_naming_one_ceiling_does_not_lift_the_other(tmp_path, monkeypatch):
+    """Both fields defaulted to ``None``, which is "unlimited": a PUT that
+    only raised the queue depth silently removed the concurrency ceiling."""
+    client = _client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    url = f"/api/tenants/{DEFAULT}/queue-limits"
+    written = client.put(url, headers=admin, json={"max_concurrent_scans": 3, "max_queued_scans": 50})
+    assert written.status_code == 200, written.text
+
+    for partial in ({"max_queued_scans": 100}, {"max_concurrent_scans": 5}, {}):
+        refused = client.put(url, headers=admin, json=partial)
+        assert refused.status_code == 422, (partial, refused.text)
+
+    after = client.get(url, headers=admin).json()
+    assert (after["max_concurrent_scans"], after["max_queued_scans"]) == (3, 50)
+    # An explicit null is still how "unlimited" is spelled.
+    cleared = client.put(
+        url, headers=admin, json={"max_concurrent_scans": None, "max_queued_scans": 50}
+    )
+    assert cleared.status_code == 200 and cleared.json()["max_concurrent_scans"] is None
 
 
 def _trail(action: str) -> list[models.AuditEvent]:
@@ -821,6 +877,51 @@ def test_moving_a_queued_scan(tmp_path, monkeypatch):
     assert cancelled.status_code == 200
     gone = client.put(url, headers=tenant_admin, json={"priority": 1})
     assert gone.status_code == 409
+
+
+def test_an_operator_cannot_demote_somebody_elses_scan(tmp_path, monkeypatch):
+    """Without ``scan.priority.raise`` an operator moved every other queued
+    scan to -100 and so had their own handed out first: jumping the queue by
+    pushing everybody else back, which is the permission's whole point."""
+    client = _client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    operator = auth_headers(client, "operator")
+    other = _member(client, admin, "queue-other-operator", "operator")
+    theirs = client.post("/api/jobs", headers=other, json={"mode": "safe"}).json()["job_id"]
+    admins = client.post("/api/jobs", headers=admin, json={"mode": "safe"}).json()["job_id"]
+
+    for job_id in (theirs, admins):
+        refused = client.put(
+            f"/api/jobs/{job_id}/priority", headers=operator, json={"priority": -100}
+        )
+        assert refused.status_code == 403, refused.text
+        assert "scan.priority.raise" in refused.json()["detail"]
+        assert client.get(f"/api/jobs/{job_id}", headers=admin).json()["priority"] == 0
+
+    # Its owner may still make room with it.
+    lowered = client.put(f"/api/jobs/{theirs}/priority", headers=other, json={"priority": -100})
+    assert lowered.status_code == 200 and lowered.json()["priority"] == -100
+    assert _trail("scan.priority")[-1].actor == "queue-other-operator"
+
+
+def test_an_operator_cannot_undo_a_demotion_somebody_else_made(tmp_path, monkeypatch):
+    """The admin pushed an operator's scan back to -50; the operator set it
+    to 0 again and got 200 — undoing the admin's decision about the queue,
+    only from below the default instead of above it."""
+    client = _client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    operator = auth_headers(client, "operator")
+    tenant_admin = _member(client, admin, "queue-demote-admin", "admin")
+    mine = client.post("/api/jobs", headers=operator, json={"mode": "safe"}).json()["job_id"]
+    url = f"/api/jobs/{mine}/priority"
+
+    assert client.put(url, headers=tenant_admin, json={"priority": -50}).status_code == 200
+    for priority in (0, -10):
+        refused = client.put(url, headers=operator, json={"priority": priority})
+        assert refused.status_code == 403, (priority, refused.text)
+    assert client.get(f"/api/jobs/{mine}", headers=operator).json()["priority"] == -50
+    # Further down is still the owner's own business.
+    assert client.put(url, headers=operator, json={"priority": -60}).status_code == 200
 
 
 @pytest.mark.parametrize("tenant_rls", ["enforce", "off"])
@@ -954,3 +1055,43 @@ def test_a_queue_that_never_drains_costs_a_schedule_one_tick_not_every_tick(svc,
     assert next_run() == tick + retry
     assert dispatcher.stats["deferred_queue_full"] == 3
     assert dispatcher.stats["skipped_queue_full"] == 1
+
+
+def test_a_stale_deferral_does_not_cost_a_later_tick_its_back_offs(svc, monkeypatch):
+    """The leader deferred one occurrence and then stopped dispatching the
+    schedule — another replica led for a while, say. Its leftover note of
+    when the queue first refused made the *next* refusal hours later compare
+    against a tick long past, and that occurrence was skipped without a
+    single retry."""
+    scan_schedules.configure(svc)
+    sched = scan_schedules.create_schedule(
+        tenant_id=DEFAULT,
+        name="hourly-stale",
+        cron=None,
+        interval_seconds=3600,
+        scan_options={"mode": "safe"},
+        targets={},
+        created_by=None,
+    )
+    _limit(svc, queued=1)
+    _queue(svc, "stays-full")
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
+    dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=svc)
+    retry = timedelta(seconds=svc.scan_queue_retry_after_seconds)
+    first = datetime.now(UTC)
+
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), first)  # noqa: SLF001
+    assert dispatcher.stats["deferred_queue_full"] == 1
+    # Meanwhile another replica ran the schedule; this one never saw it.
+    scan_schedules.record_dispatch(
+        sched["schedule_id"], job_id="elsewhere", ran_at=first + timedelta(hours=2)
+    )
+
+    later = first + timedelta(hours=3)
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), later)  # noqa: SLF001
+
+    assert dispatcher.stats["skipped_queue_full"] == 0
+    assert dispatcher.stats["deferred_queue_full"] == 2
+    raw = scan_schedules.get_schedule(sched["schedule_id"])["next_run_at"]
+    next_run = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=UTC)
+    assert next_run == later + retry

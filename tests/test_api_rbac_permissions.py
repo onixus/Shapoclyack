@@ -240,7 +240,9 @@ def test_a_tenant_admin_administers_its_own_tenant_and_no_other(tmp_path, monkey
 
     # ...and nothing that decides what their tenant is allowed to be.
     assert client.put(
-        "/api/tenants/acme/quota", headers=acme_admin, json={"max_assets": 100000}
+        "/api/tenants/acme/quota",
+        headers=acme_admin,
+        json={"max_assets": 100000, "max_scans_per_month": None},
     ).status_code == 403
     assert client.put(
         "/api/tenants/acme/scan-scope", headers=acme_admin, json=_SCOPE

@@ -335,11 +335,13 @@ renders an absent value as internal: it shows **Unclassified**.
   ([#365](https://github.com/onixus/Shapoclyack/issues/365)) shows each job's
   place in its tenant's queue — `+20` highlighted, `0` plain, negative values
   dimmed — and on a queued job an up-down button opens a small dialog to move
-  it. What the dialog accepts mirrors the API: operator rank in the active
-  tenant may set `-100…0`; `scan.priority.raise` **in the active tenant**
+  it. What the dialog accepts mirrors the API: without the permission,
+  operator rank in the active tenant may only lower a job of its own
+  (`requested_by` is the signed-in user), from `-100` up to where it stands
+  now and never above 0 — somebody else's job, and one somebody raised, offer
+  no button at all; `scan.priority.raise` **in the active tenant**
   (`holdsPermission(user, "scan.priority.raise", false)`, never the global
-  role) widens it to `100`, and a job somebody already raised above 0 offers no
-  button at all to those without it. An API older than #365 sends no
+  role) opens the full `-100…100` on every queued job. An API older than #365 sends no
   `priority`, which reads as 0 with no permission to raise. There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains

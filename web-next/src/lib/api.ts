@@ -4165,7 +4165,8 @@ export async function fetchTenantQuota(tenantId: string) {
   }
 }
 
-/** A null (or absent) ceiling is how the API spells "unlimited". */
+/** A null ceiling is how the API spells "unlimited"; both are required, and
+ * an omitted one is a 422 rather than a silently lifted limit. */
 export async function updateTenantQuota(tenantId: string, body: TenantQuotaUpdate) {
   try {
     const { data } = await api.put<TenantQuota>(

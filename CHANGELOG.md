@@ -10,11 +10,15 @@ All notable changes to Shapoclyack are documented in this file.
   ([#365](https://github.com/onixus/Shapoclyack/issues/365)).** Jobs carry a
   `priority` (`-100..100`, default `0`) and every claim hands out the highest
   first, then the oldest; set it at `POST /api/jobs` or move a queued job with
-  `PUT /api/jobs/{id}/priority`. Raising above 0 — or moving a job somebody
-  raised — needs the new `scan.priority.raise` permission (tenant `admin`,
-  platform admin); lowering is the operator's. Per tenant,
+  `PUT /api/jobs/{id}/priority`. Without the new `scan.priority.raise`
+  permission (tenant `admin`, platform admin) the operator may only lower a
+  job of its own, downwards from at or below 0; raising one, moving somebody
+  else's, moving one somebody raised and raising a demoted one back all need
+  it. The claim order is served by the new index `ix_jobs_claim_priority`
+  rather than a sort of the tenant's queue on every poll. Per tenant,
   `PUT /api/tenants/{id}/queue-limits` (platform admin; readable with
-  `tenant.quota.read`) sets `max_concurrent_scans`, enforced at claim time for
+  `tenant.quota.read`; both fields required, `null` for unlimited) sets
+  `max_concurrent_scans`, enforced at claim time for
   sensor claims, the NATS claim of an offered job and local scans alike under a
   per-tenant advisory lock so two replicas cannot both take the last slot, and
   `max_queued_scans`, enforced at admission with `429` and `Retry-After`;
@@ -505,6 +509,13 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   permissions and commands whole.
 
 ### Changed
+
+- **`PUT /api/tenants/{id}/quota` requires both limits.** `max_assets` and
+  `max_scans_per_month` defaulted to `null` — unlimited — when omitted, so a
+  `PUT` naming one silently lifted the other, despite the schema saying the
+  field must be spelled out. An omitted one is now `422`; `null` is still how
+  unlimited is written, and `note` stays optional. The console always sent
+  both. Found reviewing #365, whose `queue-limits` had copied the shape.
 
 - **One post-publication sequence for local and sensor runs
   ([#454](https://github.com/onixus/Shapoclyack/issues/454)).** What a finished

@@ -945,7 +945,7 @@ it is only supposed to approve.
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
-| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, or moving a queued one above 0 — or moving one somebody already raised (#365). Lowering a scan, or putting one back to 0 that nobody raised, is the operator rank's. Seeded by migration `0074_scan_queue_admission` |
+| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, and every move of a queued one but one (#365): lowering a scan of one's own (`requested_by` is the caller), from at or below 0 and downwards only, is the operator rank's. Demoting somebody else's scan, moving one somebody raised, and raising a demoted one back — to 0 included — need the permission: pushing the rest of the queue back is jumping it, and the job does not record who demoted it. Seeded by migration `0074_scan_queue_admission` |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
@@ -1184,9 +1184,14 @@ Set it at `POST /api/jobs` (`"priority": 20`) or move a queued job:
 PUT /api/jobs/{job_id}/priority   {"priority": -10}
 ```
 
-`operator` rank in the job's tenant; above `0` — or touching a job somebody
-already put above `0` — needs **`scan.priority.raise`** (`403` without it, both
-on the `PUT` and on `POST /api/jobs`). `404` for a job in another tenant, `409`
+`operator` rank in the job's tenant may lower a job **of its own**
+(`requested_by` is the caller) and nothing else: from at or below `0`,
+downwards only. Above `0`, a job somebody else requested, a job somebody put
+above `0`, and raising a demoted job back up — to `0` included — need
+**`scan.priority.raise`** (`403` without it, both on the `PUT` and on
+`POST /api/jobs`). Pushing the rest of the queue back is jumping it, and the
+job does not record who demoted it, so a demotion is never assumed to have
+been the caller's. `404` for a job in another tenant, `409`
 once the job has left `queued`, `422` outside the bounds. `priority` is not
 part of the idempotency digest: a retry that changed only its priority is the
 same scan. A NATS offer is published at submission and is FIFO; a sensor that
@@ -1201,8 +1206,9 @@ PUT /api/tenants/{tenant_id}/queue-limits   {"max_concurrent_scans": 4, "max_que
 ```
 
 `GET` needs `tenant.quota.read`; `PUT` is `platform.quota.manage` (platform
-admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
-`0` is unlimited, `422` above `10000`. The answer also carries
+admin), for the quota's reason. Both fields are required on every `PUT` —
+omitting one is `422`, not a silently lifted ceiling; `null` or `0` is
+unlimited, `422` above `10000`. The answer also carries
 `global_max_queued_scans`, the installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`.
 
 - `max_concurrent_scans` — how many of the tenant's jobs may be out at once
@@ -2368,8 +2374,9 @@ tenant is `404`; a value outside `0..10000000` (assets) or `0..1000000`
 (scans), or a `note` over 500 characters, is `422`.
 
 `null` — or `0`, accepted as the same thing — is **unlimited**. Both fields are
-spelled explicitly rather than by omission: a `PUT` that dropped a limit because
-a client forgot to send the field would be a silently widened contract. A stored
+spelled explicitly rather than by omission, and a `PUT` that omits either is
+`422`: one that dropped a limit because a client forgot to send the field would
+be a silently widened contract. `note` stays optional. A stored
 row wins over the platform default *including when its columns are null*, which
 is how one customer is exempted from a default everybody else is metered
 against, rather than by turning metering off globally. `DELETE
