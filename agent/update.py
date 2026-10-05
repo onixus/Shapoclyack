@@ -1041,7 +1041,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-#: ``--pending`` found the bundle already installed; the caller restarts nothing.
+#: ``--pending`` found the bundle already installed, or was run with ``--auto``
+#: and automatic updates are off; the caller restarts nothing.
 #: ``--commit`` found no pending release to keep.
 EXIT_NOTHING_TO_DO = 3
 #: ``--pending`` found an interrupted update and put the previous release back,
@@ -1068,7 +1069,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
 
     if args.auto and not _truthy(os.environ.get(AUTO_UPDATE_ENV)):
         LOG.info("Automatic sensor updates are off (%s is not true); nothing to do", AUTO_UPDATE_ENV)
-        return 0
+        # 0 from --pending means "swapped in, restart and judge it": the
+        # script would restart the unit on every tick of the timer.
+        return EXIT_NOTHING_TO_DO if args.pending else 0
 
     install_dir: Path = args.install_dir
     venv_python = install_dir / "venv" / "bin" / "python"

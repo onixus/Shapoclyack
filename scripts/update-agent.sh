@@ -130,11 +130,17 @@ fi
 # whole run, not each call of the verifier: a timer firing during a manual
 # run's health check would otherwise take that run's journal from under it,
 # put its release back and install it again, and the manual run's rollback
-# would then record the timer's healthy release as failed. The descriptor is
-# closed for everything run as the sensor's account (9>&- below), so none of
-# its processes can hold the lock, or release it, past its own call.
+# would then record the timer's healthy release as failed. flock(2) needs no
+# write access, so the file is root's alone (0600, an older 0644 one tightened):
+# another account cannot open it to hold the lock. The descriptor is closed for
+# everything run as the sensor's account (9>&- below), so none of its processes
+# inherits the lock, or releases it, past its own call.
 command -v flock &>/dev/null || error "flock not found."
+saved_umask="$(umask)"
+umask 077
 exec 9>>"${LOCK_FILE}" || error "Cannot open the lock file ${LOCK_FILE}."
+umask "${saved_umask}"
+chmod 600 "${LOCK_FILE}" || error "Cannot make the lock file ${LOCK_FILE} root's alone."
 flock -n 9 || error "Another sensor update is running (${LOCK_FILE} is held); not starting a second one."
 
 has_unit() {

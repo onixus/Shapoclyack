@@ -37,11 +37,13 @@ All notable changes to Shapoclyack are documented in this file.
   check is recorded by its signed digest and not retried by `--auto`, which
   skips it before downloading it; releases put back are pruned rather than
   left to pile up. What the sensor reads from the API before verifying it, error
-  bodies included, is bounded, and **the sensor follows no redirect**: a `3xx`
+  bodies included, is bounded, and **the sensor follows no redirect from the API**: a `3xx`
   is an error whose body is read with the same limit, and the bearer token is
   never sent on to its `Location` (`urllib`'s default handler read a redirect's
-  body to its end and forwarded `Authorization` to any host). One run of the
-  script holds root's lock (`/run/shapoclyack-update-agent.lock`) from its first
+  body to its end and forwarded `Authorization` to any host); feed downloads
+  (`scripts/feed_fetch.py`) still follow them, as before. One run of the
+  script holds root's lock (`/run/shapoclyack-update-agent.lock`, `0600`, so no other
+  account can open it to keep updates out) from its first
   look at the journal to the verdict, so a timer tick cannot take a manual
   run's update from under its health check, and "kept" is logged only when
   `--commit` kept something. Only the `agent` package is in the

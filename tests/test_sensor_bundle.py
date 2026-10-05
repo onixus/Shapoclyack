@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -1084,6 +1085,19 @@ def _run_script(env: dict, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def test_auto_without_the_opt_in_restarts_nothing(tmp_path, signing_key, monkeypatch):
+    """The timer left in place after ``OCTO_AGENT_AUTO_UPDATE`` was taken out
+    of agent.env: every tick must be a no-op, not a restart mid-scan."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env.pop(update.AUTO_UPDATE_ENV, None)
+    for _tick in range(2):
+        done = _run_script(env, "--auto", "--bundle-dir", str(bundle))
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "kept" not in done.stdout + done.stderr
+    assert not (state / "calls").exists()
+    assert _live_version(install) == "0.46-0922"
+
+
 def test_update_script_keeps_a_release_the_unit_stays_up_on(tmp_path, signing_key, monkeypatch):
     install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
     done = _run_script(env, "--bundle-dir", str(bundle))
@@ -1463,6 +1477,28 @@ def test_an_interruption_after_the_recovery_still_restarts_the_unit(tmp_path, si
     assert (state / "calls").read_text().split() == ["restart"], out
 
 
+def test_an_interruption_after_the_rollback_still_restarts_the_unit(tmp_path, signing_key, monkeypatch):
+    """The health check failed and ``--rollback`` has put the previous release
+    back -- removing the journal -- when the signal comes, before its process
+    has gone. The unit still runs the release that failed; nothing on disk
+    says so any more, so the script has to remember the restart it owes."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "crashloop", signing_key)
+    _verifier(
+        install,
+        '"$PY" "$@"; rc=$?\n'
+        'case "$*" in *--rollback*) touch "$FAKE_SYSTEMD_DIR/rolled"; sleep 30 ;; esac\n'
+        "exit $rc\n",
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "rolled").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 130, out
+    assert _live_version(install) == "0.46-0922", out
+    assert not (install / ".sensor-update.json").exists(), out
+    # Onto the new release, then onto the one put back.
+    assert (state / "calls").read_text().split() == ["restart", "restart"], out
+
+
 def test_an_interruption_before_anything_changed_restarts_nothing(tmp_path, signing_key, monkeypatch):
     install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
     _verifier(
@@ -1570,6 +1606,21 @@ def test_the_sensors_processes_do_not_inherit_the_lock(tmp_path, signing_key, mo
     done = _run_script(env, "--bundle-dir", str(bundle))
     assert done.returncode == 0, done.stdout + done.stderr
     assert not (state / "fd9").exists(), (state / "fd9").read_text()
+
+
+def test_no_other_account_can_open_the_lock(tmp_path, signing_key, monkeypatch):
+    """flock(2) takes LOCK_EX on a descriptor opened read-only: a lock file
+    other accounts can read lets any of them keep every update out."""
+    _install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    lock = Path(env["LOCK_FILE"])
+    done = _run_script(env, "--check", "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+    # One left behind readable, by an older script or by hand, is tightened.
+    lock.chmod(0o644)
+    done = _run_script(env, "--check", "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
 
 
 _SLOW_SECOND_RESTART = """#!/bin/sh

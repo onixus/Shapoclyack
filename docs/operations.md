@@ -2316,9 +2316,11 @@ signal, and goes on.
 
 **One update runs at a time, for the whole run.** The script takes an
 exclusive `flock` on `/run/shapoclyack-update-agent.lock` (`LOCK_FILE`) — root's
-file, outside every directory the sensor's account can write — before its first
-look at the journal and holds it to the verdict; nothing it runs as the
-account inherits the descriptor. A second run started meanwhile, a timer tick
+file, outside every directory the sensor's account can write, mode `0600` (an
+existing file is tightened to it: `flock` needs only read access, so a file
+other accounts could open would let any of them hold the lock and keep every
+update out) — before its first look at the journal and holds it to the verdict;
+nothing it runs as the account inherits the descriptor. A second run started meanwhile, a timer tick
 during a manual run's health check included, stops with "Another sensor update
 is running" and changes nothing. (Held only per call of the verifier, as
 before, a timer could take a manual run's journal in the middle of its health
@@ -2370,7 +2372,10 @@ Limits worth knowing:
   exchange or any other call — is an error: the bearer token is never sent on
   to the `Location`, and the `3xx` body is read with the same limit as any other
   error body, the `Location` logged. An API behind a proxy that redirects (to
-  HTTPS, to another path) has to be configured with the URL it ends at;
+  HTTPS, to another path) has to be configured with the URL it ends at. This is
+  the sensor's calls to the API only: feed downloads (`scripts/feed_fetch.py`,
+  not on the update path) still follow redirects by design, refusing one from
+  `https` to anything weaker ([air-gap](air-gap.md));
 - the install directory and its code stay owned by the sensor's account, as the
   installer leaves them: the updater does not make the sensor's own account any
   less able to change its own code, it only keeps root from running it.
