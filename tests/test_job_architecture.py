@@ -196,12 +196,14 @@ POST_PUBLICATION_STEPS = {
     "publish_asset_events_best_effort",
     "notify_channels_best_effort",
     "record_scope_denials_best_effort",
+    "release_verification_best_effort",
 }
 
 #: The owning-service calls those steps wrap: what "deriving from a run" is.
 DERIVED_UPDATES = {
     "upsert_assets_from_run",
     "register_findings_from_run",
+    "release_unfinished_verification",
     "publish_run_events",
     "notify_run_complete_async",
 }

@@ -1079,6 +1079,46 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **A verification re-scan closes a finding only when it demonstrably looked
+  ([#451](https://github.com/onixus/Shapoclyack/issues/451),
+  [#450](https://github.com/onixus/Shapoclyack/issues/450)).**
+  `POST /api/vulnerabilities/{id}/verify` dispatched `intent=vuln` at the
+  asset's first IP and closed the finding as `machine_verified` whenever that
+  run did not report it — so a **medium** nuclei finding (the intent loads
+  critical and high templates only), a run whose **nuclei was missing**
+  (`skipped_reason`, run still succeeded), a finding seen on a **name**
+  re-checked on the bare address, and an **NSE** finding re-checked on the
+  Pulse backend were all closed as verified-fixed. Every finding now records
+  its `detectors` (migration `0079`, backfilled from `script_id`: `nuclei:` →
+  nuclei, `pulse:` → Pulse, any other id → NSE; nothing invented where it
+  names none), merged on every observation — one CVE seen by Pulse and nuclei
+  keeps both, and the report's dedupe now lists the dropped one as
+  `also_detected_by`. The re-scan is built from them: the observed hosts as
+  spelled (a name out of scope is refused, `409`, not swapped for the
+  address), the nuclei templates pinned by id whatever their severity
+  (`nuclei.template_ids` → `nuclei -id`; the sensor's `exclude_tags` still
+  apply; ids outside `[A-Za-z0-9_.-]` refused at dispatch and by the scanner),
+  `service_probe.backend: hybrid` for an NSE finding. The closure then needs
+  each detector's evidence in the run: nuclei's new `coverage` block in
+  `nuclei.json` (ran and exited 0, the URL, the template pinned and found),
+  Pulse's success receipt for the port with `adapter.cve` (new in
+  `pulse/raw.json`), an nmap XML that finished and ran the script by name. A
+  finding with no detector recorded is held to the old Pulse rule, now
+  checked. Otherwise the finding goes back to `FIXING` with a new
+  `verification_inconclusive` event listing what was not covered
+  (`RegisterStats.verification_inconclusive`), never machine-verified; a
+  closed port counts as not covered. A failed or cancelled verification run
+  now does the same instead of leaving its finding in `VERIFYING`; a job that
+  ends without publishing a run still does. `nuclei.template_ids` is config
+  overlay **v2**, asked for **per job**: a job records the lowest overlay
+  version that covers it (`scan_options.config_overlay_capability`), sensors
+  declare every version they apply (`config_overlay.v1`, `config_overlay.v2`),
+  so sensors not yet upgraded keep taking every job but verifications, which
+  wait (`sensor_unavailable`, `426` naming `config_overlay.v2`). The finding
+  page lists the detectors and labels audit-trail kinds in English and
+  Russian. docs/vulnerability-lifecycle.md has the rules and their limits;
+  docs/operations.md the upgrade notes.
+
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run

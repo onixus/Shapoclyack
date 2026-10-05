@@ -2291,6 +2291,25 @@ class TenantPatchGap(BaseModel):
     truncated: bool = False
 
 
+class VulnerabilityDetectorInfo(BaseModel):
+    """One detector that observed a tracked finding (#451). Read-only.
+
+    ``detector`` is ``pulse``, ``nuclei`` or ``nmap-nse``; ``ref`` the pulse
+    origin, nuclei template id or NSE script; ``host`` the address as the
+    scanner addressed it — ``null`` on an entry migration 0079 derived from a
+    row's ``script_id``, which never recorded it. A verification re-scan is
+    built from these and may only close the finding once every one of them has
+    looked again (docs/vulnerability-lifecycle.md).
+    """
+
+    detector: str
+    ref: str | None = None
+    host: str | None = None
+    port: str | None = None
+    last_run_id: str | None = None
+    last_seen_at: str | None = None
+
+
 class VulnerabilityInfo(BaseModel):
     """One tracked finding with its lifecycle and SLA state (#145).
 
@@ -2319,6 +2338,9 @@ class VulnerabilityInfo(BaseModel):
     cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None
     port: str | None = None
+    # Every detector that has observed it, newest first (#451). ``script_id``
+    # above is only the first one's.
+    detectors: list[VulnerabilityDetectorInfo] = Field(default_factory=list)
     title: str = ""
     severity: str = "unknown"
     risk_level: str | None = None

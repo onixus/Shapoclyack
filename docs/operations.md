@@ -2561,6 +2561,27 @@ process never replaces itself, and nothing polls the server for a new version
 unless you install a timer for it. For a Docker install, pull the new image and
 re-run the installer with `--docker` (or roll the Kubernetes deployment).
 
+**Verification re-scans need an upgraded sensor** (#451, migration `0079`).
+A verification job asks for `config_overlay.v2`: it pins the nuclei templates
+that found the finding, and it is judged on coverage evidence only that build
+writes. Until a sensor of the tenant declares it, such a job stays queued with
+`sensor_unavailable` and a sensor that cannot take it answers `426` naming the
+capability — every other job keeps going to the older sensors. Two things to
+do around the upgrade:
+
+1. Finish rolling the API before anyone presses **Verify**: an API replica of
+   the previous release still closes a verification the old way, on absence
+   alone, which is the defect the release fixes.
+2. Expect findings to come back from `VERIFYING` as **verification
+   inconclusive** where the scan could not have seen them: a port closed
+   during the window, nuclei or its templates missing on the sensor, an NSE
+   script not in the sensor's NSE profile, a name the scope no longer covers.
+   The event's `detail.gaps` says which; fix that and verify again, or close
+   the finding by hand with the reason. Findings left in `VERIFYING` by a
+   verification job that was cancelled while queued, or written off before
+   it uploaded anything, are not released automatically — move them back to
+   `FIXING` by hand.
+
 **Removing a sensor** from the Sensors page (`DELETE /api/agents/{id}`) only
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
