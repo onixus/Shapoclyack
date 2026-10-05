@@ -17,7 +17,10 @@ Four steps, each of which can decline to answer:
    loose word in a banner is how a matcher learns to call every "Apache" Tomcat.
 2. **Which version.** The upstream version the banner discloses, compared with
    :func:`compare_upstream` — not dpkg's or rpm's grammar, because NVD ranges
-   are upstream versions (``8.2p1``, ``1.1.1f``, ``2.4.41``).
+   are upstream versions (``8.2p1``, ``1.1.1f``, ``2.4.41``). A product whose
+   strings carry more than that is cut to it by a per-product shape (MySQL's
+   ``5.7.33-0ubuntu0.18.04.1``, MariaDB's ``5.5.5-10.3.39``), and a string the
+   shape does not fit is no version.
 3. **Which CVEs.** Every statement for the product whose window covers that
    version.
 4. **Did the vendor backport the fix.** When the banner carries a Debian or
@@ -34,6 +37,8 @@ an honest "possible" costs a line on the asset page.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
@@ -230,6 +235,69 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     "apache tomcat": ("a:apache:tomcat",),
     # And Redis under two (246 redis:redis, 260 redislabs:redis names).
     "redis key-value store": ("a:redis:redis", "a:redislabs:redis"),
+    # The rows below were checked on 2026-10-06: the strings against
+    # nmap-service-probes (7.99) and Pulse's probes.json / fingerprint.rs, the
+    # keys against NVD's CPE dictionary (names per key in brackets).
+    #
+    # Pulse's names for products above: its probe database's "Redis" (from
+    # ``redis_version:``) and "Microsoft IIS", its banner parser's "Dropbear".
+    "redis": ("a:redis:redis", "a:redislabs:redis"),
+    "microsoft iis": ("a:microsoft:internet_information_services", "a:microsoft:iis"),
+    "dropbear": ("a:dropbear_ssh_project:dropbear_ssh", "a:matt_johnston:dropbear_ssh_server"),
+    # Mail. Dovecot's greeting names no version (nmap infers one from a few
+    # capability lists, Pulse never), so the row mostly ends in no_version.
+    "sendmail": ("a:sendmail:sendmail",),  # [71]
+    "dovecot imapd": ("a:dovecot:dovecot",),  # [267]
+    "dovecot pop3d": ("a:dovecot:dovecot",),
+    # FTP. nmap: "FileZilla ftpd"; Pulse: "FileZilla Server".
+    "pure-ftpd": ("a:pureftpd:pure-ftpd",),  # [109]
+    "filezilla ftpd": ("a:filezilla-project:filezilla_server",),  # [40]
+    "filezilla server": ("a:filezilla-project:filezilla_server",),
+    # Databases. NVD files MySQL Server under oracle:mysql now and mysql:mysql
+    # for the old CVEs [776, 415]; nmap's CPE is the second.
+    "mysql": ("a:oracle:mysql", "a:mysql:mysql"),
+    "mariadb": ("a:mariadb:mariadb",),  # [534]
+    "mongodb": ("a:mongodb:mongodb",),  # [843]
+    # And Elasticsearch under elastic:elasticsearch, elasticsearch:elasticsearch
+    # for 1.x only [523, 11]; nmap's CPE is the second.
+    "elasticsearch rest api": ("a:elastic:elasticsearch", "a:elasticsearch:elasticsearch"),
+    "elasticsearch": ("a:elastic:elasticsearch", "a:elasticsearch:elasticsearch"),
+    # Only on the memcached service — see _PRODUCT_SERVICES.
+    "memcached": ("a:memcached:memcached",),  # [80]
+    # nmap's "CouchDB httpd" is the ``Server: CouchDB/x (Erlang …)`` line, Pulse's
+    # "Apache CouchDB" the ``{"couchdb":"Welcome","version":"x"}`` reply. Not
+    # nmap's "CouchDB REST httpd", whose line also matches Couchbase, and not
+    # Pulse's bare Server token "CouchDB", which it cuts out of Couchbase's
+    # ``CouchDB/2.1.1r-…`` too (the banner path reads that one, by its shape).
+    "couchdb httpd": ("a:apache:couchdb",),  # [106]
+    "apache couchdb": ("a:apache:couchdb",),
+    # Web. Pulse's banner parser names a ``Server: squid/5.7`` "squid".
+    "squid http proxy": ("a:squid-cache:squid",),  # [297]
+    "squid": ("a:squid-cache:squid",),
+    "haproxy http proxy": ("a:haproxy:haproxy",),  # [598]
+    "haproxy stats socket": ("a:haproxy:haproxy",),
+    "haproxy": ("a:haproxy:haproxy",),
+    # nmap's Jetty CPE is mostly mortbay:jetty; NVD files current CVEs under
+    # eclipse:jetty [733, 573].
+    "jetty": ("a:eclipse:jetty", "a:mortbay:jetty"),
+    "eclipse jetty": ("a:eclipse:jetty", "a:mortbay:jetty"),
+    # Pulse, from ``X-Powered-By: PHP/8.1.2``.
+    "php": ("a:php:php",),  # [1618]
+    # DNS, from nmap's version.bind probe. NVD keeps the PowerDNS
+    # authoritative server under two keys [47, 159]; nmap's CPE is the second.
+    "unbound": ("a:nlnetlabs:unbound",),  # [206]
+    "powerdns authoritative server": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
+    "powerdns recursor": ("a:powerdns:recursor",),  # [256]
+    "libssh": ("a:libssh:libssh",),  # [53]
+}
+
+#: Product strings a prober also writes out of a loose match, believed only on
+#: the service the probers name alongside. Pulse's banner parser reads
+#: ``VERSION\s+([0-9.]+)`` anywhere in any banner as memcached, so an FTP
+#: greeting that says "version 0.9.41" on an odd port is memcached 0.9.41 to it;
+#: both probers call the real one's service "memcached".
+_PRODUCT_SERVICES: dict[str, frozenset[str]] = {
+    "memcached": frozenset({"memcached"}),
 }
 
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
@@ -257,11 +325,22 @@ CPE_ALIASES: dict[str, tuple[str, ...]] = {
         "a:microsoft:internet_information_services",
         "a:microsoft:iis",
     ),
+    # Checked on 2026-10-06, as the product table's rows.
+    "a:mysql:mysql": ("a:oracle:mysql", "a:mysql:mysql"),
+    "a:oracle:mysql": ("a:oracle:mysql", "a:mysql:mysql"),
+    "a:elasticsearch:elasticsearch": ("a:elastic:elasticsearch", "a:elasticsearch:elasticsearch"),
+    "a:elastic:elasticsearch": ("a:elastic:elasticsearch", "a:elasticsearch:elasticsearch"),
+    "a:mortbay:jetty": ("a:eclipse:jetty", "a:mortbay:jetty"),
+    "a:eclipse:jetty": ("a:eclipse:jetty", "a:mortbay:jetty"),
+    "a:powerdns:authoritative": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
+    "a:powerdns:authoritative_server": ("a:powerdns:authoritative_server", "a:powerdns:authoritative"),
 }
 
 #: NVD key → the Debian/Ubuntu *source* package an advisory names. A product
 #: missing here can still match on NVD ranges; it just cannot be checked for a
 #: backport, so a visible distribution turns its matches into ``possible``.
+#: Products Debian and Ubuntu build per upstream series are in
+#: :data:`SERIES_SOURCE_PACKAGES` instead; :func:`source_packages` joins both.
 SOURCE_PACKAGES: dict[str, tuple[str, ...]] = {
     "a:openbsd:openssh": ("openssh",),
     "a:apache:http_server": ("apache2",),
@@ -280,21 +359,69 @@ SOURCE_PACKAGES: dict[str, tuple[str, ...]] = {
     "a:samba:samba": ("samba",),
     "a:redis:redis": ("redis",),
     "a:redislabs:redis": ("redis",),
+    # Checked against sources.debian.org and Launchpad on 2026-10-06. Squid
+    # was ``squid3`` until Debian 10 and Ubuntu 20.04; a release has one or
+    # the other.
+    "a:sendmail:sendmail": ("sendmail",),
+    "a:dovecot:dovecot": ("dovecot",),
+    "a:pureftpd:pure-ftpd": ("pure-ftpd",),
+    "a:memcached:memcached": ("memcached",),
+    "a:squid-cache:squid": ("squid", "squid3"),
+    "a:haproxy:haproxy": ("haproxy",),
+    "a:nlnetlabs:unbound": ("unbound",),
+    "a:powerdns:authoritative_server": ("pdns",),
+    "a:powerdns:authoritative": ("pdns",),
+    "a:powerdns:recursor": ("pdns-recursor",),
+    "a:libssh:libssh": ("libssh",),
+}
+
+#: NVD key → the source package Debian and Ubuntu build one upstream *series*
+#: from, ``{major}.{minor}`` being the listener's own: ``mysql-5.7`` (Ubuntu
+#: 18.04), ``mysql-8.0``, ``mariadb-10.5`` (Debian 11), ``mariadb-10.6`` (Ubuntu
+#: 22.04), ``php7.4``, ``php8.2``. One static name would be the wrong package
+#: for every series but one, and a wrong source package is a wrong "fixed".
+#: PHP 5 (``php5``, Debian 8 / Ubuntu 14.04) is left out: no series name fits it,
+#: and asking ``php5.6`` finds nothing, which is ``possible``, not a verdict.
+SERIES_SOURCE_PACKAGES: dict[str, str] = {
+    "a:oracle:mysql": "mysql-{major}.{minor}",
+    "a:mysql:mysql": "mysql-{major}.{minor}",
+    "a:mariadb:mariadb": "mariadb-{major}.{minor}",
+    "a:php:php": "php{major}.{minor}",
+}
+
+#: NVD key → the unversioned source package some releases build *one* series
+#: from: Debian 12 and Ubuntu 24.04 build MariaDB 10.11 from ``mariadb``,
+#: Debian 13 builds 11.8 from it. It is asked only in a release whose records
+#: for it name a fix of the listener's own series (:func:`_ships_series`):
+#: trixie's "not affected" is about its 11.8, not about a 10.11 container on a
+#: trixie host.
+SHARED_SOURCE_PACKAGES: dict[str, str] = {
+    "a:mariadb:mariadb": "mariadb",
 }
 
 #: Products whose server builds come overwhelmingly from the distribution's own
 #: packages: every key with a Debian/Ubuntu source package above. They are the
 #: daemons of a base or standard server install (sshd, the MTA, the resolver,
-#: file sharing) or the web servers every distribution ships in main, and on a
-#: Linux host a banner that names no distribution is far more often a
-#: distribution build with ``ServerTokens``-style minimal banners than an
-#: upstream tarball. For them, a host known to be Linux is reason enough to
-#: doubt an NVD range. IIS and Tomcat are not here: Windows ships the first,
-#: and the second is routinely run from Apache's own tarballs.
-DISTRO_PACKAGED = frozenset(SOURCE_PACKAGES)
+#: file sharing, the database, the cache) or the web servers and proxies every
+#: distribution ships in main, and on a Linux host a banner that names no
+#: distribution is far more often a distribution build with ``ServerTokens``-
+#: style minimal banners than an upstream tarball. For them, a host known to be
+#: Linux is reason enough to doubt an NVD range. PHP, MySQL and MariaDB are
+#: here although containers run them too: a PHP 7.4.3 on an Ubuntu 20.04 host
+#: is focal's ``php7.4`` (``7.4.3-4ubuntu2.29``, every fix backported under one
+#: upstream number) far more often than not, and a range finding on each of its
+#: CVEs would be the dashboard nobody reads.
+#:
+#: Not here: IIS and FileZilla Server (Windows), Tomcat and Jetty (Apache's
+#: tarballs; Jetty is embedded in the product that serves it), Elasticsearch,
+#: MongoDB and CouchDB (vendor repositories and containers — none is in a
+#: supported Debian or Ubuntu release, and Ubuntu 20.04's ``mongodb`` 3.6 is a
+#: rarity next to MongoDB's own builds).
+DISTRO_PACKAGED = frozenset(SOURCE_PACKAGES) | frozenset(SERIES_SOURCE_PACKAGES)
 
 #: How the product appears inside a raw banner, for a fingerprint whose prober
-#: reported no version field (``SSH-2.0-OpenSSH_8.2p1 …``, ``Server: nginx/1.18.0``).
+#: reported no version field (``SSH-2.0-OpenSSH_8.2p1 …``, ``Server: nginx/1.18.0``)
+#: or a generic product (Pulse off its probe ports: "SMTP", "SSH (libssh_0.7.5)").
 _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:openbsd:openssh": ("openssh",),
     "a:apache:http_server": ("apache",),
@@ -306,7 +433,53 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:exim:exim": ("exim",),
     "a:microsoft:internet_information_services": ("microsoft-iis",),
     "a:lighttpd:lighttpd": ("lighttpd",),
+    "a:sendmail:sendmail": ("sendmail",),
+    # Not "libssh2_": that is the client library's name.
+    "a:libssh:libssh": ("libssh",),
+    # The header, not the word: "couchdb" is in many a path and JSON body.
+    "a:apache:couchdb": ("server: couchdb",),
 }
+
+#: MySQL's version string: the upstream version, then whatever the build
+#: appended — Ubuntu's ``-0ubuntu0.18.04.1``, Percona's ``-28``, ``-log``. Not
+#: ``5.5.5-…``: that is MariaDB's compatibility prefix, never a MySQL.
+_MYSQL_SHAPE = re.compile(r"(?!5\.5\.5-\d)(\d+\.\d+\.\d+[a-z]?)(?:-\S*)?")
+#: Jetty 7-9 date their releases (``9.4.44.v20210927``); NVD's bounds are the
+#: version alone. Pre-releases (``9.4.0.RC1``, ``.M1``, ``-SNAPSHOT``) fit no shape.
+_JETTY_SHAPE = re.compile(r"(\d+\.\d+\.\d+)(?:\.v\d{8}(?:\d{6})?)?", re.IGNORECASE)
+
+#: NVD key → where the upstream version sits in its probers' version strings,
+#: for products whose strings carry more than it (group 1 is the upstream). A
+#: string that does not fit is no version: ``no_version`` is better than a
+#: package revision or a build date compared as part of the version. Applied to
+#: the CPE's version, the version field and a banner alike.
+_VERSION_SHAPES: dict[str, re.Pattern[str]] = {
+    # "8.15.2/8.15.2/Debian-8+deb9u1": the binary, sendmail.cf, Debian's
+    # revision. Sun's "8.9.3+Sun" is Sun's build.
+    "a:sendmail:sendmail": re.compile(r"(\d+\.\d+\.\d+(?:\.\d+)?)(?:/\S*)?"),
+    "a:oracle:mysql": _MYSQL_SHAPE,
+    "a:mysql:mysql": _MYSQL_SHAPE,
+    # nmap's $1 for MariaDB 10+ is "5.5.5-10.3.39"; a real 5.5 says "5.5.68".
+    "a:mariadb:mariadb": re.compile(r"(?:5\.5\.5-(?=\d+\.\d+\.\d+))?(\d+\.\d+\.\d+)(?:-\S*)?"),
+    # FileZilla Server 0.9.x calls every release "beta" ("0.9.41 beta" in
+    # nmap's version and CPE); NVD's versions do not.
+    "a:filezilla-project:filezilla_server": re.compile(
+        r"(\d+\.\d+\.\d+(?:\.\d+)?)(?:(?:[ _]|%20)beta)?", re.IGNORECASE
+    ),
+    "a:eclipse:jetty": _JETTY_SHAPE,
+    "a:mortbay:jetty": _JETTY_SHAPE,
+    # "2.1.1r-432-gc2af28d" is Couchbase's fork of CouchDB, not a CouchDB.
+    "a:apache:couchdb": re.compile(r"(\d+\.\d+\.\d+)"),
+    # The stats socket: "2.6.12-1+deb12u1" (Debian), "2.4.22-f8e3218" (the
+    # release commit). "2.4-dev5" is not a release.
+    "a:haproxy:haproxy": re.compile(r"(\d+\.\d+\.\d+)(?:-\S*)?"),
+}
+
+#: Products one of whose probers reports "the first x.y.z in the reply": Pulse,
+#: for anything on port 3306. In a refusal (``Host '5.7.12.4' is not allowed to
+#: connect``) that is the scanner's own address, so a version that the
+#: fingerprint's text shows to be the head of a longer dotted number is none.
+_FIRST_NUMBER_VERSIONS = frozenset({"a:oracle:mysql", "a:mysql:mysql"})
 
 _VERSION_TOKEN_RE = re.compile(r"v?(\d+(?:\.\d+)*[a-z0-9.~+]*)", re.IGNORECASE)
 
@@ -320,6 +493,36 @@ _UNCERTAIN_VERSION = re.compile(
 #: CPE dictionary, 2026-09-23), so it is recognised only to be *not* matched
 #: against openbsd:openssh.
 _OPENSSH_FOR_WINDOWS = re.compile(r"for[_ ]windows", re.IGNORECASE)
+
+#: Raised by hand when the matcher's *code* changes what it answers for a
+#: fingerprint it has answered before; the tables are digested by content.
+MATCHER_REVISION = 1
+
+
+def rules_version() -> str:
+    """A digest of what decides a verdict besides the datasets.
+
+    The worker's marker (``retro_match_worker.current_marker``) carries it, so
+    a release that teaches the matcher a product, an alias or a version shape
+    re-asks — once — about every listener already matched against a dataset
+    that did not move. Content, canonically ordered: the same tables are the
+    same digest in every process and replica, tick after tick.
+    """
+    payload = {
+        "revision": MATCHER_REVISION,
+        "products": PRODUCT_TABLE,
+        "product_services": {name: sorted(services) for name, services in _PRODUCT_SERVICES.items()},
+        "aliases": CPE_ALIASES,
+        "sources": SOURCE_PACKAGES,
+        "series_sources": SERIES_SOURCE_PACKAGES,
+        "shared_sources": SHARED_SOURCE_PACKAGES,
+        "distro_packaged": sorted(DISTRO_PACKAGED),
+        "banner_names": _BANNER_NAMES,
+        "shapes": {key: shape.pattern for key, shape in _VERSION_SHAPES.items()},
+        "first_number": sorted(_FIRST_NUMBER_VERSIONS),
+    }
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
 def normalize_product(value: str | None) -> str:
@@ -393,8 +596,8 @@ def product_keys(
     """
     if _is_openssh_for_windows(fingerprint):
         return (), "", None
-    keys: list[str] = []
-    cpe_version: str | None = None
+    table = _table_keys(fingerprint)
+    entries: list[tuple[tuple[str, ...], str | None]] = []
     for name in fingerprint.cpe:
         parsed = parse_cpe(name)
         if parsed is None:
@@ -406,11 +609,18 @@ def product_keys(
             # the host, not this listener, and the listener's version applied
             # to it would match the kernel against OpenSSH's version number.
             continue
-        keys.extend(CPE_ALIASES.get(key, (key,)))
-        cpe_version = cpe_version or version
+        entries.append((CPE_ALIASES.get(key, (key,)), version))
+    if table:
+        # nmap names what runs *inside* the listener too: Elasticsearch's line
+        # carries ``cpe:/a:apache:lucene:8.11.1`` first. When the table knows
+        # the product and one of the CPEs is it, the others — and their
+        # versions — are about something else.
+        own = [entry for entry in entries if set(entry[0]) & set(table)]
+        entries = own or entries
+    keys = [key for aliases, _ in entries for key in aliases]
+    cpe_version = next((version for _, version in entries if version), None)
     if keys and (known is None or any(known(key) for key in keys)):
         return tuple(dict.fromkeys(keys)), "cpe", cpe_version
-    table = PRODUCT_TABLE.get(normalize_product(fingerprint.product))
     if table:
         # The CPE's version is still the prober's statement about this
         # listener, whatever it called the vendor.
@@ -418,21 +628,42 @@ def product_keys(
     # A prober that reported no product (or a generic one: Pulse's "ssh") may
     # still have kept the banner, and ``SSH-2.0-OpenSSH_8.2p1`` names its
     # product as plainly as nmap would. Only a name *immediately followed by a
-    # version* counts — the same pattern :func:`upstream_version` reads — so a
-    # banner that merely mentions "apache" somewhere identifies nothing.
+    # version of the product's shape* counts — the same pattern
+    # :func:`upstream_version` reads — so a banner that merely mentions
+    # "apache" somewhere identifies nothing, and Couchbase's
+    # ``Server: CouchDB/2.1.1r-432`` is not a CouchDB.
     banner = fingerprint.banner or ""
     for key, names in _BANNER_NAMES.items():
-        if any(_banner_version(banner, name) for name in names):
+        shape = _VERSION_SHAPES.get(key)
+        if any(_cut(shape, _banner_version(banner, name)) for name in names):
             return CPE_ALIASES.get(key, (key,)), "banner", cpe_version
     if keys:
         return tuple(dict.fromkeys(keys)), "cpe", cpe_version
     return (), "", None
 
 
+def _table_keys(fingerprint: Fingerprint) -> tuple[str, ...]:
+    """The product table's keys for the prober's product string, or ``()``."""
+    product = normalize_product(fingerprint.product)
+    services = _PRODUCT_SERVICES.get(product)
+    if services is not None and normalize_product(fingerprint.service) not in services:
+        return ()
+    return PRODUCT_TABLE.get(product, ())
+
+
 def _banner_version(banner: str, name: str) -> str | None:
     match = re.search(
         rf"(?<![a-z]){re.escape(name)}[_/ -]v?(\d+(?:\.\d+)+[a-z0-9]*)", banner, re.IGNORECASE
     )
+    return match.group(1) if match else None
+
+
+def _cut(shape: re.Pattern[str] | None, version: str | None) -> str | None:
+    """``version`` as the product's shape reads it — the upstream version — or
+    ``None`` when it does not fit. Products without a shape pass through."""
+    if not version or shape is None:
+        return version
+    match = shape.fullmatch(version)
     return match.group(1) if match else None
 
 
@@ -457,25 +688,46 @@ def upstream_version(fingerprint: Fingerprint, keys: Iterable[str], cpe_version:
     version, then the first version-shaped token of the ``version`` field
     (``8.2p1`` out of ``8.2p1 Ubuntu 4ubuntu0.5``), then the product's own name
     in the raw banner (``OpenSSH_8.2p1``). Never a number found just anywhere
-    in the banner: ``protocol 2.0`` is not a version of OpenSSH. Whatever is
-    found must pin a release (:func:`_usable`).
+    in the banner: ``protocol 2.0`` is not a version of OpenSSH. A product
+    whose strings carry more than the upstream version is cut to it by its
+    shape (:data:`_VERSION_SHAPES`: ``5.7.33-0ubuntu0.18.04.1`` → ``5.7.33``).
+    Whatever is found must pin a release (:func:`_usable`).
     """
+    keys = tuple(keys)
     raw = (fingerprint.version or "").strip()
     if raw and _UNCERTAIN_VERSION.search(raw):
         return None
+    shape = next((_VERSION_SHAPES[key] for key in keys if key in _VERSION_SHAPES), None)
+    found: str | None = None
     if cpe_version:
-        return _usable(cpe_version)
-    head = raw.split()
-    if head:
-        match = _VERSION_TOKEN_RE.fullmatch(head[0].rstrip(".,;"))
-        return _usable(match.group(1)) if match else None
-    banner = fingerprint.banner or ""
-    for key in keys:
-        for name in _BANNER_NAMES.get(key, ()):
-            version = _banner_version(banner, name)
-            if version:
-                return _usable(version)
-    return None
+        found = _cut(shape, cpe_version)
+    elif raw:
+        token = raw.split()[0].rstrip(".,;")
+        if shape is not None:
+            found = _cut(shape, token)
+        else:
+            match = _VERSION_TOKEN_RE.fullmatch(token)
+            found = match.group(1) if match else None
+    else:
+        banner = fingerprint.banner or ""
+        found = next(
+            (
+                version
+                for key in keys
+                for name in _BANNER_NAMES.get(key, ())
+                if (version := _banner_version(banner, name))
+            ),
+            None,
+        )
+        found = _cut(shape, found)
+    found = _usable(found)
+    if (
+        found
+        and _FIRST_NUMBER_VERSIONS.intersection(keys)
+        and re.search(rf"(?<![\d.]){re.escape(found)}\.\d", fingerprint.text)
+    ):
+        return None
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -588,6 +840,46 @@ def _fixed_upstream(fixed_version: str) -> str | None:
         return version_compare.parse_evr(fixed_version).version
     except version_compare.VersionParseError:
         return None
+
+
+def _series(version: str | None) -> tuple[str, str] | None:
+    """``("8", "0")`` for ``8.0.36``; ``None`` for a version that names no series."""
+    match = re.match(r"(\d+)\.(\d+)(?!\d)", version or "")
+    return (match.group(1), match.group(2)) if match else None
+
+
+def source_packages(product_key: str, upstream: str) -> tuple[str, ...]:
+    """The Debian/Ubuntu source packages that build ``upstream`` of the product.
+
+    The static names (:data:`SOURCE_PACKAGES`), then the series package
+    (:data:`SERIES_SOURCE_PACKAGES`: ``8.0.36`` → ``mysql-8.0``) when the
+    version names a series. The unversioned shared name is not here: whether a
+    release builds this series from it is the release's question
+    (:func:`_ships_series`).
+    """
+    names = SOURCE_PACKAGES.get(product_key, ())
+    template = SERIES_SOURCE_PACKAGES.get(product_key)
+    series = _series(upstream)
+    if template and series:
+        names = (*names, template.format(major=series[0], minor=series[1]))
+    return names
+
+
+def _ships_series(provider: Any, release: str, package: str, upstream: str) -> bool:
+    """Does ``release`` build ``upstream``'s series from ``package``?
+
+    Yes when one of its records for the package names a fix of that series. No
+    record with a fix — only "open" or "not affected" — is no evidence, and the
+    package is not asked: a "not affected" about another series is exactly the
+    wrong answer to borrow.
+    """
+    series = _series(upstream)
+    if series is None:
+        return False
+    return any(
+        record.fixed_version and _series(_fixed_upstream(record.fixed_version)) == series
+        for record in provider.advisories_for(release=release, source_package=package)
+    )
 
 
 def _releases_shipping(provider: Any, packages: Iterable[str], upstream: str) -> list[str]:
@@ -706,8 +998,9 @@ def vendor_verdict(
     provider = lookup(hint.distro or "")
     if provider is None or not provider.available():
         return POSSIBLE, {"reason": "no_advisory_provider"}
-    packages = SOURCE_PACKAGES.get(product_key, ())
-    if not packages:
+    packages = source_packages(product_key, upstream)
+    shared = SHARED_SOURCE_PACKAGES.get(product_key)
+    if not packages and not shared:
         return POSSIBLE, {"reason": "no_source_package"}
     if hint.release:
         releases = [hint.release]
@@ -716,16 +1009,21 @@ def vendor_verdict(
         if shipping is not None and memo_key in shipping:
             releases = shipping[memo_key]
         else:
-            releases = _releases_shipping(provider, packages, upstream)
+            # A fix built on this very upstream version is a fix of its series,
+            # so the shared name is safe to search here.
+            releases = _releases_shipping(provider, (*packages, *([shared] if shared else [])), upstream)
             if shipping is not None:
                 shipping[memo_key] = releases
         if not releases:
             return POSSIBLE, {"reason": "release_not_identified"}
     verdicts: list[tuple[str, dict[str, Any]]] = []
     for release in releases:
+        names = packages
+        if shared and _ships_series(provider, release, shared, upstream):
+            names = (*packages, shared)
         records = [
             record
-            for package in packages
+            for package in names
             for record in provider.advisories_for(release=release, source_package=package)
             if cve in record.cve_ids
         ]

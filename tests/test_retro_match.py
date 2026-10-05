@@ -187,7 +187,7 @@ def test_product_and_version(fingerprint, keys, via, version) -> None:
     "fingerprint",
     [
         # Unknown products are not guessed at.
-        rm.Fingerprint(product="Jetty", version="9.4.44"),
+        rm.Fingerprint(product="Undertow", version="2.2.24"),
         rm.Fingerprint(product="Apache Tomcat/Coyote JSP engine", version="1.1"),
         # "apache" with no version right after it is not Apache httpd.
         rm.Fingerprint(product="", banner="Server: Apache-Coyote/1.1"),
@@ -398,7 +398,7 @@ def test_releases_that_disagree_are_possible() -> None:
 
 
 def test_outcome_reasons(seed) -> None:
-    assert rm.match(rm.Fingerprint(product="Jetty", version="9"), seed, lookup=advisories.get_provider).reason == "unknown_product"
+    assert rm.match(rm.Fingerprint(product="Undertow", version="2.2"), seed, lookup=advisories.get_provider).reason == "unknown_product"
     assert rm.match(rm.Fingerprint(product="OpenSSH"), seed, lookup=advisories.get_provider).reason == "no_version"
     empty = cpe_ranges.CpeRangeDataset()
     assert rm.match(rm.Fingerprint(product="OpenSSH", version="7.4"), empty, lookup=advisories.get_provider).reason == "no_dataset"
@@ -701,3 +701,669 @@ def test_a_vendor_open_statement_with_a_real_severity_is_unfixed_not_tracked() -
     )
     (only,) = outcome.matches
     assert (only.verdict, only.is_finding) == ("unfixed", False)
+
+
+# --------------------------------------------------------------------------
+# Wider product coverage: each row proved by a string a prober really emits
+# --------------------------------------------------------------------------
+#
+# nmap's strings are ``p//``/``v//``/``cpe:`` values from nmap-service-probes
+# (7.99); Pulse's are the ``product`` its probe database (``probes.json``) or
+# its banner parser (``fingerprint.rs``) writes into services.json. NVD keys and
+# the ranges below were read from NVD's CPE and CVE APIs on 2026-10-06.
+
+MYSQL = ("a:oracle:mysql", "a:mysql:mysql")
+ELASTICSEARCH = ("a:elastic:elasticsearch", "a:elasticsearch:elasticsearch")
+JETTY = ("a:eclipse:jetty", "a:mortbay:jetty")
+PDNS_AUTHORITATIVE = ("a:powerdns:authoritative_server", "a:powerdns:authoritative")
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "keys", "via", "version"),
+    [
+        # nmap's Sendmail v/$2/ is "<binary>/<sendmail.cf>[/Debian-<revision>]".
+        (
+            rm.Fingerprint(
+                product="Sendmail",
+                version="8.15.2/8.15.2/Debian-8+deb9u1",
+                cpe=("cpe:/a:sendmail:sendmail:8.15.2/8.15.2/Debian-8+deb9u1",),
+            ),
+            ("a:sendmail:sendmail",),
+            "cpe",
+            "8.15.2",
+        ),
+        # Pulse: ``sendmail\s+([0-9a-zA-Z._-]+)`` stops at the slash.
+        (
+            rm.Fingerprint(
+                product="Sendmail",
+                version="8.17.1.9",
+                banner="220 mx.example.org ESMTP Sendmail 8.17.1.9/8.17.1.9/Debian-2+deb12u2; Mon, 6 Oct 2026",
+            ),
+            ("a:sendmail:sendmail",),
+            "product_table",
+            "8.17.1.9",
+        ),
+        (rm.Fingerprint(product="Dovecot imapd", version="2.0.11"), ("a:dovecot:dovecot",), "product_table", "2.0.11"),
+        (rm.Fingerprint(product="Pure-FTPd", version="1.0.49"), ("a:pureftpd:pure-ftpd",), "product_table", "1.0.49"),
+        # FileZilla Server 0.9.x calls every release "beta"; NVD does not.
+        (
+            rm.Fingerprint(
+                product="FileZilla ftpd",
+                version="0.9.41 beta",
+                cpe=("cpe:/a:filezilla-project:filezilla_server:0.9.41 beta", "cpe:/o:microsoft:windows"),
+            ),
+            ("a:filezilla-project:filezilla_server",),
+            "cpe",
+            "0.9.41",
+        ),
+        (
+            rm.Fingerprint(product="FileZilla Server", version="1.7.0"),
+            ("a:filezilla-project:filezilla_server",),
+            "product_table",
+            "1.7.0",
+        ),
+        # nmap's MySQL version carries Ubuntu's package revision.
+        (
+            rm.Fingerprint(
+                product="MySQL",
+                version="5.7.33-0ubuntu0.18.04.1",
+                cpe=("cpe:/a:mysql:mysql:5.7.33-0ubuntu0.18.04.1",),
+            ),
+            MYSQL,
+            "cpe",
+            "5.7.33",
+        ),
+        (rm.Fingerprint(product="MySQL", version="8.0.36", banner="J...", service="mysql"), MYSQL, "product_table", "8.0.36"),
+        # MariaDB 10+ greets as "5.5.5-10.3.39-MariaDB-…"; nmap's $1 keeps the
+        # compatibility prefix, and compared as written it is MariaDB 5.5.5.
+        (
+            rm.Fingerprint(product="MariaDB", version="5.5.5-10.3.39", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.3.39",)),
+            ("a:mariadb:mariadb",),
+            "cpe",
+            "10.3.39",
+        ),
+        (rm.Fingerprint(product="MariaDB", version="10.11.6"), ("a:mariadb:mariadb",), "product_table", "10.11.6"),
+        (rm.Fingerprint(product="MongoDB", version="4.4.6"), ("a:mongodb:mongodb",), "product_table", "4.4.6"),
+        # nmap lists Lucene's CPE first; its version is not Elasticsearch's.
+        (
+            rm.Fingerprint(
+                product="Elasticsearch REST API",
+                version="7.17.9",
+                cpe=("cpe:/a:apache:lucene:8.11.1", "cpe:/a:elasticsearch:elasticsearch:7.17.9"),
+            ),
+            ELASTICSEARCH,
+            "cpe",
+            "7.17.9",
+        ),
+        (rm.Fingerprint(product="Elasticsearch", version="7.17.0"), ELASTICSEARCH, "product_table", "7.17.0"),
+        (
+            rm.Fingerprint(product="Memcached", version="1.6.14", banner="VERSION 1.6.14", service="memcached"),
+            ("a:memcached:memcached",),
+            "product_table",
+            "1.6.14",
+        ),
+        (rm.Fingerprint(product="CouchDB httpd", version="3.2.1"), ("a:apache:couchdb",), "product_table", "3.2.1"),
+        (rm.Fingerprint(product="Apache CouchDB", version="3.3.3"), ("a:apache:couchdb",), "product_table", "3.3.3"),
+        (rm.Fingerprint(product="Squid http proxy", version="4.13"), ("a:squid-cache:squid",), "product_table", "4.13"),
+        # Pulse names a Server token it has no rule for by the token itself.
+        (
+            rm.Fingerprint(
+                product="squid", version="5.7", banner="HTTP/1.1 400 Bad Request | Server: squid/5.7 | Mime-Version: 1.0"
+            ),
+            ("a:squid-cache:squid",),
+            "product_table",
+            "5.7",
+        ),
+        (
+            rm.Fingerprint(
+                product="HAProxy stats socket",
+                version="2.6.12-1+deb12u1",
+                cpe=("cpe:/a:haproxy:haproxy:2.6.12-1+deb12u1",),
+            ),
+            ("a:haproxy:haproxy",),
+            "cpe",
+            "2.6.12",
+        ),
+        # Jetty 7-9 date their releases; NVD's bounds do not carry the date.
+        (
+            rm.Fingerprint(product="Jetty", version="9.4.44.v20210927", cpe=("cpe:/a:mortbay:jetty:9.4.44.v20210927",)),
+            JETTY,
+            "cpe",
+            "9.4.44",
+        ),
+        (rm.Fingerprint(product="Eclipse Jetty", version="10.0.13"), JETTY, "product_table", "10.0.13"),
+        (
+            rm.Fingerprint(
+                product="PHP",
+                version="7.4.3",
+                banner="HTTP/1.1 200 OK | Date: Mon, 06 Oct 2026 10:00:00 GMT | X-Powered-By: PHP/7.4.3-4ubuntu2.19",
+            ),
+            ("a:php:php",),
+            "product_table",
+            "7.4.3",
+        ),
+        (rm.Fingerprint(product="Unbound", version="1.13.1"), ("a:nlnetlabs:unbound",), "product_table", "1.13.1"),
+        # nmap's CPE for the authoritative server is NVD's newer key; NVD
+        # still files older CVEs under authoritative_server.
+        (
+            rm.Fingerprint(
+                product="PowerDNS Authoritative Server", version="4.1.6", cpe=("cpe:/a:powerdns:authoritative:4.1.6",)
+            ),
+            PDNS_AUTHORITATIVE,
+            "cpe",
+            "4.1.6",
+        ),
+        (rm.Fingerprint(product="PowerDNS Recursor", version="4.4.2"), ("a:powerdns:recursor",), "product_table", "4.4.2"),
+        (
+            rm.Fingerprint(product="libssh", version="0.8.1", banner="SSH-2.0-libssh_0.8.1"),
+            ("a:libssh:libssh",),
+            "product_table",
+            "0.8.1",
+        ),
+        # Products covered before, under the strings Pulse writes for them.
+        (rm.Fingerprint(product="Redis", version="7.0.15"), ("a:redis:redis", "a:redislabs:redis"), "product_table", "7.0.15"),
+        (
+            rm.Fingerprint(product="Microsoft IIS", version="10.0"),
+            ("a:microsoft:internet_information_services", "a:microsoft:iis"),
+            "product_table",
+            "10.0",
+        ),
+        (
+            rm.Fingerprint(product="Dropbear", version="2020.81"),
+            ("a:dropbear_ssh_project:dropbear_ssh", "a:matt_johnston:dropbear_ssh_server"),
+            "product_table",
+            "2020.81",
+        ),
+        # Pulse off its probe ports: a generic product and the raw banner, the
+        # name immediately followed by its version.
+        (rm.Fingerprint(product="SSH (libssh_0.7.5)", banner="SSH-2.0-libssh_0.7.5"), ("a:libssh:libssh",), "banner", "0.7.5"),
+        (
+            rm.Fingerprint(product="SMTP", banner="220 mx.example.org ESMTP Sendmail 8.15.2/8.15.2/Debian-18; Mon, 6 Oct 2026"),
+            ("a:sendmail:sendmail",),
+            "banner",
+            "8.15.2",
+        ),
+        (
+            rm.Fingerprint(
+                product="CouchDB",
+                version="3.2.2",
+                banner="HTTP/1.1 400 Bad Request | Server: CouchDB/3.2.2 (Erlang OTP/24) | Content-Type: application/json",
+            ),
+            ("a:apache:couchdb",),
+            "banner",
+            "3.2.2",
+        ),
+    ],
+)
+def test_new_products_are_named_by_the_probers_own_strings(fingerprint, keys, via, version) -> None:
+    found, found_via, cpe_version = rm.product_keys(fingerprint)
+    assert (found, found_via) == (keys, via)
+    assert rm.upstream_version(fingerprint, found, cpe_version) == version
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        # Sendmail Inc.'s commercial MTA, versioned on its own (nmap: no CPE).
+        rm.Fingerprint(product="Sendmail Switch smtpd", version="3.1.1"),
+        # Pigeonhole's version is not Dovecot's.
+        rm.Fingerprint(product="Dovecot Pigeonhole sieve", version="0.5.4"),
+        # nmap's CouchDB-compatible line also matches Couchbase.
+        rm.Fingerprint(product="CouchDB REST httpd", version="2.0.0"),
+        # Couchbase's fork of CouchDB, whose Server token Pulse cuts at the "r".
+        rm.Fingerprint(
+            product="CouchDB",
+            version="2.1.1",
+            banner="HTTP/1.1 400 Bad Request | Server: CouchDB/2.1.1r-432-gc2af28d (Erlang OTP/R14B04)",
+        ),
+        # MiniServ serves both Webmin and Usermin, two version lines NVD keeps
+        # under two keys; the banner does not say which.
+        rm.Fingerprint(product="MiniServ", version="1.990"),
+        # The ssh application's version, not the Erlang/OTP release NVD keys on.
+        rm.Fingerprint(product="Erlang OTP SSH", version="5.1.4.4"),
+        # Cisco's SSH stack version, not IOS's.
+        rm.Fingerprint(product="Cisco SSH", version="1.25", banner="SSH-2.0-Cisco-1.25"),
+        # NVD states Jenkins LTS and weekly ranges under one key, told apart
+        # only by sw_edition, which the dataset does not keep: 2.426.3 LTS is
+        # fixed for CVE-2024-23897 and still inside the weekly "< 2.442".
+        rm.Fingerprint(product="Jenkins CI", version="2.426.3"),
+        rm.Fingerprint(product="Jenkins httpd", version="2.426.3"),
+        # Answers like Redis, versioned like nothing else.
+        rm.Fingerprint(product="KeyDB", version="6.3.4"),
+        # The connector's version, not Tomcat's.
+        rm.Fingerprint(product="Apache Tomcat Coyote", version="1.1"),
+        rm.Fingerprint(product="OpenSearch", version="2.11.0"),
+        rm.Fingerprint(product="Varnish http accelerator", version="4"),
+        rm.Fingerprint(product="PostgreSQL DB", version="10.15 - 10.18 or 12.5"),
+        rm.Fingerprint(product="Microsoft Exchange smtpd"),
+        # nmap's generic "Served by POWERDNS": authoritative or recursor?
+        rm.Fingerprint(product="PowerDNS", version="3.4.11"),
+        # Pulse's banner parser reads "version N" anywhere as memcached; only
+        # the memcached service is believed.
+        rm.Fingerprint(
+            product="memcached", version="0.9.41", banner="220-FileZilla Server version 0.9.41 beta", service="ftp"
+        ),
+        # Loose words.
+        rm.Fingerprint(product="", banner="220 mx.example.org ESMTP Postfix (sendmail-compatible)"),
+        rm.Fingerprint(product="", banner="SSH-2.0-libssh2_1.9.0"),
+        rm.Fingerprint(product="Generic HTTP", banner="HTTP/1.1 302 Found | Location: /index.php/5.2/login"),
+        rm.Fingerprint(product="Generic HTTP", banner="HTTP/1.1 200 OK | Via: 1.1 squidguard/1.4"),
+    ],
+)
+def test_lookalikes_of_the_new_products_are_not_matched(fingerprint) -> None:
+    assert rm.product_keys(fingerprint)[0] == ()
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "key", "statement"),
+    [
+        # A MariaDB greeting misread as MySQL 5.5.5.
+        (
+            rm.Fingerprint(product="MySQL", version="5.5.5-10.3.39"),
+            "a:oracle:mysql",
+            CpeRange("CVE-2023-22084", start_including="5.5.0", end_including="5.7.43"),
+        ),
+        # Pulse's MySQL rule takes the first x.y.z of a port-3306 reply; in a
+        # refusal that is the scanner's own address.
+        (
+            rm.Fingerprint(
+                product="MySQL",
+                version="5.7.12",
+                banner="G....j.Host '5.7.12.4' is not allowed to connect to this MySQL server",
+                service="mysql",
+            ),
+            "a:oracle:mysql",
+            CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43"),
+        ),
+        (
+            rm.Fingerprint(product="Jetty", version="9.4.z-SNAPSHOT"),
+            "a:eclipse:jetty",
+            CpeRange("CVE-2021-28169", end_excluding="9.4.41"),
+        ),
+        (
+            rm.Fingerprint(product="Jetty", version="9.4.0.RC1"),
+            "a:eclipse:jetty",
+            CpeRange("CVE-2021-28169", end_excluding="9.4.41"),
+        ),
+        (
+            rm.Fingerprint(product="CouchDB httpd", version="2.1.1r-432-gc2af28d"),
+            "a:apache:couchdb",
+            CpeRange("CVE-2022-24706", end_excluding="3.2.2"),
+        ),
+        (
+            rm.Fingerprint(product="HAProxy stats socket", version="2.4-dev5", cpe=("cpe:/a:haproxy:haproxy:2.4-dev5",)),
+            "a:haproxy:haproxy",
+            CpeRange("CVE-2023-25725", start_including="2.3.0", end_excluding="2.4.22"),
+        ),
+        # Sun's own Sendmail build.
+        (
+            rm.Fingerprint(product="Sendmail", version="8.9.3+Sun/8.9.3"),
+            "a:sendmail:sendmail",
+            CpeRange("CVE-2023-51765", end_excluding="8.18.0.2"),
+        ),
+        # Dovecot's greeting names no version; Pulse reports none.
+        (
+            rm.Fingerprint(
+                product="Dovecot imapd",
+                banner="* OK [CAPABILITY IMAP4rev1 SASL-IR LOGIN-REFERRALS ID ENABLE IDLE LITERAL+ STARTTLS] Dovecot (Ubuntu) ready.",
+            ),
+            "a:dovecot:dovecot",
+            CpeRange("CVE-2020-24386", start_including="2.2.26", end_excluding="2.3.13"),
+        ),
+        # FileZilla Server 0.9.x: Pulse's rule captures the word after
+        # "Server", which is "version".
+        (
+            rm.Fingerprint(product="FileZilla Server", version="version", banner="220-FileZilla Server version 0.9.41 beta"),
+            "a:filezilla-project:filezilla_server",
+            CpeRange("CVE-2015-10003", end_excluding="0.9.51"),
+        ),
+    ],
+)
+def test_a_version_of_the_wrong_shape_is_no_version(fingerprint, key, statement) -> None:
+    outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None)
+    assert outcome.matches == ()
+    assert outcome.reason == "no_version"
+
+
+def test_mariadbs_compatibility_prefix_is_not_its_version() -> None:
+    """``5.5.5-10.5.21`` compared as written is MariaDB 5.5.5: inside every 5.5
+    range and outside the 10.5 one that actually applies."""
+    dataset = _one(
+        "a:mariadb:mariadb",
+        CpeRange("CVE-2023-22084", start_including="10.5.0", end_excluding="10.5.23"),
+        CpeRange("CVE-2020-2574", start_including="5.5.0", end_excluding="5.5.67"),
+    )
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version="5.5.5-10.5.21", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.5.21",)),
+        dataset,
+        lookup=lambda _d: None,
+    )
+    assert [(m.cve, m.verdict, m.confidence) for m in outcome.matches] == [
+        ("CVE-2023-22084", "vulnerable", "version_range")
+    ]
+    assert outcome.upstream_version == "10.5.21"
+
+
+@pytest.mark.parametrize(
+    ("version", "matched"),
+    [("9.4.40.v20210413", ["CVE-2021-28169"]), ("9.4.41.v20210516", []), ("10.0.2", ["CVE-2021-28169"])],
+)
+def test_jettys_dated_releases_compare_as_their_version(version, matched) -> None:
+    dataset = _one(
+        "a:eclipse:jetty",
+        CpeRange("CVE-2021-28169", end_excluding="9.4.41"),
+        CpeRange("CVE-2021-28169", start_including="10.0.0", end_excluding="10.0.3"),
+    )
+    outcome = rm.match(
+        rm.Fingerprint(product="Jetty", version=version, cpe=(f"cpe:/a:mortbay:jetty:{version}",)),
+        dataset,
+        lookup=lambda _d: None,
+    )
+    assert [m.cve for m in outcome.matches] == matched
+
+
+#: Products distributions do not build (vendor packages, containers, Windows):
+#: a Linux host says nothing about a backport, and an NVD range stays a finding.
+NOT_DISTRIBUTION_BUILT = [
+    (
+        rm.Fingerprint(product="Elasticsearch", version="7.17.9"),
+        "a:elastic:elasticsearch",
+        CpeRange("CVE-2023-31419", start_including="7.0.0", end_including="7.17.12"),
+    ),
+    (
+        rm.Fingerprint(product="MongoDB", version="4.4.6"),
+        "a:mongodb:mongodb",
+        CpeRange("CVE-2024-1351", start_including="4.4.0", end_excluding="4.4.29"),
+    ),
+    (
+        rm.Fingerprint(product="Apache CouchDB", version="3.2.1"),
+        "a:apache:couchdb",
+        CpeRange("CVE-2022-24706", end_excluding="3.2.2"),
+    ),
+    (
+        rm.Fingerprint(product="Eclipse Jetty", version="9.4.40.v20210413"),
+        "a:eclipse:jetty",
+        CpeRange("CVE-2021-28169", end_excluding="9.4.41"),
+    ),
+    (
+        rm.Fingerprint(product="FileZilla ftpd", version="0.9.41 beta"),
+        "a:filezilla-project:filezilla_server",
+        CpeRange("CVE-2015-10003", end_excluding="0.9.51"),
+    ),
+]
+
+#: Products every distribution builds: on a Linux host of unknown distribution
+#: an NVD range is no evidence against a backport.
+DISTRIBUTION_BUILT = [
+    (
+        rm.Fingerprint(product="Sendmail", version="8.17.1.9"),
+        "a:sendmail:sendmail",
+        CpeRange("CVE-2023-51765", end_excluding="8.18.0.2"),
+    ),
+    (
+        rm.Fingerprint(product="Dovecot imapd", version="2.3.7.2"),
+        "a:dovecot:dovecot",
+        CpeRange("CVE-2020-24386", start_including="2.2.26", end_excluding="2.3.13"),
+    ),
+    (
+        rm.Fingerprint(product="Pure-FTPd", version="1.0.49"),
+        "a:pureftpd:pure-ftpd",
+        CpeRange("CVE-2020-9365", exact="1.0.49"),
+    ),
+    (
+        rm.Fingerprint(product="Memcached", version="1.6.14", service="memcached"),
+        "a:memcached:memcached",
+        CpeRange("CVE-2023-46852", end_excluding="1.6.22"),
+    ),
+    (
+        rm.Fingerprint(product="Squid http proxy", version="4.13"),
+        "a:squid-cache:squid",
+        CpeRange("CVE-2023-46846", start_including="2.6", end_excluding="6.4"),
+    ),
+    (
+        rm.Fingerprint(product="HAProxy stats socket", version="2.4.20"),
+        "a:haproxy:haproxy",
+        CpeRange("CVE-2023-25725", start_including="2.3.0", end_excluding="2.4.22"),
+    ),
+    (
+        rm.Fingerprint(product="Unbound", version="1.13.1"),
+        "a:nlnetlabs:unbound",
+        CpeRange("CVE-2023-50387", end_excluding="1.19.1"),
+    ),
+    (
+        rm.Fingerprint(product="PowerDNS Authoritative Server", version="4.1.6"),
+        "a:powerdns:authoritative_server",
+        CpeRange("CVE-2022-27227", end_excluding="4.4.3"),
+    ),
+    (
+        rm.Fingerprint(product="PowerDNS Recursor", version="4.4.2"),
+        "a:powerdns:recursor",
+        CpeRange("CVE-2022-27227", end_excluding="4.4.8"),
+    ),
+    (
+        rm.Fingerprint(product="libssh", version="0.7.5"),
+        "a:libssh:libssh",
+        CpeRange("CVE-2018-10933", start_including="0.6.0", end_excluding="0.7.6"),
+    ),
+    (
+        rm.Fingerprint(product="MySQL", version="8.0.35", service="mysql"),
+        "a:oracle:mysql",
+        CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35"),
+    ),
+    (
+        rm.Fingerprint(product="MariaDB", version="10.5.21"),
+        "a:mariadb:mariadb",
+        CpeRange("CVE-2023-22084", start_including="10.5.0", end_excluding="10.5.23"),
+    ),
+    (
+        rm.Fingerprint(product="PHP", version="7.4.3"),
+        "a:php:php",
+        CpeRange("CVE-2022-31625", start_including="7.4.0", end_excluding="7.4.30"),
+    ),
+]
+
+
+@pytest.mark.parametrize(("fingerprint", "key", "statement"), NOT_DISTRIBUTION_BUILT)
+def test_a_product_distributions_do_not_build_stays_a_range_finding_on_linux(fingerprint, key, statement) -> None:
+    outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None, host=rm.DistroHint("linux"))
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("vulnerable", "version_range")]
+
+
+@pytest.mark.parametrize(("fingerprint", "key", "statement"), DISTRIBUTION_BUILT)
+def test_a_product_distributions_build_is_possible_on_a_linux_host(fingerprint, key, statement) -> None:
+    outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None, host=rm.DistroHint("linux"))
+    assert [(m.verdict, m.confidence) for m in outcome.matches] == [("possible", "backport_possible")]
+    assert outcome.matches[0].evidence["advisory"]["reason"] == "distro_packaged_on_linux"
+    # With nothing anywhere suggesting a distribution, the range is a finding.
+    bare = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None, host=None)
+    assert [(m.verdict, m.confidence) for m in bare.matches] == [("vulnerable", "version_range")]
+
+
+def _advisory(
+    cve: str, *, release: str, package: str, state: str = "resolved", fixed: str | None = None
+) -> advisory_base.AdvisoryRecord:
+    return advisory_base.AdvisoryRecord(
+        advisory_id="ADV-1",
+        cve_ids=(cve,),
+        release=release,
+        source_package=package,
+        fixed_version=fixed,
+        state=state,
+        provider="fake",
+        severity="medium",
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "upstream", "packages"),
+    [
+        ("a:oracle:mysql", "8.0.36", ("mysql-8.0",)),
+        ("a:mysql:mysql", "5.7.33", ("mysql-5.7",)),
+        ("a:mariadb:mariadb", "10.5.21", ("mariadb-10.5",)),
+        ("a:php:php", "8.1.2", ("php8.1",)),
+        ("a:squid-cache:squid", "4.13", ("squid", "squid3")),
+        ("a:powerdns:authoritative", "4.1.6", ("pdns",)),
+        ("a:powerdns:recursor", "4.4.2", ("pdns-recursor",)),
+        ("a:openbsd:openssh", "8.2p1", ("openssh",)),
+        ("a:elastic:elasticsearch", "7.17.9", ()),
+        # A version too short to name a series names no series package.
+        ("a:php:php", "8", ()),
+    ],
+)
+def test_source_packages_follow_the_upstream_series(key, upstream, packages) -> None:
+    assert rm.source_packages(key, upstream) == packages
+
+
+def test_mysql_with_ubuntus_revision_is_decided_by_its_series_package() -> None:
+    """``5.7.33-0ubuntu0.18.04.1``: bionic's ``mysql-5.7``, not ``mysql-8.0``,
+    whose not-affected statement is about another series."""
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="bionic", package="mysql-5.7", fixed="5.7.44-0ubuntu0.18.04.1"),
+        _advisory("CVE-2023-22084", release="bionic", package="mysql-8.0", state="not_affected"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(
+            product="MySQL", version="5.7.33-0ubuntu0.18.04.1", cpe=("cpe:/a:mysql:mysql:5.7.33-0ubuntu0.18.04.1",)
+        ),
+        _one("a:oracle:mysql", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
+        lookup=lambda _d: provider,
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+    assert only.evidence["advisory"]["release"] == "bionic"
+    assert only.evidence["advisory"]["installed_version"] == "5.7.33-0ubuntu0.18.04.1"
+
+
+def test_mariadb_on_a_known_debian_host_goes_to_its_series_package() -> None:
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="bullseye", package="mariadb-10.5", fixed="1:10.5.23-0+deb11u1"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version="5.5.5-10.5.21", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.5.21",)),
+        _one("a:mariadb:mariadb", CpeRange("CVE-2023-22084", start_including="10.5.0", end_excluding="10.5.23")),
+        lookup=lambda _d: provider,
+        host=rm.DistroHint("debian", "bullseye"),
+    )
+    (only,) = outcome.matches
+    # 10.5.21 is older than the upstream Debian's fix was built on.
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+    assert only.evidence["advisory"]["fixed_version"] == "1:10.5.23-0+deb11u1"
+
+
+MARIADB_10_11 = rm.Fingerprint(
+    product="MariaDB", version="5.5.5-10.11.4", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.11.4",)
+)
+MARIADB_10_11_RANGE = _one(
+    "a:mariadb:mariadb", CpeRange("CVE-2023-22084", start_including="10.11.0", end_excluding="10.11.6")
+)
+
+
+def test_mariadb_from_the_unversioned_source_is_decided_where_it_ships_that_series() -> None:
+    """bookworm builds 10.11 from ``mariadb``, not ``mariadb-10.11``."""
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="bookworm", package="mariadb", fixed="1:10.11.6-0+deb12u1"),
+    ])
+    outcome = rm.match(
+        MARIADB_10_11, MARIADB_10_11_RANGE, lookup=lambda _d: provider, host=rm.DistroHint("debian", "bookworm")
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+
+
+def test_the_unversioned_source_of_another_series_is_not_asked() -> None:
+    """trixie's ``mariadb`` is 11.8. Its "not affected" is about 11.8; a 10.11
+    on a trixie host (a container, say) is not that build."""
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="trixie", package="mariadb", state="not_affected"),
+        _advisory("CVE-2025-0001", release="trixie", package="mariadb", fixed="1:11.8.2-0+deb13u1"),
+    ])
+    outcome = rm.match(
+        MARIADB_10_11, MARIADB_10_11_RANGE, lookup=lambda _d: provider, host=rm.DistroHint("debian", "trixie")
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("possible", "backport_possible")
+    assert only.evidence["advisory"]["reason"] == "no_vendor_statement"
+
+
+def test_php_with_ubuntus_revision_is_decided_by_the_release_that_ships_it() -> None:
+    """``X-Powered-By: PHP/7.4.3-4ubuntu2.19``: focal's ``php7.4`` is the one
+    release whose fixes are built on 7.4.3."""
+    provider = _Provider([
+        _advisory("CVE-2022-31625", release="focal", package="php7.4", fixed="7.4.3-4ubuntu2.12"),
+        _advisory("CVE-2024-2756", release="focal", package="php7.4", fixed="7.4.3-4ubuntu2.22"),
+        _advisory("CVE-2022-31625", release="jammy", package="php8.1", fixed="8.1.2-1ubuntu2.2"),
+    ])
+    dataset = cpe_ranges.CpeRangeDataset(
+        marker="t",
+        index={
+            "a:php:php": (
+                CpeRange("CVE-2022-31625", start_including="7.4.0", end_excluding="7.4.30"),
+                CpeRange("CVE-2024-2756", start_including="7.4.0", end_excluding="8.1.28"),
+            )
+        },
+        cves={
+            "CVE-2022-31625": {"severity": "critical", "cvss": 9.8},
+            "CVE-2024-2756": {"severity": "medium", "cvss": 6.5},
+        },
+        present=True,
+    )
+    outcome = rm.match(
+        rm.Fingerprint(
+            product="PHP",
+            version="7.4.3",
+            banner="HTTP/1.1 200 OK | X-Powered-By: PHP/7.4.3-4ubuntu2.19 | Content-Type: text/html; charset=UTF-8",
+        ),
+        dataset,
+        lookup=lambda _d: provider,
+    )
+    verdicts = {m.cve: (m.verdict, m.confidence, m.evidence["advisory"].get("release")) for m in outcome.matches}
+    assert verdicts == {
+        "CVE-2022-31625": ("fixed", "vendor_advisory", "focal"),
+        "CVE-2024-2756": ("vulnerable", "vendor_advisory", "focal"),
+    }
+
+
+def test_sendmails_debian_banner_is_decided_by_debian() -> None:
+    provider = _Provider([
+        _advisory("CVE-2023-51765", release="bookworm", package="sendmail", fixed="8.17.1.9-2+deb12u2"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(
+            product="Sendmail",
+            version="8.17.1.9/8.17.1.9/Debian-2+deb12u1",
+            cpe=("cpe:/a:sendmail:sendmail:8.17.1.9/8.17.1.9/Debian-2+deb12u1",),
+        ),
+        _one("a:sendmail:sendmail", CpeRange("CVE-2023-51765", end_excluding="8.18.0.2")),
+        lookup=lambda _d: provider,
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+    assert only.evidence["advisory"]["installed_version"] == "8.17.1.9-2+deb12u1"
+
+
+def test_squid_on_a_known_ubuntu_host_asks_ubuntus_squid() -> None:
+    """focal builds 4.10 from ``squid``; the listener does not say which
+    revision — the backport question, asked of the right package."""
+    provider = _Provider([
+        _advisory("CVE-2023-46846", release="focal", package="squid", fixed="4.10-1ubuntu1.9"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(product="squid", version="4.10", banner="HTTP/1.1 400 Bad Request | Server: squid/4.10"),
+        _one("a:squid-cache:squid", CpeRange("CVE-2023-46846", start_including="2.6", end_excluding="6.4")),
+        lookup=lambda _d: provider,
+        host=rm.DistroHint("ubuntu", "focal"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("possible", "backport_possible")
+    assert only.evidence["advisory"]["reason"] == "revision_not_disclosed"
+    assert only.evidence["advisory"]["advisory_id"] == "ADV-1"
+
+
+def test_the_rules_version_follows_the_tables(monkeypatch) -> None:
+    """Part of the worker's marker: a release that teaches the matcher a
+    product must re-ask about listeners already matched against an unchanged
+    dataset — once, so the digest is stable while nothing changes."""
+    first = rm.rules_version()
+    assert first == rm.rules_version()
+    monkeypatch.setitem(rm.PRODUCT_TABLE, "frobnicator httpd", ("a:frob:frobnicator",))
+    assert rm.rules_version() != first

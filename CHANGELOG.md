@@ -667,6 +667,31 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
+- **Retro CVE matching names eighteen more products.** Sendmail, Dovecot,
+  Pure-FTPd, FileZilla Server, MySQL, MariaDB, MongoDB, Elasticsearch,
+  Memcached, CouchDB, Squid, HAProxy, Jetty, PHP, Unbound, PowerDNS
+  Authoritative and Recursor, and libssh join the 16, each under the strings
+  nmap and Pulse really emit (checked against `nmap-service-probes` and Pulse's
+  probe database), each key against NVD's CPE dictionary; Pulse's own names for
+  Redis, IIS and Dropbear, which the table did not know, too. Products whose
+  version string carries more than the version are cut to it by a per-product
+  shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
+  Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and
+  the cut-off revision still goes to the backport check. When the table knows
+  the product, a line's other CPEs are dropped with their versions (nmap's
+  Elasticsearch line names Lucene's first). Debian/Ubuntu source
+  packages named after the upstream series (`mysql-5.7`, `mariadb-10.5`,
+  `php8.1`) are derived from the listener's own version, and the unversioned
+  `mariadb` of Debian 12/13 and Ubuntu 24.04 is asked only in a release that
+  builds the listener's series from it. Elasticsearch, MongoDB, CouchDB, Jetty
+  and FileZilla Server are not treated as distribution builds. Deliberately not
+  matched, with the reason in
+  [docs/retro-cve-matching.md](docs/retro-cve-matching.md#products): Jenkins (NVD's
+  LTS and weekly ranges share a key), PostgreSQL (no prober reports a version),
+  Exchange (build ≠ CU), CUPS, Webmin, Erlang/OTP SSH and others. The worker's
+  marker now carries a digest of the matcher's tables (`…+rules:<digest>`), so
+  the upgrade re-matches every listener once by itself — expect a wave of
+  `retro_match` findings on the first tick (docs/operations.md).
 
 ### Changed
 
@@ -1079,6 +1104,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Retro matching read MariaDB 10+ as MariaDB 5.5.5.** nmap's MariaDB version
+  and CPE keep the `5.5.5-` compatibility prefix (`5.5.5-10.3.39`), and the CPE
+  path matched it whenever the dataset knew `mariadb:mariadb` — that is, with
+  any full NVD harvest: compared as written it put every MariaDB 10.x inside
+  every 5.5 range and outside its own series'. The prefix is now cut (see the
+  version shapes under *Added*).
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run
