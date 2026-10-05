@@ -6,6 +6,58 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Signed sensor update bundle
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)).** The publish
+  job's new `Sensor bundle` stage builds the `agent` package into a
+  reproducible tarball with a `sensor-bundle.json` manifest (version, sha256,
+  size) and signs the manifest with the release key that signs the images
+  (`scripts/build-sensor-bundle.sh`, from the files git tracks only; unsigned
+  under `DRY_RUN` and for a prerelease tag, since one bundle directory serves
+  the whole fleet). With
+  `OCTO_AGENT_BUNDLE_DIR` set, the API serves it to sensors at
+  `GET /api/agent/bundle` (manifest, signature, `min_version`) and
+  `GET /api/agent/bundle/download` — agent JWT, `403` for an endpoint agent,
+  `404` with none published, `503` when the archive does not match its
+  manifest or a file of it cannot be read. On the host, `scripts/update-agent.sh` now runs
+  `python -m agent.update` **as the sensor's account** — root only restarts
+  the unit and judges the restart, so it never runs code from a tree that
+  account can rewrite — and the updater installs the bundle only if the manifest
+  verifies against the release key **pinned in the installed package** (never
+  because the configured server sent it), the archive matches the signed
+  digest and size, and the signed version is above the installed one and not
+  below `OCTO_AGENT_MIN_VERSION` (a `-beta<N>`/`-rc<N>` counts as below the
+  release it precedes, so the final release replaces it). The install stages
+  the release under `releases/`, import-checks its worker and its updater,
+  swaps the `agent` symlink atomically, restarts
+  the unit and requires it to stay up as one process, and puts the previous
+  release back otherwise — also after a crash, from a journal, before the next
+  run asks whether anything is new, restarting the unit onto the release put
+  back. The verifier runs detached from root's terminal (`setsid`, BusyBox's
+  included; stdin from `/dev/null`; output read back with every control
+  character dropped), so the sensor's account cannot type into root's shell
+  with `TIOCSTI` or have the terminal answer an escape sequence into it.
+  Interrupted (`^C`, a dropped SSH session, `SIGTERM`), the script stops the
+  verifier and puts back what it swapped in. A release that failed its health
+  check is recorded by its signed digest and not retried by `--auto`, which
+  skips it before downloading it; releases put back are pruned rather than
+  left to pile up. What the sensor reads from the API before verifying it, error
+  bodies included, is bounded, and **the sensor follows no redirect from the API**: a `3xx`
+  is an error whose body is read with the same limit, and the bearer token is
+  never sent on to its `Location` (`urllib`'s default handler read a redirect's
+  body to its end and forwarded `Authorization` to any host); feed downloads
+  (`scripts/feed_fetch.py`) still follow them, as before. One run of the
+  script holds root's lock (`/run/shapoclyack-update-agent.lock`, `0600`, so no other
+  account can open it to keep updates out) from its first
+  look at the journal to the verdict, so a timer tick cannot take a manual
+  run's update from under its health check, and "kept" is logged only when
+  `--commit` kept something. Only the `agent` package is in the
+  bundle; `scanner/` and the venv are not. `--bundle-dir`
+  does the same from local files for air-gapped hosts. **Automatic updates stay
+  off**: nothing runs the updater unless an operator installs a timer, and its
+  `--auto` mode does nothing without `OCTO_AGENT_AUTO_UPDATE=true`. Native
+  sensors gain `cryptography` in `requirements-agent.lock`. See
+  docs/operations.md § Sensor bundle updates.
+
 - **The identity provider can be authoritative, and SCIM 2.0 provisioning
   ([#316](https://github.com/onixus/Shapoclyack/issues/316)).** With
   `OCTO_IDP_AUTHORITATIVE=true` every SSO login recomputes the account's global
@@ -757,6 +809,16 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   empty.
 
 ### Security
+
+- **`update-agent.sh --bundle-url` no longer installs an unsigned tarball
+  ([#363](https://github.com/onixus/Shapoclyack/issues/363)).** It downloaded
+  whatever the URL served, unpacked it over the installed sensor as root and
+  restarted it; the only check was that the result imported. The option now
+  stops with a pointer to the signed path (`--bundle-dir`, or no option to
+  fetch from the API). `--restart-only` no longer runs an unpinned
+  `pip install --upgrade pip setuptools wheel` either. Rotating the release key
+  now also means replacing the key pinned in `agent/update.py` and shipping
+  that release's bundle signed with the old key (docs/supply-chain.md).
 
 - **MFA policy and step-up by authority in a tenant
   ([#504](https://github.com/onixus/Shapoclyack/issues/504)).** The second-factor

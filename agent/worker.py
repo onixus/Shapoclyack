@@ -66,6 +66,18 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 # given up, the archive stays on disk and the job is requeued. Busy heartbeats
 # keep the job's lease while the upload waits.
 RATE_LIMIT_WAIT_SECONDS = 30.0
+
+# GET /api/agent/bundle answers with a manifest of at most 64 KiB and a 4 KiB
+# signature, base64-encoded (#363). The answer is read before anything in it
+# is verified, so how much of it is read is decided here, not by the server:
+# this for the metadata, the signed size for the archive, and the two below
+# for the credential exchange and for the body of any refusal.
+BUNDLE_INFO_MAX_BYTES = 256 * 1024
+# A token and its expiry; the exchange's answer is a few hundred bytes.
+EXCHANGE_MAX_BYTES = 64 * 1024
+# How much of an error answer is read, and so ends up in the exception and the
+# log line it becomes. The API's refusals are a short JSON ``detail``.
+ERROR_DETAIL_MAX_BYTES = 4 * 1024
 UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 
 # What this build promises the API it can honour, reported on register and on
@@ -404,6 +416,29 @@ _DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operato
 _OTHER_TENANT_MARKER = "registered in another tenant"
 
 
+def _error_detail(exc: urllib.error.HTTPError) -> str:
+    """The start of an error answer's body, never more than ERROR_DETAIL_MAX_BYTES.
+
+    Read with a limit and the connection closed after it: an endless body is
+    neither held in memory nor carried into the exception text.
+    """
+    try:
+        raw = exc.read(ERROR_DETAIL_MAX_BYTES + 1)
+    except OSError:
+        raw = b""
+    finally:
+        with contextlib.suppress(OSError):
+            exc.close()
+    detail = raw[:ERROR_DETAIL_MAX_BYTES].decode("utf-8", errors="replace")
+    if len(raw) > ERROR_DETAIL_MAX_BYTES:
+        detail += " [truncated]"
+    if 300 <= exc.code < 400:
+        # egress.NoRedirects: the hop is not taken, and the log says where it led.
+        location = str((exc.headers or {}).get("Location", ""))[:200]
+        detail = f"redirect to {location!r} not followed; {detail}"
+    return detail
+
+
 class AgentIdInAnotherTenant(RuntimeError):
     """The exchange refused this agent_id: another tenant registered it.
 
@@ -542,9 +577,9 @@ class AgentClient:
         )
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(EXCHANGE_MAX_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = _error_detail(exc)
             # The exchange refuses a disabled or quarantined agent_id too, so
             # it needs the same classification the bearer calls get: without
             # it, the state an operator set would reach the run loop as a bare
@@ -558,6 +593,12 @@ class AgentClient:
                     f"POST /api/auth/agent/token -> 403: {detail}"
                 ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
+        if len(raw) > EXCHANGE_MAX_BYTES:
+            raise RuntimeError(
+                f"POST /api/auth/agent/token -> more than {EXCHANGE_MAX_BYTES} bytes "
+                "in the response; not reading the rest"
+            )
+        return json.loads(raw.decode("utf-8"))
 
     def _request(
         self,
@@ -570,6 +611,7 @@ class AgentClient:
         max_retries: int = 2,
         timeout: float | None = None,
         rate_limit_wait: float = RATE_LIMIT_WAIT_SECONDS,
+        max_response_bytes: int | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -596,7 +638,15 @@ class AgentClient:
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             try:
                 with self._opener.open(req, timeout=deadline) as resp:
-                    raw = resp.read()
+                    if max_response_bytes is None:
+                        raw = resp.read()
+                    else:
+                        raw = resp.read(max_response_bytes + 1)
+                        if len(raw) > max_response_bytes:
+                            raise RuntimeError(
+                                f"{method} {path} -> more than {max_response_bytes} bytes "
+                                "in the response; not reading the rest"
+                            )
                     if resp.status == 204 or not raw:
                         return None
                     if expect_json:
@@ -620,7 +670,7 @@ class AgentClient:
                     time.sleep(0.5 * (2**attempt))
                     attempt += 1
                     continue
-                detail = exc.read().decode("utf-8", errors="replace")
+                detail = _error_detail(exc)
                 if exc.code == 401:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
@@ -713,6 +763,44 @@ class AgentClient:
             "/api/agent/heartbeat",
             body=json.dumps(payload).encode("utf-8"),
         )
+
+    def bundle_info(self) -> dict[str, Any]:
+        """``GET /api/agent/bundle``: the signed manifest, as transport (#363).
+
+        Nothing in the answer is trusted here; ``agent/update.py`` checks the
+        signature against the key pinned in this package before reading it.
+        """
+        info = self._request("GET", "/api/agent/bundle", max_response_bytes=BUNDLE_INFO_MAX_BYTES)
+        if not isinstance(info, dict):
+            raise RuntimeError("GET /api/agent/bundle -> no metadata in the response")
+        return info
+
+    def download_bundle(self, dest: Path, *, max_bytes: int) -> None:
+        """Stream the bundle archive into ``dest``, refusing more than ``max_bytes``.
+
+        ``max_bytes`` is the size in the signed manifest, so a server that
+        streams without end fills neither memory nor the disk.
+        """
+        url = f"{self.base_url}/api/agent/bundle/download"
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self.token}"}, method="GET"
+        )
+        try:
+            with self._opener.open(req, timeout=self.upload_timeout) as resp, dest.open("wb") as out:
+                written = 0
+                for chunk in iter(lambda: resp.read(1024 * 1024), b""):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise RuntimeError(
+                            "GET /api/agent/bundle/download -> more bytes than the signed "
+                            f"manifest's {max_bytes}"
+                        )
+                    out.write(chunk)
+        except urllib.error.HTTPError as exc:
+            detail = _error_detail(exc)
+            raise RuntimeError(f"GET /api/agent/bundle/download -> {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"GET /api/agent/bundle/download -> network error: {exc}") from exc
 
     def claim(self, agent_id: str, *, job_id: str | None = None) -> dict[str, Any] | None:
         query = urllib.parse.urlencode(

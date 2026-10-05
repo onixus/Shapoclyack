@@ -39,6 +39,22 @@ and the Sigstore policy-controller read by default; cosign 3 verifies it too.
 Every signature and attestation is recorded in the public Rekor transparency
 log.
 
+### The sensor bundle
+
+The same release key also signs the **sensor bundle** a native sensor updates
+from ([#363](https://github.com/onixus/Shapoclyack/issues/363)): the publish
+job's `Sensor bundle` stage packs the `agent` package into a reproducible
+`shapoclyack-sensor-<version>.tar.gz`, writes `sensor-bundle.json` (schema,
+version, archive name, sha256, size, source revision) and signs **the manifest**
+with `cosign sign-blob` — the manifest rather than the tarball, so the version a
+sensor uses to refuse a downgrade is under the signature too. The sensor pins
+`cosign.pub` in `agent/update.py` (`tests/test_sensor_bundle.py` holds the copy
+to the file) and verifies offline, which is why this signature, unlike the
+image ones, is not uploaded to Rekor. Verify one yourself with
+`cosign verify-blob --key cosign.pub --insecure-ignore-tlog --signature
+sensor-bundle.json.sig sensor-bundle.json`, then `sha256sum` the archive against
+the manifest. Installing it is [operations.md](operations.md#sensor-bundle-updates).
+
 ### Two identities
 
 | Publisher | When | Identity customers verify |
@@ -240,7 +256,22 @@ signing with a key customers do not trust would fail every verification
 downstream.
 
 **Rotation:** generate a new pair, replace `cosign.pub` and the Jenkins
-credentials in one change, and announce it. Releases signed before stay
+credentials in one change, and announce it. The sensors are the exception
+to "one change": each one trusts the key compiled into the package it runs, so
+replace `RELEASE_PUBLIC_KEY_PEM` in `agent/update.py` in the same change and
+publish that release's bundle **signed with the old key** — it is the bundle
+that carries the new key onto the fleet. The publish job cannot do that step:
+its `Sensor bundle` stage signs with the Jenkins credential and verifies against
+the `cosign.pub` of the pipeline revision, which are both the new key by then.
+Sign the transition bundle by hand on the machine holding the old key, from a
+checkout of the release tag:
+`scripts/build-sensor-bundle.sh --source agent --out dist/sensor-bundle --key
+old-cosign.key --pubkey old-cosign.pub`, and publish that instead of the job's
+artifact. Only the files git tracks under `agent/` go into the archive, so an
+`.env` or editor leftovers in that working copy are not signed and shipped, and
+the archive's sha256 is the Jenkins artifact's; the script refuses a source
+outside a git checkout unless given `--whole-tree`. A sensor that skips the transition release keeps the old key and
+refuses every later bundle until the installer is re-run. Releases signed before stay
 verifiable with the `cosign.pub` at their own tag, which is why verification
 always fetches the key from the release tag — and why a tag should be
 published before the key changes under it. **Compromise:** publish an

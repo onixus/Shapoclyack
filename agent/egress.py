@@ -216,6 +216,20 @@ def proxy_headers(proxy: Proxy) -> dict[str, str]:
     return {"Proxy-Authorization": f"Basic {token}"}
 
 
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Every 3xx is an answer, never a hop (#363).
+
+    ``urllib``'s own handler follows a redirect to any host with the request's
+    headers -- ``Authorization: Bearer`` included -- and reads the 3xx body to
+    its end first, however long the server makes it. Nothing this agent calls
+    redirects, so a redirect is followed nowhere: it reaches the caller as an
+    ``HTTPError`` whose body the caller reads with its own limit.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def build_opener(
     url: str, *handlers: urllib.request.BaseHandler
 ) -> urllib.request.OpenerDirector:
@@ -224,13 +238,16 @@ def build_opener(
     The proxy is resolved here and handed to ``ProxyHandler`` explicitly rather
     than left to its environment scan, so ``OCTO_NO_PROXY`` and the ``OCTO_``
     overrides decide — an empty mapping is how ``urllib`` is told *not* to pick
-    the ambient variables up.
+    the ambient variables up. Redirects are not followed (:class:`NoRedirects`);
+    unlike the proxy and CA, that is the agent's alone, since its bearer token
+    is what a redirect would carry elsewhere.
     """
     proxy = proxy_for_url(url)
     mapping = {"http": proxy.proxy_url(), "https": proxy.proxy_url()} if proxy else {}
     return urllib.request.build_opener(
         urllib.request.ProxyHandler(mapping),
         urllib.request.HTTPSHandler(context=ssl_context()),
+        NoRedirects(),
         *handlers,
     )
 

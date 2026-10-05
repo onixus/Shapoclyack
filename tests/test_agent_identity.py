@@ -893,8 +893,9 @@ class _InProcessResponse:
         self.headers = response.headers
         self._body = response.content
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amount: int = -1) -> bytes:
+        # http.client's signature: the sensor bounds what it reads (#363).
+        return self._body if amount < 0 else self._body[:amount]
 
     def __enter__(self) -> "_InProcessResponse":
         return self
