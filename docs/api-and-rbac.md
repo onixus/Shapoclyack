@@ -601,6 +601,8 @@ One row per administrative change, with the resource before and after it:
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
+| `scan.priority` | `PUT /api/jobs/{id}/priority` ([#365](https://github.com/onixus/Shapoclyack/issues/365)) — `before.priority`, `after.priority` and who asked. A `PUT` of the value the job already has writes nothing. A priority given at `POST /api/jobs` is on the job itself and writes no row |
+| `tenant.queue_limits` | `PUT /api/tenants/{id}/queue-limits` — both ceilings before and after, `null` for unlimited. A refusal they cause is a `429` and `octo_scan_queue_throttled_total`, not a row |
 | `asset.import` | `POST /api/assets/import` with `dry_run: false` — one row per applied import, `resource_id` = `import:<first 16 hex of the content's SHA-256>`. `after` carries the format, the full SHA-256, `context_source`, `overwrite_operator_edits`, the per-status `counts`, and the first 100 `created` and `updated` asset ids (`created_omitted`/`updated_omitted` count the rest). A dry run writes no row. The per-field history is in `asset_context_events` with the import's source |
 
 Every row carries the actor and what kind of principal it is (`user`,
@@ -848,6 +850,7 @@ it is only supposed to approve.
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
+| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, or moving a queued one above 0 — or moving one somebody already raised (#365). Lowering a scan, or putting one back to 0 that nobody raised, is the operator rank's. Seeded by migration `0074_scan_queue_admission` |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
@@ -1065,6 +1068,58 @@ the sensor reports is appended to it rather than written over it, so a finished
 to `audit_events` carrying the actor and the status the job was in. See the job
 lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
 set.
+
+### Queue priority, concurrency and admission
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). Three controls on the
+scan queue, all inactive until somebody sets them — an upgraded installation
+hands out work exactly as before.
+
+**Priority.** Every job carries `priority` (`-100..100`, default `0`) and the
+claim hands out the highest first, the oldest within it — the HTTP claim, the
+sensor's periodic fallback claim and a local scan waiting for its slot alike.
+Set it at `POST /api/jobs` (`"priority": 20`) or move a queued job:
+
+```http
+PUT /api/jobs/{job_id}/priority   {"priority": -10}
+```
+
+`operator` rank in the job's tenant; above `0` — or touching a job somebody
+already put above `0` — needs **`scan.priority.raise`** (`403` without it, both
+on the `PUT` and on `POST /api/jobs`). `404` for a job in another tenant, `409`
+once the job has left `queued`, `422` outside the bounds. `priority` is not
+part of the idempotency digest: a retry that changed only its priority is the
+same scan. A NATS offer is published at submission and is FIFO; a sensor that
+claims an offered job by name is held to the concurrency ceiling below but not
+to the priority order.
+
+**Concurrency** and **queue depth**, per tenant:
+
+```http
+GET /api/tenants/{tenant_id}/queue-limits
+PUT /api/tenants/{tenant_id}/queue-limits   {"max_concurrent_scans": 4, "max_queued_scans": 200}
+```
+
+`GET` needs `tenant.quota.read`; `PUT` is `platform.quota.manage` (platform
+admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
+`0` is unlimited, `422` above `10000`. The answer also carries
+`global_max_queued_scans`, the installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`.
+
+- `max_concurrent_scans` — how many of the tenant's jobs may be out at once
+  (`claimed`, `running` or `cancelling`, local and sensor alike). Enforced at
+  **claim**: a sensor of a tenant at its ceiling gets `204` as for an empty
+  queue, and a local scan stays `queued` in its thread and asks again every
+  `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. The decision is taken under a
+  per-tenant advisory lock inside the claim's transaction, so two API replicas
+  claiming at once cannot both take the last slot. Lowering it leaves scans
+  already out running.
+- `max_queued_scans` — how many may wait in `queued`. Enforced at
+  **admission**: `POST /api/jobs` answers **`429`** with `Retry-After:
+  OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS`, and the recurring dispatcher skips the
+  occurrence as it does for a spent monthly quota. The same `429` for the
+  installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`, without the numbers of other
+  tenants in the message. A soft bound: N simultaneous starts can overshoot it
+  by N-1. Verification re-scans are exempt, as from the monthly quota.
 
 `POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
 carrying a key an earlier request already used returns that job with **200**

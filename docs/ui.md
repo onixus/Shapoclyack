@@ -314,7 +314,16 @@ renders an absent value as internal: it shows **Unclassified**.
   permission and nothing else — a `scan-operator`, or an on-call granted that
   permission alone, sees it, and the `/scans` pages open for them too. (The
   sidebar still lists those pages by the *global* role, so such an account
-  reaches them by link rather than from the menu.) There is
+  reaches them by link rather than from the menu.) A **Priority** column
+  ([#365](https://github.com/onixus/Shapoclyack/issues/365)) shows each job's
+  place in its tenant's queue — `+20` highlighted, `0` plain, negative values
+  dimmed — and on a queued job an up-down button opens a small dialog to move
+  it. What the dialog accepts mirrors the API: operator rank in the active
+  tenant may set `-100…0`; `scan.priority.raise` **in the active tenant**
+  (`holdsPermission(user, "scan.priority.raise", false)`, never the global
+  role) widens it to `100`, and a job somebody already raised above 0 offers no
+  button at all to those without it. An API older than #365 sends no
+  `priority`, which reads as 0 with no permission to raise. There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
   admitted and dropped, wordlist, sensor, command line, links to the run and

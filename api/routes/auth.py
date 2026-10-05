@@ -47,6 +47,8 @@ from api.schemas import (
     SsoStatus,
     TenantInfo,
     TenantPosture,
+    TenantQueueLimits,
+    TenantQueueLimitsInfo,
     TenantQuotaInfo,
     TenantQuotaRequest,
 )
@@ -73,6 +75,7 @@ from api.services import oidc as oidc_service
 from api.services import passkeys as passkeys_service
 from api.services import promoted_domains
 from api.services import quotas
+from api.services import scan_queue
 from api.services import rbac as rbac_service
 from api.services import scan_policy
 from api.services import scan_scopes
@@ -1109,6 +1112,70 @@ def clear_tenant_quota(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
     quotas.clear_quota(settings, tenant_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _queue_limits_info(settings: Settings, limits: scan_queue.QueueLimits) -> TenantQueueLimitsInfo:
+    return TenantQueueLimitsInfo(
+        tenant_id=limits.tenant_id,
+        max_concurrent_scans=limits.max_concurrent_scans,
+        max_queued_scans=limits.max_queued_scans,
+        global_max_queued_scans=settings.scan_queue_max_depth or None,
+    )
+
+
+@router.get("/tenants/{tenant_id}/queue-limits", response_model=TenantQueueLimitsInfo)
+def get_tenant_queue_limits(
+    tenant_id: str,
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_QUOTA_READ)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TenantQueueLimitsInfo:
+    """How many of this tenant's scans may run at once and wait at once (#365).
+
+    Readable by whoever may read the quota — the tenant's admin and auditor —
+    for the quota's reason: a ceiling the customer cannot see is discovered as
+    scans that sit in the queue for no visible reason.
+    """
+    limits = scan_queue.get_limits(settings, tenant_id)
+    if limits is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return _queue_limits_info(settings, limits)
+
+
+@router.put("/tenants/{tenant_id}/queue-limits", response_model=TenantQueueLimitsInfo)
+def set_tenant_queue_limits(
+    tenant_id: str,
+    body: TenantQueueLimits,
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_QUOTA_MANAGE)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> TenantQueueLimitsInfo:
+    """Set both ceilings; ``null`` or 0 is unlimited.
+
+    Platform-only, on the quota's permission and for its reason: they share
+    out the executors every tenant uses, and a tenant admin who could raise
+    their own would be the control removing itself. A lowered concurrency
+    ceiling leaves scans already out running; it stops new claims until the
+    tenant is under it.
+    """
+    try:
+        limits = scan_queue.set_limits(
+            settings,
+            tenant_id,
+            max_concurrent_scans=body.max_concurrent_scans,
+            max_queued_scans=body.max_queued_scans,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return _queue_limits_info(settings, limits)
 
 
 @router.get("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])

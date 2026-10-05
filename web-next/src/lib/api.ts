@@ -786,7 +786,14 @@ export type JobInfo = {
   /** Queued for agent execution, addressed to no group, and the tenant has no
    *  scanner agent online: nothing will claim it until one enrolls (#338). */
   sensor_unavailable?: boolean;
+  /** Place in the tenant's queue (#365): higher is handed out first, ties by
+   * age. -100..100, 0 by default; absent from an API older than that. */
+  priority?: number;
 };
+
+/** Bounds of a job's priority, as `api/services/scan_queue.py` declares them. */
+export const JOB_PRIORITY_MIN = -100;
+export const JOB_PRIORITY_MAX = 100;
 
 /** One accepted run the installation still owes its visible copy (#425) —
  * a `run_publications` row from `GET /api/jobs/{id}/publications`. */
@@ -2172,6 +2179,20 @@ export async function fetchJob(jobId: string) {
 export async function cancelJob(jobId: string) {
   try {
     const { data } = await api.post<JobInfo>(`/jobs/${encodeURIComponent(jobId)}/cancel`);
+    return data;
+  } catch (error) {
+    throw new Error(apiErrorMessage(error));
+  }
+}
+
+/** Move a queued job within its tenant's queue (#365). The API answers 403
+ * for a raise above 0 without `scan.priority.raise`, and 409 once the job has
+ * left the queue. */
+export async function setJobPriority(jobId: string, priority: number) {
+  try {
+    const { data } = await api.put<JobInfo>(`/jobs/${encodeURIComponent(jobId)}/priority`, {
+      priority,
+    });
     return data;
   } catch (error) {
     throw new Error(apiErrorMessage(error));

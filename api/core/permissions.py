@@ -75,6 +75,14 @@ SCAN_SCOPE_APPROVE = "scan_scope.approve"
 #: mid-flight is an authority an installation may want to hand out on its own,
 #: to an on-call who is not otherwise an operator.
 SCAN_CANCEL = "scan.cancel"
+#: Queue a scan ahead of the tenant's other scans: start one, or move a queued
+#: one, with a ``priority`` above the default 0 (#365). Lowering a scan of
+#: one's own to make room needs only the operator rank, and so does starting
+#: one at or below 0. Its own permission because "jump the queue" is a
+#: decision about everybody else's scans, and an operator who could set it on
+#: every scan would make the ordering meaningless; the tenant ``admin`` holds
+#: it, and a custom role can be given it on its own.
+SCAN_PRIORITY_RAISE = "scan.priority.raise"
 #: List a tenant's members and their roles.
 TENANT_MEMBER_READ = "tenant.member.read"
 #: Grant and revoke them — tenant self-service, no longer platform admin only.
@@ -169,6 +177,7 @@ PERMISSIONS: dict[str, str] = {
     SCAN_SCOPE_READ: "Read the tenant's approved scanning scope",
     SCAN_SCOPE_APPROVE: "Approve what the tenant may scan",
     SCAN_CANCEL: "Stop a queued or running scan",
+    SCAN_PRIORITY_RAISE: "Queue a scan ahead of the tenant's other scans",
     TENANT_MEMBER_READ: "List the tenant's members",
     TENANT_MEMBER_MANAGE: "Grant and revoke the tenant's members",
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
@@ -236,6 +245,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     CONFIG_READ,
     SCAN_SCOPE_READ,
     SCAN_CANCEL,
+    SCAN_PRIORITY_RAISE,
     TENANT_MEMBER_READ,
     TENANT_MEMBER_MANAGE,
     TENANT_CREDENTIAL_MANAGE,

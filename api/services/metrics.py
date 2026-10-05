@@ -254,6 +254,18 @@ QUOTA_DENIED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+SCAN_QUEUE_THROTTLED_TOTAL = Counter(
+    "octo_scan_queue_throttled_total",
+    "Scan queue ceilings at work (#365), by reason. 'tenant_queue_full' and "
+    "'global_queue_full' are a scan start refused with 429 because too many "
+    "scans are already waiting; 'concurrency_limit' is a claim answered with "
+    "nothing — or a local scan left waiting — because the tenant already has "
+    "max_concurrent_scans out. The last one is expected under load and is a "
+    "rate, not an alert: a tenant pinned at its ceiling for hours is.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
 SCAN_POLICY_REFUSALS_TOTAL = Counter(
     "octo_scan_policy_refusals_total",
     "Scans refused by a tenant's scan policy (#362), by reason. 'safe_only' "
@@ -954,6 +966,14 @@ def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
         "Cluster-wide.",
         labels=["tenant", "status"],
     )
+    queued = GaugeMetricFamily(
+        "octo_tenant_jobs_queued",
+        "Scan jobs waiting in queued per tenant (top N, the rest as _other) — the "
+        "depth a tenant's max_queued_scans admission ceiling is measured against "
+        "(#365). octo_jobs_queued is the same count summed over tenants. "
+        "Cluster-wide.",
+        labels=["tenant"],
+    )
     if snapshot is not None:
         for (tenant, severity), count in sorted(snapshot.open_findings.items()):
             open_findings.add_metric([tenant, severity], count)
@@ -961,7 +981,9 @@ def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
             breached.add_metric([tenant], count)
         for (tenant, status), count in sorted(snapshot.scans_finished.items()):
             scans.add_metric([tenant, status], count)
-    return [open_findings, breached, scans]
+        for tenant, count in sorted(snapshot.jobs_queued.items()):
+            queued.add_metric([tenant], count)
+    return [open_findings, breached, scans, queued]
 
 
 def cluster_collector(

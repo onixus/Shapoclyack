@@ -674,6 +674,65 @@ contract phase to schedule. The downgrade drops the calendar and the freeze
 flags, which loses the windows an operator wrote; they are the feature, not a
 cache of something else.
 
+## Scan queue: priority and per-tenant ceilings
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). The queue is one per
+tenant, handed out by `priority` (higher first) and then by age. Two ceilings
+share the executors out between tenants; both are unlimited until a platform
+admin sets them, and the API reference is
+[api-and-rbac.md](api-and-rbac.md#queue-priority-concurrency-and-admission).
+
+**Giving a tenant a ceiling.** `PUT /api/tenants/{id}/queue-limits` with
+`max_concurrent_scans` (scans out at once) and `max_queued_scans` (scans
+waiting). Start with the concurrency ceiling — it is what keeps one customer's
+nightly sweep from occupying every sensor — and add the depth ceiling only for a
+tenant whose integration queues faster than the fleet drains: that one refuses
+scans (`429`), the concurrency ceiling only makes them wait. The
+installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH` is the backstop against a runaway
+client of any tenant ([configuration.md](configuration.md)).
+
+**"Scans sit in `queued` and the sensors are idle."** Check in this order:
+
+1. The tenant is at `max_concurrent_scans`: count its `claimed`, `running` and
+   `cancelling` jobs against `GET /api/tenants/{id}/queue-limits`. A scan stuck
+   in `cancelling` holds its slot until the sensor confirms or the grace period
+   ends — stop it, do not raise the ceiling. `octo_scan_queue_throttled_total{reason="concurrency_limit"}`
+   rising means claims are being answered with nothing for this reason.
+2. Under NATS, an offer burned while the tenant was at its ceiling is picked up
+   by the sensor's HTTP fallback claim, within `NATS_FALLBACK_CLAIM_SECONDS`
+   (60 s) of a slot freeing — a minute's delay is expected, not a fault.
+3. The ordinary causes: the job's agent group has no sensor online, or no
+   sensor declares what the job needs (`agent_group_unavailable` /
+   `sensor_unavailable` on the job).
+
+**Local scans** (`OCTO_JOB_EXECUTION_MODE=local`) wait in their thread and ask
+again every `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. Priority between them holds
+within one replica; a local scan can only ever be started by the replica that
+accepted it. A replica restart fails its waiting local scans like any local
+scan it was running ("Interrupted by API process restart").
+
+**Who may jump the queue.** `scan.priority.raise` — tenant `admin` and platform
+admin; grant it on a custom role to an on-call who has to push a re-scan ahead.
+Operators can lower their own scans to make room. Every move is a
+`scan.priority` audit row.
+
+**Watching it.** `octo_scan_queue_throttled_total{reason}` (`tenant_queue_full`,
+`global_queue_full`, `concurrency_limit`) and, with
+`OCTO_METRICS_TENANT_TOP_N` set, `octo_tenant_jobs_queued{tenant}` — the depth
+`max_queued_scans` is measured against. A tenant whose
+`octo_tenant_jobs_queued` keeps climbing while its concurrency throttle rate is
+steady is a tenant that queues faster than its ceiling lets it scan.
+
+### On upgrade
+
+Migration `0074_scan_queue_admission` is **expand only**: `jobs.priority` arrives
+`NOT NULL DEFAULT 0`, so every existing job reads 0 and the claim order over a
+queue of zeroes is the old `queued_at` order; the two tenant ceilings arrive
+`NULL` (unlimited). During a rolling update an old replica claims FIFO and
+inserts with the default — nothing is lost or handed out twice. The downgrade
+drops the columns and the `scan.priority.raise` grants, and with them any
+priorities and ceilings that were set.
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,

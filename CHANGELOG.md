@@ -6,6 +6,26 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Scan queue priority, per-tenant concurrency and admission
+  ([#365](https://github.com/onixus/Shapoclyack/issues/365)).** Jobs carry a
+  `priority` (`-100..100`, default `0`) and every claim hands out the highest
+  first, then the oldest; set it at `POST /api/jobs` or move a queued job with
+  `PUT /api/jobs/{id}/priority`. Raising above 0 — or moving a job somebody
+  raised — needs the new `scan.priority.raise` permission (tenant `admin`,
+  platform admin); lowering is the operator's. Per tenant,
+  `PUT /api/tenants/{id}/queue-limits` (platform admin; readable with
+  `tenant.quota.read`) sets `max_concurrent_scans`, enforced at claim time for
+  sensor claims, the NATS claim of an offered job and local scans alike under a
+  per-tenant advisory lock so two replicas cannot both take the last slot, and
+  `max_queued_scans`, enforced at admission with `429` and `Retry-After`;
+  `OCTO_SCAN_QUEUE_MAX_DEPTH` is the installation-wide depth ceiling. A local
+  scan of a tenant at its ceiling now waits in `queued` instead of starting.
+  New series `octo_scan_queue_throttled_total{reason}` and the opt-in
+  `octo_tenant_jobs_queued{tenant}`. The console's job table shows and sets
+  the priority, gated by the permission in the active tenant. Migration
+  `0074_scan_queue_admission` (expand-only): existing jobs read priority 0 and
+  every tenant is unlimited, so nothing changes until a ceiling is set.
+
 - **Tenant-defined roles
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
   member managers can define roles of their own — a name, a rank and an

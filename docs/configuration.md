@@ -715,6 +715,9 @@ OCTO_RUN_PUBLICATION_WORKER_ENABLED
 OCTO_RUN_RETENTION_DAYS
 OCTO_RUN_RETENTION_ENABLED
 OCTO_RUN_RETENTION_INTERVAL_SECONDS
+OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS
+OCTO_SCAN_QUEUE_MAX_DEPTH
+OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS
 OCTO_SCAN_SCOPE_RESOLVE_CHECK
 OCTO_SCHEDULER_DISPATCH_ENABLED
 OCTO_SCREENSHOT_RETENTION_DAYS
@@ -1059,6 +1062,20 @@ never sold a limit keeps scanning exactly as before.
 
 A negative value is floored to `0`, i.e. unlimited: this is a billing setting,
 and the safe direction for it to fail in is "do not refuse the customer".
+
+Scan queue admission ([#365](https://github.com/onixus/Shapoclyack/issues/365)).
+The per-tenant ceilings — `max_concurrent_scans` and `max_queued_scans` — are
+set over the API (`PUT /api/tenants/{id}/queue-limits`, see
+[api-and-rbac.md](api-and-rbac.md#queue-priority-concurrency-and-admission))
+and are unlimited until set; these are the installation-wide knobs around them.
+Not gated on `OCTO_QUOTA_ENFORCEMENT_ENABLED`: they protect the executors, not
+the invoice.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SCAN_QUEUE_MAX_DEPTH` | `0` | Jobs that may wait in `queued` across every tenant. Past it `POST /api/jobs` answers `429` with `Retry-After`, and the recurring dispatcher skips the occurrence. `0` means unlimited. Verification re-scans are exempt |
+| `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` | `60` | The `Retry-After` a full-queue `429` carries (floored to `1`). A queue drains at the pace scans finish, which the API cannot predict, so this is a back-off rather than a promise |
+| `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS` | `5` | How often a local scan held back by its tenant's `max_concurrent_scans` asks again for a slot (floored to `0.5`). Only a tenant with a ceiling ever waits |
 
 Logging ([#330](https://github.com/onixus/Shapoclyack/issues/330)). Read from
 the environment rather than from a settings object, because the configuration

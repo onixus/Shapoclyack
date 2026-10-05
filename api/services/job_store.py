@@ -91,6 +91,7 @@ def to_info(
         surface=(row.scan_options or {}).get("surface"),
         surface_source=(row.scan_options or {}).get("surface_source"),
         agent_group=row.agent_group,
+        priority=row.priority or 0,
         # Answered now, not at queue time: a job addressed to a group whose
         # only agent was restarting when it was queued is claimable the moment
         # that agent is back, and a flag frozen at queue time went on saying

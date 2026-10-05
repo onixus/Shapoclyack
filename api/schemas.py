@@ -341,6 +341,37 @@ class StartScanRequest(BaseModel):
     # trust: it must name a group of the caller's own tenant and one the scope
     # permits for these targets.
     agent_group: str | None = Field(default=None, max_length=63)
+    # Where this scan stands in its tenant's queue (#365): higher is handed out
+    # first, ties by age. Omitted is 0, the FIFO every scan had before. Above
+    # 0 needs ``scan.priority.raise``. Not part of the idempotency digest: a
+    # retry that changed only its priority is the same scan, and the queued
+    # job's priority can be moved with ``PUT /api/jobs/{id}/priority``.
+    priority: int = Field(default=0, ge=-100, le=100)
+
+
+class JobPriorityRequest(BaseModel):
+    """``PUT /api/jobs/{job_id}/priority`` (#365)."""
+
+    priority: int = Field(ge=-100, le=100)
+
+
+class TenantQueueLimits(BaseModel):
+    """A tenant's scan queue ceilings (#365). ``null`` (or 0) is unlimited.
+
+    Both are sent on every PUT, like the quota: a ceiling dropped because a
+    client forgot the field would be a silently lifted limit.
+    """
+
+    max_concurrent_scans: int | None = Field(default=None, ge=0, le=10_000)
+    max_queued_scans: int | None = Field(default=None, ge=0, le=10_000)
+
+
+class TenantQueueLimitsInfo(TenantQueueLimits):
+    tenant_id: str
+    #: The installation-wide ceiling on waiting scans (OCTO_SCAN_QUEUE_MAX_DEPTH),
+    #: ``null`` when unlimited — shown beside the tenant's own so a refusal
+    #: the tenant did not cause is explicable.
+    global_max_queued_scans: int | None = None
 
 
 class JobInfo(BaseModel):
@@ -388,6 +419,9 @@ class JobInfo(BaseModel):
     # The agent group this job is addressed to (#361); None means any agent of
     # the tenant may claim it, which is every job started before this shipped.
     agent_group: str | None = None
+    # Claim order within the tenant (#365): higher first, then oldest. 0 for
+    # every job before that revision.
+    priority: int = 0
     # True when, at the moment the scan was queued, that group had no active
     # agent with a recent heartbeat. The job is still accepted — an agent that
     # is restarting comes back — but a job nobody can claim must not look like

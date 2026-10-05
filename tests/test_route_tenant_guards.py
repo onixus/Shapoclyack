@@ -137,6 +137,10 @@ CROSS_TENANT_ROUTES: dict[str, str] = {
     "api.routes.auth:create_tenant": _PLATFORM_ADMIN,
     "api.routes.auth:set_tenant_quota": _PLATFORM_ADMIN,
     "api.routes.auth:clear_tenant_quota": _PLATFORM_ADMIN,
+    # Scan queue ceilings (#365): platform.quota.manage, for the quota's
+    # reason — they share out executors every tenant uses. The read is behind
+    # require_path_tenant_permission.
+    "api.routes.auth:set_tenant_queue_limits": _PLATFORM_ADMIN,
     # Legal hold (#332): platform.legal_hold.manage, which no tenant role holds
     # — a tenant that could release its own hold could let evidence age out.
     # (A tenant's own retention routes are behind require_path_tenant_permission.)
