@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +13,9 @@ from scanner.pipeline.tls_posture import check_tls_posture
 from scanner.pipeline.tls_probe import (
     _classify_from_cert,
     _parse_tls_endpoints,
+    _server_refusal,
+    _trust_from_verify_error,
+    _trust_store_gap,
     probe_tls_endpoints,
     write_tls_probe_json,
 )
@@ -174,3 +178,81 @@ def test_probe_tls_endpoints_respects_max_targets():
         )
     assert findings == []
     assert mock_one.call_count == 2
+
+
+# --- DQ2: what a failed handshake does and does not establish ----------------
+
+
+def _ssl_error(reason: str) -> ssl.SSLError:
+    exc = ssl.SSLError(1, f"[SSL: {reason}]")
+    exc.reason = reason
+    return exc
+
+
+def test_server_refusal_is_an_alert_or_a_hang_up():
+    for exc in (
+        _ssl_error("TLSV1_ALERT_PROTOCOL_VERSION"),
+        _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"),
+        _ssl_error("UNSUPPORTED_PROTOCOL"),
+        _ssl_error("WRONG_VERSION_NUMBER"),
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+        ConnectionResetError(54, "Connection reset by peer"),
+    ):
+        assert _server_refusal(exc) is not None, exc
+
+
+def test_local_handshake_abort_is_not_a_server_refusal():
+    """OpenSSL refusing the server's parameters says nothing about whether the
+    server accepts the version -- reporting it as "rejected" would be a check
+    that did not run, reported as a negative."""
+    for exc in (
+        _ssl_error("NO_SUITABLE_SIGNATURE_ALGORITHM"),
+        _ssl_error("UNSAFE_LEGACY_RENEGOTIATION_DISABLED"),
+        _ssl_error("DH_KEY_TOO_SMALL"),
+        ValueError("check_hostname requires server_hostname"),
+    ):
+        assert _server_refusal(exc) is None, exc
+
+
+def test_empty_trust_store_is_not_used_to_judge_chains(tmp_path: Path, monkeypatch):
+    """No anchors at all would make every public certificate "untrusted"."""
+    empty_dir = tmp_path / "certs"
+    empty_dir.mkdir()
+    monkeypatch.setattr(
+        "scanner.pipeline.tls_probe.ssl.get_default_verify_paths",
+        lambda: ssl.DefaultVerifyPaths(None, str(empty_dir), "", "", "", ""),
+    )
+    bare = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    assert _trust_store_gap(bare) is not None
+
+    # A hashed CA directory (Debian's /etc/ssl/certs) is read on demand and
+    # never shows up in cert_store_stats -- its entries count.
+    (empty_dir / "4042bcee.0").write_text("", encoding="utf-8")
+    assert _trust_store_gap(bare) is None
+
+
+def _verify_error(code: int, message: str) -> ssl.SSLCertVerificationError:
+    exc = ssl.SSLCertVerificationError(1, f"[SSL: CERTIFICATE_VERIFY_FAILED] {message}")
+    exc.verify_code = code
+    exc.verify_message = message
+    return exc
+
+
+def test_only_trust_failures_make_a_chain_untrusted():
+    """Expiry is cert_expired's finding and key size weak_key's: a verification
+    that stopped on either has not said whether the chain reaches an anchor."""
+    for code, message in (
+        (10, "certificate has expired"),
+        (9, "certificate is not yet valid"),
+        (66, "EE certificate key too weak"),
+        (68, "CA signature digest algorithm too weak"),
+    ):
+        assert _trust_from_verify_error(_verify_error(code, message))["status"] == "inconclusive"
+
+    for code, message in (
+        (18, "self-signed certificate"),
+        (19, "self-signed certificate in certificate chain"),
+        (20, "unable to get local issuer certificate"),
+    ):
+        trust = _trust_from_verify_error(_verify_error(code, message))
+        assert trust == {"status": "untrusted", "detail": message, "verify_code": code}

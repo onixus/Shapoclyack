@@ -6,6 +6,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **TLS posture judges the certificate, not only its dates.** Three findings
+  join `tls_posture.json`: `weak_key` (RSA/DSA under 2048 bits or EC under
+  224, medium; high under 1024) and `weak_signature` (leaf signed with MD5 or
+  SHA-1, medium) on the nmap path — whose `ssl-cert` key size and signature
+  algorithm were parsed and then dropped — and on the stdlib probe; and
+  `cert_untrusted` (medium) on the probe, when the presented chain does not
+  verify to the system trust store plus the new `tls_posture.ca_bundle` (a
+  PEM of the organisation's own CAs, so an internal PKI is not flagged). The
+  trust check is about the chain only: names stay `cert_name_mismatch` and
+  dates `cert_expired`. A chain that verifies silences the `self_signed`
+  heuristic. With no system trust anchors or an unreadable bundle the check
+  records `not_performed` instead of flagging every endpoint, and where the
+  `cryptography` package is missing — the scanner image does not install it,
+  the all-in-one image does — key and signature checks record
+  `not_performed` too. The org-profile TLS control grades the new medium
+  findings `weak`. Pulse `tls[]` rows carry no key or signature fields, so
+  that path has none of these. See
+  [Pulse backend](docs/pulse-backend.md#what-the-probe-checks-and-what-it-can-establish).
 - **Client certificates for sensors and endpoint Agents
   ([#309](https://github.com/onixus/Shapoclyack/issues/309)).** With
   `OCTO_AGENT_MTLS_MODE=optional|required` (default `off`, unchanged
@@ -1079,6 +1097,24 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The TLS probe tries TLS 1.0 and 1.1, as it said it did.** The stdlib
+  fallback of `tls_posture` (`scanner/pipeline/tls_probe.py`, the path the
+  default Pulse backend uses when Pulse has no TLS record) documented forced
+  min/max version attempts but made one handshake with Python's default
+  context — TLS 1.2 minimum, security level 2 — and judged only what it
+  negotiated. A server that also speaks TLS 1.3 was never caught accepting
+  1.0, and a server whose highest version is 1.0 or 1.1 failed that one
+  handshake and vanished from `tls_posture.json` altogether. The probe now
+  makes two more handshakes per endpoint pinned to TLS 1.0 and TLS 1.1
+  (`tls_posture.probe_legacy_protocols`, default `true`), its main handshake
+  reaches as low as the local OpenSSL can go, and every row records
+  `accepted_protocols` and a per-version `checks.protocols` status —
+  `accepted`, `rejected`, `inconclusive`, `not_performed` (checked by building
+  the ClientHello in memory, so a scanner host whose OpenSSL cannot offer TLS
+  1.0 never reports the server as refusing it) or, for SSLv2/SSLv3, which
+  modern OpenSSL cannot send, `not_testable`. Verified against Python `ssl`
+  and `openssl s_server` servers on loopback (OpenSSL 3.6 on macOS, 3.5 in the
+  CI `python:3.11/3.12-slim` images).
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run

@@ -218,6 +218,40 @@ def test_tls_severity_read_from_nested_issues(tmp_path: Path):
     assert tls["coverage"] == {"checked": 2, "total": 2}
 
 
+def _tls_control(tmp_path: Path, issues: list[dict]) -> dict:
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "10.0.0.9", "port": "443", "issues": issues}],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    return {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+
+
+def test_tls_strength_and_trust_findings_grade_weak(tmp_path: Path):
+    """DQ2's certificate findings are medium: the control is WEAK, not OK."""
+    tls = _tls_control(
+        tmp_path,
+        [
+            {"kind": "weak_key", "severity": "medium", "key_type": "rsa", "bits": 1024},
+            {"kind": "weak_signature", "severity": "medium", "algorithm": "sha1WithRSAEncryption"},
+            {"kind": "cert_untrusted", "severity": "medium", "detail": "self-signed certificate"},
+        ],
+    )
+    assert tls["status"] == "weak"
+    assert tls["findings_by_severity"]["medium"] == 3
+    assert {f["id"] for f in tls["top_findings"]} == {"weak_key", "weak_signature", "cert_untrusted"}
+
+
+def test_tls_factorable_key_fails_the_control(tmp_path: Path):
+    tls = _tls_control(tmp_path, [{"kind": "weak_key", "severity": "high", "key_type": "rsa", "bits": 768}])
+    assert tls["status"] == "fail"
+
+
 def test_web_technologies_clean_endpoints_are_ok(tmp_path: Path):
     """A fingerprinted endpoint is not itself a finding; only a disclosed
     product/version banner is."""

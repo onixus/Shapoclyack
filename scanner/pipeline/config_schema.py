@@ -917,6 +917,12 @@ class TlsPostureConfig(BaseModel):
     endpoint. It needs the forward names in ``hostnames.json`` -- with
     ``discovery.hostnames.forward`` off, or for an IP-only target, there is no
     expected name and the check stays silent (see ``cert_names.py``).
+
+    ``probe_legacy_protocols`` (DQ2) adds two handshakes per probed endpoint,
+    pinned to TLS 1.0 and TLS 1.1: a server that also speaks TLS 1.3 never
+    shows its legacy versions to a client offering everything. ``ca_bundle``
+    is a PEM file of the organisation's own CAs, trusted for ``cert_untrusted``
+    in addition to the system store. Both apply to the stdlib probe only.
     """
 
     enabled: bool = False
@@ -930,6 +936,8 @@ class TlsPostureConfig(BaseModel):
     probe_tls_ports: list[int] = Field(
         default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
     )
+    probe_legacy_protocols: bool = True
+    ca_bundle: str | None = None
 
 
 class OwnershipConfig(BaseModel):

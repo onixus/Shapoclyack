@@ -131,8 +131,10 @@ def test_expired_self_signed_cert(tmp_path: Path):
     assert self_signed["severity"] == "medium"
     assert self_signed["heuristic"] == "cn_match"
 
+    # The fixture's 1024-bit RSA key and sha1WithRSAEncryption signature were
+    # parsed and dropped before DQ2; they are findings now.
     lines = (tmp_path / "tls_posture_findings.txt").read_text(encoding="utf-8").splitlines()
-    assert lines == ["10.0.0.2:8443:cert_expired,self_signed"]
+    assert lines == ["10.0.0.2:8443:cert_expired,self_signed,weak_key,weak_signature"]
 
 
 def test_cert_expiring_soon(tmp_path: Path):
@@ -272,7 +274,54 @@ def test_parse_ssl_cert_output_expired_self_signed():
     assert parsed["not_before"] == "2020-01-01T00:00:00+00:00"
     assert parsed["not_after"] == "2021-01-01T00:00:00+00:00"
     assert parsed["public_key_bits"] == 1024
+    assert parsed["public_key_type"] == "rsa"
     assert parsed["parse_ok"] is True
+
+
+# --- DQ2: key size and signature digest from ssl-cert ------------------------
+
+EC_SHA1_CERT_OUTPUT = """Subject: commonName=edge.example.com
+Issuer: commonName=Example Issuing CA/organizationName=Example
+Public Key type: ec
+Public Key bits: 256
+Signature Algorithm: ecdsa-with-SHA1
+Not valid before: 2026-05-01T00:00:00
+Not valid after:  2027-05-01T23:59:59
+"""
+
+
+def test_nse_strong_key_and_digest_produce_no_strength_findings(tmp_path: Path):
+    nmap_dir = tmp_path / "nmap" / "tcp"
+    nmap_dir.mkdir(parents=True)
+    _write_nmap_xml(nmap_dir / "h.xml", "10.0.0.40", "443", [("ssl-cert", VALID_CERT_OUTPUT)])
+    result = check_tls_posture(tmp_path / "nmap", ENABLED_CONFIG, tmp_path, now=NOW)
+    kinds = {issue["kind"] for issue in result["findings"][0]["issues"]}
+    assert not kinds & {"weak_key", "weak_signature"}
+
+
+def test_nse_weak_key_and_sha1_signature_become_findings(tmp_path: Path):
+    """ssl-cert's key size and signature algorithm were parsed and then dropped."""
+    nmap_dir = tmp_path / "nmap" / "tcp"
+    nmap_dir.mkdir(parents=True)
+    _write_nmap_xml(
+        nmap_dir / "h.xml", "10.0.0.41", "443", [("ssl-cert", EXPIRED_SELF_SIGNED_CERT_OUTPUT)]
+    )
+    result = check_tls_posture(tmp_path / "nmap", ENABLED_CONFIG, tmp_path, now=NOW)
+    issues = {issue["kind"]: issue for issue in result["findings"][0]["issues"]}
+    assert issues["weak_key"]["severity"] == "medium"
+    assert issues["weak_key"]["bits"] == 1024
+    assert issues["weak_key"]["key_type"] == "rsa"
+    assert issues["weak_signature"]["algorithm"] == "sha1WithRSAEncryption"
+
+
+def test_nse_ec_key_is_judged_by_curve_size_not_rsa_thresholds(tmp_path: Path):
+    nmap_dir = tmp_path / "nmap" / "tcp"
+    nmap_dir.mkdir(parents=True)
+    _write_nmap_xml(nmap_dir / "h.xml", "10.0.0.42", "443", [("ssl-cert", EC_SHA1_CERT_OUTPUT)])
+    result = check_tls_posture(tmp_path / "nmap", ENABLED_CONFIG, tmp_path, now=NOW)
+    kinds = [issue["kind"] for issue in result["findings"][0]["issues"]]
+    # A 256-bit EC key is strong; the SHA-1 signature is not.
+    assert kinds == ["weak_signature"]
 
 
 def test_parse_ssl_enum_ciphers_output():
