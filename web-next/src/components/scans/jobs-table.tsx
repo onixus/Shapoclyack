@@ -66,18 +66,26 @@ export function isCancellable(job: Pick<JobInfo, "status">): boolean {
 /** The range of priorities this principal may give `job` (#365), or null when
  * they may not move it at all.
  *
- * Mirrors `scan_queue.check_priority`: moving a queued job is the operator
- * rank's, anything above 0 — and touching a job someone already raised — is
- * `scan.priority.raise`. The API is the boundary; this only keeps the console
- * from offering what it would refuse.
+ * Mirrors `scan_queue.check_priority`: without `scan.priority.raise` the
+ * operator rank may only lower a queued job of its own (`requested_by` is
+ * them), from at or below 0 and down from where it stands. Somebody else's
+ * job, one someone raised, and raising a demoted one back are the
+ * permission's. The API is the boundary; this only keeps the console from
+ * offering what it would refuse.
  */
 export function priorityRange(
-  job: Pick<JobInfo, "status" | "priority">,
-  { canOperate, canRaise }: { canOperate: boolean; canRaise: boolean },
+  job: Pick<JobInfo, "status" | "priority" | "requested_by">,
+  {
+    canOperate,
+    canRaise,
+    username,
+  }: { canOperate: boolean; canRaise: boolean; username: string | null | undefined },
 ): { min: number; max: number } | null {
   if (!canOperate || job.status !== "queued") return null;
-  if (!canRaise && (job.priority ?? 0) > 0) return null;
-  return { min: JOB_PRIORITY_MIN, max: canRaise ? JOB_PRIORITY_MAX : 0 };
+  if (canRaise) return { min: JOB_PRIORITY_MIN, max: JOB_PRIORITY_MAX };
+  const current = job.priority ?? 0;
+  if (current > 0 || !username || job.requested_by !== username) return null;
+  return { min: JOB_PRIORITY_MIN, max: current };
 }
 
 /** A job whose stop was requested and not yet confirmed by its agent. */
@@ -133,11 +141,13 @@ export function JobsTable({
   // The named permission in the active tenant (#365), with no fallback: an API
   // that sends no permission list predates priorities and has nothing to raise.
   const canRaise = useAuthStore((s) => holdsPermission(s.user, "scan.priority.raise", false));
+  // Without the permission only one's own job may be moved, and only down.
+  const username = useAuthStore((s) => s.user?.username ?? null);
   const [priorityTarget, setPriorityTarget] = useState<JobInfo | null>(null);
   const [priorityDraft, setPriorityDraft] = useState("0");
   const setPriority = useSetJobPriority();
   const priorityBounds = priorityTarget
-    ? priorityRange(priorityTarget, { canOperate, canRaise })
+    ? priorityRange(priorityTarget, { canOperate, canRaise, username })
     : null;
   const draftValue = Number(priorityDraft);
   const draftValid =
@@ -317,7 +327,7 @@ export function JobsTable({
         enableSorting: false,
         cell: ({ row }) => {
           const value = row.original.priority ?? 0;
-          const range = priorityRange(row.original, { canOperate, canRaise });
+          const range = priorityRange(row.original, { canOperate, canRaise, username });
           return (
             <span className="inline-flex items-center gap-1" title={t("jobs.priorityHint")}>
               <span
@@ -404,7 +414,7 @@ export function JobsTable({
       },
     );
     return cols;
-  }, [t, showSurface, canCancel, canOperate, canRaise]);
+  }, [t, showSurface, canCancel, canOperate, canRaise, username]);
 
   return (
     <>

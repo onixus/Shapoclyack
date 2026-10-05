@@ -17,6 +17,16 @@ Expand-only:
     default; an old replica's claim ignores the column, which during a rolling
     update means FIFO until it is replaced — never a lost or duplicated job.
 
+``ix_jobs_claim_priority``
+    ``(execution, status, tenant_id, priority DESC, queued_at, job_id)``, the
+    claim's new order. ``ix_jobs_claim`` ends in ``queued_at`` alone, so
+    without this every claim — every poll of every sensor, under the tenant's
+    claim lock when it has a ceiling — sorted the tenant's whole queue to take
+    one row (28 ms against 0.09 ms at 50k queued in review). Built like
+    0052's ``ix_jobs_claim_group``, in the migration's transaction. The old
+    index stays (expand-only); dropping it is a later contract step, once
+    nothing that orders by ``queued_at`` alone is left reading it.
+
 ``tenants.max_concurrent_scans`` / ``tenants.max_queued_scans``
     NULL is unlimited and is what every tenant gets: an upgrade that started
     holding back customers' scans because nobody had typed a number would be
@@ -53,6 +63,12 @@ def upgrade() -> None:
     op.add_column(
         "jobs",
         sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    )
+    op.create_index(
+        "ix_jobs_claim_priority",
+        "jobs",
+        ["execution", "status", "tenant_id", sa.text("priority DESC"), "queued_at", "job_id"],
+        unique=False,
     )
     op.add_column("tenants", sa.Column("max_concurrent_scans", sa.Integer(), nullable=True))
     op.add_column("tenants", sa.Column("max_queued_scans", sa.Integer(), nullable=True))
@@ -93,4 +109,5 @@ def downgrade() -> None:
     )
     op.drop_column("tenants", "max_queued_scans")
     op.drop_column("tenants", "max_concurrent_scans")
+    op.drop_index("ix_jobs_claim_priority", table_name="jobs")
     op.drop_column("jobs", "priority")

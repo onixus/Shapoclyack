@@ -83,7 +83,7 @@ function ProvisioningKeyNotice({
           </p>
           {canMint ? null : (
             <p className="mt-1 leading-relaxed text-amber-600 dark:text-amber-400">
-              {t("prose.mintingOneTakesTenantAdmin")}
+              {t("prose.mintingOneTakesCredentialManage")}
             </p>
           )}
         </div>
@@ -441,7 +441,7 @@ export function DeployAgentDialog() {
                     </Button>
                     {canPush ? null : (
                       <p className="text-xs text-amber-600 dark:text-amber-400">
-                        {t("prose.thePushTakesTenantAdmin")}
+                        {t("prose.thePushTakesAdminAndCredential")}
                       </p>
                     )}
                     {deployMutation.error ? (

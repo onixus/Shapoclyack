@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { useAgents, useAgentSummary } from "@/hooks/use-agents";
 import { usePagination } from "@/hooks/use-pagination";
 import { type AgentInfo } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
+import { canOperate } from "@/lib/authz";
 import {
   AGENT_LIFECYCLE_STATUS,
   AGENT_STATUS,
@@ -29,9 +31,14 @@ export default function AgentsPage() {
   const t = useT();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
+  // The fleet list is operator's (`GET /api/agents`); a `token-admin` is
+  // shown this page for the Deploy Agent dialog alone (#504), so the list is
+  // not asked for on its behalf — it would only put a 403 where the table is.
+  const listsFleet = useAuthStore((state) => canOperate(state.user));
+
   // Server-side paging/search/sort (ROADMAP P3.3): the fleet list is unbounded.
   const pagination = usePagination({ sort: "hostname", order: "asc" });
-  const { data, isLoading, error, isFetching } = useAgents(pagination.params);
+  const { data, isLoading, error, isFetching } = useAgents(pagination.params, listsFleet);
   const { data: summary } = useAgentSummary();
   const agents = data?.items ?? [];
 
@@ -226,28 +233,34 @@ export default function AgentsPage() {
       </div>
 
       {/* Agents Table */}
-      <DataTable
-        columns={columns}
-        data={agents}
-        isLoading={isLoading}
-        error={error}
-        searchPlaceholder={t("search.agents")}
-        loadingMessage={t("loading.agents")}
-        emptyMessage={t("empty.agents")}
-        meta={t("meta.agents", { count: data?.total ?? 0 })}
-        serverPagination={{
-          offset: pagination.offset,
-          limit: pagination.limit,
-          total: data?.total ?? 0,
-          onOffsetChange: pagination.setOffset,
-          search: pagination.search,
-          onSearchChange: pagination.setSearch,
-          sortableColumns: ["hostname", "status", "tenant_id", "last_seen_at"],
-          sort: pagination.sort,
-          order: pagination.order,
-          onSortChange: pagination.setSort,
-        }}
-      />
+      {listsFleet ? (
+        <DataTable
+          columns={columns}
+          data={agents}
+          isLoading={isLoading}
+          error={error}
+          searchPlaceholder={t("search.agents")}
+          loadingMessage={t("loading.agents")}
+          emptyMessage={t("empty.agents")}
+          meta={t("meta.agents", { count: data?.total ?? 0 })}
+          serverPagination={{
+            offset: pagination.offset,
+            limit: pagination.limit,
+            total: data?.total ?? 0,
+            onOffsetChange: pagination.setOffset,
+            search: pagination.search,
+            onSearchChange: pagination.setSearch,
+            sortableColumns: ["hostname", "status", "tenant_id", "last_seen_at"],
+            sort: pagination.sort,
+            order: pagination.order,
+            onSortChange: pagination.setSort,
+          }}
+        />
+      ) : (
+        <p className="rounded-lg border border-border bg-muted/50 p-4 text-sm text-muted-foreground">
+          {t("page.agents.listTakesOperator")}
+        </p>
+      )}
 
       {/* Agent Details Drawer */}
       <AgentDetailsDrawer

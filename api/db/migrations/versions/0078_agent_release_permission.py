@@ -13,9 +13,13 @@ platform admin only; ``endpoint_agent.manage`` keeps the tenant's policy and
 the listing, and its published description says so.
 
 The schema does not change, and no row is touched: a build uploaded before
-this revision stays downloadable. Who uploaded it is in ``uploaded_by`` —
-docs/operations.md says to check that list after the upgrade, since before it
-a tenant admin's name there was possible.
+this revision stays downloadable. Before it, a tenant admin could have
+uploaded one, so check after the upgrade — from the audit trail
+(``endpoint_agent.release.upload`` / ``.delete``), not from ``uploaded_by`` on
+the current rows: a row shows only the last write, so a foreign build later
+re-uploaded with the official bytes, or uploaded and then deleted, does not
+show there. docs/operations.md ("Endpoint Agent (Lariska) builds") has the
+procedure.
 
 Rolling deploy: an old replica still lets a tenant admin write a build until
 it is replaced; it does not read these rows for its own decisions
