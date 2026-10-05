@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "checked": "2026-10-06",
+  "sources": {
+    "ciotx": "EdOverflow/can-i-take-over-xyz, README table and fingerprints.json at master (last commit 2025-02-08), read 2026-10-06. CC BY 4.0: https://github.com/EdOverflow/can-i-take-over-xyz",
+    "nuclei": "projectdiscovery/nuclei-templates http/takeovers/*.yaml at main, read 2026-10-06. MIT: https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers",
+    "msdocs": "Microsoft Learn, 'Prevent dangling DNS entries and avoid subdomain takeover' (resource types and their DNS names): https://learn.microsoft.com/azure/security/fundamentals/subdomain-takeover",
+    "dnsreaper": "punk-security/dnsReaper signatures at main, read 2026-10-06 -- used only to cross-check which CNAME target a provider hands out; no fingerprint text is taken from it"
+  },
+  "services": [
+    {
+      "id": "azure_app_service",
+      "name": "Microsoft Azure App Service",
+      "status": "vulnerable",
+      "cname": ["azurewebsites.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": "App names are global and first-come; NXDOMAIN on the app name means it is free to create."
+    },
+    {
+      "id": "azure_cloud_services",
+      "name": "Microsoft Azure Cloud Services / public IP DNS label",
+      "status": "vulnerable",
+      "cname": ["cloudapp.net", "cloudapp.azure.com"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": "cloudapp.azure.com labels are per region; the label is claimable in that region."
+    },
+    {
+      "id": "azure_traffic_manager",
+      "name": "Microsoft Azure Traffic Manager",
+      "status": "vulnerable",
+      "cname": ["trafficmanager.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["msdocs", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": "Not in the ciotx table; listed by Microsoft's own dangling-DNS guidance."
+    },
+    {
+      "id": "azure_blob_storage",
+      "name": "Microsoft Azure Blob Storage",
+      "status": "vulnerable",
+      "cname": ["blob.core.windows.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": "Storage account names are global; NXDOMAIN means the account name is free."
+    },
+    {
+      "id": "azure_cdn",
+      "name": "Microsoft Azure CDN (azureedge.net)",
+      "status": "vulnerable",
+      "cname": ["azureedge.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": "Status as published before the Edgio-backed CDN profiles were retired; not re-verified since."
+    },
+    {
+      "id": "azure_front_door",
+      "name": "Microsoft Azure Front Door",
+      "status": "edge_case",
+      "cname": ["azurefd.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["msdocs"],
+      "checked": "2026-10-06",
+      "note": "Classic endpoints are <name>.azurefd.net and claimable; Standard/Premium endpoints carry a random hash suffix and are not."
+    },
+    {
+      "id": "azure_api_management",
+      "name": "Microsoft Azure API Management",
+      "status": "vulnerable",
+      "cname": ["azure-api.net"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "azure_container_instances",
+      "name": "Microsoft Azure Container Instances",
+      "status": "vulnerable",
+      "cname": ["azurecontainer.io"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "msdocs"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "azure_other",
+      "name": "Microsoft Azure (other named resources)",
+      "status": "vulnerable",
+      "cname": [
+        "database.windows.net",
+        "azuredatalakestore.net",
+        "search.windows.net",
+        "azurecr.io",
+        "redis.cache.windows.net",
+        "servicebus.windows.net",
+        "azurehdinsight.net",
+        "visualstudio.com"
+      ],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Grouped as ciotx groups them; individual resource types were not re-verified."
+    },
+    {
+      "id": "aws_elastic_beanstalk",
+      "name": "AWS Elastic Beanstalk",
+      "status": "vulnerable",
+      "cname": ["elasticbeanstalk.com"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": "Region-qualified environment names (<name>.<region>.elasticbeanstalk.com) are claimable in that region."
+    },
+    {
+      "id": "discourse",
+      "name": "Discourse (hosted)",
+      "status": "vulnerable",
+      "cname": ["trydiscourse.com"],
+      "nxdomain_required": true,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "aws_elb",
+      "name": "AWS Elastic Load Balancing",
+      "status": "not_vulnerable",
+      "cname": ["elb.amazonaws.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Load-balancer DNS names carry a random component and cannot be chosen."
+    },
+    {
+      "id": "aws_s3",
+      "name": "AWS S3",
+      "status": "vulnerable",
+      "cname": ["s3.amazonaws.com"],
+      "cname_regex": ["\\.s3(-website)?([.-][a-z0-9-]+){0,2}\\.amazonaws\\.com(\\.cn)?$"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "aws_s3.no_such_bucket", "body": ["NoSuchBucket", "The specified bucket does not exist"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": "The bucket name must be free in the global namespace; account-regional bucket names are not claimable."
+    },
+    {
+      "id": "airee",
+      "name": "Airee.ru",
+      "status": "vulnerable",
+      "cname": ["airee.ru"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "airee.unpaid", "body": ["Ошибка 402. Сервис Айри.рф не оплачен"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "bitbucket",
+      "name": "Bitbucket Cloud static sites",
+      "status": "vulnerable",
+      "cname": ["bitbucket.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "bitbucket.repository_not_found", "body": ["Repository not found"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "campaign_monitor",
+      "name": "Campaign Monitor",
+      "status": "vulnerable",
+      "cname": ["createsend.com", "campaignmonitor.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "campaign_monitor.account_prompt", "body": ["Trying to access your account?"]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "canny",
+      "name": "Canny",
+      "status": "vulnerable",
+      "cname": ["canny.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "canny.no_such_company", "body": ["There is no such company. Did you enter the right URL?"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "ghost",
+      "name": "Ghost(Pro)",
+      "status": "vulnerable",
+      "cname": ["ghost.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "ghost.error_redirect", "header": ["error.ghost.org"], "status": [302]},
+        {"id": "ghost.offline_redirect", "header": ["offline.ghost.org"], "status": [302]},
+        {"id": "ghost.dns_path", "body": ["Failed to resolve DNS path for this host"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "hatenablog",
+      "name": "Hatena Blog",
+      "status": "vulnerable",
+      "cname": ["hatenablog.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "hatenablog.blog_not_found", "body": ["404 Blog is not found"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "helpjuice",
+      "name": "Helpjuice",
+      "status": "vulnerable",
+      "cname": ["helpjuice.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "helpjuice.not_found", "body": ["We could not find what you're looking for."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "helpscout",
+      "name": "Help Scout Docs",
+      "status": "vulnerable",
+      "cname": ["helpscoutdocs.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "helpscout.no_settings", "body": ["No settings were found for this company:"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "jetbrains_youtrack",
+      "name": "JetBrains YouTrack InCloud",
+      "status": "vulnerable",
+      "cname": ["youtrack.cloud", "myjetbrains.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "jetbrains_youtrack.not_registered", "body": ["is not a registered InCloud YouTrack"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "ngrok",
+      "name": "ngrok",
+      "status": "vulnerable",
+      "cname": ["ngrok.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "ngrok.tunnel_not_found", "body": ["ngrok.io not found"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": "Only the ngrok.io domain is covered; newer ngrok domains are not in the sources."
+    },
+    {
+      "id": "pantheon",
+      "name": "Pantheon",
+      "status": "vulnerable",
+      "cname": ["pantheonsite.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "pantheon.unknown_site", "body": ["404 error unknown site!"]},
+        {"id": "pantheon.gods_are_wise", "body": ["The gods are wise, but do not know of the site which you seek."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "pingdom",
+      "name": "Pingdom public status page",
+      "status": "vulnerable",
+      "cname": ["stats.pingdom.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "pingdom.status_page_missing", "body": ["Sorry, couldn't find the status page"]},
+        {"id": "pingdom.report_not_activated", "body": ["Public Report Not Activated"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "readme",
+      "name": "ReadMe",
+      "status": "vulnerable",
+      "cname": ["readme.io", "readmessl.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "readme.still_working", "body": ["The creators of this project are still working on making everything perfect!"]},
+        {"id": "readme.project_missing", "body": ["Project doesnt exist... yet!"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "readthedocs",
+      "name": "Read the Docs",
+      "status": "vulnerable",
+      "cname": ["readthedocs.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "readthedocs.unknown_domain", "body": ["unknown to Read the Docs"]},
+        {"id": "readthedocs.link_missing", "body": ["The link you have followed or the URL that you entered does not exist."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "short_io",
+      "name": "Short.io",
+      "status": "vulnerable",
+      "cname": ["short.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "short_io.not_configured", "body": ["This domain is not configured on Short.io"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "strikingly",
+      "name": "Strikingly",
+      "status": "vulnerable",
+      "cname": ["strikinglydns.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "strikingly.build_your_own", "body": ["But if you're looking to build your own website", "you've come to the right place."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "surge",
+      "name": "Surge.sh",
+      "status": "vulnerable",
+      "cname": ["surge.sh"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "surge.project_not_found", "body": ["project not found"], "status": [404]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "surveysparrow",
+      "name": "SurveySparrow",
+      "status": "vulnerable",
+      "cname": ["surveysparrow.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "surveysparrow.account_not_found", "body": ["Account not found."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "uptimerobot",
+      "name": "UptimeRobot status page",
+      "status": "vulnerable",
+      "cname": ["stats.uptimerobot.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "uptimerobot.page_not_found", "body": ["page not found"], "header": ["server: caddy"], "status": [404]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "wordpress_com",
+      "name": "WordPress.com",
+      "status": "vulnerable",
+      "cname": ["wordpress.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "wordpress_com.register_prompt", "body": ["Do you want to register"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "github_pages",
+      "name": "GitHub Pages",
+      "status": "edge_case",
+      "cname": ["github.io"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "github_pages.no_site", "body": ["There isn't a GitHub Pages site here."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": "A domain the owner verified with GitHub cannot be claimed by another account; an unverified one can."
+    },
+    {
+      "id": "heroku",
+      "name": "Heroku",
+      "status": "edge_case",
+      "cname": ["herokuapp.com", "herokudns.com", "herokussl.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "heroku.no_such_app", "body": ["No such app"]}
+      ],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Claimable only in some configurations; see ciotx issue 38."
+    },
+    {
+      "id": "intercom",
+      "name": "Intercom Help Center",
+      "status": "edge_case",
+      "cname": ["custom.intercom.help"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "intercom.artistic_dogs", "body": ["This page is reserved for artistic dogs."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "netlify",
+      "name": "Netlify",
+      "status": "edge_case",
+      "cname": ["netlify.app", "netlify.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "netlify.not_found", "body": ["Not Found - Request ID:"]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "shopify",
+      "name": "Shopify",
+      "status": "edge_case",
+      "cname": ["myshopify.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "shopify.shop_unavailable", "body": ["Sorry, this shop is currently unavailable."]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "tilda",
+      "name": "Tilda",
+      "status": "edge_case",
+      "cname": ["tilda.ws"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "tilda.domain_not_set", "body": ["Please go to the site settings and put the domain name in the Domain tab."]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": "A lapsed subscription shows a different page; that one is not a takeover signal."
+    },
+    {
+      "id": "tumblr",
+      "name": "Tumblr",
+      "status": "edge_case",
+      "cname": ["domains.tumblr.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "tumblr.nothing_here", "body": ["Whatever you were looking for doesn't currently exist at this address"]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "status": "edge_case",
+      "cname": ["vercel.app", "vercel-dns.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "vercel.deployment_not_found", "body": ["DEPLOYMENT_NOT_FOUND"]}
+      ],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "webflow",
+      "name": "Webflow",
+      "status": "edge_case",
+      "cname": ["proxy.webflow.com", "proxy-ssl.webflow.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "webflow.page_missing", "body": ["The page you are looking for doesn't exist or has been moved."]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "wix",
+      "name": "Wix",
+      "status": "edge_case",
+      "cname": ["wixdns.net"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "wix.not_connected", "body": ["Looks Like This Domain Isn't Connected To A Website Yet!"]},
+        {"id": "wix.connect_your_domain", "body": ["ConnectYourDomain Error | Wix.com"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "mashery",
+      "name": "Mashery",
+      "status": "edge_case",
+      "cname": ["mashery.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "mashery.unrecognized_domain", "body": ["Unrecognized domain"]}
+      ],
+      "source": ["ciotx", "dnsreaper"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "frontify",
+      "name": "Frontify",
+      "status": "edge_case",
+      "cname": ["frontify.com"],
+      "nxdomain_required": false,
+      "fingerprints": [
+        {"id": "frontify.got_lost", "body": ["404 - Page Not Found", "Oops… looks like you got lost"]}
+      ],
+      "source": ["ciotx", "nuclei"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "aws_cloudfront",
+      "name": "AWS CloudFront",
+      "status": "not_vulnerable",
+      "cname": ["cloudfront.net"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Distribution names are assigned, and an alternate domain name needs a certificate for it."
+    },
+    {
+      "id": "fastly",
+      "name": "Fastly",
+      "status": "not_vulnerable",
+      "cname": ["fastly.net"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "wpengine",
+      "name": "WP Engine",
+      "status": "not_vulnerable",
+      "cname": ["wpengine.com", "wpenginepowered.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "unbounce",
+      "name": "Unbounce",
+      "status": "not_vulnerable",
+      "cname": ["unbouncepages.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "zendesk",
+      "name": "Zendesk",
+      "status": "not_vulnerable",
+      "cname": ["zendesk.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "akamai",
+      "name": "Akamai",
+      "status": "not_vulnerable",
+      "cname": ["edgesuite.net", "edgekey.net", "akamaiedge.net", "akamaized.net"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "firebase",
+      "name": "Firebase Hosting",
+      "status": "not_vulnerable",
+      "cname": ["firebaseapp.com", "web.app"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "gitlab_pages",
+      "name": "GitLab Pages",
+      "status": "not_vulnerable",
+      "cname": ["gitlab.io"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Custom domains need a verification TXT record."
+    },
+    {
+      "id": "google_cloud_storage",
+      "name": "Google Cloud Storage",
+      "status": "not_vulnerable",
+      "cname": ["c.storage.googleapis.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "A bucket named after a domain needs proof of domain ownership."
+    },
+    {
+      "id": "hubspot",
+      "name": "HubSpot",
+      "status": "not_vulnerable",
+      "cname": ["hubspot.net", "hs-sites.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "squarespace",
+      "name": "Squarespace",
+      "status": "not_vulnerable",
+      "cname": ["squarespace.com"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    },
+    {
+      "id": "statuspage",
+      "name": "Atlassian Statuspage",
+      "status": "not_vulnerable",
+      "cname": ["statuspage.io"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": "Custom domains need DNS verification."
+    },
+    {
+      "id": "sendgrid",
+      "name": "SendGrid",
+      "status": "not_vulnerable",
+      "cname": ["sendgrid.net"],
+      "nxdomain_required": false,
+      "fingerprints": [],
+      "source": ["ciotx"],
+      "checked": "2026-10-06",
+      "note": ""
+    }
+  ]
+}

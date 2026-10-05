@@ -419,10 +419,17 @@ class DomainMonitorConfig(BaseModel):
       passive -- same risk class as ct.brute_force). A candidate that
       resolves is reported as a finding; it is never merged into scan scope.
     - dangling_cname_enabled: for the org's own in-scope FQDNs, resolve the
-      CNAME chain and flag targets matching a known vulnerable-service
-      suffix with no A/AAAA record of their own. This is a heuristic
-      pattern + non-resolution signal only -- it never confirms an actual
-      takeover is possible.
+      CNAME chain and judge it against the takeover catalogue
+      (``scanner/pipeline/takeover_fingerprints.json``): a confirmed
+      takeover, a heuristic one, or a CNAME into an unregistered domain.
+
+    takeover_http_confirm: confirm a candidate whose name resolves by one
+    bounded GET per scheme to that name, matched against the provider's
+    unclaimed-resource fingerprint. Off, such candidates are listed as
+    unconfirmed and not reported. The tenant scan policy's
+    ``skip_service_probe`` turns it off and ``max_host_concurrency`` caps
+    ``takeover_http_concurrency``; neither can turn it back on or raise it.
+    ``takeover_http_max_targets`` caps how many names one run probes.
 
     max_candidates caps typosquat candidates generated per seed domain
     (round-robin across generator classes, like cloud_discovery's
@@ -438,6 +445,10 @@ class DomainMonitorConfig(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=50)
     timeout_seconds: int = Field(default=15, ge=5, le=120)
     retries: int = Field(default=1, ge=0, le=5)
+    takeover_http_confirm: bool = True
+    takeover_http_concurrency: int = Field(default=5, ge=1, le=20)
+    takeover_http_timeout_seconds: int = Field(default=10, ge=2, le=60)
+    takeover_http_max_targets: int = Field(default=200, ge=1, le=2_000)
 
 
 class DeltaDiscoveryConfig(BaseModel):

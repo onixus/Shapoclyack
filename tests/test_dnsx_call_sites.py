@@ -37,11 +37,18 @@ SYSTEM_FLAG = "10.96.0.10:53"
 
 #: What the fake dnsx answers, by the stem of the ``-o`` file each call site
 #: writes. Enough for every stage to reach its next lookup: an SPF include to
-#: walk, an alive address to PTR.
+#: walk, an alive address to PTR, a dangling CNAME whose domain to look up.
 ANSWERS = {
     "dnsx_records": [{"host": "www.customer.example", "a": ["203.0.113.10"]}],
     "policy_records": [
         {"host": "customer.example", "txt": ["v=spf1 include:_spf.mail.example -all"]}
+    ],
+    "cname_records": [
+        {
+            "host": "www.customer.example",
+            "cname": ["www.retired-campaign.example"],
+            "status_code": "NXDOMAIN",
+        }
     ],
 }
 
@@ -119,9 +126,10 @@ EVERY_RUN = [
     "dnsx_records.jsonl",
     # discover-hostnames
     "ptr.records.jsonl",
-    # domain_monitor
+    # domain_monitor; the dangling CNAME's own domain is looked up as well
     "typosquat_records.jsonl",
     "cname_records.jsonl",
+    "registrable_records.jsonl",
     # dns_hygiene (no NS came back, so no ns_addresses batch)
     "ns_records.jsonl",
     "soa_records.jsonl",
@@ -230,6 +238,7 @@ def test_the_pipeline_hands_dns_resolvers_to_every_dnsx_stage(tmp_path: Path, mo
         "dnsx_records.jsonl",
         "typosquat_records.jsonl",
         "cname_records.jsonl",
+        "registrable_records.jsonl",
         "ns_records.jsonl",
         "soa_records.jsonl",
         "caa_records.jsonl",
