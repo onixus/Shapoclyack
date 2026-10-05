@@ -704,12 +704,19 @@ def test_a_crashed_update_is_rolled_back_even_when_the_bundle_is_still_current(
     bundle = _bundle(tmp_path, signing_key, "0.47-0930")
     manifest, archive = _verified(bundle, signing_key)
     installer = update.Installer(install)
-    installer.install(archive, manifest, pending=True)  # swapped, verdict never came
+    interrupted = installer.install(archive, manifest, pending=True)  # swapped, verdict never came
     assert _live_version(install) == "0.47-0930"
 
-    assert _run_cli(install, bundle, key_file, monkeypatch, "--check") == 0
+    # --check changes nothing, this included; it says what it found.
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--check") == 1
+    assert _live_version(install) == "0.47-0930"
+    # The next real run puts the previous release back first, and stops there
+    # to have the service restarted onto it: that process still runs the
+    # interrupted release, whose tree is therefore left in place.
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--pending") == update.EXIT_RECOVERED
     assert _live_version(install) == "0.46-0922"
     assert not (install / ".sensor-update.json").exists()
+    assert (install / interrupted).is_dir()
 
 
 def test_a_second_update_waits_for_the_first(tmp_path):
@@ -787,10 +794,47 @@ def test_root_will_not_run_the_update_over_a_tree_another_account_owns(tmp_path,
 # --------------------------------------------------------------------------
 
 _FAKE_RUNUSER = """#!/bin/sh
-# runuser -u USER -- CMD...: record who, run CMD as ourselves.
+# runuser -u USER -- CMD...: record who and what the command is attached to,
+# then run CMD as ourselves.
 echo "$2" >> "$FAKE_SYSTEMD_DIR/runuser"
+"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE" >> "$FAKE_SYSTEMD_DIR/attached"
 shift 3
 exec "$@"
+"""
+
+_FAKE_SU = """#!/bin/sh
+# BusyBox su -s /bin/sh USER -c CMD: the same record, then CMD as ourselves.
+echo "$3" >> "$FAKE_SYSTEMD_DIR/runuser"
+"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE" >> "$FAKE_SYSTEMD_DIR/attached"
+exec /bin/sh -c "$5"
+"""
+
+#: What the sensor's process is attached to: its session, and what fds 0-2 are.
+_ATTACHMENT_PROBE = """
+import os, stat
+null = os.stat(os.devnull).st_rdev
+def kind(fd):
+    st = os.fstat(fd)
+    if stat.S_ISCHR(st.st_mode) and st.st_rdev == null:
+        return "null"
+    if os.isatty(fd):
+        return "tty"
+    return "fifo" if stat.S_ISFIFO(st.st_mode) else "file"
+print(os.getsid(0), kind(0), kind(1), kind(2))
+"""
+
+#: macOS has no setsid(1); this does what util-linux's does, -w included.
+_FAKE_SETSID = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if args and args[0] in ("-w", "--wait"):
+    args = args[1:]
+if os.getpgrp() == os.getpid():
+    child = os.fork()
+    if child:
+        sys.exit(os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]))
+os.setsid()
+os.execvp(args[0], args)
 """
 
 
@@ -806,8 +850,12 @@ def _real_agent_tree(root: Path, version: str) -> Path:
 
 def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurvePrivateKey):
     state = _fake_systemd(tmp_path, monkeypatch, mode)
-    (tmp_path / "bin" / "runuser").write_text(_FAKE_RUNUSER)
-    (tmp_path / "bin" / "runuser").chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "runuser").write_text(_FAKE_RUNUSER)
+    (bin_dir / "runuser").chmod(0o755)
+    if shutil.which("setsid") is None:
+        (bin_dir / "setsid").write_text(_FAKE_SETSID.format(python=sys.executable))
+        (bin_dir / "setsid").chmod(0o755)
     install = tmp_path / "install"
     shutil.copytree(_real_agent_tree(tmp_path / "old", "0.46-0922"), install / "agent")
     venv_bin = install / "venv" / "bin"
@@ -830,6 +878,8 @@ def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurveP
         "CONF_DIR": str(conf),
         "HEALTH_SECONDS": "1",
         update.PUBKEY_FILE_ENV: str(key_file),
+        "FAKE_PYTHON": sys.executable,
+        "ATTACHMENT_PROBE": _ATTACHMENT_PROBE,
     }
     return install, bundle, state, env
 
@@ -850,6 +900,8 @@ def test_update_script_keeps_a_release_the_unit_stays_up_on(tmp_path, signing_ke
     assert (state / "calls").read_text().split() == ["restart"]
     # Every python the script started ran as the sensor's account.
     assert set((state / "runuser").read_text().split()) == {"shapoclyack"}
+    # What changed is the agent package; scanner/ and the venv are not in the bundle.
+    assert "agent package updated to 0.47-0930" in done.stdout
 
 
 def test_update_script_puts_the_previous_release_back_on_a_crash_loop(tmp_path, signing_key, monkeypatch):
@@ -881,6 +933,117 @@ def test_update_script_refuses_the_unsigned_bundle_url(tmp_path, signing_key, mo
     done = _run_script(env, "--bundle-url", "http://example.invalid/agent.tar.gz")
     assert done.returncode == 1
     assert "--bundle-url is gone" in done.stderr
+
+
+@pytest.mark.parametrize("runner", ["runuser", "su"])
+def test_update_script_detaches_the_sensors_code_from_roots_terminal(
+    tmp_path, signing_key, monkeypatch, runner
+):
+    """``sudo update-agent.sh`` from an interactive shell must not hand the
+    sensor's account root's terminal: with it, a planted ``venv/bin/python``
+    pushes keystrokes into root's shell with TIOCSTI (the CVE-2016-2779
+    class). Every process run as the account is in a session of its own, reads
+    /dev/null and writes into a pipe -- checked here with the script's own
+    stdio on plain files, so none of that is inherited by accident."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    if runner == "su":
+        if any(Path(d, "runuser").exists() for d in ("/usr/bin", "/bin")):
+            pytest.skip("runuser is installed in /usr/bin here; the BusyBox path is not reachable")
+        (tmp_path / "bin" / "runuser").unlink()
+        (tmp_path / "bin" / "su").write_text(_FAKE_SU)
+        (tmp_path / "bin" / "su").chmod(0o755)
+        env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"
+    stdin = tmp_path / "stdin"
+    stdin.write_text("")
+    with stdin.open() as source, (tmp_path / "out").open("w") as out, (tmp_path / "err").open("w") as err:
+        done = subprocess.run(
+            ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", str(bundle)],
+            env=env, stdin=source, stdout=out, stderr=err, check=False, timeout=120,
+        )
+    assert done.returncode == 0, (tmp_path / "out").read_text() + (tmp_path / "err").read_text()
+    assert _live_version(install) == "0.47-0930"
+    assert set((state / "runuser").read_text().split()) == {"shapoclyack"}
+    attached = [line.split() for line in (state / "attached").read_text().splitlines()]
+    assert len(attached) >= 3  # the import probe, --pending, --commit
+    for sid, fd0, fd1, fd2 in attached:
+        assert int(sid) != os.getsid(0)
+        assert (fd0, fd1, fd2) == ("null", "fifo", "fifo")
+
+
+def _interrupted(install: Path, bundle: Path, key: ec.EllipticCurvePrivateKey) -> str:
+    """What a script killed between restart and ``--commit`` leaves: the new
+    release live and running, and the journal naming the one before."""
+    manifest, archive = _verified(bundle, key)
+    live = update.Installer(install).install(archive, manifest, pending=True)
+    assert _live_version(install) == "0.47-0930"
+    return live
+
+
+def test_update_script_restarts_onto_a_release_it_put_back(tmp_path, signing_key, monkeypatch):
+    """The review's case: the interrupted release is rolled back, and then the
+    bundle is refused. The unit is still running the code that was taken out;
+    it has to be restarted onto what is live again."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    interrupted = _interrupted(install, bundle, signing_key)
+    env[update.PUBKEY_FILE_ENV] = str(tmp_path / "other.pub")
+    (tmp_path / "other.pub").write_bytes(_pem(ec.generate_private_key(ec.SECP256R1())))
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 1  # the bundle itself is refused ...
+    assert _live_version(install) == "0.46-0922"
+    assert (state / "calls").read_text().split() == ["restart"]  # ... after the restart
+    assert not (install / ".sensor-update.json").exists()
+    # The tree the old process was running from is still there for it.
+    assert (install / interrupted).is_dir()
+
+
+def test_update_script_installs_again_after_putting_an_interrupted_release_back(
+    tmp_path, signing_key, monkeypatch
+):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    interrupted = _interrupted(install, bundle, signing_key)
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _live_version(install) == "0.47-0930"
+    # Restarted onto the release put back, then onto the verified install.
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+    assert os.readlink(install / "agent") != interrupted
+    assert not (install / interrupted).parent.exists()  # pruned once committed
+
+
+def test_check_reports_an_interrupted_update_and_changes_nothing(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    interrupted = _interrupted(install, bundle, signing_key)
+    done = _run_script(env, "--check", "--bundle-dir", str(bundle))
+    assert done.returncode == 1
+    assert "interrupted update" in done.stdout + done.stderr
+    assert os.readlink(install / "agent") == interrupted
+    assert (install / ".sensor-update.json").exists()
+    assert not (state / "calls").exists()
+
+
+def test_auto_does_not_retry_a_release_that_failed_here(tmp_path, signing_key, monkeypatch):
+    """A genuine release that crash-loops on this host: the timer must not
+    install it, restart into the loop and roll back again on every tick."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "crashloop", signing_key)
+    with (tmp_path / "etc" / "agent.env").open("a") as handle:
+        handle.write("OCTO_AGENT_AUTO_UPDATE=true\n")
+    first = _run_script(env, "--auto", "--bundle-dir", str(bundle))
+    assert first.returncode == 1
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+
+    again = _run_script(env, "--auto", "--bundle-dir", str(bundle))
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "failed its health check" in again.stdout + again.stderr
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+    assert _live_version(install) == "0.46-0922"
+
+    # An operator running it by hand means it: the release is tried again,
+    # and once it stays up the record of its failure goes.
+    (state / "mode").write_text("stable")
+    manual = _run_script(env, "--bundle-dir", str(bundle))
+    assert manual.returncode == 0, manual.stdout + manual.stderr
+    assert _live_version(install) == "0.47-0930"
+    assert not list(install.glob(".sensor-update-failed*"))
 
 
 # --------------------------------------------------------------------------
@@ -953,6 +1116,17 @@ def test_server_metadata_that_disagrees_with_the_signed_version_is_refused(tmp_p
     archive = next(bundle.glob("*.tar.gz")).read_bytes()
     with _fake_api(_metadata(bundle, version="9.99-1231"), archive) as url:
         with pytest.raises(update.BundleRefused, match="signed manifest"):
+            _from_server(tmp_path, monkeypatch, url, signing_key)
+
+
+def test_oversized_bundle_metadata_is_not_read_into_memory(tmp_path, signing_key, monkeypatch):
+    """The metadata is unsigned until it has been read; a server answering it
+    with an endless body must not get to decide how much memory that takes."""
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    archive = next(bundle.glob("*.tar.gz")).read_bytes()
+    padded = _metadata(bundle, padding="x" * (2 * 1024 * 1024))
+    with _fake_api(padded, archive) as url:
+        with pytest.raises(RuntimeError, match="more than"):
             _from_server(tmp_path, monkeypatch, url, signing_key)
 
 
