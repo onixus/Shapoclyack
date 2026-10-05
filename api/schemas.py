@@ -692,7 +692,10 @@ class AgentFleetSummary(BaseModel):
     # Agents an operator's revocation locked out of enrolling by token alone,
     # waiting for a reset; and agents refused in the last day for presenting
     # no certificate while holding a live one — another host has their token.
+    # ``client_cert_locked_agents`` names the locked ones (the first 50 by id):
+    # the reset works by id, and a deleted agent is listed nowhere else.
     client_cert_locked: int = 0
+    client_cert_locked_agents: list[str] = Field(default_factory=list)
     client_cert_conflicts: int = 0
 
 

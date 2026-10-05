@@ -50,4 +50,13 @@ describe("ClientCertExpiryAlert", () => {
     expect(alert.textContent).toMatch(/another host/);
     expect(alert.textContent).toMatch(/3 locked/);
   });
+
+  it("names the locked sensors, since a deleted one is listed nowhere else", () => {
+    render(
+      <ClientCertExpiryAlert
+        summary={summary({ client_cert_locked: 3, client_cert_locked_agents: ["edge-01", "edge-02"] })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(/Locked: edge-01, edge-02, …/);
+  });
 });

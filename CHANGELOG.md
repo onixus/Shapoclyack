@@ -30,14 +30,16 @@ All notable changes to Shapoclyack are documented in this file.
   serial or all) take effect on the next request, and revoking a certificate
   the sensor held locks it out of enrolling or calling without a certificate
   until `POST /api/agents/{id}/certificates/reset-enrolment` (admin, step-up,
-  audited; also by id for a deleted sensor, whose lock outlives it) — a
+  audited; also by id for a deleted sensor, whose lock outlives it unless its
+  provisioning key is revoked or expired by then — the delete answers
+  `client_cert_lock_lifted`) — a
   tombstone or an already-revoked certificate locks nothing. Issuance,
   revocation and reset of one sensor are serialised on its enrolment record, so
   a renewal in flight cannot outlive "revoke all" and a reset admits exactly
   one enrolment. The lock stops the sensor's identity: for a stolen host,
   revoke its provisioning key first. A sensor refused while another host
   holds its live certificate is audited once an hour. The fleet summary counts sensors with a certificate,
-  those expiring or expired, locked ones and such conflicts, and the Sensors
+  those expiring or expired, locked ones (with their ids) and such conflicts, and the Sensors
   page warns about them. The sensor presents `OCTO_AGENT_TLS_CLIENT_CERT/KEY`,
   re-reads them when cert-manager rotates them, or enrols and renews its own
   with `OCTO_AGENT_MTLS_ENROLL=true`. cert-manager, ingress and patch examples

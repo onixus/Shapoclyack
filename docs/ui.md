@@ -747,7 +747,9 @@ token, or they lost their key) and sensors a revocation locked until their
 enrolment is reset. A fleet without certificates, or one whose certificates
 are all comfortably valid, shows nothing. The counts are the summary's
 `client_certs_expiring` / `client_certs_expired` / `client_cert_conflicts` /
-`client_cert_locked`; which sensor holds which
+`client_cert_locked`, and the locked sensors are named by id
+(`client_cert_locked_agents`, the first 50) — a deleted one is listed nowhere
+else, and the enrolment reset takes its id; which sensor holds which
 certificate is `GET /api/agents/{id}/certificates`
 ([operations.md](operations.md#sensor-client-certificates)).
 A row opens a details drawer with the sensor's heartbeat metrics — OS and

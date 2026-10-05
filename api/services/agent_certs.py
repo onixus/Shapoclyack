@@ -38,7 +38,9 @@ resets the enrolment — a separate, audited act (:func:`reset_enrolment`). A
 certificate that merely ran out locks nothing: a sensor that was offline past
 its expiry enrols again by itself, as operations.md promises. Neither does a
 tombstone, nor revoking what is already revoked. The lock is keyed by
-``(tenant, agent id)`` and survives deleting the agent.
+``(tenant, agent id)`` and survives deleting the agent — unless the delete
+also left the agent's provisioning key unusable, which ends the token the
+lock was holding back (:func:`forget_enrolment`).
 
 Issuance, revocation and reset of one agent are serialised on that row
 (``SELECT … FOR UPDATE``), and :func:`issue` re-checks under it what
@@ -100,6 +102,8 @@ REASON_LOCKED = "enrolment-locked"
 CONFLICT_AUDIT_INTERVAL = timedelta(hours=1)
 #: How long the fleet view keeps counting such an agent after the last row.
 CONFLICT_WINDOW = timedelta(days=1)
+#: How many locked agents' ids the fleet summary lists; the count is exact.
+LOCKED_IDS_LISTED = 50
 
 #: Certificates this API signs for one agent that stay live after a new one is
 #: issued: the new one and the one before it, which is the overlap a rotation
@@ -944,12 +948,63 @@ def reset_enrolment(
         return [_to_dict(row, now, settings.agent_mtls_expiry_warn_days) for row in rows]
 
 
+def forget_enrolment(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    key_state: str,
+    audit: audit_service.AuditContext | None = None,
+) -> bool:
+    """Drop a deleted agent's enrolment row once its token cannot come back.
+
+    ``agents.delete_agent`` calls this when the deleted agent's provisioning
+    key is no longer ``active`` — revoked by that delete or before it, or
+    expired. The lock was holding back that token, and every request with it
+    is now refused before any certificate is looked at; kept, it would sit in
+    the fleet summary's ``client_cert_locked`` for good, lifted only by an
+    operator resetting the enrolment of a stolen sensor. Its certificates stay
+    on record, revoked ones included. Audited as an enrolment reset, since
+    that is what it amounts to: a host given a new key under this id enrols
+    from scratch. Returns whether a lock was lifted.
+    """
+    with get_session(settings.postgres_url) as session:
+        enrolment = session.execute(
+            select(models.AgentCertEnrolment)
+            .where(
+                models.AgentCertEnrolment.tenant_id == tenant_id,
+                models.AgentCertEnrolment.agent_id == agent_id,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if enrolment is None:
+            return False
+        was_locked = enrolment.locked_at is not None
+        session.delete(enrolment)
+        if was_locked:
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_AGENT_CERT_ENROLMENT_RESET,
+                resource_type="agent",
+                resource_id=agent_id,
+                tenant_id=tenant_id,
+                after={
+                    "reason": f"agent deleted; its provisioning key is {key_state}",
+                    "was_locked": True,
+                    "revoked_fingerprints": [],
+                },
+            )
+        return was_locked
+
+
 def enrolment_tenant(settings: Settings, *, tenant_id: str | None, agent_id: str) -> str:
     """The tenant of the enrolment record of an agent that no longer exists.
 
     A lock outlives the agent it was set on: deleting a sensor is not a
     revocation (``agents.delete_agent``), and a host still holding its token
-    re-registers under the same id — still locked. So the operator resets a
+    re-registers under the same id — still locked (unless the delete left its
+    key unusable: :func:`forget_enrolment`). So the operator resets a
     deleted agent's enrolment by its id, and this finds whose it is: in
     ``tenant_id``, or in any tenant for an unscoped platform admin when
     exactly one has it. ``LookupError`` otherwise, the same answer as for an
@@ -980,6 +1035,9 @@ class FleetCertificates:
     #: Agents an operator's revocation locked, waiting for a reset — an agent
     #: deleted since included: its id stays locked until reset.
     locked: int = 0
+    #: Their ids, the first :data:`LOCKED_IDS_LISTED` in order: the reset
+    #: works by id, and a deleted agent is in no other list to find it by.
+    locked_agents: tuple[str, ...] = ()
     #: Agents refused within :data:`CONFLICT_WINDOW` for presenting nothing
     #: while holding a live certificate — another host has their token.
     conflicts: int = 0
@@ -1026,18 +1084,25 @@ def fleet_certificates(
     # agent it was set on (``reset_enrolment`` lifts it by id), and a lock
     # nobody can see is one nobody lifts.
     enrolments = select(
-        models.AgentCertEnrolment.locked_at, models.AgentCertEnrolment.conflict_at
-    )
+        models.AgentCertEnrolment.agent_id,
+        models.AgentCertEnrolment.locked_at,
+        models.AgentCertEnrolment.conflict_at,
+    ).order_by(models.AgentCertEnrolment.agent_id)
     if tenant_id:
         enrolments = enrolments.where(models.AgentCertEnrolment.tenant_id == tenant_id)
     locked = conflicts = 0
-    for locked_at, conflict_at in session.execute(enrolments):
-        locked += locked_at is not None
+    locked_agents: list[str] = []
+    for agent_id, locked_at, conflict_at in session.execute(enrolments):
+        if locked_at is not None:
+            locked += 1
+            if len(locked_agents) < LOCKED_IDS_LISTED:
+                locked_agents.append(agent_id)
         conflicts += conflict_at is not None and conflict_at > now - CONFLICT_WINDOW
     return FleetCertificates(
         agents_with_cert=live,
         expiring=expiring,
         expired=expired,
         locked=locked,
+        locked_agents=tuple(locked_agents),
         conflicts=conflicts,
     )

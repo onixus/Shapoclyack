@@ -6,7 +6,8 @@ import { type AgentFleetSummary } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 /** The fleet's client certificates that need an operator (#309): running out
- * soon or already, agents locked by a revocation, and agents refused while
+ * soon or already, agents locked by a revocation (by id: a deleted one is
+ * listed nowhere else, and the reset takes the id), and agents refused while
  * another host holds their certificate.
  *
  * Rendered only when there is something to do: a fleet without certificates,
@@ -17,6 +18,7 @@ export function ClientCertExpiryAlert({ summary }: { summary?: AgentFleetSummary
   const expired = summary?.client_certs_expired ?? 0;
   const locked = summary?.client_cert_locked ?? 0;
   const conflicts = summary?.client_cert_conflicts ?? 0;
+  const lockedIds = summary?.client_cert_locked_agents ?? [];
   if (expiring + expired + locked + conflicts === 0) return null;
   const counts = [
     conflicts > 0 ? t("agents.clientCerts.conflicts", { count: conflicts }) : null,
@@ -30,6 +32,13 @@ export function ClientCertExpiryAlert({ summary }: { summary?: AgentFleetSummary
       <AlertTitle>{t("agents.clientCerts.title")}</AlertTitle>
       <AlertDescription>
         <p>{counts.join(" · ")}</p>
+        {lockedIds.length > 0 ? (
+          <p className="font-mono text-xs">
+            {t("agents.clientCerts.lockedIds", {
+              ids: lockedIds.join(", ") + (locked > lockedIds.length ? ", …" : ""),
+            })}
+          </p>
+        ) : null}
         <p className="text-xs opacity-80">
           {t("agents.clientCerts.hint", { mode: summary?.client_cert_mode ?? "off" })}
         </p>

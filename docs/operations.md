@@ -2176,11 +2176,24 @@ being undone by the token in the meantime. The sensor logs the refusal and
 retries every five minutes. `client_cert_locked` in `GET /api/agents/summary`
 counts locked sensors.
 
-**Deleting the sensor does not lift its lock.** Deleting an agent is a pause,
-not a revocation — a host with its token registers again under the same id —
-so the lock stays with the id, and `client_cert_locked` keeps counting it. A
-host re-installed under that id is refused `enrolment-locked` until the
-enrolment is reset; the reset below works by id for a deleted sensor too.
+**Deleting the sensor lifts its lock only when its token is dead.** Deleting
+an agent alone is a pause, not a revocation — a host with its token registers
+again under the same id — so while its provisioning key is still active (or
+there is none on record: a legacy shared token), the lock stays with the id,
+`client_cert_locked` keeps counting it, and `client_cert_locked_agents` in
+`GET /api/agents/summary` names it (the first 50 ids; the Sensors page shows
+them). A host re-installed under that id is refused `enrolment-locked` until
+the enrolment is reset; the reset below works by id for a deleted sensor too.
+
+Delete it with `?revoke_key=true`, or after revoking its key (the order for a
+stolen host, above), and the lock goes with it: every request with that token
+is already refused, so the lock would protect nothing and only keep "1 locked"
+on the Sensors page until somebody reset the stolen sensor to clear it. The
+delete answers `client_cert_lock_lifted: true` and records an
+`agent.certificate_enrolment_reset` row with the reason `agent deleted; its
+provisioning key is revoked` (or `expired`). The sensor's certificates stay on
+record, revoked; a host later given a new key under the same id enrols from
+scratch.
 
 **Resetting the enrolment** is the separate, deliberate act that lets the
 sensor enrol from scratch by its token — tenant admin, behind the same

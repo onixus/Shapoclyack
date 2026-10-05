@@ -964,6 +964,9 @@ export type AgentFleetSummary = {
   client_certs_expired?: number;
   /** Sensors an operator's revocation locked out until their enrolment is reset. */
   client_cert_locked?: number;
+  /** Their ids, the first 50: the reset works by id, and a deleted sensor is
+   * listed nowhere else. */
+  client_cert_locked_agents?: string[];
   /** Sensors refused in the last day for presenting no certificate while
    * holding a live one: another host enrolled with their token. */
   client_cert_conflicts?: number;

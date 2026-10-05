@@ -1546,6 +1546,185 @@ def test_a_lock_set_while_an_enrolment_by_token_is_in_flight_holds(tmp_path, mon
 
 
 # --------------------------------------------------------------------------
+# 16b. ...and serialised by the row lock itself, with two real threads.
+#
+# The tests above run the competing call *before* ``issue`` opens its
+# transaction, so they hold the re-checks under the row, not the lock: with
+# ``.with_for_update()`` dropped or taken too late every one of them stayed
+# green (review 3 of #509). Here the holder pauses inside its transaction,
+# just after taking the agent's ``agent_cert_enrolments`` row, and the
+# competitor runs meanwhile on its own connection. Every test enrols first,
+# so the row is already committed: an uncommitted INSERT of it would block
+# the competitor too, and hide a missing lock.
+# --------------------------------------------------------------------------
+
+
+def _while_holding_the_row(monkeypatch, holder, competitor) -> dict[str, object]:  # type: ignore[no-untyped-def]
+    """Run ``competitor`` while ``holder`` sits on the agent's enrolment row.
+
+    ``holder`` pauses just after ``_enrolment_row`` returns; ``competitor``
+    has to be still waiting half a second later. Then both are let go.
+    Returns what each returned or raised, by name.
+    """
+    from api.services import agent_certs
+
+    real = agent_certs._enrolment_row  # noqa: SLF001
+    held, release = threading.Event(), threading.Event()
+    holders: list[int] = []
+    outcome: dict[str, object] = {}
+
+    def enrolment_row(session, **kwargs):  # type: ignore[no-untyped-def]
+        row = real(session, **kwargs)
+        if threading.get_ident() in holders and not held.is_set():
+            held.set()
+            release.wait(30)
+        return row
+
+    def run(name: str, call) -> None:  # type: ignore[no-untyped-def]
+        if name == "holder":
+            holders.append(threading.get_ident())
+        try:
+            outcome[name] = call()
+        except Exception as exc:  # noqa: BLE001 - the test inspects it
+            outcome[name] = exc
+
+    monkeypatch.setattr(agent_certs, "_enrolment_row", enrolment_row)
+    first = threading.Thread(target=run, args=("holder", holder), daemon=True)
+    second = threading.Thread(target=run, args=("competitor", competitor), daemon=True)
+    try:
+        first.start()
+        assert held.wait(10), f"the holder never took the enrolment row: {outcome}"
+        second.start()
+        second.join(0.5)
+        assert second.is_alive(), (
+            f"the competitor finished while the row was held: {outcome.get('competitor')!r}"
+        )
+    finally:
+        release.set()
+        first.join(30)
+        second.join(30)
+    assert not first.is_alive() and not second.is_alive(), "a thread is stuck on the row"
+    return outcome
+
+
+def _enrolled(tmp_path: Path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Settings, and sensor-a's first certificate (PEM, fingerprint), enrolled by token."""
+    settings = _issuer_settings(tmp_path, CA(), agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    token_a = _token(client, _mint_key(client, login(client, "admin")), "sensor-a")
+    first = _enrol(client, token_a)
+    assert first.status_code == 200, first.text
+    return settings, first.json()["certificate"], first.json()["fingerprint_sha256"]
+
+
+def _issue(settings: Settings, presenting: str | None = None):  # type: ignore[no-untyped-def]
+    """``issue`` for sensor-a: a renewal presenting ``presenting``, else by token alone."""
+    from cryptography import x509
+
+    from api.core import client_cert
+    from api.services import agent_certs
+
+    presented = None
+    if presenting is not None:
+        presented = client_cert.describe(
+            x509.load_pem_x509_certificate(presenting.encode("ascii")),
+            source=client_cert.SOURCE_PROXY,
+        )
+    csr = _csr("a")[1]
+    return lambda: agent_certs.issue(
+        settings,
+        tenant_id="default",
+        agent_id="sensor-a",
+        agent_kind="scanner",
+        csr_pem=csr,
+        presented=presented,
+    )
+
+
+def _revoke_all(settings: Settings):  # type: ignore[no-untyped-def]
+    from api.services import agent_certs
+
+    return lambda: agent_certs.revoke(
+        settings, tenant_id="default", agent_id="sensor-a", revoke_all=True, reason="stolen"
+    )
+
+
+def _reset_enrolment(settings: Settings):  # type: ignore[no-untyped-def]
+    from api.services import agent_certs
+
+    return lambda: agent_certs.reset_enrolment(
+        settings, tenant_id="default", agent_id="sensor-a", reason="re-imaged"
+    )
+
+
+def _all(settings: Settings) -> list[dict]:
+    from api.services import agent_certs
+
+    return agent_certs.list_certs(settings, tenant_id="default", agent_id="sensor-a")
+
+
+@requires_postgres
+def test_revoke_all_waits_for_a_renewal_holding_the_row_and_revokes_it(tmp_path, monkeypatch):
+    """Before (lock dropped, or taken by ``revoke`` after it read the
+    certificates): the renewal committed a live certificate "revoke all"
+    never saw."""
+    from api.services import agent_certs
+
+    settings, cert, _ = _enrolled(tmp_path, monkeypatch)
+    outcome = _while_holding_the_row(monkeypatch, _issue(settings, cert), _revoke_all(settings))
+    renewed = outcome["holder"]
+    assert isinstance(renewed, agent_certs.IssuedCert), renewed
+    assert not isinstance(outcome["competitor"], Exception), outcome["competitor"]
+    assert _live(settings, "sensor-a") == []
+    states = {row["fingerprint_sha256"]: row["state"] for row in _all(settings)}
+    assert states[renewed.fingerprint_sha256] == "revoked"
+
+
+@requires_postgres
+def test_a_reset_waits_for_a_renewal_holding_the_row_and_revokes_it(tmp_path, monkeypatch):
+    """Before (``reset_enrolment`` taking the row after reading the
+    certificates): the renewal survived the reset that was to start over."""
+    from api.services import agent_certs
+
+    settings, cert, _ = _enrolled(tmp_path, monkeypatch)
+    outcome = _while_holding_the_row(monkeypatch, _issue(settings, cert), _reset_enrolment(settings))
+    assert isinstance(outcome["holder"], agent_certs.IssuedCert), outcome["holder"]
+    assert not isinstance(outcome["competitor"], Exception), outcome["competitor"]
+    assert _live(settings, "sensor-a") == []
+
+
+@requires_postgres
+def test_a_second_enrolment_after_a_reset_waits_for_the_first_and_is_refused(tmp_path, monkeypatch):
+    """Before (lock dropped, or ``issue`` reading the row without it): both
+    enrolments by token after a reset were issued a certificate."""
+    from api.services import agent_certs
+
+    settings, _, _ = _enrolled(tmp_path, monkeypatch)
+    _reset_enrolment(settings)()
+    outcome = _while_holding_the_row(monkeypatch, _issue(settings), _issue(settings))
+    assert isinstance(outcome["holder"], agent_certs.IssuedCert), outcome["holder"]
+    refused = outcome["competitor"]
+    assert isinstance(refused, agent_certs.ClientCertRefused), refused
+    assert refused.reason == "missing"
+    assert len(_live(settings, "sensor-a")) == 1
+
+
+@pytest.mark.parametrize("operator", ["revoke-all", "reset"])
+@requires_postgres
+def test_a_renewal_waits_for_the_operator_holding_the_row_and_is_refused(tmp_path, monkeypatch, operator):
+    from api.services import agent_certs
+
+    settings, cert, _ = _enrolled(tmp_path, monkeypatch)
+    act = _revoke_all(settings) if operator == "revoke-all" else _reset_enrolment(settings)
+    outcome = _while_holding_the_row(monkeypatch, act, _issue(settings, cert))
+    assert not isinstance(outcome["holder"], Exception), outcome["holder"]
+    refused = outcome["competitor"]
+    assert isinstance(refused, agent_certs.ClientCertRefused), refused
+    assert refused.reason == "revoked"
+    assert _live(settings, "sensor-a") == []
+
+
+# --------------------------------------------------------------------------
 # 17. Only revoking a certificate the agent held locks it.
 # --------------------------------------------------------------------------
 
@@ -1647,13 +1826,18 @@ def test_a_deleted_agents_lock_is_counted_and_reset_by_its_id(tmp_path, monkeypa
     first = _enrol(client, token_a)
     assert _register(ingress, token_a, _forwarded(first.json()["certificate"])).status_code == 200
     assert _revoke(client, admin, "sensor-a", all=True, reason="re-imaging").status_code == 200
-    assert client.delete("/api/agents/sensor-a", headers=bearer(admin)).status_code == 200
+    deleted = client.delete("/api/agents/sensor-a", headers=bearer(admin))
+    assert deleted.status_code == 200
+    assert deleted.json()["client_cert_lock_lifted"] is False
 
-    # Deleting is not a reset: the same id is still shut.
+    # Deleting is not a reset: the key is still good, so the same id is still shut.
     reinstalled = _token(client, key, "sensor-a")
     locked = _enrol(client, reinstalled)
     assert (locked.status_code, locked.headers["X-Client-Cert-Error"]) == (403, "enrolment-locked")
-    assert client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_locked"] == 1
+    summary = client.get("/api/agents/summary", headers=bearer(admin)).json()
+    assert summary["client_cert_locked"] == 1
+    # Listed by id: the reset takes one, and the agent is in no other list.
+    assert summary["client_cert_locked_agents"] == ["sensor-a"]
 
     # Another tenant's admin cannot reach it.
     created = client.post("/api/tenants", headers=bearer(admin), json={"name": "B", "tenant_id": "ten_b"})
@@ -1679,6 +1863,53 @@ def test_a_deleted_agents_lock_is_counted_and_reset_by_its_id(tmp_path, monkeypa
     fresh = _enrol(client, reinstalled)
     assert fresh.status_code == 200, fresh.text
     assert _register(ingress, reinstalled, _forwarded(fresh.json()["certificate"])).status_code == 200
+
+
+@pytest.mark.parametrize("key_revoked", ["by the delete", "before it"])
+@requires_postgres
+def test_decommissioning_a_stolen_sensor_takes_its_lock_with_it(tmp_path, monkeypatch, key_revoked):
+    """operations.md's order for a stolen host, then the delete. Before: the
+    token was already refused, so the lock protected nothing, yet the fleet
+    view showed "1 locked" for good — clearable only by resetting the
+    enrolment of the stolen sensor, found by id in the audit trail."""
+    ca = CA()
+    settings = _issuer_settings(tmp_path, ca, agent_mtls_mode="required")
+    client = _client(tmp_path, monkeypatch, settings)
+    admin = login(client, "admin")
+    minted = client.post(
+        "/api/tenants/default/provisioning-keys", headers=bearer(admin), json={"label": ""}
+    ).json()
+    token_a = _token(client, minted["key"], "sensor-a")
+    first = _enrol(client, token_a)
+    assert _register(_peer(client, INGRESS_PEER), token_a, _forwarded(first.json()["certificate"])).status_code == 200
+    assert _revoke(client, admin, "sensor-a", all=True, reason="laptop stolen").status_code == 200
+    assert client.get("/api/agents/summary", headers=bearer(admin)).json()["client_cert_locked"] == 1
+
+    if key_revoked == "before it":
+        revoked = client.post(
+            f"/api/tenants/default/provisioning-keys/{minted['key_id']}/revoke", headers=bearer(admin)
+        )
+        assert revoked.status_code == 200, revoked.text
+        deleted = client.delete("/api/agents/sensor-a", headers=bearer(admin))
+    else:
+        deleted = client.delete("/api/agents/sensor-a?revoke_key=true", headers=bearer(admin))
+    assert deleted.status_code == 200, deleted.text
+    summary = client.get("/api/agents/summary", headers=bearer(admin)).json()
+    assert (summary["client_cert_locked"], summary["client_cert_locked_agents"]) == (0, [])
+    assert deleted.json()["client_cert_lock_lifted"] is True
+    # The token the lock held back is refused before any certificate check.
+    assert _enrol(client, token_a).status_code == 401
+    [event] = _events(client, admin, "agent.certificate_enrolment_reset")
+    assert event["resource_id"] == "sensor-a"
+    assert event["after"]["was_locked"] is True
+    assert event["after"]["reason"] == "agent deleted; its provisioning key is revoked"
+    # Its certificates stay revoked; a host given a new key under the id
+    # enrols from scratch, as after a reset.
+    from api.services import agent_certs
+
+    states = {row["state"] for row in agent_certs.list_certs(settings, tenant_id="default", agent_id="sensor-a")}
+    assert states == {"revoked"}
+    assert _enrol(client, _token(client, _mint_key(client, admin), "sensor-a")).status_code == 200
 
 
 @requires_postgres
