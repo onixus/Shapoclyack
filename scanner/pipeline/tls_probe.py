@@ -5,45 +5,59 @@ backend, or missing scripts), this module connects to open TLS ports and
 extracts certificate fields comparable to what ``tls_posture`` already emits.
 
 Does **not** replace full cipher-suite enumeration (no grade A–F like nmap
-``ssl-enum-ciphers``). Per endpoint it makes at most four handshakes, one
-after another inside the caller's ``concurrency`` pool, each bounded by
-``timeout_seconds``:
+``ssl-enum-ciphers``). Per endpoint it makes at most four connections, one
+after another inside the caller's ``concurrency`` pool, each handshake bounded
+by ``timeout_seconds``:
 
-1. **Main handshake.** Verifies the presented chain against the system trust
-   store (plus ``ca_bundle``) -- chain only: the name is ``cert_name_mismatch``'s
-   job and the validity window ``cert_expired``'s, so neither is checked here.
-   It offers every version the local OpenSSL can still speak, so a server
-   whose *highest* version is TLS 1.0 answers instead of vanishing.
+1. **Main handshake.** Offers every version the local OpenSSL can still speak,
+   so a server whose *highest* version is TLS 1.0 answers. When chain trust is
+   due (see CHAIN TRUST below) it verifies the presented chain against the
+   system store plus ``ca_bundle`` -- the chain only: names are
+   ``cert_name_mismatch``'s job, and the validity window is checked separately,
+   over every certificate of the verified chain and over the leaf.
 2. **Collect handshake** (``CERT_NONE``), only when the chain did not verify,
-   to read the certificate the verifying handshake refused.
-3. **TLS 1.0 and TLS 1.1 handshakes**, each pinned to one version (min = max),
-   unless ``probe_legacy_protocols`` is off. A server that also speaks TLS 1.3
-   picks 1.3 in (1); only a ClientHello that offers nothing newer shows that
-   it still accepts 1.0.
+   so protocol and cipher come from a completed handshake. Should it fail,
+   what the first connection already showed is kept.
+3. **TLS 1.0 and TLS 1.1 handshakes**, each pinned to one version, unless
+   ``probe_legacy_protocols`` is off. A server that also speaks TLS 1.3 picks
+   1.3 in (1); only a ClientHello offering nothing newer shows it still takes 1.0.
 
-An unreachable or silent endpoint costs one ``timeout_seconds``, as before:
-nothing after (1) is attempted.
+Every handshake runs over memory BIOs, so the server's plaintext records are
+read as they arrive: the version its ServerHello chose, a CertificateRequest,
+an alert. That -- not OpenSSL's error string, which says how the *client*
+failed -- is what the protocol checks are classified on. An endpoint that
+answers nothing costs one timeout and yields no row; one that answered in TLS
+yields a row even when no handshake completed.
+
+CHAIN TRUST (``tls_posture.chain_trust``): ``public_only`` (default) judges the
+chain only when the address the probe connected to is publicly routable
+(``safe_http.is_public_address``, NAT64 included) or a ``ca_bundle`` is
+configured -- an intranet's own CA is not a finding until the operator has
+said which CAs are theirs. ``always`` judges every endpoint, ``off`` none.
 
 Flags (same shapes as the nmap path):
 
-* ``cert_expired`` / ``cert_expiring_soon`` -- not-after vs. ``expiring_soon_days``
-* ``self_signed`` -- subject == issuer heuristic, dropped when the chain verifies
+* ``cert_expired`` / ``cert_expiring_soon`` / ``cert_not_yet_valid`` -- the leaf's window
+* ``cert_chain_expired`` -- a CA certificate of the verified chain is outside its window
+* ``self_signed`` -- certain when verification said so (code 18), a heuristic
+  otherwise, and dropped when the chain verifies
 * ``cert_untrusted`` -- the chain does not verify to a trusted anchor
 * ``weak_key`` / ``weak_signature`` -- from the leaf's DER (``cert_strength.py``)
-* ``weak_protocol`` -- TLS 1.0 / 1.1 completed a handshake
-* ``weak_cipher_name`` -- on the negotiated cipher
+* ``weak_protocol`` -- a TLS 1.0 / 1.1 handshake completed
 
-HONESTY: every check records what it actually established under ``checks``.
-A protocol is ``accepted`` only when a handshake at that version completed and
-``rejected`` only when the server answered and turned it down. A connection
-that timed out, or a handshake the *local* stack aborted, is ``inconclusive``;
-a version the local OpenSSL cannot offer at all is ``not_performed`` -- checked
-by building the ClientHello in memory first, so a crypto policy that forbids
-TLS 1.0 on the scanner host never reads as "the server refuses TLS 1.0".
-SSLv2/SSLv3 are ``not_testable``: modern OpenSSL builds cannot send them.
-``rejected`` means "rejected OpenSSL's DEFAULT cipher list at security level
-0"; a server that offers TLS 1.0 only with ciphers OpenSSL 3 no longer has
-(RC4, export) reads as rejected. nmap ``ssl-enum-ciphers`` remains the full
+HONESTY: every check records what it established under ``checks``. A protocol
+is ``accepted`` only when a handshake at that version completed, and
+``rejected`` only on a version-specific answer: a ``protocol_version`` alert,
+or a ServerHello choosing another version. A ``handshake_failure`` alert before
+the ServerHello is ``inconclusive`` -- a refused version and a refused cipher
+list look the same -- as are a reset, a timeout, a server that asked for a
+client certificate (``client_cert_requested``) and a handshake the *local*
+stack aborted. A version the local OpenSSL cannot offer at all is
+``not_performed`` (the ClientHello is built in memory first, so a crypto
+policy on the scanner host never reads as the server refusing TLS 1.0);
+SSLv2/SSLv3 are ``not_testable``. The probe offers OpenSSL's ``DEFAULT`` list
+at security level 0, which on OpenSSL 3 holds no RC4/DES/NULL/EXPORT/anon
+suite: it cannot see weak ciphers, and nmap ``ssl-enum-ciphers`` remains the
 enumerator.
 
 Findings are merged into the same shape as ``tls_posture`` endpoint records
@@ -52,11 +66,13 @@ with ``source: "pulse-tls-probe"``.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import re
 import socket
 import ssl
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -66,12 +82,15 @@ from typing import Any
 
 from .cert_strength import cert_strength_issues
 from .protocol import parse_endpoint
+from .safe_http import is_public_address
 from .utils import save_json
 
 LOG = logging.getLogger("shapoclyack.tls_probe")
 
 # Common TLS ports when open_ports list is used as input.
 _DEFAULT_TLS_PORTS = frozenset({443, 8443, 9443, 4443, 10443, 6443})
+
+CHAIN_TRUST_MODES = ("public_only", "always", "off")
 
 # An assessment client has to finish the handshakes a browser refuses -- the
 # 1024-bit key or the TLS 1.0 session *is* the finding. OpenSSL 3 refuses both
@@ -84,13 +103,18 @@ _ASSESSMENT_CIPHERS = "DEFAULT:@SECLEVEL=0"
 _OP_LEGACY_SERVER_CONNECT = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
 
 # X509_V_FLAG_NO_CHECK_TIME (OpenSSL >= 1.1.0, x509_vfy.h). The ssl module has
-# no name for it; SSLContext.verify_flags passes the bit to OpenSSL as is.
+# no name for it; SSLContext.verify_flags passes the bit to OpenSSL as is. Trust
+# is judged with time switched off, and the validity of every certificate of
+# the verified chain is then checked on its own (cert_chain_expired), so an
+# expired intermediate is neither hidden nor reported as "untrusted".
 _X509_V_FLAG_NO_CHECK_TIME = 0x200000
 
 # Verification failures that say nothing about trust: the validity window
 # (switched off above; kept in case a build ignores the flag) and OpenSSL's
 # security-level checks on key size and digest.
 _NOT_TRUST_VERIFY_CODES = frozenset({9, 10, 13, 14, 66, 67, 68})
+# X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT: the leaf is its own issuer.
+_VERIFY_SELF_SIGNED_LEAF = 18
 
 # (label, ssl.TLSVersion member, ssl.HAS_* flag, ClientHello client_version)
 _LEGACY_PROTOCOLS = (
@@ -100,19 +124,49 @@ _LEGACY_PROTOCOLS = (
 _NOT_TESTABLE_PROTOCOLS = ("SSLv2", "SSLv3")
 _WEAK_PROTOCOLS = frozenset({"SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1"})
 _PROTOCOL_ORDER = ("SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3")
+_TLS_VERSION_LABELS = {
+    0x0300: "SSLv3",
+    0x0301: "TLSv1.0",
+    0x0302: "TLSv1.1",
+    0x0303: "TLSv1.2",
+    0x0304: "TLSv1.3",
+}
 
-# ssl.SSLError reasons that mean the *server* turned the handshake down: it
-# answered with another version or with something that is not TLS at all.
-# Alerts the server sent (TLSV1_ALERT_PROTOCOL_VERSION, SSLV3_ALERT_HANDSHAKE_
-# FAILURE, ...) are matched by their ALERT in the name.
-_SERVER_REFUSAL_REASONS = frozenset(
+# TLS record layer and handshake message types the observer reads (RFC 8446).
+_RECORD_CHANGE_CIPHER_SPEC = 20
+_RECORD_ALERT = 21
+_RECORD_HANDSHAKE = 22
+_RECORD_TYPES = frozenset({20, 21, 22, 23})
+_MAX_RECORD_LENGTH = 2**14 + 2048
+_MSG_SERVER_HELLO = 2
+_MSG_CERTIFICATE_REQUEST = 13
+_EXT_SUPPORTED_VERSIONS = 43
+_ALERT_PROTOCOL_VERSION = 70
+_ALERT_NAMES = {
+    0: "close_notify",
+    10: "unexpected_message",
+    40: "handshake_failure",
+    42: "bad_certificate",
+    47: "illegal_parameter",
+    48: "unknown_ca",
+    50: "decode_error",
+    70: "protocol_version",
+    71: "insufficient_security",
+    80: "internal_error",
+    86: "inappropriate_fallback",
+    112: "unrecognized_name",
+    116: "certificate_required",
+}
+
+# ssl.SSLError reasons OpenSSL raises when the server's answer was at another
+# version. Used only when the records themselves did not show it.
+_VERSION_REFUSAL_REASONS = frozenset(
     {
         "WRONG_VERSION_NUMBER",
         "UNSUPPORTED_PROTOCOL",
         "VERSION_TOO_LOW",
         "WRONG_SSL_VERSION",
-        "UNKNOWN_PROTOCOL",
-        "UNEXPECTED_EOF_WHILE_READING",
+        "TLSV1_ALERT_PROTOCOL_VERSION",
     }
 )
 
@@ -246,6 +300,18 @@ def _classify_from_cert(
                         "detail": f"expires in {days}d ({cert.get('not_after')})",
                     }
                 )
+    not_before = cert.get("not_before_dt")
+    if isinstance(not_before, datetime):
+        if not_before.tzinfo is None:
+            not_before = not_before.replace(tzinfo=timezone.utc)
+        if not_before > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "detail": f"valid from {cert.get('not_before')}",
+                }
+            )
 
     subj_cn = (cert.get("subject_cn") or "").lower()
     iss_cn = (cert.get("issuer_cn") or "").lower()
@@ -275,6 +341,9 @@ class ProbeContexts:
     collect: ssl.SSLContext
     verify: ssl.SSLContext | None = None
     trust_skip_reason: str | None = None
+    trust_store: str | None = None
+    chain_trust: str = "public_only"
+    ca_bundle_configured: bool = False
     legacy: dict[str, ssl.SSLContext] = field(default_factory=dict)
     legacy_skipped: dict[str, str] = field(default_factory=dict)
 
@@ -359,8 +428,14 @@ def _trust_store_gap(ctx: ssl.SSLContext) -> str | None:
     return "no system trust anchors (is ca-certificates installed?)"
 
 
-def _verify_context(floor: ssl.TLSVersion, ca_bundle: str | None) -> tuple[ssl.SSLContext | None, str | None]:
-    """The main handshake's chain-verifying context, or why trust cannot be judged."""
+def _verify_context(
+    floor: ssl.TLSVersion, ca_bundle: str | None
+) -> tuple[ssl.SSLContext | None, str | None, str | None]:
+    """The main handshake's chain-verifying context.
+
+    Returns ``(context, None, store)`` where ``store`` names what the chain is
+    judged against, or ``(None, reason, None)`` when trust cannot be judged.
+    """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.options |= _OP_LEGACY_SERVER_CONNECT
@@ -372,22 +447,30 @@ def _verify_context(floor: ssl.TLSVersion, ca_bundle: str | None) -> tuple[ssl.S
         getattr(ssl, "VERIFY_X509_STRICT", 0)
     )
     gap = _trust_store_gap(ctx)
-    if gap is not None:
-        return None, gap
     if ca_bundle:
         try:
             ctx.load_verify_locations(cafile=ca_bundle)
         except (OSError, ssl.SSLError) as exc:
             # Judging against the system store alone would flag every endpoint
             # of the internal PKI the bundle exists for.
-            return None, f"tls_posture.ca_bundle {ca_bundle!r} could not be loaded: {exc}"
-    return ctx, None
+            return None, f"tls_posture.ca_bundle {ca_bundle!r} could not be loaded: {exc}", None
+        # The operator named the CAs to trust: an empty system store does not
+        # stop the check, it only narrows what a chain can verify against.
+        return ctx, None, "ca_bundle" if gap is not None else "system+ca_bundle"
+    if gap is not None:
+        return None, gap, None
+    return ctx, None, "system"
 
 
 def build_probe_contexts(
-    *, probe_legacy_protocols: bool = True, ca_bundle: str | None = None
+    *,
+    probe_legacy_protocols: bool = True,
+    ca_bundle: str | None = None,
+    chain_trust: str = "public_only",
 ) -> ProbeContexts:
     """Build the contexts for one probe run (see the module docstring)."""
+    if chain_trust not in CHAIN_TRUST_MODES:
+        raise ValueError(f"chain_trust must be one of {', '.join(CHAIN_TRUST_MODES)}, not {chain_trust!r}")
     legacy: dict[str, ssl.SSLContext] = {}
     legacy_skipped: dict[str, str] = {}
     floor = ssl.TLSVersion.TLSv1_2
@@ -410,15 +493,24 @@ def build_probe_contexts(
     collect.set_ciphers(_ASSESSMENT_CIPHERS)
     _set_minimum_version(collect, floor)
 
-    verify, trust_skip_reason = _verify_context(floor, ca_bundle)
-    if trust_skip_reason is not None:
-        LOG.warning("tls_probe: chain trust not checked: %s", trust_skip_reason)
+    verify: ssl.SSLContext | None = None
+    trust_skip_reason: str | None = None
+    trust_store: str | None = None
+    if chain_trust != "off":
+        verify, trust_skip_reason, trust_store = _verify_context(floor, ca_bundle)
+        if trust_skip_reason is not None:
+            LOG.warning("tls_probe: chain trust not checked: %s", trust_skip_reason)
+        elif trust_store == "ca_bundle":
+            LOG.warning("tls_probe: no system trust anchors; chains are judged against ca_bundle alone")
     for label, reason in sorted(legacy_skipped.items()):
         LOG.info("tls_probe: %s check not performed: %s", label, reason)
     return ProbeContexts(
         collect=collect,
         verify=verify,
         trust_skip_reason=trust_skip_reason,
+        trust_store=trust_store,
+        chain_trust=chain_trust,
+        ca_bundle_configured=bool(ca_bundle),
         legacy=dict(sorted(legacy.items())),
         legacy_skipped=legacy_skipped,
     )
@@ -428,47 +520,301 @@ class _Unreachable(Exception):
     """The TCP connection itself failed: nothing was learned about TLS."""
 
 
+class _ServerRecords:
+    """What the server's plaintext TLS records said during one handshake.
+
+    Fed every byte the server sends. Until the server's ChangeCipherSpec (TLS
+    1.2 and older), or after a ServerHello that chose TLS 1.3, the handshake
+    messages and alerts are plaintext: the version the ServerHello chose, a
+    CertificateRequest, an alert description. Anything that is not a TLS
+    record stream makes ``not_tls`` true and stops the parse.
+    """
+
+    def __init__(self) -> None:
+        self.tls_seen = False
+        self.not_tls = False
+        self.server_hello_version: str | None = None
+        self.certificate_request = False
+        self.alert: int | None = None
+        self._encrypted = False
+        self._buffer = bytearray()
+        self._handshake = bytearray()
+
+    def feed(self, data: bytes) -> None:
+        if self.not_tls:
+            return
+        self._buffer += data
+        while len(self._buffer) >= 5:
+            content_type, major = self._buffer[0], self._buffer[1]
+            length = int.from_bytes(self._buffer[3:5], "big")
+            if content_type not in _RECORD_TYPES or major != 3 or length > _MAX_RECORD_LENGTH:
+                self.not_tls = True
+                return
+            if len(self._buffer) < 5 + length:
+                return
+            body = bytes(self._buffer[5 : 5 + length])
+            del self._buffer[: 5 + length]
+            self.tls_seen = True
+            if content_type == _RECORD_CHANGE_CIPHER_SPEC:
+                self._encrypted = True
+            elif self._encrypted:
+                continue
+            elif content_type == _RECORD_ALERT and len(body) >= 2 and self.alert is None:
+                self.alert = body[1]
+            elif content_type == _RECORD_HANDSHAKE:
+                self._handshake += body
+                self._read_messages()
+
+    def _read_messages(self) -> None:
+        while len(self._handshake) >= 4 and not self._encrypted:
+            msg_type = self._handshake[0]
+            length = int.from_bytes(self._handshake[1:4], "big")
+            if len(self._handshake) < 4 + length:
+                return
+            body = bytes(self._handshake[4 : 4 + length])
+            del self._handshake[: 4 + length]
+            if msg_type == _MSG_SERVER_HELLO:
+                version = _server_hello_version(body)
+                if version is not None:
+                    self.server_hello_version = _TLS_VERSION_LABELS.get(version, f"0x{version:04x}")
+                    if version == 0x0304:
+                        # Everything after a TLS 1.3 ServerHello is encrypted.
+                        self._encrypted = True
+            elif msg_type == _MSG_CERTIFICATE_REQUEST:
+                self.certificate_request = True
+
+
+def _server_hello_version(body: bytes) -> int | None:
+    """The version a ServerHello chose: ``supported_versions`` if present (TLS
+    1.3), else its legacy_version field."""
+    if len(body) < 2:
+        return None
+    version = int.from_bytes(body[0:2], "big")
+    pos = 2 + 32  # legacy_version, random
+    if len(body) < pos + 1:
+        return version
+    pos += 1 + body[pos]  # session id
+    pos += 2 + 1  # cipher suite, compression method
+    if len(body) < pos + 2:
+        return version
+    end = pos + 2 + int.from_bytes(body[pos : pos + 2], "big")
+    pos += 2
+    while pos + 4 <= min(end, len(body)):
+        ext_type = int.from_bytes(body[pos : pos + 2], "big")
+        ext_len = int.from_bytes(body[pos + 2 : pos + 4], "big")
+        if ext_type == _EXT_SUPPORTED_VERSIONS and ext_len == 2 and pos + 6 <= len(body):
+            return int.from_bytes(body[pos + 4 : pos + 6], "big")
+        pos += 4 + ext_len
+    return version
+
+
 @dataclass
-class _Handshake:
-    version: str | None
-    cipher: str
-    peercert: dict[str, Any]
-    der: bytes | None
+class _Attempt:
+    """What one connection established, whether or not its handshake completed."""
+
+    records: _ServerRecords
+    completed: bool = False
+    version: str | None = None
+    cipher: str = ""
+    leaf: dict[str, Any] = field(default_factory=dict)
+    der: bytes | None = None
+    verified_chain: list[dict[str, Any]] | None = None
+    error: BaseException | None = None
 
 
 def _protocol_label(raw: str | None) -> str | None:
-    # ssl.SSLSocket.version() spells TLS 1.0 "TLSv1"; tls_posture spells it "TLSv1.0".
+    # ssl.SSLObject.version() spells TLS 1.0 "TLSv1"; tls_posture spells it "TLSv1.0".
     return "TLSv1.0" if raw == "TLSv1" else raw
 
 
-def _handshake(
-    ctx: ssl.SSLContext, host: str, port: int, server_hostname: str, timeout: float
-) -> _Handshake:
+def _connect(host: str, port: int, timeout: float) -> socket.socket:
     try:
-        sock = socket.create_connection((host, port), timeout=timeout)
+        return socket.create_connection((host, port), timeout=timeout)
     except OSError as exc:
         raise _Unreachable(str(exc)) from exc
-    with sock:
-        with ctx.wrap_socket(sock, server_hostname=server_hostname) as ssock:
-            cipher = ssock.cipher()  # (name, proto, bits)
-            return _Handshake(
-                version=_protocol_label(ssock.version()),
-                cipher=(cipher[0] if cipher else "") or "",
-                # Empty under CERT_NONE; decoded by the stdlib once verified.
-                peercert=ssock.getpeercert() or {},
-                der=ssock.getpeercert(binary_form=True),
+
+
+def _is_public_peer(peer: str) -> bool:
+    """Whether a connected-to address is publicly routable, by the scanner's one rule.
+
+    ``safe_http.is_public_address`` judges a NAT64 or IPv4-mapped address by
+    the IPv4 address it delivers to, so ``64:ff9b::a00:5`` is 10.0.0.5 here too.
+    """
+    try:
+        address = ipaddress.ip_address(peer.split("%", 1)[0])
+    except ValueError:
+        return False
+    return is_public_address(address)
+
+
+def _peer_is_public(sock: socket.socket) -> tuple[str, bool]:
+    """The address actually connected to, and whether it is publicly routable."""
+    try:
+        peer = str(sock.getpeername()[0])
+    except OSError:
+        return "", False
+    return peer, _is_public_peer(peer)
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("handshake timed out")
+    return left
+
+
+def _flush(sock: socket.socket, outgoing: ssl.MemoryBIO, deadline: float) -> None:
+    data = outgoing.read()
+    if data:
+        sock.settimeout(_remaining(deadline))
+        sock.sendall(data)
+
+
+def _presented_chain(tls: ssl.SSLObject) -> list[tuple[dict[str, Any], bytes]] | None:
+    """The certificates the server sent, decoded by the stdlib.
+
+    ``getpeercert()`` is empty under ``CERT_NONE`` and raises after a failed
+    verification; the chain OpenSSL kept is reachable through the object's
+    ``get_unverified_chain`` -- private in 3.10-3.12, behind the public 3.13
+    method of the same name. ``None`` when this Python has no such method.
+    """
+    getter = getattr(getattr(tls, "_sslobj", None), "get_unverified_chain", None)
+    if getter is None:
+        return None
+    try:
+        chain = getter() or []
+        return [(cert.get_info(), ssl.PEM_cert_to_DER_cert(cert.public_bytes())) for cert in chain]
+    except (ssl.SSLError, ValueError, AttributeError) as exc:
+        LOG.debug("tls_probe: presented chain unreadable: %s", exc)
+        return None
+
+
+def _verified_chain(tls: ssl.SSLObject) -> list[dict[str, Any]] | None:
+    """The chain OpenSSL verified, leaf first, decoded; ``None`` when unavailable."""
+    getter = getattr(getattr(tls, "_sslobj", None), "get_verified_chain", None)
+    if getter is None:
+        return None
+    try:
+        return [cert.get_info() for cert in getter() or []]
+    except (ssl.SSLError, ValueError, AttributeError) as exc:
+        LOG.debug("tls_probe: verified chain unreadable: %s", exc)
+        return None
+
+
+def _handshake(sock: socket.socket, ctx: ssl.SSLContext, server_hostname: str, timeout: float) -> _Attempt:
+    """One TLS handshake over ``sock``, run over memory BIOs.
+
+    Never raises for a TLS-level failure: the error is kept on the attempt
+    together with what the server's records showed before it.
+    """
+    records = _ServerRecords()
+    attempt = _Attempt(records=records)
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    try:
+        tls = ctx.wrap_bio(incoming, outgoing, server_side=False, server_hostname=server_hostname)
+    except ValueError as exc:  # a server_hostname the ssl module refuses
+        attempt.error = exc
+        return attempt
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                tls.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                if incoming.eof:
+                    raise ConnectionAbortedError("server closed the connection") from None
+                _flush(sock, outgoing, deadline)
+                sock.settimeout(_remaining(deadline))
+                data = sock.recv(65536)
+                records.feed(data)
+                if data:
+                    incoming.write(data)
+                else:
+                    incoming.write_eof()
+        _flush(sock, outgoing, deadline)
+        attempt.completed = True
+    except (ssl.SSLError, OSError) as exc:
+        attempt.error = exc
+        alert = outgoing.read()
+        if alert:
+            try:
+                sock.sendall(alert)
+            except OSError as send_exc:
+                # Our alert is a courtesy to the server's logs; the connection
+                # is being dropped either way.
+                LOG.debug("tls_probe: alert not sent: %s", send_exc)
+
+    attempt.version = _protocol_label(tls.version()) if attempt.completed else records.server_hello_version
+    cipher = tls.cipher()  # set once the ServerHello was read, even if the handshake then failed
+    attempt.cipher = (cipher[0] if cipher else "") or ""
+    chain = _presented_chain(tls)
+    if chain:
+        attempt.leaf, attempt.der = chain[0]
+    elif attempt.completed:
+        attempt.leaf = tls.getpeercert() or {}
+        attempt.der = tls.getpeercert(binary_form=True)
+    if attempt.completed and ctx.verify_mode != ssl.CERT_NONE:
+        attempt.verified_chain = _verified_chain(tls)
+    return attempt
+
+
+def _describe(exc: BaseException | None) -> str:
+    if exc is None:
+        return "unknown failure"
+    reason = getattr(exc, "reason", None)
+    return str(reason) if reason else f"{exc.__class__.__name__}: {exc}"
+
+
+def _alert_name(code: int) -> str:
+    return _ALERT_NAMES.get(code, f"alert {code}")
+
+
+def _legacy_status(attempt: _Attempt, label: str) -> dict[str, Any]:
+    """Classify one pinned-version attempt (see HONESTY in the module docstring)."""
+    records = attempt.records
+    if attempt.completed:
+        if attempt.version == label:
+            return {"status": "accepted"}
+        return {"status": "inconclusive", "detail": f"handshake completed as {attempt.version}"}
+
+    chosen = records.server_hello_version
+    if chosen is not None and chosen != label:
+        return {"status": "rejected", "detail": f"server answered with {chosen}", "server_hello_version": chosen}
+    if chosen == label:
+        check: dict[str, Any] = {"status": "inconclusive", "server_hello_version": chosen}
+        if records.certificate_request:
+            check["client_cert_requested"] = True
+            check["detail"] = (
+                f"server chose {label} and asked for a client certificate; "
+                f"without one the handshake ended ({_describe(attempt.error)})"
             )
-
-
-def _server_refusal(exc: BaseException) -> str | None:
-    """The server's "no" in ``exc``, or ``None`` when it says nothing about the server."""
-    if isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError, ConnectionError)):
-        return f"server closed the connection ({exc.__class__.__name__})"
-    if isinstance(exc, ssl.SSLError):
-        reason = str(exc.reason or "")
-        if "ALERT" in reason or reason in _SERVER_REFUSAL_REASONS:
-            return reason
-    return None
+        else:
+            check["detail"] = f"server chose {label}, then the handshake failed: {_describe(attempt.error)}"
+        return check
+    if records.alert == _ALERT_PROTOCOL_VERSION:
+        return {"status": "rejected", "detail": "protocol_version alert"}
+    if records.alert is not None:
+        return {
+            "status": "inconclusive",
+            "detail": (
+                f"{_alert_name(records.alert)} alert before any ServerHello: "
+                "a refused version and a refused cipher list look the same"
+            ),
+        }
+    if records.not_tls:
+        return {"status": "inconclusive", "detail": "server did not answer in TLS"}
+    reason = getattr(attempt.error, "reason", None)
+    if records.tls_seen and reason in _VERSION_REFUSAL_REASONS:
+        return {"status": "rejected", "detail": str(reason)}
+    if isinstance(attempt.error, (ssl.SSLEOFError, ssl.SSLZeroReturnError, ConnectionError)):
+        return {
+            "status": "inconclusive",
+            "detail": "server hung up without a TLS answer (a refusal, a connection limit or a middlebox)",
+        }
+    if isinstance(attempt.error, TimeoutError):
+        return {"status": "inconclusive", "detail": "no answer before the timeout"}
+    return {"status": "inconclusive", "detail": f"handshake aborted locally: {_describe(attempt.error)}"}
 
 
 def _trust_from_verify_error(exc: ssl.SSLCertVerificationError) -> dict[str, Any]:
@@ -483,18 +829,69 @@ def _trust_from_verify_error(exc: ssl.SSLCertVerificationError) -> dict[str, Any
     return {"status": "untrusted", "detail": message, "verify_code": code}
 
 
-def _describe(exc: BaseException) -> str:
-    reason = getattr(exc, "reason", None)
-    return str(reason) if reason else f"{exc.__class__.__name__}: {exc}"
+def _trust_skip(contexts: ProbeContexts, peer: str, peer_public: bool) -> dict[str, Any] | None:
+    """The ``chain_trust`` record when the chain is not to be judged, else ``None``."""
+    if contexts.chain_trust == "off":
+        return {"status": "not_evaluated", "reason": "disabled", "detail": "tls_posture.chain_trust is off"}
+    if contexts.chain_trust == "public_only" and not contexts.ca_bundle_configured and not peer_public:
+        return {
+            "status": "not_evaluated",
+            "reason": "internal_address",
+            "detail": (
+                f"{peer or 'the address'} is not publicly routable; set tls_posture.ca_bundle "
+                "to the internal CAs (or chain_trust: always) to judge it"
+            ),
+        }
+    if contexts.verify is None:
+        return {"status": "not_performed", "detail": contexts.trust_skip_reason}
+    return None
+
+
+def _chain_validity(chain: list[dict[str, Any]] | None, now: datetime) -> tuple[list[dict[str, Any]], str | None]:
+    """Validity-window issues of the CA certificates of a verified chain.
+
+    Trust is judged with OpenSSL's time check off; a client that keeps it on
+    rejects a chain whose intermediate (or root) is outside its window, so that
+    is checked here, certificate by certificate. Returns the issues and, when
+    the chain could not be read, why not.
+    """
+    if chain is None:
+        return [], "this Python exposes no verified chain"
+    issues: list[dict[str, Any]] = []
+    for depth, info in enumerate(chain[1:], start=1):
+        cert = _cert_dict_from_peercert(info)
+        name = cert.get("subject") or f"depth {depth}"
+        not_after = cert.get("not_after_dt")
+        not_before = cert.get("not_before_dt")
+        if isinstance(not_after, datetime) and not_after < now:
+            issues.append(
+                {
+                    "kind": "cert_chain_expired",
+                    "severity": "high",
+                    "depth": depth,
+                    "subject": name,
+                    "detail": f"{name} in the verified chain expired {cert.get('not_after')}",
+                }
+            )
+        elif isinstance(not_before, datetime) and not_before > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "depth": depth,
+                    "subject": name,
+                    "detail": f"{name} in the verified chain is valid from {cert.get('not_before')}",
+                }
+            )
+    return issues, None
 
 
 def _load_leaf(der: bytes | None) -> tuple[Any, str | None]:
     """Parse the leaf DER with ``cryptography``: ``(cert, None)`` or ``(None, why not)``.
 
-    ``cryptography`` is not a dependency of the scanner image
-    (requirements.txt) -- the all-in-one image has it through
-    requirements-api.txt. Without it the key and signature checks report
-    ``not_performed`` instead of passing silently.
+    Both images install ``cryptography`` (requirements.txt and
+    requirements-api.txt); a host that runs the scanner without it gets key and
+    signature checks recorded as ``not_performed`` rather than passed silently.
     """
     if not der:
         return None, "server presented no certificate"
@@ -508,12 +905,22 @@ def _load_leaf(der: bytes | None) -> tuple[Any, str | None]:
         return None, f"certificate DER not parseable: {exc}"
 
 
+# Signature algorithms cryptography reports as "Unknown OID": the MD2/MD4
+# RSA OIDs and the OIW sha1WithRSA. Named here so cert_strength can judge them.
+_SIGNATURE_OID_NAMES = {
+    "1.2.840.113549.1.1.2": "md2WithRSAEncryption",
+    "1.2.840.113549.1.1.3": "md4WithRSAEncryption",
+    "1.2.840.113549.1.1.4": "md5WithRSAEncryption",
+    "1.3.14.3.2.29": "sha1WithRSA",
+}
+
+
 def _strength_fields(leaf: Any) -> dict[str, Any]:
     """``public_key_type`` / ``public_key_bits`` / ``signature_algorithm`` of a leaf."""
     from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
 
     oid = leaf.signature_algorithm_oid
-    name = getattr(oid, "_name", None)
+    name = _SIGNATURE_OID_NAMES.get(oid.dotted_string) or getattr(oid, "_name", None)
     out: dict[str, Any] = {
         "public_key_type": None,
         "public_key_bits": None,
@@ -536,19 +943,26 @@ def _strength_fields(leaf: Any) -> dict[str, Any]:
     return out
 
 
-def _cert_from_handshake(hs: _Handshake) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The normalized cert dict of one handshake, and the ``cert_strength`` check record."""
-    leaf, reason = _load_leaf(hs.der)
-    if hs.peercert:
-        cert = _cert_dict_from_peercert(hs.peercert)
+def _cert_from_attempt(attempt: _Attempt | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """The normalized cert dict, and the ``cert_fields`` / ``cert_strength`` check records."""
+    if attempt is None or not (attempt.leaf or attempt.der):
+        missing = {"status": "not_performed", "detail": "no certificate received"}
+        return {}, missing, dict(missing)
+    leaf, reason = _load_leaf(attempt.der)
+    if attempt.leaf:
+        cert = _cert_dict_from_peercert(attempt.leaf)
     elif leaf is not None:
         cert = _cert_fields(leaf)
     else:
         cert = {}
+    if isinstance(cert.get("not_after_dt"), datetime):
+        fields_check: dict[str, Any] = {"status": "performed"}
+    else:
+        fields_check = {"status": "not_performed", "detail": "certificate fields could not be decoded"}
     if leaf is None:
-        return cert, {"status": "not_performed", "detail": reason}
+        return cert, fields_check, {"status": "not_performed", "detail": reason}
     cert.update(_strength_fields(leaf))
-    return cert, {"status": "performed"}
+    return cert, fields_check, {"status": "performed"}
 
 
 def _probe_one(
@@ -572,37 +986,55 @@ def _probe_one(
     contexts = contexts or build_probe_contexts()
     server_hostname = sni or host
 
-    def connect(ctx: ssl.SSLContext) -> _Handshake:
-        return _handshake(ctx, host, port, server_hostname, timeout)
-
-    main: _Handshake | None = None
-    trust: dict[str, Any] = {"status": "not_performed", "detail": contexts.trust_skip_reason}
     try:
-        if contexts.verify is not None:
-            try:
-                main = connect(contexts.verify)
-                trust = {"status": "trusted"}
-            except ssl.SSLCertVerificationError as exc:
-                trust = _trust_from_verify_error(exc)
-                main = connect(contexts.collect)
-        else:
-            main = connect(contexts.collect)
-    except (_Unreachable, TimeoutError) as exc:
-        # Nothing answered, or it answered and then said nothing: a legacy
-        # ClientHello would wait out the same timeout, twice.
-        LOG.debug("tls_probe %s:%s failed: %s", host, port, exc)
+        sock = _connect(host, port, timeout)
+    except _Unreachable as exc:
+        LOG.debug("tls_probe %s:%s unreachable: %s", host, port, exc)
         return None
-    except (OSError, ssl.SSLError, ValueError) as exc:
-        # Something answered and refused the widest ClientHello. Old servers
-        # that choke on a modern one (version intolerance) may still take a
-        # ClientHello pinned to TLS 1.0, so the legacy checks still run.
-        LOG.debug("tls_probe %s:%s main handshake failed: %s", host, port, exc)
-        if contexts.verify is not None and trust["status"] == "not_performed":
-            trust = {"status": "inconclusive", "detail": f"no handshake completed: {_describe(exc)}"}
+    with sock:
+        peer, peer_public = _peer_is_public(sock)
+        skip = _trust_skip(contexts, peer, peer_public)
+        # _trust_skip answers "not_performed" whenever there is no verify context.
+        main_ctx = contexts.verify if skip is None else contexts.collect
+        main = _handshake(sock, main_ctx or contexts.collect, server_hostname, timeout)
 
-    completed: dict[str, _Handshake] = {}
-    if main is not None and main.version:
-        completed[main.version] = main
+    if not main.completed and not main.records.tls_seen:
+        if main.records.not_tls or isinstance(main.error, TimeoutError):
+            # Not TLS, or nothing said at all: a pinned ClientHello would wait
+            # out the same timeout, twice.
+            LOG.debug("tls_probe %s:%s no TLS answer: %s", host, port, _describe(main.error))
+            return None
+        # Hung up on the widest ClientHello without a word. Old servers that
+        # choke on a modern one (version intolerance) may still take one
+        # pinned to TLS 1.0, so the legacy checks run before giving up.
+
+    if skip is not None:
+        trust = skip
+    elif main.completed:
+        trust = {"status": "trusted", "store": contexts.trust_store}
+    elif isinstance(main.error, ssl.SSLCertVerificationError):
+        trust = _trust_from_verify_error(main.error)
+        trust["store"] = contexts.trust_store
+    else:
+        trust = {"status": "inconclusive", "detail": f"no handshake completed: {_describe(main.error)}"}
+
+    collect: _Attempt | None = None
+    if isinstance(main.error, ssl.SSLCertVerificationError):
+        # The verifying handshake stopped at the certificate; a second one
+        # without verification shows protocol and cipher of a completed
+        # handshake. If it fails, the first one's ServerHello and certificate
+        # still stand.
+        try:
+            with _connect(host, port, timeout) as sock:
+                collect = _handshake(sock, contexts.collect, server_hostname, timeout)
+        except _Unreachable as exc:
+            LOG.debug("tls_probe %s:%s collect handshake unreachable: %s", host, port, exc)
+
+    attempts: list[_Attempt] = [a for a in (collect, main) if a is not None]
+    completed: dict[str, _Attempt] = {}
+    for attempt in attempts:
+        if attempt.completed and attempt.version:
+            completed.setdefault(attempt.version, attempt)
 
     protocols: dict[str, dict[str, Any]] = {
         label: {
@@ -623,37 +1055,49 @@ def _probe_one(
             }
             continue
         try:
-            hs = connect(ctx)
-        except (_Unreachable, TimeoutError) as exc:
-            protocols[label] = {"status": "inconclusive", "detail": _describe(exc)}
+            with _connect(host, port, timeout) as sock:
+                attempt = _handshake(sock, ctx, server_hostname, timeout)
+        except _Unreachable as exc:
+            protocols[label] = {"status": "inconclusive", "detail": f"connection failed: {exc}"}
             continue
-        except (OSError, ssl.SSLError, ValueError) as exc:
-            refusal = _server_refusal(exc)
-            if refusal is not None:
-                protocols[label] = {"status": "rejected", "detail": refusal}
-            else:
-                protocols[label] = {
-                    "status": "inconclusive",
-                    "detail": f"handshake aborted locally: {_describe(exc)}",
-                }
-            continue
-        if hs.version == label:
-            completed[label] = hs
-            protocols[label] = {"status": "accepted"}
-        else:
-            protocols[label] = {"status": "inconclusive", "detail": f"handshake completed as {hs.version}"}
+        attempts.append(attempt)
+        protocols[label] = _legacy_status(attempt, label)
+        if protocols[label]["status"] == "accepted":
+            completed[label] = attempt
 
-    if not completed:
+    if not completed and not any(a.records.tls_seen for a in attempts):
         return None
     accepted = sorted(completed, key=lambda v: _PROTOCOL_ORDER.index(v) if v in _PROTOCOL_ORDER else 99)
-    base = main if main is not None else completed[accepted[0]]
+    # The best a client got: the main handshake, else the highest version a
+    # pinned one completed (a server that refused the modern ClientHello).
+    base = next((a for a in (collect, main) if a is not None and a.completed), None)
+    if base is None and accepted:
+        base = completed[accepted[-1]]
+    cert_source = base or next((a for a in attempts if a.leaf or a.der), None)
 
-    cert, strength = _cert_from_handshake(base)
+    cert, fields_check, strength_check = _cert_from_attempt(cert_source)
     issues = _classify_from_cert(cert, now, expiring_soon_days) if cert else []
     if trust["status"] == "trusted":
         # The chain verified to an anchor the operator trusts (the system store
         # or ca_bundle): a matching subject and issuer is not "nobody vouches".
         issues = [issue for issue in issues if issue["kind"] != "self_signed"]
+        validity_issues, validity_gap = _chain_validity(main.verified_chain, now)
+        issues.extend(validity_issues)
+        trust["validity_checked"] = validity_gap is None
+        if validity_gap is not None:
+            trust["validity_detail"] = validity_gap
+    elif trust["status"] == "untrusted" and trust.get("verify_code") == _VERIFY_SELF_SIGNED_LEAF:
+        # Verification established what the heuristic guesses: one finding,
+        # and a certain one, rather than self_signed plus cert_untrusted.
+        issues = [issue for issue in issues if issue["kind"] != "self_signed"]
+        issues.append(
+            {
+                "kind": "self_signed",
+                "severity": "medium",
+                "detail": "self-signed certificate (chain verification)",
+                "heuristic": False,
+            }
+        )
     elif trust["status"] == "untrusted":
         issues.append(
             {
@@ -674,8 +1118,11 @@ def _probe_one(
                     "detail": f"server accepts {version} (handshake completed)",
                 }
             )
-    # weak cipher name heuristic on negotiated cipher only
-    cname = base.cipher
+    # Weak cipher name on the negotiated cipher. OpenSSL 3's DEFAULT list at
+    # security level 0 offers none of these suites, so with current images the
+    # server cannot pick one and this never fires; older OpenSSL builds still
+    # offer 3DES.
+    cname = base.cipher if base is not None else ""
     upper = cname.upper()
     for weak in ("RC4", "DES", "3DES", "NULL", "EXPORT", "MD5", "ANON"):
         if weak in upper:
@@ -694,7 +1141,7 @@ def _probe_one(
         for k, v in cert.items()
         if k not in ("not_before_dt", "not_after_dt")
     }
-    return {
+    row: dict[str, Any] = {
         "host": host,
         "port": str(port),
         "sni": server_hostname,
@@ -705,23 +1152,26 @@ def _probe_one(
         ],
         "issues": issues,
         "source": "pulse-tls-probe",
-        "negotiated_protocol": base.version,
+        "negotiated_protocol": base.version if base is not None else None,
         "negotiated_cipher": cname,
         "accepted_protocols": accepted,
         "checks": {
             "protocols": dict(sorted(protocols.items(), key=lambda kv: _PROTOCOL_ORDER.index(kv[0]))),
             "chain_trust": {k: v for k, v in trust.items() if v is not None},
-            "cert_strength": strength,
+            "cert_fields": fields_check,
+            "cert_strength": strength_check,
         },
     }
+    if any(a.records.certificate_request for a in attempts):
+        row["client_cert_requested"] = True
+    return row
 
 
 def _cert_fields(cert: Any) -> dict[str, Any]:
     """Subject/issuer/SAN/validity of a ``cryptography`` certificate, in probe shape.
 
-    With ``ssl.CERT_NONE``, ``getpeercert()`` returns an empty dict; the DER
-    form is still available, and this is how an unverified certificate gets
-    its fields (see :func:`_load_leaf` for when ``cryptography`` is missing).
+    The fallback for a Python whose ``ssl`` cannot hand back the presented
+    chain decoded (see :func:`_presented_chain`).
     """
     from cryptography import x509
     from cryptography.x509.oid import ExtensionOID, NameOID
@@ -794,13 +1244,15 @@ def probe_tls_endpoints(
     sni_by_host: dict[str, str] | None = None,
     probe_legacy_protocols: bool = True,
     ca_bundle: str | None = None,
+    chain_trust: str = "public_only",
 ) -> list[dict[str, Any]]:
     """Probe open ports for TLS; return finding dicts compatible with tls_posture.
 
     ``sni_by_host`` maps an address to the name to send in SNI (the FQDN that
     resolved to it). Without an entry the address itself is used, and the row's
-    ``sni`` field records which it was. ``probe_legacy_protocols`` and
-    ``ca_bundle`` are the ``tls_posture`` config keys of the same names.
+    ``sni`` field records which it was. ``probe_legacy_protocols``,
+    ``ca_bundle`` and ``chain_trust`` are the ``tls_posture`` config keys of the
+    same names.
     """
     now = now or datetime.now(timezone.utc)
     endpoints = _parse_tls_endpoints(open_ports, tls_ports)
@@ -809,7 +1261,7 @@ def probe_tls_endpoints(
     truncated = len(endpoints) > max_targets
     endpoints = endpoints[:max_targets]
     contexts = build_probe_contexts(
-        probe_legacy_protocols=probe_legacy_protocols, ca_bundle=ca_bundle
+        probe_legacy_protocols=probe_legacy_protocols, ca_bundle=ca_bundle, chain_trust=chain_trust
     )
     findings: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:

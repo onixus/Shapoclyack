@@ -6,24 +6,38 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
-- **TLS posture judges the certificate, not only its dates.** Three findings
-  join `tls_posture.json`: `weak_key` (RSA/DSA under 2048 bits or EC under
-  224, medium; high under 1024) and `weak_signature` (leaf signed with MD5 or
-  SHA-1, medium) on the nmap path — whose `ssl-cert` key size and signature
-  algorithm were parsed and then dropped — and on the stdlib probe; and
-  `cert_untrusted` (medium) on the probe, when the presented chain does not
-  verify to the system trust store plus the new `tls_posture.ca_bundle` (a
-  PEM of the organisation's own CAs, so an internal PKI is not flagged). The
-  trust check is about the chain only: names stay `cert_name_mismatch` and
-  dates `cert_expired`. A chain that verifies silences the `self_signed`
-  heuristic. With no system trust anchors or an unreadable bundle the check
-  records `not_performed` instead of flagging every endpoint. The probe reads
-  key size and signature algorithm with `cryptography`, which the scanner
-  image now installs too (`requirements.txt`, same pin as the API image;
-  `requirements.lock` gains `cryptography`, `cffi` and `pycparser`); where it
-  is missing, those checks record `not_performed`. The org-profile TLS control grades the new medium
-  findings `weak`. Pulse `tls[]` rows carry no key or signature fields, so
-  that path has none of these. See
+- **TLS posture judges the certificate, not only its dates.** New findings in
+  `tls_posture.json`: `weak_key` (RSA/DSA under 2048 bits or EC under 224,
+  medium; high under 1024) and `weak_signature` (leaf signed with MD2/MD4/MD5
+  or SHA-1, medium; not on a self-issued leaf, whose signature nobody
+  verifies) on the nmap path — whose `ssl-cert` key size and signature
+  algorithm were parsed and then dropped — and on the stdlib probe;
+  `cert_not_yet_valid` (medium) on every path; and on the probe
+  `cert_untrusted` (medium), when the presented chain does not verify to the
+  system trust store plus the new `tls_posture.ca_bundle`, and
+  `cert_chain_expired` (high), when a CA certificate of the verified chain is
+  outside its validity window. The trust check is about the chain only (names
+  stay `cert_name_mismatch`), and `tls_posture.chain_trust` decides where it
+  runs: `public_only` (default) on publicly routable addresses — the
+  scanner's `safe_http` rule, NAT64 included — unless `ca_bundle` is set, so an
+  intranet's own CA is not flagged on every endpoint; `always`; `off`. A leaf
+  verification calls self-signed is one certain `self_signed`, not
+  `self_signed` plus `cert_untrusted`; a chain that verifies silences the
+  heuristic. With no system trust anchors and no bundle, or an unreadable
+  bundle, the check records `not_performed` instead of flagging every
+  endpoint. `chain_trust`, `ca_bundle` and `probe_legacy_protocols` are
+  sensor-config settings; the platform's config overlay does not carry them.
+  The probe reads names and dates of the presented certificates with the
+  stdlib and key size and signature algorithm with `cryptography`, which the
+  scanner image now installs too (`requirements.txt`, same pin as the API
+  image; `requirements.lock` gains `cryptography`, `cffi` and `pycparser`);
+  where it is missing, those checks record `not_performed`. Each probe row
+  carries `checks.{protocols,chain_trust,cert_fields,cert_strength}`, and the
+  org-profile TLS control reads them: an endpoint with a check that did not
+  run or could not decide is not counted as checked, and with no finding the
+  control says `not_checked` with the gaps listed instead of "all endpoints
+  passed". Pulse `tls[]` rows carry no key or signature fields, so that path
+  has no strength findings. See
   [Pulse backend](docs/pulse-backend.md#what-the-probe-checks-and-what-it-can-establish).
 - **Client certificates for sensors and endpoint Agents
   ([#309](https://github.com/onixus/Shapoclyack/issues/309)).** With
@@ -1108,14 +1122,19 @@ All notable changes to Shapoclyack are documented in this file.
   handshake and vanished from `tls_posture.json` altogether. The probe now
   makes two more handshakes per endpoint pinned to TLS 1.0 and TLS 1.1
   (`tls_posture.probe_legacy_protocols`, default `true`), its main handshake
-  reaches as low as the local OpenSSL can go, and every row records
-  `accepted_protocols` and a per-version `checks.protocols` status —
-  `accepted`, `rejected`, `inconclusive`, `not_performed` (checked by building
-  the ClientHello in memory, so a scanner host whose OpenSSL cannot offer TLS
-  1.0 never reports the server as refusing it) or, for SSLv2/SSLv3, which
-  modern OpenSSL cannot send, `not_testable`. Verified against Python `ssl`
-  and `openssl s_server` servers on loopback (OpenSSL 3.6 on macOS, 3.5 in the
-  CI `python:3.11/3.12-slim` images).
+  reaches as low as the local OpenSSL can go (so a TLS 1.0-only server is
+  found with the legacy checks off too), and an endpoint that answered in TLS
+  is reported even when no handshake completed. Handshakes run over memory
+  BIOs, so the result is classified on what the server's records said: every
+  row records `accepted_protocols` and a per-version `checks.protocols`
+  status — `accepted`; `rejected` only on a `protocol_version` alert or a
+  ServerHello at another version; `inconclusive` for a `handshake_failure`
+  before any ServerHello, a reset, a timeout, a local abort, or a server that
+  asked for a client certificate (`client_cert_requested`); `not_performed`
+  when the local OpenSSL cannot offer the version (the ClientHello is built in
+  memory first); `not_testable` for SSLv2/SSLv3. Verified against Python `ssl`
+  servers on loopback in the test suite (OpenSSL 3.6 on macOS, 3.5 in the CI
+  `python:3.11/3.12-slim` images); `openssl s_server` checked by hand.
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run

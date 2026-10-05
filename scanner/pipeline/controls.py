@@ -214,6 +214,32 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     }
 
 
+#: ``checks`` statuses of a TLS probe row that mean the check did not establish
+#: anything. ``not_evaluated`` (chain trust skipped by configured policy, e.g.
+#: an internal address) and ``not_testable`` (SSLv2/SSLv3) are by design, not gaps.
+_TLS_CHECK_GAP_STATUSES = frozenset({"not_performed", "inconclusive"})
+
+
+def _tls_check_gaps(checks: Any) -> list[str]:
+    """Names of the checks of one probe row that did not establish a result."""
+    if not isinstance(checks, dict):
+        return []
+    gaps: list[str] = []
+    for name in ("cert_fields", "cert_strength", "chain_trust"):
+        entry = checks.get(name)
+        if isinstance(entry, dict) and entry.get("status") in _TLS_CHECK_GAP_STATUSES:
+            gaps.append(f"{name} {entry['status']}")
+    trust = checks.get("chain_trust")
+    if isinstance(trust, dict) and trust.get("status") == "trusted" and trust.get("validity_checked") is False:
+        gaps.append("chain_validity not_performed")
+    protocols = checks.get("protocols")
+    if isinstance(protocols, dict):
+        for version, entry in sorted(protocols.items()):
+            if isinstance(entry, dict) and entry.get("status") in _TLS_CHECK_GAP_STATUSES:
+                gaps.append(f"{version} {entry['status']}")
+    return gaps
+
+
 def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
     tls_file = output_dir / "tls_posture.json"
     tls_data = load_json(tls_file, fallback=None)
@@ -248,6 +274,11 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
 
     findings: list[dict[str, Any]] = []
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    # Probe rows say which of their checks actually ran (``checks``); an
+    # endpoint with a check that did not run, or could not decide, is not a
+    # checked endpoint. Rows without ``checks`` (nmap, Pulse) count as before.
+    gaps: dict[str, int] = {}
+    partly_checked = 0
 
     for f in findings_raw:
         if not isinstance(f, dict):
@@ -255,6 +286,11 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
         endpoint = f.get("host", "")
         if f.get("port"):
             endpoint = f"{endpoint}:{f['port']}"
+        endpoint_gaps = _tls_check_gaps(f.get("checks"))
+        if endpoint_gaps:
+            partly_checked += 1
+            for gap in endpoint_gaps:
+                gaps[gap] = gaps.get(gap, 0) + 1
         for issue in f.get("issues") or []:
             if not isinstance(issue, dict):
                 continue
@@ -268,12 +304,27 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
                 "detail": issue.get("detail") or issue.get("kind", ""),
             })
 
+    inspected = checked_targets
+    checked_targets = max(0, inspected - partly_checked)
+    gap_note = ""
+    if gaps:
+        gap_note = (
+            f"; {partly_checked} of {inspected} endpoint(s) only partly checked ("
+            + ", ".join(f"{gap} x{count}" for gap, count in sorted(gaps.items()))
+            + ")"
+        )
+
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
         why = f"{sev_counts['critical'] + sev_counts['high']} high/critical TLS posture findings (expired/weak/mismatch)"
+        why += gap_note
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings"
+        why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings" + gap_note
+    elif partly_checked:
+        # "No finding" from a check that did not run is not a pass.
+        status = "not_checked"
+        why = f"No TLS posture findings, but not every check ran{gap_note}"
     elif checked_targets > 0:
         status = "ok"
         why = f"All {checked_targets} inspected TLS endpoints passed validation"

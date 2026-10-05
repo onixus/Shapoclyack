@@ -314,84 +314,135 @@ tls_posture:
   probe_concurrency: 20
   probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
   probe_legacy_protocols: true  # default true: TLS 1.0 / 1.1 handshakes
-  ca_bundle: null               # PEM of your own CAs, for cert_untrusted
+  chain_trust: public_only      # public_only | always | off
+  ca_bundle: null               # PEM of your own CAs
 ```
+
+`probe_legacy_protocols`, `chain_trust` and `ca_bundle` are settings of the
+scanner config on the sensor (`scanner/config/default.yaml` or the file the
+sensor runs with). The platform's config overlay does not carry them yet, so
+they cannot be changed from the console; a `ca_bundle` path must exist on the
+sensor, for a container sensor as a mounted file.
 
 | Source | When | Covers |
 |--------|------|--------|
-| `nmap-nse` | SSL scripts present in nmap XML | cert expiry / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
-| `pulse-tls` | `pulse/tls.json` has rows | cert expiry / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`) |
-| `pulse-tls-probe` | fallback handshake | cert expiry / self-signed heuristic / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance / negotiated cipher name |
+| `nmap-nse` | SSL scripts present in nmap XML | cert validity / self-signed heuristic / key size and signature digest + full cipher grades and every offered version |
+| `pulse-tls` | `pulse/tls.json` has rows | cert validity / self-signed / Pulse's own legacy-protocol probe (`requires_confirmation`) |
+| `pulse-tls-probe` | fallback handshake | cert and chain validity / self-signed / chain trust / key size and signature digest / TLS 1.0 and 1.1 acceptance |
 
 Artifacts: `tls_posture.json` (same shape; `source` field), plus
 `tls_probe.json` when the fallback ran.
 
 ### What the probe checks, and what it can establish
 
-Per endpoint the probe makes at most four handshakes, one after another
-inside the `probe_concurrency` pool, each bounded by `probe_timeout_seconds`.
-An endpoint that does not answer at all costs one timeout, as before.
+Per endpoint the probe makes at most four connections, one after another
+inside the `probe_concurrency` pool, each handshake bounded by
+`probe_timeout_seconds`. An endpoint that answers nothing costs one timeout and
+yields no row; one that answered in TLS yields a row even when no handshake
+completed — `accepted_protocols: []` and checks that say why — instead of
+disappearing from `tls_posture.json`.
 
-1. **Main handshake**, verifying the presented chain against the system trust
-   store plus `ca_bundle`. Chain only: the name is `cert_name_mismatch`'s job
-   and the validity window `cert_expired`'s, so an expired certificate from a
-   trusted CA is `cert_expired`, not `cert_untrusted`. It offers every version
-   the local OpenSSL can speak, so a server whose highest version is TLS 1.0
-   is reported instead of silently dropped.
+1. **Main handshake.** It offers every version the local OpenSSL can speak, so
+   a server whose highest version is TLS 1.0 is found even with the legacy
+   checks off. When chain trust is due (below) it verifies the presented chain
+   against the system trust store plus `ca_bundle` — the chain only: names are
+   `cert_name_mismatch`'s job, and the validity window is checked separately,
+   over the leaf and over every CA certificate of the verified chain.
 2. **Collect handshake** without verification, only when the chain did not
-   verify, to read the certificate.
+   verify, so protocol and cipher come from a completed handshake. If it
+   fails, what the first connection showed (its ServerHello, the certificate,
+   the verdict on the chain) is kept.
 3. **TLS 1.0 and TLS 1.1 handshakes**, each pinned to one version
    (`probe_legacy_protocols`). A server that also speaks TLS 1.3 picks 1.3 for
    a client offering everything; only a ClientHello offering nothing newer
    shows it still accepts 1.0.
+
+Every handshake runs over memory BIOs, so the probe reads the server's
+plaintext records as they arrive — the version its ServerHello chose, a
+CertificateRequest, an alert — and classifies on what the server said rather
+than on OpenSSL's error string, which says how the client failed.
+
+**Chain trust (`chain_trust`).** `public_only` (the default) judges the chain
+only when the address the probe connected to is publicly routable — the
+scanner's one rule for that (`safe_http.is_public_address`), so a NAT64
+address is judged by the IPv4 address it delivers to — or when `ca_bundle` is
+configured. An intranet's own CA is not a finding until the operator has said
+which CAs are theirs: without that, every internal endpoint would read as
+untrusted, the org-profile TLS control would go `weak`, and nothing in the
+console could silence it. `always` judges every endpoint; `off` none. With
+`ca_bundle` loaded on a host that has no system anchors, chains are judged
+against the bundle alone (`store: ca_bundle`).
 
 Findings, in the same shapes as the nmap path:
 
 | Finding | Severity | When |
 |---------|----------|------|
 | `weak_protocol` | high | a TLS 1.0 / 1.1 handshake completed (`version` says which) |
-| `cert_untrusted` | medium | the chain does not verify to the system store or `ca_bundle`; `detail` is OpenSSL's reason (`self-signed certificate`, `unable to get local issuer certificate`) |
+| `cert_chain_expired` | high | a CA certificate of the verified chain is past its not-after (or before its not-before: `cert_not_yet_valid`); a client that checks time rejects the chain. `depth` and `subject` say which |
+| `cert_not_yet_valid` | medium | the leaf's not-before is in the future (also from nmap's `ssl-cert` and Pulse) |
+| `cert_untrusted` | medium | the chain does not verify to the system store or `ca_bundle`; `detail` is OpenSSL's reason (`unable to get local issuer certificate`, `self-signed certificate in certificate chain`) |
+| `self_signed` | medium | the leaf is its own issuer: certain (`heuristic: false`) when verification said so, then **instead of** `cert_untrusted`; otherwise the subject/issuer heuristic, dropped when the chain verifies |
 | `weak_key` | medium; high under 1024 bits | RSA/DSA under 2048 bits, EC under 224 bits (also from nmap's `ssl-cert`) |
-| `weak_signature` | medium | leaf signed with MD5 or SHA-1 (also from nmap's `ssl-cert`) |
-| `self_signed` | medium | subject matches issuer; a heuristic, and dropped when the chain verifies |
+| `weak_signature` | medium | leaf signed with MD2/MD4/MD5 or SHA-1 (also from nmap's `ssl-cert`). Not on a self-issued leaf: no client verifies a self-signature, the finding there is `self_signed` |
 
 Each probe row also says what was actually established, so a check that did
 not run never reads as a clean result:
 
 * `accepted_protocols` — versions a completed handshake proved. Not an
   enumeration: TLS 1.2 is not tried on its own when the server prefers 1.3.
-* `checks.protocols` — per legacy version: `accepted`; `rejected` (the server
-  answered with an alert, another version or a hang-up); `inconclusive`
-  (timeout, or the *local* stack aborted the handshake); `not_performed` (the
-  local OpenSSL cannot offer that version — checked by building the
-  ClientHello in memory first, so a crypto policy that forbids TLS 1.0 on the
-  scanner host is never reported as "server refuses TLS 1.0" — or
-  `probe_legacy_protocols` is off). SSLv2 and SSLv3 are always
-  `not_testable`: modern OpenSSL cannot send them; nmap `ssl-enum-ciphers`
-  can.
-* `checks.chain_trust` — `trusted`, `untrusted`, `inconclusive` (no handshake
-  completed), or `not_performed`: the host has no system trust anchors (no
-  `ca-certificates`), or `ca_bundle` could not be loaded. Judging an internal
-  PKI against the system store alone would flag all of it, so a bad bundle
-  path turns the trust check off for the run and logs a warning.
-* `checks.cert_strength` — `performed`, or `not_performed` with the reason.
+* `checks.protocols` — per legacy version:
+  * `accepted` — a handshake at that version completed;
+  * `rejected` — only on a version-specific answer: a `protocol_version`
+    alert, or a ServerHello that chose another version (`server_hello_version`);
+  * `inconclusive` — everything else that did not complete: a
+    `handshake_failure` alert before any ServerHello (a refused version and a
+    refused cipher list look the same), a reset or hang-up (a refusal, a
+    connection limiter and a middlebox look the same), a timeout, a handshake
+    the local stack aborted, and a server that chose the version and then
+    asked for a client certificate (`client_cert_requested: true`, also on the
+    row);
+  * `not_performed` — the local OpenSSL cannot offer that version (checked by
+    building the ClientHello in memory first, so a crypto policy on the
+    scanner host is never reported as "server refuses TLS 1.0"), or
+    `probe_legacy_protocols` is off;
+  * `not_testable` — SSLv2 and SSLv3, always: modern OpenSSL cannot send them;
+    nmap `ssl-enum-ciphers` can.
+* `checks.chain_trust` — `trusted` (with `store` and `validity_checked`),
+  `untrusted` (with `verify_code`), `inconclusive` (no handshake completed),
+  `not_evaluated` (by `chain_trust`: `reason: internal_address` or
+  `disabled`), or `not_performed`: no system trust anchors and no bundle, or
+  a `ca_bundle` that could not be loaded. Judging an internal PKI against the
+  system store alone would flag all of it, so a bad bundle path turns the
+  trust check off for the run and logs a warning.
+* `checks.cert_fields` — whether the leaf's dates and names were read.
+* `checks.cert_strength` — whether key size and signature algorithm were read.
+
+The org-profile TLS control reads these: an endpoint with a check that is
+`not_performed` or `inconclusive` (or a trusted chain whose validity could
+not be read) is not counted as checked, and with no finding the control says
+`not_checked` with the gaps listed, instead of "all endpoints passed".
+`not_evaluated` and `not_testable` are by design and do not count against it.
 
 Limits worth knowing:
 
-* `rejected` means "rejected OpenSSL's `DEFAULT` cipher list at security
-  level 0". A server that offers TLS 1.0 only with ciphers OpenSSL 3 no longer
-  ships (RC4, export) reads as rejected.
-* The probe reads key size, signature algorithm and — for a chain that does
-  not verify — every certificate field from the leaf's DER with the
-  `cryptography` package. The all-in-one image has it; the scanner image
-  (`Dockerfile`, `requirements.txt`) does not, so there an untrusted
-  certificate yields no certificate fields and `checks.cert_strength` is
-  `not_performed`. A verified chain is decoded by the stdlib either way.
+* `rejected` is what the server said, and an OpenSSL server says
+  `protocol_version` also when none of *its* suites for that version is in the
+  probe's offer — so a TLS 1.0 server with only RC4 or export suites reads as
+  rejected. The probe offers OpenSSL's `DEFAULT` list at security level 0,
+  which on OpenSSL 3 holds no RC4/DES/NULL/EXPORT/anon suite: it cannot see
+  weak ciphers at all, and `weak_cipher_name` comes from nmap
+  `ssl-enum-ciphers` only.
+* Names and dates of the presented certificates are read with the stdlib.
+  Key size and signature algorithm need the `cryptography` package, which
+  both images install; without it `checks.cert_strength` is `not_performed`.
 * The trust check uses the scanner host's store, which is not a browser's:
   a public CA missing from an old `ca-certificates` reads as untrusted, and
   so does a server that omits its intermediate certificate (`unable to get
   local issuer certificate`) — browsers often fetch the missing intermediate
   and hide that misconfiguration; OpenSSL and most API clients do not.
+* An endpoint behind a middlebox that swallows TLS 1.0/1.1 ClientHellos costs
+  two more timeouts (both checks `inconclusive`); the stage has no overall
+  deadline. `probe_legacy_protocols: false` removes them.
 
 ### Certificate name mismatch (P4.1)
 
@@ -426,8 +477,8 @@ tls_posture:
 ```
 
 Full cipher-suite enumeration (nmap grade A–F) still needs nmap NSE or a
-future dedicated enumerator. Cert DER field extraction needs the optional
-`cryptography` package (all-in-one image; see the limits above).
+future dedicated enumerator. Key size and signature algorithm on the probe
+path need the `cryptography` package (both images; see the limits above).
 
 ## CVE stack without nmap-vulners (Phase 4.2)
 

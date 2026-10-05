@@ -920,9 +920,13 @@ class TlsPostureConfig(BaseModel):
 
     ``probe_legacy_protocols`` (DQ2) adds two handshakes per probed endpoint,
     pinned to TLS 1.0 and TLS 1.1: a server that also speaks TLS 1.3 never
-    shows its legacy versions to a client offering everything. ``ca_bundle``
-    is a PEM file of the organisation's own CAs, trusted for ``cert_untrusted``
-    in addition to the system store. Both apply to the stdlib probe only.
+    shows its legacy versions to a client offering everything. ``chain_trust``
+    says where ``cert_untrusted`` is judged: ``public_only`` (default) on
+    publicly routable addresses only, unless ``ca_bundle`` is set; ``always``;
+    or ``off``. ``ca_bundle`` is a PEM file of the organisation's own CAs,
+    trusted in addition to the system store. All three apply to the stdlib
+    probe only, and are scanner-config settings: the platform's config overlay
+    does not carry them.
     """
 
     enabled: bool = False
@@ -937,6 +941,7 @@ class TlsPostureConfig(BaseModel):
         default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
     )
     probe_legacy_protocols: bool = True
+    chain_trust: Literal["public_only", "always", "off"] = "public_only"
     ca_bundle: str | None = None
 
 

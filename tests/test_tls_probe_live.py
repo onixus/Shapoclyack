@@ -11,6 +11,11 @@ on the server side too, so the test servers run at ``@SECLEVEL=0``. A host
 whose OpenSSL cannot complete such a handshake at all (a build without TLS
 1.0, a crypto policy that forbids SHA-1) skips the test with the reason
 instead of passing it without having tested anything.
+
+127.0.0.1 is not a public address, so under the default ``chain_trust:
+public_only`` the probe does not judge chains here; the trust tests either
+pass ``chain_trust="always"`` or configure a ``ca_bundle``, as an operator
+would.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -43,6 +49,9 @@ LEGACY_CIPHERS = "DEFAULT:@SECLEVEL=0"
 # algorithm in a to-be-signed certificate can be swapped in place.
 _SHA256_RSA_OID = bytes.fromhex("06092a864886f70d01010b")
 _SHA1_RSA_OID = bytes.fromhex("06092a864886f70d010105")
+
+# A fatal handshake_failure alert, as a version-intolerant server sends it.
+_HANDSHAKE_FAILURE_ALERT = bytes.fromhex("15030100020228")
 
 
 # --------------------------------------------------------------------------
@@ -118,10 +127,13 @@ def _resign_with_sha1(cert: x509.Certificate, issuer_key: rsa.RSAPrivateKey) -> 
     return x509.load_der_x509_certificate(der)
 
 
-def _write(directory: Path, name: str, cert: x509.Certificate, key) -> tuple[Path, Path]:
+def _write(
+    directory: Path, name: str, cert: x509.Certificate, key, chain: tuple[x509.Certificate, ...] = ()
+) -> tuple[Path, Path]:
+    """Write a PEM certificate (followed by ``chain``) and its key."""
     cert_path = directory / f"{name}.crt"
     key_path = directory / f"{name}.key"
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(b"".join(c.public_bytes(serialization.Encoding.PEM) for c in (cert, *chain)))
     key_path.write_bytes(
         key.private_bytes(
             serialization.Encoding.PEM,
@@ -137,9 +149,49 @@ def _self_signed(directory: Path, name: str, bits: int = 2048) -> tuple[Path, Pa
     return _write(directory, name, _certificate("legacy.example.test", key), key)
 
 
+def _rsa_ca(directory: Path, name: str = "Probe Root") -> tuple[x509.Certificate, rsa.RSAPrivateKey, Path]:
+    """A self-signed RSA CA and the PEM bundle that trusts it."""
+    key = _rsa_key()
+    cert = _certificate(name, key, ca=True, organization="Probe Test")
+    bundle = directory / f"{name.replace(' ', '-').lower()}.pem"
+    bundle.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return cert, key, bundle
+
+
 # --------------------------------------------------------------------------
 # servers
 # --------------------------------------------------------------------------
+
+
+def _offered_max_version(record: bytes) -> int:
+    """The highest version a ClientHello record offers (supported_versions, else client_version)."""
+    hello = record[9:]  # record header (5) + handshake header (4)
+    best = int.from_bytes(hello[0:2], "big")
+    pos = 2 + 32
+    pos += 1 + hello[pos]  # session id
+    pos += 2 + int.from_bytes(hello[pos : pos + 2], "big")  # cipher suites
+    pos += 1 + hello[pos]  # compression methods
+    end = pos + 2 + int.from_bytes(hello[pos : pos + 2], "big")
+    pos += 2
+    while pos + 4 <= end:
+        ext_type = int.from_bytes(hello[pos : pos + 2], "big")
+        ext_len = int.from_bytes(hello[pos + 2 : pos + 4], "big")
+        if ext_type == 43:  # supported_versions
+            listed = hello[pos + 5 : pos + 4 + ext_len]
+            best = max(int.from_bytes(listed[i : i + 2], "big") for i in range(0, len(listed), 2))
+        pos += 4 + ext_len
+    return best
+
+
+def _peek_record(conn: socket.socket) -> bytes:
+    """The client's first TLS record, read without consuming it."""
+    data = b""
+    for _ in range(100):
+        data = conn.recv(65536, socket.MSG_PEEK)
+        if len(data) >= 5 and len(data) >= 5 + int.from_bytes(data[3:5], "big"):
+            return data
+        time.sleep(0.01)
+    return data
 
 
 @contextmanager
@@ -149,10 +201,24 @@ def _tls_server(
     *,
     minimum: ssl.TLSVersion | None = None,
     maximum: ssl.TLSVersion | None = None,
+    ciphers: str = LEGACY_CIPHERS,
+    client_ca: Path | None = None,
+    accept_limit: int | None = None,
+    intolerant_above: int | None = None,
 ) -> Iterator[int]:
-    """A TLS server on 127.0.0.1 that handshakes every connection; yields its port."""
+    """A TLS server on 127.0.0.1 that handshakes every connection; yields its port.
+
+    ``client_ca`` requires a client certificate from that CA. ``accept_limit``
+    resets every connection after the first N, as a per-source connection
+    limiter does. ``intolerant_above`` answers a ClientHello offering anything
+    newer than that version with a handshake_failure alert, as old
+    version-intolerant stacks did.
+    """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.set_ciphers(LEGACY_CIPHERS)
+    try:
+        ctx.set_ciphers(ciphers)
+    except ssl.SSLError as exc:
+        pytest.skip(f"local OpenSSL has no cipher {ciphers!r}: {exc}")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         if minimum is not None:
@@ -163,10 +229,14 @@ def _tls_server(
         ctx.load_cert_chain(cert_path, key_path)
     except ssl.SSLError as exc:
         pytest.skip(f"local OpenSSL will not serve this certificate: {exc}")
+    if client_ca is not None:
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(cafile=str(client_ca))
 
     listener = socket.create_server(("127.0.0.1", 0))
     listener.settimeout(0.2)
     stop = threading.Event()
+    accepted = [0]
 
     def serve() -> None:
         while not stop.is_set():
@@ -176,11 +246,20 @@ def _tls_server(
                 continue
             except OSError:
                 return
+            accepted[0] += 1
             conn.settimeout(5)
             try:
+                if accept_limit is not None and accepted[0] > accept_limit:
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, (1).to_bytes(4, "little") + bytes(4))
+                    continue
+                if intolerant_above is not None:
+                    record = _peek_record(conn)
+                    if len(record) > 9 and _offered_max_version(record) > intolerant_above:
+                        conn.sendall(_HANDSHAKE_FAILURE_ALERT)
+                        continue
                 with ctx.wrap_socket(conn, server_side=True) as tls:
                     tls.recv(1)
-            except (OSError, ssl.SSLError):
+            except (OSError, ssl.SSLError, ValueError, IndexError):
                 pass  # pinned versions and failed verification hang up mid-handshake
             finally:
                 conn.close()
@@ -195,26 +274,39 @@ def _tls_server(
         listener.close()
 
 
-def _require_handshake(port: int, version: ssl.TLSVersion, label: str) -> None:
+def _client_handshake(
+    port: int, version: ssl.TLSVersion, *, cert: tuple[Path, Path] | None = None
+) -> str | None:
+    """A plain ``ssl`` client pinned to ``version``: the negotiated version."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_ciphers(LEGACY_CIPHERS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        ctx.minimum_version = version
+        ctx.maximum_version = version
+    if cert is not None:
+        ctx.load_cert_chain(*cert)
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        with ctx.wrap_socket(sock) as tls:
+            tls.sendall(b"x")  # a server that wanted a certificate says so by now
+            return tls.version()
+
+
+def _require_handshake(
+    port: int, version: ssl.TLSVersion, label: str, *, cert: tuple[Path, Path] | None = None
+) -> None:
     """Skip unless this host's OpenSSL can complete a ``label`` handshake at all.
 
     Uses a plain ``ssl`` client, not the probe: the question is whether the
     platform can do it, so that a probe reporting nothing means something.
     """
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     try:
-        ctx.set_ciphers(LEGACY_CIPHERS)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            ctx.minimum_version = version
-            ctx.maximum_version = version
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-            with ctx.wrap_socket(sock) as tls:
-                assert tls.version() in (label, label.replace(".0", ""))
+        negotiated = _client_handshake(port, version, cert=cert)
     except (OSError, ssl.SSLError, ValueError) as exc:
         pytest.skip(f"local OpenSSL cannot complete a {label} handshake on loopback: {exc}")
+    assert negotiated in (label, label.replace(".0", ""))
 
 
 def _has_trust_store() -> bool:
@@ -283,9 +375,42 @@ def test_tls10_only_server_is_reported_not_dropped(tmp_path: Path):
     assert row["negotiated_protocol"] == "TLSv1.0"
     assert row["accepted_protocols"] == ["TLSv1.0"]
     assert [issue["version"] for issue in _issues(row, "weak_protocol")] == ["TLSv1.0"]
-    # Answered with TLS 1.0 to a TLS 1.1 ClientHello: the server said no.
-    assert row["checks"]["protocols"]["TLSv1.1"]["status"] == "rejected"
+    # Answered a TLS 1.1 ClientHello with a TLS 1.0 ServerHello: the server said no.
+    tls11 = row["checks"]["protocols"]["TLSv1.1"]
+    assert tls11["status"] == "rejected"
+    assert tls11["server_hello_version"] == "TLSv1.0"
     # The certificate still came through the TLS 1.0 handshake.
+    assert row["cert"]["subject_cn"] == "legacy.example.test"
+
+
+def test_tls10_only_server_is_found_with_the_legacy_checks_off(tmp_path: Path):
+    """The main handshake reaches as low as the local OpenSSL goes, so the
+    switch that saves two connections does not hide a TLS 1.0-only server."""
+    cert, key = _self_signed(tmp_path, "old")
+    with _tls_server(cert, key, minimum=ssl.TLSVersion.TLSv1, maximum=ssl.TLSVersion.TLSv1) as port:
+        _require_handshake(port, ssl.TLSVersion.TLSv1, "TLSv1.0")
+        row = _probe(port, probe_legacy_protocols=False)
+
+    assert row["accepted_protocols"] == ["TLSv1.0"]
+    assert row["checks"]["protocols"]["TLSv1.0"]["status"] == "accepted"
+    assert row["checks"]["protocols"]["TLSv1.1"]["status"] == "not_performed"
+    assert [issue["version"] for issue in _issues(row, "weak_protocol")] == ["TLSv1.0"]
+
+
+def test_version_intolerant_server_is_judged_by_its_pinned_handshakes(tmp_path: Path):
+    """An old stack that answers a modern ClientHello with handshake_failure but
+    takes one offering TLS 1.1 at most: the main handshake fails, the pinned
+    ones complete, and the row reports the best version a client got."""
+    cert, key = _self_signed(tmp_path, "intolerant")
+    with _tls_server(
+        cert, key, minimum=ssl.TLSVersion.TLSv1, maximum=ssl.TLSVersion.TLSv1_1, intolerant_above=0x0302
+    ) as port:
+        _require_handshake(port, ssl.TLSVersion.TLSv1_1, "TLSv1.1")
+        row = _probe(port)
+
+    assert row["accepted_protocols"] == ["TLSv1.0", "TLSv1.1"]
+    assert row["negotiated_protocol"] == "TLSv1.1"
+    assert {issue["version"] for issue in _issues(row, "weak_protocol")} == {"TLSv1.0", "TLSv1.1"}
     assert row["cert"]["subject_cn"] == "legacy.example.test"
 
 
@@ -297,8 +422,8 @@ def test_tls12_only_server_is_clean_and_the_legacy_checks_ran(tmp_path: Path):
     assert _issues(row, "weak_protocol") == []
     assert row["accepted_protocols"] == ["TLSv1.3"]
     protocols = row["checks"]["protocols"]
-    # "rejected" is a server answer, not the absence of a check.
-    assert protocols["TLSv1.0"]["status"] == "rejected"
+    # "rejected" is a server answer (a protocol_version alert), not the absence of a check.
+    assert protocols["TLSv1.0"] == {"status": "rejected", "detail": "protocol_version alert"}
     assert protocols["TLSv1.1"]["status"] == "rejected"
     assert protocols["SSLv3"]["status"] == "not_testable"
     assert protocols["SSLv2"]["status"] == "not_testable"
@@ -332,6 +457,72 @@ def test_legacy_switch_off_records_the_checks_as_not_performed(tmp_path: Path):
     assert "probe_legacy_protocols" in check["detail"]
 
 
+def test_server_wanting_a_client_certificate_is_not_reported_as_refusing_tls10(tmp_path: Path):
+    """The server chooses TLS 1.0 and then asks for a certificate the probe does
+    not have. That is not a "no" to TLS 1.0 -- a client with a certificate gets
+    in -- so the check says it could not tell, and why."""
+    client_ca = CA("Probe Client CA")
+    client_ca_path, _ = client_ca.write(tmp_path, "client-ca")
+    client_cert = client_ca.plain_client().write(tmp_path, "client")
+    cert, key = _self_signed(tmp_path, "mtls")
+    with _tls_server(cert, key, minimum=ssl.TLSVersion.TLSv1, client_ca=client_ca_path) as port:
+        _require_handshake(port, ssl.TLSVersion.TLSv1, "TLSv1.0", cert=client_cert)
+        row = _probe(port)
+
+    tls10 = row["checks"]["protocols"]["TLSv1.0"]
+    assert tls10["status"] == "inconclusive"
+    assert tls10["client_cert_requested"] is True
+    assert tls10["server_hello_version"] == "TLSv1.0"
+    assert row["client_cert_requested"] is True
+    assert "TLSv1.0" not in [issue.get("version") for issue in _issues(row, "weak_protocol")]
+
+
+def test_connection_limit_is_not_read_as_a_refusal(tmp_path: Path):
+    """A limiter that resets every connection after the first: the legacy
+    checks could not run, which is not the server refusing TLS 1.0."""
+    cert, key = _self_signed(tmp_path, "limited")
+    with _tls_server(cert, key, minimum=ssl.TLSVersion.TLSv1, accept_limit=1) as port:
+        row = _probe(port)
+
+    assert row["accepted_protocols"] == ["TLSv1.3"]
+    for label in ("TLSv1.0", "TLSv1.1"):
+        assert row["checks"]["protocols"][label]["status"] == "inconclusive"
+
+
+def test_failed_second_connection_keeps_what_the_first_one_showed(tmp_path: Path):
+    """Verification stops the first handshake at the certificate; the limiter
+    resets the second. The certificate and the verdict on it stay."""
+    cert, key = _self_signed(tmp_path, "limited")
+    with _tls_server(cert, key, accept_limit=1) as port:
+        row = _probe(port, chain_trust="always")
+
+    assert row["cert"]["subject_cn"] == "legacy.example.test"
+    assert row["checks"]["chain_trust"]["status"] == "untrusted"
+    assert len(_issues(row, "self_signed")) == 1
+    assert row["accepted_protocols"] == []
+
+
+def test_tls10_server_without_a_common_cipher_still_yields_a_row(tmp_path: Path):
+    """A TLS 1.0 server whose only suite OpenSSL's DEFAULT list does not offer
+    answers every ClientHello with an alert. It spoke TLS: the endpoint is
+    reported, with nothing accepted and no certificate, instead of dropped.
+
+    An OpenSSL server says protocol_version here -- it treats a version none
+    of its suites can serve as disabled -- so on the wire this is a version
+    refusal, and the probe reports what the wire said."""
+    cert, key = _self_signed(tmp_path, "ancient")
+    with _tls_server(
+        cert, key, minimum=ssl.TLSVersion.TLSv1, maximum=ssl.TLSVersion.TLSv1, ciphers="AECDH-AES128-SHA"
+    ) as port:
+        row = _probe(port)
+
+    assert row["accepted_protocols"] == []
+    assert row["negotiated_protocol"] is None
+    assert row["checks"]["protocols"]["TLSv1.0"] == {"status": "rejected", "detail": "protocol_version alert"}
+    assert row["checks"]["cert_fields"] == {"status": "not_performed", "detail": "no certificate received"}
+    assert row["cert"] is None
+
+
 # --------------------------------------------------------------------------
 # certificate strength
 # --------------------------------------------------------------------------
@@ -340,7 +531,7 @@ def test_legacy_switch_off_records_the_checks_as_not_performed(tmp_path: Path):
 def test_1024_bit_rsa_key_is_a_weak_key(tmp_path: Path):
     cert, key = _self_signed(tmp_path, "small", bits=1024)
     with _tls_server(cert, key) as port:
-        row = _probe(port)
+        row = _probe(port, chain_trust="always")
 
     assert row["cert"]["public_key_type"] == "rsa"
     assert row["cert"]["public_key_bits"] == 1024
@@ -352,12 +543,11 @@ def test_1024_bit_rsa_key_is_a_weak_key(tmp_path: Path):
     # Above security level 0 OpenSSL stops at "EE key too weak" before it says
     # anything about trust; the weak key must not hide the self-signed chain.
     if _has_trust_store():
-        assert row["checks"]["chain_trust"]["status"] == "untrusted"
+        assert row["checks"]["chain_trust"]["verify_code"] == 18
 
 
 def test_sha1_signed_leaf_is_a_weak_signature(tmp_path: Path):
-    ca_key = _rsa_key()
-    ca_cert = _certificate("Probe SHA-1 CA", ca_key, ca=True)
+    ca_cert, ca_key, _bundle = _rsa_ca(tmp_path, "Probe SHA-1 CA")
     leaf_key = _rsa_key()
     leaf = _resign_with_sha1(
         _certificate("sha1.example.test", leaf_key, issuer=ca_cert, issuer_key=ca_key), ca_key
@@ -376,7 +566,6 @@ def test_sha1_signed_leaf_is_a_weak_signature(tmp_path: Path):
 def test_strength_check_without_cryptography_is_not_performed(tmp_path: Path, monkeypatch):
     cert, key = _self_signed(tmp_path, "small", bits=1024)
     with _tls_server(cert, key) as port:
-        # The scanner image does not install cryptography (requirements.txt).
         monkeypatch.setitem(sys.modules, "cryptography", None)
         row = _probe(port)
 
@@ -384,6 +573,9 @@ def test_strength_check_without_cryptography_is_not_performed(tmp_path: Path, mo
     check = row["checks"]["cert_strength"]
     assert check["status"] == "not_performed"
     assert "cryptography" in check["detail"]
+    # Names and dates come from the stdlib, with or without cryptography.
+    assert row["checks"]["cert_fields"] == {"status": "performed"}
+    assert row["cert"]["subject_cn"] == "legacy.example.test"
 
 
 # --------------------------------------------------------------------------
@@ -391,12 +583,24 @@ def test_strength_check_without_cryptography_is_not_performed(tmp_path: Path, mo
 # --------------------------------------------------------------------------
 
 
-def test_chain_from_an_unknown_ca_is_untrusted(tmp_path: Path):
-    _require_trust_store()
-    ca = CA("Probe Test CA")
-    cert, key = ca.server("127.0.0.1").write(tmp_path, "leaf")
+def test_internal_address_chain_is_not_judged_by_default(tmp_path: Path):
+    """An intranet's own CA is not a finding until the operator names it: on
+    a non-public address and without ca_bundle the chain is not judged."""
+    cert, key = CA("Probe Test CA").server("127.0.0.1").write(tmp_path, "leaf")
     with _tls_server(cert, key) as port:
         row = _probe(port)
+
+    trust = row["checks"]["chain_trust"]
+    assert trust["status"] == "not_evaluated"
+    assert trust["reason"] == "internal_address"
+    assert _issues(row, "cert_untrusted") == []
+
+
+def test_chain_from_an_unknown_ca_is_untrusted(tmp_path: Path):
+    _require_trust_store()
+    cert, key = CA("Probe Test CA").server("127.0.0.1").write(tmp_path, "leaf")
+    with _tls_server(cert, key) as port:
+        row = _probe(port, chain_trust="always")
 
     untrusted = _issues(row, "cert_untrusted")
     assert len(untrusted) == 1
@@ -404,6 +608,23 @@ def test_chain_from_an_unknown_ca_is_untrusted(tmp_path: Path):
     assert untrusted[0]["detail"] == "unable to get local issuer certificate"
     assert row["checks"]["chain_trust"]["status"] == "untrusted"
     assert _issues(row, "self_signed") == []
+
+
+def test_self_signed_leaf_is_one_certain_finding(tmp_path: Path):
+    """Verification code 18 is the self_signed heuristic made certain: one
+    finding, not self_signed plus cert_untrusted -- and no weak_signature for a
+    SHA-1 self-signature that no client verifies."""
+    _require_trust_store()
+    key = _rsa_key()
+    leaf = _resign_with_sha1(_certificate("self.example.test", key), key)
+    cert, key_path = _write(tmp_path, "self", leaf, key)
+    with _tls_server(cert, key_path) as port:
+        row = _probe(port, chain_trust="always")
+
+    kinds = sorted(issue["kind"] for issue in row["issues"])
+    assert kinds == ["self_signed"]
+    assert row["issues"][0]["heuristic"] is False
+    assert row["checks"]["chain_trust"]["verify_code"] == 18
 
 
 def test_ca_bundle_makes_an_internal_chain_trusted(tmp_path: Path):
@@ -415,9 +636,30 @@ def test_ca_bundle_makes_an_internal_chain_trusted(tmp_path: Path):
         row = _probe(port, ca_bundle=str(bundle))
 
     assert _issues(row, "cert_untrusted") == []
-    assert row["checks"]["chain_trust"] == {"status": "trusted"}
-    # Verified, so the stdlib decoded the certificate itself.
+    assert row["checks"]["chain_trust"] == {
+        "status": "trusted",
+        "store": "system+ca_bundle",
+        "validity_checked": True,
+    }
     assert row["cert"]["subject_cn"] == "127.0.0.1"
+
+
+def test_ca_bundle_is_used_on_a_host_without_system_anchors(tmp_path: Path, monkeypatch):
+    """The operator named the CAs to trust; an empty system store must not
+    switch the check off."""
+    monkeypatch.setattr(
+        "scanner.pipeline.tls_probe._trust_store_gap", lambda ctx: "no system trust anchors (test)"
+    )
+    ca = CA("Probe Test CA")
+    cert, key = ca.server("127.0.0.1").write(tmp_path, "leaf")
+    bundle, _ = ca.write(tmp_path, "internal-ca")
+    with _tls_server(cert, key) as port:
+        with_bundle = _probe(port, ca_bundle=str(bundle))
+        without = _probe(port, chain_trust="always")
+
+    assert with_bundle["checks"]["chain_trust"]["status"] == "trusted"
+    assert with_bundle["checks"]["chain_trust"]["store"] == "ca_bundle"
+    assert without["checks"]["chain_trust"]["status"] == "not_performed"
 
 
 def test_verified_chain_silences_the_self_signed_heuristic(tmp_path: Path):
@@ -434,7 +676,7 @@ def test_verified_chain_silences_the_self_signed_heuristic(tmp_path: Path):
     bundle, _ = _write(tmp_path, "internal-ca", ca_cert, ca_key)
     with _tls_server(cert, key) as port:
         trusted = _probe(port, ca_bundle=str(bundle))
-        unverified = _probe(port)
+        unverified = _probe(port, chain_trust="always")
 
     assert _issues(trusted, "self_signed") == []
     assert [i["kind"] for i in unverified["issues"] if i["kind"] in ("self_signed", "cert_untrusted")] == [
@@ -445,33 +687,84 @@ def test_verified_chain_silences_the_self_signed_heuristic(tmp_path: Path):
 
 def test_expired_leaf_of_a_trusted_ca_is_expired_not_untrusted(tmp_path: Path):
     _require_trust_store()
-    ca = CA("Probe Test CA")
+    ca_cert, ca_key, bundle = _rsa_ca(tmp_path)
     now = datetime.now(UTC)
     leaf_key = _rsa_key()
     leaf = _certificate(
         "expired.example.test",
         leaf_key,
-        issuer=ca.cert,
-        issuer_key=ca.key,
+        issuer=ca_cert,
+        issuer_key=ca_key,
         not_before=now - timedelta(days=400),
         not_after=now - timedelta(days=3),
     )
     cert, key = _write(tmp_path, "expired", leaf, leaf_key)
-    bundle, _ = ca.write(tmp_path, "internal-ca")
     with _tls_server(cert, key) as port:
         row = _probe(port, ca_bundle=str(bundle))
 
-    assert row["checks"]["chain_trust"] == {"status": "trusted"}
+    assert row["checks"]["chain_trust"]["status"] == "trusted"
     assert _issues(row, "cert_untrusted") == []
     assert len(_issues(row, "cert_expired")) == 1
+
+
+def test_expired_intermediate_is_found(tmp_path: Path):
+    """Trust is judged with OpenSSL's time check off; a client that keeps it on
+    rejects this chain ("certificate has expired"), so the probe checks every
+    CA certificate of the verified chain itself."""
+    _require_trust_store()
+    now = datetime.now(UTC)
+    root, root_key, bundle = _rsa_ca(tmp_path)
+    inter_key = _rsa_key()
+    inter = _certificate(
+        "Probe Intermediate",
+        inter_key,
+        issuer=root,
+        issuer_key=root_key,
+        ca=True,
+        not_before=now - timedelta(days=400),
+        not_after=now - timedelta(days=10),
+    )
+    leaf_key = _rsa_key()
+    leaf = _certificate("app.example.test", leaf_key, issuer=inter, issuer_key=inter_key)
+    cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=(inter,))
+    with _tls_server(cert, key) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    assert row["checks"]["chain_trust"]["status"] == "trusted"
+    expired = _issues(row, "cert_chain_expired")
+    assert len(expired) == 1
+    assert expired[0]["severity"] == "high"
+    assert expired[0]["depth"] == 1
+    assert "Probe Intermediate" in expired[0]["subject"]
+    assert _issues(row, "cert_expired") == []
+
+
+def test_leaf_not_yet_valid_is_found(tmp_path: Path):
+    _require_trust_store()
+    now = datetime.now(UTC)
+    ca_cert, ca_key, bundle = _rsa_ca(tmp_path)
+    leaf_key = _rsa_key()
+    leaf = _certificate(
+        "future.example.test",
+        leaf_key,
+        issuer=ca_cert,
+        issuer_key=ca_key,
+        not_before=now + timedelta(days=2),
+        not_after=now + timedelta(days=90),
+    )
+    cert, key = _write(tmp_path, "future", leaf, leaf_key)
+    with _tls_server(cert, key) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    assert row["checks"]["chain_trust"]["status"] == "trusted"
+    assert [issue["severity"] for issue in _issues(row, "cert_not_yet_valid")] == ["medium"]
 
 
 def test_unreadable_ca_bundle_does_not_flag_every_endpoint(tmp_path: Path):
     """Judging an internal PKI against the system store alone would mark all of
     it untrusted: a bundle that fails to load turns the trust check off."""
     _require_trust_store()
-    ca = CA("Probe Test CA")
-    cert, key = ca.server("127.0.0.1").write(tmp_path, "leaf")
+    cert, key = CA("Probe Test CA").server("127.0.0.1").write(tmp_path, "leaf")
     with _tls_server(cert, key) as port:
         row = _probe(port, ca_bundle=str(tmp_path / "missing.pem"))
 

@@ -19,6 +19,9 @@ Two findings come out of them:
     size alone cannot be judged.
   * ``weak_signature`` -- the leaf is signed with MD2/MD4/MD5 or SHA-1
     (medium). RSASSA-PSS names no hash in the algorithm name and is not judged.
+    A self-issued leaf (subject equals issuer) gets none: nothing verifies its
+    signature -- a client either pins that certificate or rejects it -- so the
+    finding there is ``self_signed``, not the digest.
 
 NO DATA, NO FINDING: a source that did not record a field produces no finding
 for it, never a guess. Pulse ``tls[]`` rows carry neither field today, so this
@@ -121,7 +124,15 @@ def cert_strength_issues(cert: dict[str, Any] | None) -> list[dict[str, Any]]:
     key_issue = weak_key_issue(cert.get("public_key_type"), cert.get("public_key_bits"))
     if key_issue is not None:
         issues.append(key_issue)
-    sig_issue = weak_signature_issue(cert.get("signature_algorithm"))
-    if sig_issue is not None:
-        issues.append(sig_issue)
+    if not is_self_issued(cert):
+        sig_issue = weak_signature_issue(cert.get("signature_algorithm"))
+        if sig_issue is not None:
+            issues.append(sig_issue)
     return issues
+
+
+def is_self_issued(cert: dict[str, Any]) -> bool:
+    """Whether the certificate names itself as its issuer (full name, not just CN)."""
+    subject = str(cert.get("subject") or "").strip().lower()
+    issuer = str(cert.get("issuer") or "").strip().lower()
+    return bool(subject) and subject == issuer

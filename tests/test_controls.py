@@ -252,6 +252,77 @@ def test_tls_factorable_key_fails_the_control(tmp_path: Path):
     assert tls["status"] == "fail"
 
 
+def _probe_checks(**overrides: dict) -> dict:
+    """The ``checks`` of a TLS probe row where everything ran, with overrides."""
+    checks = {
+        "protocols": {
+            "SSLv2": {"status": "not_testable"},
+            "SSLv3": {"status": "not_testable"},
+            "TLSv1.0": {"status": "rejected"},
+            "TLSv1.1": {"status": "rejected"},
+        },
+        "chain_trust": {"status": "not_evaluated", "reason": "internal_address"},
+        "cert_fields": {"status": "performed"},
+        "cert_strength": {"status": "performed"},
+    }
+    checks.update(overrides)
+    return checks
+
+
+def _tls_control_for_checks(tmp_path: Path, checks: dict) -> dict:
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "10.0.0.9", "port": "443", "issues": [], "checks": checks}],
+            "skipped_reason": None,
+            "source": "pulse-tls-probe",
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    return {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+
+
+def test_tls_probe_row_with_every_check_run_passes(tmp_path: Path):
+    """Chain trust skipped by policy (an internal address) and SSLv2/3 that no
+    modern OpenSSL can test are by design, not gaps."""
+    tls = _tls_control_for_checks(tmp_path, _probe_checks())
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 1, "total": 1}
+
+
+def test_tls_check_that_did_not_run_is_not_a_pass(tmp_path: Path):
+    """No finding from a key check that never ran (an image without
+    cryptography) used to read "All 1 inspected TLS endpoints passed"."""
+    tls = _tls_control_for_checks(
+        tmp_path,
+        _probe_checks(cert_strength={"status": "not_performed", "detail": "cryptography package not installed"}),
+    )
+    assert tls["status"] == "not_checked"
+    assert tls["coverage"] == {"checked": 0, "total": 1}
+    assert "cert_strength not_performed" in tls["why"]
+    assert "passed" not in tls["why"]
+
+
+def test_tls_gaps_that_count(tmp_path: Path):
+    for checks, gap in (
+        (_probe_checks(cert_fields={"status": "not_performed"}), "cert_fields not_performed"),
+        (_probe_checks(chain_trust={"status": "inconclusive"}), "chain_trust inconclusive"),
+        (
+            _probe_checks(chain_trust={"status": "trusted", "validity_checked": False}),
+            "chain_validity not_performed",
+        ),
+        (
+            _probe_checks(protocols={"TLSv1.0": {"status": "inconclusive"}, "TLSv1.1": {"status": "rejected"}}),
+            "TLSv1.0 inconclusive",
+        ),
+    ):
+        tls = _tls_control_for_checks(tmp_path, checks)
+        assert tls["status"] == "not_checked", gap
+        assert gap in tls["why"]
+
+
 def test_web_technologies_clean_endpoints_are_ok(tmp_path: Path):
     """A fingerprinted endpoint is not itself a finding; only a disclosed
     product/version banner is."""

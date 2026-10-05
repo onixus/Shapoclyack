@@ -16,16 +16,18 @@ Fallback paths (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
 
 Does not replace full nmap cipher grading; covers cert expiry, self-signed
 heuristic, key and signature strength, and weak protocol acceptance. The probe
-also judges chain trust (``cert_untrusted``) and tries TLS 1.0/1.1 with
-dedicated handshakes -- see ``tls_probe.py`` for what each of its checks can
-and cannot establish.
+also judges chain trust (``cert_untrusted``, by ``chain_trust`` mode), the
+validity of the verified chain (``cert_chain_expired``) and tries TLS 1.0/1.1
+with dedicated handshakes -- see ``tls_probe.py`` for what each of its checks
+can and cannot establish.
 
 From ``ssl-cert`` output this module extracts certificate subject/issuer,
 SAN, signature algorithm, public key type and size, and validity window, then
 flags:
 
   * ``cert_expired`` (critical) / ``cert_expiring_soon`` (medium) -- based on
-    the certificate's "Not valid after" date vs. ``expiring_soon_days``.
+    the certificate's "Not valid after" date vs. ``expiring_soon_days``;
+    ``cert_not_yet_valid`` (medium) when "Not valid before" is in the future.
   * ``self_signed`` (medium) -- a heuristic: subject commonName equals issuer
     commonName (case-insensitive), or (fallback) the raw subject/issuer
     strings are verbatim equal. Always tagged with a ``heuristic`` field --
@@ -281,6 +283,21 @@ def _classify_cert(cert: dict[str, Any], now: datetime, expiring_soon_days: int)
             elif days_left <= expiring_soon_days:
                 issues.append({"kind": "cert_expiring_soon", "severity": "medium", "days": days_left})
 
+    not_before_raw = cert.get("not_before")
+    if not_before_raw:
+        try:
+            parsed_not_before = datetime.fromisoformat(not_before_raw)
+        except ValueError:
+            parsed_not_before = None
+        if parsed_not_before is not None and parsed_not_before > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "detail": f"valid from {cert.get('not_before_raw') or not_before_raw}",
+                }
+            )
+
     subject = cert.get("subject")
     issuer = cert.get("issuer")
     subject_cn_match = _COMMON_NAME_RE.search(subject) if subject else None
@@ -523,6 +540,14 @@ def findings_from_pulse_tls(
                         "detail": f"expires in {days_left}d ({not_after_raw})",
                     }
                 )
+        if not_before_dt is not None and not_before_dt > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "detail": f"valid from {not_before_raw}",
+                }
+            )
 
         if row.get("self_signed"):
             issues.append(
@@ -874,6 +899,7 @@ def check_tls_posture(
         now=now,
         probe_legacy_protocols=config.probe_legacy_protocols,
         ca_bundle=config.ca_bundle,
+        chain_trust=config.chain_trust,
     )
     _apply_hostname_mismatch(probe_findings, hostnames, enabled=config.hostname_mismatch)
     write_tls_probe_json(output_dir, probe_findings)
