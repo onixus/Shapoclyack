@@ -72,12 +72,15 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+if TYPE_CHECKING:
+    from agent.worker import AgentClient
 
 LOG = logging.getLogger("octo-agent.update")
 
@@ -582,8 +585,9 @@ class Installer:
 
         Returns whether anything was put back -- the caller then restarts the
         service, which may still be running the code the interrupted run
-        swapped in. That release's tree is left where it is for the same
-        reason, and goes with the next :meth:`_prune`.
+        swapped in. That release's tree is kept for the same reason; every
+        other release but the one put back goes, so failed attempts do not
+        pile up between updates that are kept.
         """
         try:
             payload = json.loads(self.journal.read_text(encoding="utf-8"))
@@ -593,6 +597,7 @@ class Installer:
             raise UpdateFailed(f"{self.journal} is unreadable ({exc}); fix it by hand") from exc
         previous = str(payload.get("previous") or "")
         previous_path = self._release_path(previous)
+        taken_out = str(payload.get("new") or "")
         if not self.live.is_symlink() and self.live.is_dir():
             # Killed while adopting a plain directory, before it moved: the
             # live tree is still where it was and nothing needs putting back.
@@ -605,13 +610,19 @@ class Installer:
                 f"the journal names {previous} as the release to restore and it is missing; "
                 f"fix {self.install_dir} by hand"
             )
-        if self.current() != previous:
+        put_back = self.current() != previous
+        if put_back:
             self._point_at(previous)
             LOG.warning("An interrupted update was rolled back to %s", previous)
-            self._clear_journal()
-            return True
         self._clear_journal()
-        return False
+        keep = {previous}
+        if taken_out:
+            # A journal naming something that is no release keeps nothing.
+            with contextlib.suppress(UpdateFailed):
+                self._release_path(taken_out)
+                keep.add(taken_out)
+        self._prune(keep=keep)
+        return put_back
 
     def rollback(self) -> bool:
         """``--rollback``: the restarted service did not stay up on the pending
@@ -745,6 +756,7 @@ class Installer:
                 self._remember_failed(new)
             self._point_at(previous)
             self._clear_journal()
+            restarted = True
             if self.on_rollback is not None:
                 try:
                     self.on_rollback()
@@ -752,9 +764,11 @@ class Installer:
                     # The previous release is live on disk either way; failing
                     # to restart onto it is reported alongside, not instead of,
                     # the reason the update was undone.
+                    restarted = False
                     LOG.error("Restart after the rollback failed: %s", hook_exc)
-            # After the restart: until then the service runs from this tree.
-            shutil.rmtree(self._release_path(new).parent, ignore_errors=True)
+            # The new tree goes once the service has left it: until the
+            # restart it runs from there, and after a failed one it still does.
+            self._prune(keep={previous} if restarted else {previous, new})
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             raise UpdateFailed(f"rolled back to {previous}: {exc}") from exc
@@ -782,7 +796,11 @@ class Installer:
         return new
 
     def _prune(self, *, keep: set[str]) -> None:
-        """Remove releases other than the live one and the one before it."""
+        """Remove every release but those in ``keep``, and staging leftovers.
+
+        After an update that is kept, that is the live release and the one
+        before it; after one put back, the live release and the one taken out.
+        """
         kept = {Path(relative).parts[1] for relative in keep}
         for entry in self.releases.iterdir():
             if entry.name in kept or entry.is_symlink() or not entry.is_dir():
@@ -818,6 +836,13 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["systemctl", *args], capture_output=True, text=True, check=False)
 
 
+def _restart_unit(unit: str) -> None:
+    """``systemctl restart unit``; a refusal raises instead of being a return code."""
+    restarted = _systemctl("restart", unit)
+    if restarted.returncode != 0:
+        raise RuntimeError(f"systemctl restart {unit} failed: {restarted.stderr.strip()}")
+
+
 def _main_pid(unit: str) -> str:
     return _systemctl("show", "-p", "MainPID", "--value", unit).stdout.strip()
 
@@ -832,9 +857,7 @@ def systemd_health_check(unit: str, seconds: float) -> Callable[[], None]:
     """
 
     def check() -> None:
-        restarted = _systemctl("restart", unit)
-        if restarted.returncode != 0:
-            raise RuntimeError(f"systemctl restart {unit} failed: {restarted.stderr.strip()}")
+        _restart_unit(unit)
         time.sleep(1.0)
         pid = _main_pid(unit)
         deadline = time.monotonic() + seconds
@@ -915,8 +938,12 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _download_from_server(workdir: Path, public_key: ec.EllipticCurvePublicKey) -> tuple[Manifest, Path, str]:
-    """Fetch metadata and archive with the sensor's own credential."""
+def _server_manifest(public_key: ec.EllipticCurvePublicKey) -> tuple[AgentClient, Manifest, str]:
+    """Fetch the signed manifest with the sensor's own credential, and verify it.
+
+    The archive is fetched separately (``client.download_bundle``), once the
+    signed manifest has said it is worth fetching.
+    """
     from agent.worker import AgentClient
 
     api_url = os.environ.get("OCTO_API_URL", "").strip()
@@ -944,9 +971,7 @@ def _download_from_server(workdir: Path, public_key: ec.EllipticCurvePublicKey) 
         raise BundleRefused(
             f"the server says version {info.get('version')!r}, the signed manifest {manifest.version!r}"
         )
-    archive = workdir / manifest.archive
-    client.download_bundle(archive, max_bytes=manifest.size)
-    return manifest, archive, str(info.get("min_version") or "")
+    return client, manifest, str(info.get("min_version") or "")
 
 
 def _read_bundle_dir(bundle_dir: Path, public_key: ec.EllipticCurvePublicKey) -> tuple[Manifest, Path]:
@@ -986,6 +1011,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mode.add_argument("--commit", action="store_true", help="Keep the pending release")
     mode.add_argument("--rollback", action="store_true", help="Put the previous release back")
+    mode.add_argument(
+        "--abort",
+        action="store_true",
+        help="The caller was interrupted: put the previous release back without recording "
+        f"the pending one as failed. Exit {EXIT_RECOVERED} when something was put back",
+    )
     parser.add_argument(
         "--auto",
         action="store_true",
@@ -1070,6 +1101,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
             if args.rollback:
                 LOG.info("Rolled back" if installer.rollback() else "No pending update to roll back")
                 return 0
+            if args.abort:
+                # scripts/update-agent.sh was interrupted. Whatever it swapped
+                # in got no verdict, so it is put back, and not held against
+                # the release the way a failed health check is.
+                return EXIT_RECOVERED if installer.recover() else 0
             if args.check and installer.pending():
                 # --check changes nothing; putting the release back is a
                 # change, and one that needs the restart --check does not do.
@@ -1086,7 +1122,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
                 if args.pending:
                     return EXIT_RECOVERED
                 if use_systemd:
-                    _systemctl("restart", args.unit)
+                    try:
+                        _restart_unit(args.unit)
+                    except RuntimeError as exc:
+                        LOG.error(
+                            "%s did not restart onto the release put back and may still run "
+                            "the one taken out; not installing over it: %s",
+                            args.unit, exc,
+                        )
+                        return 1
                 else:
                     LOG.warning("Restart the sensor process yourself: it may run the release put back")
 
@@ -1094,34 +1138,40 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
             public_key = load_public_key(Path(key_path) if key_path else None)
             current = read_package_version(install_dir / _LIVE)
             with tempfile.TemporaryDirectory(prefix=".download-", dir=install_dir) as tmp:
+                client = None
                 if args.bundle_dir:
                     manifest, archive = _read_bundle_dir(args.bundle_dir, public_key)
                     server_floor = ""
                 else:
-                    manifest, archive, server_floor = _download_from_server(Path(tmp), public_key)
-                verify_archive(archive, manifest)
+                    client, manifest, server_floor = _server_manifest(public_key)
+                    archive = Path(tmp) / manifest.archive
+                # Decided by the signed manifest alone, so a bundle that is
+                # not going to be installed is not downloaded either.
                 check_version_policy(
                     manifest.version,
                     current=current,
                     min_versions=[server_floor, os.environ.get(MIN_VERSION_ENV, "")],
                 )
-                if args.check:
-                    LOG.info("Bundle %s verifies and would replace %s", manifest.version, current)
-                    return 0
-                if args.auto and installer.failed_before(manifest):
+                if args.auto and not args.check and installer.failed_before(manifest):
                     LOG.warning(
                         "Bundle %s failed its health check on this host before; --auto does "
                         "not retry it. Run the update by hand to try it again",
                         manifest.version,
                     )
                     return EXIT_NOTHING_TO_DO if args.pending else 0
+                if client is not None:
+                    client.download_bundle(archive, max_bytes=manifest.size)
+                verify_archive(archive, manifest)
+                if args.check:
+                    LOG.info("Bundle %s verifies and would replace %s", manifest.version, current)
+                    return 0
                 installer.health_check = (
                     systemd_health_check(args.unit, args.health_seconds)
                     if use_systemd
                     else (lambda: import_check(str(venv_python), install_dir, manifest.version))
                 )
                 if use_systemd:
-                    installer.on_rollback = lambda: _systemctl("restart", args.unit)
+                    installer.on_rollback = lambda: _restart_unit(args.unit)
                 live = installer.install(archive, manifest, pending=args.pending)
     except NothingToDo as exc:
         LOG.info("Nothing to update: %s", exc)

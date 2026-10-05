@@ -69,8 +69,15 @@ RATE_LIMIT_WAIT_SECONDS = 30.0
 
 # GET /api/agent/bundle answers with a manifest of at most 64 KiB and a 4 KiB
 # signature, base64-encoded (#363). The answer is read before anything in it
-# is verified, so how much of it is read is decided here, not by the server.
+# is verified, so how much of it is read is decided here, not by the server:
+# this for the metadata, the signed size for the archive, and the two below
+# for the credential exchange and for the body of any refusal.
 BUNDLE_INFO_MAX_BYTES = 256 * 1024
+# A token and its expiry; the exchange's answer is a few hundred bytes.
+EXCHANGE_MAX_BYTES = 64 * 1024
+# How much of an error answer is read, and so ends up in the exception and the
+# log line it becomes. The API's refusals are a short JSON ``detail``.
+ERROR_DETAIL_MAX_BYTES = 4 * 1024
 UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 
 # What this build promises the API it can honour, reported on register and on
@@ -409,6 +416,23 @@ _DISABLED_MARKERS = ("is disabled by an operator", "is quarantined by an operato
 _OTHER_TENANT_MARKER = "registered in another tenant"
 
 
+def _error_detail(exc: urllib.error.HTTPError) -> str:
+    """The start of an error answer's body, never more than ERROR_DETAIL_MAX_BYTES.
+
+    Read with a limit and the connection closed after it: an endless body is
+    neither held in memory nor carried into the exception text.
+    """
+    try:
+        raw = exc.read(ERROR_DETAIL_MAX_BYTES + 1)
+    except OSError:
+        raw = b""
+    finally:
+        with contextlib.suppress(OSError):
+            exc.close()
+    detail = raw[:ERROR_DETAIL_MAX_BYTES].decode("utf-8", errors="replace")
+    return detail + " [truncated]" if len(raw) > ERROR_DETAIL_MAX_BYTES else detail
+
+
 class AgentIdInAnotherTenant(RuntimeError):
     """The exchange refused this agent_id: another tenant registered it.
 
@@ -547,9 +571,9 @@ class AgentClient:
         )
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(EXCHANGE_MAX_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = _error_detail(exc)
             # The exchange refuses a disabled or quarantined agent_id too, so
             # it needs the same classification the bearer calls get: without
             # it, the state an operator set would reach the run loop as a bare
@@ -563,6 +587,12 @@ class AgentClient:
                     f"POST /api/auth/agent/token -> 403: {detail}"
                 ) from exc
             raise RuntimeError(f"POST /api/auth/agent/token -> {exc.code}: {detail}") from exc
+        if len(raw) > EXCHANGE_MAX_BYTES:
+            raise RuntimeError(
+                f"POST /api/auth/agent/token -> more than {EXCHANGE_MAX_BYTES} bytes "
+                "in the response; not reading the rest"
+            )
+        return json.loads(raw.decode("utf-8"))
 
     def _request(
         self,
@@ -634,7 +664,7 @@ class AgentClient:
                     time.sleep(0.5 * (2**attempt))
                     attempt += 1
                     continue
-                detail = exc.read().decode("utf-8", errors="replace")
+                detail = _error_detail(exc)
                 if exc.code == 401:
                     raise AgentTokenRejected(f"{method} {path} -> 401: {detail}") from exc
                 if exc.code == 426:
@@ -761,7 +791,7 @@ class AgentClient:
                         )
                     out.write(chunk)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = _error_detail(exc)
             raise RuntimeError(f"GET /api/agent/bundle/download -> {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError(f"GET /api/agent/bundle/download -> network error: {exc}") from exc

@@ -16,10 +16,13 @@ import http.server
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import threading
+import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from agent import logging_setup, update
+from agent.worker import AgentClient
 from api.services import version_compare
 from scripts import sensor_bundle as bundle_builder
 from tests.conftest import bearer, configured_client, login, requires_postgres
@@ -444,6 +448,74 @@ def test_a_journal_naming_a_path_outside_releases_is_not_followed(tmp_path):
         update.Installer(install).recover()
 
 
+def _unhealthy() -> None:
+    raise RuntimeError("unit restarted on its own")
+
+
+def test_a_failed_release_is_recorded_by_its_signed_digest_not_its_version(tmp_path, signing_key):
+    """A bundle re-signed under the same version after a fix is another
+    bundle: the first one's failure must not keep ``--auto`` off it."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    installer = update.Installer(install, health_check=_unhealthy)
+    with pytest.raises(update.UpdateFailed, match="rolled back"):
+        installer.install(archive, manifest)
+    assert installer.failed_before(manifest)
+
+    respun, _ = _verified(
+        _bundle(tmp_path / "respun", signing_key, "0.47-0930", worker="MARKER = 'fixed'\n"),
+        signing_key,
+    )
+    assert (respun.version, respun.sha256 != manifest.sha256) == (manifest.version, True)
+    assert not installer.failed_before(respun)
+
+
+def test_a_release_kept_clears_the_record_of_its_earlier_failure(tmp_path, signing_key):
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    with pytest.raises(update.UpdateFailed):
+        update.Installer(install, health_check=_unhealthy).install(archive, manifest)
+
+    installer = update.Installer(install, health_check=lambda: None)
+    installer.install(archive, manifest)
+    assert _live_version(install) == "0.47-0930"
+    assert not installer.failed_before(manifest)
+    assert not list(install.glob(".sensor-update-failed*"))
+
+
+def test_releases_put_back_do_not_pile_up(tmp_path, signing_key):
+    """Every failed attempt used to leave a whole release behind until an
+    update was kept; one taken out stays only while a process may run it."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+    counts = []
+    for _ in range(4):
+        installer = update.Installer(install)
+        taken_out = installer.install(archive, manifest, pending=True)
+        assert installer.rollback() is True
+        assert (install / taken_out).is_dir()  # the unit may still run it
+        counts.append(len(list((install / "releases").iterdir())))
+    assert counts == [2, 2, 2, 2]
+    assert _live_version(install) == "0.46-0922"
+
+
+def test_a_failed_restart_onto_the_previous_release_keeps_the_new_tree(tmp_path, signing_key, caplog):
+    """The tree goes once the unit has left it; a restart that did not happen
+    leaves the unit on it, and lazy imports in that process still need it."""
+    install = _installed(tmp_path, "0.46-0922")
+    manifest, archive = _verified(_bundle(tmp_path, signing_key, "0.47-0930"), signing_key)
+
+    def restart_fails() -> None:
+        raise RuntimeError("systemctl restart shapoclyack-agent.service failed")
+
+    installer = update.Installer(install, health_check=_unhealthy, on_rollback=restart_fails)
+    with pytest.raises(update.UpdateFailed, match="rolled back"):
+        installer.install(archive, manifest)
+    assert _live_version(install) == "0.46-0922"
+    assert [p for p in (install / "releases").iterdir() if p.name.startswith("0.47-0930-")]
+    assert "Restart after the rollback failed" in caplog.text
+
+
 def _archive_of(path: Path, files: dict[str, bytes]) -> None:
     import io
 
@@ -564,10 +636,14 @@ def test_commit_refuses_when_the_live_release_is_not_the_pending_one(tmp_path, s
 
 _FAKE_SYSTEMCTL = """#!/bin/sh
 # A systemctl for one unit. MODE=stable keeps the main PID after a restart;
-# MODE=crashloop hands out a new one on every look, as Restart=always does.
+# MODE=crashloop hands out a new one on every look, as Restart=always does;
+# MODE=norestart refuses the restart itself.
 state="$FAKE_SYSTEMD_DIR"
 case "$1" in
-  restart) echo restart >> "$state/calls"; echo 100 > "$state/pid"; exit 0 ;;
+  restart)
+    echo restart >> "$state/calls"
+    [ "$(cat "$state/mode")" = norestart ] && exit 1
+    echo 100 > "$state/pid"; exit 0 ;;
   is-active) [ "$(cat "$state/mode")" = inactive ] && exit 3; exit 0 ;;
   cat) exit 0 ;;
   show)
@@ -790,6 +866,68 @@ def test_root_will_not_run_the_update_over_a_tree_another_account_owns(tmp_path,
     assert code == 2
     assert _live_version(install) == "0.46-0922"
     assert not (state / "calls").exists()
+
+
+def _systemd_cli(install: Path, bundle: Path, key_file: Path, monkeypatch, *extra: str) -> int:
+    """``python -m agent.update`` as an operator running it with a unit present."""
+    monkeypatch.setenv(update.PUBKEY_FILE_ENV, str(key_file))
+    monkeypatch.setattr(update, "_systemd_unit_present", lambda unit: True)
+    return update.main(
+        ["--install-dir", str(install), "--env-file", str(install / "missing.env"),
+         "--bundle-dir", str(bundle), "--health-seconds", "1", *extra]
+    )
+
+
+def test_cli_restarts_the_unit_onto_a_release_it_put_back(tmp_path, signing_key, monkeypatch):
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    state = _fake_systemd(tmp_path, monkeypatch, "stable")
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    manifest, archive = _verified(bundle, signing_key)
+    update.Installer(install).install(archive, manifest, pending=True)
+
+    assert _systemd_cli(install, bundle, key_file, monkeypatch) == 0
+    # Onto the release put back first, then onto the one installed and checked.
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+    assert _live_version(install) == "0.47-0930"
+
+
+def test_cli_stops_when_the_unit_does_not_restart_onto_a_release_it_put_back(
+    tmp_path, signing_key, monkeypatch, caplog
+):
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    state = _fake_systemd(tmp_path, monkeypatch, "norestart")
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    manifest, archive = _verified(bundle, signing_key)
+    interrupted = update.Installer(install).install(archive, manifest, pending=True)
+
+    assert _systemd_cli(install, bundle, key_file, monkeypatch) == 1
+    assert "did not restart" in caplog.text
+    assert _live_version(install) == "0.46-0922"
+    # Nothing installed on top of a unit in an unknown state, and the tree it
+    # may still run from is there.
+    assert (state / "calls").read_text().split() == ["restart"]
+    assert (install / interrupted).is_dir()
+
+
+def test_abort_puts_an_interrupted_release_back_without_calling_it_failed(tmp_path, signing_key, monkeypatch):
+    """What update-agent.sh runs when it is interrupted: the release was not
+    judged, so ``--auto`` must not hold it against the next run."""
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    manifest, archive = _verified(bundle, signing_key)
+    update.Installer(install).install(archive, manifest, pending=True)
+
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--abort") == update.EXIT_RECOVERED
+    assert _live_version(install) == "0.46-0922"
+    assert not (install / ".sensor-update.json").exists()
+    assert not update.Installer(install).failed_before(manifest)
+    assert _run_cli(install, bundle, key_file, monkeypatch, "--abort") == 0
 
 
 # --------------------------------------------------------------------------
@@ -1054,20 +1192,180 @@ def test_auto_does_not_retry_a_release_that_failed_here(tmp_path, signing_key, m
     assert len(list((install / "releases").iterdir())) == 2
 
 
+#: BusyBox 1.37's setsid, as Alpine has it next to the `runuser` package when
+#: util-linux-misc is not installed: no -w, and for a process-group leader it
+#: forks and the parent exits 0 at once.
+_BUSYBOX_SETSID = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if args and args[0].startswith("-"):
+    sys.stderr.write("setsid: unrecognized option: " + args[0].lstrip("-") + "\\n")
+    sys.exit(1)
+if os.getpgrp() == os.getpid() and os.fork():
+    sys.exit(0)
+os.setsid()
+os.execvp(args[0], args)
+"""
+
+
+def test_update_script_works_with_a_setsid_that_has_no_wait(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    (tmp_path / "bin" / "setsid").write_text(_BUSYBOX_SETSID.format(python=sys.executable))
+    (tmp_path / "bin" / "setsid").chmod(0o755)
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _live_version(install) == "0.47-0930"
+    for line in (state / "attached").read_text().splitlines():
+        assert int(line.split()[0]) != os.getsid(0)
+
+
+def test_update_script_shows_why_the_verifier_would_not_start(tmp_path, signing_key, monkeypatch):
+    install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    (install / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\necho 'ModuleNotFoundError: No module named cryptography' >&2\nexit 1\n"
+    )
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 1
+    assert "No module named cryptography" in done.stdout + done.stderr
+
+
+def test_update_script_passes_no_control_characters_to_roots_terminal(tmp_path, signing_key, monkeypatch):
+    """A pipe alone is no filter: escape sequences a terminal answers (title
+    reports, DECRQSS) would still reach root's terminal byte for byte."""
+    install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    (install / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        "printf 'planted\\033]0;pwn\\007\\033[21t\\033P$q\"p\\033\\\\\\r\\n' >&2\n"
+        f'exec "{sys.executable}" "$@"\n'
+    )
+    done = _run_script(env, "--bundle-dir", str(bundle))
+    assert done.returncode == 0, done.stdout + done.stderr
+    seen = done.stdout + done.stderr
+    assert "planted]0;pwn[21t" in seen  # the text arrives ...
+    for sequence in ("\x1b]", "\x07", "\x1b[21t", "\x1bP", "\r"):
+        assert sequence not in seen  # ... the controls do not
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _interrupt_script(env: dict, sig: int, ready, *args: str) -> tuple[int | None, float, str]:
+    """Start the script as an operator's foreground job would be, signal its
+    process group once ``ready()`` -- ^C, a dropped SSH session, a kill -- and
+    return its status (``None`` if it was still running 20 s later)."""
+    proc = subprocess.Popen(
+        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), *args],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 60
+    while not ready():
+        if proc.poll() is not None or time.monotonic() > deadline:
+            proc.kill()
+            pytest.fail("the script never got there:\n" + proc.communicate()[0])
+        time.sleep(0.05)
+    os.killpg(proc.pid, sig)
+    started = time.monotonic()
+    try:
+        out, _ = proc.communicate(timeout=20)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        return None, time.monotonic() - started, proc.communicate()[0]
+    return proc.returncode, time.monotonic() - started, out
+
+
+def test_ctrl_c_stops_the_verifier_and_puts_the_previous_release_back(tmp_path, signing_key, monkeypatch):
+    """The sensor's process runs in a session of its own, so ^C at root's
+    terminal does not reach it: the script has to pass it on, and then undo
+    a swap that no verdict will follow."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    # The swap is done and the process is still there, as a slow exit would be.
+    (install / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        f'"{sys.executable}" "$@"; rc=$?\n'
+        'case "$*" in *--pending*) echo $$ > "$FAKE_SYSTEMD_DIR/lingering"; sleep 30 ;; esac\n'
+        "exit $rc\n"
+    )
+    status, took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "lingering").exists(), "--bundle-dir", str(bundle)
+    )
+    lingering = int((state / "lingering").read_text())
+    left_running = _alive(lingering)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(lingering, signal.SIGKILL)
+
+    assert (status, left_running) == (130, False), out
+    assert took < 10, out
+    assert _live_version(install) == "0.46-0922", out
+    assert not (install / ".sensor-update.json").exists()
+    assert not list(install.glob(".sensor-update-failed*"))  # interrupted, not judged
+
+
+def test_the_script_waits_for_the_verifier_to_go_before_putting_anything_back(
+    tmp_path, signing_key, monkeypatch
+):
+    """The signal ends the shell's ``wait`` at once; the verifier, told to
+    stop, may take a while. Putting the release back under it would race the
+    process that still holds the update lock and may still be swapping."""
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    (install / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        f'"{sys.executable}" "$@"; rc=$?\n'
+        'case "$*" in *--pending*)\n'
+        # Its output closed first: the FIFO's end is no sign it has gone.
+        "  trap 'exec >/dev/null 2>&1; sleep 4; touch \"$FAKE_SYSTEMD_DIR/verifier-gone\"; exit 143' TERM\n"
+        '  echo $$ > "$FAKE_SYSTEMD_DIR/lingering"; sleep 30 ;;\n'
+        "esac\n"
+        "exit $rc\n"
+    )
+    status, _took, out = _interrupt_script(
+        env, signal.SIGINT, lambda: (state / "lingering").exists(), "--bundle-dir", str(bundle)
+    )
+    gone_when_the_script_exited = (state / "verifier-gone").exists()
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(int((state / "lingering").read_text()), signal.SIGKILL)
+    assert status == 130, out
+    assert gone_when_the_script_exited, out
+    assert _live_version(install) == "0.46-0922", out
+
+
+def test_a_signal_during_the_health_check_puts_the_previous_release_back(tmp_path, signing_key, monkeypatch):
+    install, bundle, state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
+    env["HEALTH_SECONDS"] = "30"
+    status, _took, out = _interrupt_script(
+        env, signal.SIGTERM, lambda: (state / "calls").exists(), "--bundle-dir", str(bundle)
+    )
+    assert status == 143, out
+    assert _live_version(install) == "0.46-0922", out
+    assert not (install / ".sensor-update.json").exists()
+    # Restarted onto the new release, then onto the one put back.
+    assert (state / "calls").read_text().split() == ["restart", "restart"]
+    assert not list(install.glob(".sensor-update-failed*"))
+
+
 # --------------------------------------------------------------------------
 # The sensor's HTTP path, against a server that lies
 # --------------------------------------------------------------------------
 
 
 @contextlib.contextmanager
-def _fake_api(metadata: dict, archive: bytes):
-    """A stand-in API on a real socket, so ``AgentClient`` runs as it does on a host."""
+def _fake_api(metadata: dict, archive: bytes, *, seen: list[str] | None = None):
+    """A stand-in API on a real socket, so ``AgentClient`` runs as it does on a host.
+    ``seen`` collects the paths asked for."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
         def do_GET(self):  # noqa: N802 - http.server's naming
+            if seen is not None:
+                seen.append(self.path)
             if self.headers.get("Authorization") != "Bearer sensor-token":
                 self.send_response(401)
                 self.end_headers()
@@ -1107,7 +1405,9 @@ def _from_server(tmp_path: Path, monkeypatch, url: str, key: ec.EllipticCurvePri
     monkeypatch.delenv("OCTO_AGENT_PROVISIONING_KEY_FILE", raising=False)
     work = tmp_path / "download"
     work.mkdir(exist_ok=True)
-    return update._download_from_server(work, key.public_key())
+    client, manifest, floor = update._server_manifest(key.public_key())
+    client.download_bundle(work / manifest.archive, max_bytes=manifest.size)
+    return manifest, work / manifest.archive, floor
 
 
 def test_the_sensor_downloads_and_verifies_over_http(tmp_path, signing_key, monkeypatch):
@@ -1144,6 +1444,106 @@ def test_a_server_streaming_more_than_the_signed_size_is_cut_off(tmp_path, signi
     with _fake_api(_metadata(bundle), archive + b"\0" * (2 * 1024 * 1024)) as url:
         with pytest.raises(RuntimeError, match="more bytes than the signed"):
             _from_server(tmp_path, monkeypatch, url, signing_key)
+
+
+def _auto_from_server(install: Path, url: str, key_file: Path, monkeypatch) -> int:
+    monkeypatch.setenv(update.PUBKEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(update.AUTO_UPDATE_ENV, "true")
+    monkeypatch.setenv("OCTO_API_URL", url)
+    monkeypatch.setenv("OCTO_AGENT_TOKEN", "sensor-token")
+    monkeypatch.delenv("OCTO_AGENT_PROVISIONING_KEY", raising=False)
+    monkeypatch.delenv("OCTO_AGENT_PROVISIONING_KEY_FILE", raising=False)
+    monkeypatch.setattr(update, "_systemd_unit_present", lambda unit: False)
+    return update.main(
+        ["--install-dir", str(install), "--env-file", str(install / "missing.env"), "--auto"]
+    )
+
+
+def test_auto_skips_a_release_that_failed_here_before_downloading_it(tmp_path, signing_key, monkeypatch):
+    """The signed manifest names the digest; a timer tick that is going to
+    skip the release has no reason to fetch 64 MiB of it first."""
+    install = _cli_install(tmp_path, "0.46-0922")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    manifest, archive = _verified(bundle, signing_key)
+    with pytest.raises(update.UpdateFailed):
+        update.Installer(install, health_check=_unhealthy).install(archive, manifest)
+
+    seen: list[str] = []
+    with _fake_api(_metadata(bundle), archive.read_bytes(), seen=seen) as url:
+        assert _auto_from_server(install, url, key_file, monkeypatch) == 0
+    assert seen == ["/api/agent/bundle"]
+    assert _live_version(install) == "0.46-0922"
+
+
+def test_a_bundle_already_installed_is_not_downloaded(tmp_path, signing_key, monkeypatch):
+    install = _cli_install(tmp_path, "0.47-0930")
+    key_file = tmp_path / "release.pub"
+    key_file.write_bytes(_pem(signing_key))
+    bundle = _bundle(tmp_path, signing_key, "0.47-0930")
+    seen: list[str] = []
+    with _fake_api(_metadata(bundle), next(bundle.glob("*.tar.gz")).read_bytes(), seen=seen) as url:
+        assert _auto_from_server(install, url, key_file, monkeypatch) == 0
+    assert seen == ["/api/agent/bundle"]
+
+
+_FLOOD_BYTES = 32 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _flooding_api(status: int):
+    """An API that answers anything with ``status`` and 32 MiB of body."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _flood(self):
+            self.send_response(status)
+            self.send_header("Content-Length", str(_FLOOD_BYTES))
+            self.end_headers()
+            chunk = b"x" * 65536
+            with contextlib.suppress(OSError):
+                for _ in range(_FLOOD_BYTES // len(chunk)):
+                    self.wfile.write(chunk)
+
+        do_GET = do_POST = _flood  # noqa: N815 - http.server's naming
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+_SENSOR_CALLS = {
+    "bundle metadata": lambda client, tmp: client.bundle_info(),
+    "credential exchange": lambda client, tmp: client.exchange_provisioning_key("pk_test"),
+    "bundle download": lambda client, tmp: client.download_bundle(tmp / "b.tar.gz", max_bytes=1024),
+}
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("call", sorted(_SENSOR_CALLS))
+def test_how_much_of_an_answer_is_read_is_decided_by_the_sensor(tmp_path, call, status):
+    """What the updater reads from the API before anything is verified -- an
+    error body included, and the text of the error it is logged as -- is
+    bounded here, whatever length the server announces or sends."""
+    with _flooding_api(status) as url:
+        client = AgentClient(url, "sensor-token")
+        tracemalloc.start()
+        try:
+            with pytest.raises(RuntimeError) as refused:
+                _SENSOR_CALLS[call](client, tmp_path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    assert len(str(refused.value)) < 8 * 1024
+    assert peak < 8 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------

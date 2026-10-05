@@ -2227,10 +2227,14 @@ restarts the unit. The install directory belongs to that account, so root
 running the venv's interpreter or the `agent` package would hand the account a
 way to root; as the account, the updater changes nothing the account could not
 already change. The account's process is also cut off from the terminal root
-ran the script from: it runs under `setsid` (which the script requires), with
-stdin from `/dev/null` and its output piped through root, so a planted
-interpreter cannot push keystrokes into root's shell with `TIOCSTI` (the
-CVE-2016-2779 class; kernels before 6.2 allow it by default). Started by hand
+ran the script from: it runs under `setsid` (which the script requires; the
+BusyBox one without `-w` will do), with stdin from `/dev/null` and its output
+read back through a FIFO by root, so a planted interpreter cannot push
+keystrokes into root's shell with `TIOCSTI` (the CVE-2016-2779 class; kernels
+before 6.2 allow it by default). What it prints reaches the terminal as
+printable ASCII, tabs and newlines only: control characters are dropped, so no
+escape sequence gets a terminal that answers one (a title report, `DECRQSS`)
+to type into root's input either. Started by hand
 as root over a tree another account owns, `python -m agent.update` stops with
 an error — a guard against that accident, **not a boundary**: by the time the
 check runs, root is already executing code that account can rewrite. Only the
@@ -2291,13 +2295,26 @@ as `legacy-<version>-…`. In order:
    leaves the unit on code that is not live. `--check` changes nothing, this
    included: it reports the interrupted update and exits `1`.
 
+**Interrupting the script** — `^C`, an SSH session that drops, `SIGTERM` —
+does not leave an unchecked release live. The verifier runs in a session of
+its own, so the terminal's `SIGINT` does not reach it; the script sends it
+`SIGTERM`, waits for it to go, puts back whatever this run swapped in
+(`python -m agent.update --abort`, which unlike `--rollback` does not record
+the release as failed: it was not judged), restarts the unit onto it if
+anything was put back, and exits `130`/`129`/`143`. Interrupted during
+`--check`, or before it has started changing anything, it only stops. A
+second `^C` during that clean-up is ignored; it takes a moment.
+
 One update runs at a time (a lock in the install directory); a second one
 started meanwhile stops with "another sensor update is running".
 
-The live release and the one before it are kept; older ones are removed. A
-release that was put back stays on disk until the next update that is kept —
-the unit ran from it until the restart, and a running Python imports lazily —
-and is pruned then.
+After an update that is kept, the live release and the one before it stay
+and older ones are removed. After one that is put back, the live release
+stays, and so does the one taken out for as long as the unit may still run
+from it — a running Python imports lazily — while everything else goes, so
+failed attempts do not pile up between updates that are kept. If the restart
+onto the previous release fails, the tree the unit is left on is not removed;
+the error is logged.
 
 **The bundle is the `agent` package and nothing else.** The worker starts
 `python -m scanner.main` from the install directory; a `scanner/` tree staged
@@ -2313,8 +2330,10 @@ Limits worth knowing:
 - **a release that failed its health check here is not retried by `--auto`.**
   Its signed digest is recorded in `.sensor-update-failed.json` in the install
   directory; the timer logs that it skips it instead of installing it, crashing
-  and rolling back on every tick. A run without `--auto` tries it again, and an
-  update that is kept clears the record;
+  and rolling back on every tick, and does so from the signed manifest, before
+  downloading the archive (a bundle already installed is not downloaded
+  either). A run without `--auto` tries it again, and an update that is kept
+  clears the record;
 - **dependencies are not updated.** A bundle that needs a Python package the
   venv lacks fails the pre-swap import and is refused, safely; such a release
   is installed by re-running `install-agent.sh`, which reinstalls the venv from

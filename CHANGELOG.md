@@ -28,10 +28,16 @@ All notable changes to Shapoclyack are documented in this file.
   the unit and requires it to stay up as one process, and puts the previous
   release back otherwise — also after a crash, from a journal, before the next
   run asks whether anything is new, restarting the unit onto the release put
-  back. The verifier runs detached from root's terminal (`setsid`, stdin from
-  `/dev/null`, output through a pipe), so the sensor's account cannot type into
-  root's shell with `TIOCSTI`. A release that failed its health check is
-  recorded and not retried by `--auto`. Only the `agent` package is in the
+  back. The verifier runs detached from root's terminal (`setsid`, BusyBox's
+  included; stdin from `/dev/null`; output read back with every control
+  character dropped), so the sensor's account cannot type into root's shell
+  with `TIOCSTI` or have the terminal answer an escape sequence into it.
+  Interrupted (`^C`, a dropped SSH session, `SIGTERM`), the script stops the
+  verifier and puts back what it swapped in. A release that failed its health
+  check is recorded by its signed digest and not retried by `--auto`, which
+  skips it before downloading it; releases put back are pruned rather than
+  left to pile up. What the sensor reads from the API before verifying it, error
+  bodies included, is bounded. Only the `agent` package is in the
   bundle; `scanner/` and the venv are not. `--bundle-dir`
   does the same from local files for air-gapped hosts. **Automatic updates stay
   off**: nothing runs the updater unless an operator installs a timer, and its
