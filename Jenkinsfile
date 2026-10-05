@@ -191,14 +191,15 @@ pipeline {
         }
 
         stage('Tests') {
-          // Матрица развёрнута в последовательный цикл. Параллельные ячейки
-          // на маке получали каждая свой воркспейс и клонировали репозиторий
-          // одновременно, и этот клон перемежающимся образом падал с
-          // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
-          // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
-          // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
-          // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
-          // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
+          // Матрица снова параллельная, но без второго клона. На маке
+          // параллельные ячейки получали каждая свой воркспейс и клонировали
+          // репозиторий одновременно, и этот клон перемежающимся образом падал
+          // с "inflate: data stream error" ещё на 154 объектах: git fsck
+          // исходного репозитория чист, мелкий клон не помог, а в изоляции
+          // (хост и контейнер, bind-mount и ФС контейнера, параллельно и по
+          // одному) 12 попыток прошли без единого сбоя. Поэтому матрица тогда
+          // стала циклом: один воркспейс — один чекаут. Здесь чекаут тоже один
+          // (стадия выше), а ячейки получают дерево через git archive.
           steps {
             // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
             // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
@@ -223,92 +224,113 @@ pipeline {
               PATH="\$BIN:\$PATH" OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh
             """
             script {
-              for (PY in ['3.11', '3.12']) {
-                try {
-                  // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
-                  // 127.0.0.1 из GitHub Actions тут не работает — у каждого
-                  // контейнера свой netns, общего loopback с раннером нет.
-                  def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
-                  sh "docker network create ${net}"
+              // Ячейки идут параллельно, каждая в своём каталоге на этом же
+              // executor'е. Одна ячейка — это один поток pytest (~1 vCPU) и
+              // ~0.6 ГБ с postgres и nats; на 6 vCPU / 15 ГБ Fedor две
+              // помещаются с запасом, а по очереди стадия шла почти час.
+              // Каталоги разные, потому что cwd у pytest общий с .coverage и
+              // .pytest_cache. Дерево — git archive уже сделанного checkout'а,
+              // а не второй клон: одновременные клоны и роняли параллельную
+              // матрицу на маке (см. комментарий стадии выше).
+              def src = env.WORKSPACE
+              def cell = { PY ->
+                ws("${src}@py${PY}") {
+                  docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
+                    sh 'find . -mindepth 1 -delete'
+                  }
+                  sh "git -C '${src}' archive HEAD | tar -x && cp -R '${src}/.k8s-render' ."
                   try {
-                    // Данные — в tmpfs, не в анонимном томе: withRun снимает
-                    // контейнер без -v, и каждый прогон оставлял в Docker-VM том
-                    // на ~1.5 ГБ; 33 таких тома и забили диск (DiskFull в
-                    // билде feat/org-profile-promoted-scope #1, 2026-09-04). size=
-                    // обязателен: без него tmpfs растёт до половины RAM VM и
-                    // разросшаяся база уронит OOM-killer'ом что попало вместо
-                    // внятной ошибки записи postgres.
-                    docker.image(POSTGRES_IMAGE).withRun(
-                      "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
-                      "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
-                    ) { pg ->
-                      // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
-                      // причина, по которой в GHA это был ручной docker run.
-                      docker.image(NATS_IMAGE).withRun(
-                        "--network ${net} --network-alias nats",
-                        "--jetstream --store_dir=/data --http_port=8222"
-                      ) { nats ->
-                        docker.image(PYTHON_IMAGES[PY]).inside("-u 0:0 --network ${net} ${PIP_CACHE}") {
-                          withEnv([
-                            'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
-                            'OCTO_NATS_URL=nats://nats:4222',
-                            // Стримы этого брокера живут минуты и на слое
-                            // контейнера, без тома. Продовые дефолты (10 ГБ для
-                            // INGEST, 1 ГБ для EVENTS) JetStream резервирует
-                            // заранее и отвечает 'insufficient storage resources
-                            // available', когда на хосте столько не осталось, —
-                            // отчего падал не тот тест, который что-то проверяет.
-                            'OCTO_NATS_INGEST_MAX_BYTES=268435456',
-                            'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
-                            // Отрендерено выше, до контейнера; путь — от корня
-                            // репозитория, который смонтирован тем же путём.
-                            'OCTO_K8S_RENDER_DIR=.k8s-render',
-                          ]) {
-                            sh '''
-                              set -eu
-                              # Без apt намеренно: psycopg[binary] везёт libpq в
-                              # колесе, компилятор не нужен, а ожидание сервисов
-                              # сделано на stdlib. Раньше тут стоял apt-get, и
-                              # матрица падала, когда deb.debian.org не ответил.
-                              pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
+                    // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
+                    // 127.0.0.1 из GitHub Actions тут не работает — у каждого
+                    // контейнера свой netns, общего loopback с раннером нет.
+                    def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
+                    sh "docker network create ${net}"
+                    try {
+                      // Данные — в tmpfs, не в анонимном томе: withRun снимает
+                      // контейнер без -v, и каждый прогон оставлял в Docker-VM том
+                      // на ~1.5 ГБ; 33 таких тома и забили диск (DiskFull в
+                      // билде feat/org-profile-promoted-scope #1, 2026-09-04). size=
+                      // обязателен: без него tmpfs растёт до половины RAM VM и
+                      // разросшаяся база уронит OOM-killer'ом что попало вместо
+                      // внятной ошибки записи postgres.
+                      docker.image(POSTGRES_IMAGE).withRun(
+                        "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
+                        "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
+                      ) { pg ->
+                        // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
+                        // причина, по которой в GHA это был ручной docker run.
+                        docker.image(NATS_IMAGE).withRun(
+                          "--network ${net} --network-alias nats",
+                          "--jetstream --store_dir=/data --http_port=8222"
+                        ) { nats ->
+                          docker.image(PYTHON_IMAGES[PY]).inside("-u 0:0 --network ${net} ${PIP_CACHE}") {
+                            withEnv([
+                              'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
+                              'OCTO_NATS_URL=nats://nats:4222',
+                              // Стримы этого брокера живут минуты и на слое
+                              // контейнера, без тома. Продовые дефолты (10 ГБ для
+                              // INGEST, 1 ГБ для EVENTS) JetStream резервирует
+                              // заранее и отвечает 'insufficient storage resources
+                              // available', когда на хосте столько не осталось, —
+                              // отчего падал не тот тест, который что-то проверяет.
+                              'OCTO_NATS_INGEST_MAX_BYTES=268435456',
+                              'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
+                              // Отрендерено выше, до контейнера; путь — от корня
+                              // репозитория, который смонтирован тем же путём.
+                              'OCTO_K8S_RENDER_DIR=.k8s-render',
+                            ]) {
+                              sh '''
+                                set -eu
+                                # Без apt намеренно: psycopg[binary] везёт libpq в
+                                # колесе, компилятор не нужен, а ожидание сервисов
+                                # сделано на stdlib. Раньше тут стоял apt-get, и
+                                # матрица падала, когда deb.debian.org не ответил.
+                                pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
 
-                              python -m compileall scanner api tests agent
+                                python -m compileall scanner api tests agent
 
-                              echo "[ci] waiting for postgres and jetstream"
-                              for i in $(seq 1 60); do
-                                python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
-                                sleep 1
-                              done
-                              for i in $(seq 1 60); do
-                                python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
-                                sleep 1
-                              done
+                                echo "[ci] waiting for postgres and jetstream"
+                                for i in $(seq 1 60); do
+                                  python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
+                                  sleep 1
+                                done
+                                for i in $(seq 1 60); do
+                                  python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
+                                  sleep 1
+                                done
 
-                              alembic -c api/db/alembic.ini upgrade head
+                                alembic -c api/db/alembic.ini upgrade head
 
-                              # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
-                              # общем с ci.yml. Там же выставляется
-                              # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
-                              # отличает прогнанные Postgres-наборы от пропущенных
-                              # целиком, а это большая часть всех тестов.
-                              JUNIT_XML=junit-''' + PY + '''.xml \
-                              COVERAGE_XML=coverage-''' + PY + '''.xml \
-                                scripts/ci-pytest.sh
-                            '''
+                                # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
+                                # общем с ci.yml. Там же выставляется
+                                # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
+                                # отличает прогнанные Postgres-наборы от пропущенных
+                                # целиком, а это большая часть всех тестов.
+                                JUNIT_XML=junit-''' + PY + '''.xml \
+                                COVERAGE_XML=coverage-''' + PY + '''.xml \
+                                  scripts/ci-pytest.sh
+                              '''
+                            }
                           }
                         }
                       }
+                    } finally {
+                      sh "docker network rm ${net} || true"
                     }
                   } finally {
-                    sh "docker network rm ${net} || true"
+                    // В finally ячейки: её падение не должно съедать отчёт,
+                    // который уже написан.
+                    junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
+                    archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
                   }
-                } finally {
-                  // В finally, а не после цикла: падение на 3.11 не должно съедать
-                  // отчёт, который уже написан.
-                  junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
-                  archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
                 }
               }
+              def cells = [:]
+              for (PY in ['3.11', '3.12']) {
+                def py = PY
+                cells["Python ${py}"] = { cell(py) }
+              }
+              parallel cells
             }
           }
         }
