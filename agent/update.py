@@ -636,9 +636,14 @@ class Installer:
             data = json.loads(raw)
             record = {"version": str(data["version"]), "sha256": str(data["sha256"])}
             fd, tmp = tempfile.mkstemp(dir=self.install_dir, prefix=f"{_FAILED}.")
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(record, handle)
-            os.replace(tmp, self.failed)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(record, handle)
+                os.replace(tmp, self.failed)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+                raise
         except (OSError, ValueError, KeyError, TypeError, UpdateFailed) as exc:
             LOG.warning("Could not record %s as failed: %s", relative, exc)
 
@@ -1065,20 +1070,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
             if args.rollback:
                 LOG.info("Rolled back" if installer.rollback() else "No pending update to roll back")
                 return 0
-            if args.check:
-                if installer.pending():
-                    # --check changes nothing; putting the release back is a
-                    # change, and one that needs the restart --check does not do.
-                    LOG.error(
-                        "An interrupted update left %s live without a verdict; run the "
-                        "update without --check to put the previous release back",
-                        installer.current(),
-                    )
-                    return 1
+            if args.check and installer.pending():
+                # --check changes nothing; putting the release back is a
+                # change, and one that needs the restart --check does not do.
+                LOG.error(
+                    "An interrupted update left %s live without a verdict; run the "
+                    "update without --check to put the previous release back",
+                    installer.current(),
+                )
+                return 1
             # Before anything else, including "nothing to do": a run killed
             # between swap and verdict left an unverified release live, and the
             # server offering that same version must not leave it there.
-            elif installer.recover():
+            if installer.recover():
                 if args.pending:
                     return EXIT_RECOVERED
                 if use_systemd:
