@@ -38,9 +38,11 @@ run put it back too, if this process dies half-way.
 
 **Root runs none of this.** The install directory belongs to the sensor's
 account, so ``scripts/update-agent.sh`` runs this module as that account with
-``--pending``, restarts the unit itself, and answers with ``--commit`` or
-``--rollback``. Run directly as root over a tree another account owns, it
-refuses. Only the names in :data:`ENV_FILE_NAMES` are taken from ``agent.env``.
+``--pending``, detached from root's terminal, restarts the unit itself, and
+answers with ``--commit`` or ``--rollback``. Started as root by hand over a
+tree another account owns, it stops -- a guard against the accident, not a
+boundary: by the time it runs, root is already executing code that account can
+rewrite. Only the names in :data:`ENV_FILE_NAMES` are taken from ``agent.env``.
 
 **Automatic updates are off.** Nothing calls this on its own. ``--auto`` exists
 for an operator's timer and does nothing unless ``OCTO_AGENT_AUTO_UPDATE=true``.
@@ -113,6 +115,9 @@ MAX_UNPACKED_BYTES = 128 * 1024 * 1024
 MAX_MEMBERS = 4096
 
 _JOURNAL = ".sensor-update.json"
+#: The release whose health check last failed here, so ``--auto`` does not
+#: install it, crash, and roll it back again on every timer tick.
+_FAILED = ".sensor-update-failed.json"
 _LOCK = ".sensor-update.lock"
 _RELEASES = "releases"
 _LIVE = "agent"
@@ -505,6 +510,7 @@ class Installer:
         self.live = install_dir / _LIVE
         self.releases = install_dir / _RELEASES
         self.journal = install_dir / _JOURNAL
+        self.failed = install_dir / _FAILED
 
     # -- journal -----------------------------------------------------------
 
@@ -567,12 +573,17 @@ class Installer:
         self._release_path(target)
         return target
 
+    def pending(self) -> bool:
+        """Whether a journal says a swap is waiting for its verdict."""
+        return self.journal.exists()
+
     def recover(self) -> bool:
         """Finish what a killed run left: put back the release its journal names.
 
         Returns whether anything was put back -- the caller then restarts the
         service, which may still be running the code the interrupted run
-        swapped in.
+        swapped in. That release's tree is left where it is for the same
+        reason, and goes with the next :meth:`_prune`.
         """
         try:
             payload = json.loads(self.journal.read_text(encoding="utf-8"))
@@ -598,13 +609,50 @@ class Installer:
             self._point_at(previous)
             LOG.warning("An interrupted update was rolled back to %s", previous)
             self._clear_journal()
-            new = str(payload.get("new") or "")
-            if new:
-                with contextlib.suppress(UpdateFailed):
-                    shutil.rmtree(self._release_path(new).parent, ignore_errors=True)
             return True
         self._clear_journal()
         return False
+
+    def rollback(self) -> bool:
+        """``--rollback``: the restarted service did not stay up on the pending
+        release. Remember it as failed here, then put the previous one back."""
+        try:
+            payload = json.loads(self.journal.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {}
+        new = str(payload.get("new") or "") if isinstance(payload, dict) else ""
+        if new:
+            self._remember_failed(new)
+        return self.recover()
+
+    def _remember_failed(self, relative: str) -> None:
+        """Record the signed manifest of a release that failed its health check.
+
+        Fail-soft: the record only spares ``--auto`` a retry, and an error
+        writing it must not stand in the way of the rollback it accompanies.
+        """
+        try:
+            raw = (self._release_path(relative).parent / "manifest.json").read_bytes()
+            data = json.loads(raw)
+            record = {"version": str(data["version"]), "sha256": str(data["sha256"])}
+            fd, tmp = tempfile.mkstemp(dir=self.install_dir, prefix=f"{_FAILED}.")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(record, handle)
+            os.replace(tmp, self.failed)
+        except (OSError, ValueError, KeyError, TypeError, UpdateFailed) as exc:
+            LOG.warning("Could not record %s as failed: %s", relative, exc)
+
+    def failed_before(self, manifest: Manifest) -> bool:
+        """Whether this very bundle (by its signed digest) failed here before."""
+        try:
+            record = json.loads(self.failed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(record, dict) and record.get("sha256") == manifest.sha256
+
+    def _forget_failed(self) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            self.failed.unlink()
 
     def _adopt_live(self) -> str:
         """The live release as a ``releases/…`` path, moving a plain directory there.
@@ -679,16 +727,19 @@ class Installer:
             shutil.rmtree(self._release_path(new).parent, ignore_errors=True)
             raise
         self._write_journal({"previous": previous, "new": new})
+        checking = False
         try:
             self._point_at(new)
             if pending:
                 return new
             if self.health_check is not None:
+                checking = True
                 self.health_check()
         except BaseException as exc:
+            if checking and isinstance(exc, Exception):
+                self._remember_failed(new)
             self._point_at(previous)
             self._clear_journal()
-            shutil.rmtree(self._release_path(new).parent, ignore_errors=True)
             if self.on_rollback is not None:
                 try:
                     self.on_rollback()
@@ -697,10 +748,13 @@ class Installer:
                     # to restart onto it is reported alongside, not instead of,
                     # the reason the update was undone.
                     LOG.error("Restart after the rollback failed: %s", hook_exc)
+            # After the restart: until then the service runs from this tree.
+            shutil.rmtree(self._release_path(new).parent, ignore_errors=True)
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             raise UpdateFailed(f"rolled back to {previous}: {exc}") from exc
         self._clear_journal()
+        self._forget_failed()
         self._prune(keep={new, previous})
         return new
 
@@ -718,6 +772,7 @@ class Installer:
         if self.current() != new:
             raise UpdateFailed(f"{self.live} is not the pending release {new}; not committing")
         self._clear_journal()
+        self._forget_failed()
         self._prune(keep={new, previous})
         return new
 
@@ -943,6 +998,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 #: ``--pending`` found the bundle already installed; the caller restarts nothing.
 EXIT_NOTHING_TO_DO = 3
+#: ``--pending`` found an interrupted update and put the previous release back,
+#: and stopped there: the service still runs the release taken out, so the
+#: caller restarts it and runs ``--pending`` again.
+EXIT_RECOVERED = 4
 
 
 def _owned_by_someone_else(path: Path) -> bool:
@@ -977,8 +1036,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
     use_systemd = not args.pending and _systemd_unit_present(args.unit)
     if use_systemd and _owned_by_someone_else(install_dir):
         # Root running code from a tree the sensor's account can rewrite is that
-        # account's way to root. scripts/update-agent.sh runs this as the owner
-        # and keeps only the restart for itself.
+        # account's way to root. This stops the accident -- ``sudo python -m
+        # agent.update`` typed by hand -- and is no boundary: it runs inside
+        # that very code. scripts/update-agent.sh runs this as the owner and
+        # keeps only the restart for itself.
         LOG.error(
             "Not updating %s as root: it belongs to another account, whose code this "
             "would run. Use scripts/update-agent.sh",
@@ -991,17 +1052,39 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
             installer = Installer(install_dir, python=str(venv_python))
             if args.commit:
                 kept = installer.commit()
-                LOG.info("Kept %s", kept or "nothing: no update was pending")
+                if kept:
+                    LOG.info(
+                        "Sensor agent package updated to %s (%s); scanner/ and the venv "
+                        "are not part of the bundle",
+                        read_package_version(install_dir / _LIVE),
+                        kept,
+                    )
+                else:
+                    LOG.info("Kept nothing: no update was pending")
                 return 0
+            if args.rollback:
+                LOG.info("Rolled back" if installer.rollback() else "No pending update to roll back")
+                return 0
+            if args.check:
+                if installer.pending():
+                    # --check changes nothing; putting the release back is a
+                    # change, and one that needs the restart --check does not do.
+                    LOG.error(
+                        "An interrupted update left %s live without a verdict; run the "
+                        "update without --check to put the previous release back",
+                        installer.current(),
+                    )
+                    return 1
             # Before anything else, including "nothing to do": a run killed
             # between swap and verdict left an unverified release live, and the
             # server offering that same version must not leave it there.
-            recovered = installer.recover()
-            if args.rollback:
-                LOG.info("Rolled back" if recovered else "No pending update to roll back")
-                return 0
-            if recovered and use_systemd:
-                _systemctl("restart", args.unit)
+            elif installer.recover():
+                if args.pending:
+                    return EXIT_RECOVERED
+                if use_systemd:
+                    _systemctl("restart", args.unit)
+                else:
+                    LOG.warning("Restart the sensor process yourself: it may run the release put back")
 
             key_path = os.environ.get(PUBKEY_FILE_ENV, "").strip()
             public_key = load_public_key(Path(key_path) if key_path else None)
@@ -1021,6 +1104,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
                 if args.check:
                     LOG.info("Bundle %s verifies and would replace %s", manifest.version, current)
                     return 0
+                if args.auto and installer.failed_before(manifest):
+                    LOG.warning(
+                        "Bundle %s failed its health check on this host before; --auto does "
+                        "not retry it. Run the update by hand to try it again",
+                        manifest.version,
+                    )
+                    return EXIT_NOTHING_TO_DO if args.pending else 0
                 installer.health_check = (
                     systemd_health_check(args.unit, args.health_seconds)
                     if use_systemd
@@ -1043,9 +1133,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one CLI, its mod
         LOG.error("Sensor update could not reach the bundle: %s", exc)
         return 1
     if args.pending:
-        LOG.info("Sensor %s swapped in for %s (%s); waiting for the verdict", manifest.version, current, live)
+        LOG.info(
+            "Sensor agent package %s swapped in for %s (%s); waiting for the verdict",
+            manifest.version, current, live,
+        )
         return 0
-    LOG.info("Sensor updated from %s to %s (%s)", current, manifest.version, live)
+    LOG.info(
+        "Sensor agent package updated to %s from %s (%s); scanner/ and the venv are not "
+        "part of the bundle",
+        manifest.version, current, live,
+    )
     if not use_systemd:
         LOG.warning(
             "No systemd unit %s here: restart the sensor process yourself to run the new version",

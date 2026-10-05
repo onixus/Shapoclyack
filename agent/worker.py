@@ -66,6 +66,11 @@ HEARTBEAT_INTERVAL_SECONDS = 60.0
 # given up, the archive stays on disk and the job is requeued. Busy heartbeats
 # keep the job's lease while the upload waits.
 RATE_LIMIT_WAIT_SECONDS = 30.0
+
+# GET /api/agent/bundle answers with a manifest of at most 64 KiB and a 4 KiB
+# signature, base64-encoded (#363). The answer is read before anything in it
+# is verified, so how much of it is read is decided here, not by the server.
+BUNDLE_INFO_MAX_BYTES = 256 * 1024
 UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 
 # What this build promises the API it can honour, reported on register and on
@@ -570,6 +575,7 @@ class AgentClient:
         max_retries: int = 2,
         timeout: float | None = None,
         rate_limit_wait: float = RATE_LIMIT_WAIT_SECONDS,
+        max_response_bytes: int | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -596,7 +602,15 @@ class AgentClient:
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             try:
                 with self._opener.open(req, timeout=deadline) as resp:
-                    raw = resp.read()
+                    if max_response_bytes is None:
+                        raw = resp.read()
+                    else:
+                        raw = resp.read(max_response_bytes + 1)
+                        if len(raw) > max_response_bytes:
+                            raise RuntimeError(
+                                f"{method} {path} -> more than {max_response_bytes} bytes "
+                                "in the response; not reading the rest"
+                            )
                     if resp.status == 204 or not raw:
                         return None
                     if expect_json:
@@ -720,7 +734,7 @@ class AgentClient:
         Nothing in the answer is trusted here; ``agent/update.py`` checks the
         signature against the key pinned in this package before reading it.
         """
-        info = self._request("GET", "/api/agent/bundle")
+        info = self._request("GET", "/api/agent/bundle", max_response_bytes=BUNDLE_INFO_MAX_BYTES)
         if not isinstance(info, dict):
             raise RuntimeError("GET /api/agent/bundle -> no metadata in the response")
         return info

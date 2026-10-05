@@ -14,7 +14,11 @@
 # sensor's own account, and restart the unit. The install directory belongs to
 # that account (scripts/install-agent.sh), so root executing the venv's python
 # or the agent package would be the account's way to root; as the account, it
-# changes nothing the account could not already change. The verdict on the
+# changes nothing the account could not already change. It runs in a session
+# of its own, reading /dev/null and writing into a pipe, so it has no hold on
+# the terminal root started this from either (TIOCSTI, CVE-2016-2779). The
+# bundle replaces the `agent` package only: scanner/ and the venv are not in
+# it. The verdict on the
 # restart -- the unit staying up as one process -- is taken here, and decides
 # whether the release is kept (--commit) or the previous one put back
 # (--rollback).
@@ -42,6 +46,9 @@ RESTART_ONLY=0
 AUTO=0
 # agent/update.py: --pending found the bundle already installed.
 EXIT_NOTHING_TO_DO=3
+# agent/update.py: --pending put back the release an interrupted update left
+# live, and stopped there for the unit to be restarted onto it.
+EXIT_RECOVERED=4
 
 log() {
     echo -e "\033[1;34m[INFO]\033[0m $*"
@@ -63,7 +70,9 @@ Options:
       --bundle-dir <DIR>   Install from sensor-bundle.json, sensor-bundle.json.sig
                            and the archive in DIR instead (air-gapped hosts).
                            Verified exactly as a download is.
-      --check              Verify the bundle and report; change nothing.
+      --check              Verify the bundle and report; change nothing. Stops
+                           with an error if an interrupted update is waiting
+                           to be put back (a run without --check does that).
       --auto               For a timer: do nothing unless OCTO_AGENT_AUTO_UPDATE=true.
       --restart-only       Restart the sensor without touching the package.
   -h, --help               Show this help message.
@@ -135,12 +144,23 @@ fi
 # The verifier, as the sensor's account, from the install directory: `agent`
 # there is the package being replaced, and the verifier that runs is the one
 # already installed, not the one arriving.
+#
+# Detached from root's terminal: neither runuser nor su without a pty gives
+# the account's process a terminal of its own, so it would share root's, and
+# TIOCSTI on it types into root's shell once this script exits. setsid takes
+# the controlling terminal away; stdin from /dev/null and output through a
+# pipe leave no descriptor on it either. -w keeps the exit status.
+command -v setsid &>/dev/null \
+    || error "setsid not found: it is what keeps the sensor's code off root's terminal."
 as_sensor() {
     if command -v runuser &>/dev/null; then
-        (cd "${INSTALL_DIR}" && runuser -u "${SENSOR_USER}" -- "$@")
+        (cd "${INSTALL_DIR}" && setsid -w runuser -u "${SENSOR_USER}" -- "$@" </dev/null 2>&1 | cat)
     else
-        # BusyBox (Alpine) has su but no runuser.
-        (cd "${INSTALL_DIR}" && su -s /bin/sh "${SENSOR_USER}" -c "$(printf '%q ' "$@")")
+        # BusyBox (Alpine) has su but no runuser, and a setsid without -w: it
+        # forks only for a process-group leader, which a pipeline member of a
+        # non-interactive script is not, so it execs and the status stays.
+        (cd "${INSTALL_DIR}" \
+            && setsid su -s /bin/sh "${SENSOR_USER}" -c "$(printf '%q ' "$@")" </dev/null 2>&1 | cat)
     fi
 }
 
@@ -149,7 +169,7 @@ updater() {
         --env-file "${CONF_DIR}/agent.env" "$@"
 }
 
-if ! as_sensor "${PYTHON}" -c "import agent.update" 2>/dev/null; then
+if ! as_sensor "${PYTHON}" -c "import agent.update" &>/dev/null; then
     error "The installed sensor has no bundle verifier (agent/update.py), or its
   dependencies are missing. Re-run scripts/install-agent.sh once to upgrade it;
   from then on this script can update it."
@@ -191,6 +211,16 @@ healthy() {
 
 status=0
 updater --pending ${ARGS[@]+"${ARGS[@]}"} || status=$?
+if [[ "${status}" -eq "${EXIT_RECOVERED}" ]]; then
+    # A previous run was killed between the restart and its verdict: the unit
+    # runs a release that is no longer live. Restart it onto the one put back
+    # before anything else, whatever the bundle turns out to be.
+    log "An interrupted update was rolled back; restarting ${UNIT} onto the previous release..."
+    systemctl restart "${UNIT}" \
+        || error "${UNIT} did not restart onto the previous release. Inspect it with: journalctl -u ${UNIT} -n 50"
+    status=0
+    updater --pending ${ARGS[@]+"${ARGS[@]}"} || status=$?
+fi
 if [[ "${status}" -eq "${EXIT_NOTHING_TO_DO}" ]]; then
     exit 0
 elif [[ "${status}" -ne 0 ]]; then
@@ -199,7 +229,7 @@ fi
 
 if healthy; then
     updater --commit
-    log "Sensor updated; ${UNIT} stayed up for ${HEALTH_SECONDS}s."
+    log "${UNIT} stayed up for ${HEALTH_SECONDS}s on the new agent package; kept."
     exit 0
 fi
 

@@ -797,7 +797,7 @@ _FAKE_RUNUSER = """#!/bin/sh
 # runuser -u USER -- CMD...: record who and what the command is attached to,
 # then run CMD as ourselves.
 echo "$2" >> "$FAKE_SYSTEMD_DIR/runuser"
-"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE" >> "$FAKE_SYSTEMD_DIR/attached"
+"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE"
 shift 3
 exec "$@"
 """
@@ -805,7 +805,7 @@ exec "$@"
 _FAKE_SU = """#!/bin/sh
 # BusyBox su -s /bin/sh USER -c CMD: the same record, then CMD as ourselves.
 echo "$3" >> "$FAKE_SYSTEMD_DIR/runuser"
-"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE" >> "$FAKE_SYSTEMD_DIR/attached"
+"$FAKE_PYTHON" -c "$ATTACHMENT_PROBE"
 exec /bin/sh -c "$5"
 """
 
@@ -820,7 +820,8 @@ def kind(fd):
     if os.isatty(fd):
         return "tty"
     return "fifo" if stat.S_ISFIFO(st.st_mode) else "file"
-print(os.getsid(0), kind(0), kind(1), kind(2))
+with open(os.path.join(os.environ["FAKE_SYSTEMD_DIR"], "attached"), "a") as out:
+    print(os.getsid(0), kind(0), kind(1), kind(2), file=out)
 """
 
 #: macOS has no setsid(1); this does what util-linux's does, -w included.
@@ -911,9 +912,11 @@ def test_update_script_puts_the_previous_release_back_on_a_crash_loop(tmp_path, 
     assert "previous release is back" in done.stderr
     assert _live_version(install) == "0.46-0922"
     assert not (install / ".sensor-update.json").exists()
-    # Restarted onto the new code, then onto the old one again.
+    # Restarted onto the new code, then onto the old one again. The new tree
+    # stays until the next update that is kept: the unit ran from it until
+    # that second restart, and lazy imports in a running process need it.
     assert (state / "calls").read_text().split() == ["restart", "restart"]
-    assert not [p for p in (install / "releases").iterdir() if p.name.startswith("0.47")]
+    assert not os.readlink(install / "agent").startswith("releases/0.47")
 
 
 def test_update_script_restarts_nothing_for_a_refused_bundle(tmp_path, signing_key, monkeypatch):
@@ -1044,6 +1047,8 @@ def test_auto_does_not_retry_a_release_that_failed_here(tmp_path, signing_key, m
     assert manual.returncode == 0, manual.stdout + manual.stderr
     assert _live_version(install) == "0.47-0930"
     assert not list(install.glob(".sensor-update-failed*"))
+    # The tree of the failed attempt went with that update.
+    assert len(list((install / "releases").iterdir())) == 2
 
 
 # --------------------------------------------------------------------------
