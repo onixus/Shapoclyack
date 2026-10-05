@@ -1,7 +1,7 @@
 """Scan queue: job priority, per-tenant concurrency and queue-depth limits (#365)
 
 Revision ID: 0074_scan_queue_admission
-Revises: 0072_run_publication_projected
+Revises: 0073_rank3_credential_permission
 Create Date: 2026-10-05
 
 Until this revision the queue was one FIFO per tenant with no ceiling: a
@@ -29,9 +29,6 @@ Expand-only:
     Seeded into the catalogue and granted to the tenant ``admin`` and the
     platform admin, the roles :mod:`api.core.permissions` gives it to.
     Nobody loses anything: priority is new.
-
-Chained onto 0072 on purpose — 0073 is in flight on another branch and this
-revision is re-chained onto it when the two land.
 """
 from __future__ import annotations
 
@@ -41,7 +38,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0074_scan_queue_admission"
-down_revision: Union[str, None] = "0072_run_publication_projected"
+down_revision: Union[str, None] = "0073_rank3_credential_permission"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
