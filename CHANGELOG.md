@@ -823,6 +823,29 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   a step-up, not after. The console notices a confinement that starts
   mid-session: the first enrolment `403` re-reads `/api/auth/me` once, so the
   banner appears without a reload.
+
+- **Endpoint Agent (Lariska) builds are written by the platform admin only
+  ([#510](https://github.com/onixus/Shapoclyack/issues/510)).** Builds are
+  stored once for the installation, one per `(version, platform)`, but
+  `POST/DELETE /api/endpoint/agent/releases` were gated on the tenant
+  permission `endpoint_agent.manage`: one tenant's admin (or a custom role
+  holding it, or an admin-role service token) could replace the binary every
+  other tenant's endpoints were told to download and execute, or delete it and
+  stop their upgrades. Both routes now need the new
+  `platform.endpoint_agent_release.manage`, held by the platform admin alone
+  and not grantable to a tenant-defined role, behind a step-up; migration
+  `0078_agent_release_permission` seeds it (no schema change). The tenant
+  admin keeps its policy (`desired_version`) and the listing, which no longer
+  shows it `uploaded_by`. Uploads and deletes are audited with no tenant, a
+  delete with the removed build in `before` (a delete was not audited at all).
+  **On upgrade:** stored builds stay downloadable and untouched. Once the last
+  old replica is gone, review the `endpoint_agent.release.upload` audit
+  history as the platform admin — every event carrying a tenant predates the
+  change — against your published digests; the current rows alone hide a
+  build that was replaced and restored, or uploaded and deleted
+  ([operations](docs/operations.md#endpoint-agent-lariska-builds)).
+  Signing the builds, so the API is not the endpoint's only source of trust,
+  is a follow-up.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

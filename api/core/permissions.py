@@ -107,14 +107,23 @@ AGENT_GROUP_MANAGE = "agent.group.manage"
 #: see what a tenant is allowed to scan may see how hard.
 SCAN_POLICY_MANAGE = "scan_policy.manage"
 #: Decide what the tenant's endpoint agents run and how (``PUT
-#: …/endpoint/agent/policy``, ``POST …/endpoint/agent/releases``, #358): their
-#: collection intervals and log level, and which build they should upgrade to.
-#: The version half is the authority to replace a binary on every endpoint in
-#: the tenant, which is why it is an administrator's and not an operator's, and
+#: …/endpoint/agent/policy``, #358): their collection intervals and log level,
+#: and which of the installation's builds they should upgrade to. The version
+#: half is the authority to move every endpoint in the tenant to another
+#: binary, which is why it is an administrator's and not an operator's, and
 #: why the policy cannot carry the agent's ``server_url`` at all — an agent
 #: that can be told where to report is an agent that can be told to report
-#: somewhere else.
+#: somewhere else. It also lists the builds, and stops there: what those
+#: builds *are* is :data:`PLATFORM_ENDPOINT_AGENT_RELEASE`'s.
 ENDPOINT_AGENT_MANAGE = "endpoint_agent.manage"
+#: Upload and delete endpoint-agent builds (``POST/DELETE
+#: …/endpoint/agent/releases``, #510). Platform-only because the builds are:
+#: one row per ``(version, platform)`` for the whole installation, so an
+#: upload is a binary every tenant's endpoints run once their own policy names
+#: that version, and a delete is every tenant's upgrade stopped. Held by a
+#: tenant's admin, it was one customer replacing the code another customer's
+#: workstations execute.
+PLATFORM_ENDPOINT_AGENT_RELEASE = "platform.endpoint_agent_release.manage"
 #: Read what the tenant was sold (``GET …/quota``).
 TENANT_QUOTA_READ = "tenant.quota.read"
 #: Change it. Platform-only on purpose: a tenant admin who could raise their
@@ -185,7 +194,8 @@ PERMISSIONS: dict[str, str] = {
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
     AGENT_GROUP_MANAGE: "Manage the tenant's agent groups and their members",
     SCAN_POLICY_MANAGE: "Set how hard this tenant may be scanned",
-    ENDPOINT_AGENT_MANAGE: "Manage the tenant's endpoint agents and their builds",
+    ENDPOINT_AGENT_MANAGE: "Manage the tenant's endpoint agents and choose their build",
+    PLATFORM_ENDPOINT_AGENT_RELEASE: "Upload and delete the installation's endpoint agent builds",
     TENANT_QUOTA_READ: "Read the tenant's quota",
     PLATFORM_QUOTA_MANAGE: "Set any tenant's quota",
     PLATFORM_TENANT_MANAGE: "Create tenants",

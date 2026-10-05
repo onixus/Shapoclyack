@@ -2276,6 +2276,157 @@ with `--docker` (or roll the Kubernetes deployment).
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
 
+### Endpoint Agent (Lariska) builds
+
+Unlike a sensor, the endpoint Agent (Lariska) is upgraded by the API: a tenant's
+policy names a version (`PUT /api/endpoint/agent/policy`, `desired_version`),
+the heartbeat hands the agent that build's sha256 and URL, and the agent
+downloads it with its own token and refuses bytes that do not match. The
+builds themselves are stored once for the installation, one per
+`(version, platform)`, so:
+
+- **Uploading and deleting a build is the platform admin's**
+  (`platform.endpoint_agent_release.manage`, behind a step-up, #510). A
+  re-upload of the same pair replaces the bytes every tenant's endpoints are
+  handed; a delete stops every tenant's upgrade to it.
+- **A tenant admin** (`endpoint_agent.manage`) lists the builds and decides
+  which one its own endpoints run. It cannot upload, replace or delete one, and
+  the list it reads carries no `uploaded_by`.
+
+```bash
+curl -sS -X POST https://<api-host>/api/endpoint/agent/releases \
+  -H "Authorization: Bearer <platform-admin token, recently re-verified>" \
+  -F version=0.3.0 -F platform=x86_64-pc-windows-msvc \
+  -F binary=@lariska.exe -F notes="release notes or build id"
+```
+
+Compare the `sha256` in the response with the digest of the build you meant to
+publish before any tenant names that version.
+
+**On upgrade to the release that made this platform-only.** Builds already
+stored stay as they are and stay downloadable — nothing is migrated or
+re-hashed. Before it, any tenant's admin could have uploaded one, and the row
+would be served to every tenant. Check this once, as the platform admin, and
+check it **from the audit trail, not from the current rows**: the rows show
+only the last write, so a build a tenant replaced, that endpoints downloaded,
+and that it then re-uploaded with the official bytes looks clean; and a build
+a tenant uploaded and then deleted is not there at all. Before this release a
+delete was not audited either, so for a deleted build the upload event is the
+only trace left.
+
+Run it **after the last replica on the previous release is gone** (`kubectl
+rollout status`, or no old pod left in `kubectl get pods`): until then an old
+replica still accepts a tenant's upload, and a check made earlier misses it.
+
+1. Export the upload history. `GET /api/audit` lists every tenant for the
+   platform admin when no `tenant_id` is named, and `format=ndjson` streams
+   all of it rather than one page:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.upload&format=ndjson" \
+     > release-uploads.ndjson
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.delete&format=ndjson" \
+     > release-deletes.ndjson
+   ```
+
+2. Every upload event **with a `tenant_id`** was made before the change — this
+   release records uploads and deletes with none. The `tenant_id` is the tenant
+   the console was looking at, not proof a tenant did it: the platform admin's
+   own uploads from before carry one too, so `actor` says who it was. List them:
+
+   ```bash
+   jq -c 'select(.tenant_id != null)
+          | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+3. Compare each one's `sha256` with the build you published. Put your digests
+   in `official-builds.json` as `{"<version>/<platform>": "<sha256>", ...}`;
+   this prints every pre-change upload that was not one of them, including a
+   version you never published:
+
+   ```bash
+   jq -c --slurpfile official official-builds.json \
+     'select(.tenant_id != null and .after.sha256 != $official[0][.resource_id])
+      | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+   Any line here is a binary you did not publish that was served to every
+   tenant whose policy named that version, **whatever the build holds now**.
+   That covers both cases the current rows hide: *replaced then restored* (a
+   foreign digest followed later by yours under the same `build`) and
+   *uploaded then deleted* (a `build` with no row left in
+   `GET /api/endpoint/agent/releases`).
+
+4. For each `build` printed, read its whole history, oldest first, to get the
+   window during which the foreign bytes were the ones handed out — from that
+   event to the next upload of that build, or to now if the build is still
+   stored. Deletes from this release on carry the removed row in `before`:
+
+   ```bash
+   cat release-uploads.ndjson release-deletes.ndjson \
+     | jq -s -c --arg build "0.3.0/x86_64-pc-windows-msvc" \
+         'map(select(.resource_id == $build)) | sort_by(.occurred_at) | .[]
+          | {occurred_at, tenant_id, actor, action, sha256: (.after.sha256 // .before.sha256)}'
+   ```
+
+5. Find the endpoints that may have run it. The server keeps **no** record of
+   which bytes an endpoint installed: the heartbeat reports only the running
+   version (`GET /api/agents`, `version` on endpoint Agents), and a download is
+   not audited (the only server-side trace is the access-log line for
+   `GET /api/endpoint/agent/releases/<version>/<platform>/download`, with client
+   IP and time, if your logs reach back that far). So treat every endpoint
+   that reports that version, or reported it during the window, in any tenant
+   whose policy named it, as suspect, and settle it on the host. Hash the
+   binary the service runs (the default install paths below; use the one your
+   service unit or Windows service points at if you installed elsewhere) and
+   compare it with your digest:
+
+   ```bash
+   sha256sum /usr/bin/lariska                    # Linux
+   shasum -a 256 /usr/local/bin/lariska          # macOS
+   ```
+
+   ```powershell
+   Get-FileHash "C:\Program Files\Lariska\lariska.exe"
+   ```
+
+   A managed update keeps the binary it replaced beside the new one, with
+   `.old` appended to the full name (`/usr/bin/lariska.old`,
+   `/usr/local/bin/lariska.old`, `C:\Program Files\Lariska\lariska.exe.old`),
+   until the next update overwrites it. Hash that file too: an endpoint that
+   ran the foreign build and was then moved on can still have it there. A
+   match on the running binary does not clear a host whose `.old` is foreign.
+
+6. Then fix the build and the endpoints. Re-uploading the official bytes under
+   the same version repairs neither: an endpoint already running the foreign
+   binary reports that version, and the heartbeat offers no update when
+   `desired_version` equals the version the agent reports.
+
+   - **The build.** `DELETE` every row whose current `sha256` is not yours, and
+     publish the official build under a **new** version (bump the patch, e.g.
+     `0.3.0` -> `0.3.1`). Do not reuse the compromised version number.
+   - **Endpoints that never ran the foreign bytes** (the host check in step 5
+     came back clean, `.old` included): point their tenant's policy at the new
+     version with `desired_version` and let the managed update move them.
+   - **Endpoints that ran the foreign binary**, or that you cannot check:
+     treat the host as compromised. That binary ran as the agent's service
+     account with the agent's token, and nothing it reports is trustworthy —
+     not its version, and not whether it applied an update, since it need not
+     honour `managed_update` at all. Reinstall the official build on the host
+     by hand (Lariska's install procedure) and remove the `.old` file. The
+     foreign binary had the host's provisioning key and JWT, so revoke them —
+     `DELETE /api/agents/{id}?revoke_key=true` (check `other_agents_on_key`
+     first: the revocation stops every agent enrolled with that key) — and
+     enrol the reinstalled agent with a fresh key. Handle the host under your
+     incident process.
+
+Builds are not signed yet: the API is the endpoint's only source of trust for
+what it executes, which is why the write is the platform admin's alone.
+
 ## Tenant-defined roles
 
 A tenant can define its own roles and grant them on memberships
