@@ -48,9 +48,33 @@ All notable changes to Shapoclyack are documented in this file.
   `viewer`. Revoking a token leaves its groups' grants in place. Every change is
   audited (`membership.*`, `user.*` with `"source": "idp"`, new
   `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
-  Migration `0076_idp_resync_scim` (expand-only; chained after 0072 on its
-  branch and renumbered at merge). Rollout order:
+  Migration `0076_idp_resync_scim` (expand-only). Rollout order:
   [operations.md](docs/operations.md#making-the-idp-authoritative-and-scim).
+
+- **Scan queue priority, per-tenant concurrency and admission
+  ([#365](https://github.com/onixus/Shapoclyack/issues/365)).** Jobs carry a
+  `priority` (`-100..100`, default `0`) and every claim hands out the highest
+  first, then the oldest; set it at `POST /api/jobs` or move a queued job with
+  `PUT /api/jobs/{id}/priority`. Raising above 0 — or moving a job somebody
+  raised — needs the new `scan.priority.raise` permission (tenant `admin`,
+  platform admin); lowering is the operator's. Per tenant,
+  `PUT /api/tenants/{id}/queue-limits` (platform admin; readable with
+  `tenant.quota.read`) sets `max_concurrent_scans`, enforced at claim time for
+  sensor claims, the NATS claim of an offered job and local scans alike under a
+  per-tenant advisory lock so two replicas cannot both take the last slot, and
+  `max_queued_scans`, enforced at admission with `429` and `Retry-After`;
+  `OCTO_SCAN_QUEUE_MAX_DEPTH` is the installation-wide depth ceiling. A local
+  scan of a tenant at its ceiling now waits in `queued` instead of starting,
+renewing a waiting mark the job reaper of any replica uses to fail it once its
+replica is gone (or cut off from the database for longer than the mark, as a
+running job's lease would be); a scheduled scan that meets a full queue is
+deferred by the `Retry-After`, not skipped (`deferred_queue_full`), up to its
+next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
+  New series `octo_scan_queue_throttled_total{reason}` and the opt-in
+  `octo_tenant_jobs_queued{tenant}`. The console's job table shows and sets
+  the priority, gated by the permission in the active tenant. Migration
+  `0074_scan_queue_admission` (expand-only): existing jobs read priority 0 and
+  every tenant is unlimited, so nothing changes until a ceiling is set.
 
 - **Tenant-defined roles
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
@@ -714,6 +738,62 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **MFA policy and step-up by authority in a tenant
+  ([#504](https://github.com/onixus/Shapoclyack/issues/504)).** The second-factor
+  policy compared `OCTO_MFA_REQUIRED_ROLES` with the account's global role only,
+  so under "MFA for admins" a tenant's `admin` whose global role is `viewer` —
+  or a `scope-approver`, `risk-approver`, `token-admin`, or a tenant-defined
+  role holding `tenant.member.manage` — signed in with a password alone, and
+  then granted memberships and wrote roles without a step-up. Two new
+  variables, `OCTO_MFA_REQUIRED_PERMISSIONS` and
+  `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS`, cover an account that holds a
+  listed permission in **any** tenant, through any role; the role lists keep
+  meaning the global role exactly as before. `PUT`/`DELETE
+  /api/tenants/{id}/members/{u}` and `POST`/`PATCH`/`DELETE
+  /api/tenants/{id}/roles…` (a delete with `reassign_to` included) now require
+  a recent step-up from an account with MFA enabled; service tokens remain
+  refused on all of them by scope. `GET /api/auth/mfa` adds
+  `required_because` (which tenant and role put the requirement there), and
+  the console's Security page shows it instead of the global role name.
+  **Behaviour change for existing installations:** with
+  `OCTO_MFA_REQUIRED_ROLES=admin` (or `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`)
+  and the new variables unset, the permission list is **derived** —
+  `tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+  `vulnerability.exception.approve` — so after the upgrade every holder of
+  one of those in any tenant who has not enrolled is confined to the Security
+  page, **including on sessions already open**: the requirement is re-read per
+  request, so a grant, a revoke or an edited role applies from the member's
+  next call rather than at the end of the session. Nobody is locked out — the
+  confined session can enrol. Installations without an MFA policy see no
+  change apart from the step-up on member and role administration, which, as
+  every step-up, applies only to accounts that have MFA enabled. To stage the
+  rollout, set both new variables to `none` (exactly the old behaviour) and
+  remove them once the affected people have enrolled; `docs/operations.md`
+  has a query listing who they are. Review round 1: the derived set also
+  holds `endpoint_agent.manage`, and under the derived default a tenant role
+  at the admin rank (3) is covered whatever permissions it lists — rank 3
+  alone reaches webhooks, notification channels, SLA policies and the SSH
+  push. `POST /api/agent/deployment-command` and `POST /api/agent/deploy/ssh`
+  now ask for `tenant.credential.manage` (the SSH push keeps the admin rank on
+  top) instead of the rank alone, like `POST …/provisioning-keys`; migration
+  **0073** writes that permission onto every tenant role at rank 3 so the roles
+  that minted keys before the upgrade still can (and reach the permission's
+  other routes). Review round 2: where such a role also holds
+  `tenant.member.manage`, its holders can now hand the credential on by itself
+  — define and grant a role carrying it, or grant `token-admin` — where before
+  it travelled only inside the role; kept on purpose, since dropping it would
+  take the console's **Deploy Agent** button from those roles, and
+  `docs/operations.md` has the query that lists them. A step-up route now
+  refuses a service token outright, so an `admin`-role token with
+  `endpoint:write` no longer sets the endpoint agent policy (`endpoint`
+  itself stays writable for the CVE-match refreshes). The console offers the
+  SSH push only to a holder of `tenant.credential.manage` at the tenant admin
+  rank, as the API checks. New step-ups: the SSH push, the endpoint agent policy and
+  builds, risk-acceptance approve/reject/revoke, and `PUT
+  /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
+  /api/users/{u}/sessions/revoke-all`. A permission variable made only of
+  unknown keys refuses to start instead of reading as `none`. The requirement
+  is computed once per request.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

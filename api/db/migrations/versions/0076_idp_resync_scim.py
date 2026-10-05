@@ -1,7 +1,7 @@
 """IdP-authoritative resync and SCIM 2.0 provisioning (#316)
 
 Revision ID: 0076_idp_resync_scim
-Revises: 0072_run_publication_projected
+Revises: 0074_scan_queue_admission
 Create Date: 2026-10-05
 
 Before this, the identity provider decided a console account's role and tenant
@@ -44,9 +44,6 @@ Expand-only; the previous release reads and writes none of it. Rollback is a
 plain drop, which forgets which memberships the IdP owns (they become local
 again) and every SCIM token and group — re-issue and let the client push
 again.
-
-Chained after 0072 on the branch it was written on; renumbered into the chain
-when it merges.
 """
 
 from __future__ import annotations
@@ -57,7 +54,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0076_idp_resync_scim"
-down_revision: Union[str, None] = "0072_run_publication_projected"
+down_revision: Union[str, None] = "0074_scan_queue_admission"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

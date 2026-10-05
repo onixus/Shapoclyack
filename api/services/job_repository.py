@@ -87,7 +87,9 @@ def load_jobs(settings: Settings) -> None:
     Unlike the pre-P1 version, the queue is now shared, so "still running" no
     longer implies "mine": only rows carrying this replica's ``owner_id`` are
     reconciled. A local job orphaned by a replica that never returns under the
-    same id stays running until the P1.4 lease reaper lands. Agent-mode jobs
+    same id — every rollout of a Deployment renames its pods — is the job
+    reaper's: a running one once its lease lapses, a queued one waiting for a
+    slot once its waiting mark does (``job_reaper.reap_expired_leases``). Agent-mode jobs
     are untouched in either case — their executor is a remote process
     independent of this one.
     """

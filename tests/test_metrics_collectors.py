@@ -869,6 +869,7 @@ def test_tenant_series_are_off_by_default():
         "octo_tenant_open_findings",
         "octo_tenant_sla_breached_findings",
         "octo_tenant_scans_finished_24h",
+        "octo_tenant_jobs_queued",
     }
 
 

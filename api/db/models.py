@@ -83,6 +83,16 @@ class Tenant(Base):
     change_freeze_note: Mapped[str | None] = mapped_column(default=None)
     change_freeze_at: Mapped[datetime | None] = mapped_column(default=None)
     change_freeze_by: Mapped[str | None] = mapped_column(default=None)
+    # Scan queue ceilings (#365, migration 0074). NULL is unlimited — every
+    # tenant until somebody sets one. ``max_concurrent_scans`` bounds how many
+    # of the tenant's jobs may be out with an executor at once (claimed,
+    # running or being cancelled) and is enforced at claim time;
+    # ``max_queued_scans`` bounds how many may wait, and is enforced at
+    # admission with a 429. Here and not in ``tenant_quotas``: a quota row's
+    # NULLs override the platform's billing defaults, so creating one to set
+    # a ceiling would exempt the tenant from its quota.
+    max_concurrent_scans: Mapped[int | None] = mapped_column(default=None)
+    max_queued_scans: Mapped[int | None] = mapped_column(default=None)
 
 
 class User(Base):
@@ -2057,6 +2067,12 @@ class Job(Base):
     # by ``jobs.reap_stale_cancellations`` instead of sitting in `cancelling`
     # forever. NULL for every job nobody has asked to stop.
     cancel_requested_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Claim order within a tenant (#365): higher first, then ``queued_at``.
+    # 0 is the default and what every job before migration 0074 reads, so a
+    # queue nobody prioritised is the FIFO it always was. Bounded by
+    # ``scan_queue.PRIORITY_MIN``/``PRIORITY_MAX``; above 0 needs
+    # ``scan.priority.raise``.
+    priority: Mapped[int] = mapped_column(default=0, server_default="0")
     queued_at: Mapped[datetime]
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)

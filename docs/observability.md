@@ -206,6 +206,7 @@ counted where they happen (use `sum()`).
 | `octo_job_idempotent_replays_total` | counter | `operation` (`start`, `results`) | E |
 | `octo_scan_policy_refusals_total` | counter | `reason` (`safe_only`, `avoid_ports`, `agent_unsupported`) | E |
 | `octo_quota_denied_total` | counter | `resource` (`assets`, `scans`) | E |
+| `octo_scan_queue_throttled_total` | counter | `reason` (`tenant_queue_full`, `global_queue_full` — a scan start refused with `429`; `concurrency_limit` — a claim answered with nothing or a local scan left waiting because its tenant is at `max_concurrent_scans`, #365). The last is counted per refused claim, so it is a rate that grows with the poll frequency, not a count of scans | E |
 
 ### Sensor and agent fleet
 
@@ -313,6 +314,7 @@ Off unless `OCTO_METRICS_TENANT_TOP_N` is set — see
 | `octo_tenant_open_findings` | gauge | `tenant` (top N active ids, fixed for the hour, + `_other`), `severity` (`critical`, `high`, `medium`, `low`, `unknown`) | C |
 | `octo_tenant_sla_breached_findings` | gauge | `tenant` as above | C |
 | `octo_tenant_scans_finished_24h` | gauge, a trailing-window count (not a counter) | `tenant` as above, `status` (`succeeded`, `failed`, `cancelled`) | C |
+| `octo_tenant_jobs_queued` | gauge | `tenant` as above — scans waiting in `queued`, the depth `max_queued_scans` is measured against (#365) | C |
 
 ### Access
 

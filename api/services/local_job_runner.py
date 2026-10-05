@@ -15,7 +15,11 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+
 from api.db import models
+from api.db.engine import get_session
 from api.services import job_inputs
 from api.services import job_leases
 from api.services import job_repository
@@ -25,6 +29,7 @@ from api.services import local_scan_executor
 from api.services import run_completion
 from api.services import run_publisher
 from api.services import runs as runs_service
+from api.services import scan_queue
 from api.services import tenants as tenants_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
@@ -128,6 +133,92 @@ def _keep_refused_run(
     )
 
 
+def _start(settings: Settings, job_id: str) -> bool:
+    """Move this local job queued → running, or answer that it must wait.
+
+    A local job has no claim step — this process is its worker — so this is
+    its claim, and it is held to the same ceiling a sensor's claim is (#365):
+    with the tenant at ``max_concurrent_scans`` the answer is ``False`` and
+    the job stays queued. It also waits while a better job of its tenant is
+    queued on this replica, so a slot that frees goes to the highest priority
+    rather than to whichever thread asked first. Both are decided in the
+    transaction that makes the move, under the tenant's claim lock, so two
+    replicas cannot both take the last slot. The lock is only tried: while
+    another claim holds it the answer is ``False`` and the thread asks again
+    at its next poll (:func:`scan_queue.hold_slot`).
+
+    Every ``False`` keeps the job's waiting mark fresh
+    (:func:`job_leases.renew_waiting_mark`, which rewrites it only once half
+    of it is spent): it is how the reaper on any replica tells a scan that is
+    still waiting from one whose replica went away.
+
+    Raises :class:`job_states.InvalidJobTransition` for a job that is no
+    longer queued — cancelled while it waited, typically.
+    """
+    with get_session(settings.postgres_url) as session:
+        tenant_id = session.execute(
+            select(models.Job.tenant_id).where(models.Job.job_id == job_id)
+        ).scalar_one_or_none()
+        if tenant_id is None:
+            raise job_states.InvalidJobTransition(f"Job {job_id} no longer exists")
+        # The slot first, the row second: the same order as the sensor claim,
+        # so the two never wait on each other in opposite orders.
+        slot = scan_queue.hold_slot(session, tenant_id, wait=False)
+        # Locked, as ``job_store.update_job`` locks it: an operator cancelling
+        # while this thread starts it must see one outcome or the other.
+        row = session.get(models.Job, job_id, with_for_update=True)
+        if row is None:
+            raise job_states.InvalidJobTransition(f"Job {job_id} no longer exists")
+        job_states.check_transition(job_id, row.status, job_states.RUNNING)
+        if not slot or (
+            scan_queue.concurrency_limit(session, tenant_id) is not None
+            and scan_queue.local_job_ahead(session, row)
+        ):
+            job_leases.renew_waiting_mark(settings, row)
+            return False
+        row.status = job_states.RUNNING
+        row.started_at = _now()
+        row.claimed_until = job_leases.lease_deadline(settings)
+        row.attempts = 1
+    job_store.refresh_job_gauges(settings)
+    return True
+
+
+def _wait_for_slot(settings: Settings, job_id: str) -> bool:
+    """Start this job, waiting for its tenant's slot. ``False`` if it never will here.
+
+    A database error while asking is retried at the next poll rather than
+    ending the thread. Ending it would leave the job ``queued`` with nobody to
+    start it, and — since a waiting job holds back the lower ones of its
+    tenant on this replica (``scan_queue.local_job_ahead``) — every job behind
+    it too, until its waiting mark lapsed and the reaper failed it.
+    """
+    waited = False
+    while True:
+        try:
+            if _start(settings, job_id):
+                return True
+            if not waited:
+                _log.info(
+                    "Job %s waits for a slot: its tenant is at max_concurrent_scans",
+                    job_id,
+                )
+                waited = True
+        except SQLAlchemyError:
+            _log.warning(
+                "Job %s: could not ask for a slot; retrying in %ss",
+                job_id,
+                settings.scan_queue_local_poll_seconds,
+                exc_info=True,
+            )
+        if local_scan_executor.wait_unless_draining(settings.scan_queue_local_poll_seconds):
+            # The process is stopping its local scans; one that has not
+            # started stays queued. Nobody renews its waiting mark after
+            # this, so the job reaper fails it once the mark lapses.
+            _log.info("Job %s did not start: local scans are being stopped", job_id)
+            return False
+
+
 def run_job(
     settings: Settings, job_id: str, command: list[str]
 ) -> None:
@@ -135,17 +226,16 @@ def run_job(
     try:
         # A local job goes queued → running with no claim step: this process
         # is the worker. If it was cancelled while the thread was still
-        # starting, the transition is rejected and the scan never launches.
-        job_store.update_job(
-            settings,
-            job_id,
-            status=job_states.RUNNING,
-            started_at=_now(),
-            claimed_until=job_leases.lease_deadline(settings),
-            attempts=1,
-        )
+        # starting — or while it waited for a slot — the transition is
+        # rejected and the scan never launches.
+        if not _wait_for_slot(settings, job_id):
+            return
     except job_states.InvalidJobTransition as exc:
-        _log.info("Not starting job %s: %s", job_id, exc)
+        # A warning: besides a cancel, this is how a waiting scan learns the
+        # job reaper wrote it off — this replica could not reach the database
+        # for longer than what was left of its waiting mark — and that is a
+        # scan the operator asked for and will not get.
+        _log.warning("Not starting job %s: %s", job_id, exc)
         # Cancelled between the insert and this thread getting scheduled: the
         # scan never launches, so nothing will ever read the wordlist copy or
         # the input files.

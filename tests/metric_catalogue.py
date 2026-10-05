@@ -76,6 +76,7 @@ def _populated_tenants() -> metrics_sources.TenantSnapshot:
         open_findings={(t, s): 1 for t in labels for s in metrics_sources.TENANT_SEVERITIES},
         sla_breached=dict.fromkeys(labels, 1),
         scans_finished={(t, s): 1 for t in labels for s in metrics_sources.TENANT_SCAN_STATUSES},
+        jobs_queued=dict.fromkeys(labels, 1),
     )
 
 

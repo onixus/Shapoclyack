@@ -674,6 +674,91 @@ contract phase to schedule. The downgrade drops the calendar and the freeze
 flags, which loses the windows an operator wrote; they are the feature, not a
 cache of something else.
 
+## Scan queue: priority and per-tenant ceilings
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). The queue is one per
+tenant, handed out by `priority` (higher first) and then by age. Two ceilings
+share the executors out between tenants; both are unlimited until a platform
+admin sets them, and the API reference is
+[api-and-rbac.md](api-and-rbac.md#queue-priority-concurrency-and-admission).
+
+**Giving a tenant a ceiling.** `PUT /api/tenants/{id}/queue-limits` with
+`max_concurrent_scans` (scans out at once) and `max_queued_scans` (scans
+waiting). Start with the concurrency ceiling — it is what keeps one customer's
+nightly sweep from occupying every sensor — and add the depth ceiling only for a
+tenant whose integration queues faster than the fleet drains: that one refuses
+scans (`429`), the concurrency ceiling only makes them wait. The
+installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH` is the backstop against a runaway
+client of any tenant ([configuration.md](configuration.md)).
+
+**"Scans sit in `queued` and the sensors are idle."** Check in this order:
+
+1. The tenant is at `max_concurrent_scans`: count its `claimed`, `running` and
+   `cancelling` jobs against `GET /api/tenants/{id}/queue-limits`. A scan stuck
+   in `cancelling` holds its slot until the sensor confirms or the grace period
+   ends — stop it, do not raise the ceiling. `octo_scan_queue_throttled_total{reason="concurrency_limit"}`
+   rising means claims are being answered with nothing for this reason.
+2. Under NATS, an offer burned while the tenant was at its ceiling is picked up
+   by the sensor's HTTP fallback claim, within `NATS_FALLBACK_CLAIM_SECONDS`
+   (60 s) of a slot freeing — a minute's delay is expected, not a fault.
+3. The ordinary causes: the job's agent group has no sensor online, or no
+   sensor declares what the job needs (`agent_group_unavailable` /
+   `sensor_unavailable` on the job).
+
+**Local scans** (`OCTO_JOB_EXECUTION_MODE=local`) wait in their thread and ask
+again every `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. Priority between them holds
+within one replica; a local scan can only ever be started by the replica that
+accepted it. Asking keeps a waiting mark on the job fresh (`claimed_until`,
+one `OCTO_JOB_LEASE_SECONDS`, at least three polls; rewritten only once half of
+it is spent, so a waiting scan costs a row update per half lease rather than
+per poll). When the replica goes away —
+a crash, or a rollout, which brings the pod back under a new
+`OCTO_INSTANCE_ID` so its startup never reconciles the old pod's rows — nobody
+renews it, and the job reaper of any replica fails the scan once the mark
+lapses ("Waited for a scan slot on replica …, which stopped reporting"). Until
+then it still counts against `max_queued_scans` and
+`OCTO_SCAN_QUEUE_MAX_DEPTH`: allow one lease plus `OCTO_JOB_REAPER_INTERVAL_SECONDS`
+after a rollout before reading a `429` as a real backlog. A live replica's
+waiting scans are not reaped however long they wait, as long as it can reach
+the database: the mark is no stronger than a running job's lease. A replica cut
+off from the database for longer than what is left of the mark — between half
+a lease and a whole one — has its waiting scans failed by another replica's
+reaper, with the same "stopped reporting" error, and logs `Not starting job …`
+at WARNING when it reconnects; those scans have to be started again. A waiting
+scan does not queue on the tenant's claim lock — it tries it and asks again at
+the next poll — so it holds a database connection only while it asks, not
+while it waits; each one is still a thread of its own, so a tenant that queues
+thousands of local scans against a small ceiling costs that many idle threads.
+
+**Who may jump the queue.** `scan.priority.raise` — tenant `admin` and platform
+admin; grant it on a custom role to an on-call who has to push a re-scan ahead.
+Operators can lower their own scans to make room. Every move is a
+`scan.priority` audit row.
+
+**Watching it.** `octo_scan_queue_throttled_total{reason}` (`tenant_queue_full`,
+`global_queue_full`, `concurrency_limit`) and, with
+`OCTO_METRICS_TENANT_TOP_N` set, `octo_tenant_jobs_queued{tenant}` — the depth
+`max_queued_scans` is measured against. A tenant whose
+`octo_tenant_jobs_queued` keeps climbing while its concurrency throttle rate is
+steady is a tenant that queues faster than its ceiling lets it scan. A
+schedule that meets a full queue is deferred by `Retry-After`, not skipped:
+`deferred_queue_full` in the dispatcher stats, apart from `skipped_quota`. The
+deferral stops at the schedule's next occurrence: once the back-off would reach
+it, the occurrence is skipped (`skipped_queue_full`, one per lost occurrence,
+logged at WARNING) and the schedule resumes on its cadence. A
+`skipped_queue_full` that keeps growing is a queue that does not drain at all —
+in agent mode, usually no sensor for the tenant — not a busy minute.
+
+### On upgrade
+
+Migration `0074_scan_queue_admission` is **expand only**: `jobs.priority` arrives
+`NOT NULL DEFAULT 0`, so every existing job reads 0 and the claim order over a
+queue of zeroes is the old `queued_at` order; the two tenant ceilings arrive
+`NULL` (unlimited). During a rolling update an old replica claims FIFO and
+inserts with the default — nothing is lost or handed out twice. The downgrade
+drops the columns and the `scan.priority.raise` grants, and with them any
+priorities and ceilings that were set.
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,
@@ -2019,7 +2104,8 @@ order itself, and refuses where revoking would stop other sensors; see
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
-[#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
+[#231](https://github.com/onixus/Shapoclyack/issues/231), plus
+`tenant.credential.manage` and a recent step-up since #504, and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
 the API: verify the target's host key → connect → read the target's
 `/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
@@ -2391,6 +2477,98 @@ working the moment the reset lands. Somebody who still holds another key or
 their phone does not need an admin: they remove the lost key themselves on the
 Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
 recorded as `user.webauthn_revoke`.
+
+### Upgrading with an MFA policy: tenant admins are now covered (#504)
+
+An installation running with `OCTO_MFA_REQUIRED_ROLES=admin` (or
+`OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`) covers more accounts after this
+upgrade: everyone holding `tenant.member.manage`, `tenant.credential.manage`,
+`scan_scope.approve`, `vulnerability.exception.approve` or
+`endpoint_agent.manage` in **any** tenant — the tenant `admin`, `token-admin`,
+`scope-approver`, `risk-approver`, and tenant-defined roles carrying one of
+those — and everyone holding a tenant-defined role at the admin rank (3),
+whatever their global role
+([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)).
+Nobody is locked out: a newly covered account that has not enrolled gets a
+session confined to the Security page, **on its open session as well**, from
+the first request after the rollout. To see who that will be before upgrading:
+
+```sql
+SELECT ut.username, ut.tenant_id, ut.role
+  FROM user_tenants ut
+  JOIN users u ON u.username = ut.username
+ WHERE u.mfa_enabled_at IS NULL
+   AND u.role <> 'admin'
+   AND (ut.role IN ('admin', 'token-admin', 'scope-approver', 'risk-approver')
+        OR EXISTS (SELECT 1 FROM roles r
+                    WHERE r.tenant_id = ut.tenant_id AND r.role_id = ut.role
+                      AND r.rank >= 3)
+        OR EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = ut.tenant_id AND rp.role_id = ut.role
+                      AND rp.permission_key IN ('tenant.member.manage',
+                          'tenant.credential.manage', 'scan_scope.approve',
+                          'vulnerability.exception.approve',
+                          'endpoint_agent.manage')))
+ ORDER BY ut.tenant_id, ut.username;
+```
+
+To stage it — tell those people first, then cover them — deploy with
+`OCTO_MFA_REQUIRED_PERMISSIONS=none` (and `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS=none`
+under a key policy), which is exactly the old global-role behaviour, and
+remove the override once they have enrolled. Granting and revoking memberships and editing tenant roles
+also needs a recent step-up from an enrolled account now, like minting a
+credential — and so do the endpoint agent policy and builds, the risk-acceptance
+decisions, and disabling, deleting or signing out an account. A typo'd
+`OCTO_MFA_REQUIRED_PERMISSIONS` that names no known permission at all now
+refuses to start instead of reading as `none`.
+
+Migration `0073` writes `tenant.credential.manage` onto every tenant-defined
+role at rank 3, because `POST /api/agent/deployment-command` and the SSH push
+now ask for that permission rather than the rank: the roles that minted keys
+from the console before the upgrade still can. They also gain the
+permission's other routes (listing and revoking provisioning keys, service
+tokens up to their own authority). To see which roles the migration touched
+before running it:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND NOT EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                      AND rp.permission_key = 'tenant.credential.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+For the rank-3 roles that also hold `tenant.member.manage` the permission
+brings **delegation** with it. A member manager may hand out what it holds, so
+after the upgrade its holders can define a role carrying
+`tenant.credential.manage`, grant it, and grant the built-in `token-admin` —
+the credential travels on its own, where before it came only bundled in the
+role itself (which such a holder could always grant: passing key minting on is
+not new, its narrower shape is). Leaving these roles out would take the
+console's **Deploy Agent** button from people who used it the day before, so
+the migration does not; review them instead:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND EXISTS (SELECT 1 FROM role_permissions rp
+                WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                  AND rp.permission_key = 'tenant.member.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+After the upgrade this lists every tenant role that may pass the credential
+on; before it, adding the first query's `NOT EXISTS` clause narrows it to the
+ones the migration gives that power. Where that is not meant, either take
+`tenant.credential.manage` off the role (and with it the button) or split it:
+one role that manages members, another that mints keys.
+
+A downgrade leaves those rows in place (nothing records which roles had the
+permission before); remove it from a role in the role editor if it was not
+meant.
 
 ### Rolling out security keys
 

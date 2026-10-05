@@ -7,8 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
 import { CopyField } from "@/components/mfa/copy-field";
+import { RequirementReasons } from "@/components/mfa/requirement-reasons";
 import { useConfirmTotp, useDisableMfa, useMfaStatus, useSetupTotp } from "@/hooks/use-mfa";
-import { useAuthStore } from "@/lib/auth-store";
 import { MFA_STATUS } from "@/lib/config/statuses";
 import { useT } from "@/lib/i18n";
 import { type MfaSetup } from "@/lib/api";
@@ -31,7 +31,6 @@ import { type MfaSetup } from "@/lib/api";
  */
 export function MfaPanel() {
   const t = useT();
-  const role = useAuthStore((state) => state.user?.role ?? "viewer");
   const { data: status, isLoading, error } = useMfaStatus();
   const setup = useSetupTotp();
   const confirm = useConfirmTotp();
@@ -126,9 +125,10 @@ export function MfaPanel() {
         {status.enabled && status.enabled_at ? (
           <p>{t("mfa.enabledAt", { when: status.enabled_at.slice(0, 16).replace("T", " ") })}</p>
         ) : null}
-        <p>
-          {status.required ? t("mfa.requiredByPolicy", { role }) : t("mfa.optional")}
-        </p>
+        {/* The requirement as the API computed it — global role and every
+            tenant's memberships (#504) — never inferred from `user.role`. */}
+        <p>{status.required ? t("mfa.requiredByPolicy") : t("mfa.optional")}</p>
+        {status.required ? <RequirementReasons reasons={status.required_because} /> : null}
         {status.enabled ? (
           <>
             <p>

@@ -22,6 +22,7 @@ from api.auth import (
     get_current_user,
     get_current_user_if_any,
     get_settings,
+    mfa_requirement,
     require_path_tenant_permission,
     require_platform_permission,
     require_role,
@@ -47,6 +48,8 @@ from api.schemas import (
     SsoStatus,
     TenantInfo,
     TenantPosture,
+    TenantQueueLimits,
+    TenantQueueLimitsInfo,
     TenantQuotaInfo,
     TenantQuotaRequest,
 )
@@ -70,9 +73,9 @@ from api.services import local_login
 from api.services import memberships as memberships_service
 from api.services import mfa as mfa_service
 from api.services import oidc as oidc_service
-from api.services import passkeys as passkeys_service
 from api.services import promoted_domains
 from api.services import quotas
+from api.services import scan_queue
 from api.services import rbac as rbac_service
 from api.services import scan_policy
 from api.services import scan_scopes
@@ -191,12 +194,13 @@ def login(
             expires_in=mfa_service.PRE_AUTH_TTL_MINUTES * 60,
         )
 
-    # Not enrolled — ``is_enabled`` said so above — so "policy names this role"
-    # is the whole of "this session owes an enrolment". The session itself is
+    # Not enrolled — ``is_enabled`` said so above — so "policy covers this
+    # account" is the whole of "this session owes an enrolment": by its global
+    # role, or by what it holds in any tenant (#504). The session itself is
     # confined by ``get_current_user``, which re-decides it per request; this
     # is only what the console is told so it can route straight to the setup
     # page instead of discovering it as a 403 on the dashboard.
-    pending = mfa_service.required_for_role(settings, user.role.value)
+    pending = mfa_service.requirement(settings, user.username, user.role.value).required
     try:
         token, opened = issue_session(settings, user)
     except LookupError as exc:
@@ -437,6 +441,7 @@ def list_auth_events(
     dependencies=[Depends(tenant_scope.cross_tenant("the caller's own tenants"))],
 )
 def me(
+    request: Request,
     user: Annotated[TokenUser, Depends(get_current_user)],
     settings: Annotated[Settings, Depends(get_settings)],
     tenant_id: Annotated[
@@ -479,6 +484,10 @@ def me(
     held = rbac_service.resolve(
         scoped_tenant, resolution.role, is_platform_admin=is_platform_admin
     )
+    # Unlike ``permissions`` above, not about ``scoped_tenant``: the MFA policy
+    # covers an account by what it holds in *any* tenant (#504), because one
+    # password signs in to all of them.
+    policy = mfa_requirement(request, settings, user)
     return MeResponse(
         username=user.username,
         role=user.role,
@@ -493,11 +502,9 @@ def me(
         # ``mfa_pending`` allowlist precisely so the console can render the
         # banner that sends the user to the setup page (#315).
         mfa_enabled=mfa_service.is_enabled(settings, user.username),
-        mfa_required=mfa_service.required_for_role(settings, user.role.value),
+        mfa_required=policy.required,
         mfa_pending=user.mfa_pending,
-        phishing_resistant_required=passkeys_service.phishing_resistant_required(
-            settings, user.role.value
-        ),
+        phishing_resistant_required=policy.phishing_resistant,
         phishing_resistant_pending=user.phishing_resistant_pending,
         mfa_method=user.mfa_method,
     )
@@ -869,6 +876,10 @@ def grant_membership(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # Granting a role is handing out authority — the tenant's admin, its
+    # approvers — so it costs a recent second factor like minting a credential
+    # does (#504). No effect on an account without MFA.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> MembershipInfo:
     """Grant (or re-grant) one user access to one tenant. Idempotent.
@@ -908,6 +919,9 @@ def revoke_membership(
         TenantPrincipal,
         Depends(require_path_tenant_permission(permission_catalog.TENANT_MEMBER_MANAGE)),
     ],
+    # As the grant (#504): revoking the other admins is how a stolen session
+    # makes itself the only one left.
+    __: StepUpDep,
     audit: AuditDep,
 ) -> None:
     """Revoke one membership. ``403`` for a member whose role is above the caller's."""
@@ -1110,6 +1124,70 @@ def clear_tenant_quota(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
     quotas.clear_quota(settings, tenant_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _queue_limits_info(settings: Settings, limits: scan_queue.QueueLimits) -> TenantQueueLimitsInfo:
+    return TenantQueueLimitsInfo(
+        tenant_id=limits.tenant_id,
+        max_concurrent_scans=limits.max_concurrent_scans,
+        max_queued_scans=limits.max_queued_scans,
+        global_max_queued_scans=settings.scan_queue_max_depth or None,
+    )
+
+
+@router.get("/tenants/{tenant_id}/queue-limits", response_model=TenantQueueLimitsInfo)
+def get_tenant_queue_limits(
+    tenant_id: str,
+    _: Annotated[
+        TenantPrincipal,
+        Depends(require_path_tenant_permission(permission_catalog.TENANT_QUOTA_READ)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TenantQueueLimitsInfo:
+    """How many of this tenant's scans may run at once and wait at once (#365).
+
+    Readable by whoever may read the quota — the tenant's admin and auditor —
+    for the quota's reason: a ceiling the customer cannot see is discovered as
+    scans that sit in the queue for no visible reason.
+    """
+    limits = scan_queue.get_limits(settings, tenant_id)
+    if limits is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return _queue_limits_info(settings, limits)
+
+
+@router.put("/tenants/{tenant_id}/queue-limits", response_model=TenantQueueLimitsInfo)
+def set_tenant_queue_limits(
+    tenant_id: str,
+    body: TenantQueueLimits,
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_QUOTA_MANAGE)),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: AuditDep,
+) -> TenantQueueLimitsInfo:
+    """Set both ceilings; ``null`` or 0 is unlimited.
+
+    Platform-only, on the quota's permission and for its reason: they share
+    out the executors every tenant uses, and a tenant admin who could raise
+    their own would be the control removing itself. A lowered concurrency
+    ceiling leaves scans already out running; it stops new claims until the
+    tenant is under it.
+    """
+    try:
+        limits = scan_queue.set_limits(
+            settings,
+            tenant_id,
+            max_concurrent_scans=body.max_concurrent_scans,
+            max_queued_scans=body.max_queued_scans,
+            audit=audit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return _queue_limits_info(settings, limits)
 
 
 @router.get("/tenants/{tenant_id}/scan-scope", response_model=list[ScanScopeEntryInfo])

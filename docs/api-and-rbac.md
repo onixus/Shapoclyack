@@ -85,7 +85,7 @@ Two claims and one header carry this:
 POST /api/auth/refresh                          # cookie only — next access token, rotated cookie
 POST /api/auth/logout                           # any role — ends this session only
 POST /api/auth/sessions/revoke-all              # any role — ends every session of your account
-POST /api/users/{username}/sessions/revoke-all  # admin   — ends every session of that account
+POST /api/users/{username}/sessions/revoke-all  # admin + step-up — ends every session of that account
 ```
 
 The last three answer `204`. Logout writes the token's `jti` to `revoked_tokens`
@@ -299,6 +299,69 @@ hours; a promotion into a covered role would have done the same. It also means
 finishing an enrolment lifts the confinement on the *existing* token, with no
 sign-out in the middle.
 
+#### Coverage by authority in a tenant (#504)
+
+Since #318 the power to run a tenant comes from a **membership**, not from
+`users.role`: a global `viewer` can be `admin` of one tenant, `scope-approver`
+of another, or hold a role the tenant defined itself. Comparing the policy with
+the global role alone left all of them out. An account is now covered when
+**either** of these holds:
+
+- **by global role** — `OCTO_MFA_REQUIRED_ROLES` names its `users.role`,
+  exactly as before (a membership's role *name* is not matched: a tenant role
+  is covered by what it carries, whatever it is called);
+- **by permission** — it holds a permission listed in
+  `OCTO_MFA_REQUIRED_PERMISSIONS` in **at least one** tenant, through any role:
+  a built-in, a [tenant-defined role](#tenant-defined-roles), or the global
+  `admin`, which holds every permission everywhere.
+
+`OCTO_MFA_REQUIRED_PERMISSIONS` left unset is **derived**: when
+`OCTO_MFA_REQUIRED_ROLES` names `admin` it is the tenant-authority set —
+`tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+`vulnerability.exception.approve`, `endpoint_agent.manage` — and otherwise
+empty. Under the derived default a role at the **admin rank (3)** in a tenant
+is covered as well, whatever permissions it lists: rank 3 alone passes every
+route gated on the tenant `admin` rank — webhooks, notification channels, SLA
+policies, the SSH push — so a tenant role written as `rank: 3, permissions: []`
+administers the tenant as surely as the built-in `admin` does. So "MFA for
+admins" now covers the tenant `admin`, `token-admin`, `scope-approver`,
+`risk-approver`, any tenant role at rank 3 and any tenant role carrying one of
+those permissions, while an installation with no MFA policy is unchanged. An
+**explicit** list means exactly what it names — the rank does not widen it —
+and `none` turns the permission half off, which is exactly the behaviour
+before #504. A value made only of unknown keys refuses to start rather than
+being read as `none`.
+
+The requirement is about what one password can do, so it is computed across
+**every** tenant the account belongs to, not the tenant a request happens to
+name: a session confined for its admin membership in `acme` is confined in
+`default` as well. An account with no membership is judged by its global role
+in `default`, as everywhere else; a membership naming a tenant role that no
+longer resolves confers nothing, and so requires nothing.
+
+**Open sessions follow the authority immediately.** Like `mfa_pending` itself,
+the requirement is re-read per request: granting `admin` (or a role carrying a
+listed permission), or widening such a role, confines the holder's **already
+open** session on its next request until it enrols; revoking or narrowing lifts
+it the same way. The alternative — waiting for the session to expire — would
+have given a freshly promoted account up to `OCTO_JWT_EXPIRE_MINUTES` of tenant
+administration on a password alone. The cost is one membership read per request
+for an account that is **not** enrolled while a policy is configured — none when
+a role list already names its global role — and the answer is reused by
+everything else in the same request that asks (`/api/auth/me`, `/api/auth/mfa`,
+a step-up's "must it be a key"); whether an enrolled account owes enrolment
+is decided by the primary-key read it already paid for. Under a key policy, a
+session an enrolled account proved with a code still reads the memberships on
+every request — "must this session have been a key" depends on them — unless
+`OCTO_MFA_PHISHING_RESISTANT_ROLES` already names its global role.
+
+`GET /api/auth/me` reports `mfa_required` and `phishing_resistant_required`
+computed this way; `GET /api/auth/mfa` adds `required_because`, one entry per
+source — `{"tenant_id": "acme", "role": "admin", "permissions":
+["tenant.credential.manage", "tenant.member.manage"], "phishing_resistant":
+false}`, with `tenant_id` `null` for the global role — which the console's
+security page renders instead of the global role name.
+
 ### Step-up
 
 Operations that create or destroy a credential, or widen what a tenant may
@@ -308,7 +371,8 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
 - `POST`/`DELETE /api/tenants/{id}/service-tokens…`
 - `POST`/`DELETE /api/tenants/{id}/provisioning-keys…` **and**
   `POST /api/agent/deployment-command`, which mints the same key and is the one
-  the console uses
+  the console uses, and `POST /api/agent/deploy/ssh`, whose run mints one too
+  (#504)
 - `PUT /api/tenants/{id}/scan-scope`
 - `POST /api/users`, `PUT /api/users/{u}/password`, `PUT /api/users/{u}/role`,
   `PUT /api/users/{u}/email` and `POST /api/users/{u}/mfa/reset` — each of them
@@ -317,12 +381,35 @@ scan, require a second factor proved within the last `OCTO_MFA_STEPUP_MINUTES`
   which would otherwise be a one-request path around every line above
 - `POST /api/auth/scim-tokens` and `POST /api/auth/scim-tokens/{id}/revoke`
   — a SCIM token creates accounts and grants memberships (#316)
+- `PUT`/`DELETE /api/tenants/{id}/members/{u}` and
+  `POST`/`PATCH`/`DELETE /api/tenants/{id}/roles…` (#504) — granting,
+  changing and revoking a membership, and defining, editing or deleting the
+  roles a grant hands out, including a delete with `reassign_to`, which
+  regrants every holder. Without these an open tab of a tenant admin was
+  enough to make anyone that tenant's admin or approver
+- `PUT`/`DELETE /api/endpoint/agent/policy[/{agent_id}]` and
+  `POST`/`DELETE /api/endpoint/agent/releases…` (#504) — naming or replacing
+  the build every endpoint of the tenant installs
+- `POST /api/vulnerabilities/{id}/exception/approve`, `…/reject` and
+  `DELETE /api/vulnerabilities/{id}/exception` (#504) — the risk-acceptance
+  decisions, the pair of the scan-scope approval
+- `PUT /api/users/{u}/disabled`, `DELETE /api/users/{u}` and
+  `POST /api/users/{u}/sessions/revoke-all` (#504) — the ways to take the other
+  administrators out of the installation (or, re-enabling, to put an account
+  back in)
 
-A **service token** is exempt from step-up: there is no human at one to
-challenge. That is why every route in the list above must also be refused a
-service token by scope — `auth`, `users`, `tenants` and `audit` are forbidden
-outright, `config` and `agent` for writes — and why adding a route here means
-checking that list too.
+A **service token** cannot satisfy a step-up — there is no human at one to
+challenge — so every route in the list above refuses it with `403` (#504),
+whatever its role and scopes. Most of them never get that far: `auth`, `users`,
+`tenants` and `audit` are forbidden to a token outright and `config` and
+`agent` for writes, and the risk-acceptance routes are refused by permission (a
+token carries `viewer`, `operator` or `admin`, none of which holds
+`vulnerability.exception.approve`). The refusal in the step-up itself is what
+holds for the endpoint agent policy and builds: `endpoint` stays writable for
+a token, because `POST /api/endpoint/cve-matches/refresh` and the per-device
+refresh are automation's to call, and before #504 an `admin`-role token with
+`endpoint:write` set the policy — and with it the build every endpoint of the
+tenant runs — with no step-up.
 
 The check applies **only to accounts that have MFA enabled**; an installation
 that has not adopted MFA behaves exactly as before. A stale session gets a 403
@@ -411,7 +498,15 @@ code) is confined exactly like `mfa_pending` — 403 on everything but
 the security key — and `GET /api/auth/me` reports `phishing_resistant_pending`.
 From there it can register a key (bootstrapped by the code it signed in with:
 there is no other factor to prove) and then verify with it. Decided per
-request from the policy and the token's `mfa_method` claim, with no query.
+request from the token's `mfa_method` claim — a session proved with a key owes
+nothing and costs no query — and otherwise from the policy as it applies to
+what the account holds now.
+
+`OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` is the same requirement by
+[authority in a tenant](#coverage-by-authority-in-a-tenant-504), with the same
+rules as `OCTO_MFA_REQUIRED_PERMISSIONS`: unset is derived (the tenant-authority
+set when `OCTO_MFA_PHISHING_RESISTANT_ROLES` names `admin`) and `none` turns
+it off. A covered account's step-ups must be a key too.
 
 `OCTO_MFA_STEPUP_PHISHING_RESISTANT=true` makes every [step-up](#step-up) —
 the credential and account-administration list above, and removing a key —
@@ -603,6 +698,8 @@ One row per administrative change, with the resource before and after it:
 | `notification_channel.create`, `notification_channel.update`, `notification_channel.delete` | `POST`/`PATCH`/`DELETE /api/notification-channels[/{id}]` — where this tenant's finished runs are announced. `before`/`after` hold the serialised channel, so the credential is not in the trail; `has_secret` is redacted along with it, because the redactor keys on the field name and over-redaction is the safe direction |
 | `vulnerability.exception_request`, `…_approve`, `…_reject`, `…_request_withdraw`, `…_withdraw`, `…_expire` | The risk-acceptance workflow ([#348](https://github.com/onixus/Shapoclyack/issues/348)), and the only single-finding verbs in this trail — every other one is remediation work and lives in `vulnerability_events`. `before`/`after` carry the acceptance fields alone (who asked, who signed, until when, the justification), not the finding's whole assessment. `…_expire` is written by the SLA worker as `system:sla-escalation`: nobody performed it, which is why it has to be recorded |
 | `vulnerability.bulk`, `asset.bulk` | `POST /api/vulnerabilities/bulk`, `POST /api/assets/bulk` — **one row per request**, `resource_id` = `bulk:<action>`. `after` lists the ids `applied` and maps the `rejected` ones to their outcome code. The ids are what the row owes, so they are what is bounded: at most 200 of them and at most 48 characters each, which is ~13 KiB, and anything else in the document gives way before they do — the request body is dropped (`payload: "[omitted…]"`) and only then does `rejected` collapse to a count per outcome (`rejected_collapsed: true`). Values inside `payload` are individually capped, since `false_positive`'s `evidence` is a free dict and 20 KiB of it on **two** ids was enough to turn the whole row into the truncation marker. A batch a platform admin ran across tenants is one row **per tenant it touched**, each naming that tenant's ids: the customer whose finding moved has to find it in their own trail. One decision, one row; the per-finding `vulnerability_events` and per-asset `asset_context_events` rows are written as usual |
+| `scan.priority` | `PUT /api/jobs/{id}/priority` ([#365](https://github.com/onixus/Shapoclyack/issues/365)) — `before.priority`, `after.priority` and who asked. A `PUT` of the value the job already has writes nothing. A priority given at `POST /api/jobs` is on the job itself and writes no row |
+| `tenant.queue_limits` | `PUT /api/tenants/{id}/queue-limits` — both ceilings before and after, `null` for unlimited. A refusal they cause is a `429` and `octo_scan_queue_throttled_total`, not a row |
 | `asset.import` | `POST /api/assets/import` with `dry_run: false` — one row per applied import, `resource_id` = `import:<first 16 hex of the content's SHA-256>`. `after` carries the format, the full SHA-256, `context_source`, `overwrite_operator_edits`, the per-status `counts`, and the first 100 `created` and `updated` asset ids (`created_omitted`/`updated_omitted` count the rest). A dry run writes no row. The per-field history is in `asset_context_events` with the import's source |
 
 Every row carries the actor and what kind of principal it is (`user`,
@@ -1039,6 +1136,7 @@ it is only supposed to approve.
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
+| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, or moving a queued one above 0 — or moving one somebody already raised (#365). Lowering a scan, or putting one back to 0 that nobody raised, is the operator rank's. Seeded by migration `0074_scan_queue_admission` |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
@@ -1072,6 +1170,11 @@ POST   /api/tenants/{tenant_id}/roles              {"role_id": "soc-lead", "desc
 PATCH  /api/tenants/{tenant_id}/roles/{role_id}    {"role_id": "…", "description": "…", "rank": 1, "permissions": [...]}   (every field optional)
 DELETE /api/tenants/{tenant_id}/roles/{role_id}[?reassign_to=viewer]
 ```
+
+All three need a recent second factor from an account with MFA enabled
+([Step-up](#step-up), #504): a role is what a grant hands out, and editing one
+changes every holder at once. A role carrying a permission of the MFA policy
+puts its holders under it ([coverage by authority](#coverage-by-authority-in-a-tenant-504)).
 
 `GET /api/rbac/roles` lists them after the built-ins, with `member_count` (how
 many of the tenant's members hold each role) and who created and last changed
@@ -1265,6 +1368,60 @@ the sensor reports is appended to it rather than written over it, so a finished
 to `audit_events` carrying the actor and the status the job was in. See the job
 lifecycle in [architecture.md](architecture.md#job-lifecycle) for the full state
 set.
+
+### Queue priority, concurrency and admission
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). Three controls on the
+scan queue, all inactive until somebody sets them — an upgraded installation
+hands out work exactly as before.
+
+**Priority.** Every job carries `priority` (`-100..100`, default `0`) and the
+claim hands out the highest first, the oldest within it — the HTTP claim, the
+sensor's periodic fallback claim and a local scan waiting for its slot alike.
+Set it at `POST /api/jobs` (`"priority": 20`) or move a queued job:
+
+```http
+PUT /api/jobs/{job_id}/priority   {"priority": -10}
+```
+
+`operator` rank in the job's tenant; above `0` — or touching a job somebody
+already put above `0` — needs **`scan.priority.raise`** (`403` without it, both
+on the `PUT` and on `POST /api/jobs`). `404` for a job in another tenant, `409`
+once the job has left `queued`, `422` outside the bounds. `priority` is not
+part of the idempotency digest: a retry that changed only its priority is the
+same scan. A NATS offer is published at submission and is FIFO; a sensor that
+claims an offered job by name is held to the concurrency ceiling below but not
+to the priority order.
+
+**Concurrency** and **queue depth**, per tenant:
+
+```http
+GET /api/tenants/{tenant_id}/queue-limits
+PUT /api/tenants/{tenant_id}/queue-limits   {"max_concurrent_scans": 4, "max_queued_scans": 200}
+```
+
+`GET` needs `tenant.quota.read`; `PUT` is `platform.quota.manage` (platform
+admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
+`0` is unlimited, `422` above `10000`. The answer also carries
+`global_max_queued_scans`, the installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`.
+
+- `max_concurrent_scans` — how many of the tenant's jobs may be out at once
+  (`claimed`, `running` or `cancelling`, local and sensor alike). Enforced at
+  **claim**: a sensor of a tenant at its ceiling gets `204` as for an empty
+  queue, and a local scan stays `queued` in its thread and asks again every
+  `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. The decision is taken under a
+  per-tenant advisory lock inside the claim's transaction, so two API replicas
+  claiming at once cannot both take the last slot. Lowering it leaves scans
+  already out running.
+- `max_queued_scans` — how many may wait in `queued`. Enforced at
+  **admission**: `POST /api/jobs` answers **`429`** with `Retry-After:
+  OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS`, and the recurring dispatcher defers the
+  occurrence by that back-off instead of skipping it as it does for a spent
+  monthly quota. The same `429` for the installation-wide
+  `OCTO_SCAN_QUEUE_MAX_DEPTH`, counted across every tenant whatever the caller
+  (a tenant user, a tenant's service token or the platform admin), without the
+  numbers of other tenants in the message. A soft bound: N simultaneous starts can overshoot it
+  by N-1. Verification re-scans are exempt, as from the monthly quota.
 
 `POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry
 carrying a key an earlier request already used returns that job with **200**
@@ -1627,19 +1784,19 @@ retry that crosses the upgrade still replays instead of re-applying its batch.
 | `DELETE /api/agent-groups/{name}` | `agent.group.manage` | Delete one. The name in the path is normalised the same way `POST` normalises it, so `DELETE /api/agent-groups/PCI` deletes the group that `POST {"name": "PCI"}` created; `422` for a name no group could have. `409` while a sensor, an unfinished job, a scan schedule or a scan-scope entry still names it — the alternative is a scope restriction that quietly evaporates into "any sensor". A reference cannot be written *while* the group is being deleted either: all four writers that name a group (`PUT /api/tenants/{id}/scan-scope`, `POST /api/jobs`, `POST /api/schedules`, `PUT /api/agents/{id}/group`) check the name inside the transaction that stores the reference and hold the group row while they do, so one of the two requests sees the other's result rather than the state that preceded it. The scan or schedule that loses is answered `422` with the group named; the deletion that loses is the `409` above |
 | `PUT /api/agents/{id}/group` | `agent.group.manage` | Put the sensor into a group (`{"group": "pci-segment"}`) or take it out of every group (`{"group": null}`), and answer the sensor as it now stands. The sensor's own `labels` are never consulted: membership decides which of the tenant's jobs it may claim, so it is a grant rather than something the host declares. A job the sensor already holds is not recalled; the move applies from its next claim |
 | `GET /api/endpoint/agent/policies` | `endpoint_agent.manage` | Every Agent (Lariska) policy the tenant has set: the tenant-wide default first (`agent_id: null`), then the per-agent overrides |
-| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` | Set the default every Agent (Lariska) inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
-| `PUT /api/endpoint/agent/policy/{agent_id}` | `endpoint_agent.manage` | The same, for one agent, merged over the default field by field. `404` for an agent that is not this tenant's |
-| `DELETE /api/endpoint/agent/policy[/{agent_id}]` | `endpoint_agent.manage` | Remove the default, or one override. `204` whether or not there was one |
+| `PUT /api/endpoint/agent/policy` | `endpoint_agent.manage` + step-up | Set the default every Agent (Lariska) inherits (`{"settings": {"inventory_interval_secs": 900, "log_level": "debug"}, "desired_version": "0.3.0"}`). `settings` accepts only what an operator may decide centrally — the collection intervals, the request timeout, the spool size and the log level. `server_url`, the provisioning key and `allow_plain_http` are **refused**, not ignored: an agent that can be told where to report can be told to report somewhere else, and this channel is what an attacker who reached the API would use to say it. Out-of-range values are refused here too, because an agent would reject them and keep its previous configuration, which looks exactly like the policy never arriving. `422` either way, naming the key |
+| `PUT /api/endpoint/agent/policy/{agent_id}` | `endpoint_agent.manage` + step-up | The same, for one agent, merged over the default field by field. `404` for an agent that is not this tenant's |
+| `DELETE /api/endpoint/agent/policy[/{agent_id}]` | `endpoint_agent.manage` + step-up | Remove the default, or one override. `204` whether or not there was one |
 | `GET /api/endpoint/agent/releases` | `endpoint_agent.manage` | Builds this installation can hand out — version, platform, sha256, size. Installation-wide rather than per tenant: it is the same program, and one version meaning two binaries is a version meaning nothing |
-| `POST /api/endpoint/agent/releases` | `endpoint_agent.manage` | Upload one build (multipart: `version`, `platform`, `binary`, optional `notes`). `platform` is the agent's target triple, e.g. `x86_64-pc-windows-msvc`; a version is identified by both, because a version alone does not identify a binary. The `sha256` in the response is computed here from the stored bytes and is **not** accepted from the uploader: it is what an endpoint verifies a download against before executing it, and a digest travelling beside the bytes it describes attests to nothing. Re-uploading the same (version, platform) replaces it. `422` over 64 MiB or with an empty body |
-| `DELETE /api/endpoint/agent/releases/{version}/{platform}` | `endpoint_agent.manage` | Remove one build. An agent already told to move to it is then told nothing, with the reason on its heartbeat |
+| `POST /api/endpoint/agent/releases` | `endpoint_agent.manage` + step-up | Upload one build (multipart: `version`, `platform`, `binary`, optional `notes`). `platform` is the agent's target triple, e.g. `x86_64-pc-windows-msvc`; a version is identified by both, because a version alone does not identify a binary. The `sha256` in the response is computed here from the stored bytes and is **not** accepted from the uploader: it is what an endpoint verifies a download against before executing it, and a digest travelling beside the bytes it describes attests to nothing. Re-uploading the same (version, platform) replaces it. `422` over 64 MiB or with an empty body |
+| `DELETE /api/endpoint/agent/releases/{version}/{platform}` | `endpoint_agent.manage` + step-up | Remove one build. An agent already told to move to it is then told nothing, with the reason on its heartbeat |
 | `GET /api/endpoint/agent/releases/{version}/{platform}/download` | agent JWT | The bytes, for an agent that has been told to move to this build. Authenticated as the agent with the same token it heartbeats with, so the digest and the bytes come from one channel: substituting the download would mean substituting the heartbeat that named its digest |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the sensor record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#sensor-installation-and-upgrade)) |
 | `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing. `kubernetes_yaml` never carries the key, placeholder or real: it reads it from a Secret, which `kubernetes_secret_command` creates |
-| `POST /api/agent/deployment-command` | **admin** | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
+| `POST /api/agent/deployment-command` | `tenant.credential.manage` + step-up | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
 | `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
 | `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
-| `POST /api/agent/deploy/ssh` | **admin** | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side, unless the host already runs one of the tenant's sensors: that one is reinstalled as itself with the key it holds, and a sensor moved to a host that lacks its key has that key revoked (refused while the sensor is online or the key has other holders; the run's log says which case, see operations.md, "SSH push deployment"). The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
+| `POST /api/agent/deploy/ssh` | **admin** rank + `tenant.credential.manage` + step-up | Starts an SSH push install and returns the run immediately (`deploy_id`, `status=queued`) — the install runs in a background thread and mints a key for that machine server-side, unless the host already runs one of the tenant's sensors: that one is reinstalled as itself with the key it holds, and a sensor moved to a host that lacks its key has that key revoked (refused while the sensor is online or the key has other holders; the run's log says which case, see operations.md, "SSH push deployment"). The target's host key is resolved **synchronously first**: `403` if the target is outside the deployment target policy, `409` if the key is unpinned and the request names no `expected_host_key`, or if either the pin or the named fingerprint does not match; `502` if the key cannot be read at all. Nothing is sent to the target in any of those cases |
 | `GET /api/agent/deploy/{deploy_id}/status` | operator | Poll for `status`, `stage`, `progress_percent`, the log lines and the resulting `agent_id`. Scoped to the caller's tenant; a run in another tenant answers `404` |
 | `GET /api/agent/install.sh` | **none** | Serves `scripts/install-agent.sh` verbatim so the remote `curl … \| bash` can fetch it. Unauthenticated by design — the script itself carries no credential |
 
@@ -1717,10 +1874,16 @@ from a never-registered one. Making a delete permanent is therefore
 A provisioning key registers sensors into the tenant, which makes handing one
 out an authorization decision rather than a read. `POST` on
 `/api/agent/deployment-command` and `/api/agent/deploy/ssh` therefore take
-tenant **`admin`** — the same bar as
+`tenant.credential.manage` — the same bar as
 `POST /api/tenants/{tenant_id}/provisioning-keys`, which mints the identical
-credential, and the SSH push additionally installs software as root on another
-machine.
+credential — and the SSH push keeps the tenant **`admin`** rank on top, because
+it additionally installs software as root on another machine. Until #504 both
+were gated on the rank alone, which refused `token-admin` the console's own
+**Generate key** button and let a tenant role at rank 3 with no credential
+authority mint keys; migration `0073` wrote `tenant.credential.manage` onto
+every tenant role at rank 3 that existed then, so none of them lost the button
+(and they now reach the permission's other routes — the role editor shows it,
+and a tenant can take it off).
 
 This replaces the earlier rule, which set both at `operator` on the grounds
 that the SSH push already minted a key at `operator`. That reasoned from the
@@ -2056,9 +2219,9 @@ POST   /api/users                               # admin  {"username","password",
 PUT    /api/users/{username}/password           # admin — reset, no old password needed
 PUT    /api/users/{username}/role               # admin
 PUT    /api/users/{username}/email              # admin  {"email": …, "verified": bool}
-PUT    /api/users/{username}/disabled           # admin  {"disabled": true}
-DELETE /api/users/{username}                    # admin
-POST   /api/users/{username}/sessions/revoke-all # admin — sign that account out everywhere
+PUT    /api/users/{username}/disabled           # admin + step-up  {"disabled": true}
+DELETE /api/users/{username}                    # admin + step-up
+POST   /api/users/{username}/sessions/revoke-all # admin + step-up — sign that account out everywhere
 POST   /api/auth/password                       # any role — change your own
 ```
 
@@ -2478,7 +2641,10 @@ own authority in the tenant: `403` for a role above it, and for changing or
 revoking a member whose current role is above it. Every grant and revoke is recorded in
 the administrative audit trail (`membership.grant` / `membership.revoke`, with
 the role before and after), which is what makes tenant self-service reviewable.
-Membership rows hold no credential material. Each carries `source`: `local`
+`PUT` and `DELETE` also need a recent second factor from an account with MFA
+enabled ([Step-up](#step-up), #504), and a grant moves the member's
+[MFA requirement](#coverage-by-authority-in-a-tenant-504) from their next
+request. Membership rows hold no credential material. Each carries `source`: `local`
 for a person's grant, `idp` for one the identity provider's group mapping made
 — the only kind an [IdP-authoritative resync](#idp-authoritative-resync) or a
 SCIM push changes or removes. Granting over a membership the IdP holds makes it

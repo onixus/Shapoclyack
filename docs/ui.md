@@ -196,8 +196,16 @@ prompt leaves a browser that is signed out rather than half signed in. **Use a
 recovery code instead** switches the field, and **Start again** drops the
 challenge rather than reusing it.
 
-When `OCTO_MFA_REQUIRED_ROLES` names your role and you have not enrolled, the
-API confines the session to the enrolment flow. An amber banner above the header
+When the MFA policy covers your account — `OCTO_MFA_REQUIRED_ROLES` names
+your global role, or you hold a permission of `OCTO_MFA_REQUIRED_PERMISSIONS`
+in any tenant (#504) — and you have not enrolled, the API confines the session
+to the enrolment flow. The console never decides this from `user.role`: it
+reads `mfa_required`/`mfa_pending` from `/api/auth/me`, and `/security`
+says *why* from the API's `required_because` — "role admin in tenant acme:
+tenant.credential.manage, tenant.member.manage", or "your account role admin"
+— instead of naming the global role, which for a tenant admin with a global
+`viewer` role used to be the wrong answer. A membership granted while you are
+signed in can confine the session you already have on its next request. An amber banner above the header
 says so and offers the one route that works; the login form sends such a session
 straight to `/security` rather than to a dashboard of 403s. Confirming the
 enrolment re-reads `/api/auth/me`, so the banner and the confinement lift on the
@@ -213,8 +221,16 @@ replayed: the dialog says to repeat the action, because a `POST` nobody saw
 succeed is not a thing to repeat silently. That covers the whole step-up set,
 which is wider than the credential screens — creating an account, resetting a
 password, changing a role, setting a verified address, resetting somebody's
-MFA, replacing a scan scope, and the **Deploy Agent** button on the sensors
-page.
+MFA, replacing a scan scope, granting, changing or revoking a membership and
+creating, editing or deleting a tenant role on **Roles & members** (#504),
+disabling, deleting or signing out an account, approving, rejecting or revoking
+a risk acceptance, setting the endpoint agent policy or uploading/removing a
+build, and both actions of the **Deploy Agent** dialog on the sensors page —
+**Generate key** and the SSH push. The dialog offers **Generate key** to
+whoever holds `tenant.credential.manage`, which is now also what the API asks
+for (#504); the SSH push and **Read from host** additionally need the tenant
+`admin` rank, so a `token-admin` sees the push disabled with the same notice
+an operator gets instead of a `403`.
 
 #### Security keys and passkeys
 
@@ -243,8 +259,9 @@ shown as the error line if not. A prompt the user cancels or lets time out (the 
 English. A refused key or code on a step-up is a `403` from the API, so it
 stays in the dialog as an error instead of signing the console out.
 
-When `OCTO_MFA_PHISHING_RESISTANT_ROLES` names your role and the session was
-verified with a code, the API confines it like an unfinished enrolment
+When the phishing-resistant policy covers your account (by global role, or by
+`OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` in any tenant) and the session was
+verified with a code — the keys panel lists which sources ask for a key — the API confines it like an unfinished enrolment
 (`phishing_resistant_pending` on `/api/auth/me`). The same amber banner says so
 in its own words and sends you to `/security`; once a key is registered, **Verify
 with your key now** re-proves the session with it, and the confinement lifts
@@ -314,7 +331,16 @@ renders an absent value as internal: it shows **Unclassified**.
   permission and nothing else — a `scan-operator`, or an on-call granted that
   permission alone, sees it, and the `/scans` pages open for them too. (The
   sidebar still lists those pages by the *global* role, so such an account
-  reaches them by link rather than from the menu.) There is
+  reaches them by link rather than from the menu.) A **Priority** column
+  ([#365](https://github.com/onixus/Shapoclyack/issues/365)) shows each job's
+  place in its tenant's queue — `+20` highlighted, `0` plain, negative values
+  dimmed — and on a queued job an up-down button opens a small dialog to move
+  it. What the dialog accepts mirrors the API: operator rank in the active
+  tenant may set `-100…0`; `scan.priority.raise` **in the active tenant**
+  (`holdsPermission(user, "scan.priority.raise", false)`, never the global
+  role) widens it to `100`, and a job somebody already raised above 0 offers no
+  button at all to those without it. An API older than #365 sends no
+  `priority`, which reads as 0 with no permission to raise. There is
   also a per-job drawer: timeline and duration,
   attempts, exit code, error, intent summary, target counts, promoted domains
   admitted and dropped, wordlist, sensor, command line, links to the run and
