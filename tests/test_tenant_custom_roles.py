@@ -563,6 +563,38 @@ def test_renaming_a_role_carries_its_holders_and_an_edit_reaches_them(tmp_path, 
     assert rename["after"]["memberships_renamed"] == 1
 
 
+def test_a_role_the_idp_group_map_names_is_neither_renamed_nor_deleted(tmp_path, monkeypatch):
+    """``OCTO_IDP_GROUP_MAP`` names tenant roles by name (#316). Renaming one
+    under it, or deleting it, left the map pointing at nothing — a tenant
+    administrator's way to make the IdP resync stop acting on that tenant."""
+    settings = make_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = _admin(client)
+    for role_id in ("analyst", "spare"):
+        assert _define(
+            client, "default", admin, role_id=role_id, permissions=["audit.read"]
+        ).status_code == 201
+    settings.idp_group_map = {"soc": [{"tenant_id": "default", "role": "analyst"}]}
+
+    renamed = client.patch(
+        "/api/tenants/default/roles/analyst", headers=admin, json={"role_id": "soc-analyst"}
+    )
+    assert renamed.status_code == 409, renamed.text
+    assert "OCTO_IDP_GROUP_MAP" in renamed.json()["detail"]
+    deleted = client.delete("/api/tenants/default/roles/analyst", headers=admin)
+    assert deleted.status_code == 409, deleted.text
+    # An edit that keeps the name is not a rename.
+    assert client.patch(
+        "/api/tenants/default/roles/analyst", headers=admin, json={"description": "SOC"}
+    ).status_code == 200
+    assert client.patch(
+        "/api/tenants/default/roles/analyst", headers=admin, json={"role_id": "analyst"}
+    ).status_code == 200
+    # The same name in another tenant's entry is not this tenant's role.
+    settings.idp_group_map["other"] = [{"tenant_id": "elsewhere", "role": "spare"}]
+    assert client.delete("/api/tenants/default/roles/spare", headers=admin).status_code == 200
+
+
 def test_deleting_a_role_cannot_reassign_its_holders_above_the_caller(tmp_path, monkeypatch):
     """``reassign_to`` is a grant, and is held to the same ceiling.
 

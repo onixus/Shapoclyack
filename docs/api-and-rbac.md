@@ -761,6 +761,20 @@ matched only once it holds a membership: until then it is a placeholder that
 one tenant's directory alone controls, and the login goes on as if it were not
 there. `externalId` is unique across accounts (`409 uniqueness`).
 
+Until that first login the two keys decide whose login lands in the account,
+with whatever role and memberships it holds, so changing them (`PUT`/`PATCH`
+of `emails` or `externalId`) is the **creating token's**, or a
+`grant_platform_admin` token's — not any token that otherwise manages the
+account (`403`). After it, the stored `(issuer, sub)` is the identity and they
+are ordinary attributes. `externalId` is compared with `sub` alone: an
+installation has one `OCTO_OIDC_ISSUER`, and after changing it, clear or
+re-push the `externalId`s of accounts nobody has signed in to yet. Uniqueness
+is global, so a `409` tells a tenant-bound token that some account somewhere
+holds that exact address or `externalId` — nothing about which; a value a
+tenant-bound directory took first is freed by re-keying that account with a
+`grant_platform_admin` token (`PATCH` of `externalId`/`emails`), or by a
+platform admin's `DELETE /api/users/{u}`.
+
 Every outcome lands in the auth trail (`GET /api/auth/events`): `success` with
 reason `sso_signin` / `sso_linked` / `sso_provisioned`, and `denied` with
 `sso_denied` (a refused callback) or `sso_not_provisioned` (an identity this
@@ -782,9 +796,14 @@ transaction as the login and **before** the disabled check:
   tenant resolve to the highest rank). Missing ones are granted, changed ones
   updated, and ones no group grants any more **removed** — but only rows the
   IdP itself granted. A group mapped to a role the tenant does not have (a
-  tenant role renamed or deleted under the map) grants nothing and **removes
-  nothing** in that tenant: the map is wrong, not the person's groups, and the
-  resync logs an error naming the group, role and tenant until it is fixed;
+  typo, or a role renamed while the map did not name it — a mapped role
+  cannot be renamed or deleted) grants nothing, and the resync logs an error
+  naming the group, role and tenant until the map is fixed. In that tenant it
+  leaves alone only a membership the broken entry may have granted: one whose
+  role no entry of the map names. A membership holding a role an
+  entry names is recomputed as usual — removed or lowered when the
+  person left the group that gave it — so one stale entry does not freeze the
+  person's other grants;
 - **access** — an account in no mapped group is disabled
   (`disabled_source = idp`, the login answered `403`); a later login with a
   mapped group re-enables it. JIT provisioning creates no account for an
@@ -796,11 +815,18 @@ missing, or Entra ID replaced it by an overage pointer (`_claim_names` naming
 the claim; `hasgroups` in the implicit flow) because the person is in too many
 groups. That is "the groups are not here", not "in no group" — the login
 proceeds on the account as it stands, the skipped resync is logged, and JIT
-provisions nothing from such a token. An IdP that removes someone from their
-last group should send an empty claim (`"groups": []`); one that drops the
-claim instead deprovisions through SCIM only. For Entra, filter the groups
-claim to the mapped groups ("groups assigned to the application") so it stays
-under the limit.
+provisions nothing from such a token; each skip is counted in
+`octo_idp_resync_skipped_total`. An IdP that removes someone from their last
+group should send an empty claim (`"groups": []`). **Okta** leaves an empty
+groups claim out of the token instead: removal from the last mapped group then
+does not take effect at login. If your IdP always sends the claim — or you
+configure it to, e.g. an Okta groups claim with a filter that always matches —
+set `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true`, and a token without the claim
+means "in no group". Otherwise deprovision through SCIM. **Entra ID**'s
+overage pointer is "not listed" whatever the setting: filter the groups claim
+to the mapped groups ("groups assigned to the application") so it stays under
+the limit. With `OCTO_OIDC_ROLE_CLAIM` empty no login lists a group, so the
+mode stays off and warns at startup, as with nothing mapped.
 
 **Which memberships the IdP owns.** Each `user_tenants` row has a `source`:
 `idp` for what the group mapping, SCIM or JIT provisioning granted, `local` for
@@ -874,7 +900,7 @@ JWT or a service token is a `401` there.
 
 | Binding | Sees | Memberships | Global role | Deactivate / re-enable |
 |---|---|---|---|---|
-| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that holds at least one membership, all of them in its tenants, and is not a platform admin |
+| `tenant_ids: [...]` | accounts with a membership in its tenants, and those it created | in its tenants only; a group mapped anywhere else, or to a global role, is `403` | never | only an account that holds at least one membership, all of them in its tenants, and whose global role is `viewer` — a higher global role acts outside the binding |
 | `all_tenants` | every account | every tenant | below `admin`; a group mapped to `admin` is `403` to create and invisible otherwise | every IdP-managed account but a platform admin |
 | `all_tenants` + `grant_platform_admin` | every account | every tenant | including `admin` | every IdP-managed account |
 
@@ -905,6 +931,13 @@ and actor type `service_token`: `user.create`, `user.disable`,
 `scim_group.create`/`update`/`delete`, and the token's own
 `scim_token.create`/`revoke`. A deactivation, a removed membership or a role
 change ends the account's sessions.
+
+**Revoking a token** stops it authenticating; it does not undo what it did.
+The groups it created stay, keep granting what that token's binding allowed
+(never more), and other tokens' pushes resync their members as before — a
+revocation is not a mass removal of access. To take the access away as well,
+delete the groups with a token that may (`all_tenants`, plus
+`grant_platform_admin` for a group mapped to `admin`).
 
 ## Service tokens
 
@@ -1055,6 +1088,14 @@ included:
 | Every permission is in the catalogue, and is one some built-in **tenant** role carries — never `config.write` or a `platform.*` permission | A tenant cannot write a role that reaches the installation |
 | `scan_scope.approve` and `vulnerability.exception.approve` only at rank 1, and never together with `tenant.member.manage` | The separation of duties the built-ins have by construction: an approver who can write acts on their own approval, and one who grants memberships can hand the approved work to an account of their own |
 | Rank is 1, 2 or 3; at most 64 roles per tenant | |
+
+**A role `OCTO_IDP_GROUP_MAP` names** for this tenant can be neither renamed
+nor deleted — `409` for everybody (#316). The map names roles by name, and an
+entry naming a role that is gone leaves the IdP memberships that entry may
+have granted where they are; a tenant administrator renaming a role could
+otherwise stop removals from IdP groups from taking effect. The operator
+changes the map first. Editing the description, rank or permissions of such a
+role is allowed.
 
 **Nobody hands out more than they hold** — `403`. A role may not carry a rank
 above the caller's own rank in the tenant, nor a permission the caller does not

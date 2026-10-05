@@ -82,14 +82,17 @@ def list_roles(
 def _refusal(exc: Exception) -> HTTPException:
     """The status each service refusal answers with.
 
-    Order matters: :class:`rbac_service.RoleExists` and
-    :class:`rbac_service.RoleInUse` are ValueErrors too.
+    Order matters: :class:`rbac_service.RoleExists`,
+    :class:`rbac_service.RoleInUse` and :class:`rbac_service.RoleMapped` are
+    ValueErrors too.
     """
     if isinstance(exc, LookupError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    if isinstance(exc, (rbac_service.RoleExists, rbac_service.RoleInUse)):
+    if isinstance(
+        exc, (rbac_service.RoleExists, rbac_service.RoleInUse, rbac_service.RoleMapped)
+    ):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -146,7 +149,8 @@ def update_role(
     A new ``role_id`` carries every member holding the role along with it. A
     changed definition is what every holder may do from their next request,
     so the role before *and* after must be within the caller's authority.
-    Built-in roles are not this tenant's to edit: ``404``.
+    Built-in roles are not this tenant's to edit: ``404``. A rename of a role
+    ``OCTO_IDP_GROUP_MAP`` names is ``409`` (#316): the map changes first.
     """
     try:
         updated = rbac_service.update_role(
@@ -183,7 +187,8 @@ def delete_role(
 
     ``409`` while any member holds it — nobody's access disappears with a role
     as a side effect. ``reassign_to`` names where they go instead, a role the
-    caller may grant; each move is recorded as a ``membership.grant``.
+    caller may grant; each move is recorded as a ``membership.grant``. Also
+    ``409`` for a role ``OCTO_IDP_GROUP_MAP`` names (#316).
     """
     try:
         deleted = rbac_service.delete_role(

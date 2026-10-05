@@ -132,8 +132,14 @@ class SyncResult:
 
 
 def is_authoritative(settings: Settings) -> bool:
-    """Whether SSO logins resync. Off with nothing mapped (see settings)."""
-    return bool(settings.idp_authoritative and (settings.oidc_role_map or settings.idp_group_map))
+    """Whether SSO logins resync. Off with nothing mapped, or with no claim to
+    read the groups from (see settings): either way every login would read as
+    "in no mapped group" and disable the account."""
+    return bool(
+        settings.idp_authoritative
+        and settings.oidc_role_claim.strip()
+        and (settings.oidc_role_map or settings.idp_group_map)
+    )
 
 
 def mapped_groups(
@@ -205,9 +211,10 @@ def _desired_memberships(
     does not exist grants nothing, with a warning: a mapping mistake must not
     be a reason to refuse a login. A role the tenant does not have — a tenant
     role renamed or deleted under the map — grants nothing either, and the
-    tenant is returned as unresolved so the caller leaves what the person holds
-    there alone: the mapping is what is wrong, not the person's groups, and
-    acting on it would revoke every membership it used to grant.
+    tenant is returned as unresolved: the mapping is what is wrong, not the
+    person's groups, and acting on it would revoke every membership it used to
+    grant. What the caller leaves alone there is narrower than the tenant —
+    see :func:`_explained_roles`.
     """
     best: dict[str, tuple[int, str]] = {}
     unresolved: set[str] = set()
@@ -228,8 +235,8 @@ def _desired_memberships(
             if resolved is None:
                 logger.error(
                     "OCTO_IDP_GROUP_MAP maps group %r to role %r, which tenant %r does "
-                    "not have; the IdP memberships in that tenant are left as they are "
-                    "until the map is fixed.",
+                    "not have; an IdP membership there whose role no map entry names is "
+                    "left as it is until the map is fixed.",
                     group,
                     role,
                     tenant_id,
@@ -240,6 +247,28 @@ def _desired_memberships(
             if current is None or resolved.rank > current[0]:
                 best[tenant_id] = (resolved.rank, role)
     return {tenant_id: role for tenant_id, (_, role) in best.items()}, unresolved
+
+
+def _explained_roles(settings: Settings, tenant_id: str) -> set[str]:
+    """The roles of ``tenant_id`` that an entry of the map names.
+
+    In a tenant where one of the person's groups maps to a role that does not
+    resolve, an IdP membership holding one of these roles is explained by an
+    entry — whichever group's — so the person's groups decide it as usual. (A
+    membership holding the broken name itself holds a role that does not
+    exist and is worth nothing; recomputing it is no loss.) Only a membership
+    holding a role no entry names — a role renamed under the map — can be the
+    broken entry's grant, and only that one is left as it is. Freezing the whole tenant
+    instead kept a grant another group gave after the person left that group:
+    one stale entry, which a tenant administrator could produce by renaming a
+    role, and removal from the admin group stopped revoking.
+    """
+    return {
+        entry["role"]
+        for entries in settings.idp_group_map.values()
+        for entry in entries
+        if entry["tenant_id"] == tenant_id
+    }
 
 
 def reconcile(
@@ -291,8 +320,10 @@ def reconcile(
     for membership in current:
         if membership.source != SOURCE_IDP or not scope.covers(membership.tenant_id):
             continue
-        if membership.tenant_id in unresolved:
-            # Logged in _desired_memberships; see there.
+        if membership.tenant_id in unresolved and membership.role not in _explained_roles(
+            settings, membership.tenant_id
+        ):
+            # Possibly the broken entry's grant; logged in _desired_memberships.
             continue
         want = desired.get(membership.tenant_id)
         if want is None:

@@ -877,6 +877,14 @@ class Settings:
     # deactivates an account that is in no mapped group. Memberships granted
     # locally are never touched (api/services/idp_sync.py says why).
     idp_authoritative: bool = False
+    # Whether the ID token always carries ``OCTO_OIDC_ROLE_CLAIM`` (#316). Off,
+    # a token without the claim is "the groups are not listed" and the resync
+    # is skipped for that login — the safe reading where the IdP drops an
+    # empty claim (Okta) or the claim is not configured on the client. On, the
+    # installation says its IdP sends the claim every time, even empty, so
+    # its absence is "in no group". Entra ID's overage pointer is "not
+    # listed" either way: the groups exist, they are just elsewhere.
+    idp_groups_claim_required: bool = False
     # Group -> tenant membership map shared by the SSO resync and SCIM,
     # ``{"acme-ops": [{"tenant_id": "acme", "role": "operator"}]}``. A group
     # may grant several tenants; the role is a built-in tenant role or one the
@@ -2228,6 +2236,10 @@ def load_settings() -> Settings:
         oidc_post_login_redirect=os.environ.get("OCTO_OIDC_POST_LOGIN_REDIRECT", "").strip(),
         idp_authoritative=os.environ.get("OCTO_IDP_AUTHORITATIVE", "false").strip().lower()
         in {"1", "true", "yes", "on"},
+        idp_groups_claim_required=os.environ.get("OCTO_IDP_GROUPS_CLAIM_REQUIRED", "false")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"},
         idp_group_map=_idp_group_map(),
         service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
@@ -2275,6 +2287,21 @@ def load_settings() -> Settings:
             "OCTO_IDP_AUTHORITATIVE=true with neither OCTO_OIDC_ROLE_MAP nor "
             "OCTO_IDP_GROUP_MAP set: nothing is mapped, so the IdP resync stays off "
             "rather than deactivating every SSO account. Map the groups first."
+        )
+    elif settings.idp_authoritative and not settings.oidc_role_claim:
+        # The same reasoning: no claim configured, no login lists a group, and
+        # every SSO account would be "in no mapped group".
+        logger.warning(
+            "OCTO_IDP_AUTHORITATIVE=true with OCTO_OIDC_ROLE_CLAIM empty: no login "
+            "carries the groups, so the IdP resync stays off rather than deactivating "
+            "every SSO account. Name the groups claim first."
+        )
+    elif settings.idp_authoritative and not settings.idp_groups_claim_required:
+        logger.info(
+            "OCTO_IDP_AUTHORITATIVE=true: a login whose ID token does not carry %r is "
+            "not resynced (counted in octo_idp_resync_skipped_total). If the IdP always "
+            "sends the claim, set OCTO_IDP_GROUPS_CLAIM_REQUIRED=true.",
+            settings.oidc_role_claim,
         )
 
     if settings.env == ENV_PROD:

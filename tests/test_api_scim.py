@@ -915,3 +915,129 @@ def test_a_tenant_bound_token_edits_its_new_account_but_cannot_lock_it(tmp_path,
     )
     assert rekeyed.status_code == 403
     assert _account("bob").scim_external_id == "idp-bob"
+
+
+# --------------------------------------------------------------------------- #
+# Link keys, global roles and revoked tokens (second review of #316)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_tenant_bound_token_cannot_rekey_an_account_another_token_created(
+    tmp_path, monkeypatch, provider
+):
+    """``externalId`` and the address decide whose first SSO login lands in an
+    unlinked account. HQ's ``ciso`` holds memberships in acme only, so acme's
+    token "owned" it — and could point it at an identity of its choosing, and
+    with it the global role HQ's directory gave it."""
+    settings, client, admin, strong = _sso_with_scim(tmp_path, monkeypatch)
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, strong, "ciso", externalId="idp-ciso").status_code == 201
+    assert _create_group(client, strong, "acme-ops", members=["ciso"]).status_code == 201
+    assert _create_group(client, strong, "vm-ops", members=["ciso"]).status_code == 201
+    assert set(_memberships("ciso")) == {acme}
+    assert _account("ciso").role == "operator"
+
+    for operation in (
+        {"op": "replace", "path": "externalId", "value": "idp-mallory"},
+        {"op": "replace", "path": "emails", "value": [{"value": "mallory@acme.example"}]},
+    ):
+        response = _patch(client, scoped, "/scim/v2/Users/ciso", operation)
+        assert response.status_code == 403, response.text
+    put = client.put(
+        "/scim/v2/Users/ciso",
+        headers=bearer(scoped),
+        json={"schemas": [SCIM_USER], "userName": "ciso", "externalId": "idp-mallory"},
+    )
+    assert put.status_code == 403, put.text
+    # Nor may it lock an account carrying a global role above viewer.
+    assert client.delete("/scim/v2/Users/ciso", headers=bearer(scoped)).status_code == 403
+    account = _account("ciso")
+    assert account.scim_external_id == "idp-ciso"
+    assert account.email is None
+    assert account.disabled_at is None
+
+    response = callback(
+        client, provider, start_login(client), preferred_username="m", sub="idp-mallory"
+    )
+    assert response.status_code == 403, response.text
+    assert _account("ciso").oidc_subject is None
+
+
+def test_only_the_creator_or_an_admin_capable_token_rekeys_an_unlinked_account(
+    tmp_path, monkeypatch
+):
+    _, client, admin, acme, _ = _setup(tmp_path, monkeypatch)
+    plain = _scim_token(client, admin, all_tenants=True, name="hq")
+    other = _scim_token(client, admin, all_tenants=True, name="hr")
+    strong = _scim_token(client, admin, all_tenants=True, grant_platform_admin=True, name="iam")
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    assert _create_user(client, plain, "erin", externalId="idp-erin").status_code == 201
+    assert _create_group(client, plain, "acme-view", members=["erin"]).status_code == 201
+
+    def rekey(token, value):
+        return _patch(
+            client, token, "/scim/v2/Users/erin",
+            {"op": "replace", "path": "externalId", "value": value},
+        )
+
+    assert rekey(scoped, "idp-x").status_code == 403
+    assert rekey(other, "idp-x").status_code == 403
+    assert rekey(plain, "idp-erin-2").status_code == 200
+    assert rekey(strong, "idp-erin-3").status_code == 200
+    assert _account("erin").scim_external_id == "idp-erin-3"
+    # Once somebody has signed in to it, the stored subject is the identity
+    # and the keys are attributes the account's owners may change.
+    with get_session(POSTGRES_URL) as session:
+        linked = session.get(models.User, "erin")
+        linked.oidc_issuer, linked.oidc_subject = "https://idp.example", "idp-erin-3"
+    assert rekey(scoped, "idp-erin-4").status_code == 200
+    # Lifecycle is not a link key: the tenant's token still deactivates an
+    # account wholly inside its tenant.
+    assert client.delete("/scim/v2/Users/erin", headers=bearer(scoped)).status_code == 204
+
+
+def test_revoking_a_scim_token_neither_strips_nor_extends_what_its_groups_grant(
+    tmp_path, monkeypatch
+):
+    """Its groups are the directory's data, not the credential: revoking the
+    credential stops further changes through it, and an unrelated push by
+    another token must not read the revoked token's groups as granting
+    nothing (a mass revocation) — nor as granting more than its binding."""
+    settings, client, admin, acme, beta = _setup(tmp_path, monkeypatch)
+    scoped = _scim_token(client, admin, tenant_ids=[acme], name="acme-directory")
+    everywhere = _scim_token(client, admin, all_tenants=True, name="hq")
+    token_id = next(
+        row["token_id"]
+        for row in client.get("/api/auth/scim-tokens", headers=admin).json()
+        if row["name"] == "acme-directory"
+    )
+    assert _create_user(client, everywhere, "frank").status_code == 201
+    group = _create_group(client, scoped, "acme-ops", members=[])
+    assert group.status_code == 201, group.text
+    group_id = group.json()["id"]
+    assert _create_group(client, scoped, "beta-later", members=[]).status_code == 201
+    assert (
+        _patch(
+            client, everywhere, f"/scim/v2/Groups/{group_id}",
+            {"op": "add", "path": "members", "value": [{"value": "frank"}]},
+        ).status_code
+        == 200
+    )
+    assert _memberships("frank") == {acme: ("operator", "idp")}
+
+    revoked = client.post(f"/api/auth/scim-tokens/{token_id}/revoke", headers=admin)
+    assert revoked.status_code == 200, revoked.text
+    assert client.get("/scim/v2/Users", headers=bearer(scoped)).status_code == 401
+
+    # An unrelated push by another token resyncs frank.
+    settings.idp_group_map["beta-later"] = [{"tenant_id": beta, "role": "admin"}]
+    assert _create_group(client, everywhere, "beta-ops", members=["frank"]).status_code == 201
+    assert _memberships("frank") == {
+        acme: ("operator", "idp"),
+        beta: ("operator", "idp"),
+    }
+    # The way out is removing the group, by a token that may.
+    assert client.delete(f"/scim/v2/Groups/{group_id}", headers=bearer(everywhere)).status_code == 204
+    assert _memberships("frank") == {beta: ("operator", "idp")}

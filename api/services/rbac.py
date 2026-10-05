@@ -97,6 +97,32 @@ class RoleInUse(ValueError):
     """
 
 
+class RoleMapped(ValueError):
+    """Renaming or deleting the role is refused because ``OCTO_IDP_GROUP_MAP``
+    names it (#316). Answered 409.
+
+    The map is the operator's, in the environment, and names the role by
+    name: renamed or deleted under it, the entry resolves to nothing. The
+    IdP resync then leaves the memberships it may have granted alone, so a
+    tenant administrator could stop group removals from taking effect in
+    their tenant by renaming a role. The map changes first, then the role.
+    """
+
+
+def _refuse_if_mapped(settings: Settings, tenant_id: str, role_id: str, what: str) -> None:
+    # Which groups is not said: their names are the customer's directory, and
+    # the caller is a tenant administrator, not the operator who wrote the map.
+    if any(
+        entry["tenant_id"] == tenant_id and entry["role"] == role_id
+        for entries in settings.idp_group_map.values()
+        for entry in entries
+    ):
+        raise RoleMapped(
+            f"role {role_id} cannot be {what}: OCTO_IDP_GROUP_MAP grants it to an IdP "
+            "group; the operator changes the map first"
+        )
+
+
 @dataclass(frozen=True)
 class ResolvedRole:
     """One role as the authorization layer sees it."""
@@ -505,6 +531,7 @@ def update_role(
         moved = 0
         if new_role_id is not None and new_role_id.strip().lower() != current_id:
             target_id = normalize_role_id(new_role_id)
+            _refuse_if_mapped(settings, tenant_id, current_id, "renamed")
             if session.get(models.RoleDefinition, (target_id, tenant_id)) is not None:
                 raise RoleExists(f"role already exists: {target_id}")
             # The primary key is the name, and role_permissions points at it
@@ -584,6 +611,7 @@ def delete_role(
             raise LookupError(f"role not found: {current_id}")
         held = _held_permissions(session, tenant_id, current_id)
         _refuse_above(actor, row.rank, held, f"role {current_id!r} is stronger than the caller")
+        _refuse_if_mapped(settings, tenant_id, current_id, "deleted")
 
         holders = _holders(session, tenant_id, current_id)
         target: ResolvedRole | None = None

@@ -22,10 +22,14 @@ All notable changes to Shapoclyack are documented in this file.
   takes over their own IdP membership (`403`), and a takeover by another
   member manager shows `source` in the trail. The resync never touches a
   break-glass account, never re-enables an account a person disabled, stays
-  off (with a startup warning) when nothing is mapped, changes nothing on a
-  token that does not list the groups (Entra ID's overage, a missing claim),
-  removes nothing in a tenant whose mapped role no longer exists, and ends the
-  account's sessions on any reduction. `/scim/v2/Users` and
+  off (with a startup warning) when nothing is mapped or no groups claim is
+  configured, changes nothing on a token that does not list the groups (Entra
+  ID's overage, a missing claim — counted in `octo_idp_resync_skipped_total`;
+  new `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true` reads a missing claim as "no
+  groups" for IdPs that always send it), leaves alone only the membership a
+  map entry naming a missing tenant role may have granted (a role the map
+  names cannot be renamed or deleted: `409`), and ends the account's sessions
+  on any reduction. `/scim/v2/Users` and
   `/scim/v2/Groups` (list with `userName eq`/`displayName eq`, get, create,
   `PUT`, `PATCH` incl. `active: false`, `DELETE` = deactivate) plus
   `ServiceProviderConfig`/`ResourceTypes`/`Schemas`, under a new credential
@@ -38,7 +42,10 @@ All notable changes to Shapoclyack are documented in this file.
   and any group grants no more than the token that created it could, however
   its name is mapped later. SCIM accounts sign in through SSO, linked at the
   first login by `externalId` = the token's `sub` (stored, unique) or by an
-  address the IdP verified — never by username. Every change is
+  address the IdP verified — never by username; until that login only the
+  creating token or a `grant_platform_admin` token may change those two, and
+  a tenant-bound token manages no account whose global role is above
+  `viewer`. Revoking a token leaves its groups' grants in place. Every change is
   audited (`membership.*`, `user.*` with `"source": "idp"`, new
   `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
   Migration `0076_idp_resync_scim` (expand-only; chained after 0072 on its

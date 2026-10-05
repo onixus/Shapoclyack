@@ -706,8 +706,9 @@ def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str] 
     A string is one group and a list is several. **None** where the token does
     not list the groups at all: the claim is missing, or the provider replaced
     it by a pointer because there were too many — Entra ID's "overage"
-    (``_claim_names`` naming the claim, or ``hasgroups``). That is "the groups
-    are not here", not "in no group", and an IdP-authoritative resync must not
+    (``_claim_names`` naming the claim, or ``hasgroups``) — except that with
+    ``OCTO_IDP_GROUPS_CLAIM_REQUIRED`` a missing claim is no groups. That is
+    "the groups are not here", not "in no group", and an IdP-authoritative resync must not
     read it as the second (it would disable the account). What the groups grant
     is the maps' business (:func:`role_from_claims`,
     ``api/services/idp_sync.py``), so this only reads.
@@ -718,7 +719,14 @@ def groups_from_claims(settings: Settings, claims: dict[str, Any]) -> list[str] 
     # ``hasgroups`` (the implicit flow's overage marker) comes instead of the
     # claim, so the absence test covers it.
     claim_names = claims.get("_claim_names")
-    if claim not in claims or (isinstance(claim_names, dict) and claim in claim_names):
+    if isinstance(claim_names, dict) and claim in claim_names:
+        return None
+    if claim not in claims:
+        # Missing: "not listed", unless the installation says its IdP always
+        # sends the claim (``OCTO_IDP_GROUPS_CLAIM_REQUIRED``). Okta leaves an
+        # empty one out. ``hasgroups`` is Entra's overage either way.
+        if settings.idp_groups_claim_required and not claims.get("hasgroups"):
+            return []
         return None
     raw = claims.get(claim)
     if isinstance(raw, str):

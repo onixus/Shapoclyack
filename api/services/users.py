@@ -29,6 +29,7 @@ from api.auth import hash_password, verify_password
 from api.db import models
 from api.db.engine import get_session, insert_if_absent
 from api.services import audit as audit_service
+from api.services import metrics as metrics_service
 from api.settings import ENV_PROD, InsecureConfigurationError, Settings
 
 logger = logging.getLogger(__name__)
@@ -587,6 +588,7 @@ def link_or_provision_sso_user(
 
         def _resync(row: models.User) -> None:
             if not groups_listed:
+                metrics_service.IDP_RESYNC_SKIPPED_TOTAL.inc()
                 logger.warning(
                     "IdP resync of %r skipped at SSO login: the ID token does not list "
                     "the groups (claim %r missing or replaced by an overage pointer)",

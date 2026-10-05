@@ -19,7 +19,8 @@ Rules carrying the security value:
   which only authenticates. A tenant-bound token sees the accounts that hold a
   membership in its tenants (and the ones it created), writes memberships in
   those tenants only, never touches the global role, and may deactivate only
-  an account that belongs to none but its tenants and is not a platform admin.
+  an account that belongs to none but its tenants and whose global role is
+  ``viewer``.
   Seeing an account is not managing it: the global role and the lifecycle of
   everything else is ``all_tenants`` work.
 * **SCIM manages IdP accounts, not local ones.** An account with a password is
@@ -38,7 +39,9 @@ Rules carrying the security value:
 Accounts created here sign in through SSO: the first login whose ``sub``
 equals the ``externalId`` stored here, or whose verified address equals the
 account's, links it — never the login's username, which can be an address
-nobody verified (``api/services/users.py:link_or_provision_sso_user``).
+nobody verified (``api/services/users.py:link_or_provision_sso_user``). Until
+then those two keys choose whose login lands in the account, so only the
+token that created it, or a ``grant_platform_admin`` one, may change them.
 
 What a group grants is held to the token that **created** it (its binding,
 and ``admin`` only from a ``grant_platform_admin`` token), whatever token's
@@ -208,13 +211,34 @@ def _owns(session, settings: Settings, principal: ScimPrincipal, row: models.Use
     membership and every one is inside the binding. "Every one" alone was true
     of an account in no tenant at all — the empty set is inside any binding —
     and let one tenant's directory create ``ciso`` deactivated, holding the
-    name against the real one's first SSO login.
+    name against the real one's first SSO login. Nor one whose global role is
+    above ``viewer``: that role acts outside the binding, so whoever gave it
+    is not this tenant's directory. The link keys of an account nobody has
+    signed in to yet are narrower still — see :func:`_may_rekey`.
     """
     idp_managed = not row.password_hash and row.username not in settings.break_glass_users
     if principal.all_tenants:
         return idp_managed and (row.role != "admin" or principal.grant_platform_admin)
     held = _memberships_of(session, row.username)
-    return idp_managed and row.role != "admin" and bool(held) and held <= principal.tenant_ids
+    return idp_managed and row.role == "viewer" and bool(held) and held <= principal.tenant_ids
+
+
+def _may_rekey(principal: ScimPrincipal, row: models.User) -> bool:
+    """Whether this token may change the address or ``externalId`` of ``row``.
+
+    Until its first SSO login those two decide *whose* login lands in the
+    account (``users._scim_link_candidate``), with whatever role and
+    memberships other directories gave it. So they are the creating token's,
+    or a ``grant_platform_admin`` token's — not every token that owns the
+    account: a tenant-bound token owned HQ's ``ciso`` by its memberships alone
+    and could point it at an identity of its choosing. Once linked, the
+    stored subject is the identity and they are attributes like any other.
+    """
+    if row.oidc_subject is not None:
+        return True
+    return row.created_by == principal.created_by_marker or (
+        principal.all_tenants and principal.grant_platform_admin
+    )
 
 
 def _account_scope(
@@ -276,6 +300,11 @@ def _require_lifecycle(
         raise PermissionError("a break-glass account is not managed by SCIM")
     if row.password_hash:
         raise PermissionError("a local account with a password is not managed by SCIM")
+    if attributes and not _may_rekey(principal, row):
+        raise PermissionError(
+            "this token may not change the address or externalId of an account it did "
+            "not create before that account's first sign-in"
+        )
     if attributes and _fresh(session, settings, principal, row):
         return
     if not _owns(session, settings, principal, row):

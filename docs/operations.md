@@ -2530,12 +2530,37 @@ push. To give the name to the right directory: find the group with an
 directory reserved with an account it never granted anything is freed by a
 platform admin with `DELETE /api/users/{u}`.
 
-With `OCTO_IDP_AUTHORITATIVE` on, watch the log for `IdP resync … skipped at
-SSO login: the ID token does not list the groups` (Entra ID's group overage,
-or an IdP that drops an empty claim): those logins change nothing, so filter
-the groups claim to the mapped groups. And for `OCTO_IDP_GROUP_MAP maps group
-… to role …, which tenant … does not have`: a renamed or deleted tenant role
-under the map, which freezes the IdP memberships in that tenant until fixed.
+With `OCTO_IDP_AUTHORITATIVE` on, watch `octo_idp_resync_skipped_total` and
+the log line `IdP resync … skipped at SSO login: the ID token does not list
+the groups`. Those logins change nothing — removals from groups do not take
+effect for those accounts — and there are two usual causes:
+
+- **Entra ID's group overage** (more groups than fit in the token): filter
+  the groups claim to the groups assigned to the application.
+- **An IdP that drops an empty claim** (Okta by default): someone removed
+  from their last group gets a token with no claim at all. Either configure
+  the claim so it is always sent and set `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true`
+  (a missing claim is then "in no group"), or deprovision through SCIM.
+
+At startup, an info line says which reading is in force; a warning says the
+mode stayed off because `OCTO_OIDC_ROLE_CLAIM` or both maps are empty.
+
+And for `OCTO_IDP_GROUP_MAP maps group … to role …, which tenant … does not
+have`: a typo in the map, or a role renamed while the map did not name it
+(a mapped role cannot be renamed or deleted — `409`). Until the map is fixed,
+the IdP memberships in that tenant whose role no entry of the map names are left
+as they are; everything else is recomputed.
+
+**Revoking a SCIM token** does not remove what its groups grant. When the
+token is revoked because it leaked, list its groups with an `all_tenants`
+token and delete the ones that should not stand. **Changing `OCTO_OIDC_ISSUER`**
+leaves the stored `externalId`s of accounts nobody has signed in to yet
+pointing at the old issuer's subjects: they are compared with `sub` alone, so
+have the directory re-push them. A **taken address or `externalId`** (a
+tenant-bound directory got there first, `409` for the right one) is freed by
+re-keying that account with an `all_tenants` + `grant_platform_admin` token
+(`PATCH` of `externalId` or `emails`), or by a platform admin's
+`DELETE /api/users/{u}`.
 
 The migration (`0076_idp_resync_scim`) is expand-only. Rolling it back drops
 the `source` column — every membership is local again — the stored

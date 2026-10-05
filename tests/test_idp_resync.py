@@ -420,8 +420,10 @@ def test_jit_does_not_provision_from_a_token_that_does_not_list_the_groups(
 def test_a_group_mapped_to_a_role_the_tenant_no_longer_has_revokes_nothing(
     tmp_path, monkeypatch, provider
 ):
-    """A tenant role renamed under ``OCTO_IDP_GROUP_MAP``: the mapping is
-    wrong, not the person's groups, and the resync must not act on it."""
+    """A map entry naming a role the tenant does not have — the role renamed
+    while the map did not name it, and the map left on the old name: the
+    mapping is wrong, not the person's groups, and the resync must not act on
+    the membership it may have granted."""
     settings = _authoritative(tmp_path)
     client = configured_client(tmp_path, monkeypatch, settings=settings)
     admin = auth_headers(client, "admin")
@@ -436,10 +438,14 @@ def test_a_group_mapped_to_a_role_the_tenant_no_longer_has_revokes_nothing(
     assert _login(client, provider, groups=["vm-ops", "acme-analysts"]).status_code == 200
     assert _memberships("dana") == {acme: ("analyst", "idp")}
 
+    mapped, settings.idp_group_map = settings.idp_group_map, {}
     renamed = client.patch(
         f"/api/tenants/{acme}/roles/analyst", headers=admin, json={"role_id": "soc-analyst"}
     )
     assert renamed.status_code == 200, renamed.text
+    settings.idp_group_map = mapped
+    # Another tenant's entry naming the new name explains nothing here.
+    settings.idp_group_map["other-soc"] = [{"tenant_id": "default", "role": "soc-analyst"}]
     assert _memberships("dana") == {acme: ("soc-analyst", "idp")}
     assert _login(client, provider, groups=["vm-ops", "acme-analysts"]).status_code == 200
     assert _memberships("dana") == {acme: ("soc-analyst", "idp")}
@@ -466,3 +472,109 @@ def test_a_scope_that_may_not_grant_admin_does_not_demote_one(tmp_path, monkeypa
         assert result.role is None
         assert row.role == "admin"
         session.rollback()
+
+
+def _analyst_role(client, admin, tenant_id: str) -> None:
+    defined = client.post(
+        f"/api/tenants/{tenant_id}/roles",
+        headers=admin,
+        json={"role_id": "analyst", "rank": 1, "permissions": ["audit.read"]},
+    )
+    assert defined.status_code == 201, defined.text
+
+
+def test_a_broken_mapping_does_not_keep_a_grant_another_group_gave(
+    tmp_path, monkeypatch, provider
+):
+    """One entry of the map naming a role the tenant does not have froze every
+    IdP membership the person held there — including one a healthy group gave.
+    Taken out of that group, they kept it: removal stopped revoking."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    _analyst_role(client, admin, acme)
+    settings.idp_group_map = {
+        "acme-admins": [{"tenant_id": acme, "role": "admin"}],
+        "acme-analysts": [{"tenant_id": acme, "role": "analyst"}],
+    }
+    assert _login(client, provider, groups=["vm-ops", "acme-admins", "acme-analysts"]).status_code == 200
+    assert _memberships("dana") == {acme: ("admin", "idp")}
+
+    # The operator's typo (or a role gone from under the map).
+    settings.idp_group_map["acme-analysts"] = [{"tenant_id": acme, "role": "analyts"}]
+    first = _login(client, provider, groups=["vm-ops", "acme-admins", "acme-analysts"])
+    assert first.status_code == 200, first.text
+    assert _memberships("dana") == {acme: ("admin", "idp")}
+
+    # Out of acme-admins at the IdP: the admin grant goes, broken map or not.
+    second = _login(client, provider, groups=["vm-ops", "acme-analysts"])
+    assert second.status_code == 200, second.text
+    assert _memberships("dana") == {}
+
+
+def test_a_broken_mapping_lowers_a_grant_to_what_the_healthy_groups_give(
+    tmp_path, monkeypatch, provider
+):
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {
+        "acme-admins": [{"tenant_id": acme, "role": "admin"}],
+        "acme-view": [{"tenant_id": acme, "role": "viewer"}],
+        "acme-odd": [{"tenant_id": acme, "role": "no-such-role"}],
+    }
+    assert _login(client, provider, groups=["vm-ops", "acme-admins", "acme-odd"]).status_code == 200
+    assert _memberships("dana") == {acme: ("admin", "idp")}
+    assert _login(client, provider, groups=["vm-ops", "acme-view", "acme-odd"]).status_code == 200
+    assert _memberships("dana") == {acme: ("viewer", "idp")}
+
+
+def test_the_mode_without_a_groups_claim_configured_stays_off(tmp_path, monkeypatch, provider):
+    """No ``OCTO_OIDC_ROLE_CLAIM`` means no login lists any group; read as "in
+    no mapped group" it would disable every SSO account at its next login."""
+    settings = _authoritative(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    assert _login(client, provider, groups=["vm-ops"]).status_code == 200
+    settings.oidc_role_claim = ""
+    again = _login(client, provider, groups=["vm-ops"])
+    assert again.status_code == 200, again.text
+    assert _account("dana").disabled_at is None
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_a_token_without_the_groups_claim_is_counted_and_optionally_read_as_none(
+    tmp_path, monkeypatch, provider, required
+):
+    """Okta leaves an empty groups claim out of the token. By default that is
+    "not listed" (the resync is skipped, and counted); an installation whose
+    IdP always sends the claim says so, and then its absence is "no groups"."""
+    from api.services import metrics as metrics_service
+
+    settings = _authoritative(tmp_path, idp_groups_claim_required=required)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    admin = auth_headers(client, "admin")
+    acme = _tenant(client, admin, "Acme")
+    settings.idp_group_map = {"acme-ops": [{"tenant_id": acme, "role": "operator"}]}
+    assert _login(client, provider, groups=["vm-ops", "acme-ops"]).status_code == 200
+
+    def skipped() -> float:
+        return metrics_service.REGISTRY.get_sample_value("octo_idp_resync_skipped_total") or 0.0
+
+    before = skipped()
+    response = _overage_login(client, provider)
+    if required:
+        assert response.status_code == 403, response.text
+        assert _memberships("dana") == {}
+        assert _account("dana").disabled_source == "idp"
+        assert skipped() == before
+    else:
+        assert response.status_code == 200, response.text
+        assert _memberships("dana") == {acme: ("operator", "idp")}
+        assert skipped() == before + 1
+
+    # Entra ID's overage is "not listed" either way.
+    before = skipped()
+    _overage_login(client, provider, hasgroups=True)
+    assert skipped() == before + 1
