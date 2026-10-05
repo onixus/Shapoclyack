@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, not_, or_, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -176,19 +176,38 @@ def claim_job(
         raise LookupError("Unknown agent_id; register first")
     effective_tenant = tenant_id or agent.tenant_id
 
-    # What this agent cannot run, as scan_options keys (#362, #338). Filtered
-    # out of the claim rather than refused at the head of the queue: a sensor
-    # that predates the config overlay used to be handed the oldest job, refuse
-    # it, and never reach the plain jobs queued behind it (review round 2).
+    # What this agent cannot run (#362, #338). Filtered out of the claim
+    # rather than refused at the head of the queue: a sensor that predates the
+    # config overlay used to be handed the oldest job, refuse it, and never
+    # reach the plain jobs queued behind it (review round 2).
+    #
+    # The overlay is versioned per job: a job asks for the capability of the
+    # lowest overlay version that covers it (``config_overlay_capability``,
+    # absent on a job queued before it existed, which is a first-version
+    # one), so a sensor that applies v1 keeps taking every job but the
+    # verification re-scans that pin nuclei templates.
     capabilities = set(agent.capabilities or [])
-    unsupported = [
-        key
-        for key, capability in (
-            ("scan_policy", scan_policy.AGENT_CAPABILITY),
-            ("config_overlay", config_override.AGENT_CAPABILITY),
+    options = models.Job.scan_options
+    overlay_needed = func.coalesce(
+        options[config_override.OVERLAY_CAPABILITY_OPTION].as_string(),
+        config_override.AGENT_CAPABILITY,
+    )
+    declared = sorted(capabilities)
+    runnable = [
+        or_(
+            options["config_overlay"].as_string().is_(None),
+            overlay_needed.in_(declared),
         )
-        if capability not in capabilities
     ]
+    blocked = [
+        and_(
+            options["config_overlay"].as_string().is_not(None),
+            not_(overlay_needed.in_(declared)),
+        )
+    ]
+    if scan_policy.AGENT_CAPABILITY not in capabilities:
+        runnable.append(options["scan_policy"].as_string().is_(None))
+        blocked.append(options["scan_policy"].as_string().is_not(None))
 
     with get_session(settings.postgres_url) as session:
         # First, before any row is selected or locked: a claim the ceiling
@@ -220,8 +239,9 @@ def claim_job(
         )
         if job_id:
             eligible = eligible.where(models.Job.job_id == job_id)
-        # ``->>`` is NULL for an absent key and for a NULL document alike.
-        runnable = [models.Job.scan_options[key].as_string().is_(None) for key in unsupported]
+        # ``->>`` is NULL for an absent key and for a NULL document alike, and
+        # neither predicate above can itself be NULL (``coalesce``, a literal
+        # IN list), so "runnable" and "blocked" partition the queue.
         row = (
             session.execute(
                 eligible.where(*runnable).limit(1).with_for_update(skip_locked=True)
@@ -235,12 +255,7 @@ def claim_job(
             # the agent's journal is how its operator learns to upgrade.
             # Only jobs it cannot run: a runnable one seen here is one another
             # claim holds the lock on, and must not be handed out twice.
-            blocked = [models.Job.scan_options[key].as_string().is_not(None) for key in unsupported]
-            row = (
-                session.execute(eligible.where(or_(*blocked)).limit(1)).scalars().first()
-                if blocked
-                else None
-            )
+            row = session.execute(eligible.where(or_(*blocked)).limit(1)).scalars().first()
             if row is None:
                 return None
 
@@ -276,22 +291,23 @@ def claim_job(
         # The same rule for the job's config overlay (#338 review): an agent
         # that predates it would run the scan on its own config alone — nuclei
         # on for an ``inventory`` job, the ConfigMap's rate instead of the
-        # console's — while the job record says otherwise.
-        if (row.scan_options or {}).get("config_overlay") and (
-            config_override.AGENT_CAPABILITY not in (agent.capabilities or [])
-        ):
+        # console's — while the job record says otherwise. Since overlay v2 the
+        # capability is the one *this* job's overlay needs: a v1 sensor handed
+        # a verification re-scan would refuse its pinned templates on the host.
+        needed = config_override.overlay_capability(row.scan_options)
+        if needed and needed not in capabilities:
             scan_policy.note_refusal("config_overlay_unsupported")
             _log.warning(
                 "Agent %s asked for job %s with a config overlay but lacks %s",
                 agent_id,
                 row.job_id,
-                config_override.AGENT_CAPABILITY,
+                needed,
             )
             raise config_override.AgentOverlayUnsupported(
                 f"agent {agent_id} cannot apply the job's config overlay "
-                f"(capability {config_override.AGENT_CAPABILITY}); upgrade the "
-                "agent — its jobs carry the scan intent and the console's config "
-                "overrides, which it would currently ignore"
+                f"(capability {needed}); upgrade the agent — its jobs carry the "
+                "scan intent and the console's config overrides, which it would "
+                "currently ignore"
             )
 
         # ``claimed``, not ``running`` (P1.3): the agent owns the job but has

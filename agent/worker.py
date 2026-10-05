@@ -96,9 +96,12 @@ UPLOAD_RATE_LIMIT_WAIT_SECONDS = 600.0
 # intent's settings and the console's config overrides — is passed to the
 # scanner as ``--config-overlay``. Refused on claim without it, for the same
 # reason. Versioned with the settings the overlay may carry, so a later API is
-# refused to this build rather than failing its scans. Kept equal to
-# scanner/pipeline/config_overlay.CAPABILITY.
-CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1")
+# refused to this build rather than failing its scans. Every version this build
+# applies is declared, because a job asks for the lowest one that covers its
+# overlay: ``config_overlay.v2`` is ``nuclei.template_ids``, which only a
+# verification re-scan sends. Kept equal to
+# scanner/pipeline/config_overlay.CAPABILITIES.
+CAPABILITIES: tuple[str, ...] = ("scan_policy", "config_overlay.v1", "config_overlay.v2")
 
 SUBJECT_JOBS_SCAN_PREFIX = "jobs.scan"
 STREAM_JOBS = "JOBS"

@@ -31,20 +31,18 @@ def required_capabilities(scan_options: dict[str, Any] | None) -> frozenset[str]
     """What an agent must declare to be handed a job with these options.
 
     The same two checks ``job_control.claim_job`` refuses on (#362, #338), so
-    the queue flag and the claim cannot disagree about who can take a job.
+    the queue flag and the claim cannot disagree about who can take a job. The
+    overlay's is the version that job's overlay needs, not the newest one.
     """
+    from api.services import config_override
     from api.services import scan_policy
-    from scanner.pipeline import config_overlay
 
     options = scan_options or {}
-    return frozenset(
-        capability
-        for key, capability in (
-            ("scan_policy", scan_policy.AGENT_CAPABILITY),
-            ("config_overlay", config_overlay.CAPABILITY),
-        )
-        if options.get(key)
-    )
+    required = {scan_policy.AGENT_CAPABILITY} if options.get("scan_policy") else set()
+    overlay = config_override.overlay_capability(options)
+    if overlay:
+        required.add(overlay)
+    return frozenset(required)
 
 
 def sensor_available(

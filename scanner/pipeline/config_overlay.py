@@ -40,16 +40,42 @@ from scanner.pipeline.config_schema import AppConfig
 #: The claim input name, and the file the worker writes it to.
 INPUT_NAME = "config_overlay.json"
 
-#: The document version this build applies — and the set of settings it
-#: accepts: a release that adds or removes a path in :data:`OVERLAY_PATHS`
-#: bumps this (tests/test_agent_config_overlay.py pins a digest per version),
-#: so a sensor that knows an older set is refused the job on claim, by
-#: :data:`CAPABILITY`, instead of refusing the run on the host.
-OVERLAY_VERSION = 1
+#: The newest document version this build applies — and with it the set of
+#: settings it accepts: a release that adds or removes a path in
+#: :data:`OVERLAY_PATHS` bumps this (tests/test_agent_config_overlay.py pins a
+#: digest per version), so a sensor that knows an older set is refused the job
+#: on claim, by capability, instead of refusing the run on the host.
+#:
+#: Per job, not per installation. A document is written at the *lowest*
+#: version whose settings cover it (:func:`required_version`), and a job is
+#: handed only to a sensor declaring that version's capability. So an API
+#: upgraded ahead of its fleet keeps every older sensor busy with the jobs it
+#: can run, and only a job that uses a newer setting -- today a verification
+#: re-scan pinning ``nuclei.template_ids`` -- waits for a sensor that can.
+#:
+#: * v1 (#338): the console's editable settings and the scan intents.
+#: * v2: ``nuclei.template_ids``. A build that applies it also writes the
+#:   coverage evidence a verification closure is judged on (``nuclei.json``'s
+#:   ``coverage`` block, ``adapter.cve`` in ``pulse/raw.json``).
+OVERLAY_VERSION = 2
 
-#: What a sensor built from this tree declares, and what the API requires of a
-#: job's claimant. Versioned for the reason above.
-CAPABILITY = f"config_overlay.v{OVERLAY_VERSION}"
+
+def capability(version: int) -> str:
+    """The capability a sensor declares when it applies overlay ``version``."""
+    return f"config_overlay.v{version}"
+
+
+#: The newest capability this build declares.
+CAPABILITY = capability(OVERLAY_VERSION)
+
+#: What every job that carries an overlay asks for at least. An ordinary
+#: console scan -- intent and overrides -- needs nothing more.
+BASE_CAPABILITY = capability(1)
+
+#: Everything a sensor built from this tree declares: each version it applies,
+#: spelled out, because a job names the one it needs and the claim asks for
+#: that string (agent/worker.py keeps the same tuple).
+CAPABILITIES: tuple[str, ...] = tuple(capability(v) for v in range(1, OVERLAY_VERSION + 1))
 
 _PROFILES = ("safe", "balanced", "fast", "test")
 _PROFILE_LEAVES = ("discover_rate", "port_rate", "top_ports", "nmap_timing")
@@ -62,13 +88,13 @@ _ORG_PROFILE_STAGES = (
     "controls",
 )
 
-#: Every dot-path an overlay may set. The console's editable settings minus
-#: the ones that belong to the API's host — the NVD key, a secret, and
-#: ``nuclei.templates_dir``, a directory on the API's filesystem that a sensor
-#: does not have, where nuclei then skipped without a word — plus what the scan
-#: intents set. ``tests/test_agent_config_overlay.py`` holds the API's lists to
-#: this one.
-OVERLAY_PATHS: frozenset[str] = frozenset(
+#: Every dot-path a first-version overlay may set. The console's editable
+#: settings minus the ones that belong to the API's host — the NVD key, a
+#: secret, and ``nuclei.templates_dir``, a directory on the API's filesystem
+#: that a sensor does not have, where nuclei then skipped without a word — plus
+#: what the scan intents set. ``tests/test_agent_config_overlay.py`` holds the
+#: API's lists to :data:`OVERLAY_PATHS`.
+_V1_PATHS: frozenset[str] = frozenset(
     {
         "fingerprint.enabled",
         "screenshots.enabled",
@@ -89,6 +115,18 @@ OVERLAY_PATHS: frozenset[str] = frozenset(
         *(f"org_profile.{stage}.enabled" for stage in _ORG_PROFILE_STAGES),
     }
 )
+
+#: Every version's settings. Each is a superset of the one before: an older
+#: document is always one a newer build applies.
+PATHS_BY_VERSION: dict[int, frozenset[str]] = {
+    1: _V1_PATHS,
+    # Set by the platform only, for a verification re-scan
+    # (api/services/vulnerabilities.py): never a console setting.
+    2: _V1_PATHS | {"nuclei.template_ids"},
+}
+
+#: What this build accepts.
+OVERLAY_PATHS: frozenset[str] = PATHS_BY_VERSION[OVERLAY_VERSION]
 
 
 #: Settings where the host's value is a ceiling: the overlay may lower them.
@@ -111,17 +149,34 @@ def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     return out
 
 
+def required_version(config: dict[str, Any]) -> int:
+    """The lowest overlay version whose settings cover every path of ``config``.
+
+    What the document is written at and what its job asks of a claimant, so a
+    sensor that predates a setting is refused only the jobs that use it.
+    """
+    check_config(config)
+    paths = set(_flatten(config))
+    return next(v for v in sorted(PATHS_BY_VERSION) if paths <= PATHS_BY_VERSION[v])
+
+
+def required_capability(config: dict[str, Any]) -> str:
+    """The capability a sensor must declare to be handed ``config``."""
+    return capability(required_version(config))
+
+
 def to_document(config: dict[str, Any]) -> dict[str, Any]:
     """The document the API writes. Checked here so a path the scanner would
     refuse is refused where the job is created, not on the executor later."""
-    check_config(config)
-    return {"overlay_version": OVERLAY_VERSION, "config": config}
+    return {"overlay_version": required_version(config), "config": config}
 
 
-def check_config(config: Any) -> dict[str, Any]:
+def check_config(config: Any, version: int = OVERLAY_VERSION) -> dict[str, Any]:
+    """``config``, refused whole if it sets anything ``version`` does not take."""
     if not isinstance(config, dict):
         raise ConfigOverlayError("config overlay: 'config' must be an object")
-    refused = sorted(path for path in _flatten(config) if path not in OVERLAY_PATHS)
+    allowed = PATHS_BY_VERSION[version]
+    refused = sorted(path for path in _flatten(config) if path not in allowed)
     if refused:
         raise ConfigOverlayError(
             "config overlay sets settings an executor does not take from the "
@@ -146,7 +201,9 @@ def load_overlay(path: Path) -> dict[str, Any]:
             f"config overlay version {version!r} is not one this build applies "
             f"(1 to {OVERLAY_VERSION}); upgrade the agent"
         )
-    return check_config(document.get("config"))
+    # Held to the version it claims, not to this build's: a v1 document that
+    # carries a v2 setting was not written by an API that knew what it meant.
+    return check_config(document.get("config"), version)
 
 
 def _merge(raw: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

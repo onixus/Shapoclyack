@@ -231,6 +231,7 @@ def start_scan(
     idempotency_key: str | None = None,
     quota_exempt: bool = False,
     widen_with_promoted: bool = True,
+    config_extra: dict[str, Any] | None = None,
 ) -> JobInfo:
     return job_submission.start_scan(
         settings,
@@ -243,6 +244,7 @@ def start_scan(
         idempotency_key=idempotency_key,
         quota_exempt=quota_exempt,
         widen_with_promoted=widen_with_promoted,
+        config_extra=config_extra,
     )
 
 

@@ -2007,9 +2007,14 @@ A third since [#338](https://github.com/onixus/Shapoclyack/issues/338): a job
 carrying a **config overlay** — its scan intent's settings and the
 configurator's overrides, sent as the claim input `config_overlay.json` because
 a sensor scans with its own config file — is handed only to a sensor reporting
-the `config_overlay.v1` capability — versioned with the settings the overlay
-may carry, so a sensor that knows an older set is refused rather than failing
-the run — which passes it to `scanner.main` as
+the capability of the overlay version **that job** needs — `config_overlay.v1`
+for the intents and the configurator's settings, `config_overlay.v2` for a
+verification re-scan that pins nuclei templates
+([#451](https://github.com/onixus/Shapoclyack/issues/451)); the job records it
+as `scan_options.config_overlay_capability`, and the `426` names it. Versioned
+with the settings the overlay may carry, so a sensor that knows an older set
+is refused only the jobs that use a newer one, rather than failing the run. A
+sensor passes the overlay to `scanner.main` as
 `--config-overlay`. The overlay never holds a secret (the NVD key is left out),
 the scanner accepts only the settings listed in
 `scanner/pipeline/config_overlay.py`, and the tenant's scan policy is applied

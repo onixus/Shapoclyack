@@ -229,6 +229,10 @@ def test_this_agent_declares_the_capability_the_api_requires():
     assert config_override.AGENT_CAPABILITY == CAPABILITY
     assert config_overlay.INPUT_NAME == OVERLAY_INPUT
     assert CAPABILITY in worker.CAPABILITIES
+    # Every version this build applies, spelled out: a job asks for the one
+    # its overlay needs, and the claim matches that string.
+    assert set(config_overlay.CAPABILITIES) <= set(worker.CAPABILITIES)
+    assert config_overlay.CAPABILITY in worker.CAPABILITIES
 
 
 def test_the_worker_hands_the_overlay_to_the_scanner(tmp_path):
@@ -273,7 +277,7 @@ def test_the_scanner_refuses_a_path_outside_its_allow_list(tmp_path, config):
 def test_the_scanner_refuses_an_overlay_version_it_does_not_know(tmp_path):
     from scanner.pipeline import config_overlay
 
-    path = _write(tmp_path, {"overlay_version": 2, "config": {}})
+    path = _write(tmp_path, {"overlay_version": config_overlay.OVERLAY_VERSION + 1, "config": {}})
     with pytest.raises(config_overlay.ConfigOverlayError, match="version"):
         config_overlay.load_overlay(path)
 
@@ -378,11 +382,13 @@ def test_a_sensor_declaring_the_unversioned_capability_is_refused(tmp_path, monk
     assert claimed.status_code == 426, claimed.text
 
 
-# sha256 of the sorted OVERLAY_PATHS, per OVERLAY_VERSION. Adding or removing a
-# path without bumping the version fails here: a sensor on the old version
-# would accept the claim and then refuse the run.
+# sha256 of the sorted overlay paths, per version. Adding or removing a path
+# without bumping the version fails here: a sensor on the old version would
+# accept the claim and then refuse the run. A released version's set never
+# changes, which is what the earlier entries pin.
 OVERLAY_PATHS_DIGEST = {
     1: "e32112da7d251a59295b425ed27fd5851cb0d679746ae4b1ba40e9aeb004a1fe",
+    2: "dca9190574a775d5e18afbeb967152792674c22e797557dcdffffc6a4be9743e",
 }
 
 
@@ -391,9 +397,16 @@ def test_the_overlay_version_moves_with_its_settings():
 
     from scanner.pipeline import config_overlay
 
-    digest = hashlib.sha256("\n".join(sorted(config_overlay.OVERLAY_PATHS)).encode()).hexdigest()
-    assert OVERLAY_PATHS_DIGEST.get(config_overlay.OVERLAY_VERSION) == digest, digest
-    assert config_override.AGENT_CAPABILITY == f"config_overlay.v{config_overlay.OVERLAY_VERSION}"
+    versions = sorted(config_overlay.PATHS_BY_VERSION)
+    assert versions == list(range(1, config_overlay.OVERLAY_VERSION + 1))
+    for version, paths in config_overlay.PATHS_BY_VERSION.items():
+        digest = hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest()
+        assert OVERLAY_PATHS_DIGEST.get(version) == digest, (version, digest)
+    assert config_overlay.OVERLAY_PATHS == config_overlay.PATHS_BY_VERSION[versions[-1]]
+    assert config_overlay.CAPABILITY == f"config_overlay.v{config_overlay.OVERLAY_VERSION}"
+    # Each version takes everything the one before it took.
+    for older, newer in zip(versions, versions[1:]):
+        assert config_overlay.PATHS_BY_VERSION[older] <= config_overlay.PATHS_BY_VERSION[newer]
 
 
 @requires_postgres
@@ -506,3 +519,137 @@ def test_a_job_another_claim_holds_is_not_handed_out_again(tmp_path, monkeypatch
         release.set()
         holder.join(10)
     assert claimed.status_code == 204, claimed.text
+
+
+# ---------------------------------------------------------------------------
+# Overlay v2: nuclei.template_ids, asked of the claimant per job (#451)
+# ---------------------------------------------------------------------------
+
+PINNED = {"nuclei": {"template_ids": ["CVE-2021-44228"]}}
+
+
+def test_a_document_is_written_at_the_lowest_version_that_covers_it():
+    """So an inventory job queued by an upgraded API is still one a v1
+    sensor's scanner applies, and only a pinned job is a v2 document."""
+    from scanner.pipeline import config_overlay
+
+    assert config_overlay.to_document({"nuclei": {"enabled": False}})["overlay_version"] == 1
+    assert config_overlay.required_capability({"nuclei": {"enabled": False}}) == CAPABILITY
+    assert config_overlay.to_document(PINNED)["overlay_version"] == 2
+    assert config_overlay.required_capability(PINNED) == "config_overlay.v2"
+    # Empty is still the setting: a verification without a nuclei detector
+    # sends it so that it is run by a build that records its coverage.
+    assert config_overlay.required_version({"nuclei": {"template_ids": []}}) == 2
+
+
+def test_a_v1_document_cannot_carry_a_v2_setting(tmp_path):
+    """Held to the version it names: an API that wrote ``overlay_version: 1``
+    did not know what ``template_ids`` meant, so it did not send it."""
+    from scanner.pipeline import config_overlay
+
+    with pytest.raises(config_overlay.ConfigOverlayError, match="template_ids"):
+        config_overlay.load_overlay(_write(tmp_path, {"overlay_version": 1, "config": PINNED}))
+    document = {"overlay_version": 2, "config": PINNED}
+    assert config_overlay.load_overlay(_write(tmp_path, document)) == PINNED
+
+
+def test_a_pinned_template_reaches_the_executor_config(tmp_path):
+    document = json.dumps({"overlay_version": 2, "config": PINNED})
+    config, _ = _executor_run_config(tmp_path, {"mode": "balanced", "inputs": {OVERLAY_INPUT: document}})
+    assert config.nuclei.template_ids == ["CVE-2021-44228"]
+
+
+def _agent_settings(tmp_path):
+    from tests.conftest import make_settings
+
+    return make_settings(tmp_path, job_execution_mode="agent", config_path=K8S_CONFIG)
+
+
+def _pinned_job(settings):
+    from api.schemas import StartScanRequest
+    from api.services import jobs as jobs_service
+
+    return jobs_service.start_scan(
+        settings,
+        StartScanRequest(mode="safe", intent="vuln", ranges="127.0.0.1\n", ports="443"),
+        username="system:verification",
+        config_extra=PINNED,
+    )
+
+
+@requires_postgres
+def test_a_sensor_that_predates_template_ids_is_refused_only_the_jobs_that_pin_them(
+    tmp_path, monkeypatch
+):
+    """The capability is the job's, not the newest one: an API upgraded ahead
+    of its fleet keeps the v1 sensors busy, and a verification re-scan that
+    pins templates waits for a sensor that will load them — refused visibly,
+    never handed to a scanner that would refuse the overlay on the host."""
+    settings = _agent_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    pinned = _pinned_job(settings)
+    assert pinned.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert pinned.scan_options["config_overlay"]["nuclei"]["template_ids"] == ["CVE-2021-44228"]
+    plain = _start(client, intent="inventory")
+    assert plain["scan_options"]["config_overlay_capability"] == CAPABILITY
+
+    old_sensor = _register(client, "v1-sensor", ["scan_policy", CAPABILITY])
+    first = _claim(client, old_sensor)
+    assert first.status_code == 200, first.text
+    assert first.json()["job_id"] == plain["job_id"]
+    refused = _claim(client, old_sensor)
+    assert refused.status_code == 426, refused.text
+    assert "config_overlay.v2" in refused.json()["detail"]
+
+    new_sensor = _register(client, "v2-sensor", ["scan_policy", CAPABILITY, "config_overlay.v2"])
+    claimed = _claim(client, new_sensor)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["job_id"] == pinned.job_id
+    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 2
+    config, _ = _executor_run_config(tmp_path, claimed.json())
+    assert config.nuclei.template_ids == ["CVE-2021-44228"]
+
+
+@requires_postgres
+def test_a_pinned_job_waits_visibly_while_only_v1_sensors_are_live(tmp_path, monkeypatch):
+    settings = _agent_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    _register(client, "v1-sensor", ["scan_policy", CAPABILITY])
+    assert _pinned_job(settings).sensor_unavailable is True
+    assert _start(client, intent="inventory")["sensor_unavailable"] is False
+
+
+@requires_postgres
+def test_a_job_queued_before_the_capability_key_needs_v1(tmp_path, monkeypatch):
+    """A job written by the previous release has an overlay and no
+    ``config_overlay_capability``: its overlay is a v1 one, and a v1 sensor
+    takes it."""
+    from api.db import models
+    from api.db.engine import get_session
+
+    settings = _agent_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    job = _start(client, intent="inventory")
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Job, job["job_id"])
+        options = dict(row.scan_options)
+        options.pop("config_overlay_capability")
+        row.scan_options = options
+    claimed = _claim(client, _register(client, "v1-sensor", ["scan_policy", CAPABILITY]))
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["job_id"] == job["job_id"]
+
+
+def test_the_platform_may_not_pin_a_setting_outside_the_allow_list(tmp_path):
+    """``config_extra`` is checked where the job is made, like the overlay."""
+    from api.schemas import StartScanRequest
+    from api.services import jobs as jobs_service
+    from scanner.pipeline import config_overlay
+
+    with pytest.raises(config_overlay.ConfigOverlayError):
+        jobs_service.start_scan(
+            _agent_settings(tmp_path),
+            StartScanRequest(mode="safe", ranges="127.0.0.1\n"),
+            username="x",
+            config_extra={"nuclei": {"templates_dir": "/tmp"}},
+        )
