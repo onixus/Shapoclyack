@@ -52,6 +52,9 @@ import { can, type Principal, type Requirement } from "@/lib/authz";
  *   entries whose routes are not tenant-scoped at all (the cross-tenant tenant
  *   list, and platform user administration). Asking the tenant role for those
  *   would show a door the API refuses.
+ *
+ * `anyOf` lists two of these for a page whose routes take either — the
+ * sensors page, for an operator or for whoever mints provisioning keys (#504).
  */
 export type NavItem = Requirement & {
   href: string;
@@ -150,10 +153,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         hintKey: "nav.hint.endpoints",
       },
       {
+        // The fleet is operator's; the **Deploy Agent** dialog on the same page
+        // mints a provisioning key, which is `tenant.credential.manage` (#504),
+        // so a `token-admin` comes here for the dialog alone.
         href: "/agents",
         labelKey: "nav.agents",
         icon: Server,
-        minRole: "operator",
+        anyOf: [{ minRole: "operator" }, { permission: "tenant.credential.manage" }],
         hintKey: "nav.hint.agents",
       },
     ],

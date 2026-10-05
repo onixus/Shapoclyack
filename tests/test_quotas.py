@@ -501,7 +501,11 @@ def test_writing_a_quota_is_admin_only_and_round_trips_with_an_author(tmp_path, 
     assert client.get(path).status_code == 401
     assert client.get(path, headers=auth_headers(client, "operator")).status_code == 403
     assert (
-        client.put(path, headers=auth_headers(client, "operator"), json={"max_assets": 5}).status_code
+        client.put(
+            path,
+            headers=auth_headers(client, "operator"),
+            json={"max_assets": 5, "max_scans_per_month": None},
+        ).status_code
         == 403
     )
 
@@ -536,13 +540,34 @@ def test_writing_a_quota_is_admin_only_and_round_trips_with_an_author(tmp_path, 
     assert cleared.json()["quota_source"] == "tenant"
 
 
+def test_a_quota_put_naming_one_limit_does_not_lift_the_other(tmp_path, monkeypatch):
+    """The docstring said both fields are spelled out on every PUT; the schema
+    defaulted the missing one to ``None``, which is "unlimited"."""
+    client = configured_client(tmp_path, monkeypatch)
+    admin = auth_headers(client, "admin")
+    path = f"/api/tenants/{DEFAULT}/quota"
+    written = client.put(path, headers=admin, json={"max_assets": 2000, "max_scans_per_month": 40})
+    assert written.status_code == 200, written.text
+
+    for partial in ({"max_assets": 3000}, {"max_scans_per_month": 50}):
+        refused = client.put(path, headers=admin, json=partial)
+        assert refused.status_code == 422, (partial, refused.text)
+
+    after = client.get(path, headers=admin).json()
+    assert (after["max_assets"], after["max_scans_per_month"]) == (2000, 40)
+
+
 def test_quota_routes_answer_404_for_a_tenant_that_does_not_exist(tmp_path, monkeypatch):
     client = configured_client(tmp_path, monkeypatch)
     admin = auth_headers(client, "admin")
 
     assert client.get("/api/tenants/ten_nope/quota", headers=admin).status_code == 404
     assert (
-        client.put("/api/tenants/ten_nope/quota", headers=admin, json={"max_assets": 5}).status_code
+        client.put(
+            "/api/tenants/ten_nope/quota",
+            headers=admin,
+            json={"max_assets": 5, "max_scans_per_month": None},
+        ).status_code
         == 404
     )
 

@@ -1162,7 +1162,7 @@ it is only supposed to approve.
 | `scan_scope.read` | `scope-approver`, `auditor`, tenant `admin`, platform admin |
 | `scan_scope.approve` | `scope-approver`, platform admin |
 | `scan.cancel` | `operator`, `scan-operator`, tenant `admin`, platform admin |
-| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, or moving a queued one above 0 — or moving one somebody already raised (#365). Lowering a scan, or putting one back to 0 that nobody raised, is the operator rank's. Seeded by migration `0074_scan_queue_admission` |
+| `scan.priority.raise` | tenant `admin`, platform admin. Starting a scan with `priority` above 0, and every move of a queued one but one (#365): lowering a scan of one's own (`requested_by` is the caller), from at or below 0 and downwards only, is the operator rank's. Demoting somebody else's scan, moving one somebody raised, and raising a demoted one back — to 0 included — need the permission: pushing the rest of the queue back is jumping it, and the job does not record who demoted it. Seeded by migration `0074_scan_queue_admission` |
 | `tenant.member.read` / `tenant.member.manage` | tenant `admin`, platform admin |
 | `tenant.credential.manage` | `token-admin`, tenant `admin`, platform admin |
 | `agent.group.manage` | tenant `admin`, platform admin |
@@ -1410,9 +1410,14 @@ Set it at `POST /api/jobs` (`"priority": 20`) or move a queued job:
 PUT /api/jobs/{job_id}/priority   {"priority": -10}
 ```
 
-`operator` rank in the job's tenant; above `0` — or touching a job somebody
-already put above `0` — needs **`scan.priority.raise`** (`403` without it, both
-on the `PUT` and on `POST /api/jobs`). `404` for a job in another tenant, `409`
+`operator` rank in the job's tenant may lower a job **of its own**
+(`requested_by` is the caller) and nothing else: from at or below `0`,
+downwards only. Above `0`, a job somebody else requested, a job somebody put
+above `0`, and raising a demoted job back up — to `0` included — need
+**`scan.priority.raise`** (`403` without it, both on the `PUT` and on
+`POST /api/jobs`). Pushing the rest of the queue back is jumping it, and the
+job does not record who demoted it, so a demotion is never assumed to have
+been the caller's. `404` for a job in another tenant, `409`
 once the job has left `queued`, `422` outside the bounds. `priority` is not
 part of the idempotency digest: a retry that changed only its priority is the
 same scan. A NATS offer is published at submission and is FIFO; a sensor that
@@ -1427,8 +1432,9 @@ PUT /api/tenants/{tenant_id}/queue-limits   {"max_concurrent_scans": 4, "max_que
 ```
 
 `GET` needs `tenant.quota.read`; `PUT` is `platform.quota.manage` (platform
-admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
-`0` is unlimited, `422` above `10000`. The answer also carries
+admin), for the quota's reason. Both fields are required on every `PUT` —
+omitting one is `422`, not a silently lifted ceiling; `null` or `0` is
+unlimited, `422` above `10000`. The answer also carries
 `global_max_queued_scans`, the installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`.
 
 - `max_concurrent_scans` — how many of the tenant's jobs may be out at once
@@ -1818,7 +1824,7 @@ retry that crosses the upgrade still replays instead of re-applying its batch.
 | `DELETE /api/endpoint/agent/releases/{version}/{platform}` | `endpoint_agent.manage` + step-up | Remove one build. An agent already told to move to it is then told nothing, with the reason on its heartbeat |
 | `GET /api/endpoint/agent/releases/{version}/{platform}/download` | agent JWT | The bytes, for an agent that has been told to move to this build. Authenticated as the agent with the same token it heartbeats with, so the digest and the bytes come from one channel: substituting the download would mean substituting the heartbeat that named its digest |
 | `POST /api/agents/{id}/upgrade` | operator | Sets `upgrade_requested` on the sensor record and answers `upgrade_queued` with the `target_version`. It is a **flag for the operator surface**, not a command channel: nothing on the host reads it, and the upgrade itself is run on that host (see [operations.md](operations.md#sensor-installation-and-upgrade)) |
-| `GET /api/agent/deployment-command` | operator | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing. `kubernetes_yaml` never carries the key, placeholder or real: it reads it from a Secret, which `kubernetes_secret_command` creates |
+| `GET /api/agent/deployment-command` | operator, or `tenant.credential.manage` | Renders the systemd / docker / compose / kubernetes snippets with a `<PROVISIONING_KEY>` placeholder. Mints nothing. `kubernetes_yaml` never carries the key, placeholder or real: it reads it from a Secret, which `kubernetes_secret_command` creates |
 | `POST /api/agent/deployment-command` | `tenant.credential.manage` + step-up | Mints **one** tenant provisioning key (optional `label`, default `Web UI Deployment Key`) and returns the same snippets filled in. **201**; the plaintext key is in this response only |
 | `POST /api/agent/deploy/ssh/host-key` | **admin** | Reports the target's SSH host key (`key_type`, `SHA256:…` fingerprint, and whether it is already `pinned` for this tenant). Authenticates to nothing and pins nothing — it exists so the fingerprint can be compared against the host before credentials are sent. `403` for a host or port outside the deployment target policy (see below), `502` when the target cannot be read |
 | `DELETE /api/agent/deploy/ssh/host-key?host=…&port=22` | **admin** | Removes this tenant's pin for that target and answers with what was removed, so the fingerprint being dropped is in front of the operator. `404` when nothing was pinned. The next deployment needs `expected_host_key` again — a rebuilt machine is re-verified, never silently re-trusted. Both the removal and the next pin are in `GET /api/auth/events?outcome=trust_change` ([#241](https://github.com/onixus/Shapoclyack/issues/241)) |
@@ -1922,8 +1928,12 @@ gating read, so one capability would mean a second authorization model for one
 pair of endpoints. If per-capability grants arrive for other reasons, this is
 the first pair worth revisiting.
 
-Reading the snippets stays `operator`: `GET` mints nothing and returns a
-`<PROVISIONING_KEY>` placeholder. Tenant-wide key administration (listing,
+Reading the snippets takes `operator` **or** `tenant.credential.manage`: `GET`
+mints nothing and returns a `<PROVISIONING_KEY>` placeholder, and the console's
+dialog renders from it, so a `token-admin` refused the `GET` had the mint in
+the API only (#504). The fleet list (`GET /api/agents`) stays `operator`. The
+SSH push checks the admin rank before the step-up, so a `token-admin` is
+refused outright rather than asked for a second factor first. Tenant-wide key administration (listing,
 revoking, minting under `/api/tenants/{tenant_id}/provisioning-keys`) needs
 `tenant.credential.manage` on **that** tenant, which since #318 the tenant's
 own admin and the `token-admin` role hold as well as the platform admin — a
@@ -2594,8 +2604,9 @@ tenant is `404`; a value outside `0..10000000` (assets) or `0..1000000`
 (scans), or a `note` over 500 characters, is `422`.
 
 `null` — or `0`, accepted as the same thing — is **unlimited**. Both fields are
-spelled explicitly rather than by omission: a `PUT` that dropped a limit because
-a client forgot to send the field would be a silently widened contract. A stored
+spelled explicitly rather than by omission, and a `PUT` that omits either is
+`422`: one that dropped a limit because a client forgot to send the field would
+be a silently widened contract. `note` stays optional. A stored
 row wins over the platform default *including when its columns are null*, which
 is how one customer is exempted from a default everybody else is metered
 against, rather than by turning metering off globally. `DELETE

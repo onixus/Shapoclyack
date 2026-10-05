@@ -2100,6 +2100,20 @@ class Job(Base):
         # The claim query's exact predicate: queued agent jobs of one tenant,
         # oldest first.
         Index("ix_jobs_claim", "execution", "status", "tenant_id", "queued_at"),
+        # The claim's order since #365, ``ORDER BY priority DESC, queued_at,
+        # job_id`` (``scan_queue.claim_order``): read top-1 off this instead
+        # of sorting the tenant's whole queue on every poll of every sensor,
+        # under the tenant's claim lock when it has a ceiling. The group is a
+        # filter on the way down the index, as ``assigned_agent_id`` is.
+        Index(
+            "ix_jobs_claim_priority",
+            "execution",
+            "status",
+            "tenant_id",
+            text("priority DESC"),
+            "queued_at",
+            "job_id",
+        ),
         # The same predicate once the claim also filters by group (#361).
         Index(
             "ix_jobs_claim_group",

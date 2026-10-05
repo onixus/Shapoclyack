@@ -21,11 +21,14 @@ import {
 import { POLL_INTERVALS } from "@/lib/config/constants";
 import { queryKeys } from "@/lib/query-keys";
 
-export function useAgents(page?: PageParams) {
+/** `enabled` is false for a principal the API will refuse the list to — a
+ * `token-admin` on the sensors page for the Deploy Agent dialog (#504). */
+export function useAgents(page?: PageParams, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agentsPage(page),
     queryFn: () => fetchAgents(page),
     refetchInterval: POLL_INTERVALS.agents,
+    enabled,
   });
 }
 
