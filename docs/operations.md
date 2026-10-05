@@ -2642,6 +2642,122 @@ is usually doing it because something is already broken, and a database that
 cannot take the row is a realistic version of that — refusing the login would
 turn a degraded installation into an unreachable one.
 
+### Making the IdP authoritative, and SCIM
+
+`OCTO_IDP_AUTHORITATIVE=true` makes every SSO login recompute the account's
+global role and IdP-granted memberships from its groups, and disable an account
+in no mapped group ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync),
+#316). It changes what people can do at their next login, so turn it on in
+this order:
+
+1. **Map before you switch.** `OCTO_OIDC_ROLE_CLAIM` (e.g. `groups`),
+   `OCTO_OIDC_ROLE_MAP` with the admin group in it, and `OCTO_IDP_GROUP_MAP` for
+   the tenants. An SSO admin whose groups map to nothing is a viewer — or
+   disabled — after their next login.
+2. **Have the break-glass account in place** (above). It is never resynced, so
+   it is how you get back in if the map is wrong.
+3. **Know what stays.** Every membership that existed before migration 0076,
+   every one a person grants afterwards, and every one JIT provisioning grants
+   from `OCTO_OIDC_TENANT_CLAIM` while the mode is off is `source: local` and
+   is never removed by the resync (`GET /api/tenants/{id}/members` shows the
+   source). Revoke the grants you want the IdP to own, once `OCTO_IDP_GROUP_MAP`
+   grants them; the next login re-grants them as `idp`.
+4. **Know who will be refused.** With `OCTO_IDP_GROUP_MAP` or
+   `OCTO_OIDC_TENANT_CLAIM` set, an account left in no tenant is disabled
+   unless it is a platform admin — a group in `OCTO_OIDC_ROLE_MAP` alone no
+   longer lets anybody into `default`. If people are meant to work in
+   `default`, map it: `{"staff": [{"tenant_id": "default", "role": "viewer"}]}`.
+   Before switching, list the SSO accounts whose only membership is one you
+   are about to revoke, or that have none.
+5. Switch it on and watch the trail:
+   `GET /api/audit?action=membership.revoke`, `…?action=user.disable` and
+   `…?action=user.role_change` — the resync's rows carry actor `oidc:<issuer>`
+   and `"source": "idp"`; a disable's `reason` is `in no mapped IdP group` or
+   `in no tenant`.
+
+Rolling it back is setting the variable to `false`: nothing is undone, and
+logins go back to deciding nothing after provisioning. An account the resync
+disabled stays disabled until an administrator re-enables it
+(`PUT /api/users/{u}/disabled`) or a login with the mode on finds a mapped
+group again.
+
+**SCIM** needs no switch — `/scim/v2` answers only an `octo_scim_` token, and
+there are none until a platform admin issues one. It applies the maps on every
+push whatever `OCTO_IDP_AUTHORITATIVE` says; with both maps empty pushes
+change no access and only `active` does (lifecycle-only provisioning):
+
+```bash
+curl -sS -X POST "$API/api/auth/scim-tokens" -H "Authorization: Bearer $ADMIN_JWT" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "okta", "all_tenants": true, "expires_in_days": 365}'
+```
+
+Give the directory `https://<console>/scim/v2` as the base URL and the returned
+`token` as its bearer token (it is shown once). Bind a token to the tenants a
+directory serves (`"tenant_ids": [...]`) rather than `all_tenants` wherever one
+directory belongs to one customer; add `"grant_platform_admin": true` only if
+the directory is meant to make platform admins. Rotate by issuing a second
+token, switching the directory over, then
+`POST /api/auth/scim-tokens/{id}/revoke` on the old one. A group grants no
+more than the token that created it could, so rotate to a token with the same
+binding: groups an old tenant-bound or plain token created keep that token's
+limits after the switch, and so do the members an old token added. A `503`
+from `/scim/v2` is a push Postgres aborted for a concurrent one on the same
+account; nothing was applied and the directory's retry succeeds.
+
+A SCIM user can sign in through SSO once a group has granted it something.
+The first login links it by **`externalId` = the ID token's `sub`**, or by an
+address the IdP marks verified — never by username. Before connecting, check
+that the directory sends the subject as `externalId` (Okta does by default);
+otherwise every first login of a SCIM user is refused (JIT off) or provisioned
+as a second account (JIT on).
+
+**Map group names before you connect a tenant-bound directory.** A group it
+pushes while its name is unmapped stays limited to its tenants even after the
+operator maps that name elsewhere, and the name answers `409` to anyone else's
+push. To give the name to the right directory: find the group with an
+`all_tenants` token (`GET /scim/v2/Groups?filter=displayName eq "…"`),
+`DELETE` it, and let the right directory push again. A username a tenant-bound
+directory reserved with an account it never granted anything is freed by a
+platform admin with `DELETE /api/users/{u}`.
+
+With `OCTO_IDP_AUTHORITATIVE` on, watch `octo_idp_resync_skipped_total` and
+the log line `IdP resync … skipped at SSO login: the ID token does not list
+the groups`. Those logins change nothing — removals from groups do not take
+effect for those accounts — and there are two usual causes:
+
+- **Entra ID's group overage** (more groups than fit in the token): filter
+  the groups claim to the groups assigned to the application.
+- **An IdP that drops an empty claim** (Okta by default): someone removed
+  from their last group gets a token with no claim at all. Either configure
+  the claim so it is always sent and set `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true`
+  (a missing claim is then "in no group"), or deprovision through SCIM.
+
+At startup, an info line says which reading is in force; a warning says the
+mode stayed off because `OCTO_OIDC_ROLE_CLAIM` or both maps are empty.
+
+And for `OCTO_IDP_GROUP_MAP maps group … to role …, which tenant … does not
+have`: a typo in the map, or a role renamed while the map did not name it
+(a mapped role cannot be renamed or deleted — `409`). Until the map is fixed,
+the IdP memberships in that tenant whose role no entry of the map names are left
+as they are; everything else is recomputed.
+
+**Revoking a SCIM token** does not remove what its groups grant. When the
+token is revoked because it leaked, list its groups with an `all_tenants`
+token and delete the ones that should not stand. **Changing `OCTO_OIDC_ISSUER`**
+leaves the stored `externalId`s of accounts nobody has signed in to yet
+pointing at the old issuer's subjects: they are compared with `sub` alone, so
+have the directory re-push them. A **taken address or `externalId`** (a
+tenant-bound directory got there first, `409` for the right one) is freed by
+re-keying that account with an `all_tenants` + `grant_platform_admin` token
+(`PATCH` of `externalId` or `emails`), or by a platform admin's
+`DELETE /api/users/{u}`.
+
+The migration (`0076_idp_resync_scim`) is expand-only. Rolling it back drops
+the `source` column — every membership is local again — the stored
+`externalId`s, and every SCIM token and group; re-issue the token and let the
+directory push again.
+
 ### Rotating the JWT signing key
 
 `OCTO_JWT_SECRET` used to be unrotatable in practice: changing it invalidated

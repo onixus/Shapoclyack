@@ -243,6 +243,16 @@ BREAK_GLASS_LOGINS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+IDP_RESYNC_SKIPPED_TOTAL = Counter(
+    "octo_idp_resync_skipped_total",
+    "SSO logins with OCTO_IDP_AUTHORITATIVE on whose ID token did not list the "
+    "groups (claim missing, or Entra ID's overage pointer), so the login changed "
+    "nobody's role or memberships (#316). A steady rate is an IdP that drops an "
+    "empty claim or sends too many groups: removals from groups are not taking "
+    "effect at login for those accounts. See docs/operations.md.",
+    registry=REGISTRY,
+)
+
 QUOTA_DENIED_TOTAL = Counter(
     "octo_quota_denied_total",
     "Actions refused because a tenant's purchased limit was reached, by "

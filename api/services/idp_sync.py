@@ -1,0 +1,533 @@
+"""Keep an account's authority in step with its identity-provider groups (#316).
+
+Before this, the IdP decided an account's role and tenant once — when
+just-in-time provisioning created it — and never again: taking somebody out of
+``vm-admins`` at the identity provider left them an admin here. This module is
+the one place that turns "these are the person's groups" into the role and
+memberships they should hold, and it is called from both ways the groups
+arrive:
+
+* an **SSO login** with ``OCTO_IDP_AUTHORITATIVE=true`` — the groups are the
+  ``OCTO_OIDC_ROLE_CLAIM`` values of the ID token just verified
+  (``api/services/users.py:link_or_provision_sso_user``);
+* a **SCIM** change — the groups are the SCIM groups the account is a member
+  of (``api/services/scim.py``).
+
+One mapping serves both: ``OCTO_OIDC_ROLE_MAP`` (group -> global role) and
+``OCTO_IDP_GROUP_MAP`` (group -> tenant memberships).
+
+Decisions worth stating:
+
+* **Only IdP-sourced memberships are the IdP's.** A row granted by a person
+  over the API is ``source = 'local'`` and is never added to, changed or
+  removed here; where one exists for a tenant the groups also grant, the local
+  row stands. Every row written before migration 0076 is local. The other
+  choice — the IdP owns every membership — would wipe a tenant's hand-made
+  grants the first time an administrator flipped the switch, which is the
+  post-upgrade state this has to survive. The cost is stated in the docs: a
+  local grant outlives the person's IdP groups until somebody revokes it.
+* **The global role is the IdP's** in authoritative mode — that is what the
+  mode is for, and the role is the most dangerous thing to leave stale. Not
+  for SCIM tokens held to some tenants (it acts across all of them), and
+  ``admin`` only where the caller may grant it.
+* **No mapped group means no access.** The account is disabled with
+  ``disabled_source = 'idp'``, and re-enabled when a mapped group comes back.
+  Never one a person disabled (``NULL``) or a SCIM client did (``scim``).
+* **No tenant means no access either, where the installation places accounts
+  in tenants** (``OCTO_IDP_GROUP_MAP`` or ``OCTO_OIDC_TENANT_CLAIM`` set). An
+  account with no membership falls back to the ``default`` tenant with its
+  global role (``memberships.resolve_tenant``) — the pre-P0 rule a
+  single-tenant installation lives by. Here it would turn a revocation into a
+  grant: out of ``acme-ops`` but still in a group mapped to a global role, the
+  person would land in ``default``, which no mapping gave them. So such an
+  account is disabled as well, unless it is a platform ``admin`` (whom no
+  tenant confines). A group mapped to a global role keeps nobody in a tenant;
+  an installation that means ``default`` maps it in ``OCTO_IDP_GROUP_MAP``.
+* **Break-glass accounts are not touched**, at all (#315): the emergency door
+  is for the day the IdP is the thing that is wrong.
+* **A reduction ends the sessions** (#314): a removed or changed membership, a
+  changed role, a disable. A JWT carries the account's generation, so the bump
+  is what makes "removed from the group" take effect now rather than at the
+  token's expiry. A grant alone ends nothing.
+
+Every change is a row in ``audit_events`` in the caller's transaction, with
+``"source": "idp"`` in the document so a filter can tell it from a person's.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Iterable, Mapping
+
+from sqlalchemy import select
+
+from api.db import models
+from api.services import audit as audit_service
+from api.services import rbac as rbac_service
+from api.services import sessions as sessions_service
+from api.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+SOURCE_LOCAL = "local"
+SOURCE_IDP = "idp"
+#: ``users.disabled_source`` values. NULL is a person.
+DISABLED_BY_IDP = "idp"
+DISABLED_BY_SCIM = "scim"
+
+_GLOBAL_RANK = {"viewer": 1, "operator": 2, "admin": 3}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class SyncScope:
+    """What one reconcile may change.
+
+    ``tenant_ids`` None means every tenant. ``manage_role`` covers the global
+    role; ``manage_active`` the disable when no mapped group is left (and the
+    re-enable when one comes back); ``allow_admin`` whether a group mapped to
+    the global ``admin`` role is honoured.
+    """
+
+    tenant_ids: frozenset[str] | None = None
+    manage_role: bool = True
+    manage_active: bool = True
+    allow_admin: bool = True
+
+    def covers(self, tenant_id: str) -> bool:
+        return self.tenant_ids is None or tenant_id in self.tenant_ids
+
+
+#: An SSO login in authoritative mode: the IdP decides everything.
+LOGIN_SCOPE = SyncScope()
+
+#: A group whose grants nothing vouches for (see ``caps`` in :func:`reconcile`).
+GRANTS_NOTHING = SyncScope(
+    tenant_ids=frozenset(), manage_role=False, manage_active=False, allow_admin=False
+)
+
+
+def _cap(caps: "Mapping[str, SyncScope] | None", group: str) -> SyncScope:
+    """What one group may grant: everything where nothing narrows it (an SSO
+    login's groups), else its entry in ``caps``, else nothing."""
+    if caps is None:
+        return LOGIN_SCOPE
+    return caps.get(group, GRANTS_NOTHING)
+
+
+def _role_allowed(cap: SyncScope, role: str) -> bool:
+    return cap.manage_role and (role != "admin" or cap.allow_admin)
+
+
+@dataclass
+class SyncResult:
+    """What a reconcile changed. ``reduced`` is what ended the sessions."""
+
+    granted: list[str] = field(default_factory=list)
+    changed: list[str] = field(default_factory=list)
+    revoked: list[str] = field(default_factory=list)
+    role: tuple[str, str] | None = None
+    disabled: bool = False
+    enabled: bool = False
+    skipped: str | None = None
+
+    @property
+    def reduced(self) -> bool:
+        return bool(self.changed or self.revoked or self.role or self.disabled)
+
+
+def is_authoritative(settings: Settings) -> bool:
+    """Whether SSO logins resync. Off with nothing mapped, or with no claim to
+    read the groups from (see settings): either way every login would read as
+    "in no mapped group" and disable the account."""
+    return bool(
+        settings.idp_authoritative
+        and settings.oidc_role_claim.strip()
+        and (settings.oidc_role_map or settings.idp_group_map)
+    )
+
+
+def places_tenants(settings: Settings) -> bool:
+    """Whether this installation places accounts in tenants through the IdP.
+
+    Then an account left with no membership is not let into the ``default``
+    tenant by the pre-P0 fallback — see the module docstring.
+    """
+    return bool(settings.idp_group_map or settings.oidc_tenant_claim.strip())
+
+
+def _unplaced(settings: Settings, role: str, tenant_ids: Iterable[str]) -> bool:
+    """An account that only the ``default`` fallback would let in anywhere."""
+    return places_tenants(settings) and role != "admin" and not set(tenant_ids)
+
+
+def grants_access(session, settings: Settings, groups: Iterable[str], scope: SyncScope) -> bool:
+    """Whether ``groups`` alone would leave a new account enabled.
+
+    What JIT provisioning asks before it creates an account the resync would
+    disable at once.
+    """
+    groups = sorted({str(group) for group in groups})
+    if not mapped_groups(settings, groups, scope):
+        return False
+    desired, _ = _desired_memberships(session, settings, groups, scope)
+    role = desired_role(settings, groups, allow_admin=scope.allow_admin)
+    return not _unplaced(settings, role, desired)
+
+
+def mapped_groups(
+    settings: Settings,
+    groups: Iterable[str],
+    scope: SyncScope,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> list[str]:
+    """The groups that grant something inside ``scope``, in a stable order.
+
+    A group mapped only to a global role counts only where the scope manages
+    the role: a token held to two tenants cannot keep an account alive on the
+    strength of a mapping it is not allowed to apply. Nor does a group count
+    for what its ``caps`` entry does not let it grant.
+    """
+    found = []
+    for group in sorted(set(groups)):
+        cap = _cap(caps, group)
+        role = settings.oidc_role_map.get(group)
+        if scope.manage_role and role is not None and _role_allowed(cap, role):
+            found.append(group)
+            continue
+        if any(
+            scope.covers(entry["tenant_id"]) and cap.covers(entry["tenant_id"])
+            for entry in settings.idp_group_map.get(group, [])
+        ):
+            found.append(group)
+    return found
+
+
+def desired_role(
+    settings: Settings,
+    groups: Iterable[str],
+    *,
+    allow_admin: bool,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> str:
+    """The global role the groups map to: the highest, else the default.
+
+    With ``allow_admin`` false a group mapped to ``admin`` contributes nothing,
+    so the answer falls to the next mapped role rather than to ``admin``. A
+    group contributes only the roles its ``caps`` entry allows.
+    """
+    mapped = [
+        settings.oidc_role_map[group]
+        for group in groups
+        if group in settings.oidc_role_map
+        and _role_allowed(_cap(caps, group), settings.oidc_role_map[group])
+    ]
+    if not allow_admin:
+        mapped = [role for role in mapped if role != "admin"]
+    if not mapped:
+        return settings.oidc_default_role
+    return max(mapped, key=lambda role: _GLOBAL_RANK.get(role, 0))
+
+
+def _desired_memberships(
+    session,
+    settings: Settings,
+    groups: Iterable[str],
+    scope: SyncScope,
+    caps: Mapping[str, SyncScope] | None = None,
+) -> tuple[dict[str, str], set[str]]:
+    """``({tenant_id: role}, {tenant_id, ...})``: what the groups grant inside
+    ``scope``, and the tenants a mapping names a role of that does not exist.
+
+    Several groups granting one tenant resolve to the highest-ranked role, the
+    rule ``role_from_claims`` already applies to the global role. A tenant that
+    does not exist grants nothing, with a warning: a mapping mistake must not
+    be a reason to refuse a login. A role the tenant does not have — a tenant
+    role renamed or deleted under the map — grants nothing either, and the
+    tenant is returned as unresolved: the mapping is what is wrong, not the
+    person's groups, and acting on it would revoke every membership it used to
+    grant. What the caller leaves alone there is narrower than the tenant —
+    see :func:`_explained_roles`.
+    """
+    best: dict[str, tuple[int, str]] = {}
+    unresolved: set[str] = set()
+    for group in sorted(set(groups)):
+        cap = _cap(caps, group)
+        for entry in settings.idp_group_map.get(group, []):
+            tenant_id, role = entry["tenant_id"], entry["role"]
+            if not scope.covers(tenant_id) or not cap.covers(tenant_id):
+                continue
+            if session.get(models.Tenant, tenant_id) is None:
+                logger.warning(
+                    "OCTO_IDP_GROUP_MAP maps group %r to unknown tenant %r; ignoring it.",
+                    group,
+                    tenant_id,
+                )
+                continue
+            resolved = rbac_service.role_in_session(session, tenant_id, role, lock="share")
+            if resolved is None:
+                logger.error(
+                    "OCTO_IDP_GROUP_MAP maps group %r to role %r, which tenant %r does "
+                    "not have; an IdP membership there whose role no map entry names is "
+                    "left as it is until the map is fixed.",
+                    group,
+                    role,
+                    tenant_id,
+                )
+                unresolved.add(tenant_id)
+                continue
+            current = best.get(tenant_id)
+            if current is None or resolved.rank > current[0]:
+                best[tenant_id] = (resolved.rank, role)
+    return {tenant_id: role for tenant_id, (_, role) in best.items()}, unresolved
+
+
+def _explained_roles(settings: Settings, tenant_id: str) -> set[str]:
+    """The roles of ``tenant_id`` that an entry of the map names.
+
+    In a tenant where one of the person's groups maps to a role that does not
+    resolve, an IdP membership holding one of these roles is explained by an
+    entry — whichever group's — so the person's groups decide it as usual. (A
+    membership holding the broken name itself holds a role that does not
+    exist and is worth nothing; recomputing it is no loss.) Only a membership
+    holding a role no entry names — a role renamed under the map — can be the
+    broken entry's grant, and only that one is left as it is. Freezing the whole tenant
+    instead kept a grant another group gave after the person left that group:
+    one stale entry, which a tenant administrator could produce by renaming a
+    role, and removal from the admin group stopped revoking.
+    """
+    return {
+        entry["role"]
+        for entries in settings.idp_group_map.values()
+        for entry in entries
+        if entry["tenant_id"] == tenant_id
+    }
+
+
+def reconcile(
+    session,
+    settings: Settings,
+    row: models.User,
+    groups: Iterable[str],
+    *,
+    scope: SyncScope,
+    audit: "audit_service.AuditContext | None",
+    caps: Mapping[str, SyncScope] | None = None,
+) -> SyncResult:
+    """Bring ``row``'s role, memberships and enabled state in line with ``groups``.
+
+    Runs in the caller's session, so the changes, their audit rows and the
+    session revocation commit together — or none of them do. The caller holds
+    the account's row (``FOR UPDATE`` where it can race), which is what keeps
+    two concurrent logins of one person from interleaving their writes.
+
+    ``scope`` is what the caller may change; ``caps`` (group -> scope) is what
+    each group may grant, whoever applies it. None means every group may grant
+    its whole mapping — an SSO login, whose groups the IdP signed. SCIM passes
+    the binding of the token that created each group, so a group cannot grant
+    beyond that token whatever token's change triggers the resync, and a
+    group missing from ``caps`` grants nothing.
+    """
+    groups = sorted({str(group) for group in groups})
+    result = SyncResult()
+    if row.erased_at is not None:
+        result.skipped = "erased"
+        return result
+    if row.username in settings.break_glass_users:
+        # Logged rather than audited: nothing changed, and a row per
+        # emergency-account login would be noise around the one that matters
+        # (``auth.break_glass_login``).
+        logger.info("IdP resync skipped for break-glass account %r", row.username)
+        result.skipped = "break-glass"
+        return result
+
+    username = row.username
+    desired, unresolved = _desired_memberships(session, settings, groups, scope, caps)
+    current = (
+        session.execute(select(models.UserTenant).where(models.UserTenant.username == username))
+        .scalars()
+        .all()
+    )
+    held = {membership.tenant_id: membership for membership in current}
+
+    for membership in current:
+        if membership.source != SOURCE_IDP or not scope.covers(membership.tenant_id):
+            continue
+        if membership.tenant_id in unresolved and membership.role not in _explained_roles(
+            settings, membership.tenant_id
+        ):
+            # Possibly the broken entry's grant; logged in _desired_memberships.
+            continue
+        want = desired.get(membership.tenant_id)
+        if want is None:
+            before = {"role": membership.role, "source": SOURCE_IDP}
+            session.delete(membership)
+            result.revoked.append(membership.tenant_id)
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_MEMBERSHIP_REVOKE,
+                resource_type="membership",
+                resource_id=username,
+                tenant_id=membership.tenant_id,
+                before=before,
+                after={"source": SOURCE_IDP, "reason": "no mapped IdP group grants it"},
+            )
+        elif want != membership.role:
+            previous = membership.role
+            membership.role = want
+            result.changed.append(membership.tenant_id)
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_MEMBERSHIP_GRANT,
+                resource_type="membership",
+                resource_id=username,
+                tenant_id=membership.tenant_id,
+                before={"role": previous, "source": SOURCE_IDP},
+                after={"role": want, "source": SOURCE_IDP},
+            )
+
+    for tenant_id, role in sorted(desired.items()):
+        if tenant_id in held:
+            # Either the IdP's own row, handled above, or a local grant, which
+            # is a person's decision and stands as it is.
+            continue
+        session.add(
+            models.UserTenant(
+                username=username,
+                tenant_id=tenant_id,
+                role=role,
+                created_at=_now(),
+                created_by=audit.actor if audit is not None else "idp",
+                source=SOURCE_IDP,
+            )
+        )
+        result.granted.append(tenant_id)
+        audit_service.record(
+            session,
+            audit,
+            action=audit_service.ACTION_MEMBERSHIP_GRANT,
+            resource_type="membership",
+            resource_id=username,
+            tenant_id=tenant_id,
+            before=None,
+            after={"role": role, "source": SOURCE_IDP},
+        )
+
+    if scope.manage_role:
+        role = desired_role(settings, groups, allow_admin=scope.allow_admin, caps=caps)
+        # A scope that may not grant admin may not take it away either: the
+        # demotion of a platform admin is a platform admin's decision.
+        if role != row.role and (scope.allow_admin or row.role != "admin"):
+            result.role = (row.role, role)
+            audit_service.record(
+                session,
+                audit,
+                action=audit_service.ACTION_USER_ROLE,
+                resource_type="user",
+                resource_id=username,
+                before={"role": row.role},
+                after={"role": role, "source": SOURCE_IDP},
+            )
+            row.role = role
+
+    remaining = (set(held) - set(result.revoked)) | set(result.granted)
+    unplaced = _unplaced(settings, row.role, remaining)
+    has_mapped = bool(mapped_groups(settings, groups, scope, caps))
+    if scope.manage_active:
+        if row.disabled_at is None and (not has_mapped or unplaced):
+            _disable(
+                session,
+                audit,
+                row,
+                result,
+                "in no mapped IdP group" if not has_mapped else "in no tenant",
+            )
+        elif (
+            has_mapped
+            and not unplaced
+            and row.disabled_at is not None
+            and row.disabled_source == DISABLED_BY_IDP
+        ):
+            _enable(session, audit, row, result)
+    elif row.disabled_at is None and unplaced and result.revoked:
+        # A scope that may not manage the account's lifecycle (a SCIM token
+        # held to some tenants, of an account it does not own) still may not
+        # leave it with no tenant and enabled: the revocation it just made
+        # would land the person in ``default``.
+        _disable(session, audit, row, result, "in no tenant")
+    elif (
+        row.disabled_at is not None
+        and row.disabled_source == DISABLED_BY_IDP
+        and result.granted
+        and has_mapped
+        and not unplaced
+    ):
+        # ...and the grant that places it again undoes that disable — the
+        # IdP's own, which any grant is meant to lift.
+        _enable(session, audit, row, result)
+
+    if result.reduced or result.enabled:
+        row.updated_at = _now()
+        session.flush()
+        if result.reduced:
+            # Ends every access token and refresh-token family of the account,
+            # in this transaction (#314). Re-enabling ends nothing that could
+            # still be live, but the bump makes it a clean start, exactly as
+            # PUT /users/{username}/disabled does.
+            sessions_service.revoke_all_in_session(
+                session, username, reason=sessions_service.END_REVOKED
+            )
+    elif result.granted:
+        session.flush()
+    return result
+
+
+def _disable(session, audit, row: models.User, result: SyncResult, reason: str) -> None:
+    row.disabled_at = _now()
+    row.disabled_source = DISABLED_BY_IDP
+    result.disabled = True
+    audit_service.record(
+        session,
+        audit,
+        action=audit_service.ACTION_USER_DISABLE,
+        resource_type="user",
+        resource_id=row.username,
+        before={"disabled": False},
+        after={"disabled": True, "source": SOURCE_IDP, "reason": reason},
+    )
+
+
+def _enable(session, audit, row: models.User, result: SyncResult) -> None:
+    row.disabled_at = None
+    row.disabled_source = None
+    result.enabled = True
+    audit_service.record(
+        session,
+        audit,
+        action=audit_service.ACTION_USER_DISABLE,
+        resource_type="user",
+        resource_id=row.username,
+        before={"disabled": True},
+        after={"disabled": False, "source": SOURCE_IDP},
+    )
+
+
+def describe(result: SyncResult) -> dict[str, Any]:
+    """A loggable summary. No group names: they name the customer's directory."""
+    return {
+        "granted": result.granted,
+        "changed": result.changed,
+        "revoked": result.revoked,
+        "role": list(result.role) if result.role else None,
+        "disabled": result.disabled,
+        "enabled": result.enabled,
+        "skipped": result.skipped,
+    }
+

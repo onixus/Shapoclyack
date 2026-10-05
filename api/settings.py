@@ -883,6 +883,27 @@ class Settings:
     # which is what an API-only install wants; a console install points this at
     # the UI, which reads the token out of the URL fragment.
     oidc_post_login_redirect: str = ""
+    # "IdP authoritative" (#316). Off by default, which leaves every SSO login
+    # exactly as before: the role and the tenant are decided once, when the
+    # account is provisioned. On, every SSO login recomputes the global role
+    # from ``oidc_role_map`` and the IdP-sourced memberships from
+    # ``idp_group_map``, removes the ones the groups no longer grant, and
+    # deactivates an account that is in no mapped group. Memberships granted
+    # locally are never touched (api/services/idp_sync.py says why).
+    idp_authoritative: bool = False
+    # Whether the ID token always carries ``OCTO_OIDC_ROLE_CLAIM`` (#316). Off,
+    # a token without the claim is "the groups are not listed" and the resync
+    # is skipped for that login — the safe reading where the IdP drops an
+    # empty claim (Okta) or the claim is not configured on the client. On, the
+    # installation says its IdP sends the claim every time, even empty, so
+    # its absence is "in no group". Entra ID's overage pointer is "not
+    # listed" either way: the groups exist, they are just elsewhere.
+    idp_groups_claim_required: bool = False
+    # Group -> tenant membership map shared by the SSO resync and SCIM,
+    # ``{"acme-ops": [{"tenant_id": "acme", "role": "operator"}]}``. A group
+    # may grant several tenants; the role is a built-in tenant role or one the
+    # tenant defined (#318). Unknown tenants and roles grant nothing.
+    idp_group_map: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
     # --- Enterprise IAM: service tokens (ROADMAP Track E) --------------------
     # Non-interactive API credentials, admin-issued per tenant with a scope
@@ -1134,6 +1155,50 @@ def _oidc_role_map() -> dict[str, str]:
             logger.warning("OCTO_OIDC_ROLE_MAP entry %r names an unknown role; ignoring it.", key)
             continue
         mapping[str(key)] = role
+    return mapping
+
+
+def _idp_group_map() -> dict[str, list[dict[str, str]]]:
+    """``{group: [{"tenant_id": ..., "role": ...}, ...]}`` from ``OCTO_IDP_GROUP_MAP``.
+
+    A group's value may be one object or a list of them. Entries without a
+    tenant or a role are dropped with a warning, and so is a malformed value as
+    a whole — the reasoning of :func:`_oidc_role_map`: this is parsed on every
+    start whether or not SSO is configured, and dropping a mapping can only
+    cost access, never grant it. Which tenants and roles exist is the
+    database's to say, so that is checked where the map is applied
+    (``api/services/idp_sync.py``), not here.
+    """
+    raw = os.environ.get("OCTO_IDP_GROUP_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        logger.warning("OCTO_IDP_GROUP_MAP is not valid JSON (%s); ignoring it.", exc)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "OCTO_IDP_GROUP_MAP must be a JSON object of {group: [{tenant_id, role}]}; "
+            "ignoring it."
+        )
+        return {}
+    mapping: dict[str, list[dict[str, str]]] = {}
+    for group, value in parsed.items():
+        entries = value if isinstance(value, list) else [value]
+        grants: list[dict[str, str]] = []
+        for entry in entries:
+            tenant_id = str(entry.get("tenant_id", "")).strip() if isinstance(entry, dict) else ""
+            role = str(entry.get("role", "")).strip() if isinstance(entry, dict) else ""
+            if not tenant_id or not role:
+                logger.warning(
+                    "OCTO_IDP_GROUP_MAP entry for %r needs a tenant_id and a role; ignoring it.",
+                    group,
+                )
+                continue
+            grants.append({"tenant_id": tenant_id[:64], "role": role[:64]})
+        if grants:
+            mapping[str(group)] = grants
     return mapping
 
 
@@ -2254,6 +2319,13 @@ def load_settings() -> Settings:
         oidc_state_ttl_seconds=max(30, int(os.environ.get("OCTO_OIDC_STATE_TTL_SECONDS", "600"))),
         oidc_http_timeout_seconds=max(1, int(os.environ.get("OCTO_OIDC_HTTP_TIMEOUT_SECONDS", "10"))),
         oidc_post_login_redirect=os.environ.get("OCTO_OIDC_POST_LOGIN_REDIRECT", "").strip(),
+        idp_authoritative=os.environ.get("OCTO_IDP_AUTHORITATIVE", "false").strip().lower()
+        in {"1", "true", "yes", "on"},
+        idp_groups_claim_required=os.environ.get("OCTO_IDP_GROUPS_CLAIM_REQUIRED", "false")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"},
+        idp_group_map=_idp_group_map(),
         service_tokens_enabled=os.environ.get("OCTO_SERVICE_TOKENS_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         service_token_default_ttl_days=max(
@@ -2295,6 +2367,31 @@ def load_settings() -> Settings:
             if item.strip()
         ],
     )
+
+    if settings.idp_authoritative and not (settings.oidc_role_map or settings.idp_group_map):
+        # Not a refusal, and not obeyed either: with nothing mapped, every SSO
+        # account is "in no mapped group", and obeying the switch would
+        # deactivate the whole console at its next login (#316).
+        logger.warning(
+            "OCTO_IDP_AUTHORITATIVE=true with neither OCTO_OIDC_ROLE_MAP nor "
+            "OCTO_IDP_GROUP_MAP set: nothing is mapped, so the IdP resync stays off "
+            "rather than deactivating every SSO account. Map the groups first."
+        )
+    elif settings.idp_authoritative and not settings.oidc_role_claim:
+        # The same reasoning: no claim configured, no login lists a group, and
+        # every SSO account would be "in no mapped group".
+        logger.warning(
+            "OCTO_IDP_AUTHORITATIVE=true with OCTO_OIDC_ROLE_CLAIM empty: no login "
+            "carries the groups, so the IdP resync stays off rather than deactivating "
+            "every SSO account. Name the groups claim first."
+        )
+    elif settings.idp_authoritative and not settings.idp_groups_claim_required:
+        logger.info(
+            "OCTO_IDP_AUTHORITATIVE=true: a login whose ID token does not carry %r is "
+            "not resynced (counted in octo_idp_resync_skipped_total). If the IdP always "
+            "sends the claim, set OCTO_IDP_GROUPS_CLAIM_REQUIRED=true.",
+            settings.oidc_role_claim,
+        )
 
     if settings.env == ENV_PROD:
         _validate_production(settings, postgres_url_env=postgres_url_env)

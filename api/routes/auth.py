@@ -637,6 +637,7 @@ def oidc_callback(
             role=oidc_service.role_from_claims(settings, claims),
             tenant_id=oidc_service.tenant_from_claims(settings, claims),
             jit_enabled=settings.oidc_jit_provisioning,
+            groups=oidc_service.groups_from_claims(settings, claims),
         )
     except PermissionError as exc:
         auth_audit.record_denied(

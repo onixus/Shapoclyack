@@ -6,6 +6,60 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **The identity provider can be authoritative, and SCIM 2.0 provisioning
+  ([#316](https://github.com/onixus/Shapoclyack/issues/316)).** With
+  `OCTO_IDP_AUTHORITATIVE=true` every SSO login recomputes the account's global
+  role (`OCTO_OIDC_ROLE_MAP`) and its tenant memberships (new
+  `OCTO_IDP_GROUP_MAP`, `{group: [{tenant_id, role}]}`, tenant-defined roles
+  included) from the token's groups, removes the memberships the groups no
+  longer grant, and disables an account in no mapped group — re-enabling it
+  when a mapped group returns. Before, the IdP decided role and tenant once, at
+  JIT provisioning, and removing somebody from a group changed nothing. Only
+  memberships the IdP granted are its to change: each membership now carries
+  `source` (`local`/`idp`, in `GET /api/tenants/{id}/members`), **every row
+  that existed before the upgrade is `local`**, and a local grant is never
+  removed — so switching the mode on does not wipe hand-made grants; nobody
+  takes over their own IdP membership (`403`), and a takeover by another
+  member manager shows `source` in the trail. The resync never touches a
+  break-glass account, never re-enables an account a person disabled, stays
+  off (with a startup warning) when nothing is mapped or no groups claim is
+  configured, changes nothing on a token that does not list the groups (Entra
+  ID's overage, a missing claim — counted in `octo_idp_resync_skipped_total`;
+  new `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true` reads a missing claim as "no
+  groups" for IdPs that always send it), leaves alone only the membership a
+  map entry naming a missing tenant role may have granted (a role the map
+  names cannot be renamed or deleted: `409`), and ends the account's sessions
+  on any reduction. `/scim/v2/Users` and
+  `/scim/v2/Groups` (list with `userName eq`/`displayName eq`, get, create,
+  `PUT`, `PATCH` incl. `active: false`, `DELETE` = deactivate) plus
+  `ServiceProviderConfig`/`ResourceTypes`/`Schemas`, under a new credential
+  type (`octo_scim_…`, issued by a platform admin with step-up under
+  `/api/auth/scim-tokens`) that works on `/scim/v2` only. A token is bound to
+  tenants (or `all_tenants`); a tenant-bound token never changes the global
+  role, cannot see or deactivate accounts of other tenants or accounts it has
+  granted nothing yet, and no token makes a platform admin unless issued with
+  `grant_platform_admin` — a group mapped to `admin` is such a token's alone,
+  and any group grants no more than the token that created it could, however
+  its name is mapped later. SCIM accounts sign in through SSO, linked at the
+  first login by `externalId` = the token's `sub` (stored, unique) or by an
+  address the IdP verified — never by username; until that login only the
+  creating token or a `grant_platform_admin` token may change those two, and
+  a tenant-bound token manages no account whose global role is above
+  `viewer`. A member grants no more than the token that added it could
+  either. Where the installation places accounts in tenants
+  (`OCTO_IDP_GROUP_MAP` or `OCTO_OIDC_TENANT_CLAIM` set), the resync and SCIM
+  disable a non-admin account they leave in **no tenant** instead of letting
+  the pre-P0 fallback put it in `default` with its global role; map `default`
+  explicitly to keep people there. JIT's tenant-claim membership stays
+  `local`, so switching the mode on does not revoke it. With both maps empty
+  SCIM pushes change no access (`active` still works), and a push Postgres
+  aborts for a concurrent one is a retryable `503`, not a deadlock `500`.
+  Revoking a token leaves its groups' grants in place. Every change is
+  audited (`membership.*`, `user.*` with `"source": "idp"`, new
+  `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
+  Migration `0076_idp_resync_scim` (expand-only). Rollout order:
+  [operations.md](docs/operations.md#making-the-idp-authoritative-and-scim).
+
 - **Scan queue priority, per-tenant concurrency and admission
   ([#365](https://github.com/onixus/Shapoclyack/issues/365)).** Jobs carry a
   `priority` (`-100..100`, default `0`) and every claim hands out the highest

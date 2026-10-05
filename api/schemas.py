@@ -1135,6 +1135,9 @@ class MembershipInfo(BaseModel):
     role: str
     created_at: str | None = None
     created_by: str | None = None
+    #: ``local`` (a person's grant) or ``idp`` (the identity provider's, which
+    #: an IdP-authoritative resync may change or remove; #316).
+    source: Literal["local", "idp"] = "local"
 
 
 class GrantMembershipRequest(BaseModel):
@@ -1527,6 +1530,39 @@ class CreateServiceTokenRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     scopes: list[str] = Field(min_length=1, max_length=64)
     role: Literal["viewer", "operator", "admin"] = "viewer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ScimTokenInfo(BaseModel):
+    """An issued SCIM token (#316). ``token`` is present only in the create response."""
+
+    token_id: str
+    name: str
+    token_prefix: str
+    tenant_ids: list[str] = Field(default_factory=list)
+    all_tenants: bool = False
+    grant_platform_admin: bool = False
+    status: Literal["active", "expired", "revoked"] = "active"
+    created_by: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    last_used_at: str | None = None
+    revoked_at: str | None = None
+    token: str | None = None
+
+
+class CreateScimTokenRequest(BaseModel):
+    """Issue a SCIM provisioning token (#316).
+
+    ``tenant_ids`` and ``all_tenants`` are exclusive and one is required;
+    ``grant_platform_admin`` needs ``all_tenants`` and is the only way a group
+    mapped to the global ``admin`` role takes effect through SCIM.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    tenant_ids: list[str] = Field(default_factory=list, max_length=256)
+    all_tenants: bool = False
+    grant_platform_admin: bool = False
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 

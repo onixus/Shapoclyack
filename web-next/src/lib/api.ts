@@ -4929,6 +4929,10 @@ export type MembershipInfo = {
   role: TenantRoleName;
   created_at: string | null;
   created_by: string | null;
+  /** `idp` when the identity provider's group mapping granted it (SSO resync,
+   * SCIM) and may take it away again; `local` for a person's grant (#316).
+   * Optional so an API from before the field reads as `local`. */
+  source?: "local" | "idp";
 };
 
 export async function fetchTenantMembers(tenantId: string) {
