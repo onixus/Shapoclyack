@@ -674,6 +674,91 @@ contract phase to schedule. The downgrade drops the calendar and the freeze
 flags, which loses the windows an operator wrote; they are the feature, not a
 cache of something else.
 
+## Scan queue: priority and per-tenant ceilings
+
+[#365](https://github.com/onixus/Shapoclyack/issues/365). The queue is one per
+tenant, handed out by `priority` (higher first) and then by age. Two ceilings
+share the executors out between tenants; both are unlimited until a platform
+admin sets them, and the API reference is
+[api-and-rbac.md](api-and-rbac.md#queue-priority-concurrency-and-admission).
+
+**Giving a tenant a ceiling.** `PUT /api/tenants/{id}/queue-limits` with
+`max_concurrent_scans` (scans out at once) and `max_queued_scans` (scans
+waiting). Start with the concurrency ceiling — it is what keeps one customer's
+nightly sweep from occupying every sensor — and add the depth ceiling only for a
+tenant whose integration queues faster than the fleet drains: that one refuses
+scans (`429`), the concurrency ceiling only makes them wait. The
+installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH` is the backstop against a runaway
+client of any tenant ([configuration.md](configuration.md)).
+
+**"Scans sit in `queued` and the sensors are idle."** Check in this order:
+
+1. The tenant is at `max_concurrent_scans`: count its `claimed`, `running` and
+   `cancelling` jobs against `GET /api/tenants/{id}/queue-limits`. A scan stuck
+   in `cancelling` holds its slot until the sensor confirms or the grace period
+   ends — stop it, do not raise the ceiling. `octo_scan_queue_throttled_total{reason="concurrency_limit"}`
+   rising means claims are being answered with nothing for this reason.
+2. Under NATS, an offer burned while the tenant was at its ceiling is picked up
+   by the sensor's HTTP fallback claim, within `NATS_FALLBACK_CLAIM_SECONDS`
+   (60 s) of a slot freeing — a minute's delay is expected, not a fault.
+3. The ordinary causes: the job's agent group has no sensor online, or no
+   sensor declares what the job needs (`agent_group_unavailable` /
+   `sensor_unavailable` on the job).
+
+**Local scans** (`OCTO_JOB_EXECUTION_MODE=local`) wait in their thread and ask
+again every `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. Priority between them holds
+within one replica; a local scan can only ever be started by the replica that
+accepted it. Asking keeps a waiting mark on the job fresh (`claimed_until`,
+one `OCTO_JOB_LEASE_SECONDS`, at least three polls; rewritten only once half of
+it is spent, so a waiting scan costs a row update per half lease rather than
+per poll). When the replica goes away —
+a crash, or a rollout, which brings the pod back under a new
+`OCTO_INSTANCE_ID` so its startup never reconciles the old pod's rows — nobody
+renews it, and the job reaper of any replica fails the scan once the mark
+lapses ("Waited for a scan slot on replica …, which stopped reporting"). Until
+then it still counts against `max_queued_scans` and
+`OCTO_SCAN_QUEUE_MAX_DEPTH`: allow one lease plus `OCTO_JOB_REAPER_INTERVAL_SECONDS`
+after a rollout before reading a `429` as a real backlog. A live replica's
+waiting scans are not reaped however long they wait, as long as it can reach
+the database: the mark is no stronger than a running job's lease. A replica cut
+off from the database for longer than what is left of the mark — between half
+a lease and a whole one — has its waiting scans failed by another replica's
+reaper, with the same "stopped reporting" error, and logs `Not starting job …`
+at WARNING when it reconnects; those scans have to be started again. A waiting
+scan does not queue on the tenant's claim lock — it tries it and asks again at
+the next poll — so it holds a database connection only while it asks, not
+while it waits; each one is still a thread of its own, so a tenant that queues
+thousands of local scans against a small ceiling costs that many idle threads.
+
+**Who may jump the queue.** `scan.priority.raise` — tenant `admin` and platform
+admin; grant it on a custom role to an on-call who has to push a re-scan ahead.
+Operators can lower their own scans to make room. Every move is a
+`scan.priority` audit row.
+
+**Watching it.** `octo_scan_queue_throttled_total{reason}` (`tenant_queue_full`,
+`global_queue_full`, `concurrency_limit`) and, with
+`OCTO_METRICS_TENANT_TOP_N` set, `octo_tenant_jobs_queued{tenant}` — the depth
+`max_queued_scans` is measured against. A tenant whose
+`octo_tenant_jobs_queued` keeps climbing while its concurrency throttle rate is
+steady is a tenant that queues faster than its ceiling lets it scan. A
+schedule that meets a full queue is deferred by `Retry-After`, not skipped:
+`deferred_queue_full` in the dispatcher stats, apart from `skipped_quota`. The
+deferral stops at the schedule's next occurrence: once the back-off would reach
+it, the occurrence is skipped (`skipped_queue_full`, one per lost occurrence,
+logged at WARNING) and the schedule resumes on its cadence. A
+`skipped_queue_full` that keeps growing is a queue that does not drain at all —
+in agent mode, usually no sensor for the tenant — not a busy minute.
+
+### On upgrade
+
+Migration `0074_scan_queue_admission` is **expand only**: `jobs.priority` arrives
+`NOT NULL DEFAULT 0`, so every existing job reads 0 and the claim order over a
+queue of zeroes is the old `queued_at` order; the two tenant ceilings arrive
+`NULL` (unlimited). During a rolling update an old replica claims FIFO and
+inserts with the default — nothing is lost or handed out twice. The downgrade
+drops the columns and the `scan.priority.raise` grants, and with them any
+priorities and ceilings that were set.
+
 ## Alerts and exports
 
 Supported integrations include Slack/Telegram summary alerts, SMTP, DefectDojo,
@@ -2022,7 +2107,8 @@ order itself, and refuses where revoking would stop other sensors; see
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
-[#231](https://github.com/onixus/Shapoclyack/issues/231), and the **Deploy
+[#231](https://github.com/onixus/Shapoclyack/issues/231), plus
+`tenant.credential.manage` and a recent step-up since #504, and the **Deploy
 agent** dialog in the UI) installs a sensor by running the same installer from
 the API: verify the target's host key → connect → read the target's
 `/etc/shapoclyack/agent.env` to see which sensor, if any, it already runs →
@@ -2404,6 +2490,119 @@ The timer runs the script as root, and the script runs the verifier as the
 sensor's account, exactly as by hand. The same checks apply, and a refused or
 failed update leaves the running release in place.
 
+### Endpoint Agent (Lariska) builds
+
+Unlike a sensor, the endpoint Agent (Lariska) is upgraded by the API: a tenant's
+policy names a version (`PUT /api/endpoint/agent/policy`, `desired_version`),
+the heartbeat hands the agent that build's sha256 and URL, and the agent
+downloads it with its own token and refuses bytes that do not match. The
+builds themselves are stored once for the installation, one per
+`(version, platform)`, so:
+
+- **Uploading and deleting a build is the platform admin's**
+  (`platform.endpoint_agent_release.manage`, behind a step-up, #510). A
+  re-upload of the same pair replaces the bytes every tenant's endpoints are
+  handed; a delete stops every tenant's upgrade to it.
+- **A tenant admin** (`endpoint_agent.manage`) lists the builds and decides
+  which one its own endpoints run. It cannot upload, replace or delete one, and
+  the list it reads carries no `uploaded_by`.
+
+```bash
+curl -sS -X POST https://<api-host>/api/endpoint/agent/releases \
+  -H "Authorization: Bearer <platform-admin token, recently re-verified>" \
+  -F version=0.3.0 -F platform=x86_64-pc-windows-msvc \
+  -F binary=@lariska.exe -F notes="release notes or build id"
+```
+
+Compare the `sha256` in the response with the digest of the build you meant to
+publish before any tenant names that version.
+
+**On upgrade to the release that made this platform-only.** Builds already
+stored stay as they are and stay downloadable — nothing is migrated or
+re-hashed. Before it, any tenant's admin could have uploaded one, and the row
+would be served to every tenant. Check this once, as the platform admin, and
+check it **from the audit trail, not from the current rows**: the rows show
+only the last write, so a build a tenant replaced, that endpoints downloaded,
+and that it then re-uploaded with the official bytes looks clean; and a build
+a tenant uploaded and then deleted is not there at all. Before this release a
+delete was not audited either, so for a deleted build the upload event is the
+only trace left.
+
+Run it **after the last replica on the previous release is gone** (`kubectl
+rollout status`, or no old pod left in `kubectl get pods`): until then an old
+replica still accepts a tenant's upload, and a check made earlier misses it.
+
+1. Export the upload history. `GET /api/audit` lists every tenant for the
+   platform admin when no `tenant_id` is named, and `format=ndjson` streams
+   all of it rather than one page:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.upload&format=ndjson" \
+     > release-uploads.ndjson
+   curl -sS -H "Authorization: Bearer <platform-admin token>" \
+     "https://<api-host>/api/audit?action=endpoint_agent.release.delete&format=ndjson" \
+     > release-deletes.ndjson
+   ```
+
+2. Every upload event **with a `tenant_id`** was made before the change — this
+   release records uploads and deletes with none. The `tenant_id` is the tenant
+   the console was looking at, not proof a tenant did it: the platform admin's
+   own uploads from before carry one too, so `actor` says who it was. List them:
+
+   ```bash
+   jq -c 'select(.tenant_id != null)
+          | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+3. Compare each one's `sha256` with the build you published. Put your digests
+   in `official-builds.json` as `{"<version>/<platform>": "<sha256>", ...}`;
+   this prints every pre-change upload that was not one of them, including a
+   version you never published:
+
+   ```bash
+   jq -c --slurpfile official official-builds.json \
+     'select(.tenant_id != null and .after.sha256 != $official[0][.resource_id])
+      | {occurred_at, tenant_id, actor, build: .resource_id, sha256: .after.sha256}' \
+     release-uploads.ndjson
+   ```
+
+   Any line here is a binary you did not publish that was served to every
+   tenant whose policy named that version, **whatever the build holds now**.
+   That covers both cases the current rows hide: *replaced then restored* (a
+   foreign digest followed later by yours under the same `build`) and
+   *uploaded then deleted* (a `build` with no row left in
+   `GET /api/endpoint/agent/releases`).
+
+4. For each `build` printed, read its whole history, oldest first, to get the
+   window during which the foreign bytes were the ones handed out — from that
+   event to the next upload of that build, or to now if the build is still
+   stored. Deletes from this release on carry the removed row in `before`:
+
+   ```bash
+   cat release-uploads.ndjson release-deletes.ndjson \
+     | jq -s -c --arg build "0.3.0/x86_64-pc-windows-msvc" \
+         'map(select(.resource_id == $build)) | sort_by(.occurred_at) | .[]
+          | {occurred_at, tenant_id, actor, action, sha256: (.after.sha256 // .before.sha256)}'
+   ```
+
+5. Find the endpoints that may have run it. The server keeps **no** record of
+   which bytes an endpoint installed: the heartbeat reports only the running
+   version (`GET /api/agents`, `version` on endpoint Agents), and a download is
+   not audited (the only server-side trace is the access-log line for
+   `GET /api/endpoint/agent/releases/<version>/<platform>/download`, with client
+   IP and time, if your logs reach back that far). So treat every endpoint
+   that reports that version, or reported it during the window, in any tenant
+   whose policy named it, as suspect, and settle it on the host:
+   `Get-FileHash "C:\Program Files\Lariska\lariska.exe"` against your digest.
+
+6. Then fix the build itself: upload yours over any row whose current `sha256`
+   is not yours (or `DELETE` it), and move the suspect endpoints to it.
+
+Builds are not signed yet: the API is the endpoint's only source of trust for
+what it executes, which is why the write is the platform admin's alone.
+
 ## Tenant-defined roles
 
 A tenant can define its own roles and grant them on memberships
@@ -2606,6 +2805,98 @@ their phone does not need an admin: they remove the lost key themselves on the
 Security page (`DELETE /api/auth/mfa/webauthn/credentials/{id}`, step-up) —
 recorded as `user.webauthn_revoke`.
 
+### Upgrading with an MFA policy: tenant admins are now covered (#504)
+
+An installation running with `OCTO_MFA_REQUIRED_ROLES=admin` (or
+`OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`) covers more accounts after this
+upgrade: everyone holding `tenant.member.manage`, `tenant.credential.manage`,
+`scan_scope.approve`, `vulnerability.exception.approve` or
+`endpoint_agent.manage` in **any** tenant — the tenant `admin`, `token-admin`,
+`scope-approver`, `risk-approver`, and tenant-defined roles carrying one of
+those — and everyone holding a tenant-defined role at the admin rank (3),
+whatever their global role
+([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)).
+Nobody is locked out: a newly covered account that has not enrolled gets a
+session confined to the Security page, **on its open session as well**, from
+the first request after the rollout. To see who that will be before upgrading:
+
+```sql
+SELECT ut.username, ut.tenant_id, ut.role
+  FROM user_tenants ut
+  JOIN users u ON u.username = ut.username
+ WHERE u.mfa_enabled_at IS NULL
+   AND u.role <> 'admin'
+   AND (ut.role IN ('admin', 'token-admin', 'scope-approver', 'risk-approver')
+        OR EXISTS (SELECT 1 FROM roles r
+                    WHERE r.tenant_id = ut.tenant_id AND r.role_id = ut.role
+                      AND r.rank >= 3)
+        OR EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = ut.tenant_id AND rp.role_id = ut.role
+                      AND rp.permission_key IN ('tenant.member.manage',
+                          'tenant.credential.manage', 'scan_scope.approve',
+                          'vulnerability.exception.approve',
+                          'endpoint_agent.manage')))
+ ORDER BY ut.tenant_id, ut.username;
+```
+
+To stage it — tell those people first, then cover them — deploy with
+`OCTO_MFA_REQUIRED_PERMISSIONS=none` (and `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS=none`
+under a key policy), which is exactly the old global-role behaviour, and
+remove the override once they have enrolled. Granting and revoking memberships and editing tenant roles
+also needs a recent step-up from an enrolled account now, like minting a
+credential — and so do the endpoint agent policy and builds, the risk-acceptance
+decisions, and disabling, deleting or signing out an account. A typo'd
+`OCTO_MFA_REQUIRED_PERMISSIONS` that names no known permission at all now
+refuses to start instead of reading as `none`.
+
+Migration `0073` writes `tenant.credential.manage` onto every tenant-defined
+role at rank 3, because `POST /api/agent/deployment-command` and the SSH push
+now ask for that permission rather than the rank: the roles that minted keys
+from the console before the upgrade still can. They also gain the
+permission's other routes (listing and revoking provisioning keys, service
+tokens up to their own authority). To see which roles the migration touched
+before running it:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND NOT EXISTS (SELECT 1 FROM role_permissions rp
+                    WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                      AND rp.permission_key = 'tenant.credential.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+For the rank-3 roles that also hold `tenant.member.manage` the permission
+brings **delegation** with it. A member manager may hand out what it holds, so
+after the upgrade its holders can define a role carrying
+`tenant.credential.manage`, grant it, and grant the built-in `token-admin` —
+the credential travels on its own, where before it came only bundled in the
+role itself (which such a holder could always grant: passing key minting on is
+not new, its narrower shape is). Leaving these roles out would take the
+console's **Deploy Agent** button from people who used it the day before, so
+the migration does not; review them instead:
+
+```sql
+SELECT r.tenant_id, r.role_id
+  FROM roles r
+ WHERE NOT r.builtin AND r.rank >= 3
+   AND EXISTS (SELECT 1 FROM role_permissions rp
+                WHERE rp.tenant_id = r.tenant_id AND rp.role_id = r.role_id
+                  AND rp.permission_key = 'tenant.member.manage')
+ ORDER BY r.tenant_id, r.role_id;
+```
+
+After the upgrade this lists every tenant role that may pass the credential
+on; before it, adding the first query's `NOT EXISTS` clause narrows it to the
+ones the migration gives that power. Where that is not meant, either take
+`tenant.credential.manage` off the role (and with it the button) or split it:
+one role that manages members, another that mints keys.
+
+A downgrade leaves those rows in place (nothing records which roles had the
+permission before); remove it from a role in the role editor if it was not
+meant.
+
 ### Rolling out security keys
 
 WebAuthn needs a relying party the browser agrees with, and getting it wrong
@@ -2677,6 +2968,109 @@ succeeds and the failure is logged. An operator reaching for the emergency door
 is usually doing it because something is already broken, and a database that
 cannot take the row is a realistic version of that — refusing the login would
 turn a degraded installation into an unreachable one.
+
+### Making the IdP authoritative, and SCIM
+
+`OCTO_IDP_AUTHORITATIVE=true` makes every SSO login recompute the account's
+global role and IdP-granted memberships from its groups, and disable an account
+in no mapped group ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync),
+#316). It changes what people can do at their next login, so turn it on in
+this order:
+
+1. **Map before you switch.** `OCTO_OIDC_ROLE_CLAIM` (e.g. `groups`),
+   `OCTO_OIDC_ROLE_MAP` with the admin group in it, and `OCTO_IDP_GROUP_MAP` for
+   the tenants. An SSO admin whose groups map to nothing is a viewer — or
+   disabled — after their next login.
+2. **Have the break-glass account in place** (above). It is never resynced, so
+   it is how you get back in if the map is wrong.
+3. **Know what stays.** Every membership that existed before migration 0076,
+   and every one a person grants afterwards, is `source: local` and is never
+   removed by the resync (`GET /api/tenants/{id}/members` shows the source).
+   Revoke the hand-made grants you want the IdP to own; the next login
+   re-grants them as `idp`.
+4. Switch it on and watch the trail:
+   `GET /api/audit?action=membership.revoke`, `…?action=user.disable` and
+   `…?action=user.role_change` — the resync's rows carry actor `oidc:<issuer>`
+   and `"source": "idp"`.
+
+Rolling it back is setting the variable to `false`: nothing is undone, and
+logins go back to deciding nothing after provisioning. An account the resync
+disabled stays disabled until an administrator re-enables it
+(`PUT /api/users/{u}/disabled`) or a login with the mode on finds a mapped
+group again.
+
+**SCIM** needs no switch — `/scim/v2` answers only an `octo_scim_` token, and
+there are none until a platform admin issues one:
+
+```bash
+curl -sS -X POST "$API/api/auth/scim-tokens" -H "Authorization: Bearer $ADMIN_JWT" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "okta", "all_tenants": true, "expires_in_days": 365}'
+```
+
+Give the directory `https://<console>/scim/v2` as the base URL and the returned
+`token` as its bearer token (it is shown once). Bind a token to the tenants a
+directory serves (`"tenant_ids": [...]`) rather than `all_tenants` wherever one
+directory belongs to one customer; add `"grant_platform_admin": true` only if
+the directory is meant to make platform admins. Rotate by issuing a second
+token, switching the directory over, then
+`POST /api/auth/scim-tokens/{id}/revoke` on the old one. A group grants no
+more than the token that created it could, so rotate to a token with the same
+binding: groups an old tenant-bound or plain token created keep that token's
+limits after the switch.
+
+A SCIM user can sign in through SSO once a group has granted it something.
+The first login links it by **`externalId` = the ID token's `sub`**, or by an
+address the IdP marks verified — never by username. Before connecting, check
+that the directory sends the subject as `externalId` (Okta does by default);
+otherwise every first login of a SCIM user is refused (JIT off) or provisioned
+as a second account (JIT on).
+
+**Map group names before you connect a tenant-bound directory.** A group it
+pushes while its name is unmapped stays limited to its tenants even after the
+operator maps that name elsewhere, and the name answers `409` to anyone else's
+push. To give the name to the right directory: find the group with an
+`all_tenants` token (`GET /scim/v2/Groups?filter=displayName eq "…"`),
+`DELETE` it, and let the right directory push again. A username a tenant-bound
+directory reserved with an account it never granted anything is freed by a
+platform admin with `DELETE /api/users/{u}`.
+
+With `OCTO_IDP_AUTHORITATIVE` on, watch `octo_idp_resync_skipped_total` and
+the log line `IdP resync … skipped at SSO login: the ID token does not list
+the groups`. Those logins change nothing — removals from groups do not take
+effect for those accounts — and there are two usual causes:
+
+- **Entra ID's group overage** (more groups than fit in the token): filter
+  the groups claim to the groups assigned to the application.
+- **An IdP that drops an empty claim** (Okta by default): someone removed
+  from their last group gets a token with no claim at all. Either configure
+  the claim so it is always sent and set `OCTO_IDP_GROUPS_CLAIM_REQUIRED=true`
+  (a missing claim is then "in no group"), or deprovision through SCIM.
+
+At startup, an info line says which reading is in force; a warning says the
+mode stayed off because `OCTO_OIDC_ROLE_CLAIM` or both maps are empty.
+
+And for `OCTO_IDP_GROUP_MAP maps group … to role …, which tenant … does not
+have`: a typo in the map, or a role renamed while the map did not name it
+(a mapped role cannot be renamed or deleted — `409`). Until the map is fixed,
+the IdP memberships in that tenant whose role no entry of the map names are left
+as they are; everything else is recomputed.
+
+**Revoking a SCIM token** does not remove what its groups grant. When the
+token is revoked because it leaked, list its groups with an `all_tenants`
+token and delete the ones that should not stand. **Changing `OCTO_OIDC_ISSUER`**
+leaves the stored `externalId`s of accounts nobody has signed in to yet
+pointing at the old issuer's subjects: they are compared with `sub` alone, so
+have the directory re-push them. A **taken address or `externalId`** (a
+tenant-bound directory got there first, `409` for the right one) is freed by
+re-keying that account with an `all_tenants` + `grant_platform_admin` token
+(`PATCH` of `externalId` or `emails`), or by a platform admin's
+`DELETE /api/users/{u}`.
+
+The migration (`0076_idp_resync_scim`) is expand-only. Rolling it back drops
+the `source` column — every membership is local again — the stored
+`externalId`s, and every SCIM token and group; re-issue the token and let the
+directory push again.
 
 ### Rotating the JWT signing key
 

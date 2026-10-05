@@ -43,6 +43,8 @@ from api.routes import retention as retention_routes
 from api.routes import tenant_lifecycle as tenant_lifecycle_routes
 from api.routes import runs as runs_routes
 from api.routes import schedules as schedules_routes
+from api.routes import scim as scim_routes
+from api.routes import scim_tokens as scim_tokens_routes
 from api.routes import service_tokens as service_tokens_routes
 from api.routes import system as system_routes
 from api.routes import users as users_routes
@@ -89,6 +91,8 @@ from api.services import oidc as oidc_service
 from api.services import scan_schedules
 from api.services.reports import dispatcher as report_dispatcher
 from api.services import service_tokens as service_tokens_service
+from api.services import scim as scim_service
+from api.services import scim_tokens as scim_tokens_service
 from api.services import schedule_dispatcher
 from api.services import tracing as tracing_service
 from api.services import tenant_purge
@@ -344,6 +348,8 @@ def create_app() -> FastAPI:
     audit_service.configure(settings)
     rbac_service.configure(settings)
     service_tokens_service.configure(settings)
+    scim_tokens_service.configure(settings)
+    scim_service.configure(settings)
     endpoint_inventory_service.configure(settings)
     endpoint_agent_mgmt.configure(settings)
     webhooks_service.configure(settings)
@@ -530,6 +536,10 @@ def create_app() -> FastAPI:
     app.include_router(tenant_lifecycle_routes.router, prefix="/api")
     if settings.service_tokens_enabled:
         app.include_router(service_tokens_routes.router, prefix="/api")
+    # SCIM 2.0 (#316): its own prefix, its own credential. The token
+    # administration lives under /api/auth, out of every service token's reach.
+    app.include_router(scim_tokens_routes.router, prefix="/api")
+    app.include_router(scim_routes.router, prefix="/scim/v2")
     app.include_router(vulnerabilities_routes.router, prefix="/api")
     app.include_router(retro_match_routes.router, prefix="/api")
     app.include_router(compliance_routes.router, prefix="/api")

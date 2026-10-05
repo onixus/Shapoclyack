@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from api.auth import hash_password, verify_password
+from api.core import permissions as permission_catalog
 from api.core import totp
 from api.db import models
 from api.db.engine import get_session
@@ -108,23 +110,157 @@ def _remaining(codes: Any) -> int:
     return sum(1 for entry in codes if isinstance(entry, dict) and not entry.get("used_at"))
 
 
-def required_for_role(settings: Settings, role: str) -> bool:
-    """Whether this installation demands a second factor of ``role``.
+@dataclass(frozen=True)
+class Requirement:
+    """What this installation demands of one account, and why (#504).
+
+    ``reasons`` has one entry per place the requirement comes from — the
+    global role (``tenant_id`` None) or a role held in a tenant — with the
+    policy's permissions that role carries. The console renders it, because
+    "required for the viewer role" is what the old wording told a tenant
+    admin whose global role is ``viewer``.
+    """
+
+    required: bool = False
+    phishing_resistant: bool = False
+    reasons: tuple[dict[str, Any], ...] = ()
+
+
+def required_permissions(settings: Settings) -> frozenset[str]:
+    """``OCTO_MFA_REQUIRED_PERMISSIONS`` as it applies, the derived default included.
+
+    Unset means what ``OCTO_MFA_REQUIRED_ROLES=admin`` was always meant to
+    say: the tenant-authority set when that list names ``admin``, nothing
+    otherwise — so an installation without the policy is not given one.
+    """
+    if settings.mfa_required_permissions is not None:
+        return frozenset(settings.mfa_required_permissions)
+    if permission_catalog.ROLE_ADMIN in settings.mfa_required_roles:
+        return permission_catalog.TENANT_AUTHORITY_PERMISSIONS
+    return frozenset()
+
+
+def phishing_resistant_permissions(settings: Settings) -> frozenset[str]:
+    """``OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS``, derived the same way."""
+    if settings.mfa_phishing_resistant_permissions is not None:
+        return frozenset(settings.mfa_phishing_resistant_permissions)
+    if permission_catalog.ROLE_ADMIN in settings.mfa_phishing_resistant_roles:
+        return permission_catalog.TENANT_AUTHORITY_PERMISSIONS
+    return frozenset()
+
+
+def _admin_rank_covered(explicit: list[str] | None, roles: list[str]) -> bool:
+    """Whether the admin rank counts as authority by itself (#504).
+
+    Only under the derived default: "MFA for admins" covers whoever
+    administers a tenant, and rank 3 passes every ``require_tenant(Role.admin)``
+    gate whatever permissions the role lists. An explicit permission list is
+    the operator naming exactly what they mean, and the rank does not widen it.
+    """
+    return explicit is None and permission_catalog.ROLE_ADMIN in roles
+
+
+def phishing_resistant_policy(settings: Settings) -> bool:
+    """Whether any account can be required to sign in with a key. No query."""
+    return bool(settings.mfa_phishing_resistant_roles or phishing_resistant_permissions(settings))
+
+
+def policy_configured(settings: Settings) -> bool:
+    """Whether any account can be required to carry a factor. No query.
+
+    False is the installation that never adopted MFA, and it is what keeps
+    every request there free of the lookups :func:`requirement` makes.
+    """
+    return bool(
+        settings.mfa_required_roles
+        or required_permissions(settings)
+        or phishing_resistant_policy(settings)
+    )
+
+
+def requirement(settings: Settings, username: str, role: str) -> Requirement:
+    """Whether this installation demands a second factor of this account (#504).
+
+    Two ways in, either one enough:
+
+    * **by global role** — ``OCTO_MFA_REQUIRED_ROLES`` names ``users.role``,
+      exactly as it always has;
+    * **by permission** — the account holds a permission of
+      :func:`required_permissions` in **any** tenant, through whichever role:
+      a built-in, a role the tenant wrote (#318), the platform admin's. Under
+      the derived default a role at the admin rank counts whatever it lists
+      (:func:`_admin_rank_covered`).
 
     A role that must carry a *phishing-resistant* factor must carry a factor
-    at all: ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` implies
-    ``OCTO_MFA_REQUIRED_ROLES`` rather than asking the operator to list the
-    role twice and confining nobody when they forget.
+    at all: the ``…PHISHING_RESISTANT…`` lists imply the plain ones rather
+    than asking the operator to list everything twice and confining nobody
+    when they forget.
+
+    Re-read on every call and never put in a token: a grant, a revoke or an
+    edited role moves the requirement from the account's next request.
     """
-    role = str(role or "").lower()
-    return role in settings.mfa_required_roles or role in settings.mfa_phishing_resistant_roles
+    if not policy_configured(settings):
+        return Requirement()
+    from api.services import rbac as rbac_service
+
+    plain_roles = set(settings.mfa_required_roles)
+    key_roles = set(settings.mfa_phishing_resistant_roles)
+    plain_keys = required_permissions(settings)
+    key_keys = phishing_resistant_permissions(settings)
+    plain_rank = _admin_rank_covered(settings.mfa_required_permissions, settings.mfa_required_roles)
+    key_rank = _admin_rank_covered(
+        settings.mfa_phishing_resistant_permissions, settings.mfa_phishing_resistant_roles
+    )
+    admin_rank = permission_catalog.ROLE_RANKS[permission_catalog.ROLE_ADMIN]
+    found: dict[tuple[str | None, str], dict[str, Any]] = {}
+
+    def _note(tenant_id: str | None, name: str, keys: frozenset[str], by_key: bool) -> None:
+        entry = found.setdefault(
+            (tenant_id, name),
+            {"tenant_id": tenant_id, "role": name, "permissions": [], "phishing_resistant": False},
+        )
+        entry["permissions"] = sorted(set(entry["permissions"]) | keys)
+        entry["phishing_resistant"] = entry["phishing_resistant"] or by_key
+
+    global_role = str(role or "").lower()
+    if global_role in plain_roles or global_role in key_roles:
+        _note(None, global_role, frozenset(), global_role in key_roles)
+    for tenant_id, held in rbac_service.held_by(username, global_role=global_role):
+        # By permission only. A membership's role *name* is not matched against
+        # the role lists: those keep meaning ``users.role`` exactly as before,
+        # so ``OCTO_MFA_REQUIRED_PERMISSIONS=none`` is a true return to the
+        # old behaviour, and a tenant role is covered by what it carries
+        # whatever it is called. Its rank is the exception, and only under the
+        # derived default: rank 3 administers the tenant through every
+        # rank-gated route, so it is covered with an empty permission list.
+        administers = held.rank >= admin_rank
+        by_key = bool(held.permissions & key_keys) or (administers and key_rank)
+        if not (by_key or held.permissions & plain_keys or (administers and plain_rank)):
+            continue
+        _note(tenant_id, held.name, held.permissions & (plain_keys | key_keys), by_key)
+    reasons = sorted(
+        found.values(), key=lambda entry: (entry["tenant_id"] is not None, entry["tenant_id"] or "")
+    )
+    return Requirement(
+        required=bool(reasons),
+        phishing_resistant=any(entry["phishing_resistant"] for entry in reasons),
+        reasons=tuple(reasons),
+    )
 
 
-def _state(row: models.User, settings: Settings, session: Any) -> dict[str, Any]:
-    """Public shape. Never carries the secret, a code, or a hash of either."""
+def _state(
+    row: models.User, settings: Settings, session: Any, policy: Requirement | None = None
+) -> dict[str, Any]:
+    """Public shape. Never carries the secret, a code, or a hash of either.
+
+    ``policy`` is the account's :func:`requirement` when the caller already
+    has it for this request; otherwise it is computed here.
+    """
     from api.services import passkeys as passkeys_service
 
     enabled = row.mfa_enabled_at is not None
+    if policy is None:
+        policy = requirement(settings, row.username, row.role)
     return {
         "username": row.username,
         "enabled": enabled,
@@ -134,7 +270,10 @@ def _state(row: models.User, settings: Settings, session: Any) -> dict[str, Any]
         # rather than silently minting a third secret.
         "setup_pending": bool(row.mfa_secret) and not enabled,
         "recovery_codes_remaining": _remaining(row.mfa_recovery_codes),
-        "required": required_for_role(settings, row.role),
+        # From what the account holds in every tenant (#504), with where each
+        # part of it comes from, so the console can say why.
+        "required": policy.required,
+        "required_because": list(policy.reasons),
         "stepup_minutes": settings.mfa_stepup_minutes,
         # Whether confirming an enrolment will ask for the password. See
         # :func:`password_required`.
@@ -144,11 +283,11 @@ def _state(row: models.User, settings: Settings, session: Any) -> dict[str, Any]
         # them — not a code — is what signs this account in or steps it up.
         "webauthn_available": passkeys_service.available(settings),
         "webauthn_credentials": passkeys_service.credential_count(session, row.username),
-        "phishing_resistant_required": passkeys_service.phishing_resistant_required(
-            settings, row.role
-        ),
-        "stepup_phishing_resistant": passkeys_service.stepup_requires_webauthn(
-            settings, row.role
+        "phishing_resistant_required": policy.phishing_resistant,
+        # :func:`api.services.passkeys.stepup_requires_webauthn`, without
+        # computing the policy a second time.
+        "stepup_phishing_resistant": (
+            settings.mfa_stepup_phishing_resistant or policy.phishing_resistant
         ),
     }
 
@@ -177,13 +316,15 @@ def password_required(settings: Settings, username: str, password_hash: str | No
     return True
 
 
-def status(settings: Settings, username: str) -> dict[str, Any]:
+def status(
+    settings: Settings, username: str, *, policy: Requirement | None = None
+) -> dict[str, Any]:
     """What the console shows on the account's security page."""
     with get_session(settings.postgres_url) as session:
         row = session.get(models.User, username)
         if row is None:
             raise LookupError(f"user '{username}' not found")
-        return _state(row, settings, session)
+        return _state(row, settings, session, policy)
 
 
 def is_enabled(settings: Settings, username: str) -> bool:

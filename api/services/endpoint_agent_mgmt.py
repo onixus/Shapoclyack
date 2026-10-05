@@ -282,7 +282,14 @@ def store_release(
         return _release_info(row)
 
 
-def list_releases() -> list[dict[str, Any]]:
+def list_releases(*, show_uploader: bool = True) -> list[dict[str, Any]]:
+    """Every stored build, newest first.
+
+    ``show_uploader=False`` blanks ``uploaded_by`` (#510): the builds are the
+    installation's and a tenant reads the list to choose one, which needs the
+    version and the digest, not the name of the platform account that put it
+    there.
+    """
     app_settings = _require_settings()
     with get_session(app_settings.postgres_url) as session:
         rows = session.scalars(
@@ -290,17 +297,28 @@ def list_releases() -> list[dict[str, Any]]:
                 models.EndpointAgentRelease.uploaded_at.desc()
             )
         ).all()
-        return [_release_info(row) for row in rows]
+        infos = [_release_info(row) for row in rows]
+    if not show_uploader:
+        for info in infos:
+            info["uploaded_by"] = None
+    return infos
 
 
-def delete_release(*, version: str, platform: str) -> bool:
+def delete_release(*, version: str, platform: str) -> dict[str, Any] | None:
+    """Remove one build; what was removed, or ``None`` if nothing was stored.
+
+    Returned rather than a bool because the row is gone afterwards and the
+    audit record is the only place left that says which bytes endpoints were
+    being handed under that version, and who put them there (#510).
+    """
     app_settings = _require_settings()
     with get_session(app_settings.postgres_url) as session:
         row = session.get(models.EndpointAgentRelease, (version, platform))
         if row is None:
-            return False
+            return None
+        info = _release_info(row)
         session.delete(row)
-        return True
+        return info
 
 
 def get_release_bytes(*, version: str, platform: str) -> tuple[bytes, str] | None:

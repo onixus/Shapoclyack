@@ -37,6 +37,14 @@ const ACTIONS = [
   "role.delete",
   "service_token.create",
   "service_token.revoke",
+  // SCIM provisioning (#316). What a push did to accounts and memberships is
+  // under user.* / membership.* with "source": "idp"; these are the token and
+  // the groups themselves.
+  "scim_token.create",
+  "scim_token.revoke",
+  "scim_group.create",
+  "scim_group.update",
+  "scim_group.delete",
   "provisioning_key.create",
   "provisioning_key.revoke",
   "agent.register",

@@ -341,6 +341,37 @@ class StartScanRequest(BaseModel):
     # trust: it must name a group of the caller's own tenant and one the scope
     # permits for these targets.
     agent_group: str | None = Field(default=None, max_length=63)
+    # Where this scan stands in its tenant's queue (#365): higher is handed out
+    # first, ties by age. Omitted is 0, the FIFO every scan had before. Above
+    # 0 needs ``scan.priority.raise``. Not part of the idempotency digest: a
+    # retry that changed only its priority is the same scan, and the queued
+    # job's priority can be moved with ``PUT /api/jobs/{id}/priority``.
+    priority: int = Field(default=0, ge=-100, le=100)
+
+
+class JobPriorityRequest(BaseModel):
+    """``PUT /api/jobs/{job_id}/priority`` (#365)."""
+
+    priority: int = Field(ge=-100, le=100)
+
+
+class TenantQueueLimits(BaseModel):
+    """A tenant's scan queue ceilings (#365). ``null`` (or 0) is unlimited.
+
+    Both are sent on every PUT, like the quota: a ceiling dropped because a
+    client forgot the field would be a silently lifted limit.
+    """
+
+    max_concurrent_scans: int | None = Field(default=None, ge=0, le=10_000)
+    max_queued_scans: int | None = Field(default=None, ge=0, le=10_000)
+
+
+class TenantQueueLimitsInfo(TenantQueueLimits):
+    tenant_id: str
+    #: The installation-wide ceiling on waiting scans (OCTO_SCAN_QUEUE_MAX_DEPTH),
+    #: ``null`` when unlimited — shown beside the tenant's own so a refusal
+    #: the tenant did not cause is explicable.
+    global_max_queued_scans: int | None = None
 
 
 class JobInfo(BaseModel):
@@ -388,6 +419,9 @@ class JobInfo(BaseModel):
     # The agent group this job is addressed to (#361); None means any agent of
     # the tenant may claim it, which is every job started before this shipped.
     agent_group: str | None = None
+    # Claim order within the tenant (#365): higher first, then oldest. 0 for
+    # every job before that revision.
+    priority: int = 0
     # True when, at the moment the scan was queued, that group had no active
     # agent with a recent heartbeat. The job is still accepted — an agent that
     # is restarting comes back — but a job nobody can claim must not look like
@@ -1123,6 +1157,9 @@ class MembershipInfo(BaseModel):
     role: str
     created_at: str | None = None
     created_by: str | None = None
+    #: ``local`` (a person's grant) or ``idp`` (the identity provider's, which
+    #: an IdP-authoritative resync may change or remove; #316).
+    source: Literal["local", "idp"] = "local"
 
 
 class GrantMembershipRequest(BaseModel):
@@ -1315,6 +1352,21 @@ _MFA_CODE = Field(default=None, max_length=16)
 _RECOVERY_CODE = Field(default=None, max_length=32)
 
 
+class MfaRequirementReason(BaseModel):
+    """One place the MFA requirement of an account comes from (#504).
+
+    ``tenant_id`` is None for the global role (``users.role``, or the global
+    ``admin``'s authority everywhere). ``permissions`` are the ones of the
+    policy this role carries — empty when it was named by role alone.
+    ``phishing_resistant`` is whether this one asks for a security key.
+    """
+
+    tenant_id: str | None = None
+    role: str
+    permissions: list[str] = Field(default_factory=list)
+    phishing_resistant: bool = False
+
+
 class MfaStatus(BaseModel):
     """What the console's security page shows about one account (#315).
 
@@ -1328,9 +1380,12 @@ class MfaStatus(BaseModel):
     enabled_at: str | None = None
     setup_pending: bool = False
     recovery_codes_remaining: int = 0
-    # Whether OCTO_MFA_REQUIRED_ROLES names this account's role. The console
-    # uses it to say "your organisation requires this" rather than "optional".
+    # Whether the policy covers this account — by its global role, or by what
+    # it holds in any tenant (#504). The console uses it to say "your
+    # organisation requires this" rather than "optional", and
+    # ``required_because`` to say why.
     required: bool = False
+    required_because: list[MfaRequirementReason] = Field(default_factory=list)
     stepup_minutes: int = 15
     # Whether ``POST /api/auth/mfa/totp/confirm`` will ask for the password.
     # False for an account that has none (SSO-provisioned).
@@ -1497,6 +1552,39 @@ class CreateServiceTokenRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     scopes: list[str] = Field(min_length=1, max_length=64)
     role: Literal["viewer", "operator", "admin"] = "viewer"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ScimTokenInfo(BaseModel):
+    """An issued SCIM token (#316). ``token`` is present only in the create response."""
+
+    token_id: str
+    name: str
+    token_prefix: str
+    tenant_ids: list[str] = Field(default_factory=list)
+    all_tenants: bool = False
+    grant_platform_admin: bool = False
+    status: Literal["active", "expired", "revoked"] = "active"
+    created_by: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    last_used_at: str | None = None
+    revoked_at: str | None = None
+    token: str | None = None
+
+
+class CreateScimTokenRequest(BaseModel):
+    """Issue a SCIM provisioning token (#316).
+
+    ``tenant_ids`` and ``all_tenants`` are exclusive and one is required;
+    ``grant_platform_admin`` needs ``all_tenants`` and is the only way a group
+    mapped to the global ``admin`` role takes effect through SCIM.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    tenant_ids: list[str] = Field(default_factory=list, max_length=256)
+    all_tenants: bool = False
+    grant_platform_admin: bool = False
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 

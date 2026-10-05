@@ -62,7 +62,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from api.core import permissions as permission_catalog
-from api.db import models
+from api.db import models, tenant_scope
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import tenants as tenants_service
@@ -95,6 +95,32 @@ class RoleInUse(ValueError):
     says how many members hold it so the caller knows what ``reassign_to``
     would move.
     """
+
+
+class RoleMapped(ValueError):
+    """Renaming or deleting the role is refused because ``OCTO_IDP_GROUP_MAP``
+    names it (#316). Answered 409.
+
+    The map is the operator's, in the environment, and names the role by
+    name: renamed or deleted under it, the entry resolves to nothing. The
+    IdP resync then leaves the memberships it may have granted alone, so a
+    tenant administrator could stop group removals from taking effect in
+    their tenant by renaming a role. The map changes first, then the role.
+    """
+
+
+def _refuse_if_mapped(settings: Settings, tenant_id: str, role_id: str, what: str) -> None:
+    # Which groups is not said: their names are the customer's directory, and
+    # the caller is a tenant administrator, not the operator who wrote the map.
+    if any(
+        entry["tenant_id"] == tenant_id and entry["role"] == role_id
+        for entries in settings.idp_group_map.values()
+        for entry in entries
+    ):
+        raise RoleMapped(
+            f"role {role_id} cannot be {what}: OCTO_IDP_GROUP_MAP grants it to an IdP "
+            "group; the operator changes the map first"
+        )
 
 
 @dataclass(frozen=True)
@@ -224,6 +250,41 @@ def resolve(tenant_id: str, role: str, *, is_platform_admin: bool = False) -> Re
     with get_session(settings.postgres_url) as session:
         resolved = role_in_session(session, tenant_id, role)
     return resolved if resolved is not None else _unresolved(role)
+
+
+def held_by(username: str, *, global_role: str) -> list[tuple[str | None, ResolvedRole]]:
+    """Every role ``username`` holds, in every tenant, as ``(tenant_id, role)``.
+
+    What the MFA policy asks (#504): not "what may this request do here" —
+    :func:`resolve` — but "what could this password do anywhere". Resolved by
+    the same rules as a request, so the answer cannot drift from what the
+    account is actually allowed: the global ``admin`` holds the platform
+    admin's permissions everywhere (``tenant_id`` None), an account with no
+    membership holds its global role in ``default`` (also None: it comes from
+    ``users.role``, not from a grant), and a membership naming a tenant role
+    that no longer resolves holds nothing.
+
+    Read across tenants on purpose, in the system scope — it runs during
+    authentication, before a tenant is known, exactly like the membership
+    lookup that finds one.
+    """
+    role = str(global_role or "").lower()
+    if role == permission_catalog.ROLE_ADMIN:
+        return [(None, resolve("", role, is_platform_admin=True))]
+    settings = _require_settings()
+    with tenant_scope.system("authentication: MFA policy"):
+        with get_session(settings.postgres_url) as session:
+            memberships = session.execute(
+                select(models.UserTenant.tenant_id, models.UserTenant.role)
+                .where(models.UserTenant.username == username)
+                .order_by(models.UserTenant.tenant_id)
+            ).all()
+            if not memberships:
+                return [(None, _builtin(role) or _unresolved(role))]
+            return [
+                (tenant_id, role_in_session(session, tenant_id, name) or _unresolved(name))
+                for tenant_id, name in memberships
+            ]
 
 
 # --- Read side --------------------------------------------------------------
@@ -505,6 +566,7 @@ def update_role(
         moved = 0
         if new_role_id is not None and new_role_id.strip().lower() != current_id:
             target_id = normalize_role_id(new_role_id)
+            _refuse_if_mapped(settings, tenant_id, current_id, "renamed")
             if session.get(models.RoleDefinition, (target_id, tenant_id)) is not None:
                 raise RoleExists(f"role already exists: {target_id}")
             # The primary key is the name, and role_permissions points at it
@@ -584,6 +646,7 @@ def delete_role(
             raise LookupError(f"role not found: {current_id}")
         held = _held_permissions(session, tenant_id, current_id)
         _refuse_above(actor, row.rank, held, f"role {current_id!r} is stronger than the caller")
+        _refuse_if_mapped(settings, tenant_id, current_id, "deleted")
 
         holders = _holders(session, tenant_id, current_id)
         target: ResolvedRole | None = None

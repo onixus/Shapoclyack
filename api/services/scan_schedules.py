@@ -163,6 +163,11 @@ def _compute_next_run(cron: str | None, interval_seconds: int | None, *, after: 
     return after + timedelta(seconds=interval_seconds)
 
 
+def next_occurrence(schedule: dict[str, Any], *, after: datetime) -> datetime:
+    """The schedule's first cadence tick after ``after``."""
+    return _compute_next_run(schedule["cron"], schedule["interval_seconds"], after=after)
+
+
 def reset_for_tests() -> None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:

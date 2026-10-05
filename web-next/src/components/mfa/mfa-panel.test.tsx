@@ -203,8 +203,55 @@ describe("MfaPanel", () => {
     installTransport({ status: 200, data: ON }, {});
     renderPanel();
 
-    expect(await screen.findByText(/requires a second factor for the admin role/i)).toBeInTheDocument();
+    expect(await screen.findByText(/requires a second factor of your account/i)).toBeInTheDocument();
     expect(screen.getByText(/9 of 10 recovery codes left/i)).toBeInTheDocument();
     expect(screen.getByText(/more than 15 minutes old/i)).toBeInTheDocument();
+  });
+
+  it("says why from what the API computed, not from the global role (#504)", async () => {
+    // A tenant admin whose account role is viewer: the store says viewer, and
+    // the panel must neither call MFA optional nor name the viewer role.
+    useAuthStore.setState({
+      user: { ...ME, username: "boss", role: "viewer", is_platform_admin: false, mfa_pending: true },
+      hydrated: true,
+      loading: false,
+    });
+    installTransport(
+      {
+        status: 200,
+        data: {
+          ...OFF,
+          username: "boss",
+          required_because: [
+            {
+              tenant_id: "acme",
+              role: "admin",
+              permissions: ["tenant.credential.manage", "tenant.member.manage"],
+              phishing_resistant: false,
+            },
+          ],
+        },
+      },
+      {},
+    );
+    renderPanel();
+
+    expect(await screen.findByText(/requires a second factor of your account/i)).toBeInTheDocument();
+    const reasons = screen.getByRole("list", { name: /required because of/i });
+    expect(reasons).toHaveTextContent(
+      "role admin in tenant acme: tenant.credential.manage, tenant.member.manage",
+    );
+    expect(screen.queryByText(/optional/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/viewer/i)).not.toBeInTheDocument();
+  });
+
+  it("calls it optional when the API says so, whatever the global role", async () => {
+    // The platform admin of the fixture, with the policy not covering it: the
+    // console must not decide "admins need MFA" on its own.
+    installTransport({ status: 200, data: { ...OFF, required: false, required_because: [] } }, {});
+    renderPanel();
+
+    expect(await screen.findByText(/optional for your account/i)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: /required because of/i })).not.toBeInTheDocument();
   });
 });

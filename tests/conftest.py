@@ -188,6 +188,17 @@ def reset_service_state(settings: "Settings") -> None:
     # authorization request from a previous test would otherwise leak into this
     # one (ROADMAP Track E).
     service_tokens_service.configure(settings)
+    # SCIM tokens and groups (#316) carry no tenant to cascade from — a token
+    # is bound to tenants by a JSON list, a group by the mapping in settings —
+    # so the truncation above leaves them, and a group one test pushed would
+    # be a 409 for the next one.
+    from api.services import scim as scim_service
+    from api.services import scim_tokens as scim_tokens_service
+
+    scim_tokens_service.configure(settings)
+    scim_tokens_service.reset_for_tests()
+    scim_service.configure(settings)
+    scim_service.reset_for_tests()
     # Since #321 the in-flight authorization requests are rows rather than a
     # process dict, so clearing them needs the settings that name the database.
     oidc_service.reset_for_tests(settings)

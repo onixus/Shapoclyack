@@ -615,6 +615,9 @@ OCTO_ENDPOINT_RETENTION_INTERVAL_SECONDS
 OCTO_ENDPOINT_STALE_HOURS
 OCTO_ENV
 OCTO_HSTS_ENABLED
+OCTO_IDP_AUTHORITATIVE
+OCTO_IDP_GROUPS_CLAIM_REQUIRED
+OCTO_IDP_GROUP_MAP
 OCTO_INSTANCE_ID
 OCTO_JOB_CANCEL_GRACE_SECONDS
 OCTO_JOB_EXECUTION_MODE
@@ -635,7 +638,9 @@ OCTO_LOGIN_RATE_LIMIT_WINDOW_SECONDS
 OCTO_MAX_BODY_BYTES
 OCTO_METRICS_TENANT_TOP_N
 OCTO_METRICS_TOKEN
+OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS
 OCTO_MFA_PHISHING_RESISTANT_ROLES
+OCTO_MFA_REQUIRED_PERMISSIONS
 OCTO_MFA_REQUIRED_ROLES
 OCTO_MFA_STEPUP_MINUTES
 OCTO_MFA_STEPUP_PHISHING_RESISTANT
@@ -716,6 +721,9 @@ OCTO_RUN_PUBLICATION_WORKER_ENABLED
 OCTO_RUN_RETENTION_DAYS
 OCTO_RUN_RETENTION_ENABLED
 OCTO_RUN_RETENTION_INTERVAL_SECONDS
+OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS
+OCTO_SCAN_QUEUE_MAX_DEPTH
+OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS
 OCTO_SCAN_SCOPE_RESOLVE_CHECK
 OCTO_SCHEDULER_DISPATCH_ENABLED
 OCTO_SCREENSHOT_RETENTION_DAYS
@@ -1064,6 +1072,20 @@ never sold a limit keeps scanning exactly as before.
 A negative value is floored to `0`, i.e. unlimited: this is a billing setting,
 and the safe direction for it to fail in is "do not refuse the customer".
 
+Scan queue admission ([#365](https://github.com/onixus/Shapoclyack/issues/365)).
+The per-tenant ceilings — `max_concurrent_scans` and `max_queued_scans` — are
+set over the API (`PUT /api/tenants/{id}/queue-limits`, see
+[api-and-rbac.md](api-and-rbac.md#queue-priority-concurrency-and-admission))
+and are unlimited until set; these are the installation-wide knobs around them.
+Not gated on `OCTO_QUOTA_ENFORCEMENT_ENABLED`: they protect the executors, not
+the invoice.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_SCAN_QUEUE_MAX_DEPTH` | `0` | Jobs that may wait in `queued` across every tenant. Past it `POST /api/jobs` answers `429` with `Retry-After` whichever tenant asks, and the recurring dispatcher defers the occurrence by `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` (stat `deferred_queue_full`), up to its next occurrence, after which it is skipped (`skipped_queue_full`). `0` means unlimited. Verification re-scans are exempt |
+| `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` | `60` | The `Retry-After` a full-queue `429` carries (floored to `1`). A queue drains at the pace scans finish, which the API cannot predict, so this is a back-off rather than a promise |
+| `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS` | `5` | How often a local scan held back by its tenant's `max_concurrent_scans` asks again for a slot (floored to `0.5`). Only a tenant with a ceiling ever waits |
+
 Logging ([#330](https://github.com/onixus/Shapoclyack/issues/330)). Read from
 the environment rather than from a settings object, because the configuration
 has to be in place before `load_settings()` runs — a `prod` start that refuses
@@ -1165,7 +1187,10 @@ SSO stays **off** until the first three are all set:
 | `OCTO_OIDC_DEFAULT_ROLE` | `viewer` | Role for a provisioned account when no claim maps to one. The lowest privileged role on purpose — a higher default grants it to everyone the IdP knows. An unrecognised value falls back to `viewer` with a warning |
 | `OCTO_OIDC_ROLE_CLAIM` | *(empty)* | Claim holding the caller's groups, e.g. `groups` |
 | `OCTO_OIDC_ROLE_MAP` | *(empty)* | JSON object mapping those values to console roles, e.g. `{"vm-admins":"admin","vm-ops":"operator"}`. The **highest** match wins; an unmapped group grants nothing, and an entry naming an unknown role is dropped rather than downgraded. Malformed JSON is logged and ignored rather than refused at startup: this is parsed on every boot whether or not SSO is configured, so a typo here must not stop the whole API |
-| `OCTO_OIDC_TENANT_CLAIM` | *(empty)* | Claim naming the tenant a provisioned account is granted membership in |
+| `OCTO_OIDC_TENANT_CLAIM` | *(empty)* | Claim naming the tenant a provisioned account is granted membership in. Ignored when `OCTO_IDP_AUTHORITATIVE` is on: the group map is then the only source of memberships |
+| `OCTO_IDP_AUTHORITATIVE` | `false` | Make the identity provider authoritative ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync), #316): every SSO login recomputes the global role from `OCTO_OIDC_ROLE_MAP` and the IdP-granted memberships from `OCTO_IDP_GROUP_MAP`, removes the ones the groups no longer grant, and disables an account in no mapped group. Memberships granted by a person are never touched; break-glass accounts are skipped. **Map the admin group in `OCTO_OIDC_ROLE_MAP` first** — the global role of every SSO account follows the map from the next login. With both maps empty, or `OCTO_OIDC_ROLE_CLAIM` empty, it stays off and warns at startup, because obeying it would disable every SSO account. A token that does not list the groups (claim missing, or Entra ID's overage) changes nothing at that login and provisions nothing, counted in `octo_idp_resync_skipped_total` — see `OCTO_IDP_GROUPS_CLAIM_REQUIRED` |
+| `OCTO_IDP_GROUPS_CLAIM_REQUIRED` | `false` | Declare that the IdP always sends `OCTO_OIDC_ROLE_CLAIM`, even empty. Then a token **without** the claim means "in no group" under `OCTO_IDP_AUTHORITATIVE` (memberships removed, account disabled) instead of "not listed" (login resyncs nothing). Leave it off for an IdP that drops an empty claim (Okta by default), or every such login disables the account. Entra ID's overage pointer (`_claim_names`, `hasgroups`) is "not listed" either way ([api-and-rbac.md](api-and-rbac.md#idp-authoritative-resync)) |
+| `OCTO_IDP_GROUP_MAP` | *(empty)* | JSON object mapping IdP groups (values of `OCTO_OIDC_ROLE_CLAIM`, or SCIM group names) to tenant memberships, e.g. `{"acme-ops": [{"tenant_id": "acme", "role": "operator"}], "acme-audit": {"tenant_id": "acme", "role": "auditor"}}`. The role is a built-in tenant role or one the tenant defined. Several groups granting one tenant resolve to the highest-ranked role. An unknown tenant grants nothing (logged where it is applied); a role the tenant does not have grants nothing, and the resync leaves alone only the IdP memberships in that tenant whose role no entry of the map names, logging an error until the map is fixed. A tenant role the map names can be neither renamed nor deleted (`409`): change the map first. Malformed JSON is logged and ignored, like `OCTO_OIDC_ROLE_MAP`. Shared by the SSO resync and SCIM, where a group grants no more than the SCIM token that created it could |
 | `OCTO_OIDC_DEFAULT_TENANT` | `default` | Tenant used when that claim is missing |
 | `OCTO_OIDC_CACHE_TTL_SECONDS` | `3600` | Discovery/JWKS cache lifetime. Rotation is also handled out of band: an unknown `kid` forces one refresh before the token is refused |
 | `OCTO_OIDC_STATE_TTL_SECONDS` | `600` | How long one authorization request stays valid — it only has to cover a human typing a password at the provider. It is also the whole bound on the `oidc_pending_states` table: the record is a row shared by every replica (#321), single-use, and swept once it expires. No session affinity is needed, and nothing evicts a *live* pending login the way the old 10,000-per-replica cap did |
@@ -1178,9 +1203,11 @@ Multi-factor authentication and local-login policy (see
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_MFA_REQUIRED_ROLES` | *(empty)* | Comma-separated console roles that must carry a second factor, e.g. `admin`. Empty — the default — means enrolment is available to everyone and required of nobody, which is why an upgrade changes nothing. An account in a listed role that has not enrolled still signs in, but its session carries `mfa_pending` and reaches only the MFA setup routes, `/api/auth/me` and the two ways out. An unknown role is dropped with a warning rather than refusing startup: dropping one only relaxes the requirement, where raising would take the API down over a typo |
-| `OCTO_MFA_STEPUP_MINUTES` | `15` | How recently the second factor must have been proved to mint or revoke a service token or a provisioning key, to replace a tenant's scan scope, or to create an account / set a password / change a role / reset somebody's MFA — the full list is in [api-and-rbac.md](api-and-rbac.md#step-up). Applies **only** to accounts that have MFA enabled. Values below `1` are clamped to `1`: zero would demand a code per click, which teaches people to keep an authenticator open beside the console |
+| `OCTO_MFA_REQUIRED_ROLES` | *(empty)* | Comma-separated console roles that must carry a second factor, e.g. `admin`. Matches the account's **global** role only, as before. Since #504 naming `admin` also switches on the derived `OCTO_MFA_REQUIRED_PERMISSIONS` below, which is what covers a tenant's admin or approver whose global role is `viewer`. Empty — the default — means enrolment is available to everyone and required of nobody, which is why an upgrade changes nothing. An account covered by the policy that has not enrolled still signs in, but its session carries `mfa_pending` and reaches only the MFA setup routes, `/api/auth/me` and the two ways out. An unknown role is dropped with a warning rather than refusing startup: dropping one only relaxes the requirement, where raising would take the API down over a typo |
+| `OCTO_MFA_REQUIRED_PERMISSIONS` | *(derived)* | Comma-separated permission keys ([catalogue](api-and-rbac.md#permissions)); an account holding any of them in **at least one** tenant — through a built-in role, a tenant-defined role, or the global `admin` — must carry a second factor (#504). **Unset** derives it: `tenant.member.manage,tenant.credential.manage,scan_scope.approve,vulnerability.exception.approve,endpoint_agent.manage` when `OCTO_MFA_REQUIRED_ROLES` names `admin`, empty otherwise — and, derived, it also covers any tenant role at the admin rank (3) whatever it lists. `none` turns the permission policy off. Re-evaluated per request, so a grant confines an already-open session on its next call ([api-and-rbac.md](api-and-rbac.md#coverage-by-authority-in-a-tenant-504)). Unknown keys are dropped with a warning; a value made **only** of unknown keys refuses to start, since dropping them all would read as `none` |
+| `OCTO_MFA_STEPUP_MINUTES` | `15` | How recently the second factor must have been proved to mint or revoke a service token or a provisioning key, to replace a tenant's scan scope, to grant, change or revoke a tenant membership or write a tenant role, to set the endpoint agent policy or upload/remove its builds, to approve, reject or revoke a risk acceptance, to disable, delete or sign out an account (#504), or to create an account / set a password / change a role / reset somebody's MFA — the full list is in [api-and-rbac.md](api-and-rbac.md#step-up). Applies **only** to accounts that have MFA enabled. Values below `1` are clamped to `1`: zero would demand a code per click, which teaches people to keep an authenticator open beside the console |
 | `OCTO_MFA_PHISHING_RESISTANT_ROLES` | *(empty)* | Comma-separated console roles whose sessions count as fully signed in only when the second factor was a **security key or passkey** (WebAuthn), not a TOTP or recovery code. Implies `OCTO_MFA_REQUIRED_ROLES` for those roles. A session of a listed role proved with a code is confined to the MFA routes — where it can register a key and verify with it — rather than refused; its step-ups must be a key as well. Same parsing as `OCTO_MFA_REQUIRED_ROLES`. In `prod`, refuses startup when no WebAuthn relying party can be derived ([api-and-rbac.md](api-and-rbac.md#requiring-a-phishing-resistant-factor)) |
+| `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS` | *(derived)* | The phishing-resistant counterpart of `OCTO_MFA_REQUIRED_PERMISSIONS` (#504): holders of a listed permission in any tenant must sign in, and step up, with a security key. Unset derives the tenant-authority set (and the admin-rank rule) when `OCTO_MFA_PHISHING_RESISTANT_ROLES` names `admin`; `none` turns it off; only unknown keys refuses to start. Implies `OCTO_MFA_REQUIRED_PERMISSIONS` for the same accounts. An explicit non-empty list is subject to the same `prod` relying-party check |
 | `OCTO_MFA_STEPUP_PHISHING_RESISTANT` | `false` | When `true`, every step-up (credentials, account administration, removing a key) must be proved with a security key, for every account that has MFA enabled — an account holding only an authenticator app cannot perform those operations until it registers a key. Same `prod` startup check as above |
 | `OCTO_WEBAUTHN_RP_ID` | *(hostname of `OCTO_PUBLIC_BASE_URL`)* | The WebAuthn relying-party ID: the domain keys are scoped to, e.g. `shapoclyack.example.com`. It must equal, or be a registrable suffix of, the host the console is served from. Changing it later orphans every registered key — they are bound to the old ID by the authenticator itself |
 | `OCTO_WEBAUTHN_ORIGINS` | *(origin of `OCTO_PUBLIC_BASE_URL`)* | Comma-separated exact origins (`scheme://host[:port]`) a ceremony may come from — the **console's** origin(s), which is not necessarily the API's when they are served separately. An assertion signed on any other origin is refused; this is the check that makes a key phishing-resistant. Never taken from the request. Lower-cased on read, as browsers serialise origins. In `prod` each must be `https` (`localhost` excepted) and have `OCTO_WEBAUTHN_RP_ID` as its host or a parent of it, and the RP ID must not be an IP address — checked whenever WebAuthn is configured or a policy uses it |

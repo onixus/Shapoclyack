@@ -54,6 +54,44 @@ def lease_deadline(settings: Settings) -> datetime:
     return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
 
 
+def _waiting_mark_lifetime(settings: Settings) -> timedelta:
+    """How long the mark of a local scan waiting for its tenant's slot lasts (#365).
+
+    Such a job is ``queued`` with no lease — nothing has claimed it — yet it
+    has an executor: the thread in the replica that accepted it, and only
+    that replica will ever start it. The thread keeps a mark in
+    ``claimed_until`` fresh each time it asks for the slot, and the reaper
+    writes off a waiting local job whose mark lapsed, whichever replica owned
+    it: a pod replaced by a rollout comes back under a new ``instance_id``, so
+    startup reconciliation never sees its rows. A lease's length, and never
+    less than three polls, so one slow ask is not mistaken for a dead replica.
+
+    It is no stronger than a lease: a live replica that cannot reach the
+    database for longer than what is left of the mark has its waiting scans
+    written off, as its running ones would be. Since
+    :func:`renew_waiting_mark` lets half of it run down, what is left is
+    anywhere between half the lifetime and all of it.
+    """
+    return timedelta(
+        seconds=max(settings.job_lease_seconds, 3 * settings.scan_queue_local_poll_seconds, 1)
+    )
+
+
+def renew_waiting_mark(settings: Settings, row: models.Job) -> None:
+    """Renew a waiting local job's mark, but only once half of it is spent.
+
+    The thread asks for its slot every poll, and ``claimed_until`` is in
+    ``ix_jobs_lease``: rewriting it at each ask is a new row version and an
+    index entry every few seconds for every waiting scan, sixty per lease at
+    the defaults, against a reaper that needs the whole mark to lapse. Half a
+    mark is never less than one and a half polls (the lifetime is at least
+    three), so a thread that keeps asking always renews before it lapses.
+    """
+    lifetime = _waiting_mark_lifetime(settings)
+    if row.claimed_until is None or row.claimed_until - _now() < lifetime / 2:
+        row.claimed_until = _now() + lifetime
+
+
 def extend_lease(row: models.Job, deadline: datetime) -> None:
     """Push a lease deadline out, never pull it in.
 
