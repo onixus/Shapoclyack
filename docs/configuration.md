@@ -1073,7 +1073,7 @@ the invoice.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OCTO_SCAN_QUEUE_MAX_DEPTH` | `0` | Jobs that may wait in `queued` across every tenant. Past it `POST /api/jobs` answers `429` with `Retry-After` whichever tenant asks, and the recurring dispatcher defers the occurrence by `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` (stat `deferred_queue_full`). `0` means unlimited. Verification re-scans are exempt |
+| `OCTO_SCAN_QUEUE_MAX_DEPTH` | `0` | Jobs that may wait in `queued` across every tenant. Past it `POST /api/jobs` answers `429` with `Retry-After` whichever tenant asks, and the recurring dispatcher defers the occurrence by `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` (stat `deferred_queue_full`), up to its next occurrence, after which it is skipped (`skipped_queue_full`). `0` means unlimited. Verification re-scans are exempt |
 | `OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS` | `60` | The `Retry-After` a full-queue `429` carries (floored to `1`). A queue drains at the pace scans finish, which the API cannot predict, so this is a back-off rather than a promise |
 | `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS` | `5` | How often a local scan held back by its tenant's `max_concurrent_scans` asks again for a slot (floored to `0.5`). Only a tenant with a ceiling ever waits |
 

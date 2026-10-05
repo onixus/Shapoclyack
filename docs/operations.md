@@ -708,8 +708,10 @@ client of any tenant ([configuration.md](configuration.md)).
 **Local scans** (`OCTO_JOB_EXECUTION_MODE=local`) wait in their thread and ask
 again every `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. Priority between them holds
 within one replica; a local scan can only ever be started by the replica that
-accepted it. Each ask renews a waiting mark on the job (`claimed_until`, one
-`OCTO_JOB_LEASE_SECONDS`, at least three polls). When the replica goes away —
+accepted it. Asking keeps a waiting mark on the job fresh (`claimed_until`,
+one `OCTO_JOB_LEASE_SECONDS`, at least three polls; rewritten only once half of
+it is spent, so a waiting scan costs a row update per half lease rather than
+per poll). When the replica goes away —
 a crash, or a rollout, which brings the pod back under a new
 `OCTO_INSTANCE_ID` so its startup never reconciles the old pod's rows — nobody
 renews it, and the job reaper of any replica fails the scan once the mark
@@ -717,7 +719,12 @@ lapses ("Waited for a scan slot on replica …, which stopped reporting"). Until
 then it still counts against `max_queued_scans` and
 `OCTO_SCAN_QUEUE_MAX_DEPTH`: allow one lease plus `OCTO_JOB_REAPER_INTERVAL_SECONDS`
 after a rollout before reading a `429` as a real backlog. A live replica's
-waiting scans are never reaped by another, however long they wait. A waiting
+waiting scans are not reaped however long they wait, as long as it can reach
+the database: the mark is no stronger than a running job's lease. A replica cut
+off from the database for longer than what is left of the mark — between half
+a lease and a whole one — has its waiting scans failed by another replica's
+reaper, with the same "stopped reporting" error, and logs `Not starting job …`
+at WARNING when it reconnects; those scans have to be started again. A waiting
 scan does not queue on the tenant's claim lock — it tries it and asks again at
 the next poll — so it holds a database connection only while it asks, not
 while it waits; each one is still a thread of its own, so a tenant that queues
@@ -735,7 +742,12 @@ Operators can lower their own scans to make room. Every move is a
 `octo_tenant_jobs_queued` keeps climbing while its concurrency throttle rate is
 steady is a tenant that queues faster than its ceiling lets it scan. A
 schedule that meets a full queue is deferred by `Retry-After`, not skipped:
-`deferred_queue_full` in the dispatcher stats, apart from `skipped_quota`.
+`deferred_queue_full` in the dispatcher stats, apart from `skipped_quota`. The
+deferral stops at the schedule's next occurrence: once the back-off would reach
+it, the occurrence is skipped (`skipped_queue_full`, one per lost occurrence,
+logged at WARNING) and the schedule resumes on its cadence. A
+`skipped_queue_full` that keeps growing is a queue that does not drain at all —
+in agent mode, usually no sensor for the tenant — not a busy minute.
 
 ### On upgrade
 

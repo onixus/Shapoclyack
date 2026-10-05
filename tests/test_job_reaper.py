@@ -159,6 +159,11 @@ def test_jobs_without_a_lease_are_left_alone(settings):
 
     with get_session(settings.postgres_url) as session:
         assert session.get(models.Job, done.job_id).claimed_until is None
+        # Waiting for a sensor for many leases is a sensor job's normal life
+        # (#365): only a *local* job that waited that long with no waiting mark
+        # is one whose replica died, so its age alone must not get it reaped.
+        aged = jobs_service._now() - timedelta(seconds=settings.job_lease_seconds * 10)  # noqa: SLF001
+        session.get(models.Job, queued.job_id).queued_at = aged
 
     assert jobs_service.reap_expired_leases(settings) == {"requeued": 0, "failed": 0}
     assert get_job(settings, queued.job_id).status == "queued"

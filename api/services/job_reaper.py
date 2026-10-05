@@ -47,13 +47,16 @@ def reap_expired_leases(settings: Settings) -> dict[str, int]:
     - **local** jobs still ``queued`` are failed the same way once their
       waiting mark lapses (#365). A local scan held back by its tenant's
       ``max_concurrent_scans`` waits in its replica's thread, which renews the
-      mark each time it asks for the slot (``job_leases.waiting_deadline``);
+      mark as it asks for the slot (``job_leases.renew_waiting_mark``);
       a mark nobody renewed means that replica is gone. Whose row it is does
       not matter — a pod replaced by a rollout returns under a new
       ``instance_id``, so ``job_repository.load_jobs`` never reconciles it —
-      and a live replica's waiter is never touched, because its mark is
-      fresh. A row with no mark at all is one whose thread never asked: it is
-      given one lease from ``queued_at``.
+      and a live replica's waiter is not touched while its mark is fresh. One
+      that cannot reach the database for what is left of its mark is written
+      off like a running job whose lease lapsed. A row with no mark at all is one whose
+      thread never asked: it is given one lease from ``queued_at``. Agent jobs
+      wait in ``queued`` for a sensor as long as they must and are never
+      reaped there.
 
     Safe to run in every replica (there is no leader election until P1.6): rows
     are taken with ``FOR UPDATE SKIP LOCKED``, so two reapers sweeping at once

@@ -505,6 +505,96 @@ def test_a_live_replicas_waiting_scan_is_not_reaped_by_another(svc, tmp_path):
     assert local_job_runner._start(replica_b, "patient") is True
 
 
+def _mark(settings: Settings, job_id: str) -> datetime | None:
+    with get_session(settings.postgres_url) as session:
+        return session.get(models.Job, job_id).claimed_until
+
+
+def test_a_scan_held_back_by_a_better_one_still_renews_its_mark(svc):
+    """The slot is free, but a better job of the tenant waits on this replica:
+    the worse one is told to wait too, and that answer must say it is alive,
+    or a long queue of low-priority scans is reaped while the top one runs."""
+    _queue(svc, "ahead-high", execution="local", owner_id=svc.instance_id, priority=10)
+    _queue(svc, "ahead-low", execution="local", owner_id=svc.instance_id, age_seconds=60)
+    _limit(svc, concurrent=2)
+    _lapse_wait(svc, "ahead-low")
+
+    assert local_job_runner._start(svc, "ahead-low") is False
+
+    mark = _mark(svc, "ahead-low")
+    assert mark is not None and mark > _now()
+    assert job_reaper.reap_expired_leases(svc) == {"requeued": 0, "failed": 0}
+
+
+def test_the_waiting_mark_lasts_a_lease_not_just_three_polls(svc):
+    """The mark is what a database hiccup has to outlast before another
+    replica writes the waiting scan off. Three polls is 15 s; a lease is the
+    margin every running job already gets."""
+    _queue(svc, "slot-holder", status=job_states.RUNNING)
+    _queue(svc, "long-wait", execution="local", owner_id=svc.instance_id)
+    _limit(svc, concurrent=1)
+    assert 3 * svc.scan_queue_local_poll_seconds < svc.job_lease_seconds
+
+    asked_at = _now()
+    assert local_job_runner._start(svc, "long-wait") is False
+
+    mark = _mark(svc, "long-wait")
+    assert mark is not None
+    assert mark >= asked_at + timedelta(seconds=svc.job_lease_seconds)
+
+
+def test_the_waiting_mark_is_rewritten_only_once_half_of_it_is_spent(svc):
+    """``claimed_until`` is in ``ix_jobs_lease``, so each rewrite is a new row
+    version and an index entry. Renewing a lease-long mark at every 5 s poll
+    was sixty of those per lease per waiting scan; half a lease of slack is
+    plenty against a reaper that needs the whole mark to lapse."""
+    _queue(svc, "slot-holder", status=job_states.RUNNING)
+    _queue(svc, "thrifty", execution="local", owner_id=svc.instance_id)
+    _limit(svc, concurrent=1)
+    lifetime = timedelta(seconds=svc.job_lease_seconds)
+
+    assert local_job_runner._start(svc, "thrifty") is False
+    first = _mark(svc, "thrifty")
+    assert local_job_runner._start(svc, "thrifty") is False
+    assert _mark(svc, "thrifty") == first
+
+    with get_session(svc.postgres_url) as session:
+        session.get(models.Job, "thrifty").claimed_until = _now() + lifetime * 0.4
+    asked_at = _now()
+    assert local_job_runner._start(svc, "thrifty") is False
+    assert _mark(svc, "thrifty") >= asked_at + lifetime
+
+
+def test_a_live_replica_cut_off_from_the_database_past_its_mark_loses_the_scan_loudly(
+    svc, monkeypatch, caplog
+):
+    """The mark is no stronger than a lease: a replica that could not renew it
+    in time — the database out of reach — finds its waiting scan written off
+    by another replica's reaper. It must not start it, and must say so above
+    INFO: an operator's scan silently never ran."""
+    _queue(svc, "slot-holder", status=job_states.RUNNING)
+    _queue(svc, "cut-off", execution="local", owner_id=svc.instance_id)
+    _limit(svc, concurrent=1)
+
+    def outage_then_reaped(_seconds: float) -> bool:
+        _lapse_wait(svc, "cut-off")
+        assert job_reaper.reap_expired_leases(svc) == {"requeued": 0, "failed": 1}
+        return False
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("a written-off scan must not launch")
+
+    monkeypatch.setattr(local_scan_executor, "wait_unless_draining", outage_then_reaped)
+    monkeypatch.setattr(local_scan_executor, "run_scanner", never)
+
+    with caplog.at_level("INFO"):
+        local_job_runner.run_job(svc, "cut-off", ["true"])
+
+    assert _status(svc, "cut-off") == job_states.FAILED
+    gave_up = [r for r in caplog.records if "Not starting job cut-off" in r.getMessage()]
+    assert [r.levelname for r in gave_up] == ["WARNING"]
+
+
 def test_a_waiting_local_scan_does_not_queue_on_the_tenants_claim_lock(svc):
     """A waiter that blocked on the claim lock would hold a pooled connection
     for as long as the claim in front of it — which may be reading a job's
@@ -813,3 +903,54 @@ def test_a_full_queue_defers_a_scheduled_scan_instead_of_dropping_its_tick(svc, 
     # Retried after the back-off, not at the next cadence tick a day away.
     assert asked_at + retry - timedelta(seconds=5) <= next_run <= datetime.now(UTC) + retry
     assert updated["last_job_id"] == "prior"
+
+
+def test_a_queue_that_never_drains_costs_a_schedule_one_tick_not_every_tick(svc, monkeypatch):
+    """Deferred by ``Retry-After`` for ever, an hourly schedule against a
+    queue that never drains folded every missed hour into one occurrence and
+    no statistic said a tick was lost. Deferral stops at the next cadence
+    tick: the occurrence is counted as skipped and the schedule resumes there."""
+    scan_schedules.configure(svc)
+    sched = scan_schedules.create_schedule(
+        tenant_id=DEFAULT,
+        name="hourly",
+        cron=None,
+        interval_seconds=3600,
+        scan_options={"mode": "safe"},
+        targets={},
+        created_by=None,
+    )
+    _limit(svc, queued=1)
+    _queue(svc, "never-drains")
+    monkeypatch.setattr(jobs_service, "get_job", lambda settings, job_id: None)
+    dispatcher = schedule_dispatcher.ScheduleDispatcher(settings=svc)
+    retry = timedelta(seconds=svc.scan_queue_retry_after_seconds)
+    first = datetime.now(UTC)
+
+    def next_run() -> datetime:
+        raw = scan_schedules.get_schedule(sched["schedule_id"])["next_run_at"]
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=UTC)
+
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), first)  # noqa: SLF001
+    assert next_run() == first + retry
+    # Still short of the next tick: one more back-off.
+    late = first + timedelta(seconds=3600) - retry * 2
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), late)  # noqa: SLF001
+    assert next_run() == late + retry
+    # The back-off would now reach the next tick: the occurrence is lost.
+    later = first + timedelta(seconds=3600) - retry / 2
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), later)  # noqa: SLF001
+
+    stats = dispatcher.stats
+    assert stats["deferred_queue_full"] == 2
+    assert stats["skipped_queue_full"] == 1
+    assert stats["skipped_quota"] == 0
+    assert next_run() == first + timedelta(seconds=3600)
+    assert scan_schedules.get_schedule(sched["schedule_id"])["last_job_id"] is None
+
+    # The next tick starts its own allowance of back-offs.
+    tick = next_run()
+    dispatcher._dispatch(scan_schedules.get_schedule(sched["schedule_id"]), tick)  # noqa: SLF001
+    assert next_run() == tick + retry
+    assert dispatcher.stats["deferred_queue_full"] == 3
+    assert dispatcher.stats["skipped_queue_full"] == 1

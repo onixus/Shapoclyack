@@ -21,8 +21,10 @@ All notable changes to Shapoclyack are documented in this file.
   `OCTO_SCAN_QUEUE_MAX_DEPTH` is the installation-wide depth ceiling. A local
   scan of a tenant at its ceiling now waits in `queued` instead of starting,
 renewing a waiting mark the job reaper of any replica uses to fail it once its
-replica is gone; a scheduled scan that meets a full queue is deferred by the
-`Retry-After`, not skipped (`deferred_queue_full`).
+replica is gone (or cut off from the database for longer than the mark, as a
+running job's lease would be); a scheduled scan that meets a full queue is
+deferred by the `Retry-After`, not skipped (`deferred_queue_full`), up to its
+next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
   New series `octo_scan_queue_throttled_total{reason}` and the opt-in
   `octo_tenant_jobs_queued{tenant}`. The console's job table shows and sets
   the priority, gated by the permission in the active tenant. Migration

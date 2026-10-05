@@ -147,9 +147,10 @@ def _start(settings: Settings, job_id: str) -> bool:
     another claim holds it the answer is ``False`` and the thread asks again
     at its next poll (:func:`scan_queue.hold_slot`).
 
-    Every ``False`` renews the job's waiting mark
-    (:func:`job_leases.waiting_deadline`): it is how the reaper on any replica
-    tells a scan that is still waiting from one whose replica went away.
+    Every ``False`` keeps the job's waiting mark fresh
+    (:func:`job_leases.renew_waiting_mark`, which rewrites it only once half
+    of it is spent): it is how the reaper on any replica tells a scan that is
+    still waiting from one whose replica went away.
 
     Raises :class:`job_states.InvalidJobTransition` for a job that is no
     longer queued — cancelled while it waited, typically.
@@ -173,7 +174,7 @@ def _start(settings: Settings, job_id: str) -> bool:
             scan_queue.concurrency_limit(session, tenant_id) is not None
             and scan_queue.local_job_ahead(session, row)
         ):
-            row.claimed_until = job_leases.waiting_deadline(settings)
+            job_leases.renew_waiting_mark(settings, row)
             return False
         row.status = job_states.RUNNING
         row.started_at = _now()
@@ -230,7 +231,11 @@ def run_job(
         if not _wait_for_slot(settings, job_id):
             return
     except job_states.InvalidJobTransition as exc:
-        _log.info("Not starting job %s: %s", job_id, exc)
+        # A warning: besides a cancel, this is how a waiting scan learns the
+        # job reaper wrote it off — this replica could not reach the database
+        # for longer than what was left of its waiting mark — and that is a
+        # scan the operator asked for and will not get.
+        _log.warning("Not starting job %s: %s", job_id, exc)
         # Cancelled between the insert and this thread getting scheduled: the
         # scan never launches, so nothing will ever read the wordlist copy or
         # the input files.
