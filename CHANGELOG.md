@@ -667,6 +667,31 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
+- **Subdomain takeover detection with a fingerprint catalogue (DQ3).**
+  `domain_monitor`'s dangling-CNAME check now judges each in-scope name's CNAME
+  chain against `scanner/pipeline/takeover_fingerprints.json` — 58 services
+  (31 `vulnerable`, 13 `edge_case`, 14 `not_vulnerable`), each with its CNAME
+  targets, how an unclaimed resource shows (NXDOMAIN or the provider's page),
+  fingerprints, sources and the date checked; the file is validated when the
+  check starts. Findings in the `dangling_cname` section are now
+  `subdomain_takeover` with `confidence: confirmed` (high: NXDOMAIN of a
+  claimable resource name, or the provider's unclaimed page) or `heuristic`
+  (medium: claimable service, no address), and `dangling_cname_nxdomain`
+  (high: the chain ends at a name whose registrable domain does not exist).
+  Every finding carries `severity`, `detail` and an `evidence` block; what
+  matched but is not a finding is listed under `not_reported` with a reason.
+  The confirmation is one bounded GET per scheme to the org's own name, pinned
+  to the resolved address with `Host`/SNI set to it, no redirects, 64 KiB, a
+  hard deadline, no proxy, never to an address the scan scope denies
+  (`discovery.domain_monitor.takeover_http_confirm`, default on, with
+  `takeover_http_concurrency`/`_timeout_seconds`/`_max_targets`). The tenant
+  policy's `skip_service_probe` turns it off and `max_host_concurrency` caps
+  it. Old readers keep `fqdn`, `cname_target` and `matched_suffix`; the finding
+  `kind` is no longer `dangling_cname`, `domain_monitor_findings.txt` lines are
+  `<kind>:<confidence>:<fqdn>:<target>`, and a confirmed takeover now makes the
+  "DNS structure" control `fail` instead of `weak`. Statuses adapted from
+  can-i-take-over-xyz (CC BY 4.0, attributed in `NOTICE`). See
+  `docs/configuration.md` § Subdomain takeover detection.
 
 ### Changed
 
@@ -1366,6 +1391,17 @@ All notable changes to Shapoclyack are documented in this file.
     of starting a second one beside it.
   - A failed `import agent.worker` check now prints the last lines of the
     traceback instead of discarding them.
+- **The dangling-CNAME check reported live resources.** Its dnsx lookup was
+  `-cname -resp`, which (measured on dnsx 1.2.3) returns the first hop of a
+  chain and never an address, so the "no A/AAAA" gate held for every name and
+  any CNAME into the 14 listed suffixes was a finding — a working GitHub Pages
+  site included. Five of those suffixes (CloudFront, Fastly, WP Engine,
+  Unbounce, Zendesk) belong to services that do not allow a takeover;
+  `s3-website` could never end a real name, so S3 website endpoints were never
+  matched; and matching was not label-bounded (`evilgithub.io` matched
+  `github.io`). The lookup is now `-a -aaaa` (whole chain, addresses, and the
+  NXDOMAIN of the chain's end, which `-cname` beside `-a` would overwrite) and
+  matching goes through the takeover catalogue above.
 
 ### Documentation
 

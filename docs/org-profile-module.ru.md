@@ -296,7 +296,13 @@ RDAP-сервер реестра не подхватился бы никогда
   (`axfr_probe: false` по умолчанию) — единственная в модуле, выходящая за
   рамки обычного DNS-запроса;
 - **dangling CNAME / typosquat**: **не реализуем заново** — контроль ссылается
-  на findings из `domain_monitor.py` и включает их в свой статус.
+  на findings из `domain_monitor.py` и включает их в свой статус. С 2026-10
+  findings секции `dangling_cname` несут свою `severity`: подтверждённый захват
+  поддомена (`subdomain_takeover`, `confidence: confirmed`) и CNAME в
+  незарегистрированный домен (`dangling_cname_nxdomain`) — `high`, и контроль
+  «DNS структура» становится `fail`; эвристика без подтверждения — `medium`
+  (`weak`). Каталог сервисов и правила — в
+  [configuration.md](configuration.md#subdomain-takeover-detection).
 
 ## Стадия 4 — почтовая защита (`mail_posture.py`) — реализовано (M2)
 

@@ -49,6 +49,21 @@ subject to the Mozilla Public License, v. 2.0 (https://mozilla.org/MPL/2.0/).
 It is bundled unmodified, licence header included, at
 scanner/pipeline/public_suffix_list.dat; that file is its own source form.
 
+Subdomain-takeover catalogue
+----------------------------
+
+scanner/pipeline/takeover_fingerprints.json contains takeover statuses and
+fingerprint strings adapted from "can-i-take-over-xyz" by EdOverflow and
+contributors (https://github.com/EdOverflow/can-i-take-over-xyz), used under
+the Creative Commons Attribution 4.0 International licence (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Changes: a selection of entries, re-expressed as a JSON catalogue with this
+project's own CNAME patterns, notes and identifiers; some fingerprints replaced
+with ones from ProjectDiscovery's nuclei-templates (MIT,
+https://github.com/projectdiscovery/nuclei-templates). No endorsement by the
+authors is implied.
+
 LGPL components
 ---------------
 

@@ -202,6 +202,48 @@ Optional modules include:
 Several modules query third-party infrastructure. Enable them deliberately,
 keep candidate/concurrency caps, and review their data-handling policies.
 
+### Subdomain takeover detection
+
+`discovery.domain_monitor` (off by default) resolves every in-scope FQDN with
+its CNAME chain, addresses and DNS status, and judges the chain against the
+takeover catalogue in `scanner/pipeline/takeover_fingerprints.json`. Each of
+its entries names a service, the CNAME targets it hands out, how an unclaimed
+resource shows (NXDOMAIN of the target, or a page the provider serves), and a
+status: `vulnerable`, `edge_case` (claimable only under the condition its note
+names) or `not_vulnerable`. Findings land in `domain_monitor.json` under the
+`dangling_cname` section, each with an `evidence` block (chain, DNS status,
+service and its status, which check ran, fingerprint id, HTTP status, the
+names that returned NXDOMAIN):
+
+| `kind` / `confidence` | Severity | When |
+|---|---|---|
+| `subdomain_takeover` / `confirmed` | high | NXDOMAIN of a claimable resource name (Azure, Elastic Beanstalk, …), or the provider's unclaimed-resource page for the org's name |
+| `subdomain_takeover` / `heuristic` | medium | The chain points at a claimable service and the name has no address, so nothing could be checked |
+| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain (Public Suffix List) does not exist either. A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
+
+A chain into a `not_vulnerable` service (CloudFront, Fastly, Zendesk, …), a
+resource that answered without the fingerprint, a check that got no answer and
+a name the scope refused are not findings; they are listed under
+`not_reported` with the reason, so a reviewer can see what was looked at.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `takeover_http_confirm` | `true` | For a candidate that resolves: one GET per scheme (HTTPS, then HTTP) to the org's own name, pinned to the address just resolved, `Host` and TLS SNI set to that name. It lands on the provider's infrastructure, not the org's. No redirect is followed, at most 64 KiB is read, the proxy environment is ignored, TLS is not verified, and an address the approved scan scope denies is never contacted. Off, such candidates are `not_reported` with `http_confirm_disabled` |
+| `takeover_http_concurrency` | `5` | Requests in flight. Held to the tenant policy's `max_host_concurrency` |
+| `takeover_http_timeout_seconds` | `10` | Hard deadline per attempt, whole exchange included |
+| `takeover_http_max_targets` | `200` | Names probed per run; the rest are `not_reported` with `http_target_cap` and the section says `truncated` |
+
+The tenant scan policy's `skip_service_probe` (the `fragile` profile) turns
+`takeover_http_confirm` off and never back on; the DNS lookups stay. The
+catalogue is loaded and validated when the check starts, and a malformed file
+stops the stage rather than reporting nothing. Statuses come from public
+research — mainly [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz)
+and the nuclei-templates takeover set — and each entry records its sources and
+the date they were read. To refresh an entry, re-read its sources, update
+`status`/`fingerprints`/`checked`, and run `tests/test_takeover_catalogue.py`.
+Providers change their error pages without notice; until the entry is updated,
+what would have been a confirmation shows up as `fingerprint_not_matched`.
+
 ### Tenant-uploaded wordlists
 
 Operators can upload custom brute-force dictionaries through the API/UI

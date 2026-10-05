@@ -453,10 +453,15 @@ and not the next is not a ceiling:
   and browser screenshots off, and disables only the **direct-handshake
   fallback** of TLS posture. TLS posture itself stays enabled so it may parse
   certificate evidence already present in NSE/Pulse artifacts without opening
-  a new connection. For a tenant that is throttled rather than silenced,
-  `nuclei.rate_limit` is held to `per_host_rate` and every active secondary
-  pool (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
-  `screenshots.concurrency`) is held to `max_host_concurrency`.
+  a new connection. Domain monitoring keeps its DNS lookups but loses the
+  **subdomain-takeover confirmation GET**
+  (`discovery.domain_monitor.takeover_http_confirm`), so a resolving takeover
+  candidate is listed as unconfirmed instead of checked. For a tenant that is
+  throttled rather than silenced, `nuclei.rate_limit` is held to
+  `per_host_rate` and every active secondary pool
+  (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
+  `screenshots.concurrency`, `discovery.domain_monitor.takeover_http_concurrency`)
+  is held to `max_host_concurrency`.
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
