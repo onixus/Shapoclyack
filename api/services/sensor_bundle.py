@@ -80,11 +80,16 @@ def _sha256(path: Path) -> str:
     return value
 
 
+def _unreadable(exc: OSError) -> str:
+    name = Path(exc.filename).name if exc.filename else "a bundle file"
+    return f"{name} cannot be read by this server ({exc.strerror or exc})"
+
+
 def current_bundle(bundle_dir: str) -> SensorBundle:
     """The bundle in ``bundle_dir`` (``OCTO_AGENT_BUNDLE_DIR``).
 
     Raises ``LookupError`` when none is published and ``ValueError`` when the
-    directory holds one that does not add up.
+    directory holds one that does not add up or that this process cannot read.
     """
     if not bundle_dir:
         raise LookupError(
@@ -98,6 +103,11 @@ def current_bundle(bundle_dir: str) -> SensorBundle:
         raise LookupError(
             f"No sensor bundle is published on this server ({exc.filename} is missing)"
         ) from exc
+    except OSError as exc:
+        # Present but unreadable to the API's account (copied as root with
+        # umask 077; cosign writes the .sig 0600) or a directory: the bundle
+        # is there and broken, which is the 503, not a 500 without a reason.
+        raise ValueError(_unreadable(exc)) from exc
     try:
         data = json.loads(manifest.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -120,10 +130,13 @@ def current_bundle(bundle_dir: str) -> SensorBundle:
     archive_path = root / archive
     if not archive_path.is_file():
         raise ValueError(f"{archive}, named by {MANIFEST_NAME}, is not in the bundle directory")
-    if archive_path.stat().st_size != size:
-        raise ValueError(f"{archive} is not the {size} bytes {MANIFEST_NAME} says")
-    if _sha256(archive_path) != digest:
-        raise ValueError(f"{archive} does not match the sha256 in {MANIFEST_NAME}")
+    try:
+        if archive_path.stat().st_size != size:
+            raise ValueError(f"{archive} is not the {size} bytes {MANIFEST_NAME} says")
+        if _sha256(archive_path) != digest:
+            raise ValueError(f"{archive} does not match the sha256 in {MANIFEST_NAME}")
+    except OSError as exc:
+        raise ValueError(_unreadable(exc)) from exc
     text = signature.decode("ascii", errors="replace").strip()
     if not text:
         raise ValueError(f"{SIGNATURE_NAME} is empty")

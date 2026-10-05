@@ -263,11 +263,14 @@ publish that release's bundle **signed with the old key** — it is the bundle
 that carries the new key onto the fleet. The publish job cannot do that step:
 its `Sensor bundle` stage signs with the Jenkins credential and verifies against
 the `cosign.pub` of the pipeline revision, which are both the new key by then.
-Sign the transition bundle by hand on the machine holding the old key, from the
-release tag:
+Sign the transition bundle by hand on the machine holding the old key, from a
+checkout of the release tag:
 `scripts/build-sensor-bundle.sh --source agent --out dist/sensor-bundle --key
 old-cosign.key --pubkey old-cosign.pub`, and publish that instead of the job's
-artifact. A sensor that skips the transition release keeps the old key and
+artifact. Only the files git tracks under `agent/` go into the archive, so an
+`.env` or editor leftovers in that working copy are not signed and shipped, and
+the archive's sha256 is the Jenkins artifact's; the script refuses a source
+outside a git checkout unless given `--whole-tree`. A sensor that skips the transition release keeps the old key and
 refuses every later bundle until the installer is re-run. Releases signed before stay
 verifiable with the `cosign.pub` at their own tag, which is why verification
 always fetches the key from the release tag — and why a tag should be

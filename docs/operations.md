@@ -2281,7 +2281,14 @@ the **release key** — the cosign key pair that signs the images
 `Sensor bundle` stage (`scripts/build-sensor-bundle.sh`) and archives three
 files: `sensor-bundle.json`, `sensor-bundle.json.sig` and
 `shapoclyack-sensor-<version>.tar.gz`. A `DRY_RUN` builds them unsigned, and no
-sensor will install that.
+sensor will install that. So does a **prerelease** tag (`-alpha<N>`, `-beta<N>`,
+`-rc<N>`): one `OCTO_AGENT_BUNDLE_DIR` serves every sensor that updates with
+`--auto`, and a beta signed with the release key would reach all of them. To
+try a prerelease on a test sensor, sign its bundle by hand as for a key
+rotation ([supply-chain.md](supply-chain.md)) and install it with
+`--bundle-dir`. The sensor orders a prerelease below the release it precedes
+(`0.47-1005-beta1` < `0.47-1005`), so the final release replaces it as an
+upgrade.
 
 **Publishing it.** Put the three files in a directory every API replica can
 read and point `OCTO_AGENT_BUNDLE_DIR` at it. The API reads them on each
@@ -2306,6 +2313,10 @@ sudo shapoclyack-update-agent            # fetch from the API this sensor report
 sudo shapoclyack-update-agent --check    # verify and report, change nothing
 sudo shapoclyack-update-agent --bundle-dir /media/usb/sensor-bundle   # air-gapped
 ```
+
+`--bundle-dir` may be relative to where the script is run; the files in it are
+read by the sensor's account, not by root, so a directory under `/root` or files
+copied with `umask 077` are refused with that reason.
 
 **Root does two things and nothing else**: it runs the verifier *as the
 sensor's account* (`runuser -u shapoclyack`, BusyBox `su` on Alpine) and it
@@ -2358,9 +2369,11 @@ directory — becomes a symlink to it, replaced with an atomic `rename(2)`. The
 first update moves the installer's plain `agent` directory under `releases/`
 as `legacy-<version>-…`. In order:
 
-1. **stage** — unpack, check the version, import `agent.worker` from the staged
-   tree in a fresh isolated interpreter of the sensor's venv. A release that does
-   not import never goes live;
+1. **stage** — unpack, check the version, import `agent.worker` and
+   `agent.update` from the staged tree in a fresh isolated interpreter of the
+   sensor's venv. A release that does not import never goes live — including
+   one whose service would run but whose updater would not, which would
+   otherwise be kept and leave the host with nothing to install the fix with;
 2. **swap** — journal the previous release to `.sensor-update.json`, then swap
    the link;
 3. **health check** — the script, as root, runs
@@ -2440,8 +2453,8 @@ Limits worth knowing:
   downloading the archive (a bundle already installed is not downloaded
   either). A run without `--auto` tries it again, and an update that is kept
   clears the record;
-- **dependencies are not updated.** A bundle that needs a Python package the
-  venv lacks fails the pre-swap import and is refused, safely; such a release
+- **dependencies are not updated.** A bundle whose service or updater needs a
+  Python package the venv lacks fails the pre-swap import and is refused, safely; such a release
   is installed by re-running `install-agent.sh`, which reinstalls the venv from
   the hash-locked list;
 - **a sensor installed before this release has no verifier.** `update-agent.sh`

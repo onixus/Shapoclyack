@@ -78,7 +78,8 @@ reports to (OCTO_API_URL in ${CONF_DIR}/agent.env) and installs it.
 Options:
       --bundle-dir <DIR>   Install from sensor-bundle.json, sensor-bundle.json.sig
                            and the archive in DIR instead (air-gapped hosts).
-                           Verified exactly as a download is.
+                           Verified exactly as a download is. Read as the
+                           sensor's account, which must be able to read DIR.
       --check              Verify the bundle and report; change nothing. Stops
                            with an error if an interrupted update is waiting
                            to be put back (a run without --check does that).
@@ -124,6 +125,14 @@ done
 
 if [[ ! -f "${CONF_DIR}/agent.env" ]]; then
     error "Agent config not found at ${CONF_DIR}/agent.env. Is the agent installed?"
+fi
+
+# The verifier runs from INSTALL_DIR, so a relative --bundle-dir would be read
+# from there rather than from where it was typed.
+if [[ -n "${BUNDLE_DIR}" ]]; then
+    [[ -d "${BUNDLE_DIR}" ]] || error "--bundle-dir ${BUNDLE_DIR} is not a directory."
+    BUNDLE_DIR="$(cd -- "${BUNDLE_DIR}" && pwd -P)" \
+        || error "--bundle-dir ${BUNDLE_DIR} cannot be entered."
 fi
 
 # One run at a time, from the first look at the journal to the verdict -- the

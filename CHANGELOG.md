@@ -11,20 +11,24 @@ All notable changes to Shapoclyack are documented in this file.
   job's new `Sensor bundle` stage builds the `agent` package into a
   reproducible tarball with a `sensor-bundle.json` manifest (version, sha256,
   size) and signs the manifest with the release key that signs the images
-  (`scripts/build-sensor-bundle.sh`; unsigned under `DRY_RUN`). With
+  (`scripts/build-sensor-bundle.sh`, from the files git tracks only; unsigned
+  under `DRY_RUN` and for a prerelease tag, since one bundle directory serves
+  the whole fleet). With
   `OCTO_AGENT_BUNDLE_DIR` set, the API serves it to sensors at
   `GET /api/agent/bundle` (manifest, signature, `min_version`) and
   `GET /api/agent/bundle/download` — agent JWT, `403` for an endpoint agent,
   `404` with none published, `503` when the archive does not match its
-  manifest. On the host, `scripts/update-agent.sh` now runs
+  manifest or a file of it cannot be read. On the host, `scripts/update-agent.sh` now runs
   `python -m agent.update` **as the sensor's account** — root only restarts
   the unit and judges the restart, so it never runs code from a tree that
   account can rewrite — and the updater installs the bundle only if the manifest
   verifies against the release key **pinned in the installed package** (never
   because the configured server sent it), the archive matches the signed
   digest and size, and the signed version is above the installed one and not
-  below `OCTO_AGENT_MIN_VERSION`. The install stages the release under
-  `releases/`, import-checks it, swaps the `agent` symlink atomically, restarts
+  below `OCTO_AGENT_MIN_VERSION` (a `-beta<N>`/`-rc<N>` counts as below the
+  release it precedes, so the final release replaces it). The install stages
+  the release under `releases/`, import-checks its worker and its updater,
+  swaps the `agent` symlink atomically, restarts
   the unit and requires it to stay up as one process, and puts the previous
   release back otherwise — also after a crash, from a journal, before the next
   run asks whether anything is new, restarting the unit onto the release put
