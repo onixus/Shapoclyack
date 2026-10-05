@@ -47,7 +47,7 @@ All notable changes to Shapoclyack are documented in this file.
   `agent.env`, so signed updates still reach a sensor under `required`. cert-manager, ingress and patch examples
   are in `k8s/shapoclyack/examples/agent-mtls-*`/`ingress-agent-mtls.*`; the
   rollout is in `docs/operations.md` § Sensor client certificates. Migration
-  `0077_agent_client_certs` (two new tables, tenant RLS). Datastore TLS stays a
+  `0077_agent_client_certs` (two new tables, tenant RLS, emptied by the tenant purge). Datastore TLS stays a
   `prod` warning rather than a refusal — the decision and its reasons are in
   `docs/operations.md` § Transport encryption.
 
