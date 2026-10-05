@@ -1,7 +1,7 @@
 """Sensor and endpoint-agent client certificates (#309)
 
 Revision ID: 0077_agent_client_certs
-Revises: 0072_run_publication_projected
+Revises: 0078_agent_release_permission
 Create Date: 2026-10-05
 
 Two new tables. ``agent_client_certs``: the certificates a sensor or a Lariska
@@ -34,9 +34,6 @@ Rollback is a plain drop: it forgets every issued and revoked certificate and
 every lock, and a revoked certificate becomes good again on the next upgrade
 only if a SPIFFE URI binds it — revoke the provisioning key as well if that
 matters.
-
-The revision number leaves room for the parallel branches of the same wave;
-``down_revision`` is re-chained when they merge.
 """
 from __future__ import annotations
 
@@ -46,7 +43,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0077_agent_client_certs"
-down_revision: Union[str, None] = "0072_run_publication_projected"
+down_revision: Union[str, None] = "0078_agent_release_permission"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

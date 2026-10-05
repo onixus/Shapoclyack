@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from api.schemas import StartScanRequest
 from api.services import job_states
@@ -29,6 +29,7 @@ from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
 from api.services import scan_policy
+from api.services import scan_queue
 from api.services import scan_schedules
 from api.services.leader_lock import SCHEDULE_DISPATCHER_LOCK_ID, LeaderLock
 from api.settings import Settings
@@ -60,8 +61,15 @@ class ScheduleDispatcher:
             "skipped_quota": 0,
             "skipped_policy": 0,
             "deferred_maintenance": 0,
+            "deferred_queue_full": 0,
+            "skipped_queue_full": 0,
             "errors": 0,
         }
+        # schedule_id -> when a full queue first refused its current
+        # occurrence. Leader-local: a handover forgets it, which only restarts
+        # that occurrence's allowance of back-offs, never stretches it past
+        # the following one.
+        self._queue_full_since: dict[str, datetime] = {}
 
     @property
     def stats(self) -> dict[str, int]:
@@ -144,10 +152,50 @@ class ScheduleDispatcher:
         # briefly overlap with the new one, and this is what makes that overlap
         # a no-op instead of a second scan.
         key = f"schedule:{sched['schedule_id']}:{sched.get('next_run_at') or now.isoformat()}"
+        # Popped here and put back only by another queue-full deferral, so
+        # whatever else this attempt ends in closes the occurrence.
+        refused_since = self._queue_full_since.pop(sched["schedule_id"], now)
         try:
             job = jobs_service.start_scan(
                 self._settings, request, username="scheduler", idempotency_key=key
             )
+        except scan_queue.QueueFull as full:
+            # Before the quota branch, which would also catch it: a full queue
+            # (#365) is the monthly quota's shape and not its meaning. It
+            # drains by itself, so the tick is *deferred* by the refusal's own
+            # Retry-After, as a maintenance block is to its end — skipping it
+            # would lose a nightly scan to a busy minute until the next night.
+            # Its own stat, so a queue that is often full is not read as a
+            # billing fact; the refusal is already counted in
+            # octo_scan_queue_throttled_total.
+            #
+            # But only up to the schedule's next occurrence. A queue that never
+            # drains — agent mode with no sensor, say — would otherwise have
+            # one occurrence re-asked for ever, every later one folded into it
+            # and nothing saying a tick was lost. Once the back-off would reach
+            # that next occurrence, this one is skipped (``skipped_queue_full``)
+            # and the schedule resumes on its cadence.
+            retry_at = now + timedelta(
+                seconds=full.retry_after_seconds or self._settings.scan_queue_retry_after_seconds
+            )
+            following = scan_schedules.next_occurrence(sched, after=refused_since)
+            if retry_at >= following:
+                self._stats["skipped_queue_full"] += 1
+                LOG.warning(
+                    "Schedule %s skipped: the queue stayed full until its next run at %s: %s",
+                    sched["schedule_id"],
+                    following.isoformat(),
+                    full,
+                )
+                scan_schedules.defer_dispatch(sched["schedule_id"], ran_at=now, until=following)
+                return
+            self._stats["deferred_queue_full"] += 1
+            self._queue_full_since[sched["schedule_id"]] = refused_since
+            LOG.info(
+                "Schedule %s deferred until %s: %s", sched["schedule_id"], retry_at.isoformat(), full
+            )
+            scan_schedules.defer_dispatch(sched["schedule_id"], ran_at=now, until=retry_at)
+            return
         except quotas.QuotaExceeded as exc:
             # Expected, not an error: the tenant has spent this month's
             # entitlement. Counting it in "errors" would page whoever watches

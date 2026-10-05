@@ -21,11 +21,14 @@ from fastapi import (
 from api.auth import (
     AgentPrincipal,
     Role,
+    StepUpDep,
     cached_agent_info,
     TenantPrincipal,
+    TokenUser,
     get_settings,
     require_agent,
     require_permission,
+    require_platform_permission,
     require_tenant,
 )
 from api.core import permissions as permission_catalog
@@ -340,6 +343,9 @@ def set_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    # Naming a build here replaces the binary on every endpoint of the tenant,
+    # so it costs a recent second factor like minting a credential (#504).
+    _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Set the tenant-wide default every endpoint agent inherits."""
@@ -353,6 +359,7 @@ def set_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Override the default for one agent, field by field."""
@@ -400,6 +407,7 @@ def delete_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
 ) -> Response:
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -411,6 +419,7 @@ def delete_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
 ) -> Response:
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=agent_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -425,9 +434,12 @@ def list_agent_releases(
     """Builds this installation can hand out.
 
     Installation-wide rather than per tenant: it is the same program, and a
-    build stored twice is a build that can be two different binaries.
+    build stored twice is a build that can be two different binaries. Which
+    is why writing one is the platform admin's (#510), and why a tenant reads
+    the list without ``uploaded_by``.
     """
-    return [EndpointAgentReleaseInfo(**row) for row in endpoint_agent_mgmt.list_releases()]
+    rows = endpoint_agent_mgmt.list_releases(show_uploader=principal.is_platform_admin)
+    return [EndpointAgentReleaseInfo(**row) for row in rows]
 
 
 @router.post(
@@ -437,8 +449,11 @@ def list_agent_releases(
 )
 async def upload_agent_release(
     principal: Annotated[
-        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_ENDPOINT_AGENT_RELEASE)),
     ],
+    # What every endpoint told to move to this version will execute (#504).
+    _: StepUpDep,
     audit: AuditDep,
     version: Annotated[str, Form()],
     platform: Annotated[str, Form()],
@@ -470,7 +485,9 @@ async def upload_agent_release(
         action="endpoint_agent.release.upload",
         resource_type="endpoint_agent_release",
         resource_id=f"{row['version']}/{row['platform']}",
-        tenant_id=principal.tenant_id,
+        # No tenant: the build is the installation's, whichever tenant the
+        # console happened to be looking at when it was uploaded.
+        tenant_id=None,
         after={"sha256": row["sha256"], "size_bytes": row["size_bytes"]},
     )
     return EndpointAgentReleaseInfo(**row)
@@ -482,11 +499,27 @@ async def upload_agent_release(
 def delete_agent_release(
     version: str,
     platform: str,
-    principal: Annotated[
-        TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
+    _: Annotated[
+        TokenUser,
+        Depends(require_platform_permission(permission_catalog.PLATFORM_ENDPOINT_AGENT_RELEASE)),
     ],
+    __: StepUpDep,
+    audit: AuditDep,
 ) -> Response:
-    endpoint_agent_mgmt.delete_release(version=version, platform=platform)
+    """Remove one build — every tenant's, since there is only one (#510)."""
+    deleted = endpoint_agent_mgmt.delete_release(version=version, platform=platform)
+    if deleted is not None:
+        audit_service.record_standalone(
+            audit,
+            action="endpoint_agent.release.delete",
+            resource_type="endpoint_agent_release",
+            resource_id=f"{version}/{platform}",
+            # The bytes are gone with the row; this is what is left of them.
+            before={
+                key: deleted[key]
+                for key in ("version", "platform", "sha256", "size_bytes", "uploaded_by")
+            },
+        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

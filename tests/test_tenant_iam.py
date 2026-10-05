@@ -132,6 +132,9 @@ def test_membership_grant_is_idempotent_and_revocable(client):
             "role": "operator",
             "created_at": members.json()[0]["created_at"],
             "created_by": "admin",
+            # A person's grant, which an IdP-authoritative resync never
+            # touches (#316).
+            "source": "local",
         }
     ]
 

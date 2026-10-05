@@ -22,6 +22,7 @@ from api.services import job_store
 from api.services import metrics as metrics_service
 from api.services import run_ids
 from api.services import scan_policy
+from api.services import scan_queue
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -160,6 +161,14 @@ def claim_job(
     SQLite fallback, which has a single writer anyway): two agents claiming
     concurrently — against the same replica or different ones — each get a
     different job instead of both being handed the head of the queue.
+
+    Since #365 the head of the queue is the highest ``priority`` first and the
+    oldest within it, and a tenant at its ``max_concurrent_scans`` is handed
+    nothing at all — a 204, as for an empty queue, because there is nothing
+    this agent could do about it. That ceiling is decided in this transaction
+    under the tenant's claim lock (``scan_queue.hold_slot``), so it holds
+    across replicas. The NATS path is held to it too: it names a job, but it
+    claims through here.
     """
     if agent is None:
         agent = agents_service.get_agent(agent_id)
@@ -182,6 +191,11 @@ def claim_job(
     ]
 
     with get_session(settings.postgres_url) as session:
+        # First, before any row is selected or locked: a claim the ceiling
+        # refuses must not take a job's lock on the way out, and the count it
+        # is decided on has to be read under the tenant's claim lock.
+        if not scan_queue.hold_slot(session, effective_tenant):
+            return None
         eligible = (
             select(models.Job)
             .where(
@@ -202,7 +216,7 @@ def claim_job(
                     )
                 ),
             )
-            .order_by(models.Job.queued_at, models.Job.job_id)
+            .order_by(*scan_queue.claim_order())
         )
         if job_id:
             eligible = eligible.where(models.Job.job_id == job_id)

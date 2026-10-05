@@ -732,3 +732,35 @@ def test_prod_refuses_a_refresh_cookie_without_secure(clean_env: pytest.MonkeyPa
     assert load_settings().refresh_cookie_secure is False
     clean_env.delenv("OCTO_REFRESH_COOKIE_SECURE")
     assert load_settings().refresh_cookie_secure is False
+
+
+@pytest.mark.parametrize(
+    ("claim", "required", "says"),
+    [
+        ("", "false", "OCTO_OIDC_ROLE_CLAIM empty"),
+        ("groups", "false", "OCTO_IDP_GROUPS_CLAIM_REQUIRED=true"),
+        ("groups", "true", None),
+    ],
+)
+def test_the_idp_authoritative_mode_says_how_it_reads_a_missing_groups_claim(
+    clean_env: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    claim: str,
+    required: str,
+    says: str | None,
+) -> None:
+    """#316: a login without the groups claim either skips the resync or, with
+    the claim declared required, reads as "no groups"; and with no claim
+    configured at all the mode stays off. Each is said at startup."""
+    clean_env.setenv("OCTO_ENV", ENV_DEV)
+    clean_env.setenv("OCTO_IDP_AUTHORITATIVE", "true")
+    clean_env.setenv("OCTO_OIDC_ROLE_MAP", json.dumps({"vm-ops": "operator"}))
+    clean_env.setenv("OCTO_OIDC_ROLE_CLAIM", claim)
+    clean_env.setenv("OCTO_IDP_GROUPS_CLAIM_REQUIRED", required)
+    with caplog.at_level("INFO", logger="api.settings"):
+        settings = load_settings()
+    assert settings.idp_groups_claim_required is (required == "true")
+    if says is None:
+        assert "OCTO_IDP_AUTHORITATIVE" not in caplog.text
+    else:
+        assert says in caplog.text

@@ -243,6 +243,16 @@ BREAK_GLASS_LOGINS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+IDP_RESYNC_SKIPPED_TOTAL = Counter(
+    "octo_idp_resync_skipped_total",
+    "SSO logins with OCTO_IDP_AUTHORITATIVE on whose ID token did not list the "
+    "groups (claim missing, or Entra ID's overage pointer), so the login changed "
+    "nobody's role or memberships (#316). A steady rate is an IdP that drops an "
+    "empty claim or sends too many groups: removals from groups are not taking "
+    "effect at login for those accounts. See docs/operations.md.",
+    registry=REGISTRY,
+)
+
 QUOTA_DENIED_TOTAL = Counter(
     "octo_quota_denied_total",
     "Actions refused because a tenant's purchased limit was reached, by "
@@ -251,6 +261,18 @@ QUOTA_DENIED_TOTAL = Counter(
     "assets were not registered — nobody is told about that one interactively, "
     "which is why it is a metric.",
     ["resource"],
+    registry=REGISTRY,
+)
+
+SCAN_QUEUE_THROTTLED_TOTAL = Counter(
+    "octo_scan_queue_throttled_total",
+    "Scan queue ceilings at work (#365), by reason. 'tenant_queue_full' and "
+    "'global_queue_full' are a scan start refused with 429 because too many "
+    "scans are already waiting; 'concurrency_limit' is a claim answered with "
+    "nothing — or a local scan left waiting — because the tenant already has "
+    "max_concurrent_scans out. The last one is expected under load and is a "
+    "rate, not an alert: a tenant pinned at its ceiling for hours is.",
+    ["reason"],
     registry=REGISTRY,
 )
 
@@ -954,6 +976,14 @@ def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
         "Cluster-wide.",
         labels=["tenant", "status"],
     )
+    queued = GaugeMetricFamily(
+        "octo_tenant_jobs_queued",
+        "Scan jobs waiting in queued per tenant (top N, the rest as _other) — the "
+        "depth a tenant's max_queued_scans admission ceiling is measured against "
+        "(#365). octo_jobs_queued is the same count summed over tenants. "
+        "Cluster-wide.",
+        labels=["tenant"],
+    )
     if snapshot is not None:
         for (tenant, severity), count in sorted(snapshot.open_findings.items()):
             open_findings.add_metric([tenant, severity], count)
@@ -961,7 +991,9 @@ def _tenant_families(snapshot: MetricsTenantSnapshot | None) -> list[Metric]:
             breached.add_metric([tenant], count)
         for (tenant, status), count in sorted(snapshot.scans_finished.items()):
             scans.add_metric([tenant, status], count)
-    return [open_findings, breached, scans]
+        for tenant, count in sorted(snapshot.jobs_queued.items()):
+            queued.add_metric([tenant], count)
+    return [open_findings, breached, scans, queued]
 
 
 def cluster_collector(

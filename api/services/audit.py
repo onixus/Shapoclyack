@@ -94,6 +94,16 @@ ACTION_ROLE_UPDATE = "role.update"
 ACTION_ROLE_DELETE = "role.delete"
 ACTION_SERVICE_TOKEN_CREATE = "service_token.create"
 ACTION_SERVICE_TOKEN_REVOKE = "service_token.revoke"
+# SCIM provisioning (#316). The token is a credential of its own type, and a
+# group is what the IdP maps to roles: renaming one, or moving people in and
+# out of it, is how access changes from the directory side. The membership,
+# role and disable changes that follow are recorded under their own actions
+# with ``"source": "idp"``.
+ACTION_SCIM_TOKEN_CREATE = "scim_token.create"
+ACTION_SCIM_TOKEN_REVOKE = "scim_token.revoke"
+ACTION_SCIM_GROUP_CREATE = "scim_group.create"
+ACTION_SCIM_GROUP_UPDATE = "scim_group.update"
+ACTION_SCIM_GROUP_DELETE = "scim_group.delete"
 ACTION_PROVISIONING_KEY_CREATE = "provisioning_key.create"
 ACTION_PROVISIONING_KEY_REVOKE = "provisioning_key.revoke"
 ACTION_AGENT_REGISTER = "agent.register"
@@ -187,6 +197,12 @@ ACTION_SCAN_MAINTENANCE_BLOCK = "scan.maintenance_block"
 # confirmation, which is a machine reporting that it obeyed rather than a
 # person deciding anything.
 ACTION_SCAN_CANCEL = "scan.cancel"
+# The scan queue (#365). Moving a queued scan is a decision about every other
+# scan of the tenant, so it is recorded with the value before and after. The
+# ceilings are the platform's decision about a customer, like its quota, and
+# a refusal they cause is a 429 the caller sees and a counter, not a row.
+ACTION_SCAN_PRIORITY = "scan.priority"
+ACTION_TENANT_QUEUE_LIMITS = "tenant.queue_limits"
 # The two ways out of a ``dead`` run publication (#425). Both are decisions
 # about a run the installation has already told its user it accepted: one
 # gives the publication another full set of attempts, the other gives up on

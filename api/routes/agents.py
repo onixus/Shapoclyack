@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from api.auth import (
     AGENT_TENANT_CLOSED_ATTR,
@@ -45,6 +46,7 @@ from api.schemas import (
     CreateAgentDeploymentKeyRequest,
     JobInfo,
     Page,
+    SensorBundleInfo,
     SetAgentGroupRequest,
     UpdateAgentStatusRequest,
 )
@@ -57,6 +59,7 @@ from api.services import audit as audit_service
 from api.services import config_override as config_override_service
 from api.services import jobs as jobs_service
 from api.services import scan_policy
+from api.services import sensor_bundle
 from api.settings import Settings
 
 router = APIRouter(tags=["agents"])
@@ -783,7 +786,12 @@ def unpin_ssh_host_key(
 @router.post("/agent/deploy/ssh", response_model=AgentDeployStatusResponse)
 def deploy_agent_ssh(
     body: AgentDeploySSHRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
+    # The run mints a provisioning key, as the route below does (#504).
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
     audit: AuditDep,
@@ -793,7 +801,18 @@ def deploy_agent_ssh(
     A host that already runs one of this tenant's sensors gets that sensor
     back, with its ID and its key; the run's log says which case it was
     (docs/operations.md, "SSH push deployment").
+
+    ``tenant.credential.manage``, because a run mints a provisioning key, *and*
+    the admin rank, because it also hands the platform a login on the target
+    and opens a connection to it — which ``token-admin`` was never given. The
+    rank alone used to be the gate, so a tenant role at rank 3 with no
+    credential authority minted keys through here (#504).
     """
+    if not principal.at_least(Role.admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role 'admin' or higher required in tenant '{principal.tenant_id}'",
+        )
     # Ensure tenant alignment
     tenant_id = principal.tenant_id if not principal.is_platform_admin else (body.tenant_id or principal.tenant_id)
     body.tenant_id = tenant_id
@@ -846,6 +865,80 @@ def get_deploy_status(
 _INSTALLER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install-agent.sh"
 
 
+def _published_bundle(
+    request: Request, principal: AgentPrincipal, settings: Settings
+) -> sensor_bundle.SensorBundle:
+    """The bundle for a sensor of this tenant, or the status that says why not (#363).
+
+    Not refused to a disabled, quarantined or below-the-floor sensor: an
+    upgrade is how such a host gets repaired, and the bundle is the release
+    every customer already has. An endpoint agent is refused -- it is not the
+    program this bundle replaces.
+    """
+    if principal.agent_id:
+        agent = _agent_for_request(request, principal, principal.agent_id)
+        if agent is not None and agent.tenant_id != principal.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-tenant agent access denied")
+        if agent is not None and agent.agent_kind == agents_service.KIND_ENDPOINT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The sensor bundle is not for endpoint agents",
+            )
+    try:
+        return sensor_bundle.current_bundle(settings.agent_bundle_dir)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"The sensor bundle on this server is inconsistent: {exc}",
+        ) from exc
+
+
+@router.get(
+    "/agent/bundle",
+    response_model=SensorBundleInfo,
+    responses={
+        404: {"description": "No sensor bundle is published (OCTO_AGENT_BUNDLE_DIR)"},
+        503: {"description": "The published bundle's files do not match its manifest"},
+    },
+)
+def get_sensor_bundle(
+    request: Request,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SensorBundleInfo:
+    """The signed manifest of the sensor bundle, for ``python -m agent.update``.
+
+    Transport only: the sensor trusts the manifest because the release key it
+    pins signed it, not because this route returned it.
+    """
+    bundle = _published_bundle(request, principal, settings)
+    return SensorBundleInfo(
+        version=bundle.version,
+        archive=bundle.archive,
+        sha256=bundle.sha256,
+        size=bundle.size,
+        manifest=base64.b64encode(bundle.manifest).decode("ascii"),
+        signature=bundle.signature,
+        min_version=(settings.agent_min_version or "").strip() or None,
+    )
+
+
+@router.get(
+    "/agent/bundle/download",
+    response_class=FileResponse,
+    responses={404: {"description": "No sensor bundle is published"}},
+)
+def download_sensor_bundle(
+    request: Request,
+    principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> FileResponse:
+    bundle = _published_bundle(request, principal, settings)
+    return FileResponse(bundle.archive_path, media_type="application/gzip", filename=bundle.archive)
+
+
 @router.get("/agent/install.sh", response_class=PlainTextResponse)
 def get_install_script() -> PlainTextResponse:
     script_path = Path(os.environ.get("OCTO_AGENT_INSTALLER") or _INSTALLER_SCRIPT)
@@ -880,7 +973,10 @@ def get_deployment_command(
 )
 def create_deployment_command(
     body: CreateAgentDeploymentKeyRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # Same credential, therefore same step-up (#315). This is the route the
     # console actually uses to mint a provisioning key — the one under
     # /api/tenants is the API-first path — so gating only that one would have
@@ -891,10 +987,14 @@ def create_deployment_command(
 ) -> AgentDeploymentSnippetResponse:
     """Mint one provisioning key for this tenant and return the snippets.
 
-    Tenant ``admin``, the same bar as
+    ``tenant.credential.manage``, the same bar as
     ``POST /api/tenants/{id}/provisioning-keys``, because it mints the same
-    credential: a key that registers agents into this tenant (#231). The
-    plaintext is in this response only.
+    credential: a key that registers agents into this tenant (#231). It was
+    the admin *rank* until #504 — which refused ``token-admin`` the console's
+    own button and let a tenant role at rank 3 mint keys without the
+    permission; migration 0073 gave that permission to the rank-3 tenant roles
+    that existed then, so none of them lost the button. The plaintext is in
+    this response only.
     """
     try:
         snippets = agents_service.mint_deployment_snippets(

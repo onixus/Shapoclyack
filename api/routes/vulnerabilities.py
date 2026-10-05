@@ -44,6 +44,7 @@ from fastapi.responses import StreamingResponse
 
 from api.auth import (
     Role,
+    StepUpDep,
     TenantPrincipal,
     get_settings,
     require_permission,
@@ -715,6 +716,9 @@ def approve_exception(
         TenantPrincipal,
         Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
     ],
+    # An approval is a signature, and the pair of scan-scope's: the same
+    # recent second factor (#504).
+    _: StepUpDep,
     settings: SettingsDep,
     audit: AuditDep,
 ) -> dict[str, Any]:
@@ -756,6 +760,7 @@ def reject_exception(
         TenantPrincipal,
         Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
     ],
+    _: StepUpDep,
     settings: SettingsDep,
     audit: AuditDep,
 ) -> dict[str, Any]:
@@ -823,6 +828,7 @@ def clear_exception(
         TenantPrincipal,
         Depends(require_permission(permission_catalog.VULNERABILITY_EXCEPTION_APPROVE)),
     ],
+    _: StepUpDep,
     settings: SettingsDep,
     audit: AuditDep,
 ) -> dict[str, Any]:

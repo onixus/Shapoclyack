@@ -75,6 +75,14 @@ SCAN_SCOPE_APPROVE = "scan_scope.approve"
 #: mid-flight is an authority an installation may want to hand out on its own,
 #: to an on-call who is not otherwise an operator.
 SCAN_CANCEL = "scan.cancel"
+#: Queue a scan ahead of the tenant's other scans: start one, or move a queued
+#: one, with a ``priority`` above the default 0 (#365). Lowering a scan of
+#: one's own to make room needs only the operator rank, and so does starting
+#: one at or below 0. Its own permission because "jump the queue" is a
+#: decision about everybody else's scans, and an operator who could set it on
+#: every scan would make the ordering meaningless; the tenant ``admin`` holds
+#: it, and a custom role can be given it on its own.
+SCAN_PRIORITY_RAISE = "scan.priority.raise"
 #: List a tenant's members and their roles.
 TENANT_MEMBER_READ = "tenant.member.read"
 #: Grant and revoke them — tenant self-service, no longer platform admin only.
@@ -97,14 +105,23 @@ AGENT_GROUP_MANAGE = "agent.group.manage"
 #: see what a tenant is allowed to scan may see how hard.
 SCAN_POLICY_MANAGE = "scan_policy.manage"
 #: Decide what the tenant's endpoint agents run and how (``PUT
-#: …/endpoint/agent/policy``, ``POST …/endpoint/agent/releases``, #358): their
-#: collection intervals and log level, and which build they should upgrade to.
-#: The version half is the authority to replace a binary on every endpoint in
-#: the tenant, which is why it is an administrator's and not an operator's, and
+#: …/endpoint/agent/policy``, #358): their collection intervals and log level,
+#: and which of the installation's builds they should upgrade to. The version
+#: half is the authority to move every endpoint in the tenant to another
+#: binary, which is why it is an administrator's and not an operator's, and
 #: why the policy cannot carry the agent's ``server_url`` at all — an agent
 #: that can be told where to report is an agent that can be told to report
-#: somewhere else.
+#: somewhere else. It also lists the builds, and stops there: what those
+#: builds *are* is :data:`PLATFORM_ENDPOINT_AGENT_RELEASE`'s.
 ENDPOINT_AGENT_MANAGE = "endpoint_agent.manage"
+#: Upload and delete endpoint-agent builds (``POST/DELETE
+#: …/endpoint/agent/releases``, #510). Platform-only because the builds are:
+#: one row per ``(version, platform)`` for the whole installation, so an
+#: upload is a binary every tenant's endpoints run once their own policy names
+#: that version, and a delete is every tenant's upgrade stopped. Held by a
+#: tenant's admin, it was one customer replacing the code another customer's
+#: workstations execute.
+PLATFORM_ENDPOINT_AGENT_RELEASE = "platform.endpoint_agent_release.manage"
 #: Read what the tenant was sold (``GET …/quota``).
 TENANT_QUOTA_READ = "tenant.quota.read"
 #: Change it. Platform-only on purpose: a tenant admin who could raise their
@@ -169,12 +186,14 @@ PERMISSIONS: dict[str, str] = {
     SCAN_SCOPE_READ: "Read the tenant's approved scanning scope",
     SCAN_SCOPE_APPROVE: "Approve what the tenant may scan",
     SCAN_CANCEL: "Stop a queued or running scan",
+    SCAN_PRIORITY_RAISE: "Queue a scan ahead of the tenant's other scans",
     TENANT_MEMBER_READ: "List the tenant's members",
     TENANT_MEMBER_MANAGE: "Grant and revoke the tenant's members",
     TENANT_CREDENTIAL_MANAGE: "Manage the tenant's provisioning keys and service tokens",
     AGENT_GROUP_MANAGE: "Manage the tenant's agent groups and their members",
     SCAN_POLICY_MANAGE: "Set how hard this tenant may be scanned",
-    ENDPOINT_AGENT_MANAGE: "Manage the tenant's endpoint agents and their builds",
+    ENDPOINT_AGENT_MANAGE: "Manage the tenant's endpoint agents and choose their build",
+    PLATFORM_ENDPOINT_AGENT_RELEASE: "Upload and delete the installation's endpoint agent builds",
     TENANT_QUOTA_READ: "Read the tenant's quota",
     PLATFORM_QUOTA_MANAGE: "Set any tenant's quota",
     PLATFORM_TENANT_MANAGE: "Create tenants",
@@ -236,6 +255,7 @@ _TENANT_ADMIN_PERMISSIONS = (
     CONFIG_READ,
     SCAN_SCOPE_READ,
     SCAN_CANCEL,
+    SCAN_PRIORITY_RAISE,
     TENANT_MEMBER_READ,
     TENANT_MEMBER_MANAGE,
     TENANT_CREDENTIAL_MANAGE,
@@ -353,6 +373,34 @@ TENANT_GRANTABLE_PERMISSIONS: frozenset[str] = frozenset(
 #: rank delegate them, and nobody below it.
 APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
     {SCAN_SCOPE_APPROVE, VULNERABILITY_EXCEPTION_APPROVE}
+)
+
+#: The named authorities that decide *who else* may act in a tenant, what it
+#: may be pointed at, or what runs on its endpoints: granting memberships and
+#: writing roles, minting its provisioning keys and service tokens, the two
+#: approvals, and choosing the endpoint agent build every endpoint installs.
+#: What ``OCTO_MFA_REQUIRED_PERMISSIONS`` defaults to when
+#: ``OCTO_MFA_REQUIRED_ROLES`` names ``admin`` (#504): "MFA for
+#: administrators" has to mean whoever holds these in any tenant, not whoever
+#: has the word ``admin`` in ``users.role``. Every role holding one — the
+#: tenant ``admin``, ``token-admin``, ``scope-approver``, ``risk-approver``, a
+#: tenant-defined role carrying any of them — is one a stolen password would
+#: turn into somebody else's access.
+#:
+#: Not the whole of a tenant administrator's power, and not meant to be: the
+#: routes still gated on the admin *rank* (webhooks, notification channels,
+#: SLA policies, the SSH push's target) are reached by rank 3 whatever the
+#: role lists, so the derived default covers rank 3 by itself as well
+#: (:func:`api.services.mfa.requirement`). Every route that issues a tenant
+#: credential asks for ``tenant.credential.manage`` by name.
+TENANT_AUTHORITY_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        TENANT_MEMBER_MANAGE,
+        TENANT_CREDENTIAL_MANAGE,
+        SCAN_SCOPE_APPROVE,
+        VULNERABILITY_EXCEPTION_APPROVE,
+        ENDPOINT_AGENT_MANAGE,
+    }
 )
 
 #: Ranks a role may sit at: read, write, administer.
