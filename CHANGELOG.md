@@ -17,10 +17,11 @@ All notable changes to Shapoclyack are documented in this file.
   trust check is about the chain only: names stay `cert_name_mismatch` and
   dates `cert_expired`. A chain that verifies silences the `self_signed`
   heuristic. With no system trust anchors or an unreadable bundle the check
-  records `not_performed` instead of flagging every endpoint, and where the
-  `cryptography` package is missing — the scanner image does not install it,
-  the all-in-one image does — key and signature checks record
-  `not_performed` too. The org-profile TLS control grades the new medium
+  records `not_performed` instead of flagging every endpoint. The probe reads
+  key size and signature algorithm with `cryptography`, which the scanner
+  image now installs too (`requirements.txt`, same pin as the API image;
+  `requirements.lock` gains `cryptography`, `cffi` and `pycparser`); where it
+  is missing, those checks record `not_performed`. The org-profile TLS control grades the new medium
   findings `weak`. Pulse `tls[]` rows carry no key or signature fields, so
   that path has none of these. See
   [Pulse backend](docs/pulse-backend.md#what-the-probe-checks-and-what-it-can-establish).

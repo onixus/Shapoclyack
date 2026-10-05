@@ -772,6 +772,7 @@ cryptography==50.0.0 \
     --hash=sha256:fd9192b7b70c573d7f214eb1ae35e00d359f6f5e4b27c7e21e30de1fc6204645
     # via
     #   -r requirements-api.txt
+    #   -r requirements.txt
     #   pyopenssl
     #   webauthn
 defusedxml==0.7.1 \
