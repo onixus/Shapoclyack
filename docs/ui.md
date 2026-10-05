@@ -736,6 +736,16 @@ on a poll, so it reads as a live view rather than one that needs reloading.
 The tiles above the table are `GET /api/agents/summary`: total, online /
 active, scanning (busy), stale / offline and **updates available** (outdated
 against the server's target version).
+Below them, a warning appears only when sensor **client certificates** need
+attention ([#309](https://github.com/onixus/Shapoclyack/issues/309)): how many
+sensors' newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`
+(amber) and how many have run out altogether (red, since under
+`OCTO_AGENT_MTLS_MODE=required` those sensors are refused), with the mode the
+installation runs in. A fleet without certificates, or one whose certificates
+are all comfortably valid, shows nothing. The counts are the summary's
+`client_certs_expiring` / `client_certs_expired`; which sensor holds which
+certificate is `GET /api/agents/{id}/certificates`
+([operations.md](operations.md#sensor-client-certificates)).
 A row opens a details drawer with the sensor's heartbeat metrics — OS and
 architecture, CPU, memory, disk, load and uptime — its capabilities, current
 job, and an **Upgrade** action. Upgrade marks the sensor (`upgrade_requested`)

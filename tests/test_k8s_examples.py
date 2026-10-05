@@ -39,6 +39,9 @@ NS_LABEL = "kubernetes.io/metadata.name"
 # third-party controller's own. The key is the file that needs it.
 FOREIGN_NAMESPACES = {
     ("nats-443-ingress.example.yaml", "ingress-nginx"): "ingress-nginx reads its tcp-services ConfigMap there",
+    ("agent-mtls-cert-manager.example.yaml", "cert-manager"): (
+        "a ClusterIssuer reads its CA Secret from cert-manager's cluster resource namespace (#309)"
+    ),
 }
 
 # RFC 5737 and RFC 3849: never routed, so a placeholder in one of them opens

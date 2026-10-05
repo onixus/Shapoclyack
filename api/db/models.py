@@ -1816,6 +1816,58 @@ class Agent(Base):
     )
 
 
+class AgentClientCert(Base):
+    """A client certificate a sensor or endpoint agent authenticates with (#309).
+
+    One row per certificate the platform knows about, per tenant: issued here
+    from a CSR (``csr``), pinned by an operator (``pinned`` — a certificate
+    whose SAN does not name the sensor, bound by its fingerprint), first seen
+    on a request and bound by its SPIFFE URI (``observed`` — typically
+    cert-manager's), or a revocation of a certificate the platform never saw
+    (``tombstone``). ``revoked_at`` takes effect on the next request: binding
+    reads this table every time a certificate is presented.
+
+    Unique per ``(tenant_id, fingerprint_sha256)``, never globally, and every
+    lookup is in the token's tenant: a fingerprint is not a secret, and a
+    global key would let one tenant's admin pin or revoke another tenant's
+    certificate and so lock its sensor out.
+
+    ``agent_id`` is not a foreign key: deleting the agent row must not delete
+    the revocation of its certificate.
+    """
+
+    __tablename__ = "agent_client_certs"
+
+    cert_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE")
+    )
+    agent_id: Mapped[str]
+    fingerprint_sha256: Mapped[str]
+    serial_hex: Mapped[str] = mapped_column(default="")
+    subject: Mapped[str] = mapped_column(default="")
+    # csr | pinned | observed | tombstone
+    source: Mapped[str]
+    not_before: Mapped[datetime | None] = mapped_column(default=None)
+    not_after: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str] = mapped_column(default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_by: Mapped[str | None] = mapped_column(default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "fingerprint_sha256", name="uq_agent_client_certs_tenant_fingerprint"
+        ),
+        Index("ix_agent_client_certs_tenant_agent", "tenant_id", "agent_id"),
+        CheckConstraint(
+            "source IN ('csr', 'pinned', 'observed', 'tombstone')",
+            name="ck_agent_client_certs_source",
+        ),
+    )
+
+
 class AgentSshHostKey(Base):
     """Pinned SSH host key for one deployment target, per tenant (#232).
 

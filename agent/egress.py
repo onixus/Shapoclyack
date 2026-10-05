@@ -217,7 +217,9 @@ def proxy_headers(proxy: Proxy) -> dict[str, str]:
 
 
 def build_opener(
-    url: str, *handlers: urllib.request.BaseHandler
+    url: str,
+    *handlers: urllib.request.BaseHandler,
+    context: ssl.SSLContext | None = None,
 ) -> urllib.request.OpenerDirector:
     """A ``urllib`` opener for ``url``: this agent's proxy and CA, nothing else.
 
@@ -225,12 +227,16 @@ def build_opener(
     than left to its environment scan, so ``OCTO_NO_PROXY`` and the ``OCTO_``
     overrides decide — an empty mapping is how ``urllib`` is told *not* to pick
     the ambient variables up.
+
+    ``context`` replaces :func:`ssl_context` — the agent passes one that also
+    presents its client certificate (``agent/mtls.py``, #309); it is built
+    from :func:`ssl_context`, so the trust store is the same.
     """
     proxy = proxy_for_url(url)
     mapping = {"http": proxy.proxy_url(), "https": proxy.proxy_url()} if proxy else {}
     return urllib.request.build_opener(
         urllib.request.ProxyHandler(mapping),
-        urllib.request.HTTPSHandler(context=ssl_context()),
+        urllib.request.HTTPSHandler(context=context or ssl_context()),
         *handlers,
     )
 

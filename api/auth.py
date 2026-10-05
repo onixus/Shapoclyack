@@ -1414,6 +1414,96 @@ def require_agent_results(
     )
 
 
+def require_agent_enrolment(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AgentPrincipal:
+    """:func:`require_agent` for ``POST /api/agent/certificate`` alone (#309).
+
+    The same token check, and a certificate rule of its own that does not
+    depend on ``OCTO_AGENT_MTLS_MODE``: an agent that already holds a live
+    certificate renews only by presenting it — so a stolen token cannot mint
+    itself a certificate next to the real sensor's — and an agent that holds
+    none may enrol without one, which is the only way a first certificate is
+    ever obtained (``api/services/agent_certs.py``).
+    """
+    return _authenticate_agent(
+        request,
+        credentials,
+        settings,
+        allow_closed_tenant=False,
+        cert_mode="required",
+        cert_bootstrap=True,
+    )
+
+
+#: Where the certificate bound to this request is left, for the route that
+#: wants to name it (the enrolment response does not; the audit row does).
+AGENT_CLIENT_CERT_ATTR = "agent_client_cert"
+
+
+def _bind_client_certificate(
+    request: Request,
+    settings: Settings,
+    principal: AgentPrincipal,
+    *,
+    mode: str | None,
+    bootstrap: bool,
+) -> None:
+    """403 unless the request's client certificate is the token's agent's own (#309).
+
+    Nothing is read when the effective mode is ``off``, so an installation that
+    never turned this on pays no query for it. ``ssl-client-*`` headers count
+    only from ``OCTO_AGENT_MTLS_TRUSTED_PROXIES`` (``api/core/client_cert.py``).
+    """
+    from api.core.client_cert import presented_certificate
+    from api.services import agent_certs
+    from api.services import audit as audit_service
+
+    if (mode or settings.agent_mtls_mode) == agent_certs.MODE_OFF:
+        return
+    presentation = presented_certificate(
+        scope_state=request.scope.get("state"),
+        peer=request.client.host if request.client else None,
+        headers=request.headers,
+        trusted_proxies=settings.agent_mtls_trusted_proxies,
+        client_ca_path=settings.agent_mtls_ca_path(),
+    )
+    try:
+        bound = agent_certs.bind(
+            settings,
+            tenant_id=principal.tenant_id,
+            agent_id=principal.agent_id or None,
+            presentation=presentation,
+            mode=mode,
+            bootstrap=bootstrap,
+        )
+    except agent_certs.ClientCertRefused as exc:
+        agent_certs.record_refusal(
+            audit_service.context_from_request(
+                request,
+                settings,
+                actor=principal.agent_id or principal.subject,
+                actor_type=audit_service.ACTOR_AGENT,
+            ),
+            tenant_id=principal.tenant_id,
+            agent_id=principal.agent_id or None,
+            refusal=exc,
+            presentation=presentation,
+        )
+        # 403, not 401: a sensor answers 401 by re-exchanging its key, which
+        # succeeds and is refused here again — at the poll rate, forever.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+            headers={agent_certs.REFUSAL_HEADER: exc.reason},
+        ) from exc
+    setattr(request.state, AGENT_CLIENT_CERT_ATTR, bound)
+
+
 def _authenticate_agent(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
@@ -1421,6 +1511,8 @@ def _authenticate_agent(
     *,
     allow_closed_tenant: bool,
     rate_limited: bool = True,
+    cert_mode: str | None = None,
+    cert_bootstrap: bool = False,
 ) -> AgentPrincipal:
     from api.services.rate_limit import SCOPE_AGENT, SCOPE_LEGACY_AGENT
 
@@ -1473,6 +1565,11 @@ def _authenticate_agent(
         identity = principal.agent_id or f"key:{principal.key_id or ''}"
         if rate_limited:
             _charge_rate_limit(request, SCOPE_AGENT, f"{principal.tenant_id}:{identity}")
+        # After the limiter, so a sensor stuck on a wrong certificate is
+        # throttled before it writes an audit row per poll.
+        _bind_client_certificate(
+            request, settings, principal, mode=cert_mode, bootstrap=cert_bootstrap
+        )
         return principal
 
     if settings.agent_token:
@@ -1495,12 +1592,18 @@ def _authenticate_agent(
                 _charge_rate_limit(
                     request, SCOPE_LEGACY_AGENT, _request_client_ip(request, settings)
                 )
-            return AgentPrincipal(
+            legacy = AgentPrincipal(
                 tenant_id=LEGACY_AGENT_TENANT_ID,
                 key_id=None,
                 subject="agent",
                 auth_mode="legacy",
             )
+            # No identity to bind a certificate to: refused under
+            # ``required``, unaffected otherwise.
+            _bind_client_certificate(
+                request, settings, legacy, mode=cert_mode, bootstrap=cert_bootstrap
+            )
+            return legacy
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(

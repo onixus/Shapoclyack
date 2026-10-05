@@ -1,0 +1,72 @@
+# A client certificate for every pod of the example sensor (#309).
+#
+# Wiring (overlay kustomization.yaml, next to agent-deployment.example.yaml):
+#
+#   patches:
+#     - path: agent-mtls-patch.yaml
+#       target:
+#         kind: StatefulSet
+#         name: shapoclyack-agent
+#
+# Each pod of a StatefulSet is its own sensor with its own agent id, and a
+# StatefulSet cannot mount a different Secret per pod — so the certificate
+# comes from the cert-manager CSI driver, which issues one per pod from the
+# ClusterIssuer in agent-mtls-cert-manager.example.yaml and renews it in place.
+# The sensor re-reads the files within a minute of a renewal; no restart.
+#
+# The URI is the identity the API binds, and it must name the agent id the
+# pod registers as. The CSI driver can substitute ${POD_NAME} but cannot read
+# a Secret, so the per-site prefix (OCTO_AGENT_ID_PREFIX in the example) is
+# written here literally — the SAME value in OCTO_AGENT_ID and in uri-sans.
+# Replace `site-7f3a` and the tenant id `default` with yours.
+#
+# Without the CSI driver: let the sensor enrol its own certificate with the
+# API (OCTO_AGENT_MTLS_ENROLL=true and the API's OCTO_AGENT_MTLS_ISSUER_*),
+# and put the two files on a volumeClaimTemplate rather than an emptyDir. A
+# sensor that loses its key cannot enrol again while its old certificate is
+# live — that is what stops a stolen token from enrolling — and an operator
+# then has to revoke it (POST /api/agents/{id}/certificates/revoke, "all").
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shapoclyack-agent
+spec:
+  template:
+    spec:
+      volumes:
+        - name: client-cert
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: shapoclyack-sensor-ca
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/common-name: site-7f3a-${POD_NAME}
+              csi.cert-manager.io/uri-sans: spiffe://shapoclyack/tenant/default/sensor/site-7f3a-${POD_NAME}
+              csi.cert-manager.io/key-usages: client auth,digital signature
+              csi.cert-manager.io/duration: 720h
+              csi.cert-manager.io/renew-before: 240h
+              # The pod's fsGroup, so uid 1000 can read the key.
+              csi.cert-manager.io/fs-group: "1000"
+      containers:
+        - name: agent
+          volumeMounts:
+            - name: client-cert
+              mountPath: /etc/shapoclyack/client-cert
+              readOnly: true
+          env:
+            # Repeated from the example, and first: a strategic merge puts the
+            # patch's entries ahead of the rest, and $(POD_NAME) below expands
+            # only against a variable defined earlier in the list.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Overrides $(OCTO_AGENT_ID_PREFIX)-$(POD_NAME): same shape, with
+            # the prefix spelt out, because uri-sans above has to spell it too.
+            - name: OCTO_AGENT_ID
+              value: site-7f3a-$(POD_NAME)
+            - name: OCTO_AGENT_TLS_CLIENT_CERT
+              value: /etc/shapoclyack/client-cert/tls.crt
+            - name: OCTO_AGENT_TLS_CLIENT_KEY
+              value: /etc/shapoclyack/client-cert/tls.key

@@ -2016,6 +2016,122 @@ should register as a new sensor under the new key. The SSH push handles this
 order itself, and refuses where revoking would stop other sensors; see
 [SSH push deployment](#ssh-push-deployment).
 
+### Sensor client certificates
+
+A sensor (or a Lariska Agent) can present a client certificate next to its
+token, and the API then requires the two to name the same sensor
+([#309](https://github.com/onixus/Shapoclyack/issues/309)). The switches are in
+[configuration.md](configuration.md#sensor-and-agent-client-certificates-mtls);
+this is how to get a fleet onto them without stopping it.
+
+**Where TLS ends decides the wiring.**
+
+- *Behind ingress-nginx* (every shipped Kubernetes layout): the ingress
+  verifies the certificate and forwards it in `ssl-client-*` headers —
+  `examples/ingress-agent-mtls.example.yaml`. Set
+  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` to the controller pods' addresses; headers
+  from anything else are ignored. Every Ingress host that routes to the API
+  must carry the `auth-tls-*` annotations, with
+  `auth-tls-pass-certificate-to-upstream: "true"` — on a host without them the
+  headers are whatever the client wrote, and the controller is still a trusted
+  peer.
+- *On the API's own listener* (`OCTO_API_TLS_CERT`, a lab stand or an
+  appliance): set `OCTO_AGENT_MTLS_CLIENT_CA`; the handshake verifies the
+  certificate itself.
+
+**Where certificates come from.**
+
+- *cert-manager*: a CA that signs sensor certificates only, and a
+  `ClusterIssuer` around it — `examples/agent-mtls-cert-manager.example.yaml`.
+  In-cluster sensors get a certificate per pod from the CSI driver
+  (`examples/agent-mtls-patch.yaml`), with the sensor's SPIFFE URI in it;
+  cert-manager renews it, and the sensor re-reads it within a minute. The
+  first request with it records it (`source: observed`), so it is listed and
+  revocable like any other.
+- *The API*: give it `OCTO_AGENT_MTLS_ISSUER_CERT`/`_KEY` (an intermediate for
+  this and nothing else) and set `OCTO_AGENT_MTLS_ENROLL=true` with the two
+  file paths on the sensor. The sensor sends a CSR to
+  `POST /api/agent/certificate`, gets a certificate naming its token's agent —
+  whatever the CSR asked for — and renews at two thirds of the lifetime. The
+  first enrolment needs only the token; **every later one must present the
+  current certificate**, so a stolen token cannot enrol a second certificate
+  next to the real sensor's.
+- *An enterprise PKI* that issues by host name: pin each certificate to its
+  sensor, `POST /api/agents/{id}/certificates` with the PEM (tenant admin).
+
+**Rollout, for a fleet that is already running.**
+
+1. Deploy the release (migration `0077`); `OCTO_AGENT_MTLS_MODE` stays `off`
+   and nothing changes. Finish the rollout before the next step — a replica
+   still on the previous release ignores the mode entirely.
+2. Wire the certificate path (ingress or listener) and the issuance (either
+   of the two above). Enrolment works under `off` already: sensors with
+   `OCTO_AGENT_MTLS_ENROLL=true` get their certificates now. Its renewals do
+   need the certificate path — a renewal must present the current
+   certificate whatever the mode, and without `OCTO_AGENT_MTLS_TRUSTED_PROXIES`
+   (or the listener's client CA) the API never sees one.
+3. `OCTO_AGENT_MTLS_MODE=optional`. Sensors without a certificate keep
+   working; one that presents a wrong one is refused and shows up as
+   `agent.certificate_refused` in the audit trail — investigate those, they are
+   a host holding two sensors' credentials or a mis-mounted Secret.
+4. Watch `GET /api/agents/summary`: `client_cert_agents` should reach the
+   number of sensors, and `client_certs_expired` stay at zero.
+5. `OCTO_AGENT_MTLS_MODE=required`. A sensor without a certificate is now
+   refused with `403` and `X-Client-Cert-Error: missing`; the sensor logs it
+   once and backs off. The legacy shared `OCTO_AGENT_TOKEN` is refused
+   outright — it names no sensor to bind a certificate to. Rolling back is
+   setting the mode back; nothing is lost.
+
+**Rotation** overlaps: a renewal leaves the previous certificate valid until
+its own expiry, so a sensor that has written the new files but not yet reloaded
+is not cut off. The API keeps two live certificates per sensor it issued for —
+the newest and the one before — and revokes older ones as `superseded`.
+cert-manager's renewals overlap the same way (`renewBefore`).
+
+**Revocation** is immediate — the table is read on every request that
+presents a certificate:
+
+```bash
+# one certificate, by fingerprint (colons optional) or serial
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"fingerprint": "ab12…", "reason": "laptop stolen"}'
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"serial": "4f2a…"}'
+# everything this sensor holds — also the reset for a sensor that lost its key
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"all": true, "reason": "re-imaged"}'
+```
+
+A fingerprint the platform has never seen is recorded as a revocation all the
+same (`source: tombstone`), so a certificate can be revoked before its first
+use. A serial has to match one on record: a serial alone does not say which CA
+issued it. The ingress does not consult this list — the API does — so revoke
+here, not by editing the ingress CA.
+
+**A sensor that lost its key** (re-imaged host, an emptyDir that went with its
+pod) cannot enrol again while its old certificate is live, because that rule
+is what stops a stolen token. Revoke with `{"all": true}`; the sensor's next
+enrolment then succeeds without a certificate. A sensor whose certificate ran
+out while it was offline needs nothing: with no live certificate left it may
+enrol from scratch.
+
+**Expiry** shows in the fleet summary: `client_certs_expiring` counts sensors
+whose newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`,
+`client_certs_expired` those whose certificates all have. Each sensor's list
+(`GET /api/agents/{id}/certificates`) says which is which.
+
+**Lariska.** The endpoint Agent has no client-certificate support yet; nothing
+in the API needs changing for it. Its contract: present a certificate whose SAN
+carries `spiffe://<domain>/tenant/<tenant_id>/agent/<agent_id>` (or one an
+operator pinned), on every request it already makes with its token; enrol by
+`POST /api/v1/agent/certificate` with `{"csr": "<PEM>"}` after
+`/api/v1/agent/register`, renewing at `renew_after` with the current
+certificate presented; treat `403` with `X-Client-Cert-Error` as "replace the
+certificate" for `missing`/`revoked`/`expired` and as an operator's problem
+otherwise. Until it does, `required` — an installation-wide mode — refuses
+every Agent: stay at `optional` while Agents are deployed, or pin certificates
+an MDM puts on the endpoints.
+
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
@@ -3599,14 +3715,40 @@ every row of scan data. As of
 | Link | Encrypted | How it is configured |
 |---|---|---|
 | Console / API ingress | Yes, when you configure it | `spec.tls` + cert-manager in `examples/ingress.example.yaml`; `force-ssl-redirect` sends bookmarked `http://` links back to HTTPS |
-| Sensor / endpoint Agent → API | Yes | Plain HTTPS to `OCTO_PUBLIC_BASE_URL`; both are outbound-only, there is no client certificate |
+| Sensor / endpoint Agent → API | Yes; mutual when you configure it | HTTPS to `OCTO_PUBLIC_BASE_URL`, outbound-only. A client certificate bound to the sensor's token with `OCTO_AGENT_MTLS_MODE` — see [Sensor client certificates](#sensor-client-certificates) |
 | API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
 | API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
 | API / sensors ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
-There is no mTLS anywhere yet: nothing in this repository issues or checks a
-client certificate. Where the README once said "mTLS", read "TLS, one-way".
+Mutual TLS exists on one link: sensor and Agent → API, opt-in
+([Sensor client certificates](#sensor-client-certificates)). Every other link
+is TLS one-way at most.
+
+**Datastore links stay warned about, not enforced** — the decision #309 asked
+for. A `prod` start keeps *warning* when `OCTO_POSTGRES_URL` has no `sslmode=`
+and does not refuse; ClickHouse and NATS are not checked at all beyond their
+scheme. Three reasons, all of which still hold:
+
+1. The shipped layouts run Postgres, ClickHouse and NATS in the cluster,
+   reached only from the API's pods (`base/networkpolicy-datastores.yaml`), and
+   ship no certificates for them. A refusal would stop every existing
+   installation at its next upgrade, with nothing in the repository to fix it
+   with.
+2. A link without TLS *at the client* is often encrypted anyway — a service
+   mesh's sidecars (Istio, Linkerd) do mTLS between pods and hand the
+   application plaintext, a Unix socket never leaves the host, a cloud private
+   link is the provider's. The API sees the same URL in all of them and cannot
+   tell them from the unprotected case.
+3. Enforcement is already available where it is meaningful, and is fail-closed
+   once chosen: `sslmode=verify-full` makes libpq refuse a server without a
+   valid certificate, `https://` for ClickHouse and `tls://` for NATS do the
+   same for theirs. The operator who writes the URL is the one who knows which
+   of the cases above applies.
+
+What would change it: in-cluster datastore TLS shipped in the `prod-ha`
+overlay (cert-manager certificates for the three StatefulSets). Once that
+exists, `prod` can refuse a plaintext URL that points at those Services.
 
 Which ports have to be open for any of it, how egress goes through a corporate
 proxy (`OCTO_HTTPS_PROXY`, `OCTO_NO_PROXY`), and where an internal root goes

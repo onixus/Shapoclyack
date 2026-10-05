@@ -6,6 +6,33 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Client certificates for sensors and endpoint Agents
+  ([#309](https://github.com/onixus/Shapoclyack/issues/309)).** With
+  `OCTO_AGENT_MTLS_MODE=optional|required` (default `off`, unchanged
+  behaviour) every agent route also checks the request's client certificate
+  against the token: it must name the token's agent in a SPIFFE URI
+  (`spiffe://<domain>/tenant/<t>/sensor/<id>`, `/agent/` for Lariska) or be
+  pinned to it by fingerprint, and must not be revoked — sensor A's
+  certificate does not make sensor B's token good. Refusals are `403` with
+  `X-Client-Cert-Error` and, except for a missing certificate, an
+  `agent.certificate_refused` audit row. The certificate comes from the API's
+  own TLS listener (`CERT_OPTIONAL` against `OCTO_AGENT_MTLS_CLIENT_CA`) or
+  from ingress-nginx's `ssl-client-*` headers, believed **only** from
+  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` and cross-checked against the client CA
+  and the verified subject. `POST /api/agent/certificate` signs a CSR with
+  `OCTO_AGENT_MTLS_ISSUER_*` for the token's agent (a renewal must present the
+  current certificate; two live certificates per sensor overlap a rotation);
+  `GET/POST /api/agents/{id}/certificates` and `…/revoke` (by fingerprint,
+  serial or all) take effect on the next request; the fleet summary counts
+  sensors with a certificate and those expiring or expired, and the Sensors
+  page warns about them. The sensor presents `OCTO_AGENT_TLS_CLIENT_CERT/KEY`,
+  re-reads them when cert-manager rotates them, or enrols and renews its own
+  with `OCTO_AGENT_MTLS_ENROLL=true`. cert-manager, ingress and patch examples
+  are in `k8s/shapoclyack/examples/agent-mtls-*`/`ingress-agent-mtls.*`; the
+  rollout is in `docs/operations.md` § Sensor client certificates. Migration
+  `0077_agent_client_certs` (new table, tenant RLS). Datastore TLS stays a
+  `prod` warning rather than a refusal — the decision and its reasons are in
+  `docs/operations.md` § Transport encryption.
 - **Tenant-defined roles
   ([#318](https://github.com/onixus/Shapoclyack/issues/318)).** A tenant's
   member managers can define roles of their own — a name, a rank and an

@@ -10,6 +10,7 @@ import {
   Server,
 } from "lucide-react";
 import { AgentDetailsDrawer } from "@/components/agent/agent-details-drawer";
+import { ClientCertExpiryAlert } from "@/components/agent/client-cert-expiry-alert";
 import { DeployAgentDialog } from "@/components/agent/deploy-agent-dialog";
 import { DataTable } from "@/components/data-table";
 import { KpiCard } from "@/components/kpi-card";
@@ -224,6 +225,8 @@ export default function AgentsPage() {
           decorationColor="amber"
         />
       </div>
+
+      <ClientCertExpiryAlert summary={summary} />
 
       {/* Agents Table */}
       <DataTable

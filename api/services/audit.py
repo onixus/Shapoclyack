@@ -104,6 +104,14 @@ ACTION_AGENT_DISABLE = "agent.disable"
 ACTION_AGENT_ENABLE = "agent.enable"
 ACTION_AGENT_QUARANTINE = "agent.quarantine"
 ACTION_AGENT_DELETE = "agent.delete"
+# Client certificates of sensors and endpoint agents (#309). ``refused`` is
+# not an edit: a presented certificate that belongs to another agent than the
+# token, or one already revoked — one host holding two sensors' credentials,
+# which is what the trail has to be able to show afterwards.
+ACTION_AGENT_CERT_ISSUE = "agent.certificate_issue"
+ACTION_AGENT_CERT_PIN = "agent.certificate_pin"
+ACTION_AGENT_CERT_REVOKE = "agent.certificate_revoke"
+ACTION_AGENT_CERT_REFUSED = "agent.certificate_refused"
 # Agent groups (#361). Membership decides which worker may execute which of a
 # tenant's scans, so moving an agent between groups is an access-control change
 # and belongs in the same trail as granting a membership — "which agent was

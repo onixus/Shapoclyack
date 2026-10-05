@@ -55,6 +55,9 @@ TENANT_GUARDS = frozenset(
         # The results upload's variant (#320): the same token, the same tenant
         # declared — it only skips the rate limit.
         auth.require_agent_results.__qualname__,
+        # The certificate enrolment's variant (#309): the same token, the same
+        # tenant declared — only its client-certificate rule differs.
+        auth.require_agent_enrolment.__qualname__,
     }
 )
 

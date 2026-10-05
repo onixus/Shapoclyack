@@ -1,0 +1,97 @@
+# Client certificates for sensors, issued by cert-manager (#309).
+#
+# A private CA that signs nothing but sensor client certificates, and a
+# ClusterIssuer around it. The sensors get their certificates from it through
+# the cert-manager CSI driver (agent-mtls-patch.yaml) or as Certificates of
+# their own (the last document below); the ingress and the API are told to
+# trust it (ingress-agent-mtls.example.yaml, agent-mtls-api-patch.yaml).
+#
+# Requires cert-manager (and, for agent-mtls-patch.yaml, csi-driver):
+#   https://cert-manager.io/docs/installation/
+#   https://cert-manager.io/docs/usage/csi-driver/
+#
+#   kubectl apply -f agent-mtls-cert-manager.example.yaml
+#
+# Its own CA, not the one behind the console's server certificate and not a
+# corporate root: the API believes *any* certificate this CA signs that names
+# a sensor, so whoever can get one signed can speak for a sensor. Keep the
+# ClusterIssuer's use to these sensors — a cert-manager approver-policy that
+# only lets the sensor namespaces request from it is the way to say so.
+#
+# The ingress and the API need the CA's *public* certificate only. The CA
+# Secret below also holds the CA's key, so copy the certificate out of it into
+# a Secret of its own rather than mounting this one anywhere:
+#
+#   kubectl -n cert-manager get secret shapoclyack-sensor-ca \
+#     -o jsonpath='{.data.ca\.crt}' | base64 -d > sensor-ca.crt
+#   kubectl -n network-scan create secret generic shapoclyack-sensor-client-ca \
+#     --from-file=ca.crt=sensor-ca.crt
+#
+# (trust-manager's Bundle does the same copy and keeps it current.)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: shapoclyack-sensor-selfsigned
+spec:
+  selfSigned: {}
+---
+# The CA itself, in cert-manager's cluster resource namespace (where a
+# ClusterIssuer looks for its Secret).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: shapoclyack-sensor-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: Shapoclyack sensor client CA
+  secretName: shapoclyack-sensor-ca
+  duration: 87600h # 10 years; rotating the CA means re-trusting it everywhere
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: shapoclyack-sensor-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: shapoclyack-sensor-ca
+spec:
+  ca:
+    secretName: shapoclyack-sensor-ca
+---
+# One sensor's certificate as a Certificate of its own — for a sensor that is
+# not a StatefulSet pod (a Deployment of one, a VM that reads the Secret
+# through an external-secrets sync). The URI is the identity the API binds:
+#   spiffe://<OCTO_AGENT_MTLS_TRUST_DOMAIN>/tenant/<tenant_id>/sensor/<agent_id>
+# with <agent_id> exactly the sensor's OCTO_AGENT_ID. Use /agent/ instead of
+# /sensor/ for a Lariska endpoint agent.
+#
+# renewBefore is when cert-manager replaces it; the sensor re-reads a mounted
+# Secret within a minute of the change (agent/mtls.py), no restart needed.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: shapoclyack-sensor-edge-01
+  namespace: network-scan-executor
+spec:
+  secretName: shapoclyack-sensor-edge-01-tls
+  duration: 720h
+  renewBefore: 240h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  commonName: edge-01
+  uris:
+    - spiffe://shapoclyack/tenant/default/sensor/edge-01
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: shapoclyack-sensor-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

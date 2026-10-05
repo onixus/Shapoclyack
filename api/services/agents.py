@@ -29,6 +29,7 @@ from api import __version__
 from api.db import models, tenant_scope
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentFleetSummary, AgentInfo
+from api.services import agent_certs
 from api.services import audit as audit_service
 from api.services import pagination
 from api.services import tenants as tenants_service
@@ -1058,6 +1059,12 @@ def get_fleet_summary(
         if tenant_id:
             query = query.where(models.Agent.tenant_id == tenant_id)
         rows = session.execute(query).scalars().all()
+        certificates = agent_certs.fleet_certificates(
+            session,
+            tenant_id=tenant_id,
+            now=_now(),
+            warn_days=settings.agent_mtls_expiry_warn_days,
+        )
 
     total = len(rows)
     online = 0
@@ -1101,6 +1108,10 @@ def get_fleet_summary(
         outdated_agents=outdated,
         latest_version=LATEST_AGENT_VERSION,
         by_tenant=by_tenant,
+        client_cert_mode=settings.agent_mtls_mode,  # type: ignore[arg-type]
+        client_cert_agents=certificates.agents_with_cert,
+        client_certs_expiring=certificates.expiring,
+        client_certs_expired=certificates.expired,
     )
 
 

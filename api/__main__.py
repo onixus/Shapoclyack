@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
+from typing import Any
 
 import uvicorn
 
@@ -9,7 +11,7 @@ from api import __version__
 from api.logging_setup import configure_logging, uvicorn_log_config
 
 
-def tls_options() -> dict[str, str]:
+def tls_options() -> dict[str, Any]:
     """TLS for the API's own listener, from ``OCTO_API_TLS_CERT``/``_KEY``.
 
     Terminating here rather than only in an ingress is what lets an
@@ -38,7 +40,36 @@ def tls_options() -> dict[str, str]:
     for label, path in (("certificate", cert), ("private key", key)):
         if not os.path.exists(path):
             raise SystemExit(f"Refusing to start: TLS {label} not found at {path}")
-    return {"ssl_certfile": cert, "ssl_keyfile": key}
+    return {"ssl_certfile": cert, "ssl_keyfile": key, **client_certificate_options()}
+
+
+def client_certificate_options() -> dict[str, Any]:
+    """Ask TLS clients for a sensor certificate, when sensors use one (#309).
+
+    Only with ``OCTO_AGENT_MTLS_MODE`` other than ``off`` and a CA to verify
+    against (``OCTO_AGENT_MTLS_CLIENT_CA``, else ``OCTO_AGENT_MTLS_ISSUER_CERT``).
+    ``CERT_OPTIONAL`` and never ``CERT_REQUIRED``: the console and every API
+    client share this listener and have no certificate, and *which* requests
+    need one is decided per route (``api.auth``), not per connection. A
+    certificate that is presented is verified by OpenSSL here — one from
+    another CA fails the handshake — and handed to the application through
+    :func:`api.core.client_cert.listener_protocol_class`.
+    """
+    mode = (os.environ.get("OCTO_AGENT_MTLS_MODE") or "off").strip().lower()
+    ca = (os.environ.get("OCTO_AGENT_MTLS_CLIENT_CA") or "").strip() or (
+        os.environ.get("OCTO_AGENT_MTLS_ISSUER_CERT") or ""
+    ).strip()
+    if mode == "off" or not ca:
+        return {}
+    if not os.path.exists(ca):
+        raise SystemExit(f"Refusing to start: client CA bundle not found at {ca}")
+    from api.core.client_cert import listener_protocol_class
+
+    return {
+        "ssl_cert_reqs": ssl.CERT_OPTIONAL,
+        "ssl_ca_certs": ca,
+        "http": listener_protocol_class(),
+    }
 
 
 def main() -> None:
@@ -57,6 +88,12 @@ def main() -> None:
         log_format,
         logging.getLevelName(level),
     )
+    if "ssl_ca_certs" in tls:
+        logging.getLogger("shapoclyack.api").info(
+            "TLS listener asks clients for a certificate issued by %s (optional per "
+            "connection; OCTO_AGENT_MTLS_MODE decides which routes need one)",
+            tls["ssl_ca_certs"],
+        )
     uvicorn.run(
         "api.app:app",
         host=host,

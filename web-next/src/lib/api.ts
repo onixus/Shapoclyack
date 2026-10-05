@@ -954,6 +954,14 @@ export type AgentFleetSummary = {
   outdated_agents: number;
   latest_version: string;
   by_tenant: Record<string, number>;
+  /** OCTO_AGENT_MTLS_MODE (#309); absent from an API that predates it. */
+  client_cert_mode?: "off" | "optional" | "required";
+  /** Sensors holding a live client certificate. */
+  client_cert_agents?: number;
+  /** ...whose newest one runs out within OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS. */
+  client_certs_expiring?: number;
+  /** Sensors whose certificates have all run out. */
+  client_certs_expired?: number;
 };
 
 export type AgentDeploySSHRequest = {

@@ -681,6 +681,76 @@ class AgentFleetSummary(BaseModel):
     latest_version: str = ""
     min_version: str = ""
     by_tenant: dict[str, int] = Field(default_factory=dict)
+    # Client certificates (#309): the installation's OCTO_AGENT_MTLS_MODE, how
+    # many agents hold a live certificate — what an operator watches before
+    # switching to ``required`` — and how many need a renewal soon, or missed
+    # it. ``expiring`` uses OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS.
+    client_cert_mode: Literal["off", "optional", "required"] = "off"
+    client_cert_agents: int = 0
+    client_certs_expiring: int = 0
+    client_certs_expired: int = 0
+
+
+class AgentCertificateRequest(BaseModel):
+    """A sensor's (or endpoint agent's) CSR, for ``POST /api/agent/certificate`` (#309).
+
+    Only the public key is used; subject and SANs are decided by the server
+    from the token. 16 KiB is several times an RSA-4096 CSR.
+    """
+
+    csr: str = Field(min_length=1, max_length=16 * 1024)
+
+
+class AgentCertificateResponse(BaseModel):
+    certificate: str
+    #: The issuing CA, so the agent can present a chain and an operator can
+    #: see which CA its ingress has to trust.
+    ca_certificate: str
+    fingerprint_sha256: str
+    serial: str
+    spiffe_id: str
+    not_before: str
+    not_after: str
+    #: When the agent should renew: two thirds of the lifetime.
+    renew_after: str
+
+
+class AgentClientCertInfo(BaseModel):
+    cert_id: str
+    agent_id: str
+    tenant_id: str
+    fingerprint_sha256: str
+    serial: str = ""
+    subject: str = ""
+    source: Literal["csr", "pinned", "observed", "tombstone"]
+    state: Literal["valid", "expiring", "expired", "revoked"]
+    not_before: str | None = None
+    not_after: str | None = None
+    created_at: str | None = None
+    created_by: str = ""
+    revoked_at: str | None = None
+    revoked_by: str | None = None
+    revoked_reason: str | None = None
+
+
+class PinAgentCertificateRequest(BaseModel):
+    """Bind a certificate the platform did not issue to one agent, by fingerprint."""
+
+    certificate: str = Field(min_length=1, max_length=16 * 1024)
+
+
+class RevokeAgentCertificatesRequest(BaseModel):
+    """Exactly one of ``fingerprint``, ``serial`` or ``all``.
+
+    ``all`` revokes every certificate of the agent, after which it may enrol
+    again from scratch under ``required`` — the reset for a sensor whose key
+    was lost or copied.
+    """
+
+    fingerprint: str | None = Field(default=None, max_length=128)
+    serial: str | None = Field(default=None, max_length=128)
+    all: bool = False
+    reason: str = Field(default="", max_length=512)
 
 
 # A hostname, an IPv4 literal, or a bracketed IPv6 literal — never a value
