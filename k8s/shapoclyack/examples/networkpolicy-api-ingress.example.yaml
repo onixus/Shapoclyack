@@ -3,7 +3,9 @@
 #   - the in-cluster sensor (the scanner-executor in network-scan-executor);
 #   - the Ingress controller, which carries everything from outside the
 #     cluster: the console's users, sensors in other clusters, and Agents
-#     (Lariska);
+#     (Lariska) — its controller pods only, not every pod in its namespace:
+#     with sensor client certificates behind the ingress (#309) the API
+#     believes ssl-client-* headers from it (agent-mtls-api-patch.yaml);
 #   - Prometheus, for /metrics (servicemonitor.example.yaml).
 # All other traffic to the API pods is dropped.
 #
@@ -15,7 +17,11 @@
 #
 # An Ingress controller on hostNetwork, which is common on bare metal, connects
 # from node addresses. No namespaceSelector matches those, so use an ipBlock
-# for the node CIDR instead of its rule below.
+# for the node CIDR instead of its rule below. That admits every hostNetwork
+# pod on those nodes as well (the overlays/prod scanner-executor,
+# node-exporter): with sensor client certificates behind such an ingress they
+# are as trusted as the controller, and this policy cannot narrow it — see
+# docs/operations.md § Sensor client certificates before using `required`.
 #
 # Kubelet probes (/livez, /readyz) also come from the node and match no rule
 # here. Calico and Cilium let host traffic through by default;
@@ -50,11 +56,16 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-    # The Ingress controller.
+    # The Ingress controller: the labels the ingress-nginx chart and its
+    # static manifests both put on the controller pods.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+              app.kubernetes.io/component: controller
       ports:
         - protocol: TCP
           port: 8080

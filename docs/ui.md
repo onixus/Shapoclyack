@@ -772,6 +772,25 @@ on a poll, so it reads as a live view rather than one that needs reloading.
 The tiles above the table are `GET /api/agents/summary`: total, online /
 active, scanning (busy), stale / offline and **updates available** (outdated
 against the server's target version).
+Below them, a warning appears only when sensor **client certificates** need
+attention ([#309](https://github.com/onixus/Shapoclyack/issues/309)): how many
+sensors' newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`
+(amber) and how many have run out altogether (red, since under
+`OCTO_AGENT_MTLS_MODE=required` those sensors are refused), with the mode the
+installation runs in. The hint under it says what an expired certificate does
+on the sensor: it is no longer presented, an enrolled sensor enrols again by
+itself, and one with a mounted certificate works without it under `optional`
+and is refused under `required` until the certificate is renewed. It also names sensors refused in the last day while
+another host holds their certificate (red: somebody else enrolled with their
+token, or they lost their key) and sensors a revocation locked until their
+enrolment is reset. A fleet without certificates, or one whose certificates
+are all comfortably valid, shows nothing. The counts are the summary's
+`client_certs_expiring` / `client_certs_expired` / `client_cert_conflicts` /
+`client_cert_locked`, and the locked sensors are named by id
+(`client_cert_locked_agents`, the first 50) — a deleted one is listed nowhere
+else, and the enrolment reset takes its id; which sensor holds which
+certificate is `GET /api/agents/{id}/certificates`
+([operations.md](operations.md#sensor-client-certificates)).
 A row opens a details drawer with the sensor's heartbeat metrics — OS and
 architecture, CPU, memory, disk, load and uptime — its capabilities, current
 job, and an **Upgrade** action. Upgrade marks the sensor (`upgrade_requested`)

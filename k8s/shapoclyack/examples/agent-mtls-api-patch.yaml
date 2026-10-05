@@ -1,0 +1,92 @@
+# The API's side of sensor client certificates (#309).
+#
+# Wiring (overlay kustomization.yaml):
+#
+#   patches:
+#     - path: agent-mtls-api-patch.yaml
+#
+# with the Ingress from ingress-agent-mtls.example.yaml, the CA from
+# agent-mtls-cert-manager.example.yaml, and networkpolicy-api-ingress.example.yaml
+# — not optional with this patch: see OCTO_AGENT_MTLS_TRUSTED_PROXIES below.
+# docs/operations.md § Sensor client certificates has the rollout: start at
+# `optional`, watch the fleet view's certificate count reach the fleet size,
+# then switch to `required`.
+#
+# What the header path proves. The ingress checked that the client held the
+# key of the certificate it forwards; the API only sees the certificate. So it
+# is as strong as two things: that the ingress verifies (auth-tls on every
+# host that routes here), and that nothing but the ingress can reach port 8080
+# from an address in OCTO_AGENT_MTLS_TRUSTED_PROXIES — a pod that can, needs
+# only a sensor's public certificate and its token. Where that cannot be
+# guaranteed, run `required` on the API's own TLS listener instead
+# (OCTO_API_TLS_CERT + OCTO_AGENT_MTLS_CLIENT_CA, a TLS-passthrough or L4 path
+# to it), where the API makes the handshake itself and proves possession.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shapoclyack-api
+spec:
+  template:
+    spec:
+      volumes:
+        # ca.crt only — never the CA Secret with its key.
+        - name: sensor-client-ca
+          secret:
+            secretName: shapoclyack-sensor-client-ca
+            defaultMode: 0444
+        # Only for OCTO_AGENT_MTLS_ISSUER_* (CSR enrolment by the API itself,
+        # instead of or next to cert-manager): an intermediate that signs
+        # sensor certificates and nothing else, as tls.crt / tls.key. It must
+        # be in, or be signed by a CA in, the client CA bundle below — the API
+        # refuses to start otherwise; the sensors present it after their leaf.
+        # - name: sensor-issuer
+        #   secret:
+        #     secretName: shapoclyack-sensor-issuer
+        #     defaultMode: 0400
+      containers:
+        - name: api
+          volumeMounts:
+            - name: sensor-client-ca
+              mountPath: /etc/shapoclyack/sensor-client-ca
+              readOnly: true
+            # - name: sensor-issuer
+            #   mountPath: /etc/shapoclyack/sensor-issuer
+            #   readOnly: true
+          env:
+            # off (default) | optional | required. `optional` binds a
+            # certificate when one is presented and lets a sensor without one
+            # through; `required` refuses it.
+            - name: OCTO_AGENT_MTLS_MODE
+              value: optional
+            # The ingress-nginx controller and nothing else — the only peers
+            # whose ssl-client-* headers are believed. IP addresses or CIDRs
+            # (a host name is refused at start):
+            #   * a pod-network controller: a range only its pods get — a Calico
+            #     IPPool or Cilium pool bound to the ingress-nginx namespace;
+            #   * a hostNetwork controller: the addresses of the nodes it runs
+            #     on — which every hostNetwork pod on those nodes shares (the
+            #     overlays/prod scanner-executor, node-exporter), so any of them
+            #     is trusted too and no NetworkPolicy can tell them apart. For
+            #     `required`, prefer the API's own TLS listener or a controller
+            #     on the pod network (docs/operations.md § Sensor client
+            #     certificates).
+            # Never the cluster's pod CIDR: the scanner-executor and Prometheus
+            # may open 8080 too (networkpolicy-api-ingress.example.yaml), and
+            # from a trusted address they could forge a verified certificate.
+            # The placeholders are documentation addresses (RFC 5737): applied
+            # unchanged, they trust nobody.
+            - name: OCTO_AGENT_MTLS_TRUSTED_PROXIES
+              value: 192.0.2.10,192.0.2.11
+            # Required whenever the list above is set (the API refuses to start
+            # without it): every forwarded certificate is checked against it,
+            # so an auth-tls-secret pointing at the wrong CA does not widen
+            # access. A root is enough for certificates OCTO_AGENT_MTLS_ISSUER_*
+            # signs (the API knows that intermediate); a cert-manager issuer
+            # that is an intermediate goes in this bundle too, since the
+            # ingress forwards the leaf alone.
+            - name: OCTO_AGENT_MTLS_CLIENT_CA
+              value: /etc/shapoclyack/sensor-client-ca/ca.crt
+            # - name: OCTO_AGENT_MTLS_ISSUER_CERT
+            #   value: /etc/shapoclyack/sensor-issuer/tls.crt
+            # - name: OCTO_AGENT_MTLS_ISSUER_KEY
+            #   value: /etc/shapoclyack/sensor-issuer/tls.key

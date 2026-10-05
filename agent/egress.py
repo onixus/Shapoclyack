@@ -231,7 +231,9 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
 
 
 def build_opener(
-    url: str, *handlers: urllib.request.BaseHandler
+    url: str,
+    *handlers: urllib.request.BaseHandler,
+    context: ssl.SSLContext | None = None,
 ) -> urllib.request.OpenerDirector:
     """A ``urllib`` opener for ``url``: this agent's proxy and CA, nothing else.
 
@@ -241,12 +243,16 @@ def build_opener(
     the ambient variables up. Redirects are not followed (:class:`NoRedirects`);
     unlike the proxy and CA, that is the agent's alone, since its bearer token
     is what a redirect would carry elsewhere.
+
+    ``context`` replaces :func:`ssl_context` — the agent passes one that also
+    presents its client certificate (``agent/mtls.py``, #309); it is built
+    from :func:`ssl_context`, so the trust store is the same.
     """
     proxy = proxy_for_url(url)
     mapping = {"http": proxy.proxy_url(), "https": proxy.proxy_url()} if proxy else {}
     return urllib.request.build_opener(
         urllib.request.ProxyHandler(mapping),
-        urllib.request.HTTPSHandler(context=ssl_context()),
+        urllib.request.HTTPSHandler(context=context or ssl_context()),
         NoRedirects(),
         *handlers,
     )

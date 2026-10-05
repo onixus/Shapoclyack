@@ -83,6 +83,9 @@ POSTGRES_TABLES = (
     # The fleet: agents are a NO ACTION key to provisioning_keys, below.
     "agent_deployments",
     "agent_ssh_host_keys",
+    # Client certificates (#309): keyed by tenant and agent id, no key to agents.
+    "agent_client_certs",
+    "agent_cert_enrolments",
     "agents",
     "agent_groups",
     # Scans.

@@ -508,6 +508,8 @@ Both are warnings rather than refusals because, unlike a published default
 password, neither value is distinguishable from a deliberate choice: a Postgres
 reached over a Unix socket or an operator-owned encrypted link is a legitimate
 install, and refusing would break every deployment that upgrades.
+Whether `prod` should refuse instead was decided in #309: not yet, and why is
+in [operations.md](operations.md#transport-encryption).
 
 Everything except the console-account check is decided in `load_settings()`
 from the environment alone. That one needs the database and therefore runs at
@@ -559,6 +561,14 @@ OCTO_AGENT_JWT_EXPIRE_MINUTES
 OCTO_AGENT_JWT_SECRET
 OCTO_AGENT_JWT_SECRET_PREVIOUS
 OCTO_AGENT_MIN_VERSION
+OCTO_AGENT_MTLS_CERT_DAYS
+OCTO_AGENT_MTLS_CLIENT_CA
+OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS
+OCTO_AGENT_MTLS_ISSUER_CERT
+OCTO_AGENT_MTLS_ISSUER_KEY
+OCTO_AGENT_MTLS_MODE
+OCTO_AGENT_MTLS_TRUSTED_PROXIES
+OCTO_AGENT_MTLS_TRUST_DOMAIN
 OCTO_AGENT_RESULTS_INGEST_MAX_WAITING
 OCTO_AGENT_RESULTS_INGEST_WAIT_SECONDS
 OCTO_AGENT_RESULTS_MAX_BODY_BYTES
@@ -568,6 +578,7 @@ OCTO_AGENT_TOKEN
 OCTO_ALLOW_SCAN_START
 OCTO_API_CORS
 OCTO_API_DOCS
+OCTO_API_TLS_CERT
 OCTO_API_USERS
 OCTO_ARTIFACT_BACKEND
 OCTO_ARTIFACT_CACHE_DIR
@@ -1455,3 +1466,76 @@ separate from JWT and `OCTO_MASTER_KEY`; losing it prevents new signatures
 but does not make archived packages unverifiable because they embed the public
 key. Pin the package `key_id` through an independent trusted record when
 authenticity, rather than integrity alone, is required.
+## Sensor and Agent client certificates (mTLS)
+
+A sensor or an endpoint Agent (Lariska) authenticates with a bearer token —
+the JWT its provisioning key is exchanged for. With
+[#309](https://github.com/onixus/Shapoclyack/issues/309) it can also present a
+**client certificate**, and the API checks that the certificate belongs to the
+same sensor as the token: a token copied off a host is then useless without
+that host's private key, and one host's certificate does not make another
+sensor's token good. The procedure (rollout, rotation, revocation) is in
+[operations.md](operations.md#sensor-client-certificates); this section is the
+switches.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_AGENT_MTLS_MODE` | `off` | `off` — the token alone, as before; no certificate is read. `optional` — a presented certificate must be the token's sensor's own (`403` otherwise), a request without one passes: the migration mode. `required` — every sensor and Agent request needs one. A misspelt value refuses to start, in every environment |
+| `OCTO_AGENT_MTLS_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs of the TLS-terminating ingress — the ingress-nginx controller and nothing else: its nodes' addresses if it runs on hostNetwork, or a pod range only it gets. **Never the cluster's pod CIDR**: any pod with a trusted address that can reach the API port can forward a "verified" certificate. The `ssl-client-verify` / `ssl-client-cert` / `ssl-client-subject-dn` headers are believed **only** from these peers; from anywhere else they are ignored, as if nothing was presented. Parsed once at start; an entry that is not an IP or CIDR (a host name) refuses to start. Requires `OCTO_AGENT_MTLS_CLIENT_CA`. Separate from `OCTO_TRUSTED_PROXIES`, which only decides whose `X-Forwarded-For` keys a rate-limit bucket. Matched against the socket's own peer address, never the one uvicorn takes from `X-Forwarded-For` for peers in its `FORWARDED_ALLOW_IPS` — that variable has no effect on this list |
+| `OCTO_AGENT_MTLS_CLIENT_CA` | *(empty; falls back to `OCTO_AGENT_MTLS_ISSUER_CERT`)* | PEM bundle of the CA(s) that issue sensor certificates. The API's own TLS listener asks clients for a certificate from it — in every `OCTO_AGENT_MTLS_MODE`, `off` included, since renewals present the current certificate — and a certificate an ingress forwards is checked against it again — so an `auth-tls-secret` pointed at the wrong CA does not widen who gets in. Every certificate in it is a trust anchor, an intermediate included. With an ingress (which forwards the leaf only), it must hold the **issuing** CA — or a root above `OCTO_AGENT_MTLS_ISSUER_CERT`, whose link the API supplies itself — and it is mandatory: without it a forwarded certificate is never believed, and `OCTO_AGENT_MTLS_TRUSTED_PROXIES` refuses to start |
+| `OCTO_AGENT_MTLS_ISSUER_CERT` / `OCTO_AGENT_MTLS_ISSUER_KEY` | *(empty)* | CA certificate and unencrypted PEM key that sign CSRs at `POST /api/agent/certificate`. Both or neither. Use an intermediate that signs sensor certificates and nothing else — the API believes any certificate it signs that names a sensor. With `OCTO_AGENT_MTLS_CLIENT_CA` set, the issuer must be in that bundle or chain to it (intermediates may follow it in this file); otherwise start-up is refused, in every mode. Enrolled sensors present it after their leaf |
+| `OCTO_AGENT_MTLS_TRUST_DOMAIN` | `shapoclyack` | The SPIFFE trust domain: a certificate names its sensor as `spiffe://<domain>/tenant/<tenant_id>/sensor/<agent_id>` (`/agent/` for a Lariska Agent). URIs of any other domain are not identities here |
+| `OCTO_AGENT_MTLS_CERT_DAYS` | `30` | Lifetime of a certificate this API signs (1–365). The response says when to renew: two thirds in |
+| `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS` | `7` | How early `GET /api/agents/summary` counts a sensor's newest certificate as `client_certs_expiring` |
+
+**Refused at start**, in every environment: a mode that is not one of the
+three; `required` with no way for a certificate to arrive (neither
+`OCTO_AGENT_MTLS_TRUSTED_PROXIES` nor a TLS listener with a client CA);
+`OCTO_AGENT_MTLS_TRUSTED_PROXIES` under `optional` or `required` without
+`OCTO_AGENT_MTLS_CLIENT_CA` (or `OCTO_AGENT_MTLS_ISSUER_CERT`), or with an
+entry that is not an IP or CIDR; one half of the issuer pair; a path that
+does not exist.
+
+**Which certificate is whose.** A certificate's identity is the SPIFFE URI in
+its SAN, in the configured trust domain — the form the API signs and the one a
+cert-manager `Certificate` is told to carry. A certificate without one (an
+enterprise PKI that issues by host name) has no identity until a tenant admin
+pins its fingerprint to a sensor (`POST /api/agents/{id}/certificates`).
+Lookups are per tenant: one tenant's pin or revocation never touches another's
+sensor.
+
+**Refusals are `403`**, never `401`, with the reason in `X-Client-Cert-Error`:
+`missing`, `revoked`, `expired`, `mismatch` (the certificate names, or is
+pinned to, a different sensor), `unbound` (it names nobody), `no-identity` (the
+legacy shared `OCTO_AGENT_TOKEN`, which has no sensor to bind to and is refused
+under `required`), `enrolment-locked` (an operator revoked one of the sensor's
+certificates; nothing without a certificate is accepted from it, in
+`optional` as in `required`, until its enrolment is reset). A sensor answers
+`401` by re-exchanging its key, which would succeed and be refused again at
+the poll rate. Everything but `missing` and `enrolment-locked` is recorded as
+`agent.certificate_refused` in the audit trail; those two are only logged,
+because a fleet that has not enrolled yet polls every few seconds and a
+locked sensor's revocation is already recorded — except `missing` for a
+sensor that holds a live certificate on record, which is recorded once per
+sensor per hour with `agent_holds_live_certificate: true`.
+
+### Direct TLS on the API's listener
+
+With `OCTO_API_TLS_CERT` / `OCTO_API_TLS_KEY` set (above), a mode other than
+`off` and a client CA, the listener asks every client for a certificate —
+`CERT_OPTIONAL`, never `CERT_REQUIRED`, because the console and the API
+clients share the port and have none. A presented certificate from another CA
+fails the handshake; a verified one reaches the application from the socket,
+and no header can add one there.
+
+### The sensor side
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OCTO_AGENT_TLS_CLIENT_CERT` / `OCTO_AGENT_TLS_CLIENT_KEY` | *(empty)* | PEM certificate and key the sensor presents on every call to the API. Both or neither. Re-read within a minute of changing on disk, so a cert-manager renewal needs no restart. Not presented from five minutes before its `not_after` on: the API's handshake (and ingress-nginx) refuses an expired one outright, so the sensor carries on as one without a certificate and logs that the file needs renewing |
+| `OCTO_AGENT_MTLS_ENROLL` | `false` | The sensor makes its own P-256 key, enrols at `POST /api/agent/certificate`, writes the two files above (key `0600`; the certificate followed by its issuer) plus `<cert>.json`, and renews at the `renew_after` the API answered. A new pair is staged as `<file>.next` and moved in together; an interrupted move is finished at the next start, and a pair that does not load is dropped and enrolled again. Needs `cryptography` or the `openssl` binary on the host. Put the files on storage that survives a restart: a sensor that loses its key cannot enrol again while its old certificate is live |
+
+The client certificate rides the same proxy-aware connection as everything
+else (`OCTO_HTTPS_PROXY`, `OCTO_CA_BUNDLE`). A TLS-inspecting proxy re-signs
+the connection and cannot forward a client certificate — put the API's host in
+`OCTO_NO_PROXY` or exempt it from inspection.

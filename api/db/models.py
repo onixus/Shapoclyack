@@ -1928,6 +1928,94 @@ class Agent(Base):
     )
 
 
+class AgentClientCert(Base):
+    """A client certificate a sensor or endpoint agent authenticates with (#309).
+
+    One row per certificate the platform knows about, per tenant: issued here
+    from a CSR (``csr``), pinned by an operator (``pinned`` — a certificate
+    whose SAN does not name the sensor, bound by its fingerprint), first seen
+    on a request and bound by its SPIFFE URI (``observed`` — typically
+    cert-manager's), or a revocation of a certificate the platform never saw
+    (``tombstone``). ``revoked_at`` takes effect on the next request: binding
+    reads this table every time a certificate is presented.
+
+    Unique per ``(tenant_id, fingerprint_sha256)``, never globally, and every
+    lookup is in the token's tenant: a fingerprint is not a secret, and a
+    global key would let one tenant's admin pin or revoke another tenant's
+    certificate and so lock its sensor out.
+
+    ``agent_id`` is not a foreign key: deleting the agent row must not delete
+    the revocation of its certificate.
+    """
+
+    __tablename__ = "agent_client_certs"
+
+    cert_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE")
+    )
+    agent_id: Mapped[str]
+    fingerprint_sha256: Mapped[str]
+    serial_hex: Mapped[str] = mapped_column(default="")
+    subject: Mapped[str] = mapped_column(default="")
+    # csr | pinned | observed | tombstone
+    source: Mapped[str]
+    not_before: Mapped[datetime | None] = mapped_column(default=None)
+    not_after: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime]
+    created_by: Mapped[str] = mapped_column(default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_by: Mapped[str | None] = mapped_column(default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "fingerprint_sha256", name="uq_agent_client_certs_tenant_fingerprint"
+        ),
+        Index("ix_agent_client_certs_tenant_agent", "tenant_id", "agent_id"),
+        CheckConstraint(
+            "source IN ('csr', 'pinned', 'observed', 'tombstone')",
+            name="ck_agent_client_certs_source",
+        ),
+    )
+
+
+class AgentCertEnrolment(Base):
+    """Whether one agent may get a certificate by its token alone (#309).
+
+    Revoking a certificate is not enough to stop the host that holds it: with
+    no live certificate left on record, the token alone would enrol a new one
+    seconds later. So an operator's revocation also *locks* the agent
+    (``locked_at``): enrolment without a certificate is refused, and so is
+    every request without one, under ``optional`` as under ``required``,
+    until an operator resets the enrolment (``reset_at``) — a separate,
+    audited act.
+
+    ``conflict_at`` is the last time the agent was refused for presenting no
+    certificate while it holds a live one: somebody else enrolled first, or
+    the real sensor lost its key. Kept here so the audit row for it is written
+    once per window across replicas, and so the fleet view can count it.
+
+    A row exists only for an agent something has happened to; no row is "never
+    locked, never reset". Not a foreign key to ``agents``, for the reason
+    :class:`AgentClientCert` gives.
+    """
+
+    __tablename__ = "agent_cert_enrolments"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[str] = mapped_column(primary_key=True)
+    locked_at: Mapped[datetime | None] = mapped_column(default=None)
+    locked_by: Mapped[str | None] = mapped_column(default=None)
+    locked_reason: Mapped[str | None] = mapped_column(default=None)
+    reset_at: Mapped[datetime | None] = mapped_column(default=None)
+    reset_by: Mapped[str | None] = mapped_column(default=None)
+    reset_reason: Mapped[str | None] = mapped_column(default=None)
+    conflict_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
 class AgentSshHostKey(Base):
     """Pinned SSH host key for one deployment target, per tenant (#232).
 

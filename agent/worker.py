@@ -50,7 +50,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from agent import __version__, egress
+from agent import __version__, egress, mtls
 from agent import logging_setup, run_retention
 
 LOG = logging.getLogger("octo-agent")
@@ -75,6 +75,9 @@ RATE_LIMIT_WAIT_SECONDS = 30.0
 BUNDLE_INFO_MAX_BYTES = 256 * 1024
 # A token and its expiry; the exchange's answer is a few hundred bytes.
 EXCHANGE_MAX_BYTES = 64 * 1024
+# An enrolled client certificate, its issuer's and their metadata (#309):
+# two PEM certificates, a few KiB between them.
+ENROLMENT_MAX_BYTES = 64 * 1024
 # How much of an error answer is read, and so ends up in the exception and the
 # log line it becomes. The API's refusals are a short JSON ``detail``.
 ERROR_DETAIL_MAX_BYTES = 4 * 1024
@@ -489,6 +492,50 @@ class AgentResultInFlight(AgentResultRejected):
     """
 
 
+#: The API's reason for refusing this agent's client certificate (#309):
+#: ``missing``, ``revoked``, ``expired``, ``mismatch``, ``unbound`` or
+#: ``no-identity`` — see ``api/services/agent_certs.py``.
+_CLIENT_CERT_ERROR_HEADER = "X-Client-Cert-Error"
+#: The reasons a fresh enrolment can cure. ``mismatch`` and ``unbound`` are
+#: the wrong certificate on this host, which only an operator can sort out;
+#: so is ``enrolment-locked`` — a revocation, until the operator resets it.
+_RENEWABLE_CERT_REASONS = frozenset({"missing", "revoked", "expired"})
+
+
+def _after_client_cert_refusal(
+    client_cert: mtls.ClientCertificate | None, poll_interval: float
+) -> tuple[float, bool]:
+    """How long to wait after a certificate refusal, and whether to re-check it now.
+
+    ``client_cert`` is the certificate an enrolment can replace, ``None`` when
+    the refusal is not one an enrolment cures. Returns the wait in seconds and
+    whether the next poll should enrol before anything else.
+    """
+    if client_cert is None:
+        return DISABLED_BACKOFF_SECONDS, False
+    if not client_cert.retry_pending():
+        client_cert.force_enrolment()
+        return min(poll_interval, 5.0), True
+    # The enrolment itself was refused — locked by a revocation until an
+    # operator resets it. Wait it out instead of asking at the poll rate.
+    client_cert.force_enrolment()
+    return mtls.RETRY_SECONDS, False
+
+
+class AgentClientCertRefused(RuntimeError):
+    """The API refused the request over its client certificate (#309).
+
+    Its own class because the answer differs from a disabled agent's: a
+    certificate that is missing, revoked or expired is replaced by enrolling
+    again, when this sensor enrols its own; anything else is backed off like
+    an operator's refusal.
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 class AgentUpgradeRequired(RuntimeError):
     """The API refused the claim because this agent is below its version floor.
 
@@ -530,6 +577,7 @@ class AgentClient:
         timeout: float = 60.0,
         upload_timeout: float = 0.0,
         upload_rate_limit_kbps: float = 0.0,
+        client_cert: mtls.ClientCertificate | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -544,8 +592,57 @@ class AgentClient:
         self.upload_timeout = upload_timeout if upload_timeout > 0 else max(timeout, 900.0)
         self.upload_rate_limit_kbps = max(0.0, upload_rate_limit_kbps)
         # Built once from the base URL: the proxy decision depends on the host
-        # and scheme, and every path this client opens shares both.
-        self._opener = egress.build_opener(self.base_url)
+        # and scheme, and every path this client opens shares both. Rebuilt
+        # only when the client certificate changes (#309).
+        self.client_cert = client_cert
+        self._opener = self._build_opener()
+
+    def _build_opener(self, *, with_certificate: bool = True) -> urllib.request.OpenerDirector:
+        if self.client_cert is None or not with_certificate:
+            return egress.build_opener(self.base_url)
+        return egress.build_opener(self.base_url, context=self.client_cert.ssl_context())
+
+    def reload_client_certificate(self) -> None:
+        """Present the certificate now on disk from the next request on."""
+        self._opener = self._build_opener()
+
+    def enrol_client_certificate(self, agent_id: str) -> dict[str, Any]:
+        """Trade a fresh key's CSR for a certificate and start presenting it (#309).
+
+        A renewal presents the current certificate, which the API requires of
+        an agent that holds one. When the API refuses *that* — revoked — the
+        request is repeated without it: an agent with no live certificate on
+        record may enrol from scratch, and one that still has another is
+        refused, which is the API's call. One that ran out while the sensor
+        was offline is not presented in the first place
+        (:meth:`mtls.ClientCertificate.ssl_context`): the handshake would
+        refuse it before the API could say so.
+        """
+        assert self.client_cert is not None
+        key_pem, csr_pem = mtls.generate_key_and_csr(agent_id or "sensor")
+        body = json.dumps({"csr": csr_pem}).encode("utf-8")
+        try:
+            issued = self._request(
+                "POST", "/api/agent/certificate", body=body, max_response_bytes=ENROLMENT_MAX_BYTES
+            )
+        except AgentClientCertRefused as exc:
+            if exc.reason not in _RENEWABLE_CERT_REASONS - {"missing"}:
+                raise
+            LOG.warning("Current client certificate refused (%s); enrolling without it", exc.reason)
+            presenting = self._opener
+            self._opener = self._build_opener(with_certificate=False)
+            try:
+                issued = self._request(
+                    "POST",
+                    "/api/agent/certificate",
+                    body=body,
+                    max_response_bytes=ENROLMENT_MAX_BYTES,
+                )
+            finally:
+                self._opener = presenting
+        self.client_cert.install(key_pem, issued)
+        self.reload_client_certificate()
+        return issued
 
     def set_token(self, token: str) -> None:
         self.token = token
@@ -686,6 +783,11 @@ class AgentClient:
                             f"{method} {path} -> 409: {detail}"
                         ) from exc
                     raise AgentResultRejected(f"{method} {path} -> 409: {detail}") from exc
+                cert_error = (exc.headers or {}).get(_CLIENT_CERT_ERROR_HEADER, "")
+                if exc.code == 403 and cert_error:
+                    raise AgentClientCertRefused(
+                        f"{method} {path} -> 403: {detail}", cert_error
+                    ) from exc
                 if exc.code == 403 and any(m in detail for m in _DISABLED_MARKERS):
                     raise AgentDisabled(f"{method} {path} -> 403: {detail}") from exc
                 raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
@@ -1704,13 +1806,28 @@ def _check_agent_id_file_writable(path: Path) -> None:
 
 
 def run_loop(args: argparse.Namespace) -> int:
-    client = AgentClient(
-        args.api_url,
-        args.token or "pending",
-        timeout=args.timeout,
-        upload_timeout=getattr(args, "upload_timeout", 0.0),
-        upload_rate_limit_kbps=getattr(args, "upload_rate_limit_kbps", 0.0),
-    )
+    try:
+        client_cert = mtls.ClientCertificate.from_env()
+    except egress.EgressConfigError as exc:
+        LOG.error("%s", exc)
+        return 2
+    if client_cert is not None and not args.api_url.lower().startswith("https://"):
+        LOG.warning(
+            "A client certificate is configured, but %s is not https:// — it is never sent",
+            args.api_url,
+        )
+    try:
+        client = AgentClient(
+            args.api_url,
+            args.token or "pending",
+            timeout=args.timeout,
+            upload_timeout=getattr(args, "upload_timeout", 0.0),
+            upload_rate_limit_kbps=getattr(args, "upload_rate_limit_kbps", 0.0),
+            client_cert=client_cert,
+        )
+    except egress.EgressConfigError as exc:
+        LOG.error("%s", exc)
+        return 2
     # Logged once at start because "the agent cannot reach the API" is answered
     # by this line and by nothing else on the box.
     LOG.info("Egress to %s: %s", args.api_url, egress.describe(args.api_url))
@@ -1799,6 +1916,10 @@ def run_loop(args: argparse.Namespace) -> int:
     # on the API, which may be exactly what is unreachable.
     retention_sweep_at = 0.0
 
+    # The client certificate is looked at once a minute (#309), not per poll.
+    cert_check_at = 0.0
+    last_cert_message = ""
+
     shutdown_event = threading.Event()
     last_upgrade_message = ""
     last_lifecycle_message = ""
@@ -1868,6 +1989,40 @@ def run_loop(args: argparse.Namespace) -> int:
             exchanged.get("expires_in"),
         )
 
+    def _maintain_client_certificate() -> None:
+        """Pick up a rotated certificate, and enrol or renew our own (#309).
+
+        A failed enrolment is logged and retried later rather than raised:
+        the current certificate is usually good for days yet, and under
+        ``optional`` none is needed at all.
+        """
+        if client_cert is None:
+            return
+        if client_cert.needs_reload():
+            # New files, or the one presented reached the end of its life
+            # (which ssl_context() then leaves out of the handshake).
+            LOG.info("Client certificate %s changed; reloading", client_cert.cert_path)
+            client.reload_client_certificate()
+        if not client_cert.enrolment_due():
+            return
+        try:
+            issued = client.enrol_client_certificate(agent_id)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            client_cert.enrolment_failed()
+            LOG.error(
+                "Client certificate enrolment failed; retrying in %.0fs: %s",
+                mtls.RETRY_SECONDS,
+                exc,
+            )
+            return
+        LOG.info(
+            "Enrolled client certificate %s (%s) valid until %s, renewing after %s",
+            str(issued.get("fingerprint_sha256") or "")[:16],
+            issued.get("spiffe_id"),
+            issued.get("not_after"),
+            issued.get("renew_after"),
+        )
+
     def _register() -> None:
         nonlocal agent_id, tenant_id, agent_group, registered
         info = client.register(
@@ -1914,6 +2069,12 @@ def run_loop(args: argparse.Namespace) -> int:
                     retention.sweep()
                 if _uses_provisioning_key(args) and time.time() >= token_refresh_at:
                     _exchange()
+                if client_cert is not None and time.time() >= cert_check_at:
+                    # After the exchange (enrolment needs the token) and before
+                    # registering (which, under ``required``, needs the
+                    # certificate).
+                    cert_check_at = time.time() + mtls.CHECK_INTERVAL_SECONDS
+                    _maintain_client_certificate()
                 if not registered:
                     # Inside the loop, and inside the same handlers as every
                     # other call: a quarantined agent is refused *here*, and
@@ -2030,6 +2191,26 @@ def run_loop(args: argparse.Namespace) -> int:
                     LOG.error("Job claim refused: %s", message)
                 last_claim_refusal_message = message
                 time.sleep(args.poll_interval)
+            except AgentClientCertRefused as exc:
+                message = str(exc)
+                renewable = (
+                    client_cert is not None
+                    and client_cert.enrol
+                    and exc.reason in _RENEWABLE_CERT_REASONS
+                )
+                if message != last_cert_message:
+                    LOG.error(
+                        "Client certificate refused (%s): %s",
+                        exc.reason,
+                        "enrolling a new one" if renewable else message,
+                    )
+                last_cert_message = message
+                wait, check_now = _after_client_cert_refusal(
+                    client_cert if renewable else None, args.poll_interval
+                )
+                if check_now:
+                    cert_check_at = 0.0
+                shutdown_event.wait(wait)
             except AgentDisabled as exc:
                 # Logged on change only, for the reason upgrade_message is: the
                 # API repeats the refusal on every poll, and at the normal

@@ -23,6 +23,7 @@ from api.middleware import (
     install_request_id_middleware,
 )
 from api.request_context import REQUEST_ID_HEADER
+from api.routes import agent_certificates as agent_certificates_routes
 from api.routes import agents as agents_routes
 from api.routes import audit as audit_routes
 from api.routes import rbac as rbac_routes
@@ -509,12 +510,14 @@ def create_app() -> FastAPI:
     app.include_router(runs_routes.router, prefix="/api")
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(agents_routes.router, prefix="/api")
+    app.include_router(agent_certificates_routes.router, prefix="/api")
 
     # APEX Architecture Contract v1: stable versioned aliases for machine-to-
     # machine agent boundaries. The same handlers and authorization checks are
     # mounted twice intentionally; /api remains a compatibility alias.
     app.include_router(auth_routes.router, prefix="/api/v1")
     app.include_router(agents_routes.router, prefix="/api/v1")
+    app.include_router(agent_certificates_routes.router, prefix="/api/v1")
     app.include_router(assets_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")

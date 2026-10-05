@@ -1,0 +1,75 @@
+# ingress.example.yaml with sensor client certificates verified at the edge (#309).
+#
+# ingress-nginx terminates TLS, so it is the one that sees a sensor's client
+# certificate. With these annotations it asks every client for one signed by
+# the sensor CA (agent-mtls-cert-manager.example.yaml), verifies it, and
+# forwards the verdict and the certificate to the API as request headers:
+#
+#   ssl-client-verify      SUCCESS | NONE | FAILED:<reason>
+#   ssl-client-subject-dn  the verified subject
+#   ssl-client-cert        the certificate, URL-escaped PEM
+#
+# The API believes those headers only from OCTO_AGENT_MTLS_TRUSTED_PROXIES —
+# set it to the controller's addresses and nothing else, never the pod CIDR
+# (agent-mtls-api-patch.yaml), and apply networkpolicy-api-ingress.example.yaml
+# with it. From anywhere else they are ignored, as if no certificate had been
+# presented. The API sees only the certificate, not proof of its key: that
+# proof is this ingress's handshake. Where sensors alone use a host, give them
+# their own Ingress with auth-tls-verify-client "on".
+#
+# Three things that must hold, or the headers stop meaning anything:
+#
+#  * auth-tls-pass-certificate-to-upstream: "true". nginx overwrites
+#    ssl-client-verify and ssl-client-subject-dn from the handshake, but it
+#    writes ssl-client-cert only with this on — otherwise the header is the
+#    client's own, and a host with *any* sensor certificate could send another
+#    sensor's (public) certificate in it. The API cross-checks the subject and
+#    refuses that case, but do not rely on the subjects being different.
+#  * Every Ingress host that routes to the API carries these annotations.
+#    ingress-nginx applies auth-tls per server (host); on a host without it,
+#    all three headers pass through from the client untouched, and the
+#    controller pod is still a trusted peer. One host for console and sensors,
+#    as here, is the simplest way to keep that true.
+#  * verify-client "optional", not "on": the console and API clients on the
+#    same host have no certificate. Which requests need one is the API's
+#    decision (OCTO_AGENT_MTLS_MODE), not the edge's. "optional_no_ca" is
+#    never right here — it forwards certificates nobody verified.
+#
+# The CA Secret holds ca.crt only (see agent-mtls-cert-manager.example.yaml);
+# it lives in the Ingress's namespace.
+#
+# A TLS-inspecting proxy between a sensor and this Ingress cannot forward a
+# client certificate: exempt the API's host from inspection, or put it in the
+# sensor's OCTO_NO_PROXY.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shapoclyack-api
+  namespace: network-scan
+  labels:
+    app.kubernetes.io/name: shapoclyack
+    app.kubernetes.io/component: api
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/auth-tls-secret: network-scan/shapoclyack-sensor-client-ca
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "optional"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "2"
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - shapoclyack.example.com
+      secretName: shapoclyack-api-tls
+  rules:
+    - host: shapoclyack.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shapoclyack-api
+                port:
+                  number: 8080

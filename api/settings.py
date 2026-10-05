@@ -7,6 +7,7 @@ import socket
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -819,6 +820,36 @@ class Settings:
     # client picks its own limiter key by writing the header. Empty (default)
     # means the socket peer is always used. See api/core/client_ip.py.
     trusted_proxies: list[str] = field(default_factory=list)
+    # Client certificates for sensors and endpoint agents (#309); see
+    # api/core/client_cert.py and api/services/agent_certs.py. ``off`` is the
+    # pre-#309 behaviour and the default: a bearer token alone authenticates.
+    # ``optional`` binds a certificate to the token's agent when one is
+    # presented; ``required`` refuses an agent request without one.
+    agent_mtls_mode: str = "off"
+    # Peers whose ``ssl-client-verify`` / ``ssl-client-cert`` headers are
+    # believed — the ingress-nginx pods that verify the client certificate.
+    # Separate from ``trusted_proxies`` on purpose: that list decides whose
+    # X-Forwarded-For keys a rate-limit bucket, this one authenticates a sensor.
+    agent_mtls_trusted_proxies: list[str] = field(default_factory=list)
+    # PEM bundle of the CA(s) that issue sensor client certificates. Asked of
+    # TLS clients by the API's own listener and checked again on a certificate
+    # an ingress forwards. Falls back to ``agent_mtls_issuer_cert``.
+    agent_mtls_client_ca: str = ""
+    # CA certificate and key that sign CSRs at POST /api/agent/certificate.
+    # Both or neither; unset, enrolment is cert-manager's (or the operator's).
+    agent_mtls_issuer_cert: str = ""
+    agent_mtls_issuer_key: str = ""
+    # The SPIFFE trust domain sensor certificates name:
+    # spiffe://<domain>/tenant/<tenant_id>/sensor/<agent_id>.
+    agent_mtls_trust_domain: str = "shapoclyack"
+    # Lifetime of a certificate this API signs, and how early the fleet view
+    # starts warning about one that runs out.
+    agent_mtls_cert_days: int = 30
+    agent_mtls_expiry_warn_days: int = 7
+
+    def agent_mtls_ca_path(self) -> str:
+        """The bundle client certificates are verified against, or ``""``."""
+        return self.agent_mtls_client_ca or self.agent_mtls_issuer_cert
     # Audit-trail retention. Pruned opportunistically on login (auth_audit);
     # 0 keeps events forever.
     auth_event_retention_days: int = 90
@@ -1754,6 +1785,143 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     )
 
 
+AGENT_MTLS_MODES = ("off", "optional", "required")
+
+
+def _check_issuer_in_client_ca(client_ca: str, issuer_cert: str) -> None:
+    """Refuse an issuer whose certificates the client CA would not accept (#309).
+
+    In any mode, ``off`` included: the API's own listener asks for client
+    certificates whenever it has a CA (``api.__main__``), so a sensor that
+    enrols from this issuer and presents the result would be cut off in the
+    handshake — every request, not just the ones that need a certificate —
+    and through an ingress its certificate would be "not issued by the client
+    CA". Either is found at the first renewal, weeks after the change that
+    caused it; at start it is one line.
+    """
+    from api.core.client_cert import fingerprint, issued_by_bundle, load_ca_bundle
+
+    try:
+        bundle = load_ca_bundle(client_ca)
+        issuer_chain = load_ca_bundle(issuer_cert)
+    except ValueError as exc:
+        raise InsecureConfigurationError(
+            f"OCTO_AGENT_MTLS_CLIENT_CA / OCTO_AGENT_MTLS_ISSUER_CERT: not a PEM bundle ({exc})."
+        ) from exc
+    if not bundle or not issuer_chain:
+        empty = "OCTO_AGENT_MTLS_CLIENT_CA" if not bundle else "OCTO_AGENT_MTLS_ISSUER_CERT"
+        raise InsecureConfigurationError(f"{empty} holds no PEM certificate.")
+    issuer, rest = issuer_chain[0], issuer_chain[1:]
+    if fingerprint(issuer) in {fingerprint(ca) for ca in bundle}:
+        return
+    if issued_by_bundle(issuer, bundle, rest):
+        return
+    raise InsecureConfigurationError(
+        f"OCTO_AGENT_MTLS_ISSUER_CERT ({issuer.subject.rfc4514_string()}) does not chain to "
+        "OCTO_AGENT_MTLS_CLIENT_CA:\n"
+        "    every certificate the API issues would be refused by its own listener's\n"
+        "    handshake and by the client CA check of a forwarded one. Put the issuer\n"
+        "    (or the root it was signed by) in OCTO_AGENT_MTLS_CLIENT_CA, or follow it\n"
+        "    in OCTO_AGENT_MTLS_ISSUER_CERT with the intermediates up to that root."
+    )
+
+
+def _agent_mtls_settings() -> dict[str, Any]:
+    """``agent_mtls_*`` from the environment, refused when it cannot work (#309).
+
+    Refused in every environment, like ``OCTO_TENANT_RLS``: a misspelt mode
+    read as ``off`` is the one typo that switches the control off silently, and
+    a ``required`` that no certificate can ever reach refuses the whole fleet
+    on the first poll, which is better said at start than discovered there.
+    """
+    mode = os.environ.get("OCTO_AGENT_MTLS_MODE", "off").strip().lower() or "off"
+    if mode not in AGENT_MTLS_MODES:
+        raise InsecureConfigurationError(
+            f"OCTO_AGENT_MTLS_MODE must be one of {', '.join(AGENT_MTLS_MODES)}, "
+            f"not {mode!r}. See docs/operations.md § Sensor client certificates."
+        )
+    proxies = [
+        part.strip()
+        for part in os.environ.get("OCTO_AGENT_MTLS_TRUSTED_PROXIES", "").split(",")
+        if part.strip()
+    ]
+    client_ca = os.environ.get("OCTO_AGENT_MTLS_CLIENT_CA", "").strip()
+    issuer_cert = os.environ.get("OCTO_AGENT_MTLS_ISSUER_CERT", "").strip()
+    issuer_key = os.environ.get("OCTO_AGENT_MTLS_ISSUER_KEY", "").strip()
+    if bool(issuer_cert) != bool(issuer_key):
+        missing = "OCTO_AGENT_MTLS_ISSUER_KEY" if issuer_cert else "OCTO_AGENT_MTLS_ISSUER_CERT"
+        raise InsecureConfigurationError(
+            f"Sensor certificate issuance is half-configured: {missing} is unset. "
+            "Set both OCTO_AGENT_MTLS_ISSUER_CERT and OCTO_AGENT_MTLS_ISSUER_KEY, or neither."
+        )
+    for variable, path in (
+        ("OCTO_AGENT_MTLS_CLIENT_CA", client_ca),
+        ("OCTO_AGENT_MTLS_ISSUER_CERT", issuer_cert),
+        ("OCTO_AGENT_MTLS_ISSUER_KEY", issuer_key),
+    ):
+        if path and not os.path.isfile(path):
+            raise InsecureConfigurationError(f"{variable} names {path}, which does not exist.")
+    if client_ca and issuer_cert:
+        _check_issuer_in_client_ca(client_ca, issuer_cert)
+    if mode != "off" and proxies:
+        from api.core.client_cert import parse_trusted_proxies
+
+        try:
+            parse_trusted_proxies(proxies)
+        except ValueError as exc:
+            raise InsecureConfigurationError(
+                f"OCTO_AGENT_MTLS_TRUSTED_PROXIES: {exc}. Every sensor behind that "
+                "ingress would be refused."
+            ) from exc
+        if not (client_ca or issuer_cert):
+            # The ingress's "SUCCESS" means "chained to the CA in my
+            # auth-tls-secret" — and from a trusted address that is not the
+            # ingress, nothing at all. Our own CA is the only check of a
+            # forwarded certificate the API can make.
+            raise InsecureConfigurationError(
+                "OCTO_AGENT_MTLS_TRUSTED_PROXIES is set, but OCTO_AGENT_MTLS_CLIENT_CA "
+                "(or OCTO_AGENT_MTLS_ISSUER_CERT) is not:\n"
+                "    a certificate forwarded in ssl-client-* headers would be believed\n"
+                "    whoever issued it. Set OCTO_AGENT_MTLS_CLIENT_CA to the CA that issues\n"
+                "    sensor certificates (the one in the ingress auth-tls-secret)."
+            )
+    direct_tls = bool(os.environ.get("OCTO_API_TLS_CERT", "").strip()) and bool(
+        client_ca or issuer_cert
+    )
+    if mode == "required" and not proxies and not direct_tls:
+        raise InsecureConfigurationError(
+            "OCTO_AGENT_MTLS_MODE=required, but no client certificate can reach the API:\n"
+            "    behind an ingress, set OCTO_AGENT_MTLS_TRUSTED_PROXIES to the ingress\n"
+            "    pods' addresses; on the API's own TLS listener (OCTO_API_TLS_CERT), set\n"
+            "    OCTO_AGENT_MTLS_CLIENT_CA. Otherwise every sensor would be refused."
+        )
+    trust_domain = (
+        os.environ.get("OCTO_AGENT_MTLS_TRUST_DOMAIN", "shapoclyack").strip().lower()
+        or "shapoclyack"
+    )
+    if "/" in trust_domain or ":" in trust_domain:
+        raise InsecureConfigurationError(
+            "OCTO_AGENT_MTLS_TRUST_DOMAIN is a SPIFFE trust domain (a host name), "
+            "not a URI."
+        )
+    return {
+        "agent_mtls_mode": mode,
+        "agent_mtls_trusted_proxies": proxies,
+        "agent_mtls_client_ca": client_ca,
+        "agent_mtls_issuer_cert": issuer_cert,
+        "agent_mtls_issuer_key": issuer_key,
+        "agent_mtls_trust_domain": trust_domain,
+        # A day at least; a year at most — a sensor certificate that outlives
+        # the people who could revoke it is a provisioning key by another name.
+        "agent_mtls_cert_days": min(
+            365, max(1, int(os.environ.get("OCTO_AGENT_MTLS_CERT_DAYS", "30")))
+        ),
+        "agent_mtls_expiry_warn_days": max(
+            0, int(os.environ.get("OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS", "7"))
+        ),
+    }
+
+
 def load_settings() -> Settings:
     env = _resolve_env()
 
@@ -2296,6 +2464,7 @@ def load_settings() -> Settings:
             for part in os.environ.get("OCTO_TRUSTED_PROXIES", "").split(",")
             if part.strip()
         ],
+        **_agent_mtls_settings(),
         bulk_action_budget_seconds=max(
             0, int(os.environ.get("OCTO_BULK_ACTION_BUDGET_SECONDS", "45"))
         ),

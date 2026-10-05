@@ -29,6 +29,7 @@ from api import __version__
 from api.db import models, tenant_scope
 from api.db.engine import get_session, insert_if_absent
 from api.schemas import AgentFleetSummary, AgentInfo
+from api.services import agent_certs
 from api.services import audit as audit_service
 from api.services import pagination
 from api.services import tenants as tenants_service
@@ -1058,6 +1059,12 @@ def get_fleet_summary(
         if tenant_id:
             query = query.where(models.Agent.tenant_id == tenant_id)
         rows = session.execute(query).scalars().all()
+        certificates = agent_certs.fleet_certificates(
+            session,
+            tenant_id=tenant_id,
+            now=_now(),
+            warn_days=settings.agent_mtls_expiry_warn_days,
+        )
 
     total = len(rows)
     online = 0
@@ -1101,6 +1108,13 @@ def get_fleet_summary(
         outdated_agents=outdated,
         latest_version=LATEST_AGENT_VERSION,
         by_tenant=by_tenant,
+        client_cert_mode=settings.agent_mtls_mode,  # type: ignore[arg-type]
+        client_cert_agents=certificates.agents_with_cert,
+        client_certs_expiring=certificates.expiring,
+        client_certs_expired=certificates.expired,
+        client_cert_locked=certificates.locked,
+        client_cert_locked_agents=list(certificates.locked_agents),
+        client_cert_conflicts=certificates.conflicts,
     )
 
 
@@ -1235,6 +1249,11 @@ def delete_agent(
     key — the blast radius of ``revoke_key``, counted before the delete and
     reported whether or not the revocation was asked for, so the console can
     warn before the click as well as explain after it (#308).
+
+    ``client_cert_lock_lifted`` says whether a certificate revocation's lock
+    on the id went with the agent: it does once the key is unusable, whether
+    ``revoke_key`` revoked it or it was revoked or expired before
+    (``agent_certs.forget_enrolment``); otherwise the lock stays (#309).
     """
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -1280,11 +1299,29 @@ def delete_agent(
         # touched by anything that might remove it later. The same audit
         # context goes with it, so the pair reads as one operator action.
         key_revoked = tenants_service.revoke_provisioning_key(key_id, audit=audit) is not None
+    client_cert_lock_lifted = False
+    if key_id:
+        # A certificate lock on the id held back this agent's token; with its
+        # key unusable — revoked just now or before, or expired — the token is
+        # refused on every request anyway, and a lock kept for nothing would
+        # sit in the fleet summary until somebody reset a stolen sensor to
+        # clear it. Without a key on record (legacy) or with it still active,
+        # the host can come back under this id, so the lock stays.
+        key_state = tenants_service.provisioning_key_state(key_id)
+        if key_state != "active":
+            client_cert_lock_lifted = agent_certs.forget_enrolment(
+                settings,
+                tenant_id=agent_tenant_id,
+                agent_id=agent_id,
+                key_state=key_state,
+                audit=audit,
+            )
     return {
         "agent_id": agent_id,
         "provisioning_key_id": key_id,
         "key_revoked": key_revoked,
         "other_agents_on_key": int(other_agents_on_key),
+        "client_cert_lock_lifted": client_cert_lock_lifted,
     }
 
 

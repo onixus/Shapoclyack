@@ -2104,6 +2104,299 @@ should register as a new sensor under the new key. The SSH push handles this
 order itself, and refuses where revoking would stop other sensors; see
 [SSH push deployment](#ssh-push-deployment).
 
+### Sensor client certificates
+
+A sensor (or a Lariska Agent) can present a client certificate next to its
+token, and the API then requires the two to name the same sensor
+([#309](https://github.com/onixus/Shapoclyack/issues/309)). The switches are in
+[configuration.md](configuration.md#sensor-and-agent-client-certificates-mtls);
+this is how to get a fleet onto them without stopping it.
+
+**Where TLS ends decides the wiring.**
+
+- *Behind ingress-nginx* (every shipped Kubernetes layout): the ingress
+  verifies the certificate and forwards it in `ssl-client-*` headers —
+  `examples/ingress-agent-mtls.example.yaml`. Set
+  `OCTO_AGENT_MTLS_TRUSTED_PROXIES` to the controller's addresses and nothing
+  else — a pod range only the controller gets (a Calico IPPool / Cilium pool
+  bound to its namespace) — **never the cluster's pod CIDR**: the
+  scanner-executor and Prometheus may open the API port too, and from a
+  trusted address any pod can forward a "verified" certificate. Apply
+  `examples/networkpolicy-api-ingress.example.yaml` with it, so that of the
+  pod network only the controller pods reach port 8080.
+  *A hostNetwork controller* (common on bare metal) connects from its nodes'
+  addresses, so those are what the list has to hold — and every hostNetwork
+  pod on those nodes connects from the same addresses: the scanner-executor
+  of `overlays/prod` (`hostNetwork: true`), node-exporter, the CNI's own
+  agents. Any of them can then forward a "verified" certificate, and no
+  NetworkPolicy tells them apart (Calico and Cilium let host traffic through
+  by default). Under `required` that makes the floor "whatever runs with host
+  networking on an ingress node"; prefer the API's own TLS listener (below)
+  or a controller on the pod network, or at least keep the ingress nodes free
+  of other hostNetwork workloads (a dedicated node pool with a taint).
+  `OCTO_AGENT_MTLS_CLIENT_CA` is mandatory with the list (the API refuses to
+  start without it, and an entry that is not an IP or CIDR): every forwarded
+  certificate is checked against it. Every Ingress host that routes to the API
+  must carry the `auth-tls-*` annotations, with
+  `auth-tls-pass-certificate-to-upstream: "true"` — on a host without them the
+  headers are whatever the client wrote, and the controller is still a trusted
+  peer. The trusted address is the socket's own: uvicorn's
+  `FORWARDED_ALLOW_IPS` (which rewrites the client address from
+  `X-Forwarded-For`) does not enter into it, so setting it to `*` behind the
+  ingress does not let a pod name the controller's address, and setting it to
+  the controller's does not hide the controller.
+- *On the API's own listener* (`OCTO_API_TLS_CERT`, a lab stand, an appliance,
+  or a TLS-passthrough / L4 path to the API): set `OCTO_AGENT_MTLS_CLIENT_CA`;
+  the handshake verifies the certificate itself. The listener asks for a
+  certificate whenever it has a client CA (or an issuer), whatever the mode —
+  optional per connection, so the console is unaffected, but a browser holding
+  a certificate from that CA may offer it.
+
+**What the header path proves, and what it does not.** The ingress checked
+that the client held the key; the API sees only the certificate the ingress
+says it was, and cannot check possession itself. So behind an ingress, a
+sensor's identity is as good as two things outside the API: that every host
+routing to it verifies (`auth-tls-*`), and that nothing but the controller
+reaches the API port from a trusted address — anything that does needs only a
+sensor's *public* certificate and its token. For `required` where that
+matters, prefer the API's own listener (it makes the handshake), or a
+dedicated sensor host on the ingress with `auth-tls-verify-client: "on"`, so
+no request on that host gets through without a verified certificate. The
+subject the ingress forwards (`ssl-client-subject-dn`) is compared with the
+certificate's as a name, not as a string: nginx writes it in OpenSSL's
+RFC 2253 form (`emailAddress=`, `\D0\9E…` for non-ASCII, `INN=`/`OGRN=`),
+which a corporate subject in Cyrillic, with an e-mail address or a
+multi-valued RDN reaches exactly. nginx older than 1.11.6 writes the legacy
+`/C=…/O=…` form, which is not read — upgrade it.
+
+**Where certificates come from.**
+
+- *cert-manager*: a CA that signs sensor certificates only, and a
+  `ClusterIssuer` around it — `examples/agent-mtls-cert-manager.example.yaml`.
+  In-cluster sensors get a certificate per pod from the CSI driver
+  (`examples/agent-mtls-patch.yaml`), with the sensor's SPIFFE URI in it;
+  cert-manager renews it, and the sensor re-reads it within a minute. The
+  first request with it records it (`source: observed`), so it is listed and
+  revocable like any other.
+- *The API*: give it `OCTO_AGENT_MTLS_ISSUER_CERT`/`_KEY` (an intermediate for
+  this and nothing else) and set `OCTO_AGENT_MTLS_ENROLL=true` with the two
+  file paths on the sensor. With `OCTO_AGENT_MTLS_CLIENT_CA` set too, the
+  issuer must be in it or signed by a CA in it — start-up refuses an issuer
+  the client CA would not accept, since every certificate it signs would be
+  cut off in the handshake. The sensor writes the issuer after its leaf and
+  presents both, so a terminator that trusts only the root (an
+  `auth-tls-secret` holding the root, with `auth-tls-verify-depth: "2"`) can
+  build the chain; the API's own listener also takes the issuer as an anchor
+  for sensors that still present the leaf alone. A cert-manager issuer that is
+  an intermediate belongs in `OCTO_AGENT_MTLS_CLIENT_CA` itself: the ingress
+  forwards only the leaf, and the API links a leaf to a root only through its
+  own issuer. The sensor sends a CSR to
+  `POST /api/agent/certificate`, gets a certificate naming its token's agent —
+  whatever the CSR asked for — and renews at two thirds of the lifetime. The
+  first enrolment needs only the token; **every later one must present the
+  current certificate**, so a stolen token cannot enrol a second certificate
+  next to the real sensor's.
+- *An enterprise PKI* that issues by host name: pin each certificate to its
+  sensor, `POST /api/agents/{id}/certificates` with the PEM (tenant admin).
+
+**Rollout, for a fleet that is already running.**
+
+1. Deploy the release (migration `0077`); `OCTO_AGENT_MTLS_MODE` stays `off`
+   and nothing changes. Finish the rollout before the next step — a replica
+   still on the previous release ignores the mode entirely.
+2. Wire the certificate path (ingress or listener) and the issuance (either
+   of the two above). Enrolment works under `off` already: sensors with
+   `OCTO_AGENT_MTLS_ENROLL=true` get their certificates now. Its renewals do
+   need the certificate path — a renewal must present the current
+   certificate whatever the mode, and without `OCTO_AGENT_MTLS_TRUSTED_PROXIES`
+   (or the listener's client CA) the API never sees one. The API's own
+   listener asks for it under `off` as well, as soon as it has a client CA or
+   an issuer.
+3. `OCTO_AGENT_MTLS_MODE=optional`. Sensors without a certificate keep
+   working; one that presents a wrong one is refused and shows up as
+   `agent.certificate_refused` in the audit trail — investigate those, they are
+   a host holding two sensors' credentials or a mis-mounted Secret.
+4. Watch `GET /api/agents/summary`: `client_cert_agents` should reach the
+   number of sensors, and `client_certs_expired` stay at zero.
+5. `OCTO_AGENT_MTLS_MODE=required`. A sensor without a certificate is now
+   refused with `403` and `X-Client-Cert-Error: missing`; the sensor logs it
+   once and backs off. The legacy shared `OCTO_AGENT_TOKEN` is refused
+   outright — it names no sensor to bind a certificate to. Rolling back is
+   setting the mode back; nothing is lost.
+
+**Rotation** overlaps: a renewal leaves the previous certificate valid until
+its own expiry, so a sensor that has written the new files but not yet reloaded
+is not cut off. The API keeps two live certificates per sensor it issued for —
+the newest and the one before — and revokes older ones as `superseded`.
+cert-manager's renewals overlap the same way (`renewBefore`).
+
+**Revocation** is immediate — the table is read on every request that
+presents a certificate, and a renewal already in flight when the revocation
+commits is refused rather than issued (issuance and revocation of one sensor
+are serialised on its enrolment record):
+
+```bash
+# a stolen or copied host: first the provisioning key it holds (see below),
+# then everything this sensor holds
+curl -X POST "$API/api/tenants/$TENANT/provisioning-keys/$KEY_ID/revoke" -H "$AUTH"
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"all": true, "reason": "laptop stolen"}'
+# one certificate, by fingerprint (colons optional) or serial
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"fingerprint": "ab12…", "reason": "old key found on a share"}'
+curl -X POST "$API/api/agents/edge-01/certificates/revoke" -H "$AUTH" \
+  -d '{"serial": "4f2a…"}'
+```
+
+**Revoking a certificate the sensor held also locks the sensor.** Without
+that, revoking would undo itself: with nothing live left on record, the
+host's token would enrol a new certificate on its next poll (the review of
+#509 timed it at five seconds). "Held" means a certificate on record for this
+sensor that was not revoked yet — live, or already expired. After such a
+revocation, until an operator resets it, the sensor:
+
+- cannot enrol by token alone (`403`, `X-Client-Cert-Error: enrolment-locked`) —
+  in every mode, `off` included, since enrolment does not depend on the mode;
+- cannot call anything without a certificate under `optional` as under
+  `required` (the same `enrolment-locked`), so *this sensor's token* does not
+  simply fall back to working without one;
+- still works with a certificate that is live and its own *and on record* —
+  revoking one old certificate after a rotation does not stop the sensor
+  holding the new one. A certificate the platform has never seen is refused
+  `enrolment-locked`, however valid: cert-manager reissuing to the stolen host
+  (the CSI driver on a pod restart, a renewal that external-secrets delivers
+  to a VM) does not bring it back. For a stolen host revoke `{"all": true}`, so
+  it holds nothing live; the CA can keep issuing, the API keeps refusing, and
+  deleting the `Certificate` (or the pod's CSI volume) stops the noise.
+
+A tombstone (below) and a certificate that was already revoked — a
+`superseded` one, say — lock nothing: the sensor never held the first, and
+revoking the second again changes nothing it holds. So revoking a leaked
+certificate before its first use does not shut out a sensor still working
+without a certificate under `optional`, and tidying up an old certificate
+does not turn the next expiry into an operator's job. The `revoke` audit row
+says whether the sensor is locked (`enrolment_locked`).
+
+**The lock stops an identity, not a host.** It is keyed by the agent id. A
+stolen host that still holds the provisioning key exchanges it for a token
+under any other agent id (or none: the API then picks one) and enrols that
+from scratch — so for a stolen host, revoke the provisioning key *first*
+(`docs/api-and-rbac.md`), then the certificates, as above. A key shared by a
+fleet means a new key for every sensor on it (`other_agents_on_key` on the
+agent says how many). The lock is what keeps the certificate revocation from
+being undone by the token in the meantime. The sensor logs the refusal and
+retries every five minutes. `client_cert_locked` in `GET /api/agents/summary`
+counts locked sensors.
+
+**Deleting the sensor lifts its lock only when its token is dead.** Deleting
+an agent alone is a pause, not a revocation — a host with its token registers
+again under the same id — so while its provisioning key is still active (or
+there is none on record: a legacy shared token), the lock stays with the id,
+`client_cert_locked` keeps counting it, and `client_cert_locked_agents` in
+`GET /api/agents/summary` names it (the first 50 ids; the Sensors page shows
+them). A host re-installed under that id is refused `enrolment-locked` until
+the enrolment is reset; the reset below works by id for a deleted sensor too.
+
+Delete it with `?revoke_key=true`, or after revoking its key (the order for a
+stolen host, above), and the lock goes with it: every request with that token
+is already refused, so the lock would protect nothing and only keep "1 locked"
+on the Sensors page until somebody reset the stolen sensor to clear it. The
+delete answers `client_cert_lock_lifted: true` and records an
+`agent.certificate_enrolment_reset` row with the reason `agent deleted; its
+provisioning key is revoked` (or `expired`). The sensor's certificates stay on
+record, revoked; a host later given a new key under the same id enrols from
+scratch.
+
+**Resetting the enrolment** is the separate, deliberate act that lets the
+sensor enrol from scratch by its token — tenant admin, behind the same
+multi-factor step-up as minting a provisioning key, audited as
+`agent.certificate_enrolment_reset`:
+
+```bash
+curl -X POST "$API/api/agents/edge-01/certificates/reset-enrolment" -H "$AUTH" \
+  -d '{"reason": "host re-imaged, new key"}'
+```
+
+It revokes whatever of the sensor's certificates is still live ("from
+scratch" means the old key stops working too), lifts the lock, and allows
+exactly one enrolment without a certificate — two arriving at once get one
+certificate between them, and the other is refused `missing` and recorded as
+a conflict (below). The next one is a renewal again. Whoever enrols first
+after a reset wins it, so if the token may be elsewhere, revoke the
+provisioning key and give the host a new one *before* resetting.
+
+A fingerprint the platform has never seen is recorded as a revocation all the
+same (`source: tombstone`), so a certificate can be revoked before its first
+use; it does not lock the sensor (above). A serial has to match one on
+record: a serial alone does not say which CA issued it. The ingress does not consult this list — the API does — so revoke
+here, not by editing the ingress CA.
+
+**A sensor that lost its key** (re-imaged host, an emptyDir that went with its
+pod) cannot enrol again while its old certificate is live, because that rule
+is what stops a stolen token. Reset its enrolment (above); the sensor's next
+enrolment then succeeds without a certificate. A sensor whose certificate ran
+out while it was offline needs nothing: it stops presenting a certificate
+five minutes before `not_after` (the handshake — the API's, or
+ingress-nginx's with a `400` — refuses an expired one before any route runs),
+expiry is not revocation, nothing locks, and with no live certificate left
+it enrols from scratch by its token. Until then it is a sensor without a
+certificate: working under `optional`, refused `missing` under `required`. A
+*mounted* certificate that runs out is the same, except that nothing on the
+sensor can renew it: the sensor logs that the file has run out, and under
+`required` is refused until cert-manager (or the host's PKI agent) replaces
+it.
+
+**An enrolled sensor's key and certificate change together.** The new pair is
+staged as `<file>.next` and moved in after both are on disk; a crash in
+between is completed at the next start. A pair that still does not match —
+left by a release before this — is deleted and the sensor enrols again; if
+the API holds the certificate the lost key belonged to as live, that
+enrolment is refused `missing` and needs the reset above.
+
+**A sensor shut out by somebody else's enrolment.** The first enrolment of a
+sensor needs only its token, so whoever holds a copy of the token and enrols
+first gets the certificate; the real sensor is then refused with `missing` on
+every poll. That refusal — nothing presented while a live certificate of the
+same sensor is on record — is the one event that says the token is somewhere
+else, so it is recorded: `agent.certificate_refused` with
+`agent_holds_live_certificate: true`, at most once per sensor per hour, and
+`client_cert_conflicts` in `GET /api/agents/summary` counts the sensors with
+one in the last day (the Sensors page raises it). The same event fires for a
+sensor that lost its key or whose certificate the ingress stopped forwarding,
+so check the host first. If the certificate on record is not the host's:
+revoke the provisioning key, revoke `{"all": true}` on the sensor (which
+locks it), install a new key on the real host, then reset the enrolment.
+A cert-manager certificate the API has not seen yet does not count as live
+here — the first request with it records it.
+
+**Expiry** shows in the fleet summary: `client_certs_expiring` counts sensors
+whose newest certificate runs out within `OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS`,
+`client_certs_expired` those whose certificates all have. Each sensor's list
+(`GET /api/agents/{id}/certificates`) says which is which.
+
+**Lariska does not support client certificates yet.** Until it does,
+`required` — an installation-wide mode — refuses every Agent: stay at
+`optional` while Agents are deployed, or pin certificates an MDM puts on the
+endpoints. The contract it is to implement, in this order (the API side is in
+place and tested):
+
+1. Exchange the provisioning key for a token, as today.
+2. Enrol **before** registering — under `required`, register needs a
+   certificate: `POST /api/v1/agent/certificate` with
+   `{"csr": "<PEM>", "agent_kind": "endpoint"}` and no certificate. The answer
+   names `spiffe://<domain>/tenant/<tenant_id>/agent/<agent_id>`; without
+   `agent_kind` an agent not on record yet enrols as a sensor (`/sensor/`),
+   which binds the same but reads wrong. Once the agent is registered its
+   recorded kind wins.
+3. Present that certificate on every request from then on, `register` first.
+4. Renew at `renew_after`, presenting the current certificate.
+5. On `403` with `X-Client-Cert-Error`: `missing`/`revoked`/`expired` mean
+   "enrol again" — one attempt, then back off for minutes, because
+   `enrolment-locked` (a revocation, until an operator resets it) and
+   `missing` for an agent that already holds a live certificate do not clear
+   by retrying. `mismatch`, `unbound` and `no-identity` are an operator's
+   problem.
+
 ### SSH push deployment
 
 `POST /api/agent/deploy/ssh` (tenant **admin** since
@@ -2339,8 +2632,11 @@ script keeps root out of that code.
 
 The verifier is `python -m agent.update` from the **installed** package — the
 one already on the host, never the one arriving. It reads the URL and the
-credential from `/etc/shapoclyack/agent.env`, and only those and the proxy/CA
-variables: `OCTO_AGENT_BUNDLE_PUBKEY_FILE` and `OCTO_AGENT_PROVISIONING_KEY_FILE`
+credential from `/etc/shapoclyack/agent.env`, and only those, the proxy/CA
+variables and the sensor's client certificate (`OCTO_AGENT_TLS_CLIENT_CERT`/`_KEY`,
+presented as the sensor presents it, so the update works under
+`OCTO_AGENT_MTLS_MODE=required`; enrolling and renewing stay the sensor's):
+`OCTO_AGENT_BUNDLE_PUBKEY_FILE` and `OCTO_AGENT_PROVISIONING_KEY_FILE`
 written into that file are ignored. What it refuses, before anything on disk
 changes:
 
@@ -4271,14 +4567,40 @@ every row of scan data. As of
 | Link | Encrypted | How it is configured |
 |---|---|---|
 | Console / API ingress | Yes, when you configure it | `spec.tls` + cert-manager in `examples/ingress.example.yaml`; `force-ssl-redirect` sends bookmarked `http://` links back to HTTPS |
-| Sensor / endpoint Agent → API | Yes | Plain HTTPS to `OCTO_PUBLIC_BASE_URL`; both are outbound-only, there is no client certificate |
+| Sensor / endpoint Agent → API | Yes; mutual when you configure it | HTTPS to `OCTO_PUBLIC_BASE_URL`, outbound-only. A client certificate bound to the sensor's token with `OCTO_AGENT_MTLS_MODE` — see [Sensor client certificates](#sensor-client-certificates) |
 | API → Postgres | Only if you ask for it | `?sslmode=verify-full` in `OCTO_POSTGRES_URL`; a `prod` start without any `sslmode=` logs a warning |
 | API → ClickHouse | Only if you ask for it | `https://` in `OCTO_CLICKHOUSE_URL`. The scheme decides, not the port |
 | API → SMTP relay | Yes, verified | `OCTO_REPORT_SMTP_STARTTLS` (default on) with certificate verification; `OCTO_REPORT_SMTP_VERIFY_TLS=false` downgrades it deliberately |
 | API / sensors ↔ NATS | Yes, when you configure it | `tls://` in `OCTO_NATS_URL` plus `OCTO_NATS_TLS_*`; the broker side is `examples/nats-tls-configmap-patch.yaml`. Plain `nats://` is still accepted and still plaintext — do not expose `:4222` across an untrusted segment without `tls://` |
 
-There is no mTLS anywhere yet: nothing in this repository issues or checks a
-client certificate. Where the README once said "mTLS", read "TLS, one-way".
+Mutual TLS exists on one link: sensor and Agent → API, opt-in
+([Sensor client certificates](#sensor-client-certificates)). Every other link
+is TLS one-way at most.
+
+**Datastore links stay warned about, not enforced** — the decision #309 asked
+for. A `prod` start keeps *warning* when `OCTO_POSTGRES_URL` has no `sslmode=`
+and does not refuse; ClickHouse and NATS are not checked at all beyond their
+scheme. Three reasons, all of which still hold:
+
+1. The shipped layouts run Postgres, ClickHouse and NATS in the cluster,
+   reached only from the API's pods (`base/networkpolicy-datastores.yaml`), and
+   ship no certificates for them. A refusal would stop every existing
+   installation at its next upgrade, with nothing in the repository to fix it
+   with.
+2. A link without TLS *at the client* is often encrypted anyway — a service
+   mesh's sidecars (Istio, Linkerd) do mTLS between pods and hand the
+   application plaintext, a Unix socket never leaves the host, a cloud private
+   link is the provider's. The API sees the same URL in all of them and cannot
+   tell them from the unprotected case.
+3. Enforcement is already available where it is meaningful, and is fail-closed
+   once chosen: `sslmode=verify-full` makes libpq refuse a server without a
+   valid certificate, `https://` for ClickHouse and `tls://` for NATS do the
+   same for theirs. The operator who writes the URL is the one who knows which
+   of the cases above applies.
+
+What would change it: in-cluster datastore TLS shipped in the `prod-ha`
+overlay (cert-manager certificates for the three StatefulSets). Once that
+exists, `prod` can refuse a plaintext URL that points at those Services.
 
 Which ports have to be open for any of it, how egress goes through a corporate
 proxy (`OCTO_HTTPS_PROXY`, `OCTO_NO_PROXY`), and where an internal root goes

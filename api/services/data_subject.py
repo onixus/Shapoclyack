@@ -165,6 +165,12 @@ SUBJECT_COLUMNS: dict[tuple[str, str], tuple[str, str]] = {
     ("retro_match_state", "refresh_requested_by"): (PSEUDONYM, "attribution"),
     ("tenant_retention_policies", "updated_by"): (PSEUDONYM, "attribution"),
     ("tenant_legal_holds", "set_by"): (PSEUDONYM, "who placed a hold"),
+    # An operator who pinned or revoked a sensor certificate (#309) — or the
+    # agent's own id, for one it enrolled or that superseded its predecessor.
+    ("agent_client_certs", "created_by"): (PSEUDONYM, "certificate register"),
+    ("agent_client_certs", "revoked_by"): (PSEUDONYM, "certificate register"),
+    ("agent_cert_enrolments", "locked_by"): (PSEUDONYM, "certificate register"),
+    ("agent_cert_enrolments", "reset_by"): (PSEUDONYM, "certificate register"),
     # JSON documents (review round 1): no column name says a document holds an
     # address, so every JSON column is decided here or below.
     ("notification_channels", "config"): (

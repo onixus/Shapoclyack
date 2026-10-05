@@ -414,6 +414,8 @@ def test_delete_reports_that_there_was_no_key_to_revoke(tmp_path, monkeypatch):
         "provisioning_key_id": None,
         "key_revoked": False,
         "other_agents_on_key": 0,
+        # Nor a key whose loss would make a certificate lock moot (#309).
+        "client_cert_lock_lifted": False,
     }
 
 

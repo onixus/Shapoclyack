@@ -121,7 +121,16 @@ def _forget_custom_roles(settings: Settings) -> None:
         session.execute(text("DELETE FROM roles WHERE tenant_id <> ''"))
 
 
+#: Columns a CHECK constraint holds to a fixed set, which the generic value
+#: below would violate: one allowed value each.
+_CHECKED_VALUES: dict[tuple[str, str], Any] = {
+    ("agent_client_certs", "source"): "csr",
+}
+
+
 def _seed_value(table: sa.Table, column: sa.Column, tenant_id: str) -> Any:
+    if (table.name, column.name) in _CHECKED_VALUES:
+        return _CHECKED_VALUES[(table.name, column.name)]
     kind = column.type
     if isinstance(kind, sa.Boolean):
         return False
