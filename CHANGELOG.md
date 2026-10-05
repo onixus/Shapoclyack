@@ -1078,6 +1078,14 @@ next occurrence; past that the occurrence is skipped (`skipped_queue_full`).
 
 ### Fixed
 
+- **`test_window_decays_without_operator_intervention` no longer depends on how
+  fast bcrypt runs.** It used a real one-second limiter window, so the lockout
+  only formed if two logins fitted in that second; under coverage on the CI
+  container each took ~1.2 s and main #76 failed with `401 == 429`. The test
+  now holds `auth_audit._now` still and moves it across a 60-second window by
+  hand, and also checks the lock still holds one second before the edge. Test
+  only; the limiter is unchanged.
+
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run
