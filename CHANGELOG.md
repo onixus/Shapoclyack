@@ -45,7 +45,16 @@ All notable changes to Shapoclyack are documented in this file.
   address the IdP verified — never by username; until that login only the
   creating token or a `grant_platform_admin` token may change those two, and
   a tenant-bound token manages no account whose global role is above
-  `viewer`. Revoking a token leaves its groups' grants in place. Every change is
+  `viewer`. A member grants no more than the token that added it could
+  either. Where the installation places accounts in tenants
+  (`OCTO_IDP_GROUP_MAP` or `OCTO_OIDC_TENANT_CLAIM` set), the resync and SCIM
+  disable a non-admin account they leave in **no tenant** instead of letting
+  the pre-P0 fallback put it in `default` with its global role; map `default`
+  explicitly to keep people there. JIT's tenant-claim membership stays
+  `local`, so switching the mode on does not revoke it. With both maps empty
+  SCIM pushes change no access (`active` still works), and a push Postgres
+  aborts for a concurrent one is a retryable `503`, not a deadlock `500`.
+  Revoking a token leaves its groups' grants in place. Every change is
   audited (`membership.*`, `user.*` with `"source": "idp"`, new
   `scim_token.*` and `scim_group.*`, which the console's audit filter lists).
   Migration `0076_idp_resync_scim` (expand-only). Rollout order:

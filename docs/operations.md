@@ -2657,14 +2657,23 @@ this order:
 2. **Have the break-glass account in place** (above). It is never resynced, so
    it is how you get back in if the map is wrong.
 3. **Know what stays.** Every membership that existed before migration 0076,
-   and every one a person grants afterwards, is `source: local` and is never
-   removed by the resync (`GET /api/tenants/{id}/members` shows the source).
-   Revoke the hand-made grants you want the IdP to own; the next login
-   re-grants them as `idp`.
-4. Switch it on and watch the trail:
+   every one a person grants afterwards, and every one JIT provisioning grants
+   from `OCTO_OIDC_TENANT_CLAIM` while the mode is off is `source: local` and
+   is never removed by the resync (`GET /api/tenants/{id}/members` shows the
+   source). Revoke the grants you want the IdP to own, once `OCTO_IDP_GROUP_MAP`
+   grants them; the next login re-grants them as `idp`.
+4. **Know who will be refused.** With `OCTO_IDP_GROUP_MAP` or
+   `OCTO_OIDC_TENANT_CLAIM` set, an account left in no tenant is disabled
+   unless it is a platform admin — a group in `OCTO_OIDC_ROLE_MAP` alone no
+   longer lets anybody into `default`. If people are meant to work in
+   `default`, map it: `{"staff": [{"tenant_id": "default", "role": "viewer"}]}`.
+   Before switching, list the SSO accounts whose only membership is one you
+   are about to revoke, or that have none.
+5. Switch it on and watch the trail:
    `GET /api/audit?action=membership.revoke`, `…?action=user.disable` and
    `…?action=user.role_change` — the resync's rows carry actor `oidc:<issuer>`
-   and `"source": "idp"`.
+   and `"source": "idp"`; a disable's `reason` is `in no mapped IdP group` or
+   `in no tenant`.
 
 Rolling it back is setting the variable to `false`: nothing is undone, and
 logins go back to deciding nothing after provisioning. An account the resync
@@ -2673,7 +2682,9 @@ disabled stays disabled until an administrator re-enables it
 group again.
 
 **SCIM** needs no switch — `/scim/v2` answers only an `octo_scim_` token, and
-there are none until a platform admin issues one:
+there are none until a platform admin issues one. It applies the maps on every
+push whatever `OCTO_IDP_AUTHORITATIVE` says; with both maps empty pushes
+change no access and only `active` does (lifecycle-only provisioning):
 
 ```bash
 curl -sS -X POST "$API/api/auth/scim-tokens" -H "Authorization: Bearer $ADMIN_JWT" \
@@ -2690,7 +2701,9 @@ token, switching the directory over, then
 `POST /api/auth/scim-tokens/{id}/revoke` on the old one. A group grants no
 more than the token that created it could, so rotate to a token with the same
 binding: groups an old tenant-bound or plain token created keep that token's
-limits after the switch.
+limits after the switch, and so do the members an old token added. A `503`
+from `/scim/v2` is a push Postgres aborted for a concurrent one on the same
+account; nothing was applied and the directory's retry succeeds.
 
 A SCIM user can sign in through SSO once a group has granted it something.
 The first login links it by **`externalId` = the ID token's `sub`**, or by an

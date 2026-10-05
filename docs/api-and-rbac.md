@@ -903,9 +903,20 @@ transaction as the login and **before** the disabled check:
   person's other grants;
 - **access** — an account in no mapped group is disabled
   (`disabled_source = idp`, the login answered `403`); a later login with a
-  mapped group re-enables it. JIT provisioning creates no account for an
-  identity in no mapped group, and grants no `OCTO_OIDC_TENANT_CLAIM`
-  membership: the group map is the only source of memberships in this mode.
+  mapped group re-enables it. So is an account left in **no tenant** where the
+  installation places accounts in tenants (`OCTO_IDP_GROUP_MAP` or
+  `OCTO_OIDC_TENANT_CLAIM` set) and it is not a platform admin: with no
+  membership it would act in `default` with its global role (the
+  [pre-P0 fallback](#tenant-memberships)), so taking someone out of their last
+  tenant group while a group mapped to a global role remained would *widen*
+  their access. A group in `OCTO_OIDC_ROLE_MAP` places nobody in a tenant; to
+  keep people in `default`, map it in `OCTO_IDP_GROUP_MAP`
+  (`{"staff": [{"tenant_id": "default", "role": "viewer"}]}`). Without either
+  variable set (a single-tenant installation), the role map alone still lets
+  people into `default`. JIT provisioning creates no account the resync would
+  disable at once — in no mapped group, or in none that places it in a tenant
+  — and grants no `OCTO_OIDC_TENANT_CLAIM` membership: the group map is the
+  only source of memberships in this mode.
 
 A token that **does not list the groups** changes nothing: the claim is
 missing, or Entra ID replaced it by an overage pointer (`_claim_names` naming
@@ -926,10 +937,12 @@ the limit. With `OCTO_OIDC_ROLE_CLAIM` empty no login lists a group, so the
 mode stays off and warns at startup, as with nothing mapped.
 
 **Which memberships the IdP owns.** Each `user_tenants` row has a `source`:
-`idp` for what the group mapping, SCIM or JIT provisioning granted, `local` for
-what a person granted over the API — and for **every row that existed before
-migration 0076**, JIT ones included, because nothing recorded where those came
-from. The resync never adds to, changes or removes a `local` row, and where one
+`idp` for what the group mapping or SCIM granted, `local` for what a person
+granted over the API, for what JIT provisioning grants from
+`OCTO_OIDC_TENANT_CLAIM` with the mode off — the resync never reads that claim,
+so an `idp` row would be revoked by the first login after the switch — and for
+**every row that existed before migration 0076**, JIT ones included, because
+nothing recorded where those came from. The resync never adds to, changes or removes a `local` row, and where one
 exists for a tenant the groups also grant, it stands. So turning the mode on
 never wipes the grants an administrator made by hand; the cost is that such a
 grant outlives the person's IdP groups until somebody revokes it (the member
@@ -978,7 +991,16 @@ groups re-derives its role, IdP memberships and access exactly as the
 [resync](#idp-authoritative-resync) does — including **disabling an account in
 no mapped group**, so a freshly created SCIM user cannot sign in until a group
 push grants it something (otherwise it would fall back to the `default` tenant
-with the default role, which no mapping gave it). `active` in responses is
+with the default role, which no mapping gave it), and an account a push leaves
+in no tenant. The latter also when the token may not manage the account's
+lifecycle: a tenant-bound token taking an account out of its last tenant group
+does not leave it enabled for `default`; a push that places it again
+re-enables it. **With nothing mapped** (`OCTO_OIDC_ROLE_MAP` and
+`OCTO_IDP_GROUP_MAP` both empty) pushes are stored and change no access, as
+an SSO login resyncs nothing then; `active` still deactivates and reactivates,
+so SCIM can be connected for the account lifecycle alone. A push that Postgres
+aborts for a concurrent one touching the same account (a deadlock or a
+serialization failure) is a `503` with `Retry-After`, nothing applied. `active` in responses is
 `false` only where SCIM or a person disabled the account. Errors are SCIM error
 bodies (`scimType` `uniqueness`, `mutability`, `invalidFilter`, …). Not
 supported: bulk, sort, ETags, password changes.
@@ -1005,6 +1027,10 @@ JWT or a service token is a `401` there.
 token's change triggers the resync and whatever its name is mapped to later: a
 tenant-bound token's group grants only in that token's tenants and never a
 global role, and only a `grant_platform_admin` token's group can grant `admin`.
+**Nor does it grant a member more than the token that added the member could**:
+a tenant-bound token that adds its account to an `all_tenants` token's group
+gets that group's grants inside its own tenants only, before and after any
+remap or rename.
 So a directory cannot push a group under a name nobody has mapped yet and
 collect what the operator maps that name to afterwards. **Map group names
 before you connect a tenant-bound directory**; a name it took first stays
@@ -2646,7 +2672,7 @@ enabled ([Step-up](#step-up), #504), and a grant moves the member's
 [MFA requirement](#coverage-by-authority-in-a-tenant-504) from their next
 request. Membership rows hold no credential material. Each carries `source`: `local`
 for a person's grant, `idp` for one the identity provider's group mapping made
-— the only kind an [IdP-authoritative resync](#idp-authoritative-resync) or a
+(JIT provisioning's tenant-claim grant is `local`) — the only kind an [IdP-authoritative resync](#idp-authoritative-resync) or a
 SCIM push changes or removes. Granting over a membership the IdP holds makes it
 `local`.
 
@@ -2659,7 +2685,7 @@ else is `403`:
 |---|---|---|
 | Global role `admin` | Requested, else `default` | Platform admin — memberships do not constrain them; `/jobs`, `/agents`, `/schedules`, and `/runs` stay fleet-wide when no tenant is named |
 | Has memberships | Requested (must be granted), else their sole membership / `default` / first by name | Role inside the tenant comes from the membership row, so it can differ from the global role |
-| Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping |
+| Has no memberships | `default` only | Pre-P0 behaviour, so existing single-tenant installations keep working; granting any membership opts the user into strict scoping. An IdP resync or SCIM push that leaves an account here where the installation places accounts in tenants disables it instead ([resync](#idp-authoritative-resync)) |
 
 `GET /api/auth/me` returns `tenants`, `default_tenant`, `is_platform_admin`,
 and — since #318 — `tenant_role`, `permissions` and `scoped_tenant`, which is

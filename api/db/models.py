@@ -334,11 +334,12 @@ class UserTenant(Base):
     role: Mapped[str] = mapped_column(default="viewer")
     created_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(default=None)
-    # ``local`` — granted by a person over the API, or written before
-    # migration 0076 — or ``idp``: granted by the identity provider's group
-    # mapping (SSO resync, SCIM, JIT provisioning). An IdP-authoritative
-    # resync adds, changes and removes ``idp`` rows only (#316), so turning it
-    # on never takes away what an administrator granted by hand.
+    # ``local`` — granted by a person over the API, by JIT provisioning's
+    # tenant claim, or written before migration 0076 — or ``idp``: granted by
+    # the identity provider's group mapping (SSO resync, SCIM). An
+    # IdP-authoritative resync adds, changes and removes ``idp`` rows only
+    # (#316), so turning it on never takes away what an administrator granted
+    # by hand.
     source: Mapped[str] = mapped_column(default="local", server_default="local")
 
     __table_args__ = (
@@ -405,7 +406,14 @@ class ScimGroup(Base):
 
 
 class ScimGroupMember(Base):
-    """One account in one SCIM group. Goes with either side (FK cascades)."""
+    """One account in one SCIM group. Goes with either side (FK cascades).
+
+    ``added_by_token_id`` is the token that put the account in the group. The
+    membership grants no more than that token could, nor than the group's
+    creator could: otherwise a tenant-bound token adding its own account to a
+    group an ``all_tenants`` token created would collect whatever that name is
+    mapped to later, beyond its tenants.
+    """
 
     __tablename__ = "scim_group_members"
 
@@ -415,6 +423,7 @@ class ScimGroupMember(Base):
     username: Mapped[str] = mapped_column(
         ForeignKey("users.username", ondelete="CASCADE"), primary_key=True, index=True
     )
+    added_by_token_id: Mapped[str | None] = mapped_column(default=None)
 
 
 class Permission(Base):
