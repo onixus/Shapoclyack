@@ -8,7 +8,12 @@ import { useAuthStore } from "@/lib/auth-store";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-function principal(role: Me["role"], tenantRole: string, permissions?: string[]): Me {
+function principal(
+  role: Me["role"],
+  tenantRole: string,
+  permissions?: string[],
+  tenantRank?: number,
+): Me {
   return {
     username: "someone",
     role,
@@ -18,6 +23,7 @@ function principal(role: Me["role"], tenantRole: string, permissions?: string[])
     tenant_role: tenantRole,
     permissions,
     scoped_tenant: "default",
+    ...(tenantRank === undefined ? {} : { tenant_rank: tenantRank }),
   };
 }
 
@@ -34,30 +40,61 @@ async function openDialog(user: Me) {
   await userEvent.click(screen.getByRole("button", { name: /Deploy Sensor/i }));
 }
 
-const REFUSED = /takes tenant admin/i;
+/** The mint notice. Names the permission rather than "tenant admin": a
+ * tenant role at rank 3 without the permission *is* at the tenant admin rank,
+ * and `token-admin` is not, yet holds it (#504). */
+const REFUSED = /Minting one takes the tenant\.credential\.manage permission/i;
+const PUSH_REFUSED = /The push takes the tenant admin rank and the tenant\.credential\.manage/i;
 
 describe("DeployAgentDialog", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("offers the push to a token-admin, who holds the permission it needs", async () => {
-    // Both credential-handing actions here mint a provisioning key, which is
-    // `tenant.credential.manage` — held by the tenant admin *and* by a
-    // `token-admin`, both of them `viewer` accounts (#318). Asking the account
-    // instead named a role the API does not consult.
-    await openDialog(principal("viewer", "token-admin", ["tenant.credential.manage"]));
+  it("offers a token-admin the key but not the push", async () => {
+    // Minting a provisioning key is `tenant.credential.manage` — held by the
+    // tenant admin *and* by a `token-admin`, both of them `viewer` accounts
+    // (#318). The SSH push mints one as well, but the API also asks for the
+    // tenant admin rank, which `token-admin` (rank 1) does not have (#504):
+    // offering it the push or the host-key probe would only produce a 403.
+    await openDialog(
+      principal("viewer", "token-admin", ["tenant.credential.manage"], 1),
+    );
 
-    expect(screen.queryByText(REFUSED)).not.toBeInTheDocument();
-    // The other half of the same permission: minting the key the snippets
-    // embed, on the tab that shows them.
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Start Installation/i })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(/Target Host/i), "192.168.10.50");
+    expect(screen.getByRole("button", { name: /Read from host/i })).toBeDisabled();
+
     await userEvent.click(screen.getByRole("tab", { name: /Linux One-Liner/i }));
     expect(screen.getByRole("button", { name: /Generate key/i })).toBeEnabled();
+  });
+
+  it("offers the push to the tenant admin, who has both", async () => {
+    await openDialog(
+      principal("viewer", "admin", ["tenant.credential.manage", "tenant.member.manage"], 3),
+    );
+
+    expect(screen.queryByText(PUSH_REFUSED)).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/Target Host/i), "192.168.10.50");
+    expect(screen.getByRole("button", { name: /Read from host/i })).toBeEnabled();
+  });
+
+  it("refuses the push to a rank-3 role without the credential", async () => {
+    // The other half: the rank alone used to be the gate, and minted keys.
+    await openDialog(principal("viewer", "deployer", ["config.read"], 3));
+
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Linux One-Liner/i }));
+    expect(screen.getByText(REFUSED)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Generate key/i })).toBeDisabled();
   });
 
   it("refuses a tenant operator, who does not", async () => {
     await openDialog(principal("viewer", "operator", ["config.read", "scan.cancel"]));
 
+    expect(screen.getByText(PUSH_REFUSED)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Linux One-Liner/i }));
     expect(screen.getByText(REFUSED)).toBeInTheDocument();
   });
 
@@ -67,6 +104,6 @@ describe("DeployAgentDialog", () => {
     // than refusing everybody.
     await openDialog(principal("admin", "admin", undefined));
 
-    expect(screen.queryByText(REFUSED)).not.toBeInTheDocument();
+    expect(screen.queryByText(PUSH_REFUSED)).not.toBeInTheDocument();
   });
 });

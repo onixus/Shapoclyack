@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import jwt
 from fastapi import Depends, HTTPException, Query, Request, status
@@ -16,6 +16,9 @@ from pydantic import BaseModel, Field
 from api.core import permissions as permission_catalog
 from api.db import tenant_scope
 from api.settings import Settings, load_settings
+
+if TYPE_CHECKING:
+    from api.services.mfa import Requirement
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -766,55 +769,100 @@ _MFA_PENDING_ALLOWED_PATHS = (
 )
 
 
-def _owes_enrolment(settings: Settings, user: TokenUser) -> bool:
-    """Whether this caller is in a role that must enrol, and has not (#315).
+#: Where :func:`mfa_requirement` keeps the answer for the rest of the request.
+MFA_REQUIREMENT_STATE_ATTR = "mfa_requirement"
+
+
+def mfa_requirement(request: Request, settings: Settings, user: TokenUser) -> Requirement:
+    """:func:`api.services.mfa.requirement` for this request's caller, decided once.
+
+    The confinement check in :func:`get_current_user`, the step-up's "must it
+    be a key", and ``/api/auth/me`` and ``/api/auth/mfa`` all ask the same
+    question about the same account within one request; the membership read
+    behind it is paid for by the first of them. Per request and never longer,
+    which is what keeps a grant or a revoke effective from the next call.
+    """
+    from api.services import mfa as mfa_service
+
+    cached = getattr(request.state, MFA_REQUIREMENT_STATE_ATTR, None)
+    if cached is None:
+        cached = mfa_service.requirement(settings, user.username, user.role.value)
+        setattr(request.state, MFA_REQUIREMENT_STATE_ATTR, cached)
+    return cached
+
+
+def _owes_enrolment(request: Request, settings: Settings, user: TokenUser) -> bool:
+    """Whether this caller must enrol a second factor, and has not (#315, #504).
 
     Asked per request rather than once at login, and gated on the policy being
     configured at all so that an installation which has not adopted MFA pays
-    nothing for it: with ``OCTO_MFA_REQUIRED_ROLES`` empty this is a comparison
-    against an empty list and no query. When it is set it costs one extra
+    nothing for it: with no role or permission list set this is a comparison
+    against empty lists and no query. When one is set it costs one
     ``SELECT`` by primary key per request — a second short transaction, not a
-    re-read of the one ``decode_token`` already opened. That is the price of
-    the policy applying to sessions that predate it; the alternative was a
-    claim, and a claim is a promise made once about a fact that changes.
+    re-read of the one ``decode_token`` already opened — and, for an account
+    that has not enrolled, the membership read that decides whether it must.
+    That is the price of the policy applying to sessions that predate it, and
+    to a membership granted while the session is open (#504); the alternative
+    was a claim, and a claim is a promise made once about a fact that changes.
     """
-    # Either list makes a role MFA-required (``mfa.required_for_role``): a
-    # role that must hold a key must hold a factor at all.
-    if not (settings.mfa_required_roles or settings.mfa_phishing_resistant_roles):
-        return False
     from api.services import mfa as mfa_service
 
-    if not mfa_service.required_for_role(settings, user.role.value):
+    if not mfa_service.policy_configured(settings):
         return False
-    return not mfa_service.is_enabled(settings, user.username)
+    # Enrolled first: it is one primary-key read, and an enrolled account
+    # owes nothing here whatever it holds, so the common case under a policy
+    # never reads the memberships.
+    if mfa_service.is_enabled(settings, user.username):
+        return False
+    # A global role the lists name is enough on its own; the memberships would
+    # only add reasons, which nothing on this path reads.
+    if user.role.value in settings.mfa_required_roles or (
+        user.role.value in settings.mfa_phishing_resistant_roles
+    ):
+        return True
+    return mfa_requirement(request, settings, user).required
 
 
-def _owes_phishing_resistant_factor(settings: Settings, user: TokenUser) -> bool:
+def _owes_phishing_resistant_factor(
+    request: Request, settings: Settings, user: TokenUser
+) -> bool:
     """Whether this session was proved with a code where a key is required (#315).
 
-    Decided from the policy and the session's own ``mfa_method`` claim, with no
-    query: which factor *this* session was proved with is a fact about the
-    token, and the policy is configuration. An account that has not enrolled at
-    all is :func:`_owes_enrolment`'s case and is confined there first.
+    Which factor *this* session was proved with is a fact about the token (its
+    ``mfa_method`` claim), checked first and with no query: a session proved
+    with a key owes nothing. Otherwise whether a key is required is the policy
+    as it applies to what the account holds now (#504) — a read of its
+    memberships, made only under a phishing-resistant policy and only for a
+    session that was not proved with a key. An account that has not enrolled
+    at all is :func:`_owes_enrolment`'s case and is confined there first.
     """
-    if not settings.mfa_phishing_resistant_roles:
-        return False
+    from api.services import mfa as mfa_service
     from api.services import passkeys as passkeys_service
 
-    if not passkeys_service.phishing_resistant_required(settings, user.role.value):
+    if not mfa_service.phishing_resistant_policy(settings):
         return False
-    return user.mfa_method != passkeys_service.FACTOR_WEBAUTHN
+    if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN:
+        return False
+    if user.role.value in settings.mfa_phishing_resistant_roles:
+        return True
+    return mfa_requirement(request, settings, user).phishing_resistant
 
 
+#: The console recognises this refusal, and the one below, by their opening
+#: words and re-reads ``/auth/me`` to raise its banner (#504,
+#: ``web-next/src/lib/mfa-confinement.ts``): reword the start of either and
+#: the console falls back to showing the detail as an error.
 _ENROLMENT_REQUIRED_DETAIL = (
-    "This installation requires multi-factor authentication for your role. "
+    "This installation requires multi-factor authentication for your account's "
+    "role or for what it may do in a tenant. "
     "Enrol an authenticator with POST /api/auth/mfa/totp/setup before using "
     "the rest of the API."
 )
 #: Worded for the console as well as for a script: "security key" is what the
 #: banner keys on, the two endpoints are what a script needs.
 _PHISHING_RESISTANT_REQUIRED_DETAIL = (
-    "This installation requires a security key (WebAuthn) for your role. "
+    "This installation requires a security key (WebAuthn) for your account's "
+    "role or for what it may do in a tenant. "
     "Register one with POST /api/auth/mfa/webauthn/register/options, then sign "
     "in with it through POST /api/auth/mfa/verify."
 )
@@ -823,9 +871,9 @@ _PHISHING_RESISTANT_REQUIRED_DETAIL = (
 def _enforce_mfa_enrolment(request: Request, detail: str = _ENROLMENT_REQUIRED_DETAIL) -> None:
     """Confine a session that owes this installation a second factor (#315).
 
-    The account is in a role ``OCTO_MFA_REQUIRED_ROLES`` names and has not
-    enrolled — or, with ``detail`` naming it, a role
-    ``OCTO_MFA_PHISHING_RESISTANT_ROLES`` names whose session was proved with a
+    The policy covers the account — by its global role, or by what it holds in
+    a tenant (#504) — and it has not enrolled; or, with ``detail`` naming it,
+    the phishing-resistant policy covers it and this session was proved with a
     code rather than a key. Refusing the *login* would leave nobody able to
     enrol, so the session exists and is worth exactly one thing: setting up
     the factor. Everything else is a 403 that names the endpoint to go to,
@@ -905,10 +953,10 @@ def get_current_user(
     # Before the MFA confinement below: a session that may only reach the
     # enrolment routes is still somebody's session, and its requests count.
     _charge_rate_limit(request, rate_limit.SCOPE_USER, user.username)
-    if _owes_enrolment(settings, user):
+    if _owes_enrolment(request, settings, user):
         user.mfa_pending = True
         _enforce_mfa_enrolment(request)
-    elif _owes_phishing_resistant_factor(settings, user):
+    elif _owes_phishing_resistant_factor(request, settings, user):
         user.phishing_resistant_pending = True
         _enforce_mfa_enrolment(request, _PHISHING_RESISTANT_REQUIRED_DETAIL)
     return user
@@ -1002,10 +1050,13 @@ def require_step_up(
     adopted MFA behaves exactly as it did, which is what makes this safe to
     turn on for everyone at once rather than behind a flag.
 
-    Where policy asks for a phishing-resistant factor — the account's role is
-    in ``OCTO_MFA_PHISHING_RESISTANT_ROLES``, or
+    Where policy asks for a phishing-resistant factor — the phishing-resistant
+    policy covers the account by role or tenant permission (#504), or
     ``OCTO_MFA_STEPUP_PHISHING_RESISTANT`` is on — the recent proof must also
     have been a WebAuthn assertion (the session's ``mfa_method``).
+
+    A service token is refused outright, MFA or not: nobody is at one to
+    re-verify, so it can never be "recent" (#504).
     """
     from api.services import mfa as mfa_service
     from api.services import passkeys as passkeys_service
@@ -1013,15 +1064,23 @@ def require_step_up(
     if getattr(request.state, SERVICE_TOKEN_STATE_ATTR, None) is not None:
         # A service token is a credential with its own expiry and revocation,
         # not a session somebody left open, and there is no human at it to
-        # challenge — so step-up cannot be the control that stops one. The
-        # control that does is the scope layer, which must refuse the route
-        # outright: ``auth``, ``users``, ``tenants`` and ``audit`` are in
-        # FORBIDDEN_RESOURCES, and ``config`` and ``agent`` in
-        # FORBIDDEN_WRITE_RESOURCES. A route put behind this dependency has to
-        # be in one of those two lists as well, or a service token walks past
-        # it — which is exactly what ``POST /api/agent/deployment-command`` did
-        # until ``agent`` was added.
-        return user
+        # challenge — so it cannot satisfy a step-up, and a route that asks
+        # for one is refused to it here. The scope layer refuses most of them
+        # first (``auth``, ``users``, ``tenants`` and ``audit`` in
+        # FORBIDDEN_RESOURCES, ``config`` and ``agent`` in
+        # FORBIDDEN_WRITE_RESOURCES); this is what holds when a route sits
+        # under a resource a token may write. ``POST
+        # /api/agent/deployment-command`` walked past the lists until
+        # ``agent`` was added, and the endpoint agent policy did until this
+        # check (#504): ``endpoint`` stays writable because the CVE-match
+        # refreshes under it are automation's to call.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This operation needs a person to re-verify a second factor; "
+                "a service token cannot. Use a console session."
+            ),
+        )
     if not mfa_service.is_enabled(settings, user.username):
         return user
     deadline = mfa_service.stepup_deadline(user.mfa_verified_at, settings)
@@ -1031,7 +1090,12 @@ def require_step_up(
     # tests is a setting that can quietly stop meaning anything.
     if deadline is not None and deadline > mfa_service.now_utc():
         if user.mfa_method == passkeys_service.FACTOR_WEBAUTHN or not (
-            passkeys_service.stepup_requires_webauthn(settings, user.role.value)
+            passkeys_service.stepup_requires_webauthn(
+                settings,
+                user.username,
+                user.role.value,
+                policy=lambda: mfa_requirement(request, settings, user),
+            )
         ):
             return user
         # Recent, but proved with a code where policy wants a key. Same marker

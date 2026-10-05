@@ -668,6 +668,71 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Security
 
+- **MFA policy and step-up by authority in a tenant
+  ([#504](https://github.com/onixus/Shapoclyack/issues/504)).** The second-factor
+  policy compared `OCTO_MFA_REQUIRED_ROLES` with the account's global role only,
+  so under "MFA for admins" a tenant's `admin` whose global role is `viewer` —
+  or a `scope-approver`, `risk-approver`, `token-admin`, or a tenant-defined
+  role holding `tenant.member.manage` — signed in with a password alone, and
+  then granted memberships and wrote roles without a step-up. Two new
+  variables, `OCTO_MFA_REQUIRED_PERMISSIONS` and
+  `OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS`, cover an account that holds a
+  listed permission in **any** tenant, through any role; the role lists keep
+  meaning the global role exactly as before. `PUT`/`DELETE
+  /api/tenants/{id}/members/{u}` and `POST`/`PATCH`/`DELETE
+  /api/tenants/{id}/roles…` (a delete with `reassign_to` included) now require
+  a recent step-up from an account with MFA enabled; service tokens remain
+  refused on all of them by scope. `GET /api/auth/mfa` adds
+  `required_because` (which tenant and role put the requirement there), and
+  the console's Security page shows it instead of the global role name.
+  **Behaviour change for existing installations:** with
+  `OCTO_MFA_REQUIRED_ROLES=admin` (or `OCTO_MFA_PHISHING_RESISTANT_ROLES=admin`)
+  and the new variables unset, the permission list is **derived** —
+  `tenant.member.manage`, `tenant.credential.manage`, `scan_scope.approve`,
+  `vulnerability.exception.approve` — so after the upgrade every holder of
+  one of those in any tenant who has not enrolled is confined to the Security
+  page, **including on sessions already open**: the requirement is re-read per
+  request, so a grant, a revoke or an edited role applies from the member's
+  next call rather than at the end of the session. Nobody is locked out — the
+  confined session can enrol. Installations without an MFA policy see no
+  change apart from the step-up on member and role administration, which, as
+  every step-up, applies only to accounts that have MFA enabled. To stage the
+  rollout, set both new variables to `none` (exactly the old behaviour) and
+  remove them once the affected people have enrolled; `docs/operations.md`
+  has a query listing who they are. Review round 1: the derived set also
+  holds `endpoint_agent.manage`, and under the derived default a tenant role
+  at the admin rank (3) is covered whatever permissions it lists — rank 3
+  alone reaches webhooks, notification channels, SLA policies and the SSH
+  push. `POST /api/agent/deployment-command` and `POST /api/agent/deploy/ssh`
+  now ask for `tenant.credential.manage` (the SSH push keeps the admin rank on
+  top) instead of the rank alone, like `POST …/provisioning-keys`; migration
+  **0073** writes that permission onto every tenant role at rank 3 so the roles
+  that minted keys before the upgrade still can (and reach the permission's
+  other routes). Review round 2: where such a role also holds
+  `tenant.member.manage`, its holders can now hand the credential on by itself
+  — define and grant a role carrying it, or grant `token-admin` — where before
+  it travelled only inside the role; kept on purpose, since dropping it would
+  take the console's **Deploy Agent** button from those roles, and
+  `docs/operations.md` has the query that lists them. A step-up route now
+  refuses a service token outright, so an `admin`-role token with
+  `endpoint:write` no longer sets the endpoint agent policy (`endpoint`
+  itself stays writable for the CVE-match refreshes). The console offers the
+  SSH push only to a holder of `tenant.credential.manage` at the tenant admin
+  rank, as the API checks. New step-ups: the SSH push, the endpoint agent policy and
+  builds, risk-acceptance approve/reject/revoke, and `PUT
+  /api/users/{u}/disabled`, `DELETE /api/users/{u}`, `POST
+  /api/users/{u}/sessions/revoke-all`. A permission variable made only of
+  unknown keys refuses to start instead of reading as `none`. The requirement
+  is computed once per request. Review round 3: `GET
+  /api/agent/deployment-command` (the dialog's placeholder snippets) is now
+  readable by a holder of `tenant.credential.manage` as well as by an
+  operator, and the console shows the **Sensors** page to a `token-admin` with
+  the **Deploy Agent** dialog and without the fleet list (`GET /api/agents`
+  stays operator) — before, the mint it was moved for was reachable through
+  the API only. The SSH push refuses below the admin rank before it asks for
+  a step-up, not after. The console notices a confinement that starts
+  mid-session: the first enrolment `403` re-reads `/api/auth/me` once, so the
+  banner appears without a reload.
 - **General request rate limiting and a body cap on every route
   ([#320](https://github.com/onixus/Shapoclyack/issues/320)).** The login route
   was the only one with a limiter and two uploads the only ones with a body

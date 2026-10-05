@@ -911,6 +911,17 @@ class Settings:
     # register a key — rather than refused, so the requirement is a guided
     # enrolment and not a lockout. Empty by default.
     mfa_phishing_resistant_roles: list[str] = field(default_factory=list)
+    # The same two requirements by *authority in a tenant* rather than by the
+    # global role (#504). An account holding any listed permission in at least
+    # one tenant — through a built-in membership role, a role the tenant
+    # defined, or the global ``admin``, which holds them all — is covered.
+    # ``None`` (unset) derives the list: the tenant-authority set in
+    # api/core/permissions.py (``TENANT_AUTHORITY_PERMISSIONS``) when the
+    # matching role list names ``admin``, nothing otherwise — so "MFA for
+    # admins" covers the admins of tenants, and an installation with no MFA
+    # policy is unchanged. ``[]`` (``none``) turns the permission half off.
+    mfa_required_permissions: list[str] | None = None
+    mfa_phishing_resistant_permissions: list[str] | None = None
     # Whether the step-up that credential-issuing and account-administration
     # routes demand must itself be a WebAuthn assertion, for every account that
     # has MFA enabled — not only the roles above. Off by default; turning it on
@@ -1192,6 +1203,50 @@ def _mfa_required_roles(variable: str = "OCTO_MFA_REQUIRED_ROLES") -> list[str]:
         if role not in roles:
             roles.append(role)
     return roles
+
+
+def _mfa_permissions(variable: str) -> list[str] | None:
+    """``OCTO_MFA_REQUIRED_PERMISSIONS`` and its phishing-resistant twin (#504).
+
+    Unset or blank is ``None`` — derive from the role list, see
+    :attr:`Settings.mfa_required_permissions` — and ``none`` is an explicit
+    empty list. Otherwise comma-separated catalogue keys; an unknown one is
+    dropped with a warning, for the reason :func:`_mfa_required_roles` gives.
+
+    Except when nothing is left: a value made only of unknown keys would come
+    out as ``[]``, which is ``none`` — the derived default switched off and
+    every tenant admin back outside the policy, over a typo, with a log line
+    as the only trace. That one refuses to start instead.
+    """
+    from api.core.permissions import PERMISSIONS
+
+    raw = os.environ.get(variable, "").strip()
+    if not raw:
+        return None
+    if raw.lower() == "none":
+        return []
+    keys: list[str] = []
+    for item in raw.split(","):
+        key = item.strip().lower()
+        if not key:
+            continue
+        if key not in PERMISSIONS:
+            logger.warning(
+                "%s names an unknown permission %r; ignoring it. GET /api/rbac/permissions "
+                "lists the catalogue.",
+                variable,
+                key,
+            )
+            continue
+        if key not in keys:
+            keys.append(key)
+    if not keys:
+        raise ValueError(
+            f"{variable} names no known permission ({raw!r}); write `none` to turn the "
+            "permission policy off, or unset it for the default. GET /api/rbac/permissions "
+            "lists the catalogue."
+        )
+    return keys
 
 
 def _local_login() -> str:
@@ -1525,11 +1580,17 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
     # A phishing-resistant requirement with no relying party to register a key
     # against confines every listed role to a page whose one action answers
     # 409 — an administrator lockout that starts at the first login (#315).
-    if settings.mfa_phishing_resistant_roles or settings.mfa_stepup_phishing_resistant:
+    # An explicit permission list does the same to whoever holds one (#504).
+    if (
+        settings.mfa_phishing_resistant_roles
+        or settings.mfa_phishing_resistant_permissions
+        or settings.mfa_stepup_phishing_resistant
+    ):
         rp_id, origins = settings.webauthn_relying_party()
         if not rp_id or not origins:
             problems.append(
-                "OCTO_MFA_PHISHING_RESISTANT_ROLES / OCTO_MFA_STEPUP_PHISHING_RESISTANT\n"
+                "OCTO_MFA_PHISHING_RESISTANT_ROLES / OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS /\n"
+                "    OCTO_MFA_STEPUP_PHISHING_RESISTANT\n"
                 "    require WebAuthn, but no relying party could be derived.\n"
                 "    Set OCTO_PUBLIC_BASE_URL, or OCTO_WEBAUTHN_RP_ID and\n"
                 "    OCTO_WEBAUTHN_ORIGINS, to the console's domain and origin."
@@ -1543,6 +1604,7 @@ def _validate_production(settings: Settings, *, postgres_url_env: str) -> None:
         settings.webauthn_rp_id
         or settings.webauthn_origins
         or settings.mfa_phishing_resistant_roles
+        or settings.mfa_phishing_resistant_permissions
         or settings.mfa_stepup_phishing_resistant
     )
     if webauthn_in_use:
@@ -2186,6 +2248,10 @@ def load_settings() -> Settings:
         # people to keep an authenticator open next to the console.
         mfa_stepup_minutes=max(1, int(os.environ.get("OCTO_MFA_STEPUP_MINUTES", "15"))),
         mfa_phishing_resistant_roles=_mfa_required_roles("OCTO_MFA_PHISHING_RESISTANT_ROLES"),
+        mfa_required_permissions=_mfa_permissions("OCTO_MFA_REQUIRED_PERMISSIONS"),
+        mfa_phishing_resistant_permissions=_mfa_permissions(
+            "OCTO_MFA_PHISHING_RESISTANT_PERMISSIONS"
+        ),
         mfa_stepup_phishing_resistant=os.environ.get(
             "OCTO_MFA_STEPUP_PHISHING_RESISTANT", "false"
         ).lower()

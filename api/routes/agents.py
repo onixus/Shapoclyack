@@ -780,10 +780,34 @@ def unpin_ssh_host_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+def _ssh_push_principal(
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
+) -> TenantPrincipal:
+    """The credential permission *and* the tenant admin rank, as one dependency.
+
+    A dependency rather than a check in the route body so that it is resolved
+    before ``StepUpDep``: a ``token-admin`` with a stale step-up was sent to
+    re-verify a second factor and only then told that the push was never
+    theirs (#504).
+    """
+    if not principal.at_least(Role.admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role 'admin' or higher required in tenant '{principal.tenant_id}'",
+        )
+    return principal
+
+
 @router.post("/agent/deploy/ssh", response_model=AgentDeployStatusResponse)
 def deploy_agent_ssh(
     body: AgentDeploySSHRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[TenantPrincipal, Depends(_ssh_push_principal)],
+    # The run mints a provisioning key, as the route below does (#504). After
+    # the principal: FastAPI resolves dependencies in declaration order.
+    _: StepUpDep,
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
     audit: AuditDep,
@@ -793,6 +817,12 @@ def deploy_agent_ssh(
     A host that already runs one of this tenant's sensors gets that sensor
     back, with its ID and its key; the run's log says which case it was
     (docs/operations.md, "SSH push deployment").
+
+    ``tenant.credential.manage``, because a run mints a provisioning key, *and*
+    the admin rank, because it also hands the platform a login on the target
+    and opens a connection to it — which ``token-admin`` was never given. The
+    rank alone used to be the gate, so a tenant role at rank 3 with no
+    credential authority minted keys through here (#504).
     """
     # Ensure tenant alignment
     tenant_id = principal.tenant_id if not principal.is_platform_admin else (body.tenant_id or principal.tenant_id)
@@ -855,16 +885,43 @@ def get_install_script() -> PlainTextResponse:
     return PlainTextResponse(content, media_type="text/x-sh")
 
 
+def _snippet_reader(
+    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.viewer))],
+) -> TenantPrincipal:
+    """Operator rank, or the authority to mint the key the snippets are for.
+
+    The ``Deploy Agent`` dialog renders from the ``GET`` and mints with the
+    ``POST``; with the ``GET`` at operator alone, a ``token-admin`` — rank 1,
+    and holder of exactly the permission the ``POST`` asks for — was refused
+    the dialog on opening it (#504). Nothing else on the sensors page widens
+    with it: the fleet list stays at operator.
+    """
+    if principal.at_least(Role.operator) or principal.allows(
+        permission_catalog.TENANT_CREDENTIAL_MANAGE
+    ):
+        return principal
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"Role 'operator' or higher, or permission "
+            f"'{permission_catalog.TENANT_CREDENTIAL_MANAGE}', required in tenant "
+            f"'{principal.tenant_id}'"
+        ),
+    )
+
+
 @router.get("/agent/deployment-command", response_model=AgentDeploymentSnippetResponse)
 def get_deployment_command(
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.operator))],
+    principal: Annotated[TenantPrincipal, Depends(_snippet_reader)],
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
 ) -> AgentDeploymentSnippetResponse:
     """Render the install snippets with a placeholder key.
 
-    Read-only: registering an agent is an operator act, and the key that lets
-    someone do it is minted by the POST below, never by loading this page.
+    Read-only: the key that registers an agent is minted by the POST below,
+    never by loading this page. Readable by an operator, who installs agents,
+    and by whoever holds ``tenant.credential.manage``, who mints the key the
+    snippets are filled in with (#504).
     """
     snippets = agents_service.get_deployment_snippets(
         tenant_id=principal.tenant_id,
@@ -880,7 +937,10 @@ def get_deployment_command(
 )
 def create_deployment_command(
     body: CreateAgentDeploymentKeyRequest,
-    principal: Annotated[TenantPrincipal, Depends(require_tenant(Role.admin))],
+    principal: Annotated[
+        TenantPrincipal,
+        Depends(require_permission(permission_catalog.TENANT_CREDENTIAL_MANAGE)),
+    ],
     # Same credential, therefore same step-up (#315). This is the route the
     # console actually uses to mint a provisioning key — the one under
     # /api/tenants is the API-first path — so gating only that one would have
@@ -891,10 +951,14 @@ def create_deployment_command(
 ) -> AgentDeploymentSnippetResponse:
     """Mint one provisioning key for this tenant and return the snippets.
 
-    Tenant ``admin``, the same bar as
+    ``tenant.credential.manage``, the same bar as
     ``POST /api/tenants/{id}/provisioning-keys``, because it mints the same
-    credential: a key that registers agents into this tenant (#231). The
-    plaintext is in this response only.
+    credential: a key that registers agents into this tenant (#231). It was
+    the admin *rank* until #504 — which refused ``token-admin`` the console's
+    own button and let a tenant role at rank 3 mint keys without the
+    permission; migration 0073 gave that permission to the rank-3 tenant roles
+    that existed then, so none of them lost the button. The plaintext is in
+    this response only.
     """
     try:
         snippets = agents_service.mint_deployment_snippets(

@@ -12,6 +12,7 @@ import {
   useRevokeWebAuthnKey,
   useWebAuthnKeys,
 } from "@/hooks/use-mfa";
+import { RequirementReasons } from "@/components/mfa/requirement-reasons";
 import { useAuthStore } from "@/lib/auth-store";
 import { useT } from "@/lib/i18n";
 import { isCancelledCeremony, isWebAuthnSupported } from "@/lib/webauthn";
@@ -39,7 +40,6 @@ function when(value: string | null): string {
  */
 export function SecurityKeysPanel() {
   const t = useT();
-  const role = useAuthStore((state) => state.user?.role ?? "viewer");
   const confined = useAuthStore((state) => state.user?.phishing_resistant_pending ?? false);
   const verifyWithKey = useAuthStore((state) => state.verifyWithKey);
   const { data: status } = useMfaStatus();
@@ -96,7 +96,10 @@ export function SecurityKeysPanel() {
 
       <div className="space-y-1 text-sm text-muted-foreground">
         {status.phishing_resistant_required ? (
-          <p>{t("mfa.keys.requiredByPolicy", { role })}</p>
+          <>
+            <p>{t("mfa.keys.requiredByPolicy")}</p>
+            <RequirementReasons reasons={status.required_because} phishingResistant />
+          </>
         ) : null}
         {status.stepup_phishing_resistant ? <p>{t("mfa.keys.stepupByPolicy")}</p> : null}
         {!status.enabled ? <p>{t("mfa.keys.needsTotp")}</p> : null}

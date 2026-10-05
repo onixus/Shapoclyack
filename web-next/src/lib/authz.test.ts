@@ -161,6 +161,15 @@ describe("can", () => {
     expect(can(principal("admin", "viewer", []), { minRole: "operator" })).toBe(false);
   });
 
+  it("opens an `anyOf` door on whichever of its requirements is met", () => {
+    const door = { anyOf: [{ minRole: "operator" }, { permission: "tenant.credential.manage" }] };
+    expect(can(principal("viewer", "token-admin", ["tenant.credential.manage"]), door)).toBe(true);
+    expect(can(principal("viewer", "scan-operator", []), door)).toBe(true);
+    expect(can(principal("viewer", "auditor", ["audit.read"]), door)).toBe(false);
+    // An empty list is a door nobody named a key for, not an open one.
+    expect(can(principal("admin", "admin", []), { anyOf: [] })).toBe(false);
+  });
+
   it("lets a door with no requirement through", () => {
     expect(can(principal("viewer", "viewer", []), {})).toBe(true);
   });

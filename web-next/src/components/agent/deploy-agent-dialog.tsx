@@ -36,7 +36,7 @@ import {
 } from "@/hooks/use-agents";
 import { type AgentDeploySSHRequest } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
-import { holdsPermission } from "@/lib/authz";
+import { holdsPermission, isTenantAdmin } from "@/lib/authz";
 
 /** The snippets are rendered with a placeholder until an operator explicitly
  * mints a key — loading this dialog must not create tenant credentials. */
@@ -83,7 +83,7 @@ function ProvisioningKeyNotice({
           </p>
           {canMint ? null : (
             <p className="mt-1 leading-relaxed text-amber-600 dark:text-amber-400">
-              {t("prose.mintingOneTakesTenantAdmin")}
+              {t("prose.mintingOneTakesCredentialManage")}
             </p>
           )}
         </div>
@@ -121,13 +121,17 @@ export function DeployAgentDialog() {
 
   const deployMutation = useDeploySSH();
   const hostKeyMutation = useProbeSSHHostKey();
-  // Both credential-handing actions in this dialog take tenant admin (#231).
-  // Offering them to an operator would only produce a 403 they cannot act on.
-  // Minting a provisioning key is `tenant.credential.manage` in this tenant
-  // — the tenant's own admin and a `token-admin` hold it (#318).
-  const isAdmin = useAuthStore((state) =>
+  // Offering an action the API refuses would only produce a 403 nobody can
+  // act on (#231). Minting a provisioning key is `tenant.credential.manage`
+  // in this tenant — the tenant's own admin and a `token-admin` hold it
+  // (#318). The SSH push mints one too and also needs the tenant admin rank,
+  // because it hands the platform a login on the target; the host-key probe
+  // asks for that rank alone (#504).
+  const canMint = useAuthStore((state) =>
     holdsPermission(state.user, "tenant.credential.manage", state.user?.role === "admin"),
   );
+  const isAdminRank = useAuthStore((state) => isTenantAdmin(state.user));
+  const canPush = canMint && isAdminRank;
   const { data: deployStatus } = useDeployStatus(activeDeployId);
   const { data: snippets } = useAgentSnippets();
   const mintKeyMutation = useCreateAgentDeploymentKey();
@@ -138,7 +142,7 @@ export function DeployAgentDialog() {
       onMint={() => mintKeyMutation.mutate(undefined)}
       isPending={mintKeyMutation.isPending}
       error={mintKeyMutation.error ? (mintKeyMutation.error as Error).message : null}
-      canMint={isAdmin}
+      canMint={canMint}
     />
   );
 
@@ -321,7 +325,7 @@ export function DeployAgentDialog() {
                         size="sm"
                         variant="outline"
                         className="gap-1.5 text-xs"
-                        disabled={!host.trim() || hostKeyMutation.isPending}
+                        disabled={!host.trim() || hostKeyMutation.isPending || !isAdminRank}
                         onClick={() =>
                           hostKeyMutation.mutate({
                             host: host.trim(),
@@ -425,7 +429,7 @@ export function DeployAgentDialog() {
 
                     <Button
                       type="submit"
-                      disabled={deployMutation.isPending || !host || !isAdmin}
+                      disabled={deployMutation.isPending || !host || !canPush}
                       className="gap-2 font-semibold"
                     >
                       {deployMutation.isPending ? (
@@ -435,9 +439,9 @@ export function DeployAgentDialog() {
                       )}
                       Start Installation
                     </Button>
-                    {isAdmin ? null : (
+                    {canPush ? null : (
                       <p className="text-xs text-amber-600 dark:text-amber-400">
-                        {t("prose.thePushTakesTenantAdmin")}
+                        {t("prose.thePushTakesAdminAndCredential")}
                       </p>
                     )}
                     {deployMutation.error ? (

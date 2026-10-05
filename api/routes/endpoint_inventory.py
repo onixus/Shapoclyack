@@ -22,6 +22,7 @@ from api.auth import (
     AgentPrincipal,
     Role,
     cached_agent_info,
+    StepUpDep,
     TenantPrincipal,
     get_settings,
     require_agent,
@@ -340,6 +341,9 @@ def set_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    # Naming a build here replaces the binary on every endpoint of the tenant,
+    # so it costs a recent second factor like minting a credential (#504).
+    _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Set the tenant-wide default every endpoint agent inherits."""
@@ -353,6 +357,7 @@ def set_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
     audit: AuditDep,
 ) -> EndpointAgentPolicyInfo:
     """Override the default for one agent, field by field."""
@@ -400,6 +405,7 @@ def delete_default_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
 ) -> Response:
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -411,6 +417,7 @@ def delete_agent_policy(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
 ) -> Response:
     endpoint_agent_mgmt.delete_policy(tenant_id=principal.tenant_id, agent_id=agent_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -439,6 +446,8 @@ async def upload_agent_release(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    # What every endpoint told to move to this version will execute (#504).
+    _: StepUpDep,
     audit: AuditDep,
     version: Annotated[str, Form()],
     platform: Annotated[str, Form()],
@@ -485,6 +494,7 @@ def delete_agent_release(
     principal: Annotated[
         TenantPrincipal, Depends(require_permission(permission_catalog.ENDPOINT_AGENT_MANAGE))
     ],
+    _: StepUpDep,
 ) -> Response:
     endpoint_agent_mgmt.delete_release(version=version, platform=platform)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
