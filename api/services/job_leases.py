@@ -54,6 +54,24 @@ def lease_deadline(settings: Settings) -> datetime:
     return _now() + timedelta(seconds=max(settings.job_lease_seconds, 1))
 
 
+def waiting_deadline(settings: Settings) -> datetime:
+    """The mark a local scan waiting for its tenant's slot keeps fresh (#365).
+
+    Such a job is ``queued`` with no lease — nothing has claimed it — yet it
+    has an executor: the thread in the replica that accepted it, and only
+    that replica will ever start it. The thread stamps this into
+    ``claimed_until`` each time it asks for the slot, and the reaper writes off
+    a waiting local job whose mark lapsed, whichever replica owned it: a pod
+    replaced by a rollout comes back under a new ``instance_id``, so startup
+    reconciliation never sees its rows. A lease's length, and never less than
+    three polls, so one slow ask is not mistaken for a dead replica.
+    """
+    seconds = max(
+        settings.job_lease_seconds, 3 * settings.scan_queue_local_poll_seconds, 1
+    )
+    return _now() + timedelta(seconds=seconds)
+
+
 def extend_lease(row: models.Job, deadline: datetime) -> None:
     """Push a lease deadline out, never pull it in.
 

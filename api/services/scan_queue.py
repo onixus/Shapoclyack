@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import and_, func, or_, select, text
 
 from api.db import models
+from api.db import tenant_scope
 from api.db.engine import get_session
 from api.services import audit as audit_service
 from api.services import job_states
@@ -103,11 +104,13 @@ RESOURCE_QUEUE = "queue"
 class QueueFull(quotas.QuotaExceeded):
     """A scan refused because too many scans are already waiting.
 
-    A :class:`~api.services.quotas.QuotaExceeded` so every caller that already
-    handles the monthly quota — the route's 429 with ``Retry-After``, the
-    schedule dispatcher's skip-and-retry — handles this one the same way
-    without learning a new exception. ``limit`` and ``used`` are the queue
-    ceiling and its depth.
+    A :class:`~api.services.quotas.QuotaExceeded` so the route's 429 with
+    ``Retry-After`` handles it without learning a new exception. The schedule
+    dispatcher catches it first, on purpose: a spent quota skips the tick, a
+    full queue only defers it by ``retry_after_seconds``. ``limit`` and
+    ``used`` are the queue ceiling and its depth; ``used`` of the
+    installation's ceiling is every tenant's queue, so nothing may put it in
+    front of a tenant.
     """
 
 
@@ -255,9 +258,6 @@ def assert_admitted(settings: Settings, *, tenant_id: str, exempt: bool = False)
                 select(models.Tenant.max_queued_scans).where(models.Tenant.tenant_id == tenant_id)
             ).scalar_one_or_none()
         )
-        global_limit = _normalise_limit(settings.scan_queue_max_depth)
-        if tenant_limit is None and global_limit is None:
-            return
         if tenant_limit is not None:
             depth = _queued_count(session, tenant_id)
             if depth >= tenant_limit:
@@ -271,38 +271,58 @@ def assert_admitted(settings: Settings, *, tenant_id: str, exempt: bool = False)
                     used=depth,
                     retry_after_seconds=settings.scan_queue_retry_after_seconds,
                 )
-        if global_limit is not None:
+    global_limit = _normalise_limit(settings.scan_queue_max_depth)
+    if global_limit is None:
+        return
+    # A session of its own, opened in the system scope: the request's session
+    # is a tenant's under row-level security, and an unfiltered count in it
+    # sees that tenant's queue only — every tenant would get a ceiling of its
+    # own instead of sharing one. The scope is fixed when a transaction
+    # begins, so widening it for a statement inside the request's session
+    # would not take.
+    with tenant_scope.system("scan admission: installation-wide queue depth"):
+        with get_session(settings.postgres_url) as session:
             depth = _queued_count(session, None)
-            if depth >= global_limit:
-                metrics_service.SCAN_QUEUE_THROTTLED_TOTAL.labels(REASON_GLOBAL_QUEUE_FULL).inc()
-                # The installation's depth is not the tenant's business, so the
-                # message names the ceiling and not the numbers behind it.
-                raise QueueFull(
-                    "The installation's scan queue is full; retry once some scans have started",
-                    tenant_id=tenant_id,
-                    resource=RESOURCE_QUEUE,
-                    limit=global_limit,
-                    used=depth,
-                    retry_after_seconds=settings.scan_queue_retry_after_seconds,
-                )
+    if depth >= global_limit:
+        metrics_service.SCAN_QUEUE_THROTTLED_TOTAL.labels(REASON_GLOBAL_QUEUE_FULL).inc()
+        # The installation's depth is not the tenant's business, so the
+        # message names the ceiling and not the numbers behind it.
+        raise QueueFull(
+            "The installation's scan queue is full; retry once some scans have started",
+            tenant_id=tenant_id,
+            resource=RESOURCE_QUEUE,
+            limit=global_limit,
+            used=depth,
+            retry_after_seconds=settings.scan_queue_retry_after_seconds,
+        )
 
 
-def _lock_claims(session, tenant_id: str) -> None:
-    """Hold this tenant's claim lock until the transaction ends.
+_CLAIM_LOCK = text("SELECT pg_advisory_xact_lock(:class_id, :object_id)")
+_CLAIM_LOCK_TRY = text("SELECT pg_try_advisory_xact_lock(:class_id, :object_id)")
+
+
+def _lock_claims(session, tenant_id: str, *, wait: bool = True) -> bool:
+    """Hold this tenant's claim lock until the transaction ends. ``False`` if busy.
+
+    ``wait=False`` asks once and answers ``False`` while another transaction
+    holds the lock, instead of queueing behind it with a pooled connection in
+    hand; see :func:`hold_slot`.
 
     SQLite (dev and the test fallback) has no advisory locks and one writer at
     a time anyway.
     """
     if session.get_bind().dialect.name != "postgresql":
-        return
+        return True
     digest = hashlib.blake2b(tenant_id.encode("utf-8"), digest_size=4).digest()
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(:class_id, :object_id)"),
+    result = session.execute(
+        _CLAIM_LOCK if wait else _CLAIM_LOCK_TRY,
         {
             "class_id": CLAIM_LOCK_CLASS_ID,
             "object_id": int.from_bytes(digest, "big", signed=True),
         },
-    )
+    ).scalar()
+    # pg_advisory_xact_lock returns void (None) once it has the lock.
+    return wait or bool(result)
 
 
 def concurrency_limit(session, tenant_id: str) -> int | None:
@@ -313,7 +333,7 @@ def concurrency_limit(session, tenant_id: str) -> int | None:
     )
 
 
-def hold_slot(session, tenant_id: str) -> bool:
+def hold_slot(session, tenant_id: str, *, wait: bool = True) -> bool:
     """Whether the tenant may have one more scan out, deciding it for this transaction.
 
     Call inside the transaction that then claims the job, *before* selecting
@@ -323,13 +343,22 @@ def hold_slot(session, tenant_id: str) -> bool:
     a count that excludes this one. Under READ COMMITTED each statement takes
     a fresh snapshot, which is what makes the count after the lock current.
 
+    ``wait=False`` is for a caller that will ask again anyway — a local scan
+    polling for its slot. While another claim of the tenant holds the lock it
+    is answered ``False`` at once rather than waiting its turn: a claim can
+    hold the lock for as long as it takes to read a job's inputs from the
+    object store, and every waiting local scan queued behind it would hold a
+    pooled connection meanwhile. ``False`` then means "not now", not "at the
+    ceiling", and is not counted as a throttle.
+
     ``True`` without a ceiling, without a lock and without a count: the
     pre-#365 claim, unchanged.
     """
     limit = concurrency_limit(session, tenant_id)
     if limit is None:
         return True
-    _lock_claims(session, tenant_id)
+    if not _lock_claims(session, tenant_id, wait=wait):
+        return False
     out = int(
         session.execute(
             select(func.count())

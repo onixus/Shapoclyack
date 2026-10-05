@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from api.schemas import StartScanRequest
 from api.services import job_states
@@ -29,6 +29,7 @@ from api.services import maintenance
 from api.services import metrics as metrics_service
 from api.services import quotas
 from api.services import scan_policy
+from api.services import scan_queue
 from api.services import scan_schedules
 from api.services.leader_lock import SCHEDULE_DISPATCHER_LOCK_ID, LeaderLock
 from api.settings import Settings
@@ -60,6 +61,7 @@ class ScheduleDispatcher:
             "skipped_quota": 0,
             "skipped_policy": 0,
             "deferred_maintenance": 0,
+            "deferred_queue_full": 0,
             "errors": 0,
         }
 
@@ -148,6 +150,24 @@ class ScheduleDispatcher:
             job = jobs_service.start_scan(
                 self._settings, request, username="scheduler", idempotency_key=key
             )
+        except scan_queue.QueueFull as full:
+            # Before the quota branch, which would also catch it: a full queue
+            # (#365) is the monthly quota's shape and not its meaning. It
+            # drains by itself, so the tick is *deferred* by the refusal's own
+            # Retry-After, as a maintenance block is to its end — skipping it
+            # would lose a nightly scan to a busy minute until the next night.
+            # Its own stat, so a queue that is often full is not read as a
+            # billing fact; the refusal is already counted in
+            # octo_scan_queue_throttled_total.
+            self._stats["deferred_queue_full"] += 1
+            retry_at = now + timedelta(
+                seconds=full.retry_after_seconds or self._settings.scan_queue_retry_after_seconds
+            )
+            LOG.info(
+                "Schedule %s deferred until %s: %s", sched["schedule_id"], retry_at.isoformat(), full
+            )
+            scan_schedules.defer_dispatch(sched["schedule_id"], ran_at=now, until=retry_at)
+            return
         except quotas.QuotaExceeded as exc:
             # Expected, not an error: the tenant has spent this month's
             # entitlement. Counting it in "errors" would page whoever watches

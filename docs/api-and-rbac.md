@@ -1115,10 +1115,12 @@ admin), for the quota's reason. Both fields are sent on every `PUT`; `null` or
   already out running.
 - `max_queued_scans` — how many may wait in `queued`. Enforced at
   **admission**: `POST /api/jobs` answers **`429`** with `Retry-After:
-  OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS`, and the recurring dispatcher skips the
-  occurrence as it does for a spent monthly quota. The same `429` for the
-  installation-wide `OCTO_SCAN_QUEUE_MAX_DEPTH`, without the numbers of other
-  tenants in the message. A soft bound: N simultaneous starts can overshoot it
+  OCTO_SCAN_QUEUE_RETRY_AFTER_SECONDS`, and the recurring dispatcher defers the
+  occurrence by that back-off instead of skipping it as it does for a spent
+  monthly quota. The same `429` for the installation-wide
+  `OCTO_SCAN_QUEUE_MAX_DEPTH`, counted across every tenant whatever the caller
+  (a tenant user, a tenant's service token or the platform admin), without the
+  numbers of other tenants in the message. A soft bound: N simultaneous starts can overshoot it
   by N-1. Verification re-scans are exempt, as from the monthly quota.
 
 `POST /api/jobs` accepts an optional **`Idempotency-Key`** header. A retry

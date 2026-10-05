@@ -143,7 +143,13 @@ def _start(settings: Settings, job_id: str) -> bool:
     queued on this replica, so a slot that frees goes to the highest priority
     rather than to whichever thread asked first. Both are decided in the
     transaction that makes the move, under the tenant's claim lock, so two
-    replicas cannot both take the last slot.
+    replicas cannot both take the last slot. The lock is only tried: while
+    another claim holds it the answer is ``False`` and the thread asks again
+    at its next poll (:func:`scan_queue.hold_slot`).
+
+    Every ``False`` renews the job's waiting mark
+    (:func:`job_leases.waiting_deadline`): it is how the reaper on any replica
+    tells a scan that is still waiting from one whose replica went away.
 
     Raises :class:`job_states.InvalidJobTransition` for a job that is no
     longer queued — cancelled while it waited, typically.
@@ -156,7 +162,7 @@ def _start(settings: Settings, job_id: str) -> bool:
             raise job_states.InvalidJobTransition(f"Job {job_id} no longer exists")
         # The slot first, the row second: the same order as the sensor claim,
         # so the two never wait on each other in opposite orders.
-        slot = scan_queue.hold_slot(session, tenant_id)
+        slot = scan_queue.hold_slot(session, tenant_id, wait=False)
         # Locked, as ``job_store.update_job`` locks it: an operator cancelling
         # while this thread starts it must see one outcome or the other.
         row = session.get(models.Job, job_id, with_for_update=True)
@@ -167,6 +173,7 @@ def _start(settings: Settings, job_id: str) -> bool:
             scan_queue.concurrency_limit(session, tenant_id) is not None
             and scan_queue.local_job_ahead(session, row)
         ):
+            row.claimed_until = job_leases.waiting_deadline(settings)
             return False
         row.status = job_states.RUNNING
         row.started_at = _now()
@@ -183,7 +190,7 @@ def _wait_for_slot(settings: Settings, job_id: str) -> bool:
     ending the thread. Ending it would leave the job ``queued`` with nobody to
     start it, and — since a waiting job holds back the lower ones of its
     tenant on this replica (``scan_queue.local_job_ahead``) — every job behind
-    it too, until a restart.
+    it too, until its waiting mark lapsed and the reaper failed it.
     """
     waited = False
     while True:
@@ -205,7 +212,8 @@ def _wait_for_slot(settings: Settings, job_id: str) -> bool:
             )
         if local_scan_executor.wait_unless_draining(settings.scan_queue_local_poll_seconds):
             # The process is stopping its local scans; one that has not
-            # started stays queued, and the restart reconciles it.
+            # started stays queued. Nobody renews its waiting mark after
+            # this, so the job reaper fails it once the mark lapses.
             _log.info("Job %s did not start: local scans are being stopped", job_id)
             return False
 

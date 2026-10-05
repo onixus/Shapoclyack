@@ -708,8 +708,20 @@ client of any tenant ([configuration.md](configuration.md)).
 **Local scans** (`OCTO_JOB_EXECUTION_MODE=local`) wait in their thread and ask
 again every `OCTO_SCAN_QUEUE_LOCAL_POLL_SECONDS`. Priority between them holds
 within one replica; a local scan can only ever be started by the replica that
-accepted it. A replica restart fails its waiting local scans like any local
-scan it was running ("Interrupted by API process restart").
+accepted it. Each ask renews a waiting mark on the job (`claimed_until`, one
+`OCTO_JOB_LEASE_SECONDS`, at least three polls). When the replica goes away —
+a crash, or a rollout, which brings the pod back under a new
+`OCTO_INSTANCE_ID` so its startup never reconciles the old pod's rows — nobody
+renews it, and the job reaper of any replica fails the scan once the mark
+lapses ("Waited for a scan slot on replica …, which stopped reporting"). Until
+then it still counts against `max_queued_scans` and
+`OCTO_SCAN_QUEUE_MAX_DEPTH`: allow one lease plus `OCTO_JOB_REAPER_INTERVAL_SECONDS`
+after a rollout before reading a `429` as a real backlog. A live replica's
+waiting scans are never reaped by another, however long they wait. A waiting
+scan does not queue on the tenant's claim lock — it tries it and asks again at
+the next poll — so it holds a database connection only while it asks, not
+while it waits; each one is still a thread of its own, so a tenant that queues
+thousands of local scans against a small ceiling costs that many idle threads.
 
 **Who may jump the queue.** `scan.priority.raise` — tenant `admin` and platform
 admin; grant it on a custom role to an on-call who has to push a re-scan ahead.
@@ -721,7 +733,9 @@ Operators can lower their own scans to make room. Every move is a
 `OCTO_METRICS_TENANT_TOP_N` set, `octo_tenant_jobs_queued{tenant}` — the depth
 `max_queued_scans` is measured against. A tenant whose
 `octo_tenant_jobs_queued` keeps climbing while its concurrency throttle rate is
-steady is a tenant that queues faster than its ceiling lets it scan.
+steady is a tenant that queues faster than its ceiling lets it scan. A
+schedule that meets a full queue is deferred by `Retry-After`, not skipped:
+`deferred_queue_full` in the dispatcher stats, apart from `skipped_quota`.
 
 ### On upgrade
 
