@@ -215,8 +215,10 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
 
 
 #: ``checks`` statuses of a TLS probe row that mean the check did not establish
-#: anything. ``not_evaluated`` (chain trust skipped by configured policy, e.g.
-#: an internal address) and ``not_testable`` (SSLv2/SSLv3) are by design, not gaps.
+#: anything. ``not_evaluated`` (skipped by configuration: chain trust on an
+#: internal address or ``chain_trust: off``, legacy checks with
+#: ``probe_legacy_protocols: false``) and ``not_testable`` (SSLv2/SSLv3) are
+#: by design, not gaps.
 _TLS_CHECK_GAP_STATUSES = frozenset({"not_performed", "inconclusive"})
 
 
@@ -321,13 +323,20 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings" + gap_note
-    elif partly_checked:
-        # "No finding" from a check that did not run is not a pass.
-        status = "not_checked"
-        why = f"No TLS posture findings, but not every check ran{gap_note}"
+    elif checked_targets > 0 and partly_checked:
+        # The credential_leaks pattern: the fully checked endpoints passed,
+        # coverage says how many of how many, and the rest are named. One
+        # endpoint a middlebox resets must not take the control out of the risk
+        # matrix for the other 99.
+        status = "ok"
+        why = f"{checked_targets} fully checked TLS endpoint(s) passed validation{gap_note}"
     elif checked_targets > 0:
         status = "ok"
         why = f"All {checked_targets} inspected TLS endpoints passed validation"
+    elif partly_checked:
+        # "No finding" from checks that did not run anywhere is not a pass.
+        status = "not_checked"
+        why = f"No TLS posture findings, but no endpoint was fully checked{gap_note}"
     else:
         status = "not_checked"
         why = "No TLS endpoints inspected"

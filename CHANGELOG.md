@@ -15,8 +15,10 @@ All notable changes to Shapoclyack are documented in this file.
   `cert_not_yet_valid` (medium) on every path; and on the probe
   `cert_untrusted` (medium), when the presented chain does not verify to the
   system trust store plus the new `tls_posture.ca_bundle`, and
-  `cert_chain_expired` (high), when a CA certificate of the verified chain is
-  outside its validity window. The trust check is about the chain only (names
+  `cert_chain_expired` (high), when the chain fails the time check on a CA
+  certificate and verifies without it — the chain is verified with the time
+  check first, as clients do, so a stale expired intermediate sent next to its
+  re-issued twin is not flagged. The trust check is about the chain only (names
   stay `cert_name_mismatch`), and `tls_posture.chain_trust` decides where it
   runs: `public_only` (default) on publicly routable addresses — the
   scanner's `safe_http` rule, NAT64 included — unless `ca_bundle` is set, so an
@@ -34,9 +36,11 @@ All notable changes to Shapoclyack are documented in this file.
   where it is missing, those checks record `not_performed`. Each probe row
   carries `checks.{protocols,chain_trust,cert_fields,cert_strength}`, and the
   org-profile TLS control reads them: an endpoint with a check that did not
-  run or could not decide is not counted as checked, and with no finding the
-  control says `not_checked` with the gaps listed instead of "all endpoints
-  passed". Pulse `tls[]` rows carry no key or signature fields, so that path
+  run or could not decide is left out of `coverage.checked` and named in
+  `why`, and the control is `not_checked` only when no endpoint was fully
+  checked; checks switched off by configuration (`chain_trust`, and
+  `probe_legacy_protocols: false`, recorded as `not_evaluated` / `disabled`)
+  are not gaps. Pulse `tls[]` rows carry no key or signature fields, so that path
   has no strength findings. See
   [Pulse backend](docs/pulse-backend.md#what-the-probe-checks-and-what-it-can-establish).
 - **Client certificates for sensors and endpoint Agents

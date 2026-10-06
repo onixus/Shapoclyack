@@ -305,6 +305,51 @@ def test_tls_check_that_did_not_run_is_not_a_pass(tmp_path: Path):
     assert "passed" not in tls["why"]
 
 
+def test_one_unresolvable_endpoint_does_not_unrate_the_tls_control(tmp_path: Path):
+    """99 clean endpoints and one that resets every pinned ClientHello (an
+    SChannel box): the control stays ok -- with coverage 99 of 100 and the gap
+    named -- and keeps a risk level, as credential_leaks does with partial
+    coverage. not_checked is for "nothing was checked"."""
+    rows = [
+        {"host": f"10.0.0.{i}", "port": "443", "issues": [], "checks": _probe_checks()} for i in range(1, 100)
+    ]
+    rows.append({
+        "host": "10.0.0.100",
+        "port": "443",
+        "issues": [],
+        "checks": _probe_checks(
+            protocols={"TLSv1.0": {"status": "inconclusive"}, "TLSv1.1": {"status": "inconclusive"}}
+        ),
+    })
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 100,
+            "checked_count": 100,
+            "findings": rows,
+            "skipped_reason": None,
+            "source": "pulse-tls-probe",
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    tls = {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 99, "total": 100}
+    assert "TLSv1.0 inconclusive" in tls["why"]
+    assert tls["risk_level"] != "unassessed"
+
+
+def test_legacy_checks_switched_off_are_not_a_gap(tmp_path: Path):
+    """probe_legacy_protocols: false is a documented choice, like chain_trust:
+    off -- it must not keep the control from ever being ok."""
+    disabled = {"status": "not_evaluated", "reason": "disabled"}
+    tls = _tls_control_for_checks(
+        tmp_path, _probe_checks(protocols={"TLSv1.0": dict(disabled), "TLSv1.1": dict(disabled)})
+    )
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 1, "total": 1}
+
+
 def test_tls_gaps_that_count(tmp_path: Path):
     for checks, gap in (
         (_probe_checks(cert_fields={"status": "not_performed"}), "cert_fields not_performed"),
