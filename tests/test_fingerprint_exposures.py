@@ -583,3 +583,17 @@ def test_a_rejected_catalogue_entry_is_recorded_and_the_stage_runs(site, tmp_pat
 
     assert [r["id"] for r in result["catalogue"]["rejected"]] == [raw["technologies"][0]["id"]]
     assert [t["id"] for t in result["findings"][0]["technologies"]] == ["jenkins"]
+
+
+def test_a_password_field_in_a_cut_script_does_not_make_a_login_page(site, tmp_path: Path):
+    """The body limit cuts the page inside a script that quotes a form."""
+    body = (
+        "<title>Prometheus Time Series Collection and Processing Server</title>"
+        "<script>var tpl = '<form><input type=\"password\" name=\"p\"></form>';" + "x" * 2048
+    )
+    site.routes["/"] = (200, [], body)
+    config = FingerprintConfig(enabled=True, http_ports=[site.port], https_ports=[], body_max_bytes=1024)
+    result = fingerprint_hosts_sync([f"127.0.0.1:{site.port}/tcp"], config, tmp_path)
+    (admin,) = result["exposures"]
+    assert admin["auth_required"] is False
+    assert admin["severity"] == "medium"

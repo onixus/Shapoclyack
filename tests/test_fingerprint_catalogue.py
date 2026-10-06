@@ -422,6 +422,11 @@ def test_markup_inside_a_comment_is_text():
         r"a{0,1000}a{0,1000}a{0,1000}c",
         r"a{0,1000}(?=a{0,1000})a{0,10}c",
         r"\s{0,8}[ \t]{0,8}x",
+        # Only the lookaround's own repeat overlaps the one before it.
+        r"a{0,1000}(?=a{0,1000}b)c",
+        # Overlaps outside ASCII: Latin-1 and Cyrillic.
+        "\u00e9{0,99}[\u00e0-\u00ff]{0,99}x",
+        "[\u0430-\u044f]{0,99}\u0434{0,99}x",
     ],
 )
 def test_the_lint_refuses_backtracking_shapes(pattern):
@@ -495,3 +500,40 @@ def test_an_unusable_catalogue_file_identifies_nothing_instead_of_raising(tmp_pa
     assert catalogue.technologies == []
     assert catalogue.rejected and "unusable" in catalogue.rejected[0]["error"]
     assert catalogue.classify(200, httpx.Headers({"Server": "nginx/1.24.0"}), "") == []
+
+
+
+def _raw_regex_count() -> int:
+    """Regexes in the file, counted from the JSON itself rather than through the model."""
+
+    def count(matchers: list) -> int:
+        return sum(count(m["all"]) if "all" in m else int("regex" in m) for m in matchers)
+
+    return sum(count(t["match"]) + len(t.get("version", [])) for t in _raw()["technologies"])
+
+
+def test_every_regex_in_the_file_is_linted_and_stressed():
+    """patterns() feeds the stress test; a rule it skipped (version rules) would never be timed."""
+    assert len(load_catalogue().patterns()) == _raw_regex_count()
+
+
+@pytest.mark.parametrize(
+    "body, title",
+    [
+        ("<!--><title>a</title>", "a"),
+        ("<!---><title>b</title>", "b"),
+        ("<!-- <title>no</title> --!><title>c</title>", "c"),
+        ("<!-- <title>no</title> --><title>d</title>", "d"),
+        ("<!-- <title>no</title>", ""),
+    ],
+)
+def test_comment_forms_follow_the_html_spec(body, title):
+    assert page_title(body) == title
+
+
+def test_markup_quoted_inside_a_script_is_not_the_page():
+    """A login form drawn by JavaScript is a string, not an <input> of this page."""
+    truncated = "<title>Prometheus Time Series Collection and Processing Server</title><script>var f = '<input type=\"password\">';"
+    assert parse_page(truncated).password_input is False
+    long_script = "<script>var f = '" + "x" * (70 * 1024) + "<input type=\"password\">';</script><p>after</p>"
+    assert parse_page(long_script).password_input is False

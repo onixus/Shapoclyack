@@ -467,6 +467,7 @@ def parse_page(body: str) -> Page:
     n = len(body)
     pos = 0
     gt = -1
+    close_dash = close_bang = -1
     while len(tags) < MAX_TAGS:
         lt = body.find("<", pos)
         if lt < 0 or lt + 1 >= n:
@@ -477,10 +478,24 @@ def parse_page(body: str) -> Page:
                 break
         if body.startswith("<!--", lt):
             # A comment is not markup: a <title> or <script> inside it is text.
-            end = body.find("-->", lt + 4)
-            if end < 0:
+            # HTML ends one at "-->" or "--!>", and "<!-->" / "<!--->" are
+            # complete empty comments. The next closer of each kind is found
+            # once and reused, so a page of openers stays linear.
+            if body.startswith("<!-->", lt):
+                pos = lt + 5
+                continue
+            if body.startswith("<!--->", lt):
+                pos = lt + 6
+                continue
+            if close_dash <= lt + 4 - 1:
+                close_dash = body.find("-->", lt + 4)
+                close_dash = n if close_dash < 0 else close_dash
+            if close_bang <= lt + 4 - 1:
+                close_bang = body.find("--!>", lt + 4)
+                close_bang = n if close_bang < 0 else close_bang
+            if close_dash == n and close_bang == n:
                 break
-            pos = end + 3
+            pos = close_dash + 3 if close_dash <= close_bang else close_bang + 4
             continue
         name_match = _TAG_NAME_RE.match(body, lt + 1)
         if name_match is None or gt - lt > MAX_TAG_LEN:
@@ -495,20 +510,21 @@ def parse_page(body: str) -> Page:
             if close:
                 pos = close.end()
         elif name == "script" and len(scripts) < MAX_SCRIPTS:
-            close = _SCRIPT_CLOSE_RE.search(body, pos, min(n, pos + MAX_SCRIPT_LEN))
-            if close:
-                if close.start() > pos:
-                    scripts.append(body[pos : close.start()])
-                pos = close.end()
-            elif pos + MAX_SCRIPT_LEN >= n:
+            # Markup quoted inside a script (a form a SPA draws) is a string,
+            # not this page's: step over the whole script to its close. The
+            # search either finds the close and moves past it, or reaches the
+            # end once and stops the scan, so the walk stays linear.
+            close = _SCRIPT_CLOSE_RE.search(body, pos)
+            if close is None:
                 # The body was cut inside this script (body_max_bytes): what
                 # arrived of it is still script text -- Grafana's boot data
                 # alone outgrows a 64 KiB read. Nothing after it is markup.
                 if n > pos:
-                    scripts.append(body[pos:])
+                    scripts.append(body[pos : pos + MAX_SCRIPT_LEN])
                 break
-            else:
-                scripts.append(body[pos : pos + MAX_SCRIPT_LEN])
+            if close.start() > pos:
+                scripts.append(body[pos : min(close.start(), pos + MAX_SCRIPT_LEN)])
+            pos = close.end()
     metas: list[tuple[str, str]] = []
     generators: list[str] = []
     password = False

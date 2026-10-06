@@ -234,7 +234,7 @@
       "version": [
         {"from": "header", "name": "server", "regex": "^nginx/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
       ],
-      "note": "NVD files nginx under f5:nginx_open_source since 2024 (historical releases re-filed there too); f5:nginx and nginx:nginx carry older releases. retro_match aliases the older two only."
+      "note": "NVD files nginx under f5:nginx_open_source since 2024 (historical releases re-filed there too); f5:nginx and nginx:nginx carry older releases. retro_match treats all three as one product."
     },
     {
       "id": "apache_httpd",
