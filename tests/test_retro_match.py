@@ -1106,6 +1106,15 @@ def test_a_redis_fork_the_banner_names_is_a_lookalike_not_redis(banner) -> None:
     assert outcome.reason == "lookalike"
 
 
+def test_an_engine_named_only_in_the_cpe_is_a_lookalike() -> None:
+    outcome = rm.match(
+        rm.Fingerprint(cpe=("cpe:/a:mysql:mysql:5.7.25-TiDB-v7.1.5",), service="mysql"),
+        _one("a:oracle:mysql", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
+        lookup=lambda _d: None,
+    )
+    assert outcome.reason == "lookalike"
+
+
 def test_a_fork_is_named_a_lookalike_even_without_a_version() -> None:
     """What the listener is outranks what it failed to say: a Valkey whose
     version nobody recorded is a lookalike, not "no version"."""
@@ -1125,6 +1134,12 @@ def test_a_fork_is_named_a_lookalike_even_without_a_version() -> None:
         # MySQL line: engines that borrow MySQL's version and append their name.
         ("5.7.25-TiDB-v7.1.5", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
         ("8.0.30-Vitess", CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35")),
+        # And every other engine nmap's generic MySQL line catches: a suffix
+        # MySQL's own builds never use is not MySQL, whatever its name.
+        ("5.7.25-OceanBase_CE-v4.2.1.2", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
+        ("5.7.25-OceanBase-v4.2.1.0", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
+        ("8.0.30-MatrixOne-v1.2.0", CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35")),
+        ("5.7.25-TDDL-5.4.19", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
     ],
 )
 def test_an_engine_that_borrows_mysqls_version_is_a_lookalike(version, statement) -> None:
@@ -1155,6 +1170,10 @@ def test_redis_that_says_it_is_redis_is_still_matched() -> None:
         ("5.6.51-community", "5.6.51"),
         # Oracle's own commercial and cluster builds, CloudLinux's (cPanel's
         # MySQL, the most exposed there is) and debug builds.
+        ("5.7.33-0+deb9u1", "5.7.33"),
+        ("8.0.34-26.1", "8.0.34"),
+        ("5.7.40-43-log", "5.7.40"),
+        ("8.0.36-0ubuntu0.20.04.1-log", "8.0.36"),
         ("8.0.33-commercial", "8.0.33"),
         ("5.7.42-enterprise-commercial-advanced-log", "5.7.42"),
         ("5.7.42-cll-lve", "5.7.42"),
@@ -1168,6 +1187,13 @@ def test_mysql_builds_keep_their_upstream_version(version, upstream) -> None:
     fingerprint = rm.Fingerprint(product="MySQL", version=version, cpe=(f"cpe:/a:mysql:mysql:{version}",))
     keys, _, cpe_version = rm.product_keys(fingerprint)
     assert rm.upstream_version(fingerprint, keys, cpe_version) == upstream
+    # And it is MySQL: matched, not a lookalike.
+    outcome = rm.match(
+        fingerprint,
+        _one("a:oracle:mysql", CpeRange("CVE-2023-22084", start_including="5.0.0", end_excluding="9.0.0")),
+        lookup=lambda _d: None,
+    )
+    assert (outcome.reason, outcome.upstream_version) == (None, upstream)
 
 
 def test_mariadbs_compatibility_prefix_is_not_its_version() -> None:
@@ -1773,11 +1799,13 @@ _FROB = "a:frob:frobnicator"
         lambda mp: mp.setattr(rm, "_FIRST_NUMBER_VERSIONS", rm._FIRST_NUMBER_VERSIONS | {_FROB}),
         lambda mp: mp.setattr(rm, "_NOT_MATCHED_CPE", rm._NOT_MATCHED_CPE | {_FROB}),
         lambda mp: mp.setitem(rm._LOOKALIKES, _FROB, re.compile("frobfork")),
+        lambda mp: mp.setattr(rm, "_MYSQL_OWN_SUFFIXES", rm._MYSQL_OWN_SUFFIXES | {"frob"}),
         lambda mp: mp.setattr(rm, "MATCHER_REVISION", rm.MATCHER_REVISION + 1),
     ],
     ids=[
         "products", "product_services", "aliases", "sources", "series_sources", "shared_sources",
         "distro_packaged", "banner_names", "shapes", "first_number", "not_matched_cpe", "lookalikes",
+        "mysql_own_suffixes",
         "revision",
     ],
 )

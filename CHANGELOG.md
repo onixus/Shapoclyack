@@ -676,11 +676,14 @@ All notable changes to Shapoclyack are documented in this file.
   IIS and Dropbear, which the table did not know, too — but not Pulse's
   "Redis", which is whatever answers INFO with `redis_version` first (Valkey
   8.1.10 is "Redis 7.2.4" to it). A listener whose banner names a Redis fork
-  (`server_name:valkey`, `valkey_version`, `dragonfly_version`, `keydb`) is a
+  (`server_name:valkey`, `valkey_version`, `dragonfly_version`; KeyDB names
+  itself nowhere a prober keeps) is a
   new `match_status`, `lookalike`, shown on the asset's Services section.
-  A MySQL version naming TiDB (`5.7.25-TiDB-v7.1.5`) or Vitess
-  (`8.0.30-Vitess`) is `lookalike` too; every other suffix is MySQL's own
-  (`-commercial`, `-cll-lve`, `-cluster`, `-debug`, `-log`, revisions). Products whose
+  A MySQL version whose suffix carries a word MySQL's own builds never append
+  is `lookalike` too — TiDB `5.7.25-TiDB-v7.1.5`, Vitess `8.0.30-Vitess`,
+  OceanBase, MatrixOne, TDDL, and whatever engine is next. MySQL's own:
+  package revisions and Percona builds, and `log`, `debug`, `community`,
+  `commercial`, `enterprise`, `advanced`, `cll`, `lve`, `cluster`. Products whose
   version string carries more than the version are cut to it by a per-product
   shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
   Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and

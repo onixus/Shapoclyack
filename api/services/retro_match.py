@@ -327,25 +327,45 @@ _NOT_MATCHED_CPE = frozenset({"a:apple:cups", "a:jenkins:jenkins"})
 #: version field, and is versioned on its own. Only what the scan kept can
 #: tell — nmap stores no INFO text for Redis, so nmap's "Redis key-value store"
 #: row catches a fork only when a hybrid run kept Pulse's raw INFO reply as
-#: the banner. A Valkey nmap alone saw is still "Redis 7.2.4".
-#: KeyDB's marker is in the pattern for completeness, but no prober is known to
-#: keep it: its INFO names it on the ``executable:`` line, past the eight lines
-#: (240 characters) Pulse keeps of a reply.
-#:
-#: MySQL: TiDB (``5.7.25-TiDB-v7.1.5``) and Vitess (``8.0.30-Vitess``) answer
-#: MySQL's handshake with MySQL's version and their own name appended; nmap's
-#: generic MySQL line copies both into the version and the CPE. Pulse cuts the
-#: version to ``x.y.z`` and keeps no handshake, so through Pulse they are
-#: MySQL. Every other suffix is MySQL's own (``-log``, ``-debug``,
-#: ``-commercial``, ``-cll-lve``, ``-cluster``, package revisions).
-_REDIS_FORKS = re.compile(r"server_name:valkey|valkey_version|dragonfly_version|keydb", re.IGNORECASE)
-_MYSQL_ENGINES = re.compile(r"\d-(?:tidb|vitess)\b", re.IGNORECASE)
+#: the banner. A Valkey nmap alone saw is still "Redis 7.2.4". KeyDB is not
+#: here: its INFO names it only on the ``executable:`` line, past the eight
+#: lines (240 characters) Pulse keeps of a reply, and nmap keeps none of it.
+_REDIS_FORKS = re.compile(r"server_name:valkey|valkey_version|dragonfly_version", re.IGNORECASE)
 _LOOKALIKES: dict[str, re.Pattern[str]] = {
     "a:redis:redis": _REDIS_FORKS,
     "a:redislabs:redis": _REDIS_FORKS,
-    "a:oracle:mysql": _MYSQL_ENGINES,
-    "a:mysql:mysql": _MYSQL_ENGINES,
 }
+
+#: The words MySQL's own builds append to the version, joined by ``-``:
+#: ``-log``, ``-debug``, Oracle's ``-community``, ``-commercial`` and
+#: ``-enterprise-commercial-advanced``, CloudLinux's ``-cll-lve``,
+#: ``-cluster``. Every other piece of the suffix must start with a digit — a
+#: package revision (``0ubuntu0.22.04.1``, ``0+deb12u1``) or Percona's build
+#: (``27``, ``26.1``). Anything else names another engine that answers
+#: MySQL's handshake with MySQL's version and its own name appended — TiDB
+#: ``5.7.25-TiDB-v7.1.5``, Vitess ``8.0.30-Vitess``, OceanBase
+#: ``5.7.25-OceanBase_CE-v4.2.1.2``, MatrixOne, TDDL — which nmap's generic
+#: MySQL line copies into the version and the CPE; such a listener is a
+#: lookalike, never a version. A deny-list of the names let the next engine
+#: in. Pulse cuts the version to ``x.y.z`` and keeps no handshake, so through
+#: Pulse alone they are still MySQL.
+_MYSQL_OWN_SUFFIXES = frozenset(
+    {"log", "debug", "community", "commercial", "enterprise", "advanced", "cll", "lve", "cluster"}
+)
+_MYSQL_KEYS = frozenset({"a:oracle:mysql", "a:mysql:mysql"})
+_MYSQL_SUFFIX = re.compile(r"\d+\.\d+\.\d+[a-z]?-(\S+)")
+
+
+def _foreign_mysql_engine(fingerprint: Fingerprint, cpe_version: str | None) -> bool:
+    """Does a MySQL version string carry a suffix no MySQL build appends?"""
+    for text in (fingerprint.version.split()[0] if fingerprint.version.strip() else "", cpe_version or ""):
+        match = _MYSQL_SUFFIX.fullmatch(text)
+        if match and any(
+            not piece[:1].isdigit() and piece.lower() not in _MYSQL_OWN_SUFFIXES
+            for piece in match.group(1).split("-")
+        ):
+            return True
+    return False
 
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
 #: some NVD renames, and names some vendors its own way; without these an nginx
@@ -493,9 +513,9 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
 #: appended — a package revision (Ubuntu's ``-0ubuntu0.18.04.1``, Percona's
 #: ``-28``), ``-log``, ``-debug``, Oracle's ``-commercial`` and
 #: ``-enterprise-commercial-advanced``, CloudLinux's ``-cll-lve``,
-#: ``-cluster``. An allow-list of those dropped real Oracle builds; the engines
-#: that borrow MySQL's version and append their name (TiDB, Vitess) are
-#: refused by name instead (:data:`_LOOKALIKES`). The ``5.5.5-`` lookahead is
+#: ``-cluster``. Which suffixes are MySQL's own is decided before the version
+#: is read (:data:`_MYSQL_OWN_SUFFIXES`): a version carrying any other word is
+#: another engine's, a lookalike, not "no version". The ``5.5.5-`` lookahead is
 #: belt and braces: MariaDB's compatibility prefix would read as MySQL 5.5.5,
 #: and no prober writes it under "MySQL" today only because nmap's MariaDB line
 #: precedes its MySQL one and Pulse cuts the version to ``x.y.z``.
@@ -582,6 +602,7 @@ def rules_version() -> str:
         "first_number": sorted(_FIRST_NUMBER_VERSIONS),
         "not_matched_cpe": sorted(_NOT_MATCHED_CPE),
         "lookalikes": {key: pattern.pattern for key, pattern in _LOOKALIKES.items()},
+        "mysql_own_suffixes": sorted(_MYSQL_OWN_SUFFIXES),
     }
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
@@ -1271,7 +1292,9 @@ def match(
     keys, via, cpe_version = product_keys(fingerprint, known=lambda key: bool(dataset.ranges_for(key)))
     if not keys:
         return MatchOutcome(reason=REASON_UNKNOWN_PRODUCT)
-    if any(key in _LOOKALIKES and _LOOKALIKES[key].search(fingerprint.text) for key in keys):
+    if any(key in _LOOKALIKES and _LOOKALIKES[key].search(fingerprint.text) for key in keys) or (
+        _MYSQL_KEYS.intersection(keys) and _foreign_mysql_engine(fingerprint, cpe_version)
+    ):
         return MatchOutcome(reason=REASON_LOOKALIKE, product_keys=keys)
     upstream = upstream_version(fingerprint, keys, cpe_version, via=via)
     if not upstream:
