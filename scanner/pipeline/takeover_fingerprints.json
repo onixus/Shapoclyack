@@ -122,7 +122,7 @@
       "name": "AWS Elastic Beanstalk",
       "status": "vulnerable",
       "cname": [],
-      "cname_regex": ["\\.[a-z]{2}-[a-z]+-[0-9]\\.elasticbeanstalk\\.com$"],
+      "cname_regex": ["\\.[a-z]{2}(-gov)?-[a-z]+-[0-9]\\.elasticbeanstalk\\.com$"],
       "nxdomain_required": true,
       "fingerprints": [],
       "source": ["ciotx", "dnsreaper"],

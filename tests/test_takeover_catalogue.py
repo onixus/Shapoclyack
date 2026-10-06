@@ -99,6 +99,7 @@ def test_entries_the_sources_leave_in_doubt_are_edge_cases(service_id):
 def test_only_region_qualified_beanstalk_names_are_claimed():
     catalogue = load_catalogue()
     assert catalogue.match("env.us-east-1.elasticbeanstalk.com")[0].id == "aws_elastic_beanstalk"
+    assert catalogue.match("env.us-gov-west-1.elasticbeanstalk.com")[0].id == "aws_elastic_beanstalk"
     assert catalogue.match("legacy-env.elasticbeanstalk.com") is None
 
 
