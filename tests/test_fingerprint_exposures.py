@@ -535,3 +535,34 @@ def test_a_json_content_type_is_not_enough_for_a_json_marker(site, tmp_path: Pat
     site.routes["/"] = (200, [("Content-Type", "application/json")], ')]}\'\n{"tagline" : "You Know, for Search"}')
     (endpoint,) = _run(site, tmp_path)["findings"]
     assert endpoint["technologies"] == []
+
+
+def test_classification_runs_off_the_event_loop(site, tmp_path: Path, monkeypatch):
+    import scanner.pipeline.fingerprint as fp
+
+    real = fp._classify
+    threads = []
+
+    def spy(*args, **kwargs):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fp, "_classify", spy)
+    site.routes["/"] = (200, [("X-Jenkins", "2.414.3")], "")
+    _run(site, tmp_path)
+    assert threads == [False]
+
+
+def test_a_search_that_ignores_the_deadline_is_still_timed_out(site, tmp_path: Path, monkeypatch):
+    """The deadline is checked between technologies; one stuck search is cut by the outer timeout."""
+    import scanner.pipeline.fingerprint as fp
+
+    def stuck(*args, **kwargs):
+        time.sleep(1.5)
+        raise AssertionError("the stage should have stopped waiting")
+
+    monkeypatch.setattr(fp, "CLASSIFY_SECONDS", 0.1)
+    monkeypatch.setattr(fp, "_classify", stuck)
+    site.routes["/"] = (200, [("X-Jenkins", "2.414.3")], "")
+    (endpoint,) = _run(site, tmp_path)["findings"]
+    assert endpoint["error"] == "classification_timeout"
