@@ -625,3 +625,10 @@ def test_a_script_ends_where_html_ends_it(closer):
 def test_an_unterminated_script_tail_is_cut_at_the_cap():
     page = parse_page("<script>" + "x" * 100_000)
     assert [len(text) for text in page.scripts] == [64 * 1024]
+
+
+def test_an_end_tag_with_a_quoted_attribute_runs_to_its_first_gt():
+    """`</script x='<title>t'>`: the end tag is everything up to the first `>`, so the
+    `<title>` inside the quoted value is not markup and the real title still is."""
+    page = parse_page("<script>var a = 1;</script x='<title>t'><title>real</title>")
+    assert page.title == "real"
