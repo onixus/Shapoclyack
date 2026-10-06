@@ -421,19 +421,24 @@ def merge_detectors(
     entry the cap drops hands its vantages to the newest one. A refusal from
     one vantage says nothing about what another observed, so a later observer
     must not erase an earlier one (#451 review). ``unknown`` is the exception
-    — it goes once a known vantage is recorded — and a replaced host-less
-    entry hands nothing on: it never recorded where it was seen from.
+    — it goes once a known vantage is recorded, so a replaced host-less
+    entry backfilled by 0079 hands nothing on; one that did record a vantage
+    (a row without a host, observed by a known sensor) hands that on.
     """
     previous = [entry for entry in (existing or []) if isinstance(entry, dict)]
     fresh = {_detector_key(entry) for entry in observed}
     located = {_loose_detector_key(entry) for entry in observed if entry.get("host")}
 
+    def replaced_by(old: dict[str, Any], new: dict[str, Any]) -> bool:
+        if _detector_key(old) == _detector_key(new):
+            return True
+        return not old.get("host") and bool(new.get("host")) and _loose_detector_key(old) == _loose_detector_key(new)
+
     renewed = [
         {
             **entry,
             "vantages": _union_vantages(
-                _vantages_of(entry),
-                *(_vantages_of(old) for old in previous if _detector_key(old) == _detector_key(entry)),
+                _vantages_of(entry), *(_vantages_of(old) for old in previous if replaced_by(old, entry))
             ),
         }
         for entry in observed

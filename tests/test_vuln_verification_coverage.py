@@ -838,11 +838,16 @@ def test_vantages_survive_the_detector_cap_and_unknown_gives_way_to_a_known_one(
     """Whatever the merge drops, the known vantages it was seen from stay on
     the row: the entry the cap evicts hands them to the newest one. ``unknown``
     is "nobody recorded where", not another place — the host-less entry 0079
-    backfilled hands nothing on, and an observation from a run no job owns
-    gives way to the first known vantage of the same detector."""
+    backfilled hands nothing on (one that did record a vantage hands it on),
+    and an observation from a run no job owns gives way to the first known
+    vantage of the same detector."""
     backfilled = {"detector": "pulse", "ref": "local", "host": None, "port": "443"}
     located = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443", "vantage": "local"}
     assert vulns.merge_detectors([backfilled], [located])[0]["vantages"] == ["local"]
+    # A host-less entry that did record where it was seen from hands that on:
+    # only "unknown" gives way, a known place is never erased.
+    hostless_seen = {**backfilled, "vantage": "group:internal"}
+    assert vulns.merge_detectors([hostless_seen], [located])[0]["vantages"] == ["local", "group:internal"]
 
     ownerless = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443"}
     first = vulns.merge_detectors([], [ownerless])
