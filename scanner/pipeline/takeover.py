@@ -13,9 +13,11 @@ suffix list:
    ``edge_case`` (claimable only under conditions the note names) or
    ``not_vulnerable``. A ``not_vulnerable`` entry is kept on purpose: it is
    what stops a CNAME into CloudFront or Zendesk from being reported. Each
-   entry names its sources and the date it was checked; the statuses are
+   entry names its sources and the date it was checked -- the date those
+   sources were *read*, not a live re-test of the provider; the statuses are
    other people's research (``sources`` in the file), not something this
-   scanner measured. The file lives beside the module rather than under
+   scanner measured. An entry whose own sources leave the takeover in doubt is
+   ``edge_case``, and its note says why. The file lives beside the module rather than under
    ``scanner/data`` for the reason ``public_suffix.py`` gives: that directory
    is where the images mount the enrichment volume, which would hide it.
 
@@ -245,6 +247,10 @@ def _parse_service(raw: Any, where: str, sources: dict[str, Any]) -> Service:
     note = raw.get("note", "")
     if not isinstance(note, str):
         raise _fail(where, "note must be a string")
+    # The note is the condition a finding's reader needs; an edge case without
+    # one is a status nobody can act on.
+    if raw["status"] == "edge_case" and not note.strip():
+        raise _fail(where, "an edge_case service needs a note naming its condition")
     return Service(
         id=service_id,
         name=raw["name"],

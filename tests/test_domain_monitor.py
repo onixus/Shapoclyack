@@ -10,9 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+import yaml
 
+from scanner import exit_codes
+from scanner import main as scanner_main
 from scanner.pipeline import dnsx as dnsx_module
-from scanner.pipeline import domain_monitor, takeover
+from scanner.pipeline import domain_monitor, scan_scope, takeover
 from scanner.pipeline.config_schema import ControlsConfig, DomainMonitorConfig
 from scanner.pipeline.controls import evaluate_controls
 from tests.mtls_pki import CA
@@ -111,7 +114,14 @@ def test_typosquat_no_finding_when_not_resolved(tmp_path: Path, monkeypatch):
 def test_dangling_cname_finding_present(tmp_path: Path, monkeypatch):
     def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         assert resolvers == RESOLVERS
-        return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
+        return {
+            "staging.example.com": {
+                "cname": ["abandoned.github.io"],
+                "a": [],
+                "aaaa": [],
+                "status": {"A": "NOERROR", "AAAA": "NOERROR"},
+            }
+        }
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_cname", fake_cname)
 
@@ -140,6 +150,7 @@ def test_dangling_cname_no_finding_when_a_present(tmp_path: Path, monkeypatch):
                 "cname": ["abandoned.github.io"],
                 "a": ["1.2.3.4"],
                 "aaaa": [],
+                "status": {"A": "NOERROR", "AAAA": "NOERROR"},
             }
         }
 
@@ -165,6 +176,7 @@ def test_dangling_cname_no_finding_when_no_suffix_match(tmp_path: Path, monkeypa
                 "cname": ["internal-lb.example-corp.net"],
                 "a": [],
                 "aaaa": [],
+                "status": {"A": "NOERROR", "AAAA": "NOERROR"},
             }
         }
 
@@ -219,7 +231,14 @@ def test_persisted_files_reflect_both_findings(tmp_path: Path, monkeypatch):
 
     def fake_cname(fqdns, output_dir, *, timeout, retries, resolvers):
         assert resolvers == RESOLVERS
-        return {"staging.example.com": {"cname": ["abandoned.github.io"], "a": [], "aaaa": []}}
+        return {
+            "staging.example.com": {
+                "cname": ["abandoned.github.io"],
+                "a": [],
+                "aaaa": [],
+                "status": {"A": "NOERROR", "AAAA": "NOERROR"},
+            }
+        }
 
     monkeypatch.setattr(domain_monitor, "_run_dnsx_a_aaaa", fake_a_aaaa)
     monkeypatch.setattr(domain_monitor, "_run_dnsx_cname", fake_cname)
@@ -248,7 +267,9 @@ def test_classify_helpers_return_none_when_appropriate():
     assert _classify_typosquat("example.com", "examp1e.com", {"a": [], "aaaa": []}) is None
     assert (
         _classify_dangling_cname(
-            "host.example.com", {"cname": [], "a": [], "aaaa": []}, takeover.load_catalogue()
+            "host.example.com",
+            {"cname": [], "a": [], "aaaa": [], "status": {"A": "NOERROR", "AAAA": "NOERROR"}},
+            takeover.load_catalogue(),
         )
         is None
     )
@@ -357,51 +378,82 @@ def test_org_registrable_domain_is_not_reported_as_its_own_typosquat(tmp_path: P
 class Dnsx123:
     """``run_command`` for the stage's dnsx runs, answering as dnsx 1.2.3 does.
 
-    Measured on 2026-10-06 against a stub resolver in the aio image: an A/AAAA
-    query returns the whole CNAME chain, the addresses and the status of the
-    chain's last name, and writes a line even for NXDOMAIN; ``-cname`` alone
-    returns the first hop only, never an address, and NOERROR for a dangling
-    chain; ``-cname`` beside ``-a`` reports the CNAME query's NOERROR over the
-    A query's NXDOMAIN. A name missing from ``zone`` does not exist.
+    Measured on 2026-10-06 against a stub resolver in the aio image:
+
+    - an A or AAAA query returns the whole CNAME chain, its addresses and an
+      rcode, and writes a row even for NXDOMAIN, SERVFAIL and REFUSED;
+    - a query that times out writes no row;
+    - with several record types in one run, ``status_code`` is the rcode of
+      the *last* type asked (A, AAAA, CNAME, ..., TXT in that order);
+    - ``-cname`` alone returns the first hop only and never an address;
+    - ``cname`` and ``all`` keep the answer section's order.
+
+    A ``zone`` entry: ``cname`` (the chain in resolution order), ``a``,
+    ``aaaa``, ``txt``, ``status`` (default NOERROR), ``status_a`` /
+    ``status_aaaa`` / ``status_txt`` per type, ``drop`` (a list of types that
+    time out, or True for all), ``wire_order`` (the chain's hops in the order
+    the answer section lists them). ``by_run`` overrides entries for one run,
+    keyed by its output file stem (``nxdomain_recheck``). A name missing from
+    the zone does not exist.
     """
 
-    def __init__(self, zone: dict[str, dict]) -> None:
+    _TYPE_ORDER = ("-a", "-aaaa", "-cname", "-txt")
+
+    def __init__(self, zone: dict[str, dict], by_run: dict[str, dict[str, dict]] | None = None) -> None:
         self.zone = zone
+        self.by_run = by_run or {}
         self.argvs: list[list[str]] = []
 
     def __call__(self, command, timeout, retries):  # noqa: ANN001
         self.argvs.append(list(command))
         assert command[command.index("-r") + 1] == RESOLVERS[0]
         names = Path(command[command.index("-l") + 1]).read_text(encoding="utf-8").split()
-        flags = set(command)
+        out = Path(command[command.index("-o") + 1])
+        zone = {**self.zone, **self.by_run.get(out.name.removesuffix("_records.jsonl"), {})}
+        asked = [flag for flag in self._TYPE_ORDER if flag in command]
         rows = []
         for name in names:
-            entry = self.zone.get(name, {"status": "NXDOMAIN"})
+            entry = zone.get(name, {"status": "NXDOMAIN"})
+            drop = entry.get("drop") or []
+            answered = [t for t in asked if not (drop is True or t.lstrip("-") in drop)]
+            if not answered:
+                continue
             chain = list(entry.get("cname", []))
-            row: dict = {"host": name, "status_code": entry.get("status", "NOERROR")}
-            if "-a" in flags or "-aaaa" in flags:
+            last = answered[-1].lstrip("-")
+            row: dict = {"host": name, "status_code": entry.get(f"status_{last}", entry.get("status", "NOERROR"))}
+            if any(t in answered for t in ("-a", "-aaaa")):
                 if chain:
-                    row["cname"] = chain
-                if "-a" in flags and entry.get("a"):
+                    hops = list(zip([name, *chain[:-1]], chain, strict=True))
+                    order = entry.get("wire_order")
+                    if order:
+                        hops = sorted(hops, key=lambda hop: order.index(hop[1]))
+                    row["cname"] = [target for _, target in hops]
+                    row["all"] = [f"{owner}.\t60\tIN\tCNAME\t{target}." for owner, target in hops]
+                if "-a" in answered and entry.get("a"):
                     row["a"] = list(entry["a"])
-                if "-aaaa" in flags and entry.get("aaaa"):
+                if "-aaaa" in answered and entry.get("aaaa"):
                     row["aaaa"] = list(entry["aaaa"])
-                if "-cname" in flags and chain:
-                    row["status_code"] = "NOERROR"
-            elif "-cname" in flags and chain:
+            elif "-cname" in answered and chain:
                 row["cname"] = chain[:1]
-                row["status_code"] = "NOERROR"
+            if "-txt" in answered and entry.get("txt"):
+                row["txt"] = list(entry["txt"])
             rows.append(row)
-        out = Path(command[command.index("-o") + 1])
         out.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
     def lookups(self) -> list[tuple[str, list[str]]]:
         """(output file, record-type flags) of every run, in order."""
         result = []
         for argv in self.argvs:
-            flags = [arg for arg in argv if arg in ("-a", "-aaaa", "-cname", "-resp")]
+            flags = [arg for arg in argv if arg in ("-a", "-aaaa", "-cname", "-txt", "-resp")]
             result.append((Path(argv[argv.index("-o") + 1]).name, flags))
         return result
+
+    def asked(self, run: str) -> list[str]:
+        """The names one run was asked about (by output file stem)."""
+        for argv in self.argvs:
+            if Path(argv[argv.index("-o") + 1]).name == f"{run}_records.jsonl":
+                return Path(argv[argv.index("-l") + 1]).read_text(encoding="utf-8").split()
+        return []
 
 
 def _takeover_block(
@@ -412,7 +464,8 @@ def _takeover_block(
     **config: object,
 ) -> tuple[dict, Dnsx123]:
     address_allowed = config.pop("address_allowed", None)
-    fake = Dnsx123(zone)
+    by_run = config.pop("by_run", None)
+    fake = Dnsx123(zone, by_run)
     monkeypatch.setattr(domain_monitor, "run_command", fake)
     monkeypatch.setattr(dnsx_module, "run_command", fake)
     kwargs = {} if address_allowed is None else {"address_allowed": address_allowed}
@@ -436,7 +489,11 @@ def test_the_chain_lookup_asks_for_addresses_and_never_for_cname_records(tmp_pat
         tmp_path, monkeypatch, zone, ["www.example.com"], takeover_http_confirm=False
     )
 
-    assert fake.lookups()[0] == ("cname_records.jsonl", ["-a", "-aaaa"])
+    # One record type per run: with both, dnsx reports the rcode of the last only.
+    assert fake.lookups()[:2] == [
+        ("cname_records.jsonl", ["-a"]),
+        ("cname_aaaa_records.jsonl", ["-aaaa"]),
+    ]
 
 
 def test_a_resolving_cname_into_a_claimable_service_is_not_reported_unconfirmed(
@@ -517,7 +574,9 @@ def test_heuristic_finding_is_kept_when_http_confirmation_is_off(tmp_path, monke
     [finding] = block["findings"]
     assert finding["kind"] == "subdomain_takeover"
     assert finding["confidence"] == "heuristic"
-    assert finding["severity"] == "medium"
+    # GitHub Pages is an edge case (a verified domain cannot be claimed): low.
+    assert finding["severity"] == "low"
+    assert "Edge case:" in finding["detail"]
     assert finding["fqdn"] == "staging.example.com"
     assert finding["cname_target"] == "abandoned.github.io"
     assert finding["matched_suffix"] == "github.io"
@@ -574,8 +633,9 @@ def test_a_cname_into_an_unregistered_domain_names_what_returned_nxdomain(tmp_pa
     assert evidence["registrable_domain"] == "promo-campaign-2019.com"
     assert evidence["nxdomain_names"] == ["www.promo-campaign-2019.com", "promo-campaign-2019.com"]
     assert evidence["check"] == "dns_nxdomain"
-    # The registrable domain is asked about through the same resolvers.
-    assert fake.lookups()[1] == ("registrable_records.jsonl", ["-a"])
+    # The registrable domain is asked about, and both NXDOMAINs asked again.
+    assert fake.asked("registrable") == ["promo-campaign-2019.com"]
+    assert fake.asked("nxdomain_recheck") == ["promo-campaign-2019.com", "promo.example.com"]
 
 
 def test_a_dangling_name_inside_a_registered_domain_is_not_reported(tmp_path, monkeypatch):
@@ -602,7 +662,7 @@ def test_nxdomain_into_a_service_that_cannot_be_taken_over_is_not_reported(tmp_p
 
     assert block["findings"] == []
     assert block["not_reported"][0]["reason"] == "service_not_vulnerable"
-    assert [name for name, _ in fake.lookups()] == ["cname_records.jsonl"]
+    assert [name for name, _ in fake.lookups()] == ["cname_records.jsonl", "cname_aaaa_records.jsonl"]
 
 
 # --- the HTTP confirmation, against a provider stand-in on 127.0.0.1 ---------
@@ -617,6 +677,10 @@ class _Provider:
         self.delay = 0.0
         #: Seconds between body bytes; 0 sends the body at once.
         self.drip = 0.0
+        #: Hosts whose body never ends: the page, then filler until the client hangs up.
+        self.endless: set[str] = set()
+        #: Body bytes written per host, as the server saw them leave.
+        self.sent: dict[str, int] = {}
         self.in_flight = 0
         self.max_in_flight = 0
         self.lock = threading.Lock()
@@ -639,6 +703,17 @@ def _handler(provider: _Provider) -> type[BaseHTTPRequestHandler]:
                 self.send_response(status)
                 for name, value in headers.items():
                     self.send_header(name, value)
+                if host in provider.endless:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    chunk = payload + b"x" * 8192
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                        provider.sent[host] = provider.sent.get(host, 0) + len(chunk)
+                        chunk = b"x" * 8192
+                        time.sleep(0.001)
+                    return
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 if not provider.drip:
@@ -708,10 +783,24 @@ def _closed_port() -> int:
 
 
 def _ports(monkeypatch, https: int, http: int) -> None:
-    # raising=False so the same test can run against a build without the
-    # confirmation and fail on its assertions rather than on this line.
+    """Point the confirmation at the stand-in provider on 127.0.0.1.
+
+    The stage never dials a loopback answer in production -- that is what a
+    sinkholing resolver returns -- so these tests take 127.0.0.0/8 off the
+    sinkhole list; ``test_a_sinkhole_answer_is_never_sent_the_request`` runs
+    with the real one. raising=False so the same test can run against a build
+    without these names and fail on its assertions rather than on this line.
+    """
     monkeypatch.setattr(
         domain_monitor, "_TAKEOVER_HTTP_PORTS", (("https", https), ("http", http)), raising=False
+    )
+    monkeypatch.setattr(
+        domain_monitor,
+        "_SINKHOLE_NETWORKS",
+        tuple(
+            ipaddress.ip_network(network) for network in ("0.0.0.0/8", "::/128", "::1/128")
+        ),
+        raising=False,
     )
 
 
@@ -728,7 +817,10 @@ def test_the_provider_page_confirms_the_takeover(tmp_path, monkeypatch, provider
     [finding] = block["findings"]
     assert finding["kind"] == "subdomain_takeover"
     assert finding["confidence"] == "confirmed"
-    assert finding["severity"] == "high"
+    # Confirmed, but GitHub Pages is an edge case: medium, and the detail says why.
+    assert finding["severity"] == "medium"
+    service = takeover.load_catalogue().match("example-org.github.io")[0]
+    assert finding["detail"].endswith(f"Edge case: {service.note}")
     assert finding["service"] == "github_pages"
     evidence = finding["evidence"]
     assert evidence["check"] == "http_fingerprint"
@@ -905,9 +997,9 @@ def test_the_http_target_cap_is_reported_as_truncation(tmp_path, monkeypatch, pr
 def test_a_confirmed_takeover_fails_the_dns_structure_control(tmp_path, monkeypatch, provider):
     """The finding carries its severity, so the controls matrix stops reading
     every takeover as the "medium" it used to default to."""
-    provider.pages["docs.example.com"] = GITHUB_UNCLAIMED
+    provider.pages["docs.example.com"] = (404, {}, "<h1>project not found</h1>")
     _ports(monkeypatch, provider.port, provider.port)
-    zone = {"docs.example.com": {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]}}
+    zone = {"docs.example.com": {"cname": ["na-west1.surge.sh"], "a": ["127.0.0.1"]}}
 
     _takeover_block(tmp_path, monkeypatch, zone, ["docs.example.com"])
 
@@ -916,3 +1008,395 @@ def test_a_confirmed_takeover_fails_the_dns_structure_control(tmp_path, monkeypa
     assert dns["status"] == "fail"
     assert dns["findings_by_severity"]["high"] == 1
     assert dns["top_findings"][0]["id"] == "subdomain_takeover"
+
+
+# --- DNS answers a verdict cannot rest on -----------------------------------
+
+
+def test_an_address_from_either_query_means_the_name_resolves(tmp_path, monkeypatch):
+    """Measured live: ``-a -aaaa`` reported this name NXDOMAIN with an A record,
+    because the AAAA query ran last. Some servers do answer AAAA that way."""
+    zone = {
+        "app.example.com": {
+            "cname": ["live-app.azurewebsites.net"],
+            "a": ["20.0.0.1"],
+            "status_a": "NOERROR",
+            "status_aaaa": "NXDOMAIN",
+        }
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert block["findings"] == []
+    [listed] = block["not_reported"]
+    assert listed["reason"] == "target_exists"
+    assert listed["evidence"]["dns_status_by_type"] == {"A": "NOERROR", "AAAA": "NXDOMAIN"}
+
+
+def test_nxdomain_needs_both_record_types(tmp_path, monkeypatch):
+    """The reverse: an A NXDOMAIN that ``-a -aaaa`` hid behind the AAAA NOERROR."""
+    zone = {
+        "app.example.com": {
+            "cname": ["gone-app.azurewebsites.net"],
+            "status_a": "NXDOMAIN",
+            "status_aaaa": "NOERROR",
+        }
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "dns_inconclusive"
+    assert block["dns_unanswered"] == ["app.example.com"]
+
+
+@pytest.mark.parametrize("rcode", ["SERVFAIL", "REFUSED"])
+@pytest.mark.parametrize(
+    "target",
+    ["org.github.io", "gone-app.azurewebsites.net", "gone.retired-partner.com"],
+)
+def test_an_error_answer_decides_nothing_for_any_service(tmp_path, monkeypatch, rcode, target):
+    """dnsx writes a row with the partial chain on SERVFAIL and REFUSED."""
+    zone = {"app.example.com": {"cname": [target], "status": rcode}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert block["findings"] == []
+    [listed] = block["not_reported"]
+    assert listed["reason"] == "dns_inconclusive"
+    assert fake.asked("registrable") == []
+    assert fake.asked("nxdomain_recheck") == []
+
+
+def test_a_timed_out_query_type_makes_the_name_inconclusive(tmp_path, monkeypatch):
+    zone = {
+        "app.example.com": {
+            "cname": ["gone-app.azurewebsites.net"],
+            "status": "NXDOMAIN",
+            "drop": ["a"],
+        }
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "dns_inconclusive"
+
+
+def test_names_dnsx_wrote_no_row_for_are_listed_and_the_control_is_not_ok(tmp_path, monkeypatch):
+    """A dead resolver: dnsx exits 0 and writes nothing. That is not a clean bill."""
+    zone = {"app.example.com": {"drop": True}, "docs.example.com": {"drop": True}}
+    fake = Dnsx123(zone)
+    monkeypatch.setattr(domain_monitor, "run_command", fake)
+    monkeypatch.setattr(dnsx_module, "run_command", fake)
+
+    result = monitor_domains(
+        ["example.com"],
+        ["app.example.com", "docs.example.com"],
+        DomainMonitorConfig(enabled=True, typosquat_enabled=False),
+        tmp_path,
+        resolvers=RESOLVERS,
+    )
+
+    block = result["dangling_cname"]
+    assert [entry["reason"] for entry in block["not_reported"]] == ["dns_no_answer", "dns_no_answer"]
+    assert block["dns_unanswered"] == ["app.example.com", "docs.example.com"]
+    controls = evaluate_controls(tmp_path, ControlsConfig(enabled=True))["controls"]
+    dns = {control["control"]: control for control in controls}["dns_structure"]
+    assert dns["status"] == "not_checked"
+    assert "2 in-scope name(s) got no usable DNS answer" in dns["why"]
+
+
+def test_the_chain_is_walked_not_read_in_answer_order(tmp_path, monkeypatch):
+    """Live dnsx keeps the answer section's order; a reversed answer used to
+    make the first hop look like the name that does not exist."""
+    zone = {
+        "app.example.com": {
+            "cname": ["a.trafficmanager.net", "b.azurewebsites.net", "c.cloudapp.net"],
+            "wire_order": ["c.cloudapp.net", "b.azurewebsites.net", "a.trafficmanager.net"],
+            "status": "NXDOMAIN",
+        }
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    [finding] = block["findings"]
+    assert finding["cname_target"] == "c.cloudapp.net"
+    assert finding["evidence"]["cname_chain"] == [
+        "a.trafficmanager.net",
+        "b.azurewebsites.net",
+        "c.cloudapp.net",
+    ]
+
+
+# --- NXDOMAIN confirmations: asked twice, and only where it means "free" -----
+
+
+def test_an_nxdomain_that_does_not_repeat_is_not_confirmed(tmp_path, monkeypatch):
+    zone = {"app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"}}
+    flapped = {"app.example.com": {"cname": ["old-app.azurewebsites.net"], "a": ["20.0.0.1"]}}
+
+    block, fake = _takeover_block(
+        tmp_path, monkeypatch, zone, ["app.example.com"], by_run={"nxdomain_recheck": flapped}
+    )
+
+    assert fake.asked("nxdomain_recheck") == ["app.example.com"]
+    assert block["findings"] == []
+    [listed] = block["not_reported"]
+    assert listed["reason"] == "nxdomain_not_repeated"
+    assert listed["evidence"]["recheck"] == {"app.example.com": "NOERROR"}
+
+
+def test_an_app_service_name_with_a_verification_record_is_not_a_takeover(tmp_path, monkeypatch):
+    zone = {
+        "app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"},
+        "asuid.app.example.com": {"txt": ["0123456789ABCDEF"]},
+    }
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert fake.asked("asuid") == ["asuid.app.example.com"]
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "domain_verified"
+
+
+def test_an_app_service_name_without_one_is_confirmed_high(tmp_path, monkeypatch):
+    zone = {"app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    [finding] = block["findings"]
+    assert (finding["confidence"], finding["severity"]) == ("confirmed", "high")
+    assert finding["evidence"]["recheck"] == {"app.example.com": "NXDOMAIN"}
+    assert fake.asked("asuid") == ["asuid.app.example.com"]
+
+
+def test_an_unanswered_verification_lookup_decides_nothing(tmp_path, monkeypatch):
+    zone = {
+        "app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"},
+        "asuid.app.example.com": {"status": "SERVFAIL"},
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "dns_inconclusive"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "abc123defg.execute-api.us-east-1.amazonaws.com",
+        "happy-river-0a1b2c3.azurestaticapps.net",
+        "abcdefghijk.lambda-url.us-east-1.on.aws",
+    ],
+)
+def test_nxdomain_at_an_unknown_hosting_platform_is_low(tmp_path, monkeypatch, target):
+    """Under a private PSL suffix the "registrable domain" is the platform's
+    tenant name; nobody can register it, and whether the platform lets a
+    stranger re-create it is unknown -- so neither "free to register" nor high."""
+    zone = {"api.example.com": {"cname": [target], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["api.example.com"])
+
+    [finding] = block["findings"]
+    assert finding["kind"] == "dangling_cname"
+    assert (finding["confidence"], finding["severity"]) == ("heuristic", "low")
+    assert "provider we don't know" in finding["detail"]
+    assert "check whether the name can be re-created" in finding["detail"]
+    assert fake.asked("registrable") == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["vpn01.corp.local", "portal.internal", "nas.home.arpa", "srv.corp", "files.lan", "x.test"],
+)
+def test_a_name_nobody_can_register_is_not_reported_as_unregistered(tmp_path, monkeypatch, target):
+    zone = {"intra.example.com": {"cname": [target], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["intra.example.com"])
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "target_not_registrable"
+    assert fake.asked("registrable") == []
+
+
+def test_a_target_that_is_its_own_registrable_domain_is_still_asked_about(tmp_path, monkeypatch):
+    """No shortcut from "the chain's end is NXDOMAIN" to "the domain is free"."""
+    zone = {"promo.example.com": {"cname": ["promo-campaign-2019.com"], "status": "NXDOMAIN"}}
+    answered = {"promo-campaign-2019.com": {"status": "NOERROR"}}
+
+    block, fake = _takeover_block(
+        tmp_path, monkeypatch, zone, ["promo.example.com"], by_run={"registrable": answered}
+    )
+
+    assert fake.asked("registrable") == ["promo-campaign-2019.com"]
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "registrable_domain_exists"
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [({"drop": True}, "dns_no_answer"), ({"status": "SERVFAIL"}, "dns_inconclusive")],
+)
+def test_an_unusable_answer_about_the_registrable_domain_decides_nothing(
+    tmp_path, monkeypatch, answer, reason
+):
+    zone = {"promo.example.com": {"cname": ["www.promo-campaign-2019.com"], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(
+        tmp_path,
+        monkeypatch,
+        zone,
+        ["promo.example.com"],
+        by_run={"registrable": {"promo-campaign-2019.com": answer}},
+    )
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == reason
+    assert fake.asked("nxdomain_recheck") == []
+
+
+def test_an_unregistered_domain_that_reappears_on_the_second_ask_is_not_reported(
+    tmp_path, monkeypatch
+):
+    zone = {"promo.example.com": {"cname": ["www.promo-campaign-2019.com"], "status": "NXDOMAIN"}}
+    reappeared = {"promo-campaign-2019.com": {"status": "NOERROR"}}
+
+    block, _ = _takeover_block(
+        tmp_path,
+        monkeypatch,
+        zone,
+        ["promo.example.com"],
+        by_run={"nxdomain_recheck": reappeared},
+    )
+
+    assert block["findings"] == []
+    [listed] = block["not_reported"]
+    assert listed["reason"] == "nxdomain_not_repeated"
+    assert listed["evidence"]["recheck"] == {
+        "promo.example.com": "NXDOMAIN",
+        "promo-campaign-2019.com": "NOERROR",
+    }
+
+
+# --- what the confirmation request may and may not do ------------------------
+
+
+@pytest.mark.parametrize("address", ["0.0.0.0", "127.0.0.1", "127.53.0.1", "::1", "::"])
+def test_a_sinkhole_answer_is_never_sent_the_request(tmp_path, monkeypatch, provider, address):
+    """A filtering resolver answers 0.0.0.0 or loopback for what it blocks; the
+    GET would land on the sensor itself and say nothing about the provider."""
+    provider.pages["docs.example.com"] = GITHUB_UNCLAIMED
+    monkeypatch.setattr(
+        domain_monitor, "_TAKEOVER_HTTP_PORTS", (("https", provider.port), ("http", provider.port))
+    )
+    family = "aaaa" if ":" in address else "a"
+    zone = {"docs.example.com": {"cname": ["example-org.github.io"], family: [address]}}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["docs.example.com"])
+
+    assert provider.requests == []
+    assert block["not_reported"][0]["reason"] == "sinkholed"
+
+
+def test_the_environment_proxy_is_not_used(tmp_path, monkeypatch, provider):
+    """The request is pinned to the address just resolved; a proxy would resolve
+    the name again, and here it would also be a dead end."""
+    provider.pages["docs.example.com"] = GITHUB_UNCLAIMED
+    _ports(monkeypatch, provider.port, provider.port)
+    dead_proxy = f"http://127.0.0.1:{_closed_port()}"
+    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(variable, dead_proxy)
+    zone = {"docs.example.com": {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]}}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["docs.example.com"])
+
+    [finding] = block["findings"]
+    assert finding["confidence"] == "confirmed"
+    assert provider.requests == [("docs.example.com", "/")]
+
+
+def test_an_endless_body_is_cut_at_the_cap_not_at_the_deadline(tmp_path, monkeypatch, provider):
+    """The page marker comes first; reading on past 64 KiB would run into the
+    deadline and lose the confirmation."""
+    provider.pages["docs.example.com"] = GITHUB_UNCLAIMED
+    provider.endless.add("docs.example.com")
+    _ports(monkeypatch, provider.port, provider.port)
+    zone = {"docs.example.com": {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]}}
+
+    started = time.monotonic()
+    block, _ = _takeover_block(
+        tmp_path, monkeypatch, zone, ["docs.example.com"], takeover_http_timeout_seconds=2
+    )
+
+    assert time.monotonic() - started < 2
+    [finding] = block["findings"]
+    assert finding["evidence"]["fingerprint_id"] == "github_pages.no_site"
+
+
+def _pipeline_config(tmp_path: Path) -> Path:
+    raw = yaml.safe_load(Path("scanner/config/default.yaml").read_text(encoding="utf-8"))
+    raw["runtime"]["output_dir"] = str(tmp_path / "output")
+    raw["runtime"]["state_dir"] = str(tmp_path / "state")
+    raw["runtime"]["logs_dir"] = str(tmp_path / "output" / "logs")
+    raw["dns"]["resolvers"] = ["192.0.2.53"]
+    raw["discovery"]["domain_monitor"]["enabled"] = True
+    raw["discovery"]["domain_monitor"]["typosquat_enabled"] = False
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return config_path
+
+
+def test_the_pipeline_never_sends_the_request_to_an_address_the_scope_denies(
+    tmp_path, monkeypatch, provider
+):
+    """End to end through scanner.main: the deny-only scope filter reaches the
+    stage, and its refusal lands in the denials artifact with the others."""
+    provider.pages["docs.customer.example"] = GITHUB_UNCLAIMED
+    _ports(monkeypatch, provider.port, provider.port)
+    fake = Dnsx123(
+        {"docs.customer.example": {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]}}
+    )
+    monkeypatch.setattr(domain_monitor, "run_command", fake)
+    monkeypatch.setattr(dnsx_module, "run_command", fake)
+    # The scan targets themselves are not under test: none, so the run ends at
+    # its own "no targets" gate right after writing the denials.
+    monkeypatch.setattr(scanner_main, "resolve_fqdns", lambda *args, **kwargs: [])
+    monkeypatch.setattr(scanner_main, "run_discovery_stage", lambda **kwargs: [])
+    document = {
+        "version": scan_scope.DOCUMENT_VERSION,
+        "tenant_id": "acme",
+        "approved": True,
+        "entries": [
+            {"effect": "allow", "kind": "domain", "value": "customer.example"},
+            {"effect": "deny", "kind": "cidr", "value": "127.0.0.1/32"},
+        ],
+    }
+    scope_file = tmp_path / "scan_scope.json"
+    scope_file.write_text(json.dumps(document), encoding="utf-8")
+    domains_file = tmp_path / "domains.txt"
+    domains_file.write_text("docs.customer.example\n", encoding="utf-8")
+    ranges_file = tmp_path / "ranges.txt"
+    ranges_file.write_text("\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "scanner.main",
+            "--config", str(_pipeline_config(tmp_path)),
+            "--ranges", str(ranges_file),
+            "--domains", str(domains_file),
+            "--run-id", "20261006T120000Z",
+            "--skip-nse",
+            "--scan-scope", str(scope_file),
+        ],
+    )
+
+    assert scanner_main._run_pipeline(scanner_main.parse_args()) == exit_codes.INPUT_ERROR
+
+    run_dir = tmp_path / "output" / "runs" / "20261006T120000Z"
+    block = json.loads((run_dir / "domain_monitor.json").read_text(encoding="utf-8"))["dangling_cname"]
+    assert provider.requests == []
+    assert block["not_reported"][0]["reason"] == "address_refused_by_scope"
+    denials = json.loads((run_dir / scan_scope.DENIED_ARTIFACT).read_text(encoding="utf-8"))
+    assert "resolved -> 127.0.0.1 (denied by 127.0.0.1/32)" in denials["denied"]

@@ -5,7 +5,8 @@
     "ciotx": "EdOverflow/can-i-take-over-xyz, README table and fingerprints.json at master (last commit 2025-02-08), read 2026-10-06. CC BY 4.0: https://github.com/EdOverflow/can-i-take-over-xyz",
     "nuclei": "projectdiscovery/nuclei-templates http/takeovers/*.yaml at main, read 2026-10-06. MIT: https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers",
     "msdocs": "Microsoft Learn, 'Prevent dangling DNS entries and avoid subdomain takeover' (page dated 2026-07-20, read 2026-10-06): the Azure resource types at risk and their DNS names. https://learn.microsoft.com/azure/security/fundamentals/subdomain-takeover",
-    "dnsreaper": "punk-security/dnsReaper signatures at main, read 2026-10-06 -- used only to cross-check which CNAME target a provider hands out; no fingerprint text is taken from it"
+    "dnsreaper": "punk-security/dnsReaper signatures at main, read 2026-10-06 -- used only to cross-check which CNAME target a provider hands out; no fingerprint text is taken from it",
+    "ciotx-threads": "Comments in the can-i-take-over-xyz issue threads linked from the README (issues 14, 32, 40, 44, 69, 170, 183, 231, 240), read 2026-10-06. Reports by individual researchers, not re-tested here."
   },
   "services": [
     {
@@ -17,18 +18,18 @@
       "fingerprints": [],
       "source": ["ciotx", "msdocs"],
       "checked": "2026-10-06",
-      "note": "App names are global and first-come; NXDOMAIN on the app name means it is free to create. An asuid.<subdomain> TXT record (custom-domain verification) stops another subscription from binding the org's name even then."
+      "note": "App names are global and first-come; NXDOMAIN on the app name means it is free to create. An asuid.<name> TXT record (custom-domain verification) stops another subscription from binding the org's name even then, so the stage looks that record up before reporting."
     },
     {
       "id": "azure_cloud_services",
       "name": "Microsoft Azure Cloud Services / public IP DNS label",
-      "status": "vulnerable",
+      "status": "edge_case",
       "cname": ["cloudapp.net", "cloudapp.azure.com"],
       "nxdomain_required": true,
       "fingerprints": [],
       "source": ["ciotx", "msdocs"],
       "checked": "2026-10-06",
-      "note": "cloudapp.azure.com labels are per region; the label is claimable in that region. A deleted classic cloudapp.net name is reserved for the owning tenant for a while before anyone can claim it."
+      "note": "A deleted classic cloudapp.net name is reserved for the owning tenant for a while before any subscription can claim it; cloudapp.azure.com labels are per region. NXDOMAIN alone does not say which phase the name is in."
     },
     {
       "id": "azure_traffic_manager",
@@ -55,7 +56,7 @@
     {
       "id": "azure_cdn",
       "name": "Microsoft Azure CDN (azureedge.net)",
-      "status": "vulnerable",
+      "status": "edge_case",
       "cname": ["azureedge.net"],
       "nxdomain_required": true,
       "fingerprints": [],
@@ -99,7 +100,7 @@
     {
       "id": "azure_other",
       "name": "Microsoft Azure (other named resources)",
-      "status": "vulnerable",
+      "status": "edge_case",
       "cname": [
         "database.windows.net",
         "azuredatalakestore.net",
@@ -114,18 +115,19 @@
       "fingerprints": [],
       "source": ["ciotx"],
       "checked": "2026-10-06",
-      "note": "Grouped as ciotx groups them; individual resource types were not re-verified."
+      "note": "Grouped as ciotx groups them; for these resource types it was not verified that a freed name can be re-created by another subscription."
     },
     {
       "id": "aws_elastic_beanstalk",
       "name": "AWS Elastic Beanstalk",
       "status": "vulnerable",
-      "cname": ["elasticbeanstalk.com"],
+      "cname": [],
+      "cname_regex": ["\\.[a-z]{2}-[a-z]+-[0-9]\\.elasticbeanstalk\\.com$"],
       "nxdomain_required": true,
       "fingerprints": [],
       "source": ["ciotx", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": "Region-qualified environment names (<name>.<region>.elasticbeanstalk.com) are claimable in that region."
+      "note": "Only region-qualified environment names (<name>.<region>.elasticbeanstalk.com) are matched: those are the claimable ones per ciotx issue 194. Legacy names without a region are left to the unknown-provider rule."
     },
     {
       "id": "discourse",
@@ -453,7 +455,7 @@
       ],
       "source": ["ciotx"],
       "checked": "2026-10-06",
-      "note": "Claimable only in some configurations; see ciotx issue 38."
+      "note": "ciotx marks it an edge case (issue 38): claiming means adding the org's name to another account's app, which works only in some configurations. The conditions were not re-checked here."
     },
     {
       "id": "intercom",
@@ -464,9 +466,9 @@
       "fingerprints": [
         {"id": "intercom.artistic_dogs", "body": ["This page is reserved for artistic dogs."]}
       ],
-      "source": ["ciotx", "nuclei"],
+      "source": ["ciotx", "ciotx-threads", "nuclei"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Claimable only when the help-center name is free: a disabled help center whose name is still registered shows the same page and cannot be taken (ciotx issue 69)."
     },
     {
       "id": "netlify",
@@ -477,9 +479,9 @@
       "fingerprints": [
         {"id": "netlify.not_found", "body": ["Not Found - Request ID:"]}
       ],
-      "source": ["ciotx", "dnsreaper"],
+      "source": ["ciotx", "ciotx-threads", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "A 2026-08 report in ciotx issue 40 says Netlify now requires a TXT verification record before another account can add the name; if so, the page alone is not claimable."
     },
     {
       "id": "shopify",
@@ -490,9 +492,9 @@
       "fingerprints": [
         {"id": "shopify.shop_unavailable", "body": ["Sorry, this shop is currently unavailable."]}
       ],
-      "source": ["ciotx", "dnsreaper"],
+      "source": ["ciotx", "ciotx-threads", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Reports from 2025-10 and 2026-02 in ciotx issue 32 say Shopify now requires a TXT verification record for a custom domain; if so, the page alone is not claimable."
     },
     {
       "id": "tilda",
@@ -516,9 +518,9 @@
       "fingerprints": [
         {"id": "tumblr.nothing_here", "body": ["Whatever you were looking for doesn't currently exist at this address"]}
       ],
-      "source": ["ciotx", "dnsreaper"],
+      "source": ["ciotx", "ciotx-threads", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Per ciotx issue 240, Tumblr stopped accepting outside custom domains on 2023-06-09 (new domains are bought through Tumblr); only legacy setups may still be claimable."
     },
     {
       "id": "vercel",
@@ -529,9 +531,9 @@
       "fingerprints": [
         {"id": "vercel.deployment_not_found", "body": ["DEPLOYMENT_NOT_FOUND"]}
       ],
-      "source": ["ciotx"],
+      "source": ["ciotx", "ciotx-threads"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Vercel asks for domain-ownership verification in some cases (reports in ciotx issue 183, 2024-2025); the name is claimable only when it does not."
     },
     {
       "id": "webflow",
@@ -542,9 +544,9 @@
       "fingerprints": [
         {"id": "webflow.page_missing", "body": ["The page you are looking for doesn't exist or has been moved."]}
       ],
-      "source": ["ciotx", "dnsreaper"],
+      "source": ["ciotx", "ciotx-threads", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Reports in ciotx issue 44 (2024-07, 2026-08) say a TXT record is now required to connect the name; a paid account is needed in any case."
     },
     {
       "id": "wix",
@@ -556,9 +558,9 @@
         {"id": "wix.not_connected", "body": ["Looks Like This Domain Isn't Connected To A Website Yet!"]},
         {"id": "wix.connect_your_domain", "body": ["ConnectYourDomain Error | Wix.com"]}
       ],
-      "source": ["ciotx", "nuclei"],
+      "source": ["ciotx", "ciotx-threads", "nuclei"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "Connecting a domain needs a premium account (ciotx issue 231); whether a disconnected name is still claimable was not verified."
     },
     {
       "id": "mashery",
@@ -569,9 +571,9 @@
       "fingerprints": [
         {"id": "mashery.unrecognized_domain", "body": ["Unrecognized domain"]}
       ],
-      "source": ["ciotx", "dnsreaper"],
+      "source": ["ciotx", "ciotx-threads", "dnsreaper"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "ciotx issue 14 was closed as no longer possible after a HackerOne report; kept as an edge case only because the ciotx table still lists it so."
     },
     {
       "id": "frontify",
@@ -582,9 +584,9 @@
       "fingerprints": [
         {"id": "frontify.got_lost", "body": ["404 - Page Not Found", "Oops… looks like you got lost"]}
       ],
-      "source": ["ciotx", "nuclei"],
+      "source": ["ciotx", "ciotx-threads", "nuclei"],
       "checked": "2026-10-06",
-      "note": ""
+      "note": "ciotx issue 170 reports a case where the CNAME target was claimed and the org's name still did not follow; claimability depends on the setup."
     },
     {
       "id": "aws_cloudfront",

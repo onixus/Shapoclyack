@@ -149,6 +149,12 @@ batching:
 # and domain_monitor judge public posture from what this resolver answers: on a
 # split-horizon network they see the internal view of the org's zones, and a
 # resolver that rewrites NXDOMAIN makes every typosquat candidate "resolve".
+# The reverse also holds: a filtering resolver (RPZ, a blocking public
+# resolver) that answers NXDOMAIN for names it blocks makes a CNAME into a
+# blocked provider look unclaimed to domain_monitor's takeover check. That
+# check asks twice before it calls an NXDOMAIN confirmed, which catches a
+# flapping answer and not a consistent policy -- point dns.resolvers at a plain
+# recursive resolver when it is on.
 # Nuclei receives the same configured list; when empty it reads all system
 # nameservers. Its interactsh client has its own DNS behavior.
 # Config file only; not editable through the API.
@@ -245,9 +251,11 @@ discovery:
   # sub-checks: (1) generate look-alike candidates of the seed domains and
   # DNS-resolve them (A/AAAA only, passive) -- a resolving candidate is
   # reported as a finding, never merged into scan scope; (2) for the org's
-  # own in-scope FQDNs, resolve CNAME chains and flag targets matching a
-  # known vulnerable-service suffix with no A/AAAA of their own (heuristic
-  # pattern + non-resolution only -- never confirms an actual takeover).
+  # own in-scope FQDNs, resolve CNAME chains and judge them against the
+  # takeover catalogue (scanner/pipeline/takeover_fingerprints.json): a
+  # takeover confirmed by NXDOMAIN (asked twice) or by the provider's
+  # unclaimed page, a heuristic one when nothing could be checked, or a CNAME
+  # into an unregistered domain. docs/configuration.md has the rules.
   domain_monitor:
     enabled: false
     domains: []               # empty = registrable domains of input FQDNs (PSL)
@@ -261,9 +269,11 @@ discovery:
     # at a claimable service in scanner/pipeline/takeover_fingerprints.json and
     # which resolves, one GET per scheme (HTTPS, then HTTP) to that name, pinned
     # to the address just resolved -- it lands on the provider, not on the org.
-    # A matched fingerprint is a confirmed (high) finding; off, such names are
-    # listed as unconfirmed only. The tenant scan policy's skip_service_probe
-    # (fragile profile) turns this off; max_host_concurrency caps the pool.
+    # A matched fingerprint is a confirmed finding (high, medium for an
+    # edge_case service); off, such names are listed as unconfirmed only.
+    # Sinkhole answers and scope-denied addresses are never sent the GET. The
+    # tenant scan policy's skip_service_probe (fragile profile) turns this
+    # off; max_host_concurrency caps the pool.
     takeover_http_confirm: true
     takeover_http_concurrency: 5
     takeover_http_timeout_seconds: 10

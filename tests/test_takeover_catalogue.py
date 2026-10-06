@@ -79,6 +79,29 @@ def test_every_entry_names_its_sources_and_the_date_they_were_read():
         date.fromisoformat(service["checked"])
 
 
+def test_every_edge_case_says_what_the_condition_is():
+    """The note is what a finding's reader acts on; the finding detail quotes it."""
+    for service in load_catalogue().services:
+        if service.status == "edge_case":
+            assert service.note.strip(), service.id
+
+
+@pytest.mark.parametrize(
+    "service_id",
+    ["azure_cdn", "azure_other", "azure_cloud_services", "azure_front_door"],
+)
+def test_entries_the_sources_leave_in_doubt_are_edge_cases(service_id):
+    """Each of these notes says the takeover was not verified or is not always possible."""
+    service = {s.id: s for s in load_catalogue().services}[service_id]
+    assert service.status == "edge_case"
+
+
+def test_only_region_qualified_beanstalk_names_are_claimed():
+    catalogue = load_catalogue()
+    assert catalogue.match("env.us-east-1.elasticbeanstalk.com")[0].id == "aws_elastic_beanstalk"
+    assert catalogue.match("legacy-env.elasticbeanstalk.com") is None
+
+
 def test_every_claimable_service_can_be_confirmed_somehow():
     """A claimable service with no way to confirm it could only ever be a
     heuristic finding; that should be a decision in the file, not an accident."""
@@ -183,6 +206,17 @@ def test_load_refuses_a_file_that_is_not_json(tmp_path):
             ),
             "overlaps",
         ),
+        # The same nesting the other way round: the wider suffix comes second.
+        (
+            lambda d: d["services"].insert(
+                0,
+                _service(id="nested_host", cname=["eu.example-host.net"], fingerprints=[])
+                | {"status": "not_vulnerable"},
+            ),
+            "overlaps",
+        ),
+        (lambda d: d["services"][0].update(status="edge_case", note=""), "needs a note"),
+        (lambda d: d["services"][0].update(status="edge_case", note="   "), "needs a note"),
     ],
 )
 def test_the_schema_refuses(mutate, message):

@@ -157,7 +157,13 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     # domain_monitor.json nests its findings under the two sub-checks it runs
     # (``typosquat`` / ``dangling_cname``); there is no top-level ``findings``
     # array and no ``monitored_domains`` list -- see domain_monitor.run().
+    # Names whose DNS answer was missing or unusable were not checked, and
+    # "absence of data never yields ok" holds for them too.
+    dm_unanswered: list[str] = []
     if isinstance(dm_data, dict) and not dm_data.get("skipped_reason"):
+        dangling_block = dm_data.get("dangling_cname")
+        if isinstance(dangling_block, dict):
+            dm_unanswered = [str(name) for name in dangling_block.get("dns_unanswered") or []]
         evidence.append("domain_monitor.json")
         for section, default_kind in (
             ("typosquat", "typosquat_candidate"),
@@ -197,6 +203,12 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low DNS hygiene findings detected"
+    elif dm_unanswered:
+        status = "not_checked"
+        why = (
+            f"{len(dm_unanswered)} in-scope name(s) got no usable DNS answer, so the "
+            f"dangling-CNAME check is incomplete: {', '.join(sorted(dm_unanswered)[:5])}"
+        )
     elif checked_count > 0:
         status = "ok"
         why = f"All {checked_count} domains passed DNS hygiene checks"

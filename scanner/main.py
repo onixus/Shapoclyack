@@ -646,10 +646,19 @@ def _run_pipeline_body(
         dm_config = config.discovery.domain_monitor
         dm_domains = dm_config.domains or base_domains_from_fqdns(scope_fqdns)
         # The takeover confirmation dials the address a candidate name resolved
-        # to; the same deny-only rule as the resolved targets above applies.
+        # to; the same deny-only rule as the resolved targets above applies, and
+        # a refusal goes into the same denials artifact.
         dm_scope = scope
         dm_address_allowed = (
-            (lambda address: bool(scan_scope.filter_resolved(dm_scope, [address]).kept))
+            (
+                lambda address: bool(
+                    _keep_in_scope(
+                        scan_scope.filter_resolved(dm_scope, [address]),
+                        what="takeover-check addresses",
+                        refusals=scope_refusals,
+                    )
+                )
+            )
             if dm_scope is not None
             else None
         )
