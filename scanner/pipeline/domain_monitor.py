@@ -68,8 +68,10 @@ limits). ``takeover_http_confirm`` turns it off and the tenant scan policy's
 ``skip_service_probe`` does too; without it every resolving candidate is
 listed as unconfirmed rather than guessed at. An address the approved scope
 denies is never contacted (and is recorded with the run's other scope
-refusals), nor is a sinkhole answer (0.0.0.0, 127.0.0.0/8, ::, ::1). Nothing
-is ever claimed or registered.
+refusals), nor is a sinkhole answer (0.0.0.0/8, 127.0.0.0/8, ::, ::1) or any
+other non-public address -- a walled garden or split-horizon answer, where
+the request would not reach the provider. Nothing is ever claimed or
+registered.
 
 Both sub-checks are findings-only and non-scope-expanding: a discovered
 typosquat domain or a flagged dangling CNAME is reported for human review,
@@ -93,6 +95,7 @@ from .config_schema import DomainMonitorConfig
 from .dnsx import command as dnsx_command
 from .dnsx import query as dnsx_query
 from .public_suffix import has_icann_tld, is_special_use, registrable_domain
+from .safe_http import is_public_address
 from .utils import run_command, save_json, write_lines
 
 LOG = logging.getLogger("shapoclyack.domain-monitor")
@@ -329,10 +332,14 @@ def _run_dnsx_cname(
 ) -> dict[str, dict[str, Any]]:
     """CNAME chain, addresses and the rcode of each query type, per FQDN.
 
-    Two runs, ``-a`` and ``-aaaa``, never one with both and never ``-cname``:
-    dnsx reports the rcode of the *last* query type it asked (see the module
-    docstring). Every name asked about is in the result; ``status`` holds None
-    for a query type that produced no row, which is what a timeout looks like.
+    Separate runs for ``-a`` and ``-aaaa``, never one with both and never
+    ``-cname``: dnsx reports the rcode of the *last* query type it asked (see
+    the module docstring). The AAAA run asks only the names the A run did not
+    settle -- an IPv4 address already means the name resolves, and asking AAAA
+    for every IPv4-only name again was half as many queries on top. Every name
+    asked about is in the result; ``status`` holds None for a query type that
+    produced no row (what a timeout looks like) and ``NOT_ASKED`` for an AAAA
+    query that was not needed.
     """
     rows_a = dnsx_query(
         fqdns,
@@ -344,8 +351,9 @@ def _run_dnsx_cname(
         retries=retries,
         resolvers=resolvers,
     )
+    unsettled = [fqdn for fqdn in fqdns if not (rows_a.get(fqdn) or {}).get("a")]
     rows_aaaa = dnsx_query(
-        fqdns,
+        unsettled,
         output_dir,
         stage="domain_monitor",
         kind="cname_aaaa",
@@ -365,7 +373,10 @@ def _run_dnsx_cname(
             "cname": chain,
             "a": list((row_a or {}).get("a") or []),
             "aaaa": list((row_aaaa or {}).get("aaaa") or []),
-            "status": {"A": _row_status(row_a), "AAAA": _row_status(row_aaaa)},
+            "status": {
+                "A": _row_status(row_a),
+                "AAAA": _row_status(row_aaaa) if fqdn in unsettled else "NOT_ASKED",
+            },
         }
     return records
 
@@ -416,15 +427,28 @@ _SINKHOLE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = 
 )
 
 
-def _is_sinkhole(address: str) -> bool:
+def _undialable_reason(address: str) -> str | None:
+    """Why the confirmation GET must not go to ``address``, or None when it may.
+
+    ``sinkholed`` for what a blocking resolver answers; ``private_address``
+    for anything else that is not public -- an RPZ walled garden, or a
+    split-horizon view that maps the provider's name inside the network. In
+    neither case would the request reach the provider, so it would prove
+    nothing about the provider. Public means ``safe_http.is_public_address``,
+    which also reads the IPv4 inside a NAT64 or IPv4-mapped IPv6 address.
+    """
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
-        return True  # not an address at all: never dial it
+        return "sinkholed"  # not an address at all: never dial it
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
-    return any(ip.version == network.version and ip in network for network in _SINKHOLE_NETWORKS)
+    if any(ip.version == network.version and ip in network for network in _SINKHOLE_NETWORKS):
+        return "sinkholed"
+    if not is_public_address(ip):
+        return "private_address"
+    return None
 
 
 def _combined_status(addresses: Sequence[str], status: dict[str, Any]) -> str:
@@ -669,11 +693,11 @@ def _confirm_over_http(
         )
     probes: list[tuple[_Candidate, takeover.HttpProbe]] = []
     for candidate in candidates[:cap]:
-        usable = [address for address in candidate.addresses if not _is_sinkhole(address)]
+        refusals = [_undialable_reason(address) for address in candidate.addresses]
+        usable = [a for a, why in zip(candidate.addresses, refusals, strict=True) if why is None]
         if not usable:
-            not_reported.append(
-                _not_reported(candidate, "sinkholed", unconfirmed_reason="sinkholed")
-            )
+            reason = "sinkholed" if "sinkholed" in refusals else "private_address"
+            not_reported.append(_not_reported(candidate, reason, unconfirmed_reason=reason))
             continue
         address = next(
             (a for a in usable if address_allowed is None or address_allowed(a)),
@@ -727,9 +751,21 @@ def _confirm_over_http(
     return len(probes), len(candidates) > cap
 
 
-def _followup_reason(status: str | None) -> str:
-    """Why a follow-up lookup that did not give NOERROR/NXDOMAIN decides nothing."""
-    return "dns_no_answer" if status is None else "dns_inconclusive"
+def _followup_outcome(answer: dict[str, Any]) -> str:
+    """``nxdomain``, ``noerror``, ``dns_no_answer`` or ``dns_inconclusive``.
+
+    A follow-up lookup that timed out or erred decides nothing, and neither
+    does an NXDOMAIN that came with an address: an answer contradicting
+    itself is not the "does not exist" a takeover verdict rests on.
+    """
+    status = answer["status"]
+    if status is None:
+        return "dns_no_answer"
+    if status == "NXDOMAIN":
+        return "dns_inconclusive" if answer["row"].get("a") else "nxdomain"
+    if status == "NOERROR":
+        return "noerror"
+    return "dns_inconclusive"
 
 
 def _triage_unknown_nxdomain(
@@ -739,10 +775,12 @@ def _triage_unknown_nxdomain(
 ) -> list[tuple[_Candidate, str]]:
     """Sort uncatalogued NXDOMAIN ends; return those whose domain must be asked about.
 
-    Only a name under an ICANN-section suffix and a delegated, non-special TLD
-    has a registrable domain anybody could buy. Under a private-section suffix
-    the "registrable domain" is a hosting platform's tenant name, and whether
-    the platform lets a stranger create it is exactly what is not known.
+    Only a name under a registry's suffix (the PSL's ICANN section, or a public
+    registry's private-section block such as ``com.ru`` or ``uk.com``) and a
+    delegated, non-special TLD has a registrable domain anybody could buy.
+    Under any other private-section suffix the "registrable domain" is a
+    hosting platform's tenant name, and whether the platform lets a stranger
+    create it is exactly what is not known.
     """
     to_query: list[tuple[_Candidate, str]] = []
     for candidate in candidates:
@@ -750,12 +788,12 @@ def _triage_unknown_nxdomain(
         if is_special_use(target) or not has_icann_tld(target):
             not_reported.append(_not_reported(candidate, "target_not_registrable", nxdomain_names=[target]))
             continue
-        icann_domain = registrable_domain(target, registries_only=True)
-        if not icann_domain:
+        registry_domain = registrable_domain(target, registries_only=True)
+        if not registry_domain:
             not_reported.append(_not_reported(candidate, "no_registrable_domain", nxdomain_names=[target]))
             continue
         platform_name = registrable_domain(target)
-        if platform_name != icann_domain:
+        if platform_name != registry_domain:
             findings.append(
                 {
                     "kind": "dangling_cname",
@@ -767,20 +805,20 @@ def _triage_unknown_nxdomain(
                     "service": None,
                     "detail": (
                         f"{candidate.fqdn} points at {target}, a non-existent resource at a "
-                        f"provider we don't know (under the hosting suffix of {icann_domain}); "
+                        f"provider we don't know (under the hosting suffix of {registry_domain}); "
                         "check whether the name can be re-created"
                     ),
                     "evidence": _evidence(
                         candidate,
                         check="dns_nxdomain",
                         nxdomain_names=[target],
-                        registrable_domain=icann_domain,
+                        registrable_domain=registry_domain,
                         unconfirmed_reason="unknown_provider",
                     ),
                 }
             )
             continue
-        to_query.append((candidate, icann_domain))
+        to_query.append((candidate, registry_domain))
     return to_query
 
 
@@ -797,6 +835,9 @@ def _check_dangling_cnames(
     findings: list[dict[str, Any]] = []
     not_reported: list[dict[str, Any]] = []
     unanswered: list[str] = []
+    #: Candidates whose follow-up lookup (registrable domain, asuid, repeat
+    #: query) went unanswered: a takeover nobody could rule in or out.
+    candidates_unanswered: list[str] = []
     http_candidates: list[_Candidate] = []
     service_nxdomain: list[_Candidate] = []
     unknown_nxdomain: list[_Candidate] = []
@@ -836,15 +877,15 @@ def _check_dangling_cnames(
             resolvers=resolvers,
         )
         for candidate, domain in to_query:
-            answer = answers[domain]
-            status = answer["status"]
+            outcome = _followup_outcome(answers[domain])
             evidence = {"check": "dns_nxdomain", "nxdomain_names": [candidate.target], "registrable_domain": domain}
-            if status == "NXDOMAIN" and not answer["row"].get("a"):
+            if outcome == "nxdomain":
                 pending.append(_NxdomainPending(candidate, (candidate.fqdn, domain), domain))
-            elif status == "NOERROR":
+            elif outcome == "noerror":
                 not_reported.append(_not_reported(candidate, "registrable_domain_exists", **evidence))
             else:
-                not_reported.append(_not_reported(candidate, _followup_reason(status), **evidence))
+                not_reported.append(_not_reported(candidate, outcome, **evidence))
+                candidates_unanswered.append(candidate.fqdn)
 
     # App Service lets a custom domain be bound only with the asuid TXT record
     # the owner created; with one in place a free app name is not a takeover.
@@ -862,15 +903,15 @@ def _check_dangling_cnames(
         )
         for candidate in app_service:
             answer = answers[f"asuid.{candidate.fqdn}"]
-            status = answer["status"]
-            if status == "NOERROR" and answer["row"].get("txt"):
+            outcome = _followup_outcome(answer)
+            if outcome == "noerror" and answer["row"].get("txt"):
                 not_reported.append(_not_reported(candidate, "domain_verified", check="dns_txt_asuid"))
                 verified.add(candidate.fqdn)
-            elif status not in ("NOERROR", "NXDOMAIN"):
-                not_reported.append(
-                    _not_reported(candidate, _followup_reason(status), check="dns_txt_asuid")
-                )
+            elif outcome in ("dns_no_answer", "dns_inconclusive"):
+                not_reported.append(_not_reported(candidate, outcome, check="dns_txt_asuid"))
+                candidates_unanswered.append(candidate.fqdn)
                 verified.add(candidate.fqdn)
+            # NXDOMAIN, or NOERROR without a TXT record (NODATA): no verification.
     pending.extend(
         _NxdomainPending(candidate, (candidate.fqdn,))
         for candidate in service_nxdomain
@@ -891,12 +932,11 @@ def _check_dangling_cnames(
         )
         for item in pending:
             recheck = {name: rechecked[name]["status"] for name in item.recheck}
-            repeated = all(
-                rechecked[name]["status"] == "NXDOMAIN" and not rechecked[name]["row"].get("a")
-                for name in item.recheck
-            )
-            is_finding, entry = _nxdomain_verdict(item, recheck, repeated)
+            outcomes = {_followup_outcome(rechecked[name]) for name in item.recheck}
+            is_finding, entry = _nxdomain_verdict(item, recheck, outcomes)
             (findings if is_finding else not_reported).append(entry)
+            if entry.get("reason") in ("dns_no_answer", "dns_inconclusive"):
+                candidates_unanswered.append(item.candidate.fqdn)
 
     return {
         "checked": len(fqdns),
@@ -905,14 +945,15 @@ def _check_dangling_cnames(
         "http_confirm": config.takeover_http_confirm,
         "http_probed": probed,
         "truncated": truncated,
-        "dns_unanswered": sorted(unanswered),
+        "dns_unanswered": sorted(set(unanswered) | set(candidates_unanswered)),
+        "candidates_unanswered": sorted(set(candidates_unanswered)),
         "findings": sorted(findings, key=lambda f: (f["fqdn"], f["kind"])),
         "not_reported": sorted(not_reported, key=lambda n: (n["fqdn"], n["reason"])),
     }
 
 
 def _nxdomain_verdict(
-    item: _NxdomainPending, recheck: dict[str, str | None], repeated: bool
+    item: _NxdomainPending, recheck: dict[str, str | None], outcomes: set[str]
 ) -> tuple[bool, dict[str, Any]]:
     """(is_finding, entry) for one NXDOMAIN-backed confirmation after the repeat query."""
     candidate = item.candidate
@@ -924,7 +965,12 @@ def _nxdomain_verdict(
         "registrable_domain": item.registrable_domain,
         "recheck": recheck,
     }
-    if not repeated:
+    # A repeat query that got no usable answer says nothing either way; only a
+    # name that came back existing is an NXDOMAIN that did not repeat.
+    for unusable in ("dns_no_answer", "dns_inconclusive"):
+        if unusable in outcomes:
+            return False, _not_reported(candidate, unusable, unconfirmed_reason=unusable, **evidence)
+    if outcomes != {"nxdomain"}:
         return False, _not_reported(
             candidate, "nxdomain_not_repeated", unconfirmed_reason="nxdomain_not_repeated", **evidence
         )

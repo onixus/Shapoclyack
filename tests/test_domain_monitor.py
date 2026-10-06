@@ -483,10 +483,17 @@ def _takeover_block(
 def test_the_chain_lookup_asks_for_addresses_and_never_for_cname_records(tmp_path, monkeypatch):
     """``-cname`` alone never returns an address, so "no A/AAAA" held for every
     name and every pattern match was reported; beside ``-a`` it hides NXDOMAIN."""
-    zone = {"www.example.com": {"cname": ["org.github.io"], "a": ["185.199.108.153"]}}
+    zone = {
+        "www.example.com": {"cname": ["org.github.io"], "a": ["185.199.108.153"]},
+        "v6.example.com": {"cname": ["org6.github.io"], "aaaa": ["2606:50c0:8000::153"]},
+    }
 
     _, fake = _takeover_block(
-        tmp_path, monkeypatch, zone, ["www.example.com"], takeover_http_confirm=False
+        tmp_path,
+        monkeypatch,
+        zone,
+        ["v6.example.com", "www.example.com"],
+        takeover_http_confirm=False,
     )
 
     # One record type per run: with both, dnsx reports the rcode of the last only.
@@ -494,6 +501,9 @@ def test_the_chain_lookup_asks_for_addresses_and_never_for_cname_records(tmp_pat
         ("cname_records.jsonl", ["-a"]),
         ("cname_aaaa_records.jsonl", ["-aaaa"]),
     ]
+    # An IPv4 address already settles the name; AAAA is asked only for the rest.
+    assert fake.asked("cname") == ["v6.example.com", "www.example.com"]
+    assert fake.asked("cname_aaaa") == ["v6.example.com"]
 
 
 def test_a_resolving_cname_into_a_claimable_service_is_not_reported_unconfirmed(
@@ -787,23 +797,23 @@ def _closed_port() -> int:
 def _ports(monkeypatch, https: int, http: int) -> None:
     """Point the confirmation at the stand-in provider on 127.0.0.1.
 
-    The stage never dials a loopback answer in production -- that is what a
-    sinkholing resolver returns -- so these tests take 127.0.0.0/8 off the
-    sinkhole list; ``test_a_sinkhole_answer_is_never_sent_the_request`` runs
-    with the real one. raising=False so the same test can run against a build
+    The stage never dials a loopback (or any non-public) answer in production
+    -- that is what a sinkholing resolver returns -- so these tests let exactly
+    127.0.0.1 through and keep the real rule for every other address;
+    ``test_a_non_public_answer_is_never_sent_the_request`` runs with the real
+    rule throughout. raising=False so the same test can run against a build
     without these names and fail on its assertions rather than on this line.
     """
     monkeypatch.setattr(
         domain_monitor, "_TAKEOVER_HTTP_PORTS", (("https", https), ("http", http)), raising=False
     )
-    monkeypatch.setattr(
-        domain_monitor,
-        "_SINKHOLE_NETWORKS",
-        tuple(
-            ipaddress.ip_network(network) for network in ("0.0.0.0/8", "::/128", "::1/128")
-        ),
-        raising=False,
-    )
+    real = getattr(domain_monitor, "_undialable_reason", None)
+    if real is not None:
+        monkeypatch.setattr(
+            domain_monitor,
+            "_undialable_reason",
+            lambda address: None if address == "127.0.0.1" else real(address),
+        )
 
 
 GITHUB_UNCLAIMED = (404, {"Content-Type": "text/html"}, "<p>There isn't a GitHub Pages site here.</p>")
@@ -1017,24 +1027,32 @@ def test_a_confirmed_takeover_fails_the_dns_structure_control(tmp_path, monkeypa
 # --- DNS answers a verdict cannot rest on -----------------------------------
 
 
-def test_an_address_from_either_query_means_the_name_resolves(tmp_path, monkeypatch):
-    """Measured live: ``-a -aaaa`` reported this name NXDOMAIN with an A record,
-    because the AAAA query ran last. Some servers do answer AAAA that way."""
-    zone = {
-        "app.example.com": {
-            "cname": ["live-app.azurewebsites.net"],
-            "a": ["20.0.0.1"],
-            "status_a": "NOERROR",
-            "status_aaaa": "NXDOMAIN",
-        }
-    }
+@pytest.mark.parametrize(
+    ("entry", "by_type"),
+    [
+        # Measured live: ``-a -aaaa`` reported this name NXDOMAIN with an A
+        # record, because the AAAA query ran last. Now AAAA is not even asked.
+        (
+            {"a": ["20.0.0.1"], "status_a": "NOERROR", "status_aaaa": "NXDOMAIN"},
+            {"A": "NOERROR", "AAAA": "NOT_ASKED"},
+        ),
+        # The mirror image (RFC 4074, section 4.2): A answered NXDOMAIN for a
+        # name that has an AAAA record.
+        (
+            {"aaaa": ["2603:1030::1"], "status_a": "NXDOMAIN", "status_aaaa": "NOERROR"},
+            {"A": "NXDOMAIN", "AAAA": "NOERROR"},
+        ),
+    ],
+)
+def test_an_address_from_either_query_means_the_name_resolves(tmp_path, monkeypatch, entry, by_type):
+    zone = {"app.example.com": {"cname": ["live-app.azurewebsites.net"], **entry}}
 
     block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
 
     assert block["findings"] == []
     [listed] = block["not_reported"]
     assert listed["reason"] == "target_exists"
-    assert listed["evidence"]["dns_status_by_type"] == {"A": "NOERROR", "AAAA": "NXDOMAIN"}
+    assert listed["evidence"]["dns_status_by_type"] == by_type
 
 
 def test_nxdomain_needs_both_record_types(tmp_path, monkeypatch):
@@ -1175,16 +1193,50 @@ def test_an_app_service_name_without_one_is_confirmed_high(tmp_path, monkeypatch
     assert fake.asked("asuid") == ["asuid.app.example.com"]
 
 
-def test_an_unanswered_verification_lookup_decides_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [({"status": "SERVFAIL"}, "dns_inconclusive"), ({"drop": True}, "dns_no_answer")],
+)
+def test_an_unanswered_verification_lookup_decides_nothing(tmp_path, monkeypatch, answer, reason):
+    """Not a finding, and not quietly gone either: the candidate is unanswered,
+    and the control names it rather than saying every name passed."""
     zone = {
         "app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"},
-        "asuid.app.example.com": {"status": "SERVFAIL"},
+        "asuid.app.example.com": answer,
+        "www.example.com": {"a": ["203.0.113.10"]},
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com", "www.example.com"])
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == reason
+    assert block["dns_unanswered"] == ["app.example.com"]
+    assert block["candidates_unanswered"] == ["app.example.com"]
+    dns = _dns_control(tmp_path)
+    assert dns["coverage"] == {"checked": 1, "total": 2}
+    assert "All" not in dns["why"]
+    assert "takeover candidate(s) left undecided by an unanswered lookup: app.example.com" in dns["why"]
+
+
+def _dns_control(output_dir: Path) -> dict:
+    controls = evaluate_controls(output_dir, ControlsConfig(enabled=True))["controls"]
+    return {control["control"]: control for control in controls}["dns_structure"]
+
+
+def test_a_verification_name_that_exists_without_a_txt_record_does_not_protect(
+    tmp_path, monkeypatch
+):
+    """NOERROR with no TXT (NODATA) is not a verification record: the free app
+    name is still a takeover."""
+    zone = {
+        "app.example.com": {"cname": ["old-app.azurewebsites.net"], "status": "NXDOMAIN"},
+        "asuid.app.example.com": {"status": "NOERROR"},
     }
 
     block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["app.example.com"])
 
-    assert block["findings"] == []
-    assert block["not_reported"][0]["reason"] == "dns_inconclusive"
+    [finding] = block["findings"]
+    assert (finding["confidence"], finding["severity"]) == ("confirmed", "high")
 
 
 @pytest.mark.parametrize(
@@ -1259,6 +1311,104 @@ def test_an_unusable_answer_about_the_registrable_domain_decides_nothing(
     assert block["findings"] == []
     assert block["not_reported"][0]["reason"] == reason
     assert fake.asked("nxdomain_recheck") == []
+    assert block["candidates_unanswered"] == ["promo.example.com"]
+    assert "promo.example.com" in _dns_control(tmp_path)["why"]
+
+
+def test_an_nxdomain_with_an_address_on_the_registrable_domain_decides_nothing(
+    tmp_path, monkeypatch
+):
+    """An answer that contradicts itself is not "does not exist"."""
+    zone = {"promo.example.com": {"cname": ["www.promo-campaign-2019.com"], "status": "NXDOMAIN"}}
+    contradictory = {"promo-campaign-2019.com": {"status": "NXDOMAIN", "a": ["198.51.100.7"]}}
+
+    block, fake = _takeover_block(
+        tmp_path, monkeypatch, zone, ["promo.example.com"], by_run={"registrable": contradictory}
+    )
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == "dns_inconclusive"
+    assert fake.asked("nxdomain_recheck") == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        ({"drop": True}, "dns_no_answer"),
+        ({"status": "SERVFAIL"}, "dns_inconclusive"),
+        ({"status": "NXDOMAIN", "a": ["20.0.0.9"]}, "dns_inconclusive"),
+    ],
+)
+def test_a_repeat_query_without_a_usable_answer_is_not_called_a_flap(
+    tmp_path, monkeypatch, answer, reason
+):
+    """A lost repeat query says nothing either way; nxdomain_not_repeated is
+    for a name that came back existing."""
+    zone = {"tm.example.com": {"cname": ["gone.trafficmanager.net"], "status": "NXDOMAIN"}}
+
+    block, _ = _takeover_block(
+        tmp_path,
+        monkeypatch,
+        zone,
+        ["tm.example.com"],
+        by_run={"nxdomain_recheck": {"tm.example.com": answer}},
+    )
+
+    assert block["findings"] == []
+    assert block["not_reported"][0]["reason"] == reason
+    assert block["candidates_unanswered"] == ["tm.example.com"]
+    assert block["dns_unanswered"] == ["tm.example.com"]
+
+
+@pytest.mark.parametrize(
+    ("target", "domain"),
+    [
+        ("www.gone.com.ru", "gone.com.ru"),
+        ("www.gone.msk.ru", "gone.msk.ru"),
+        ("shop.gone.pp.ua", "gone.pp.ua"),
+        ("www.gone.uk.com", "gone.uk.com"),
+        ("www.gone.br.com", "gone.br.com"),
+        ("www.gone.co.com", "gone.co.com"),
+        ("www.gone.eu.org", "gone.eu.org"),
+    ],
+)
+def test_a_domain_under_a_public_registrys_private_suffix_is_registrable(
+    tmp_path, monkeypatch, target, domain
+):
+    """These registries list their suffixes in the PSL's private section, next
+    to the hosting platforms -- but anybody can buy a name under them."""
+    zone = {"www.example.com": {"cname": [target], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["www.example.com"])
+
+    assert fake.asked("registrable") == [domain]
+    [finding] = block["findings"]
+    assert (finding["kind"], finding["severity"]) == ("dangling_cname_nxdomain", "high")
+
+
+def test_a_tld_the_list_names_only_by_wildcard_is_delegated(tmp_path, monkeypatch):
+    """``*.ck`` is the only rule for .ck; the TLD exists all the same."""
+    zone = {"www.example.com": {"cname": ["www.gone.co.ck"], "status": "NXDOMAIN"}}
+
+    block, fake = _takeover_block(tmp_path, monkeypatch, zone, ["www.example.com"])
+
+    assert fake.asked("registrable") == ["gone.co.ck"]
+    assert block["findings"][0]["kind"] == "dangling_cname_nxdomain"
+
+
+def test_one_unanswered_name_among_many_leaves_the_control_rated(tmp_path, monkeypatch):
+    """A SERVFAIL on one stale name used to blank the whole DNS-structure control."""
+    zone = {f"h{i}.example.com": {"a": [f"203.0.113.{i + 1}"]} for i in range(20)}
+    zone["lame.example.com"] = {"status": "SERVFAIL"}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, sorted(zone))
+
+    assert block["dns_unanswered"] == ["lame.example.com"]
+    dns = _dns_control(tmp_path)
+    assert dns["status"] == "ok"
+    assert dns["coverage"] == {"checked": 20, "total": 21}
+    assert "20 of 21 names checked passed" in dns["why"]
+    assert "lame.example.com" in dns["why"]
 
 
 def test_an_unregistered_domain_that_reappears_on_the_second_ask_is_not_reported(
@@ -1287,10 +1437,30 @@ def test_an_unregistered_domain_that_reappears_on_the_second_ask_is_not_reported
 # --- what the confirmation request may and may not do ------------------------
 
 
-@pytest.mark.parametrize("address", ["0.0.0.0", "127.0.0.1", "127.53.0.1", "::1", "::"])
-def test_a_sinkhole_answer_is_never_sent_the_request(tmp_path, monkeypatch, provider, address):
-    """A filtering resolver answers 0.0.0.0 or loopback for what it blocks; the
-    GET would land on the sensor itself and say nothing about the provider."""
+@pytest.mark.parametrize(
+    ("address", "reason"),
+    [
+        ("0.0.0.0", "sinkholed"),
+        ("0.1.2.3", "sinkholed"),
+        ("127.0.0.1", "sinkholed"),
+        ("127.53.0.1", "sinkholed"),
+        ("::1", "sinkholed"),
+        ("::", "sinkholed"),
+        ("::ffff:127.0.0.1", "sinkholed"),
+        ("::ffff:0.0.0.0", "sinkholed"),
+        # A walled garden or a split-horizon view: the GET would not reach the provider.
+        ("10.0.0.5", "private_address"),
+        ("192.168.1.10", "private_address"),
+        ("fd00::5", "private_address"),
+        ("64:ff9b::a00:5", "private_address"),  # 10.0.0.5 through NAT64
+    ],
+)
+def test_a_non_public_answer_is_never_sent_the_request(
+    tmp_path, monkeypatch, provider, address, reason
+):
+    """A filtering resolver answers 0.0.0.0 or loopback for what it blocks, an
+    RPZ walled garden a private address; the GET would land on the sensor or
+    inside the network and say nothing about the provider."""
     provider.pages["docs.example.com"] = GITHUB_UNCLAIMED
     monkeypatch.setattr(
         domain_monitor, "_TAKEOVER_HTTP_PORTS", (("https", provider.port), ("http", provider.port))
@@ -1301,7 +1471,7 @@ def test_a_sinkhole_answer_is_never_sent_the_request(tmp_path, monkeypatch, prov
     block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["docs.example.com"])
 
     assert provider.requests == []
-    assert block["not_reported"][0]["reason"] == "sinkholed"
+    assert block["not_reported"][0]["reason"] == reason
 
 
 def test_the_environment_proxy_is_not_used(tmp_path, monkeypatch, provider):
@@ -1352,21 +1522,28 @@ def _pipeline_config(tmp_path: Path) -> Path:
     return config_path
 
 
+@pytest.mark.parametrize("resolve_stage_saw_it", [False, True])
 def test_the_pipeline_never_sends_the_request_to_an_address_the_scope_denies(
-    tmp_path, monkeypatch, provider
+    tmp_path, monkeypatch, provider, resolve_stage_saw_it
 ):
     """End to end through scanner.main: the deny-only scope filter reaches the
-    stage, and its refusal lands in the denials artifact with the others."""
-    provider.pages["docs.customer.example"] = GITHUB_UNCLAIMED
+    stage, and its refusal lands in the denials artifact with the others --
+    once, however many names point at the address and whether the resolve
+    step already refused it."""
+    names = ["blog.customer.example", "docs.customer.example"]
+    for name in names:
+        provider.pages[name] = GITHUB_UNCLAIMED
     _ports(monkeypatch, provider.port, provider.port)
     fake = Dnsx123(
-        {"docs.customer.example": {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]}}
+        {name: {"cname": ["example-org.github.io"], "a": ["127.0.0.1"]} for name in names}
     )
     monkeypatch.setattr(domain_monitor, "run_command", fake)
     monkeypatch.setattr(dnsx_module, "run_command", fake)
-    # The scan targets themselves are not under test: none, so the run ends at
-    # its own "no targets" gate right after writing the denials.
-    monkeypatch.setattr(scanner_main, "resolve_fqdns", lambda *args, **kwargs: [])
+    # The scan targets themselves are not under test: the resolve step either
+    # returns nothing or the same denied address, and the run ends at its own
+    # "no targets" gate right after writing the denials.
+    resolved = ["127.0.0.1"] if resolve_stage_saw_it else []
+    monkeypatch.setattr(scanner_main, "resolve_fqdns", lambda *args, **kwargs: list(resolved))
     monkeypatch.setattr(scanner_main, "run_discovery_stage", lambda **kwargs: [])
     document = {
         "version": scan_scope.DOCUMENT_VERSION,
@@ -1380,7 +1557,7 @@ def test_the_pipeline_never_sends_the_request_to_an_address_the_scope_denies(
     scope_file = tmp_path / "scan_scope.json"
     scope_file.write_text(json.dumps(document), encoding="utf-8")
     domains_file = tmp_path / "domains.txt"
-    domains_file.write_text("docs.customer.example\n", encoding="utf-8")
+    domains_file.write_text("\n".join(names) + "\n", encoding="utf-8")
     ranges_file = tmp_path / "ranges.txt"
     ranges_file.write_text("\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -1401,6 +1578,7 @@ def test_the_pipeline_never_sends_the_request_to_an_address_the_scope_denies(
     run_dir = tmp_path / "output" / "runs" / "20261006T120000Z"
     block = json.loads((run_dir / "domain_monitor.json").read_text(encoding="utf-8"))["dangling_cname"]
     assert provider.requests == []
-    assert block["not_reported"][0]["reason"] == "address_refused_by_scope"
+    assert [entry["reason"] for entry in block["not_reported"]] == ["address_refused_by_scope"] * 2
     denials = json.loads((run_dir / scan_scope.DENIED_ARTIFACT).read_text(encoding="utf-8"))
-    assert "resolved -> 127.0.0.1 (denied by 127.0.0.1/32)" in denials["denied"]
+    assert denials["denied"] == ["resolved -> 127.0.0.1 (denied by 127.0.0.1/32)"]
+    assert denials["denied_count"] == 1
