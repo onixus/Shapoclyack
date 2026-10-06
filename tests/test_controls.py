@@ -833,3 +833,45 @@ def test_web_technologies_does_not_call_an_spa_landing_page_a_login_page(tmp_pat
     web = _web_control(tmp_path)
     assert web["status"] == "weak"
     assert web["why"] == "1 admin console landing page(s) reachable, authentication not determinable"
+
+
+def _clean_fingerprint(catalogue: dict) -> dict:
+    return {
+        "targets_considered": 1,
+        "checked_count": 1,
+        "findings": [{"host": "a.example.com", "port": 443, "server": "", "x_powered_by": ""}],
+        "exposures": [],
+        "catalogue": catalogue,
+        "skipped_reason": None,
+    }
+
+
+def test_web_technologies_is_not_checked_when_the_catalogue_was_unusable(tmp_path: Path):
+    """Nothing could be identified: that is not a clean bill of health."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps(_clean_fingerprint({
+            "schema": 1,
+            "updated": "",
+            "technologies": 0,
+            "rejected": [{"id": "", "error": "catalogue unusable: Expecting value"}],
+        })),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "not_checked"
+    assert "catalogue" in web["why"] and "unusable" in web["why"]
+
+
+def test_web_technologies_is_not_ok_when_catalogue_entries_were_rejected(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps(_clean_fingerprint({
+            "schema": 1,
+            "updated": "2026-10-06",
+            "technologies": 145,
+            "rejected": [{"id": "jenkins", "error": "regex 'a.*b' repeats without a bound"}],
+        })),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "jenkins" in web["why"]

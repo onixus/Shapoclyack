@@ -597,3 +597,21 @@ def test_a_password_field_in_a_cut_script_does_not_make_a_login_page(site, tmp_p
     (admin,) = result["exposures"]
     assert admin["auth_required"] is False
     assert admin["severity"] == "medium"
+
+
+def test_the_stage_log_line_names_rejected_entries(site, tmp_path: Path, monkeypatch, caplog):
+    import logging
+
+    import scanner.pipeline.fingerprint as fp
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    raw = json.loads(module.CATALOGUE_PATH.read_text(encoding="utf-8"))
+    raw["technologies"][0]["match"] = [{"from": "body", "regex": "a.*b"}]
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(fp, "load_catalogue", lambda: module.load_catalogue.__wrapped__(path))
+    site.routes["/"] = (200, [], "")
+    with caplog.at_level(logging.INFO, logger="shapoclyack.fingerprint"):
+        _run(site, tmp_path)
+    final = [r.getMessage() for r in caplog.records if "endpoint(s) checked" in r.getMessage()]
+    assert final and "1 catalogue entry(ies) rejected: cloudflare" in final[0]

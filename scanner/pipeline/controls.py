@@ -512,6 +512,23 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
             "why": f"Web technology fingerprinting skipped: {fp_data['skipped_reason']}",
         }
 
+    # The catalogue the stage matched with. A broken file loads empty and a bad
+    # entry is dropped rather than failing the run -- so "nothing found" here
+    # can mean "nothing could be looked for", and the control must say so.
+    catalogue = fp_data.get("catalogue") if isinstance(fp_data.get("catalogue"), dict) else {}
+    rejected = [r for r in (catalogue.get("rejected") or []) if isinstance(r, dict)]
+    if catalogue and int(catalogue.get("technologies") or 0) == 0:
+        reasons = "; ".join(str(r.get("error") or "") for r in rejected)[:300]
+        return {
+            "status": "not_checked",
+            "coverage": {"checked": 0, "total": int(fp_data.get("targets_considered") or 0)},
+            "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "top_findings": [],
+            "evidence": ["fingerprint.json"],
+            "why": f"Web technology catalogue unusable, nothing could be identified: {reasons or 'no entries'}",
+        }
+    rejected_ids = [str(r.get("id") or "?") for r in rejected]
+
     # fingerprint.json findings are per-endpoint observations
     # ({host, port, scheme, server, x_powered_by, cdn_waf, cms_framework}) with
     # no severity of their own -- an endpoint that simply answered is not a
@@ -612,12 +629,21 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
         parts.append(f"{banner_count} endpoint banner(s) disclose product/version information")
     inventory = f"{gateways} remote-access/webmail portal(s) inventoried" if gateways else ""
 
+    gap = (
+        f"{len(rejected_ids)} catalogue entr(ies) rejected and not looked for: {', '.join(rejected_ids[:10])}"
+        if rejected_ids
+        else ""
+    )
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
-        why = "; ".join([*parts, inventory] if inventory else parts)
+        why = "; ".join(p for p in [*parts, inventory, gap] if p)
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = "; ".join([*parts, inventory] if inventory else parts)
+        why = "; ".join(p for p in [*parts, inventory, gap] if p)
+    elif checked_count > 0 and gap:
+        # Clean, but with part of the catalogue missing: not a pass.
+        status = "weak"
+        why = "; ".join(p for p in [f"{checked_count} web endpoint(s) fingerprinted with a partial catalogue", gap, inventory] if p)
     elif checked_count > 0:
         status = "ok"
         why = (

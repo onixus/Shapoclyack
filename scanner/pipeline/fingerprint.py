@@ -534,12 +534,16 @@ async def fingerprint_hosts(
 
     matched = sum(1 for f in findings if f["technologies"])
     _persist(output_dir, result)
+    rejected = catalogue.rejected
     LOG.info(
-        "fingerprint: %d endpoint(s) checked -> %d with an identified technology, %d exposure(s)%s",
+        "fingerprint: %d endpoint(s) checked -> %d with an identified technology, %d exposure(s)%s%s",
         len(findings),
         matched,
         len(result["exposures"]),
         " [truncated]" if truncated else "",
+        f"; {len(rejected)} catalogue entry(ies) rejected: {', '.join(r['id'] or '<file>' for r in rejected)}"
+        if rejected
+        else "",
     )
     return result
 
