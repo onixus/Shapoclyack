@@ -1624,6 +1624,23 @@ def test_a_product_named_by_its_banner_takes_the_version_from_its_banner(product
     assert outcome.matches == ()
 
 
+def test_a_product_named_by_its_banner_takes_no_revision_from_the_version_field() -> None:
+    """The version field is the named server's, revision and all."""
+    outcome = rm.match(
+        rm.Fingerprint(
+            product="Cherokee Web Server",
+            version="1.2.104-1ubuntu1",
+            banner="HTTP/1.1 200 OK | Server: Cherokee/1.2.104 (Ubuntu) | X-Powered-By: PHP/7.4.3-4ubuntu2.19",
+            service="http",
+        ),
+        FOCAL_WEB_RANGES,
+        lookup=lambda _d: FOCAL_WEB,
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("fixed", "vendor_advisory")
+    assert only.evidence["advisory"]["installed_version"] == "7.4.3-4ubuntu2.19"
+
+
 def test_another_products_header_says_nothing_about_the_listeners_distribution() -> None:
     """``X-Powered-By`` is the application's, not the server's: a Debian PHP
     behind an Apache that names no distribution does not make the Apache a
