@@ -1002,3 +1002,23 @@ def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
         )
     assert rows == []
     assert connections[0] == 1
+
+
+def test_expired_leaf_behind_a_connection_limiter_is_not_an_expired_chain(tmp_path: Path):
+    """Same limiter, but the leaf is the certificate out of its window: the
+    time failure is the leaf's own (cert_expired), not a CA certificate's."""
+    _require_trust_store()
+    now = datetime.now(UTC)
+    ca_cert, ca_key, bundle = _rsa_ca(tmp_path)
+    leaf_key = _rsa_key()
+    leaf = _certificate(
+        "expired.example.test", leaf_key, issuer=ca_cert, issuer_key=ca_key,
+        not_before=now - timedelta(days=400), not_after=now - timedelta(days=3),
+    )
+    cert, key = _write(tmp_path, "expired", leaf, leaf_key)
+    with _tls_server(cert, key, accept_limit=1) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    assert row["checks"]["chain_trust"]["status"] == "inconclusive"
+    assert len(_issues(row, "cert_expired")) == 1
+    assert _issues(row, "cert_chain_expired") == []
