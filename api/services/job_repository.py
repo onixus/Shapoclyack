@@ -193,7 +193,7 @@ def _import_legacy_jobs(settings: Settings, path: Path) -> None:
 
 def _live_groups_for(
     settings: Settings, rows: Sequence[models.Job]
-) -> set[tuple[str, str]] | None:
+) -> dict[tuple[str, str], list[frozenset[str]]] | None:
     """``live_groups`` for the tenants of these rows, or None if none is grouped."""
     tenants = {
         row.tenant_id or tenants_service.DEFAULT_TENANT_ID

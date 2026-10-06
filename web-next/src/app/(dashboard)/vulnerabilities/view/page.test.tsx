@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import VulnerabilityDetailPage from "@/app/(dashboard)/vulnerabilities/view/page";
 import * as apiModule from "@/lib/api";
 import type { Me, TrackedVulnerability } from "@/lib/api";
+import { useAppearanceStore } from "@/lib/appearance";
 import { useAuthStore } from "@/lib/auth-store";
 import { canOperate as canOperateIn } from "@/lib/authz";
 
@@ -387,5 +388,140 @@ describe("Retro match finding", () => {
 
     expect(await screen.findByRole("button", { name: /Verify remediation/ })).toBeInTheDocument();
     expect(screen.queryByTestId("retro-evidence")).toBeNull();
+  });
+});
+
+// One CVE seen by Pulse on the address and by a nuclei template on the name,
+// plus an entry migration 0079 derived from the old script id (no host).
+const DETECTED = vuln({
+  script_id: "pulse:local",
+  detectors: [
+    {
+      detector: "nuclei",
+      ref: "CVE-2024-0001",
+      host: "app.example.com",
+      port: "443",
+      last_run_id: "run-2",
+      last_seen_at: "2026-10-02T10:00:00Z",
+    },
+    {
+      detector: "pulse",
+      ref: "local",
+      host: null,
+      port: "443",
+      last_run_id: "run-1",
+      last_seen_at: "2026-10-01T10:00:00Z",
+    },
+  ],
+});
+
+describe("Detectors and an inconclusive verification (#451)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });
+  });
+
+  it("lists every detector and where it looked", async () => {
+    signIn({ role: "viewer" });
+    renderPage(DETECTED);
+
+    const card = await screen.findByTestId("detectors-card");
+    expect(card).toHaveTextContent("nuclei");
+    expect(card).toHaveTextContent("CVE-2024-0001");
+    expect(card).toHaveTextContent("app.example.com:443");
+    // A migrated entry never recorded its host, and says so.
+    expect(card).toHaveTextContent("any address of the asset:443");
+  });
+
+  it("says when nothing was recorded instead of showing an empty table", async () => {
+    signIn({ role: "viewer" });
+    renderPage(vuln({ detectors: [] }));
+
+    expect(await screen.findByTestId("detectors-card")).toHaveTextContent(
+      /older rule: Pulse with CVE matching/,
+    );
+  });
+
+  it("labels the inconclusive event in the reader's language", async () => {
+    signIn({ role: "viewer" });
+    useAppearanceStore.setState({ locale: "ru" });
+    vi.spyOn(apiModule, "fetchTrackedVulnerability").mockResolvedValue(DETECTED);
+    vi.spyOn(apiModule, "fetchVulnerabilityEvents").mockResolvedValue({
+      items: [
+        {
+          id: 7,
+          vuln_id: "vln_1",
+          tenant_id: "default",
+          occurred_at: "2026-10-03T10:00:00Z",
+          kind: "verification_inconclusive",
+          from_state: "VERIFYING",
+          to_state: "FIXING",
+          actor: "system:verification",
+          note: "Not observed by verification run run-3, but the run does not show that it looked: nuclei CVE-2024-0001 on app.example.com:443: nuclei_skipped:nuclei_binary_missing",
+          detail: { gaps: [{ detector: "nuclei", reason: "nuclei_skipped:nuclei_binary_missing" }] },
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <VulnerabilityDetailPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Проверка неубедительна")).toBeInTheDocument();
+    expect(screen.getByText(/nuclei_binary_missing/)).toBeInTheDocument();
+    expect(screen.getByTestId("detectors-card")).toHaveTextContent("Детекторы");
+  });
+});
+
+describe("A verification that found the port closed (#451)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });
+  });
+
+  it("names the closure and the event for what they are", async () => {
+    signIn({ role: "viewer" });
+    vi.spyOn(apiModule, "fetchTrackedVulnerability").mockResolvedValue(
+      vuln({ state: "CLOSED", closure_reason: "endpoint_unreachable", machine_verified: false }),
+    );
+    vi.spyOn(apiModule, "fetchVulnerabilityEvents").mockResolvedValue({
+      items: [
+        {
+          id: 9,
+          vuln_id: "vln_1",
+          tenant_id: "default",
+          occurred_at: "2026-10-06T10:00:00Z",
+          kind: "verification_unreachable",
+          from_state: "VERIFYING",
+          to_state: "CLOSED",
+          actor: "system:verification",
+          note: "Verification run run-4: port 443 not reachable from group:dmz (connect refused on every attempt); closed, not machine-verified",
+          detail: { closure_reason: "endpoint_unreachable", machine_verified: false },
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <VulnerabilityDetailPage />
+      </QueryClientProvider>,
+    );
+
+    // A refusal is "not reachable from there", never a fix: neither label
+    // may read as one.
+    expect(await screen.findByText("Not reachable from the scanner")).toBeInTheDocument();
+    expect(screen.getAllByText("Not reachable from the scanner (not verified)").length).toBeGreaterThanOrEqual(1);
   });
 });

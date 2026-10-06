@@ -128,10 +128,12 @@ it must not be shadowed by an enrichment volume mounted there:
 | Dataset | Path | Source | Terms | What is extracted |
 |---------|------|--------|-------|-------------------|
 | Public Suffix List | `scanner/pipeline/public_suffix_list.dat` | [publicsuffix.org](https://publicsuffix.org/list/) | MPL-2.0; committed unmodified with its licence header, so the file is its own source form | The whole list, as published — used to derive registrable (seed) domains and to refuse AXFR against a public suffix. Refresh with `scripts/fetch-public-suffix-list.sh` |
+| Subdomain-takeover catalogue | `scanner/pipeline/takeover_fingerprints.json` | [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates/tree/main/http/takeovers) `http/takeovers`; Microsoft's dangling-DNS guidance | **CC BY 4.0 — attribution required** (can-i-take-over-xyz); MIT (nuclei-templates) | Per service: takeover status and the short error strings a provider shows for an unclaimed resource. A selection, re-expressed as a JSON catalogue with this project's own CNAME patterns, notes and ids; no prose is copied. Edited by hand — see [configuration.md](configuration.md#subdomain-takeover-detection) |
 
-**Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. Any
-redistribution of this repository or its images carries that obligation; keep
-this notice with it.
+**Attribution.** EPSS data is provided by FIRST.org under CC BY 4.0. The
+takeover statuses and fingerprints are adapted from "can-i-take-over-xyz" by
+EdOverflow and contributors, CC BY 4.0. Any redistribution of this repository
+or its images carries those obligations; keep this notice with it.
 
 **Why identifiers only.** The exploit overlay stores CVE ids and a maturity
 rung, never exploit content. That keeps the redistribution to a set of factual

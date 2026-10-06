@@ -1,0 +1,1778 @@
+{
+  "schema": 1,
+  "updated": "2026-10-06",
+  "note": "Web technology signatures for scanner/pipeline/fingerprint.py, matched against the one GET the stage already makes. Format and rules: scanner/pipeline/fingerprint_catalogue.py and docs/web-fingerprinting.md. Every entry needs a positive fixture in tests/fixtures/fingerprint/web_responses.json; cpe keys were checked against the NVD CPE dictionary on the date above and are left out where the product has no single key. The first six cdn_waf entries are the original #173 set and feed the risk model's compensating-control discount; keep their matchers as they are.",
+  "technologies": [
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "cf-ray"},
+        {"from": "header", "name": "server", "contains": "cloudflare"}
+      ]
+    },
+    {
+      "id": "akamai",
+      "name": "Akamai",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "prefix": "x-akamai"},
+        {"from": "header", "name": "server", "contains": "akamai"}
+      ]
+    },
+    {
+      "id": "sucuri",
+      "name": "Sucuri",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-sucuri-id"},
+        {"from": "header", "name": "x-sucuri-cache"}
+      ]
+    },
+    {
+      "id": "imperva_incapsula",
+      "name": "Imperva Incapsula",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-iinfo"},
+        {"from": "cookie", "prefix": "incap_ses"},
+        {"from": "cookie", "prefix": "visid_incap"}
+      ]
+    },
+    {
+      "id": "cloudfront",
+      "name": "Amazon CloudFront",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-amz-cf-id"},
+        {"from": "header", "name": "via", "contains": "cloudfront"}
+      ]
+    },
+    {
+      "id": "fastly",
+      "name": "Fastly",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-fastly-request-id"},
+        {"from": "header", "name": "x-served-by", "contains": "fastly"}
+      ]
+    },
+    {
+      "id": "qrator",
+      "name": "Qrator",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^qrator\\b"}
+      ]
+    },
+    {
+      "id": "ddos_guard",
+      "name": "DDoS-Guard",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^ddos-guard\\b"},
+        {"from": "cookie", "prefix": "__ddg", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "variti",
+      "name": "Variti",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-variti-ccr"}
+      ]
+    },
+    {
+      "id": "azure_front_door",
+      "name": "Azure Front Door / Azure CDN",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-azure-ref"}
+      ]
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel Edge Network",
+      "category": "cdn_waf",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-vercel-id"},
+        {"from": "header", "name": "server", "equals": "vercel"}
+      ]
+    },
+    {
+      "id": "barracuda_waf",
+      "name": "Barracuda Web Application Firewall",
+      "category": "cdn_waf",
+      "confidence": "medium",
+      "match": [
+        {"from": "cookie", "name": "barra_counter_session"}
+      ],
+      "note": "Cookie only; medium, so it never reaches the cdn_waf list or the risk discount."
+    },
+    {
+      "id": "f5_bigip_asm",
+      "name": "F5 BIG-IP ASM / Advanced WAF",
+      "category": "cdn_waf",
+      "confidence": "medium",
+      "match": [
+        {"all": [
+          {"from": "title", "equals": "request rejected"},
+          {"from": "body", "contains": "the requested url was rejected. please consult with your administrator"},
+          {"from": "body", "contains": "your support id is"}
+        ]}
+      ],
+      "note": "Only visible when the root GET itself was blocked. The block text alone is quoted on help pages; the default page's title has to agree."
+    },
+    {
+      "id": "f5_bigip_ltm",
+      "name": "F5 BIG-IP LTM",
+      "category": "load_balancer",
+      "confidence": "high",
+      "cpe": "a:f5:big-ip_local_traffic_manager",
+      "match": [
+        {"from": "cookie", "prefix": "bigipserver"},
+        {"from": "header", "name": "server", "regex": "^big-?ip$", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "citrix_adc_lb",
+      "name": "Citrix ADC (NetScaler) load balancing",
+      "category": "load_balancer",
+      "confidence": "medium",
+      "match": [
+        {"from": "cookie", "prefix": "nsc_"},
+        {"from": "header", "name": "via", "regex": "\\bns-cache-\\d"}
+      ],
+      "note": "No cpe: the persistence cookie does not tell ADC from Gateway firmware lines."
+    },
+    {
+      "id": "fortigate_slb",
+      "name": "FortiGate server load balancing",
+      "category": "load_balancer",
+      "confidence": "medium",
+      "match": [
+        {"from": "cookie", "name": "fgtserver"}
+      ],
+      "note": "Persistence cookie of a FortiGate virtual server in front of a site; says nothing about the FortiGate's own interfaces."
+    },
+    {
+      "id": "aws_elb",
+      "name": "AWS Elastic Load Balancing",
+      "category": "load_balancer",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^awselb/"},
+        {"from": "cookie", "name": "awsalb"},
+        {"from": "cookie", "name": "awsalbcors"}
+      ]
+    },
+    {
+      "id": "google_cloud_lb",
+      "name": "Google Cloud Load Balancing / Google Front End",
+      "category": "load_balancer",
+      "confidence": "medium",
+      "match": [
+        {"from": "header", "name": "via", "regex": "\\b1\\.1 google\\b"},
+        {"from": "header", "name": "server", "equals": "google frontend"}
+      ]
+    },
+    {
+      "id": "yandex_cloud_alb",
+      "name": "Yandex Cloud Application Load Balancer",
+      "category": "load_balancer",
+      "confidence": "medium",
+      "match": [
+        {"from": "header", "name": "server", "equals": "ycalb"}
+      ]
+    },
+    {
+      "id": "squid",
+      "name": "Squid",
+      "category": "proxy_cache",
+      "confidence": "high",
+      "cpe": "a:squid-cache:squid",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^squid(?:/|$)"},
+        {"from": "header", "name": "x-squid-error"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^squid/(?P<version>\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)"}
+      ]
+    },
+    {
+      "id": "varnish",
+      "name": "Varnish Cache",
+      "category": "proxy_cache",
+      "confidence": "high",
+      "cpe": "a:varnish_cache_project:varnish_cache",
+      "match": [
+        {"from": "header", "name": "x-varnish"},
+        {"from": "header", "name": "via", "regex": "\\bvarnish\\b"}
+      ]
+    },
+    {
+      "id": "nginx",
+      "name": "nginx",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:f5:nginx_open_source",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^nginx(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^nginx/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "NVD files nginx under f5:nginx_open_source since 2024 (historical releases re-filed there too); f5:nginx and nginx:nginx carry older releases. retro_match treats all three as one product."
+    },
+    {
+      "id": "apache_httpd",
+      "name": "Apache HTTP Server",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:apache:http_server",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^apache(?:/|$|\\s(?!tom))"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^apache/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "microsoft_iis",
+      "name": "Microsoft IIS",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:microsoft:internet_information_services",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^microsoft-iis(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^microsoft-iis/(?P<version>\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "microsoft_httpapi",
+      "name": "Microsoft HTTPAPI (http.sys)",
+      "category": "web_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^microsoft-httpapi/"}
+      ],
+      "note": "The 2.0 in the banner is the API version, not a product version; none is extracted."
+    },
+    {
+      "id": "litespeed",
+      "name": "LiteSpeed Web Server",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:litespeedtech:litespeed_web_server",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^litespeed\\b"},
+        {"from": "header", "name": "x-turbo-charged-by", "regex": "^litespeed\\b"}
+      ]
+    },
+    {
+      "id": "openresty",
+      "name": "OpenResty",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:openresty:openresty",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^openresty(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^openresty/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)"}
+      ]
+    },
+    {
+      "id": "caddy",
+      "name": "Caddy",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:caddyserver:caddy",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^caddy(?:/|$)"}
+      ]
+    },
+    {
+      "id": "envoy",
+      "name": "Envoy",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:envoyproxy:envoy",
+      "match": [
+        {"from": "header", "name": "server", "equals": "envoy"},
+        {"from": "header", "name": "x-envoy-upstream-service-time"}
+      ]
+    },
+    {
+      "id": "lighttpd",
+      "name": "lighttpd",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:lighttpd:lighttpd",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^lighttpd(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^lighttpd/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "angie",
+      "name": "Angie",
+      "category": "web_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^angie(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^angie/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "No NVD CPE for Angie as of the catalogue date."
+    },
+    {
+      "id": "tengine",
+      "name": "Tengine",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "a:alibaba:tengine",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^tengine(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^tengine/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "miniserv",
+      "name": "Webmin MiniServ",
+      "category": "web_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^miniserv/"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^miniserv/(?P<version>\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "The web server of both Webmin and Usermin; which one it fronts is the login title's to say."
+    },
+    {
+      "id": "fortios_httpsd",
+      "name": "FortiOS web server",
+      "category": "web_server",
+      "confidence": "high",
+      "cpe": "o:fortinet:fortios",
+      "match": [
+        {"from": "header", "name": "server", "equals": "xxxxxxxx-xxxxx"}
+      ],
+      "note": "FortiOS answers with the literal Server: xxxxxxxx-xxxxx on both the admin GUI and the SSL-VPN; which one is the entries below."
+    },
+    {
+      "id": "apache_tomcat",
+      "name": "Apache Tomcat",
+      "category": "app_server",
+      "confidence": "high",
+      "cpe": "a:apache:tomcat",
+      "match": [
+        {"from": "title", "regex": "^apache tomcat/\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$"},
+        {"all": [
+          {"from": "status", "regex": "^[45]\\d\\d$"},
+          {"from": "body", "contains": "<h3>apache tomcat/"}
+        ]},
+        {"from": "header", "name": "server", "regex": "^apache-coyote/", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "title", "regex": "^apache tomcat/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"},
+        {"from": "body", "regex": "<h3>apache tomcat/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "eclipse_jetty",
+      "name": "Eclipse Jetty",
+      "category": "app_server",
+      "confidence": "high",
+      "cpe": "a:eclipse:jetty",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^jetty\\("}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^jetty\\((?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "gunicorn",
+      "name": "Gunicorn",
+      "category": "app_server",
+      "confidence": "high",
+      "cpe": "a:gunicorn:gunicorn",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^gunicorn(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^gunicorn/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "werkzeug",
+      "name": "Werkzeug development server",
+      "category": "app_server",
+      "confidence": "high",
+      "cpe": "a:palletsprojects:werkzeug",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^werkzeug/"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^werkzeug/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "uvicorn",
+      "name": "Uvicorn",
+      "category": "app_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "equals": "uvicorn"}
+      ]
+    },
+    {
+      "id": "kestrel",
+      "name": "Kestrel (ASP.NET Core)",
+      "category": "app_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "equals": "kestrel"}
+      ]
+    },
+    {
+      "id": "oracle_weblogic",
+      "name": "Oracle WebLogic Server",
+      "category": "app_server",
+      "confidence": "medium",
+      "cpe": "a:oracle:weblogic_server",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^weblogic server\\b", "confidence": "high"},
+        {"all": [
+          {"from": "status", "equals": "404"},
+          {"from": "body", "contains": "error 404--not found"},
+          {"from": "body", "contains": "from rfc 2068 hypertext transfer protocol"}
+        ]}
+      ],
+      "note": "WebLogic's own 404 page quotes RFC 2068; the root of a fresh domain answers with it."
+    },
+    {
+      "id": "undertow",
+      "name": "WildFly / Undertow",
+      "category": "app_server",
+      "confidence": "medium",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "^undertow\\b"},
+        {"from": "header", "name": "server", "regex": "^wildfly/", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "glassfish",
+      "name": "GlassFish",
+      "category": "app_server",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^glassfish\\b"},
+        {"from": "header", "name": "x-powered-by", "regex": "\\bglassfish\\b", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^glassfish(?: server)?(?: open source edition)?\\s{1,8}(?P<version>\\d{1,6}(?:\\.\\d{1,6}){1,2})"}
+      ],
+      "note": "No cpe: Oracle (oracle:glassfish_server) and Eclipse GlassFish are filed apart and the banner does not always say which."
+    },
+    {
+      "id": "phusion_passenger",
+      "name": "Phusion Passenger",
+      "category": "app_server",
+      "confidence": "high",
+      "cpe": "a:phusionpassenger:phusion_passenger",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "\\bphusion passenger\\b"},
+        {"from": "header", "name": "server", "regex": "\\bphusion passenger\\b"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-powered-by", "regex": "phusion passenger(?:\\(r\\))?\\s{1,8}(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"},
+        {"from": "header", "name": "server", "regex": "phusion passenger(?:\\(r\\))?\\s{1,8}(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "wordpress",
+      "name": "WordPress",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:wordpress:wordpress",
+      "match": [
+        {"from": "header", "name": "x-generator", "contains": "wordpress"},
+        {"from": "asset", "regex": "^/wp-(?:content|includes)/"},
+        {"from": "header", "name": "link", "contains": "api.w.org"},
+        {"from": "generator", "regex": "^wordpress\\b"}
+      ],
+      "version": [
+        {"from": "generator", "regex": "^wordpress (?P<version>\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)$"}
+      ]
+    },
+    {
+      "id": "drupal",
+      "name": "Drupal",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:drupal:drupal",
+      "match": [
+        {"from": "header", "name": "x-generator", "contains": "drupal"},
+        {"from": "header", "name": "x-drupal-cache"},
+        {"from": "header", "name": "x-drupal-dynamic-cache"},
+        {"from": "script", "contains": "drupal.settings"},
+        {"from": "attr", "name": "data-drupal-selector"},
+        {"from": "generator", "regex": "^drupal\\b"}
+      ],
+      "note": "Drupal shows its major version only; that is not a version a CPE range can be matched against, so none is extracted."
+    },
+    {
+      "id": "joomla",
+      "name": "Joomla!",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:joomla:joomla\\!",
+      "match": [
+        {"from": "generator", "regex": "^joomla!"},
+        {"from": "header", "name": "x-content-encoded-by", "regex": "^joomla!"},
+        {"from": "asset", "regex": "^/media/(?:jui|system/js)/"},
+        {"from": "attr", "tag": "script", "name": "class", "contains": "joomla-script-options"},
+        {"from": "asset", "regex": "^/components/com_", "confidence": "medium"}
+      ],
+      "note": "The pre-catalogue rule matched the word 'joomla' anywhere in the body; that fired on any page mentioning Joomla."
+    },
+    {
+      "id": "bitrix",
+      "name": "1C-Bitrix",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:bitrix24:bitrix_site_manager",
+      "match": [
+        {"from": "header", "name": "x-powered-cms", "contains": "bitrix"},
+        {"from": "cookie", "prefix": "bitrix_sm_"},
+        {"from": "asset", "regex": "^/bitrix/(?:js|templates|cache)/"}
+      ],
+      "note": "bitrix24:bitrix_site_manager is the NVD key for the product; NVD has few releases under it, so expect sparse CVE coverage."
+    },
+    {
+      "id": "tilda",
+      "name": "Tilda",
+      "category": "cms",
+      "confidence": "medium",
+      "match": [
+        {"from": "asset", "regex": "^//[a-z0-9.-]{0,64}\\btildacdn\\."}
+      ],
+      "note": "Hosted builder; no cpe."
+    },
+    {
+      "id": "modx",
+      "name": "MODX",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:modx:modx_revolution",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "^modx\\b"},
+        {"from": "generator", "regex": "^modx\\b"}
+      ],
+      "note": "MODX is quiet by default; these fire only where the site keeps the header or the generator tag."
+    },
+    {
+      "id": "typo3",
+      "name": "TYPO3",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:typo3:typo3",
+      "match": [
+        {"from": "generator", "regex": "^typo3\\b"},
+        {"from": "asset", "regex": "^/typo3(?:temp|conf)/"}
+      ]
+    },
+    {
+      "id": "datalife_engine",
+      "name": "DataLife Engine",
+      "category": "cms",
+      "confidence": "high",
+      "match": [
+        {"from": "generator", "regex": "^datalife engine\\b"}
+      ],
+      "note": "No cpe: the only NVD key (dleviet:datalife_engine) has two entries and names a reseller, not the vendor."
+    },
+    {
+      "id": "moodle",
+      "name": "Moodle",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:moodle:moodle",
+      "match": [
+        {"from": "cookie", "name": "moodlesession"}
+      ]
+    },
+    {
+      "id": "mediawiki",
+      "name": "MediaWiki",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:mediawiki:mediawiki",
+      "match": [
+        {"from": "generator", "regex": "^mediawiki\\b"},
+        {"from": "attr", "tag": "body", "name": "class", "regex": "\\bmediawiki\\b"}
+      ],
+      "version": [
+        {"from": "generator", "regex": "^mediawiki (?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "ghost",
+      "name": "Ghost",
+      "category": "cms",
+      "confidence": "high",
+      "cpe": "a:ghost:ghost",
+      "match": [
+        {"from": "generator", "regex": "^ghost(?:\\s|$)"}
+      ],
+      "note": "The generator shows major.minor only, which no NVD range fits; no version is extracted."
+    },
+    {
+      "id": "magento",
+      "name": "Magento / Adobe Commerce",
+      "category": "ecommerce",
+      "confidence": "high",
+      "match": [
+        {"from": "cookie", "name": "x-magento-vary"},
+        {"from": "header", "name": "x-magento-cache-debug"},
+        {"from": "header", "name": "x-magento-tags"},
+        {"from": "attr", "tag": "script", "name": "type", "equals": "text/x-magento-init"}
+      ],
+      "note": "No cpe: the storefront does not say Open Source from Commerce, and NVD files Magento 2 under magento:magento, adobe:magento_open_source and adobe:commerce depending on the year."
+    },
+    {
+      "id": "opencart",
+      "name": "OpenCart",
+      "category": "ecommerce",
+      "confidence": "high",
+      "cpe": "a:opencart:opencart",
+      "match": [
+        {"from": "cookie", "name": "ocsessid"},
+        {"from": "asset", "regex": "^/catalog/view/theme/"}
+      ]
+    },
+    {
+      "id": "prestashop",
+      "name": "PrestaShop",
+      "category": "ecommerce",
+      "confidence": "high",
+      "cpe": "a:prestashop:prestashop",
+      "match": [
+        {"from": "cookie", "prefix": "prestashop-"},
+        {"from": "generator", "regex": "^prestashop\\b"},
+        {"from": "script", "contains": "var prestashop = "}
+      ]
+    },
+    {
+      "id": "woocommerce",
+      "name": "WooCommerce",
+      "category": "ecommerce",
+      "confidence": "high",
+      "cpe": "a:woocommerce:woocommerce",
+      "match": [
+        {"from": "asset", "regex": "^/wp-content/plugins/woocommerce/"},
+        {"from": "attr", "tag": "body", "name": "class", "regex": "\\bwoocommerce-no-js\\b"}
+      ]
+    },
+    {
+      "id": "shopify",
+      "name": "Shopify",
+      "category": "ecommerce",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-shopid"},
+        {"from": "header", "name": "x-shopify-stage"},
+        {"from": "asset", "regex": "^//cdn\\.shopify\\.com/s/files/", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "nextjs",
+      "name": "Next.js",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:vercel:next.js",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "contains": "next.js"},
+        {"from": "attr", "tag": "script", "name": "id", "equals": "__next_data__"},
+        {"from": "asset", "regex": "^/_next/static/"}
+      ]
+    },
+    {
+      "id": "nuxt",
+      "name": "Nuxt",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:nuxt:nuxt",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "contains": "nuxt"},
+        {"from": "script", "contains": "window.__nuxt__"},
+        {"from": "attr", "tag": "div", "name": "id", "equals": "__nuxt"},
+        {"from": "asset", "regex": "^/_nuxt/"}
+      ]
+    },
+    {
+      "id": "laravel",
+      "name": "Laravel",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:laravel:framework",
+      "match": [
+        {"from": "cookie", "name": "laravel_session"}
+      ]
+    },
+    {
+      "id": "django",
+      "name": "Django",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:djangoproject:django",
+      "match": [
+        {"from": "attr", "tag": "input", "name": "name", "equals": "csrfmiddlewaretoken"},
+        {"from": "cookie", "name": "django_language"},
+        {"from": "cookie", "name": "csrftoken", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "spring_boot",
+      "name": "Spring Boot",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:vmware:spring_boot",
+      "match": [
+        {"all": [
+          {"from": "status", "regex": "^[45]\\d\\d$"},
+          {"from": "body", "contains": "whitelabel error page"},
+          {"from": "body", "contains": "this application has no explicit mapping for /error"}
+        ]},
+        {"from": "header", "name": "x-application-context", "confidence": "medium"}
+      ],
+      "note": "The Whitelabel text is quoted in every 'how to fix it' article; only an error status makes it the application's own page."
+    },
+    {
+      "id": "aspnet",
+      "name": "ASP.NET",
+      "category": "framework",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "^asp\\.net\\b"},
+        {"from": "header", "name": "x-aspnet-version"},
+        {"from": "header", "name": "x-aspnetmvc-version"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-aspnet-version", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "X-AspNet-Version names the CLR (4.0.30319), not an ASP.NET release NVD files; no cpe."
+    },
+    {
+      "id": "express",
+      "name": "Express",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:openjsf:express",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "^express(?:$|,)"}
+      ]
+    },
+    {
+      "id": "generic_php",
+      "name": "PHP",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:php:php",
+      "match": [
+        {"from": "header", "name": "x-powered-by", "regex": "^php"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-powered-by", "regex": "^php/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "Id kept from the pre-catalogue signature set; consumers know it as generic_php."
+    },
+    {
+      "id": "codeigniter",
+      "name": "CodeIgniter",
+      "category": "framework",
+      "confidence": "medium",
+      "cpe": "a:codeigniter:codeigniter",
+      "match": [
+        {"from": "cookie", "name": "ci_session"},
+        {"from": "attr", "tag": "input", "name": "name", "equals": "ci_csrf_token", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "symfony",
+      "name": "Symfony",
+      "category": "framework",
+      "confidence": "high",
+      "cpe": "a:sensiolabs:symfony",
+      "match": [
+        {"from": "header", "name": "x-debug-token"},
+        {"from": "header", "name": "x-debug-token-link"},
+        {"from": "cookie", "name": "sf_redirect"}
+      ],
+      "note": "X-Debug-Token means the web profiler is on, which is itself worth a look."
+    },
+    {
+      "id": "webmin",
+      "name": "Webmin / Usermin",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:webmin:webmin",
+      "version_in_cpe": true,
+      "match": [
+        {"from": "title", "regex": "^login to webmin$"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^miniserv/(?P<version>\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "Webmin by its own login title; the MiniServ banner alone is the miniserv entry (Usermin runs on it too)."
+    },
+    {
+      "id": "cpanel",
+      "name": "cPanel / WHM",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:cpanel:cpanel",
+      "match": [
+        {"from": "title", "regex": "^(?:cpanel|whm) login$"},
+        {"from": "header", "name": "server", "regex": "^cpsrvd/", "confidence": "medium"},
+        {"from": "cookie", "name": "cprelogin", "confidence": "medium"}
+      ],
+      "note": "cpsrvd also serves cPanel's own webmail (cpanel_webmail); only the cPanel/WHM login title makes it the admin panel."
+    },
+    {
+      "id": "cpanel_webmail",
+      "name": "cPanel Webmail",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:cpanel:cpanel",
+      "match": [
+        {"all": [
+          {"from": "header", "name": "server", "regex": "^cpsrvd/"},
+          {"from": "title", "equals": "webmail login"}
+        ]}
+      ],
+      "note": "cPanel's mailbox login (port 2096), a user portal rather than the admin panel. A 'Webmail Login' title without cpsrvd is anybody's webmail."
+    },
+    {
+      "id": "plesk",
+      "name": "Plesk",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:plesk:plesk",
+      "match": [
+        {"from": "meta", "name": "plesk-build"},
+        {"from": "asset", "regex": "^/login_up\\.php", "confidence": "medium"}
+      ],
+      "note": "X-Powered-By: PleskLin is on every hosted site, not the panel, and is deliberately not a marker here."
+    },
+    {
+      "id": "directadmin",
+      "name": "DirectAdmin",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:directadmin:directadmin",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^directadmin daemon\\b"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^directadmin daemon v(?P<version>\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)"}
+      ]
+    },
+    {
+      "id": "rabbitmq_management",
+      "name": "RabbitMQ Management",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:broadcom:rabbitmq_server",
+      "match": [
+        {"from": "title", "equals": "rabbitmq management"}
+      ],
+      "note": "vmware:rabbitmq is deprecated in favour of broadcom:rabbitmq_server."
+    },
+    {
+      "id": "minio_console",
+      "name": "MinIO Console",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:minio:minio",
+      "match": [
+        {"from": "title", "equals": "minio console"}
+      ]
+    },
+    {
+      "id": "keycloak",
+      "name": "Keycloak",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:redhat:keycloak",
+      "root_is_public": true,
+      "match": [
+        {"from": "title", "equals": "welcome to keycloak"}
+      ],
+      "note": "The welcome page links the administration console; an ordinary realm login page is not matched."
+    },
+    {
+      "id": "vmware_vcenter",
+      "name": "VMware vCenter Server",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:vmware:vcenter_server",
+      "root_is_public": true,
+      "match": [
+        {"from": "title", "equals": "id_vc_welcome"}
+      ]
+    },
+    {
+      "id": "django_admin",
+      "name": "Django admin",
+      "category": "admin_panel",
+      "confidence": "high",
+      "cpe": "a:djangoproject:django",
+      "match": [
+        {"from": "title", "regex": "\\|\\s{0,8}django site admin$"}
+      ]
+    },
+    {
+      "id": "phpmyadmin",
+      "name": "phpMyAdmin",
+      "category": "database_ui",
+      "confidence": "high",
+      "cpe": "a:phpmyadmin:phpmyadmin",
+      "match": [
+        {"from": "title", "regex": "^phpmyadmin$"},
+        {"from": "title", "regex": "\\|\\s{0,8}phpmyadmin(?:\\s{1,8}\\d[\\d.]{0,16})?$"},
+        {"from": "cookie", "prefix": "phpmyadmin"},
+        {"from": "cookie", "name": "pma_lang"}
+      ],
+      "version": [
+        {"from": "title", "regex": "phpmyadmin (?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})$"},
+        {"from": "script", "regex": "pma_version:\\s{0,8}\"(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "adminer",
+      "name": "Adminer",
+      "category": "database_ui",
+      "confidence": "high",
+      "cpe": "a:adminer:adminer",
+      "match": [
+        {"from": "title", "regex": "(?:^|\\s-\\s)adminer$"},
+        {"from": "cookie", "name": "adminer_sid"},
+        {"from": "cookie", "name": "adminer_key"}
+      ],
+      "version": [
+        {"from": "body", "regex": "adminer</a>\\s{0,8}<span class=[\"']?version[\"']?>(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "pgadmin",
+      "name": "pgAdmin 4",
+      "category": "database_ui",
+      "confidence": "high",
+      "cpe": "a:pgadmin:pgadmin_4",
+      "match": [
+        {"from": "title", "equals": "pgadmin 4"},
+        {"from": "cookie", "name": "pga4_session"}
+      ]
+    },
+    {
+      "id": "solr_admin",
+      "name": "Apache Solr Admin",
+      "category": "database_ui",
+      "confidence": "high",
+      "cpe": "a:apache:solr",
+      "match": [
+        {"from": "title", "equals": "solr admin"}
+      ]
+    },
+    {
+      "id": "mongo_express",
+      "name": "mongo-express",
+      "category": "database_ui",
+      "confidence": "high",
+      "match": [
+        {"from": "title", "equals": "mongo express"}
+      ]
+    },
+    {
+      "id": "elasticsearch",
+      "name": "Elasticsearch",
+      "category": "database",
+      "confidence": "high",
+      "cpe": "a:elastic:elasticsearch",
+      "match": [
+        {"from": "json", "regex": "\"tagline\"\\s{0,8}:\\s{0,8}\"you know, for search\""}
+      ],
+      "version": [
+        {"from": "json", "regex": "\"number\"\\s{0,8}:\\s{0,8}\"(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})\""}
+      ]
+    },
+    {
+      "id": "opensearch",
+      "name": "OpenSearch",
+      "category": "database",
+      "confidence": "high",
+      "match": [
+        {"from": "json", "regex": "\"tagline\"\\s{0,8}:\\s{0,8}\"the opensearch project"}
+      ],
+      "version": [
+        {"from": "json", "regex": "\"number\"\\s{0,8}:\\s{0,8}\"(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})\""}
+      ]
+    },
+    {
+      "id": "couchdb",
+      "name": "Apache CouchDB",
+      "category": "database",
+      "confidence": "high",
+      "cpe": "a:apache:couchdb",
+      "root_is_public": true,
+      "match": [
+        {"from": "json", "regex": "\"couchdb\"\\s{0,8}:\\s{0,8}\"welcome\""},
+        {"from": "header", "name": "server", "regex": "^couchdb/"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^couchdb/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"},
+        {"from": "json", "regex": "\"version\"\\s{0,8}:\\s{0,8}\"(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})\""}
+      ]
+    },
+    {
+      "id": "clickhouse",
+      "name": "ClickHouse HTTP interface",
+      "category": "database",
+      "confidence": "medium",
+      "match": [
+        {"from": "header", "name": "x-clickhouse-server-display-name"},
+        {"from": "header", "name": "x-clickhouse-summary"}
+      ]
+    },
+    {
+      "id": "influxdb",
+      "name": "InfluxDB",
+      "category": "database",
+      "confidence": "high",
+      "cpe": "a:influxdata:influxdb",
+      "match": [
+        {"from": "header", "name": "x-influxdb-version"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-influxdb-version", "regex": "^v?(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "minio",
+      "name": "MinIO",
+      "category": "storage",
+      "confidence": "high",
+      "cpe": "a:minio:minio",
+      "match": [
+        {"from": "header", "name": "server", "equals": "minio"}
+      ]
+    },
+    {
+      "id": "jenkins",
+      "name": "Jenkins",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:jenkins:jenkins",
+      "match": [
+        {"from": "header", "name": "x-jenkins"},
+        {"from": "header", "name": "x-hudson"},
+        {"from": "title", "regex": "\\[jenkins\\]$", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-jenkins", "regex": "^(?P<version>\\d{1,6}(?:\\.\\d{1,6}){1,2})$"}
+      ]
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:gitlab:gitlab",
+      "match": [
+        {"from": "cookie", "name": "_gitlab_session"},
+        {"from": "title", "regex": "\\u00b7\\s{0,8}gitlab$"},
+        {"from": "meta", "name": "og:site_name", "equals": "gitlab"}
+      ]
+    },
+    {
+      "id": "gitea",
+      "name": "Gitea",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:gitea:gitea",
+      "match": [
+        {"from": "cookie", "name": "i_like_gitea"},
+        {"from": "meta", "name": "keywords", "regex": "^go,\\s{0,4}git,\\s{0,4}self-hosted,\\s{0,4}gitea$"}
+      ]
+    },
+    {
+      "id": "gogs",
+      "name": "Gogs",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:gogs:gogs",
+      "match": [
+        {"from": "cookie", "name": "i_like_gogits"}
+      ]
+    },
+    {
+      "id": "jira",
+      "name": "Jira (Server / Data Center)",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:atlassian:jira_data_center",
+      "match": [
+        {"from": "meta", "name": "application-name", "equals": "jira"}
+      ],
+      "version": [
+        {"from": "meta", "name": "ajs-version-number", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})$"}
+      ],
+      "note": "NVD lists jira_server and jira_data_center side by side; the page does not say which, and new releases are Data Center only. atlassian:jira is deprecated."
+    },
+    {
+      "id": "confluence",
+      "name": "Confluence (Server / Data Center)",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:atlassian:confluence_data_center",
+      "match": [
+        {"from": "header", "name": "x-confluence-request-time"},
+        {"from": "meta", "name": "confluence-base-url"}
+      ],
+      "version": [
+        {"from": "meta", "name": "ajs-version-number", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})$"}
+      ],
+      "note": "NVD lists confluence_server and confluence_data_center side by side; 8.x/9.x are filed under data_center."
+    },
+    {
+      "id": "sonarqube",
+      "name": "SonarQube",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:sonarsource:sonarqube",
+      "match": [
+        {"from": "title", "equals": "sonarqube"},
+        {"from": "meta", "name": "application-name", "equals": "sonarqube"}
+      ]
+    },
+    {
+      "id": "nexus",
+      "name": "Sonatype Nexus Repository",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:sonatype:nexus_repository_manager",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^nexus/"},
+        {"from": "title", "equals": "nexus repository manager"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^nexus/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "harbor",
+      "name": "Harbor",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:linuxfoundation:harbor",
+      "root_is_public": true,
+      "match": [
+        {"all": [
+          {"from": "title", "equals": "harbor"},
+          {"from": "attr", "tag": "harbor-app"}
+        ]}
+      ]
+    },
+    {
+      "id": "portainer",
+      "name": "Portainer",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:portainer:portainer",
+      "root_is_public": true,
+      "match": [
+        {"from": "attr", "tag": "html", "name": "ng-app", "equals": "portainer"},
+        {"from": "title", "equals": "portainer", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "argocd",
+      "name": "Argo CD",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:argoproj:argo_cd",
+      "root_is_public": true,
+      "match": [
+        {"from": "title", "equals": "argo cd"}
+      ],
+      "note": "linuxfoundation:argo-cd is deprecated in favour of argoproj:argo_cd."
+    },
+    {
+      "id": "kubernetes_dashboard",
+      "name": "Kubernetes Dashboard",
+      "category": "devops",
+      "confidence": "high",
+      "root_is_public": true,
+      "match": [
+        {"from": "title", "equals": "kubernetes dashboard"},
+        {"from": "attr", "name": "ng-app", "equals": "kubernetesdashboard"}
+      ],
+      "note": "No NVD CPE for the dashboard on its own."
+    },
+    {
+      "id": "kubernetes_api",
+      "name": "Kubernetes API server",
+      "category": "devops",
+      "confidence": "high",
+      "match": [
+        {"all": [
+          {"from": "status", "regex": "^40[13]$"},
+          {"from": "json", "regex": "\"kind\"\\s{0,8}:\\s{0,8}\"status\""},
+          {"from": "json", "contains": "system:anonymous"}
+        ]}
+      ]
+    },
+    {
+      "id": "teamcity",
+      "name": "JetBrains TeamCity",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:jetbrains:teamcity",
+      "match": [
+        {"from": "header", "name": "teamcity-node-id"},
+        {"from": "meta", "name": "application-name", "equals": "teamcity"}
+      ],
+      "version": [
+        {"from": "body", "regex": "<span class=\"vword\">version</span>\\s{0,8}(?P<version>\\d{4}\\.\\d{1,6}(?:\\.\\d{1,6})?)"}
+      ]
+    },
+    {
+      "id": "artifactory",
+      "name": "JFrog Artifactory",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:jfrog:artifactory",
+      "match": [
+        {"from": "header", "name": "x-artifactory-id"},
+        {"from": "header", "name": "x-jfrog-version"},
+        {"from": "header", "name": "server", "regex": "^artifactory(?:/|$)"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-jfrog-version", "regex": "^artifactory/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"},
+        {"from": "header", "name": "server", "regex": "^artifactory/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "redmine",
+      "name": "Redmine",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:redmine:redmine",
+      "match": [
+        {"from": "cookie", "name": "_redmine_session"},
+        {"from": "meta", "name": "description", "equals": "redmine", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "docker_registry",
+      "name": "Docker registry (Distribution API)",
+      "category": "devops",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "docker-distribution-api-version"}
+      ]
+    },
+    {
+      "id": "consul",
+      "name": "HashiCorp Consul",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:hashicorp:consul",
+      "match": [
+        {"from": "title", "equals": "consul by hashicorp"}
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "HashiCorp Vault",
+      "category": "devops",
+      "confidence": "high",
+      "cpe": "a:hashicorp:vault",
+      "match": [
+        {"from": "meta", "name": "vault/config/environment"}
+      ]
+    },
+    {
+      "id": "jupyter",
+      "name": "Jupyter Notebook / JupyterLab",
+      "category": "devops",
+      "confidence": "high",
+      "match": [
+        {"from": "title", "regex": "^(?:jupyter notebook|jupyterlab|home page - select or create a notebook)$"},
+        {"from": "attr", "tag": "script", "name": "id", "equals": "jupyter-config-data"}
+      ],
+      "note": "Notebook and Lab are separate NVD products; no single cpe."
+    },
+    {
+      "id": "grafana",
+      "name": "Grafana",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:grafana:grafana",
+      "match": [
+        {"all": [
+          {"from": "script", "contains": "window.grafanabootdata"},
+          {"from": "title", "equals": "grafana"}
+        ]},
+        {"from": "script", "contains": "window.grafanabootdata", "confidence": "medium"},
+        {"from": "title", "equals": "grafana", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "script", "regex": "\"buildinfo\":\\{[^{}]{0,1024}?\"version\":\"(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})\""}
+      ]
+    },
+    {
+      "id": "kibana",
+      "name": "Kibana",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:elastic:kibana",
+      "match": [
+        {"from": "header", "name": "kbn-name"},
+        {"from": "header", "name": "kbn-version"},
+        {"from": "attr", "tag": "kbn-injected-metadata"}
+      ],
+      "version": [
+        {"from": "header", "name": "kbn-version", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})$"}
+      ]
+    },
+    {
+      "id": "prometheus",
+      "name": "Prometheus",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:prometheus:prometheus",
+      "match": [
+        {"from": "title", "equals": "prometheus time series collection and processing server"}
+      ]
+    },
+    {
+      "id": "alertmanager",
+      "name": "Prometheus Alertmanager",
+      "category": "monitoring",
+      "confidence": "medium",
+      "match": [
+        {"from": "title", "equals": "alertmanager"}
+      ]
+    },
+    {
+      "id": "zabbix",
+      "name": "Zabbix",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:zabbix:zabbix",
+      "match": [
+        {"from": "cookie", "name": "zbx_session"},
+        {"from": "cookie", "name": "zbx_sessionid"},
+        {"from": "attr", "tag": "body", "name": "onload", "contains": "zbxcallpostscripts"},
+        {"from": "title", "equals": "zabbix", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "nagios",
+      "name": "Nagios",
+      "category": "monitoring",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "www-authenticate", "regex": "realm=\"nagios"}
+      ],
+      "note": "No cpe: the realm is shared by Nagios Core and its forks, and NVD splits Core between nagios:nagios and nagios:nagios_core."
+    },
+    {
+      "id": "graylog",
+      "name": "Graylog",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:graylog:graylog",
+      "match": [
+        {"from": "header", "name": "x-graylog-node-id"}
+      ]
+    },
+    {
+      "id": "splunk",
+      "name": "Splunk",
+      "category": "monitoring",
+      "confidence": "high",
+      "cpe": "a:splunk:splunk",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^splunkd\\b"}
+      ]
+    },
+    {
+      "id": "fortinet_fortigate",
+      "name": "Fortinet FortiGate SSL-VPN",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "o:fortinet:fortios",
+      "match": [
+        {"from": "url", "regex": "^/remote/(?:login|logincheck)\\b"},
+        {"from": "script", "regex": "top\\.location\\s{0,4}=\\s{0,4}[\"']/remote/login"},
+        {"from": "asset", "regex": "^/remote/fgt_lang"}
+      ],
+      "note": "The SSL-VPN portal. The admin GUI is fortinet_fortigate_admin; the FortiOS server banner on its own is fortios_httpsd."
+    },
+    {
+      "id": "usermin",
+      "name": "Usermin",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "a:webmin:usermin",
+      "match": [
+        {"from": "title", "regex": "^login to usermin$"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^miniserv/(?P<version>\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "Webmin's user portal (mail, files, shell for ordinary accounts): a remote-access surface, not the admin panel."
+    },
+    {
+      "id": "ivanti_connect_secure",
+      "name": "Ivanti Connect Secure (Pulse Connect Secure)",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "a:ivanti:connect_secure",
+      "match": [
+        {"from": "url", "regex": "^/dana-na/"},
+        {"from": "asset", "regex": "^/dana-na/"},
+        {"from": "cookie", "name": "dssignin"},
+        {"from": "cookie", "name": "dssigninurl"},
+        {"from": "title", "regex": "^(?:ivanti|pulse) connect secure\\b"}
+      ],
+      "note": "Releases before the rename are filed under pulsesecure:pulse_connect_secure."
+    },
+    {
+      "id": "citrix_gateway",
+      "name": "Citrix Gateway (NetScaler Gateway)",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "a:citrix:netscaler_gateway",
+      "match": [
+        {"from": "url", "regex": "^/logon/logonpoint/"},
+        {"from": "asset", "regex": "^/logon/logonpoint/"},
+        {"from": "asset", "regex": "/ctxs\\.core\\.min\\.js$"},
+        {"from": "title", "regex": "^(?:citrix|netscaler) gateway$"}
+      ]
+    },
+    {
+      "id": "paloalto_globalprotect",
+      "name": "Palo Alto Networks GlobalProtect",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "o:paloaltonetworks:pan-os",
+      "match": [
+        {"from": "url", "regex": "^/global-protect/"},
+        {"from": "asset", "regex": "^/global-protect/portal/"},
+        {"from": "title", "equals": "globalprotect portal"}
+      ]
+    },
+    {
+      "id": "cisco_asa_anyconnect",
+      "name": "Cisco ASA / AnyConnect (WebVPN)",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "o:cisco:adaptive_security_appliance_software",
+      "match": [
+        {"from": "url", "regex": "^/\\+cscoe\\+/"},
+        {"from": "script", "regex": "location\\.replace\\(\\s{0,4}[\"']/\\+cscoe\\+/"},
+        {"from": "asset", "regex": "^/\\+csco[eu]\\+/"},
+        {"from": "cookie", "name": "webvpnlogin"},
+        {"from": "cookie", "name": "webvpncontext"}
+      ],
+      "note": "NVD moved ASA from a: to o: (the a: names are deprecated)."
+    },
+    {
+      "id": "f5_bigip_apm",
+      "name": "F5 BIG-IP APM (access portal)",
+      "category": "remote_access",
+      "confidence": "high",
+      "cpe": "a:f5:big-ip_access_policy_manager",
+      "match": [
+        {"from": "cookie", "name": "mrhsession"},
+        {"from": "cookie", "name": "lastmrh_session"},
+        {"from": "url", "regex": "^/my\\.policy\\b"},
+        {"from": "asset", "regex": "^/my\\.policy\\b"}
+      ]
+    },
+    {
+      "id": "sonicwall_sma",
+      "name": "SonicWall SMA (Secure Mobile Access)",
+      "category": "remote_access",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^sonicwall ssl-vpn web server"}
+      ],
+      "note": "NVD files SMA per hardware model firmware (sma_210_firmware, ...); no single cpe."
+    },
+    {
+      "id": "ms_rdweb",
+      "name": "Microsoft Remote Desktop Web Access",
+      "category": "remote_access",
+      "confidence": "high",
+      "match": [
+        {"from": "title", "equals": "rd web access"}
+      ]
+    },
+    {
+      "id": "openvpn_as",
+      "name": "OpenVPN Access Server",
+      "category": "remote_access",
+      "confidence": "medium",
+      "cpe": "a:openvpn:openvpn_access_server",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^openvpn-as\\b"}
+      ]
+    },
+    {
+      "id": "exchange_owa",
+      "name": "Microsoft Exchange (Outlook on the web)",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:microsoft:exchange_server",
+      "version_in_cpe": false,
+      "match": [
+        {"from": "header", "name": "x-owa-version"},
+        {"from": "url", "regex": "^/owa/auth/"},
+        {"from": "asset", "regex": "^/owa/auth/"},
+        {"from": "header", "name": "x-feserver", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "header", "name": "x-owa-version", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})$"},
+        {"from": "asset", "regex": "^/owa/auth/(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})/themes/"}
+      ],
+      "note": "The version is the Exchange build (15.2.1258.12); NVD files Exchange by release and CU, so it stays out of the cpe."
+    },
+    {
+      "id": "zimbra",
+      "name": "Zimbra Collaboration",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:synacor:zimbra_collaboration_suite",
+      "match": [
+        {"from": "cookie", "name": "zm_test"},
+        {"from": "cookie", "name": "zm_login_csrf"},
+        {"from": "title", "equals": "zimbra web client sign in"}
+      ],
+      "note": "NVD keeps zimbra:collaboration live as well; synacor:zimbra_collaboration_suite carries the newest releases."
+    },
+    {
+      "id": "roundcube",
+      "name": "Roundcube Webmail",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:roundcube:webmail",
+      "match": [
+        {"from": "attr", "tag": "input", "name": "id", "equals": "rcmloginuser"},
+        {"from": "cookie", "name": "roundcube_sessid"},
+        {"from": "title", "regex": "\\broundcube webmail\\b", "confidence": "medium"},
+        {"from": "url", "regex": "[?&]_task=login\\b", "confidence": "medium"}
+      ],
+      "note": "Roundcube encodes its version as an integer (rcversion 10603 = 1.6.3); not decoded here."
+    },
+    {
+      "id": "kerio_connect",
+      "name": "Kerio Connect",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:gfi:kerio_connect",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^kerio connect\\b"},
+        {"from": "title", "regex": "^kerio connect\\b", "confidence": "medium"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^kerio connect (?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ]
+    },
+    {
+      "id": "communigate_pro",
+      "name": "CommuniGate Pro",
+      "category": "mail_webmail",
+      "confidence": "high",
+      "cpe": "a:communigate:communigate_pro",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^communigatepro/"}
+      ],
+      "version": [
+        {"from": "header", "name": "server", "regex": "^communigatepro/(?P<version>\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)"}
+      ]
+    },
+    {
+      "id": "mikrotik_routeros",
+      "name": "MikroTik RouterOS (WebFig)",
+      "category": "network_appliance",
+      "confidence": "high",
+      "cpe": "o:mikrotik:routeros",
+      "match": [
+        {"from": "title", "equals": "routeros router configuration page"}
+      ],
+      "version": [
+        {"from": "body", "regex": "<h1>routeros v(?P<version>\\d{1,6}\\.\\d{1,6}(?:\\.\\d{1,6})?)</h1>"}
+      ]
+    },
+    {
+      "id": "fortinet_fortigate_admin",
+      "name": "Fortinet FortiGate admin GUI",
+      "category": "network_appliance",
+      "confidence": "high",
+      "cpe": "o:fortinet:fortios",
+      "match": [
+        {"all": [
+          {"from": "header", "name": "server", "equals": "xxxxxxxx-xxxxx"},
+          {"from": "url", "regex": "^/login\\b"}
+        ]},
+        {"all": [
+          {"from": "header", "name": "server", "equals": "xxxxxxxx-xxxxx"},
+          {"from": "script", "regex": "top\\.location\\s{0,4}=\\s{0,4}[\"']/login\\b"}
+        ]},
+        {"from": "attr", "name": "class", "contains": "ftnt-fortinet-grid", "confidence": "medium"}
+      ],
+      "note": "FortiOS management on the scanned address (CVE-2022-40684 and kin). The GUI's own markup is medium: the SSL-VPN portal shares the styling."
+    },
+    {
+      "id": "f5_bigip_tmui",
+      "name": "F5 BIG-IP Configuration Utility (TMUI)",
+      "category": "network_appliance",
+      "confidence": "high",
+      "cpe": "a:f5:big-ip_local_traffic_manager",
+      "match": [
+        {"from": "url", "regex": "^/tmui/"},
+        {"all": [
+          {"from": "asset", "regex": "^/tmui/"},
+          {"from": "title", "regex": "^big-ip®?\\s{0,4}-"}
+        ]}
+      ]
+    },
+    {
+      "id": "sonicwall_sonicos",
+      "name": "SonicWall SonicOS",
+      "category": "network_appliance",
+      "confidence": "medium",
+      "match": [
+        {"from": "header", "name": "server", "equals": "sonicwall"}
+      ]
+    },
+    {
+      "id": "kerio_control",
+      "name": "Kerio Control",
+      "category": "network_appliance",
+      "confidence": "medium",
+      "cpe": "a:gfi:kerio_control",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^kerio control\\b"},
+        {"from": "title", "regex": "^kerio control\\b"}
+      ]
+    },
+    {
+      "id": "opnsense",
+      "name": "OPNsense",
+      "category": "network_appliance",
+      "confidence": "medium",
+      "cpe": "a:opnsense:opnsense",
+      "match": [
+        {"from": "title", "regex": "\\|\\s{0,8}opnsense$"}
+      ]
+    },
+    {
+      "id": "hpe_ilo",
+      "name": "HPE Integrated Lights-Out (iLO)",
+      "category": "network_appliance",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^hpe?-ilo-server\\b"}
+      ],
+      "note": "NVD files iLO per generation (integrated_lights-out_5_firmware, ...); no single cpe."
+    },
+    {
+      "id": "synology_dsm",
+      "name": "Synology DiskStation Manager",
+      "category": "network_appliance",
+      "confidence": "high",
+      "cpe": "o:synology:diskstation_manager",
+      "match": [
+        {"from": "attr", "name": "class", "contains": "syno-no-script"},
+        {"from": "meta", "name": "application-name", "equals": "synology diskstation"}
+      ]
+    },
+    {
+      "id": "sharepoint",
+      "name": "Microsoft SharePoint",
+      "category": "collaboration",
+      "confidence": "high",
+      "cpe": "a:microsoft:sharepoint_server",
+      "version_in_cpe": false,
+      "match": [
+        {"from": "header", "name": "microsoftsharepointteamservices"},
+        {"from": "header", "name": "sprequestguid"},
+        {"from": "generator", "regex": "^microsoft sharepoint\\b"}
+      ],
+      "version": [
+        {"from": "header", "name": "microsoftsharepointteamservices", "regex": "^(?P<version>\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}\\.\\d{1,6})"}
+      ],
+      "note": "The header carries the build (16.0.0.10337); NVD files SharePoint by edition, so it stays out of the cpe."
+    },
+    {
+      "id": "nextcloud",
+      "name": "Nextcloud",
+      "category": "collaboration",
+      "confidence": "high",
+      "cpe": "a:nextcloud:nextcloud_server",
+      "match": [
+        {"from": "cookie", "name": "__host-nc_samesitecookielax"},
+        {"from": "cookie", "name": "__host-nc_samesitecookiestrict"}
+      ]
+    },
+    {
+      "id": "1c_enterprise",
+      "name": "1C:Enterprise web client",
+      "category": "business_app",
+      "confidence": "medium",
+      "match": [
+        {"from": "title", "regex": "^1[\\u0441c]:\\u043f\\u0440\\u0435\\u0434\\u043f\\u0440\\u0438\\u044f\\u0442\\u0438\\u0435$"},
+        {"from": "title", "equals": "1c:enterprise"}
+      ],
+      "note": "The web client's own page title, Cyrillic or Latin C. Markers inside the client load later via script and are not in the first response."
+    },
+    {
+      "id": "sap_netweaver",
+      "name": "SAP NetWeaver Application Server",
+      "category": "business_app",
+      "confidence": "high",
+      "match": [
+        {"from": "header", "name": "server", "regex": "^sap netweaver application server\\b"}
+      ],
+      "note": "The banner names the kernel and AS Java release, not a product NVD files as such; no cpe."
+    }
+  ]
+}

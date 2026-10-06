@@ -159,3 +159,97 @@ def test_truncated_snapshot_is_refused(tmp_path: Path, monkeypatch):
             registrable_domain("x.github.io")
     finally:
         public_suffix._snapshot.cache_clear()
+
+
+#: Suffixes in the list's private section under which a registry sells or
+#: assigns names to unrelated parties. Fixed here, not derived from
+#: PUBLIC_REGISTRY_OPERATORS, so dropping an operator -- or a refresh renaming
+#: its block header -- fails the suffix rather than quietly shrinking the test.
+PUBLIC_REGISTRY_SUFFIXES = (
+    "com.ru", "msk.ru", "spb.ru", "ru.net",  # FAITID
+    "net.ru", "org.ru", "pp.ru",  # MSK-IX
+    "uk.com", "br.com", "us.com", "gb.net",  # CentralNic
+    "co.com", "co.ca", "eu.org", "pp.ua", "co.ua", "v.ua", "co.cz", "za.net", "za.org",
+    "us.org", "gr.com", "uk.cc", "us.cc", "name.pm", "org.yt", "biz.ng",
+    "krakow.pl", "poznan.pl", "lodz.pl", "gda.pl",
+)
+
+
+@pytest.mark.parametrize("suffix", PUBLIC_REGISTRY_SUFFIXES)
+def test_a_public_registrys_suffix_is_registrable_under_registries_only(suffix):
+    assert registrable_domain(f"www.gone.{suffix}", registries_only=True) == f"gone.{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("rule", "operator"),
+    [
+        # Blocks whose header has no "operator : url" form used to inherit the
+        # previous block's operator.
+        ("firebaseapp.com", "Firebase, Inc."),
+        ("github.io", "GitHub, Inc."),
+        ("ras.ru", "Russian Academy of Sciences"),
+        # "Name: url" without the space before the colon.
+        ("v.ua", "V.UA Domain Registry"),
+        ("uk.cc", "TechEdge Limited"),
+    ],
+)
+def test_every_private_block_is_attributed_to_its_own_header(rule, operator):
+    owners = {
+        owned: name for name, rules in public_suffix.private_operators().items() for owned in rules
+    }
+    assert owners[rule] == operator
+
+
+def test_rules_after_a_blank_line_belong_to_no_one_until_a_header_says(tmp_path, monkeypatch):
+    """The shipped list has no header-less group today (614 of 614 have one),
+    so this pins the rule on a list made for it: a registry's block ends at
+    the blank line, and what follows is not the registry's."""
+    snapshot = tmp_path / "public_suffix_list.dat"
+    snapshot.write_text(
+        "// ===BEGIN ICANN DOMAINS===\ncom\n// ===END ICANN DOMAINS===\n\n"
+        "// ===BEGIN PRIVATE DOMAINS===\n\n"
+        "// CentralNic : https://teaminternet.com/\nuk.com\n\n"
+        "headerless.com\n\n"
+        "// Some Host\nhost.com\n"
+        "// ===END PRIVATE DOMAINS===\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(public_suffix, "PSL_PATH", snapshot)
+    public_suffix._snapshot.cache_clear()
+    try:
+        assert public_suffix.private_operators()["CentralNic"] == {"uk.com"}
+        assert registrable_domain("www.gone.uk.com", registries_only=True) == "gone.uk.com"
+        assert registrable_domain("www.a.headerless.com", registries_only=True) == "headerless.com"
+    finally:
+        public_suffix._snapshot.cache_clear()
+
+
+@pytest.mark.parametrize("platform", ["x.firebaseapp.com", "x.github.io", "x.ras.ru"])
+def test_a_platform_that_followed_a_registry_block_is_not_a_registry(platform):
+    assert registrable_domain(platform, registries_only=True) != platform
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Public registries in the private section: the registrable domain is the same.
+        ("www.gone.com.ru", "gone.com.ru"),
+        ("x.msk.ru", "x.msk.ru"),
+        ("shop.gone.pp.ua", "gone.pp.ua"),
+        ("www.gone.uk.com", "gone.uk.com"),
+        ("www.gone.eu.org", "gone.eu.org"),
+        # Hosting platforms: the tenant name gives way to the platform's domain.
+        ("abc.execute-api.us-east-1.amazonaws.com", "amazonaws.com"),
+        ("org.github.io", "github.io"),
+    ],
+)
+def test_registries_only_keeps_registries_and_drops_platforms(name, expected):
+    assert registrable_domain(name, registries_only=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("x.co.ck", True), ("a.b.jm", True), ("x.com", True), ("srv.corp", False), ("files.lan", False)],
+)
+def test_a_tld_named_only_by_a_wildcard_rule_counts(name, expected):
+    assert public_suffix.has_icann_tld(name) is expected

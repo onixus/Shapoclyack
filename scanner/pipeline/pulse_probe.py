@@ -40,10 +40,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,39 @@ from .service_schema import (
     services_to_report_findings,
 )
 from .utils import run_command, save_json, write_lines
+
+
+#: pulse's ruleset id: ``YYYY.MM.DD`` with an optional ``-hN`` hotfix
+#: (pulse 1.1.0 prints ``2026.07.29-h1``).
+_RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
+
+
+def parse_ruleset(value: str | None) -> tuple[int, int, int, int] | None:
+    """``(year, month, day, hotfix)`` of a pulse ruleset id, or ``None``.
+
+    Case and surrounding space do not matter, and a missing hotfix is hotfix
+    0 (``2026.07.29`` == ``2026.07.29-h0``). Anything else is ``None``: a
+    verification must not decide "older or newer" about an id it cannot read
+    (#451 review — ``2026-08-02`` used to sort oldest, so any dated run
+    "covered" it).
+    """
+    match = _RULESET.fullmatch(str(value or "").strip().lower())
+    if match is None:
+        return None
+    year, month, day, hotfix = match.groups()
+    try:
+        # A date that does not exist (2026.13.45) is not a ruleset either:
+        # it would sort newer than every real one and "cover" them all.
+        date(int(year), int(month), int(day))
+    except ValueError:
+        return None
+    return int(year), int(month), int(day), int(hotfix or 0)
+
+
+def ruleset_order(value: str | None) -> tuple:
+    """Sort key, oldest first; an unreadable id sorts before every readable one."""
+    parsed = parse_ruleset(value)
+    return (0, (), str(value or "")) if parsed is None else (1, parsed, "")
 
 
 def resolve_pulse_bin(configured: str = "") -> str:
@@ -681,7 +716,14 @@ def run_pulse_probe(
         "stats": {},
         "chunks": [],
         "completion": completion_manifest({host: grouped[host] for host in done}),
-        "adapter": {"chunk_hosts": size, **diagnostics},
+        "adapter": {
+            "chunk_hosts": size,
+            "cve": cve,
+            "cve_online": cve_online,
+            "ruleset": None,
+            "pulse_version": None,
+            **diagnostics,
+        },
     }
 
     pulse_dir = output_dir / "pulse"
@@ -709,6 +751,12 @@ def run_pulse_probe(
     # of raw sockets; every later chunk then skips the doomed attempt.
     os_detect_effective = os_detect
     os_detect_degraded: str | None = None
+    # pulse's offline CVE ruleset (``meta.ruleset``, e.g. ``2026.07.29-h1``) and
+    # its own version, from every chunk that answered. Recorded because a
+    # verification run matching with an older ruleset than the one that found
+    # a CVE proves nothing about it (api/services/verification_coverage.py).
+    rulesets: set[str] = set()
+    pulse_versions: set[str] = set()
     consecutive_crashes = 0
     scan_mode = "syn" if syn else "connect"
 
@@ -848,6 +896,11 @@ def run_pulse_probe(
             on_unresolved(unresolved_hosts)
 
         if payload:
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            if meta.get("ruleset"):
+                rulesets.add(str(meta["ruleset"]))
+            if meta.get("version"):
+                pulse_versions.add(str(meta["version"]))
             services, os_recs, cves = parse_pulse_json(payload)
             all_services.extend(services)
             all_os.extend(os_recs)
@@ -916,6 +969,17 @@ def run_pulse_probe(
         "pulse_bin": pulse_bin,
         "os_detect": os_detect_effective,
         "os_detect_degraded": os_detect_degraded,
+        # Whether CVE matching was asked of pulse at all. Together with the
+        # ``completion`` receipts this is what lets the API say a verification
+        # run re-checked a pulse finding (api/services/verification_coverage.py):
+        # a receipt alone proves the endpoint was probed, not that its banner
+        # was matched against anything.
+        "cve": cve,
+        "cve_online": cve_online,
+        # The oldest ruleset any chunk matched with: one binary has one, and
+        # if two ever answered, the claim made for the run is the weaker one.
+        "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
+        "pulse_version": min(pulse_versions) if pulse_versions else None,
         "chunk_hosts": size,
         **diagnostics,
     }

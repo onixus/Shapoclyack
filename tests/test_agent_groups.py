@@ -403,6 +403,28 @@ def test_a_job_addressed_to_an_empty_group_is_queued_but_flagged(tmp_path, monke
     assert later.json()["agent_group_unavailable"] is False
 
 
+def test_an_agent_the_claim_would_refuse_does_not_make_a_group_available(tmp_path, monkeypatch):
+    """An endpoint agent put into a group, and a sensor below the version
+    floor: each answers every claim with a refusal (403, 426), so a group of
+    only those has nothing to execute its jobs — as the ungrouped
+    ``sensor_unavailable`` already said (#451 review)."""
+    client = _client(tmp_path, monkeypatch, agent_min_version="99.0")
+    _create_group(client, "pci")
+    endpoint = client.post(
+        "/api/agent/register",
+        headers=_agent_headers(),
+        json={"hostname": "laptop-7", "version": "99.1", "agent_kind": "endpoint"},
+    )
+    assert endpoint.status_code == 200, endpoint.text
+    _assign(client, endpoint.json()["agent_id"], "pci")
+    _assign(client, _register(client, "pci-old"), "pci")  # 0.3.2.1, below 99.0
+
+    started = _start_scan(client, agent_group="pci")
+    assert started.status_code == 202, started.text
+    assert started.json()["agent_group_unavailable"] is True
+    assert agent_groups.live_groups(_settings(tmp_path, agent_min_version="99.0"), {"default"}) == {}
+
+
 # ---------------------------------------------------------------------------
 # Managing the groups
 # ---------------------------------------------------------------------------

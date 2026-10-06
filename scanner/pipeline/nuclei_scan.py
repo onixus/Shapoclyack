@@ -30,6 +30,15 @@ OAST: off unless ``nuclei.interactsh_server`` names a server the operator
 runs. Off means ``-no-interactsh``, and nuclei then skips every template that
 needs an interactsh URL. See ``NucleiConfig`` and
 ``docs/network-requirements.md`` for why the default is not nuclei's own.
+
+COVERAGE: ``nuclei.json`` carries a ``coverage`` block -- whether nuclei was
+actually run and exited cleanly, the URLs it was given, and, for a run pinned
+to ``nuclei.template_ids`` (a verification re-scan), which of those ids were
+found under the template directories and which were not. The API closes a
+finding as machine-verified on the strength of this block
+(``api/services/verification_coverage.py``), so it records what happened, not
+what was configured: an empty finding list next to ``ran: false`` is a scan
+that did not look, and is not read as a clean one.
 """
 
 from __future__ import annotations
@@ -37,11 +46,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .config_schema import NucleiConfig
 from .dns_resolvers import host_port, scan_resolvers
@@ -68,6 +80,79 @@ _SEVERITY_CVSS_FLOOR = {
     "medium": 5.0,
     "low": 2.0,
 }
+
+#: How much of a template file is read to find its ``id``. nuclei-templates
+#: puts ``id:`` on the first line of every file; the slack is for a comment
+#: header above it. Reading the head and not the file is what keeps the index
+#: cheap over a ~10k-file checkout.
+_TEMPLATE_HEAD_BYTES = 2048
+
+#: What nuclei v3.11.1 prints at INFO (stderr, hidden by -silent), checked
+#: live in the aio image: how many templates the run really loaded, and each
+#: target it gave up on ("... found unresponsive permanently: ..." for a
+#: refused port, "... found unresponsive N times" after -max-host-error).
+_TEMPLATES_LOADED = re.compile(r"Templates loaded for current scan: (\d+)")
+_TARGET_SKIPPED = re.compile(r"Skipped (\S+) from target list as found unresponsive")
+#: The -elog kind nuclei gives the errors it skips a target over.
+_PERMANENT_ERROR = "network-permanent-error"
+_TEMPLATE_ID_LINE = re.compile(r"^id:[ \t]*['\"]?([A-Za-z0-9_.-]+)", re.MULTILINE)
+
+
+def _template_tags(path: Path) -> set[str]:
+    """The ``info.tags`` of one template, as nuclei matches ``-exclude-tags``.
+
+    Parsed properly, and only for the handful of templates a pinned run asked
+    for: tags sit below a free-text description, and nuclei accepts both the
+    comma string and a YAML list. An unreadable file has no tags here, which
+    the run itself then settles -- nuclei refuses to load it either way.
+    """
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, yaml.YAMLError):
+        return set()
+    info = document.get("info") if isinstance(document, dict) else None
+    raw = info.get("tags") if isinstance(info, dict) else None
+    if isinstance(raw, str):
+        return {tag.strip().lower() for tag in raw.split(",") if tag.strip()}
+    if isinstance(raw, list):
+        return {str(tag).strip().lower() for tag in raw if str(tag).strip()}
+    return set()
+
+
+def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[set[str]]]:
+    """``{template id: [tags of each file with that id]}`` for ``wanted`` under ``dirs``.
+
+    A pinned run has to know which of its ids nuclei can load before it runs:
+    nuclei filters the templates it loaded by ``-id`` and says nothing about an
+    id that filtered nothing in, so a missing template would otherwise vanish
+    without a trace and the run would read as having checked it.
+
+    Every file, not the first: the same id in two directories (a custom copy
+    beside the baked one) is two templates nuclei loads under one id, and its
+    "Templates loaded" count could then hide one that failed to parse behind
+    the other (#451 review). One full pass over the heads — 0.19 s over the
+    8936 baked templates, measured in the aio image.
+    """
+    remaining = set(wanted)
+    found: dict[str, list[set[str]]] = {}
+    for root in dirs:
+        if not root.is_dir():
+            continue
+        for directory, _subdirs, files in os.walk(root):
+            for name in files:
+                if not name.endswith((".yaml", ".yml")):
+                    continue
+                path = Path(directory) / name
+                try:
+                    with path.open("rb") as handle:
+                        head = handle.read(_TEMPLATE_HEAD_BYTES).decode("utf-8", errors="replace")
+                except OSError:
+                    continue
+                match = _TEMPLATE_ID_LINE.search(head)
+                if match is None or match.group(1) not in remaining:
+                    continue
+                found.setdefault(match.group(1), []).append(_template_tags(path))
+    return found
 
 
 def _candidate_endpoints(
@@ -159,10 +244,49 @@ def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
             "severity": finding["severity"],
             "script_id": f"nuclei:{finding['template_id']}",
             "source": "nuclei",
+            "protocol": "tcp",
             "cwe": finding.get("cwe") or [],
         }
         for cve in finding["cve"]
     ]
+
+
+#: nuclei_errors.jsonl travels with the run (it is tarred and uploaded), and
+#: an unreachable target can fill it with one line per request; read in full
+#: for the skipped targets first, then kept to this many bytes.
+_ERRORS_LOG_MAX_BYTES = 1024 * 1024
+
+
+def _cap_errors_log(errors_file: Path) -> bool:
+    """Truncate ``errors_file`` to whole lines under the cap; True if it was.
+
+    A first line longer than the cap is kept cut, not dropped: whole lines
+    alone would leave an empty file, and an operator reading it would see
+    no error where nuclei wrote one.
+    """
+    try:
+        if not errors_file.is_file() or errors_file.stat().st_size <= _ERRORS_LOG_MAX_BYTES:
+            return False
+        with errors_file.open("rb") as handle:
+            head = handle.read(_ERRORS_LOG_MAX_BYTES)
+        whole = head[: head.rfind(b"\n") + 1]
+        errors_file.write_bytes(whole or head[: _ERRORS_LOG_MAX_BYTES - 1] + b"\n")
+    except OSError:
+        LOG.warning("could not cap %s", errors_file, exc_info=True)
+        return False
+    return True
+
+
+def _permanent_error_addresses(errors_file: Path) -> set[str]:
+    """``host:port`` of each target nuclei's -elog says it gave up on."""
+    out: set[str] = set()
+    if not errors_file.is_file():
+        return out
+    for line in errors_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        record = _parse_result_line(line)
+        if record and record.get("kind") == _PERMANENT_ERROR and record.get("address"):
+            out.add(str(record["address"]))
+    return out
 
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
@@ -228,7 +352,31 @@ def run_nuclei_scan(
         # "interactsh_registered" says whether nuclei actually got to use it.
         "interactsh": config.interactsh_server or "disabled",
         "interactsh_registered": None,
+        # What this run demonstrably did, for the verification closure (see
+        # the module docstring). ``ran`` turns true only once nuclei itself
+        # has exited 0; every skip below leaves it false.
+        "coverage": {
+            "ran": False,
+            "returncode": None,
+            "targets": [],
+            "template_ids_requested": list(config.template_ids),
+            "template_ids_missing": [],
+            "template_ids_excluded": [],
+            "severities": None if config.template_ids else list(config.severities),
+            # nuclei's own account of the run: templates it loaded (a pinned
+            # run only; -silent hides the line on a sweep) and the targets it
+            # dropped as unresponsive. A target it dropped was not checked.
+            "templates_loaded": None,
+            "templates_expected": None,
+            # An id found in more than one file across the template dirs.
+            "template_ids_ambiguous": [],
+            "skipped_targets": [],
+            # As nuclei applies it: it raises a value below -concurrency.
+            "max_host_error": max(config.max_host_error, config.concurrency),
+            "errors_log_truncated": False,
+        },
     }
+    coverage = result["coverage"]
     if not config.enabled:
         result["skipped_reason"] = "nuclei.disabled"
         _persist(output_dir, result)
@@ -245,6 +393,48 @@ def run_nuclei_scan(
         _persist(output_dir, result)
         return result
 
+    custom_dir = Path(config.custom_templates_dir) if config.custom_templates_dir else None
+    pinned: list[str] = []
+    if config.template_ids:
+        # Resolved before anything is sent: an id that is not on this host,
+        # or that the host's own exclusions would filter out, is recorded as
+        # such rather than left for nuclei to drop without a word.
+        dirs = [templates_dir, *([custom_dir] if custom_dir and custom_dir.exists() else [])]
+        index = index_template_ids(config.template_ids, dirs)
+        excluded_tags = {tag.lower() for tag in config.exclude_tags}
+        expected = 0
+        for template_id in config.template_ids:
+            files = index.get(template_id, [])
+            loadable = [tags for tags in files if not tags & excluded_tags]
+            if not files:
+                coverage["template_ids_missing"].append(template_id)
+            elif not loadable:
+                coverage["template_ids_excluded"].append(template_id)
+            else:
+                pinned.append(template_id)
+                expected += len(loadable)
+            if len(files) > 1:
+                coverage["template_ids_ambiguous"].append(template_id)
+        # What nuclei has to report loading, exactly: one per loadable file
+        # of each pinned id.
+        coverage["templates_expected"] = expected
+        if coverage["template_ids_missing"] or coverage["template_ids_excluded"]:
+            LOG.warning(
+                "nuclei: of the %d pinned template(s), not on this host: %s; excluded by "
+                "nuclei.exclude_tags: %s",
+                len(config.template_ids),
+                ", ".join(coverage["template_ids_missing"]) or "none",
+                ", ".join(coverage["template_ids_excluded"]) or "none",
+            )
+        if not pinned:
+            # Not run at all: nuclei given only ids it cannot load exits 1
+            # with "no templates provided for scan" (v3.11.1, checked live).
+            result["skipped_reason"] = (
+                "template_ids_missing" if coverage["template_ids_missing"] else "template_ids_excluded"
+            )
+            _persist(output_dir, result)
+            return result
+
     candidates = _candidate_endpoints(open_ports, set(config.http_ports), set(config.https_ports))
     result["targets_considered"] = len(candidates)
     if not candidates:
@@ -260,6 +450,7 @@ def run_nuclei_scan(
     jsonl_file = output_dir / "nuclei_raw.jsonl"
     urls = [_build_url(host, port, scheme) for host, port, scheme in candidates]
     write_lines(targets_file, urls)
+    coverage["targets"] = sorted(urls)
     jsonl_file.unlink(missing_ok=True)
     # Written directly, not through write_lines: that sorts, and the order
     # here is the operator's.
@@ -280,23 +471,38 @@ def run_nuclei_scan(
         # with the system resolver, and its DNS client asks only those.
         "-resolvers", str(resolvers_file),
     ]
-    if config.custom_templates_dir and Path(config.custom_templates_dir).exists():
-        command.extend(["-templates", str(config.custom_templates_dir)])
-    if config.severities:
-        command.extend(["-severity", ",".join(config.severities)])
-    if config.tags:
-        command.extend(["-tags", ",".join(config.tags)])
+    if custom_dir is not None and custom_dir.exists():
+        command.extend(["-templates", str(custom_dir)])
+    if pinned:
+        # Exactly these templates, whatever their severity or tags: the run is
+        # re-checking what they found, and a severity floor that skips a
+        # medium template would make "not observed" mean "not looked for".
+        command.extend(["-id", ",".join(pinned)])
+    else:
+        if config.severities:
+            command.extend(["-severity", ",".join(config.severities)])
+        if config.tags:
+            command.extend(["-tags", ",".join(config.tags)])
     if config.exclude_tags:
         command.extend(["-exclude-tags", ",".join(config.exclude_tags)])
+    errors_file = output_dir / "nuclei_errors.jsonl"
+    errors_file.unlink(missing_ok=True)
     command.extend([
         "-jsonl-export", str(jsonl_file),
         "-rate-limit", str(config.rate_limit),
         "-concurrency", str(config.concurrency),
         "-timeout", str(config.timeout_seconds),
         "-retries", str(config.retries),
+        "-max-host-error", str(config.max_host_error),
+        "-elog", str(errors_file),
         "-silent",
         "-no-color",
     ])  # fmt: skip
+    if pinned:
+        # A verification needs nuclei's "Templates loaded for current scan"
+        # line, which -silent hides; the run is a handful of requests, so the
+        # rest of the INFO output costs nothing.
+        command.remove("-silent")
     # interactsh ignores -resolvers above: its client resolves the server name
     # through nuclei's built-in public resolvers as well (dns_resolvers.py).
     interactsh_args, private_dir = _interactsh_args(config.interactsh_server)
@@ -306,7 +512,8 @@ def run_nuclei_scan(
         # A registration that fails prints nothing under -silent, or at any
         # level short of -v, which logs every request. The only signal is the
         # INFO line on success, and -silent hides that too.
-        command.remove("-silent")
+        if "-silent" in command:
+            command.remove("-silent")
     else:
         result["interactsh"] = "disabled"
 
@@ -320,6 +527,29 @@ def run_nuclei_scan(
     finally:
         if private_dir is not None:
             shutil.rmtree(private_dir, ignore_errors=True)
+
+    # Not ``check=True`` above, and still not a skip: nuclei's findings from a
+    # run that then exited non-zero are kept as before. But such a run did not
+    # demonstrably complete, so it does not count as having looked.
+    returncode = getattr(completed, "returncode", None)
+    coverage["returncode"] = returncode if isinstance(returncode, int) else None
+    coverage["ran"] = coverage["returncode"] == 0
+    if coverage["returncode"] not in (0, None):
+        LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)
+    stderr_text = getattr(completed, "stderr", None)
+    stderr_text = stderr_text if isinstance(stderr_text, str) else ""
+    loaded = _TEMPLATES_LOADED.findall(stderr_text)
+    coverage["templates_loaded"] = int(loaded[-1]) if loaded else None
+    coverage["skipped_targets"] = sorted(
+        set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
+    )
+    coverage["errors_log_truncated"] = _cap_errors_log(errors_file)
+    if coverage["skipped_targets"]:
+        LOG.warning(
+            "nuclei dropped %d target(s) as unresponsive: %s",
+            len(coverage["skipped_targets"]),
+            ", ".join(coverage["skipped_targets"][:8]),
+        )
 
     if oast:
         stderr = getattr(completed, "stderr", None)

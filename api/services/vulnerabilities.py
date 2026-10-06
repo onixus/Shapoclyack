@@ -35,6 +35,7 @@ acceptance runs out rather than never.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import uuid
 from dataclasses import dataclass
@@ -55,8 +56,10 @@ from api.services import pagination
 from api.services import publication_marks
 from api.services import runs as runs_service
 from api.services import scan_surface
+from api.services import verification_coverage
 from api.services import vuln_states
 from api.services import workflow_events
+from scanner.pipeline.config_schema import MAX_NUCLEI_TEMPLATE_IDS, NUCLEI_TEMPLATE_ID_RE
 from scanner.pipeline.cvss4 import normalize_cwes
 from api.services.risk_scoring import (
     FOOTHOLD,
@@ -121,6 +124,16 @@ VULN_EVENT_KINDS = (
     "verification_started",
     "verification_passed",
     "verification_failed",
+    # The verification run did not show that every detector of the finding
+    # re-checked it (api/services/verification_coverage.py), or did not
+    # finish at all. Neither fixed nor still there: back to FIXING, never
+    # machine-verified, with what was not covered in ``detail.gaps`` (#451).
+    "verification_inconclusive",
+    # The verification run's connect probe was refused on the finding's port
+    # (closure_reason endpoint_unreachable): not reachable from where the run
+    # looked. Never machine-verified — a firewall REJECT in front of a
+    # listening port answers the same way (#451).
+    "verification_unreachable",
     "ticket_synced",
     # SLA escalation (#349): the worker reassigned the finding or raised its
     # severity because its deadline passed. Recorded as an event of its own
@@ -168,7 +181,25 @@ SOURCES = ("scan", "endpoint_software", "retro_match")
 #: Why a finding is closed. Never taken from a request body — the value of
 #: ``machine_verified`` is that it cannot be self-attested. ``patched`` is the
 #: software path's: a later accepted inventory snapshot no longer matches it.
-CLOSURE_REASONS = ("verified_remediated", "patched", "manual", "ticket_resolved")
+CLOSURE_REASONS = (
+    "verified_remediated",
+    "patched",
+    "manual",
+    "ticket_resolved",
+    # A verification's connect probe was refused on the finding's port, from
+    # the vantage that observed it (#451). Not a verified fix.
+    "endpoint_unreachable",
+)
+
+ENDPOINT_UNREACHABLE = "endpoint_unreachable"
+
+#: The shortest window, in days from an ``endpoint_unreachable`` closure,
+#: within which a finding seen again continues its old SLA clock. The window
+#: is the finding's own ``sla_days`` when longer. Never shorter than this:
+#: the most urgent findings have the shortest SLA (a 1-day FSTEC deadline),
+#: and a window that short let a REJECT rule and one quiet day erase an
+#: overdue deadline (#451 review, round 3).
+ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS = 30
 
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
@@ -186,6 +217,12 @@ class RegisterStats:
     # any run that was not a verification run.
     verification_passed: int = 0
     verification_failed: int = 0
+    # Not observed, but not demonstrably looked for either: sent back to
+    # FIXING rather than closed (verification_coverage.py).
+    verification_inconclusive: int = 0
+    # Closed as endpoint_unreachable: refused from the observing vantage,
+    # not machine-verified.
+    verification_unreachable: int = 0
     # Findings seen again while a false-positive verdict suppressed them, and
     # verdicts this run broke early because the assessment got worse.
     fp_suppressed: int = 0
@@ -234,6 +271,218 @@ def finding_key(*, asset_id: str, cve: str | None, script_id: str | None, port: 
     what = (cve or "").strip().upper() or f"script:{(script_id or '').strip()}"
     material = "|".join([asset_id, what, (port or "").strip()])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+#: How many detector entries a finding keeps (``Vulnerability.detectors``),
+#: newest first. A bound because the list is merged on every observation of a
+#: row nobody may ever close; sixteen is far more detectors and addresses than
+#: one CVE on one port plausibly has.
+MAX_DETECTORS = 16
+
+#: How many vantages one detector entry remembers (``vantages``, newest
+#: first). Only "one, and it is the verifying one" ever lets a refusal close
+#: a finding, so a bound that keeps at least two loses no decision.
+MAX_VANTAGES = 8
+
+#: The vantage of an observation nobody recorded: a run no job owns, or an
+#: entry from before vantages were kept (backfilled by 0079). The two are
+#: not the same: the backfill predates recording and gives way to the first
+#: known vantage (:func:`merge_detectors`), while a run no job owns did look,
+#: from a place nobody knows, and stays beside any known one.
+UNKNOWN_VANTAGE = "unknown"
+
+
+def _detector_of(source: Any, script_id: Any) -> tuple[str, str] | None:
+    """``(detector, ref)`` for one vulnerabilities.json row, or ``None``.
+
+    ``source`` is what the scanner stages write (``pulse``, ``nuclei``,
+    ``nmap-nse``; scanner/pipeline/report.py); ``script_id`` carries the ref —
+    ``nuclei:<template id>``, ``pulse:<origin>`` or the NSE script id. A row
+    without a ``source`` (a run from before the stages wrote one, or written
+    by hand) is classified from the ``script_id`` prefix, as migration 0079
+    backfills, and a row with neither has no detector anyone can name.
+    """
+    name = str(source or "").strip().lower()[:32]
+    script = str(script_id or "").strip()
+    derived: tuple[str, str] | None = None
+    if script.startswith("nuclei:"):
+        derived = (verification_coverage.NUCLEI, script[len("nuclei:") :])
+    elif script.startswith("pulse:"):
+        derived = (verification_coverage.PULSE, script[len("pulse:") :])
+    elif script:
+        derived = (verification_coverage.NMAP_NSE, script)
+    if not name:
+        return derived
+    return name, (derived[1] if derived and derived[0] == name else script)
+
+
+def _observed_detectors(
+    entry: dict[str, Any],
+    *,
+    port: str | None,
+    run_id: str,
+    now: datetime,
+    vantage: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """The detector entries one vulnerabilities.json row stands for.
+
+    The row's own, plus ``also_detected_by``: the report collapses one CVE
+    seen by several stages on one endpoint into one row and lists the others
+    there, because a verification has to re-check every one of them.
+    """
+    host = str(entry.get("host") or "").strip()[:255] or None
+    rows = [entry, *(other for other in entry.get("also_detected_by") or [] if isinstance(other, dict))]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        detector = _detector_of(row.get("source"), row.get("script_id"))
+        if detector is None:
+            continue
+        name, ref = detector
+        candidate = {
+            "detector": name,
+            "ref": ref[:200] or None,
+            "host": host,
+            "port": port,
+            "last_run_id": run_id,
+            "last_seen_at": _iso(now),
+        }
+        if vantage:
+            # ``vantages`` is written by merge_detectors, from this one and
+            # every earlier one; without a vantage it reads as unknown.
+            candidate.update(vantage)
+        protocol = str(row.get("protocol") or "").strip().lower()
+        if protocol in ("tcp", "udp"):
+            # Recorded so a UDP finding is never judged by a TCP re-check.
+            candidate["protocol"] = protocol
+        ruleset = str(row.get("ruleset_version") or "").strip()[:64]
+        if name == verification_coverage.PULSE and ruleset:
+            # The offline ruleset this match was made with: a verification
+            # matching with an older one has not re-checked it.
+            candidate["ruleset"] = ruleset
+        if not any(_detector_key(candidate) == _detector_key(seen) for seen in out):
+            out.append(candidate)
+    return out
+
+
+def _detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    host = entry.get("host")
+    return (
+        entry.get("detector"),
+        entry.get("ref") or None,
+        verification_coverage.normalize_host(host) if host else None,
+        str(entry.get("port") or ""),
+    )
+
+
+def _vantages_of(entry: dict[str, Any]) -> list[str]:
+    """Every vantage ``entry`` was observed from, newest first.
+
+    An entry written before the list was kept names one (``vantage``) or
+    none, and none is :data:`UNKNOWN_VANTAGE`, not "anywhere".
+    """
+    listed = entry.get("vantages")
+    if isinstance(listed, list) and listed:
+        return [str(value) for value in listed]
+    return [str(entry.get("vantage") or UNKNOWN_VANTAGE)]
+
+
+def _union_vantages(*lists: list[str]) -> list[str]:
+    """The vantages of ``lists``, newest first, once each, capped."""
+    out: list[str] = []
+    for values in lists:
+        out.extend(value for value in values if value not in out)
+    return out[:MAX_VANTAGES]
+
+
+def _handed_on(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    """The vantages ``old`` hands to ``new``, the entry replacing it.
+
+    All of them for the same endpoint. For a host-less entry a located one
+    replaces, its known vantages only: an ``unknown`` there is 0079's
+    backfill, which predates recording rather than naming a place, and kept
+    it would leave a finding from before the upgrade unable to be shown
+    unreachable from anywhere.
+    """
+    if _detector_key(old) == _detector_key(new):
+        return _vantages_of(old)
+    return [value for value in _vantages_of(old) if value != UNKNOWN_VANTAGE]
+
+
+def _loose_detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    return (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""))
+
+
+def merge_detectors(
+    existing: list[dict[str, Any]] | None, observed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """``existing`` with ``observed`` folded in: newest first, capped.
+
+    An entry seen again moves to the front with its new run and time; one not
+    seen this time keeps its place behind, because a detector that did not
+    report the finding in one run did observe it once and a verification
+    still owes it a look. A host-less entry (backfilled by 0079) is replaced
+    by the same detector and ref observed with a host — the observation now
+    says where it looked.
+
+    Vantages are only ever added to: an entry seen again from another sensor
+    group keeps the one it was seen from before (``vantages``), and an entry
+    the cap drops hands its vantages to the newest one. A refusal from one
+    vantage says nothing about what another observed, so a later observer
+    must not erase an earlier one (#451). That includes ``unknown`` from a
+    run no job owns; only a replaced host-less entry's ``unknown`` — 0079's
+    backfill — is not handed on (:func:`_handed_on`).
+    """
+    previous = [entry for entry in (existing or []) if isinstance(entry, dict)]
+    fresh = {_detector_key(entry) for entry in observed}
+    located = {_loose_detector_key(entry) for entry in observed if entry.get("host")}
+
+    def replaced_by(old: dict[str, Any], new: dict[str, Any]) -> bool:
+        if _detector_key(old) == _detector_key(new):
+            return True
+        return not old.get("host") and bool(new.get("host")) and _loose_detector_key(old) == _loose_detector_key(new)
+
+    renewed = [
+        {
+            **entry,
+            "vantages": _union_vantages(
+                _vantages_of(entry), *(_handed_on(old, entry) for old in previous if replaced_by(old, entry))
+            ),
+        }
+        for entry in observed
+    ]
+    kept = [
+        entry
+        for entry in previous
+        if _detector_key(entry) not in fresh
+        and not (not entry.get("host") and _loose_detector_key(entry) in located)
+    ]
+    merged = [*renewed, *kept]
+    if len(merged) <= MAX_DETECTORS:
+        return merged
+    # Over the cap, an entry repeating a detector and ref a newer entry
+    # already holds (the same template seen on another address) goes first,
+    # oldest of those first; only then the oldest entries outright. Dropping
+    # the one entry of a detector would let a verification close the finding
+    # without that detector ever looking again.
+    held: set[tuple[Any, Any]] = set()
+    repeats: list[int] = []
+    for index, entry in enumerate(merged):
+        key = (entry.get("detector"), entry.get("ref") or None)
+        if key in held:
+            repeats.append(index)
+        held.add(key)
+    excess = len(merged) - MAX_DETECTORS
+    dropped = set(repeats[::-1][:excess])
+    survivors = [index for index in range(len(merged)) if index not in dropped][:MAX_DETECTORS]
+    capped = [merged[index] for index in survivors]
+    lost = [
+        vantage
+        for index, entry in enumerate(merged)
+        if index not in survivors
+        for vantage in _vantages_of(entry)
+    ]
+    capped[0] = {**capped[0], "vantages": _union_vantages(_vantages_of(capped[0]), lost)}
+    return capped
 
 
 def _severity_of(entry: dict[str, Any]) -> str:
@@ -884,6 +1133,138 @@ def _run_verifies_anything(settings: Settings, *, run_id: str, tenant_id: str) -
         ) > 0
 
 
+def _run_vantage(session: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+    """Where the job that produced ``run_id`` scanned from, or ``None``.
+
+    ``{"vantage": "local"}`` for the API's own executor; for a sensor its id,
+    its group (the job's when the sensor has none on record) and the key a
+    closure compares — ``group:<name>`` for a grouped sensor, ``agent:<id>``
+    for an ungrouped one, since two ungrouped sensors may sit in different
+    networks. ``None`` for a run no job owns (imported, hand-placed).
+    """
+    job = session.scalars(
+        select(models.Job)
+        .where(models.Job.tenant_id == tenant_id, models.Job.run_id == run_id)
+        .order_by(models.Job.queued_at.desc())
+        .limit(1)
+    ).first()
+    if job is None:
+        return None
+    if job.execution == "local":
+        return {"vantage": "local"}
+    if not job.assigned_agent_id:
+        return None
+    agent = session.get(models.Agent, job.assigned_agent_id)
+    group = (agent.agent_group if agent is not None else None) or job.agent_group
+    return {
+        "agent_id": job.assigned_agent_id,
+        "agent_group": group,
+        "vantage": f"group:{group}" if group else f"agent:{job.assigned_agent_id}",
+    }
+
+
+def _observed_vantages(row: models.Vulnerability) -> set[str]:
+    """Every vantage any detector of ``row`` ever observed it from."""
+    return {
+        vantage
+        for entry in (row.detectors or [])
+        if isinstance(entry, dict)
+        for vantage in _vantages_of(entry)
+    }
+
+
+def _same_vantage(row: models.Vulnerability, verifying: dict[str, Any] | None) -> bool:
+    """Whether ``row`` was only ever observed from where the run looked.
+
+    One observing vantage, and it is the verifying one. A finding two sensor
+    groups saw is not shown unreachable by a refusal from either: each one's
+    path is its own. False whenever either side is unknown — an observation
+    nobody recorded the sensor of, a row with no detector, a run no job owns.
+    An ungrouped sensor is its own vantage (``agent:<id>``), so a refusal
+    another ungrouped sensor got does not count either.
+    """
+    key = (verifying or {}).get("vantage")
+    return bool(key) and _observed_vantages(row) == {key}
+
+
+def _asset_hosts(session: Any, row: models.Vulnerability) -> set[str]:
+    """Every address the finding's asset is known by.
+
+    What a detector that never recorded where it looked (backfilled by 0079,
+    or a row with no detector at all) is re-checked against: any of them
+    answering counts. The weaker rule — an asset with two addresses can be
+    "verified" on the one the finding was not on — and the reason a detector
+    records its host from 0079 on.
+    """
+    return {
+        str(value).strip()
+        for value in session.scalars(
+            select(models.AssetIdentifier.identifier_value).where(
+                models.AssetIdentifier.tenant_id == row.tenant_id,
+                models.AssetIdentifier.asset_id == row.asset_id,
+                # Addresses only: a certificate fingerprint is an identity,
+                # not something a scan can be pointed at.
+                models.AssetIdentifier.identifier_type.in_(("ip", "fqdn")),
+            )
+        )
+        if value and str(value).strip()
+    }
+
+
+def _finding_hosts(row: models.Vulnerability, addresses: set[str]) -> set[str]:
+    """Where the finding's port has to be closed for it to be unreachable.
+
+    Each detector's own host, and for one that never recorded it (or a row
+    with none) every IP of the asset — the same set its coverage is held to.
+    """
+    normalized = {verification_coverage.normalize_host(a) for a in addresses}
+    asset_ips = {a for a in normalized if _is_ip(a)}
+    detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
+    hosts = {
+        verification_coverage.normalize_host(entry["host"])
+        for entry in detectors
+        if entry.get("host")
+    }
+    if not detectors or any(not entry.get("host") for entry in detectors):
+        hosts |= asset_ips
+    return hosts
+
+
+def _send_back_inconclusive(
+    session: Any,
+    row: models.Vulnerability,
+    *,
+    now: datetime,
+    note: str,
+    detail: dict[str, Any],
+) -> None:
+    """``VERIFYING → FIXING`` for a verification that proved nothing either way.
+
+    Not left in ``VERIFYING``: nothing is looking at it any more, and a finding
+    parked there is the state that used to end in a false closure. Not
+    ``verification_failed`` either, which says the finding is still there —
+    the run did not say that. ``machine_verified`` is not touched: it is false
+    on every row in ``VERIFYING``, and stays so.
+    """
+    row.state = vuln_states.FIXING
+    row.state_changed_at = now
+    row.state_changed_by = "system:verification"
+    row.last_verified_at = now
+    row.updated_at = now
+    _record_event(
+        session,
+        vuln_id=row.vuln_id,
+        tenant_id=row.tenant_id,
+        kind="verification_inconclusive",
+        occurred_at=now,
+        from_state=vuln_states.VERIFYING,
+        to_state=vuln_states.FIXING,
+        actor="system:verification",
+        note=note,
+        detail=detail,
+    )
+
+
 def _declared_surface_for_run(session: Any, *, tenant_id: str, run_id: str) -> str | None:
     """The surface the operator declared on the job that produced this run.
 
@@ -936,8 +1317,11 @@ def register_findings_from_run(
     )
     now = _now()
     created = reobserved = reopened = skipped = 0
-    verification_passed = verification_failed = 0
+    verification_passed = verification_failed = verification_inconclusive = 0
+    verification_unreachable = 0
     fp_suppressed_observations = fp_overridden = 0
+    # Read only if a finding is waiting on this run, and then once.
+    coverage = verification_coverage.RunCoverage(run_dir)
 
     with get_session(settings.postgres_url) as session:
         if not publication_marks.first_pass(
@@ -952,6 +1336,9 @@ def register_findings_from_run(
         declared_surface = _declared_surface_for_run(
             session, tenant_id=tenant_id, run_id=run_id
         )
+        # Where this run looked from (#451): recorded on every detector it
+        # observes, compared with the verification run's at closure.
+        vantage = _run_vantage(session, tenant_id=tenant_id, run_id=run_id)
         resolved: list[tuple[dict[str, Any], Any]] = []
         for entry in entries:
             host = str(entry.get("host") or "")
@@ -986,6 +1373,12 @@ def register_findings_from_run(
             )
             severity = _severity_of(entry)
             key = finding_key(asset_id=asset.asset_id, cve=cve, script_id=script_id, port=port)
+            # Who saw it and where, merged into the row whatever else this
+            # observation does — a held false positive included: provenance is
+            # what a later verification is judged against, not a verdict.
+            observed = _observed_detectors(
+                entry, port=port, run_id=run_id, now=now, vantage=vantage
+            )
 
             row = session.execute(
                 select(models.Vulnerability).where(
@@ -1022,6 +1415,7 @@ def register_findings_from_run(
                     cve=cve,
                     script_id=script_id,
                     port=port,
+                    detectors=merge_detectors([], observed),
                     state=vuln_states.OPEN,
                     state_changed_at=now,
                     # Remediation ownership starts at whoever owns the asset, so
@@ -1095,6 +1489,9 @@ def register_findings_from_run(
                 setattr(row, field, value)
             row.last_seen_at = now
             row.last_seen_run_id = run_id
+            # A new list, not an in-place edit: the JSON column is not a
+            # mutable type, so only an assignment is written back.
+            row.detectors = merge_detectors(row.detectors, observed)
             row.observation_count += 1
             row.updated_at = now
             reobserved += 1
@@ -1118,12 +1515,27 @@ def register_findings_from_run(
                 # restarts from this observation, because the deadline for
                 # fixing something that returned is not measured from before it
                 # was fixed the first time.
+                #
+                # Except after an endpoint_unreachable closure: nothing was
+                # fixed, the port was out of one sensor's reach for one run.
+                # Restarting the clock there would let a verify/reopen cycle
+                # reset an overdue finding's deadline as often as anyone
+                # pressed Verify (#451), so it continues from where it was —
+                # within max(sla_days, 30) days of that closure. Seen again
+                # later than that, it is a new exposure (a redeploy months
+                # on), and its clock starts now like any other regression's.
                 previous = row.state
                 days, source = _resolve_sla_days(
                     session,
                     tenant_id=tenant_id,
                     severity=severity,
                     criticality=asset.asset_criticality,
+                )
+                continue_clock = (
+                    row.closure_reason == ENDPOINT_UNREACHABLE
+                    and row.closed_at is not None
+                    and now - row.closed_at
+                    <= timedelta(days=max(row.sla_days or days, ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS))
                 )
                 row.state = vuln_states.OPEN
                 row.state_changed_at = now
@@ -1134,13 +1546,17 @@ def register_findings_from_run(
                 # machine-verified as fixed, which is the one claim this column
                 # exists to make un-fakeable.
                 row.machine_verified = False
-                row.sla_started_at = now
-                row.due_at = now + timedelta(days=days)
-                row.sla_days = days
-                row.sla_source = source
+                if not continue_clock:
+                    row.sla_started_at = now
+                    row.due_at = now + timedelta(days=days)
+                    row.sla_days = days
+                    row.sla_source = source
                 row.reopen_count += 1
                 reopened += 1
                 detail: dict[str, Any] = {"run_id": run_id, "reopen_count": row.reopen_count}
+                if continue_clock:
+                    detail["sla_continued"] = True
+                    detail["after"] = ENDPOINT_UNREACHABLE
                 # Either the suppression ran out or an escalation broke it.
                 # Both mean the verdict no longer holds.
                 if drop_fp_verdict_on_reopen(row):
@@ -1212,40 +1628,152 @@ def register_findings_from_run(
                         detail={"run_id": run_id, "job_id": v_row.verification_job_id},
                     )
                     verification_failed += 1
-                else:
-                    # The run that was sent to look for it did not find it.
+                    continue
+                # The run that was sent to look for it did not find it. That
+                # is evidence of a fix only if it demonstrably looked: every
+                # detector of the finding re-checked its endpoint in this run
+                # (#451). A skipped nuclei, a template the run never loaded,
+                # a Pulse that did not match CVEs, a backend without NSE, a
+                # port that did not answer — each used to close the finding as
+                # verified-fixed here.
+                addresses = _asset_hosts(session, v_row)
+                gaps, waived = coverage.assess(
+                    list(v_row.detectors or []),
+                    port=v_row.port,
+                    asset_hosts=addresses,
+                )
+                unreachable = (
+                    coverage.endpoint_unreachable(
+                        _finding_hosts(v_row, addresses),
+                        verification_coverage.port_of(v_row.port),
+                        protocol=verification_coverage.finding_protocol(list(v_row.detectors or [])),
+                    )
+                    if gaps
+                    else None
+                )
+                if unreachable is not None and not _same_vantage(v_row, vantage):
+                    # A refusal is about the path from where the run looked.
+                    # One from a DMZ sensor says nothing about what an internal
+                    # one saw, and a finding seen from two places is not shown
+                    # unreachable from either: it closes nothing.
+                    gaps = [
+                        *gaps,
+                        {
+                            "detector": "vantage",
+                            "ref": None,
+                            "host": None,
+                            "port": v_row.port,
+                            "reason": "vantage_differs",
+                            "observed_from": sorted(_observed_vantages(v_row)) or [UNKNOWN_VANTAGE],
+                            "verified_from": (vantage or {}).get("vantage") or UNKNOWN_VANTAGE,
+                        },
+                    ]
+                    unreachable = None
+                if unreachable is not None:
+                    # No detector re-checked it because nothing got through:
+                    # the port was asked about in a batch that finished, nothing
+                    # saw it open, and every connect was refused, from the one
+                    # vantage that ever observed the finding. That is "not
+                    # reachable from there", not a fix: an iptables or
+                    # kube-proxy REJECT, a tcp-reset rule or a fail2ban ban in
+                    # front of a listening port is refused the same way. So it
+                    # closes, and is never machine-verified, exposure or CVE.
+                    verified_from = (vantage or {}).get("vantage") or UNKNOWN_VANTAGE
                     v_row.state = vuln_states.CLOSED
                     v_row.state_changed_at = now
                     v_row.state_changed_by = "system:verification"
                     v_row.closed_at = now
                     v_row.last_verified_at = now
-                    v_row.machine_verified = True
-                    v_row.closure_reason = "verified_remediated"
-                    # The same erasure the operator's close does: a fixed
-                    # finding carries no risk to accept, and an acceptance left
-                    # on it stayed in the risk register and was still swept
-                    # into an "it lapsed" audit row weeks later.
+                    v_row.machine_verified = False
+                    v_row.closure_reason = ENDPOINT_UNREACHABLE
                     dropped_exception = _drop_exception(v_row)
                     v_row.updated_at = now
                     _record_event(
                         session,
                         vuln_id=v_row.vuln_id,
                         tenant_id=tenant_id,
-                        kind="verification_passed",
+                        kind="verification_unreachable",
                         occurred_at=now,
                         from_state=vuln_states.VERIFYING,
                         to_state=vuln_states.CLOSED,
                         actor="system:verification",
-                        note=f"Not observed by verification run {run_id}",
+                        note=(
+                            f"Verification run {run_id}: port {v_row.port} not reachable "
+                            f"from {verified_from} (connect refused on every attempt); "
+                            "closed, not machine-verified"
+                        ),
                         detail={
                             "run_id": run_id,
                             "job_id": v_row.verification_job_id,
-                            "machine_verified": True,
-                            "closure_reason": "verified_remediated",
+                            "machine_verified": False,
+                            "closure_reason": ENDPOINT_UNREACHABLE,
+                            "evidence": unreachable,
+                            "verified_from": vantage,
+                            "gaps": gaps,
                             **dropped_exception,
                         },
                     )
-                    verification_passed += 1
+                    verification_unreachable += 1
+                    continue
+                if gaps:
+                    _send_back_inconclusive(
+                        session,
+                        v_row,
+                        now=now,
+                        note=(
+                            f"Not observed by verification run {run_id}, but the run does not "
+                            "show that it looked: "
+                            f"{verification_coverage.describe(gaps)}"
+                        ),
+                        detail={
+                            "run_id": run_id,
+                            "job_id": v_row.verification_job_id,
+                            "gaps": gaps,
+                            "verified_from": vantage,
+                        },
+                    )
+                    verification_inconclusive += 1
+                    continue
+                v_row.state = vuln_states.CLOSED
+                v_row.state_changed_at = now
+                v_row.state_changed_by = "system:verification"
+                v_row.closed_at = now
+                v_row.last_verified_at = now
+                v_row.machine_verified = True
+                v_row.closure_reason = "verified_remediated"
+                # The same erasure the operator's close does: a fixed
+                # finding carries no risk to accept, and an acceptance left
+                # on it stayed in the risk register and was still swept
+                # into an "it lapsed" audit row weeks later.
+                dropped_exception = _drop_exception(v_row)
+                v_row.updated_at = now
+                _record_event(
+                    session,
+                    vuln_id=v_row.vuln_id,
+                    tenant_id=tenant_id,
+                    kind="verification_passed",
+                    occurred_at=now,
+                    from_state=vuln_states.VERIFYING,
+                    to_state=vuln_states.CLOSED,
+                    actor="system:verification",
+                    note=f"Not observed by verification run {run_id}",
+                    detail={
+                        "run_id": run_id,
+                        "job_id": v_row.verification_job_id,
+                        "machine_verified": True,
+                        "closure_reason": "verified_remediated",
+                        # Which rule the closure passed: every recorded
+                        # detector, or the legacy Pulse rule for a row that
+                        # has none (verification_coverage.py).
+                        "coverage_rule": "detectors" if v_row.detectors else "legacy",
+                        "verified_from": vantage,
+                        # NSE detectors another detector of the finding stood
+                        # in for (verification_coverage.assess).
+                        **({"waived": waived} if waived else {}),
+                        **dropped_exception,
+                    },
+                )
+                verification_passed += 1
 
     stats = RegisterStats(
         findings_seen=len(entries),
@@ -1255,12 +1783,15 @@ def register_findings_from_run(
         skipped_unknown_asset=skipped,
         verification_passed=verification_passed,
         verification_failed=verification_failed,
+        verification_inconclusive=verification_inconclusive,
+        verification_unreachable=verification_unreachable,
         fp_suppressed=fp_suppressed_observations,
         fp_overridden=fp_overridden,
     )
     LOG.info(
         "Vulnerability tracker: run=%s tenant=%s seen=%s created=%s reobserved=%s "
-        "reopened=%s skipped=%s",
+        "reopened=%s skipped=%s verification passed=%s failed=%s inconclusive=%s "
+        "unreachable=%s",
         run_id,
         tenant_id,
         stats.findings_seen,
@@ -1268,6 +1799,10 @@ def register_findings_from_run(
         stats.reobserved,
         stats.reopened,
         stats.skipped_unknown_asset,
+        stats.verification_passed,
+        stats.verification_failed,
+        stats.verification_inconclusive,
+        stats.verification_unreachable,
     )
 
     try:
@@ -1283,6 +1818,56 @@ def register_findings_from_run(
         )
 
     return stats
+
+
+def release_unfinished_verification(
+    settings: Settings, *, tenant_id: str, job_id: str, run_id: str | None, status: str
+) -> int:
+    """Send the findings a failed or cancelled verification job held back to FIXING.
+
+    Only a succeeded run reaches :func:`register_findings_from_run`
+    (``run_completion.POST_PUBLICATION``), so a verification whose scan failed
+    or was cancelled left its finding in ``VERIFYING`` with nothing looking at
+    it — until somebody noticed and moved it by hand. It is the same outcome
+    as a run that did not cover the finding: ``verification_inconclusive``,
+    back to ``FIXING``, never machine-verified. Keyed on the job, not the run
+    id, which a tenant may reuse. Idempotent: a second pass finds nothing in
+    ``VERIFYING`` behind this job. Returns how many findings it moved.
+    """
+    now = _now()
+    with get_session(settings.postgres_url) as session:
+        rows = session.scalars(
+            select(models.Vulnerability).where(
+                models.Vulnerability.tenant_id == tenant_id,
+                models.Vulnerability.state == vuln_states.VERIFYING,
+                models.Vulnerability.verification_job_id == job_id,
+            )
+        ).all()
+        for row in rows:
+            _send_back_inconclusive(
+                session,
+                row,
+                now=now,
+                note=(
+                    f"Verification job {job_id} ended {status} before its run could show "
+                    "anything; the finding is neither verified fixed nor seen again"
+                ),
+                detail={
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "job_status": status,
+                    "gaps": [],
+                },
+            )
+    if rows:
+        LOG.info(
+            "Verification job %s (tenant %s) ended %s: %d finding(s) back to FIXING",
+            job_id,
+            tenant_id,
+            status,
+            len(rows),
+        )
+    return len(rows)
 
 
 # --------------------------------------------------------------------------
@@ -1308,6 +1893,11 @@ def _to_dict(row: models.Vulnerability, *, now: datetime | None = None) -> dict[
         "cwe": list(row.cwe or []),
         "script_id": row.script_id,
         "port": row.port,
+        "detectors": [
+            dict(entry)
+            for entry in (row.detectors or [])
+            if isinstance(entry, dict) and entry.get("detector")
+        ],
         "title": row.title,
         "severity": row.severity,
         "risk_level": row.risk_level,
@@ -1583,26 +2173,190 @@ def _ticket_endpoint(
     return str(row.url), secret, headers, dict(row.transport_config or {})
 
 
-def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
-    """The address to re-scan for one finding, and whether it is an IP.
+#: The overlay version a verification job asks of its sensor, whatever its
+#: overlay carries: v2 is the build that loads pinned nuclei templates and
+#: writes the coverage evidence (nuclei.json ``coverage``, ``adapter.cve`` and
+#: ``adapter.ruleset`` in pulse/raw.json, the port-scan record) the closure is
+#: judged on. A v1 sensor's run of a pulse-only verification would carry none
+#: of it and end inconclusive every time.
+VERIFICATION_OVERLAY_VERSION = 2
+VERIFICATION_CAPABILITY = f"config_overlay.v{VERIFICATION_OVERLAY_VERSION}"
 
-    Assets carry no address column of their own — the addresses are the
-    ``asset_identifiers`` rows the ingest resolved the finding's host through —
-    so the target is read back from there. An IP is preferred over an FQDN
-    because it is what the original observation was made against.
+
+def _verification_sensors(settings: Settings, tenant_id: str, group: str | None) -> list[frozenset[str]]:
+    """The capabilities of each live sensor that would be offered the job.
+
+    ``group`` is the one the job will carry (the observing group, held to the
+    approved scope): only that group's sensors claim it. With none, any
+    scanner sensor of the tenant does — a grouped one takes ungrouped jobs too.
+    A tenant-wide answer here once refused nothing while the job went to a
+    group of v1 sensors and sat in VERIFYING behind 426s (#451 review).
     """
-    identifiers = session.scalars(
-        select(models.AssetIdentifier).where(
-            models.AssetIdentifier.tenant_id == row.tenant_id,
-            models.AssetIdentifier.asset_id == row.asset_id,
+    from api.services import agent_groups as agent_groups_service
+
+    if group:
+        return agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group), [])
+    return agent_groups_service.live_sensors(settings, {tenant_id}).get(tenant_id, [])
+
+
+GROUP_DELETED = "group_deleted"
+NO_LIVE_SENSOR_FOR = "no_live_sensor_for_"
+
+
+def _duration(seconds: float) -> str:
+    """``42s``, ``45m``, ``3h``, ``2d``: rounded down, for a reason code and a note."""
+    seconds = max(0, int(seconds))
+    if seconds >= 86400:
+        return f"{seconds // 86400}d"
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    if seconds >= 60:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _regroup_wording(reason: str) -> str:
+    """How a verification's event and refusal say why it left its group."""
+    if reason == GROUP_DELETED:
+        return "was deleted"
+    return f"has had no live sensor for {reason.removeprefix(NO_LIVE_SENSOR_FOR)}"
+
+
+def _observing_group_gone(
+    settings: Settings, tenant_id: str, group: str | None, *, now: datetime
+) -> str | None:
+    """Why the finding's observing group cannot take its verification, or None.
+
+    ``group_deleted`` when the tenant no longer has the group;
+    ``no_live_sensor_for_<duration>`` when nothing in it could claim a job
+    for longer than ``verification_regroup_grace_seconds`` (sensors moved
+    out, decommissioned, refused at claim). Either way pinning the job there
+    would be refused or sit queued forever, so the verification goes out
+    tenant-wide instead — and since that is another vantage, a refusal from
+    it closes nothing (``vantage_differs``); coverage closes as before.
+
+    Inside the grace period the answer is a refusal, not a reroute: a sensor
+    that missed two heartbeats while restarting is not a group gone, and the
+    tenant-wide fallback looks from another network path (#451 review, round
+    3). Raises :class:`VerificationDispatchError` then.
+    """
+    from api.services import agent_groups as agent_groups_service
+
+    if not group:
+        return None
+    if agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group)):
+        return None
+    heard = agent_groups_service.last_heard_from(settings, tenant_id=tenant_id, name=group)
+    if heard is None:
+        return GROUP_DELETED
+    silent = (now - heard).total_seconds()
+    if silent > settings.verification_regroup_grace_seconds:
+        return f"{NO_LIVE_SENSOR_FOR}{_duration(silent)}"
+    raise VerificationDispatchError(
+        f"The observing sensor group '{group}' has no live sensor right now (none for "
+        f"{_duration(silent)}): retry once one reports in. After "
+        f"{_duration(settings.verification_regroup_grace_seconds)} without one the "
+        "verification goes to any sensor of the tenant instead."
+    )
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value.strip().strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class VerificationPlan:
+    """What one verification re-scan is sent to do, from the finding's detectors.
+
+    ``ips``/``names`` are the hosts the detectors observed it on, spelled as
+    they saw them — a finding a template matched on a virtual host is re-checked
+    on that name, not on the address behind it. ``template_ids`` pins nuclei to
+    the templates that found it, whatever their severity; ``nse`` turns the
+    service probe to ``hybrid`` so the NSE script that found it runs at all.
+    """
+
+    ips: tuple[str, ...]
+    names: tuple[str, ...]
+    template_ids: tuple[str, ...]
+    nse: bool
+    from_detectors: bool
+    # The sensor group the newest detector that recorded one observed it
+    # from: the re-scan goes out from there, so "not observed" is about the
+    # same network path (#451). None when no detector recorded a group.
+    agent_group: str | None = None
+
+    def config_extra(self) -> dict[str, Any]:
+        # The connect probe of the finding's port, always: it is the only
+        # evidence that tells a refused port from a dropped one, and a
+        # closure as endpoint_unreachable rests on it (reachability.py).
+        extra: dict[str, Any] = {"reachability": {"enabled": True}}
+        if self.template_ids:
+            extra["nuclei"] = {"enabled": True, "template_ids": list(self.template_ids)}
+        if self.nse:
+            extra["service_probe"] = {"backend": "hybrid"}
+        return extra
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "targets": [*self.ips, *self.names],
+            "targets_from": "detectors" if self.from_detectors else "asset",
+            "template_ids": list(self.template_ids),
+            "nse": self.nse,
+            "agent_group": self.agent_group,
+        }
+
+
+def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationPlan:
+    """Build the re-scan from ``row.detectors``; refuse what it cannot re-check.
+
+    A detector without a host (backfilled by 0079) or a row with none at
+    all adds every address of the asset to the targets, because its closure
+    then needs coverage on each of them (verification_coverage.assess).
+    """
+    detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
+    hosts = {str(entry["host"]).strip() for entry in detectors if entry.get("host")}
+    if not detectors or any(not entry.get("host") for entry in detectors):
+        # A detector that never recorded where it looked is held to every
+        # address of the asset (verification_coverage.assess), so every one of
+        # them is scanned: the IPs, or the names of an asset known by none.
+        addresses = _asset_hosts(session, row)
+        asset_ips = {host for host in addresses if _is_ip(host)}
+        hosts |= asset_ips or addresses
+    if not hosts:
+        raise VerificationDispatchError(
+            f"Vulnerability '{row.vuln_id}' has no scannable address on record"
         )
-    ).all()
-    for wanted in ("ip", "fqdn"):
-        for identifier in identifiers:
-            value = str(identifier.identifier_value or "").strip()
-            if identifier.identifier_type == wanted and value:
-                return value, wanted == "ip"
-    return None, False
+    ips = tuple(sorted(host for host in hosts if _is_ip(host)))
+    names = tuple(sorted(host for host in hosts if not _is_ip(host)))
+    refs = sorted(
+        {
+            str(entry.get("ref") or "").strip()
+            for entry in detectors
+            if entry.get("detector") == verification_coverage.NUCLEI
+        }
+        - {""}
+    )
+    refused = [ref for ref in refs if NUCLEI_TEMPLATE_ID_RE.fullmatch(ref) is None]
+    if refused or len(refs) > MAX_NUCLEI_TEMPLATE_IDS:
+        # Pinned or not at all: a sweep that may or may not load the template
+        # would be judged by a closure that requires it, and end inconclusive
+        # every time. Refused here so the operator hears it now.
+        raise VerificationDispatchError(
+            f"Vulnerability '{row.vuln_id}' was found by nuclei templates a sensor "
+            f"cannot be asked to load by id: {', '.join(refused) or len(refs)}"
+        )
+    return VerificationPlan(
+        ips=ips,
+        names=names,
+        template_ids=tuple(refs),
+        nse=any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors),
+        from_detectors=bool(detectors) and all(entry.get("host") for entry in detectors),
+        agent_group=next((str(e["agent_group"]) for e in detectors if e.get("agent_group")), None),
+    )
 
 
 def push_ticket_state(
@@ -1662,12 +2416,19 @@ def trigger_verification(
     produces a false "machine verified" closure later, so it is never created.
 
     It is refused outright for a ``endpoint_software`` finding. The asset does
-    have a scannable address, so ``_verification_target`` would happily return
-    one and a scan would happily run — and it would prove nothing, because an
+    have a scannable address, so a target would happily be found and a scan
+    would happily run — and it would prove nothing, because an
     installed package is not something a port scan observes. The finding would
     then be closed as machine-verified on the strength of a scan that never
     looked at it, which is the exact thing this whole path exists to prevent.
     Its verification is the next inventory snapshot.
+
+    The scan is built from the finding's detectors (``VerificationPlan``,
+    #451): the hosts they observed it on, the nuclei templates that found it
+    pinned by id whatever their severity, NSE turned on for an NSE finding.
+    A name the approved scope no longer covers is refused, not swapped for the
+    address behind it. What the run then has to show before the finding may
+    close is ``verification_coverage``'s.
     """
     now = _now()
     with get_session(settings.postgres_url) as session:
@@ -1700,11 +2461,7 @@ def trigger_verification(
         # finding is not re-verified, it is reopened first.
         vuln_states.check_transition(vuln_id, previous, vuln_states.VERIFYING)
 
-        target, is_ip = _verification_target(session, row)
-        if not target:
-            raise VerificationDispatchError(
-                f"Vulnerability '{vuln_id}' has no scannable address on record"
-            )
+        plan = _verification_plan(session, row)
 
         owning_tenant = row.tenant_id
         port = str(row.port).strip() if row.port is not None else None
@@ -1714,9 +2471,64 @@ def trigger_verification(
             "Scan dispatch is disabled on this server (OCTO_ALLOW_SCAN_START), "
             "so this finding cannot be machine-verified"
         )
+    # The group the re-scan goes out from: the observing one, unless that
+    # one can no longer take it (deleted, or emptied by a regroup).
+    requested_group = plan.agent_group
+    regrouped: dict[str, Any] | None = None
+    if settings.job_execution_mode == "agent":
+        from api.services import agent_groups as agent_groups_service
+        from api.services import scan_scopes as scopes
+
+        gone = _observing_group_gone(settings, owning_tenant, plan.agent_group, now=now)
+        if gone:
+            regrouped = {"from": plan.agent_group, "reason": gone}
+            requested_group = None
+        ranges_text = "\n".join(plan.ips) or None
+        domains_text = "\n".join(plan.names) or None
+        try:
+            # The group the job will carry, decided now as start_scan will:
+            # the observing group, held to what the approved scope allows.
+            group = agent_groups_service.resolve_for_scan(
+                settings,
+                tenant_id=owning_tenant,
+                requested=requested_group,
+                required=scopes.required_agent_groups(
+                    settings,
+                    tenant_id=owning_tenant,
+                    ranges_text=ranges_text,
+                    domains_text=domains_text,
+                ),
+            )
+        except (ValueError, PermissionError) as exc:
+            raise VerificationDispatchError(f"Could not dispatch a verification scan: {exc}") from exc
+        live = _verification_sensors(settings, owning_tenant, group)
+        if not any(VERIFICATION_CAPABILITY in capabilities for capabilities in live):
+            # Refused rather than queued: the job would wait for a sensor
+            # that may never come, with the finding parked in VERIFYING
+            # meanwhile — the state this function exists never to create. A
+            # local-execution installation runs the scan itself.
+            where = f"sensor group '{group}'" if group else "this tenant"
+            if regrouped and not group:
+                where += f" (its observing group '{plan.agent_group}' {_regroup_wording(regrouped['reason'])})"
+            if live:
+                raise VerificationDispatchError(
+                    f"No live sensor of {where} can run a verification re-scan: it needs "
+                    f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
+                    "loads pinned nuclei templates and records the coverage evidence the "
+                    "closure is judged on). Upgrade a sensor there and verify again."
+                )
+            # Nothing there to upgrade: no active scanner sensor with a recent
+            # heartbeat at or above the version floor.
+            raise VerificationDispatchError(
+                f"No live sensor of {where} can run a verification re-scan: none is "
+                "active and reporting in, of scanner kind and at or above the version "
+                f"floor. Bring one online (with capability {VERIFICATION_CAPABILITY}) "
+                "and verify again."
+            )
 
     from api.schemas import StartScanRequest
     from api.services import jobs as jobs_service
+    from api.services import scan_scopes
 
     scan_request = StartScanRequest(
         tenant_id=owning_tenant,
@@ -1724,12 +2536,13 @@ def trigger_verification(
         # The narrowest intent that still runs the vulnerability checks: the
         # verification has to be able to re-detect what it is confirming gone.
         intent="vuln",
-        ranges=target if is_ip else None,
-        domains=target if not is_ip else None,
+        ranges="\n".join(plan.ips) or None,
+        domains="\n".join(plan.names) or None,
         # Re-check the port the finding is on. Verifying a finding on 8443 with
         # a default port sweep is how "not observed" stops meaning "fixed".
         ports=port or None,
         skip_nse=False,
+        agent_group=requested_group,
     )
     try:
         job = jobs_service.start_scan(
@@ -1744,7 +2557,32 @@ def trigger_verification(
             # Aimed at one finding: widening it with the tenant's promoted
             # related domains is how "not observed" would stop meaning "fixed".
             widen_with_promoted=False,
+            # The detectors' own settings, on the same path as the intent's.
+            config_extra=plan.config_extra(),
+            # Explicitly, not through some setting the overlay happens to
+            # carry: a verification is only handed to a build that writes the
+            # coverage evidence it will be judged on.
+            min_overlay_version=VERIFICATION_OVERLAY_VERSION,
+            verification_of=vuln_id,
         )
+    except scan_scopes.ScanScopeDenied as exc:
+        LOG.warning("Verification dispatch refused by scope for %s: %s", vuln_id, exc)
+        denied = {str(target).lower() for target in exc.targets}
+        names = [name for name in plan.names if name.lower() in denied] or (
+            list(plan.names) if not denied else []
+        )
+        if names:
+            raise VerificationDispatchError(
+                f"Vulnerability '{vuln_id}' was observed on {', '.join(names)}, which "
+                "the tenant's approved scan scope does not cover now. It is not re-checked "
+                "on the address behind the name instead: a finding a check matched on a "
+                "name (a virtual host) says nothing about the bare address, and a re-scan "
+                "there would close it without having looked. Approve the name in the scan "
+                "scope, or close the finding with a reason."
+            ) from exc
+        raise VerificationDispatchError(
+            f"Could not dispatch a verification scan: {exc}"
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 409
         LOG.warning("Verification dispatch failed for %s: %s", vuln_id, exc, exc_info=True)
         raise VerificationDispatchError(
@@ -1771,14 +2609,23 @@ def trigger_verification(
             from_state=previous,
             to_state=vuln_states.VERIFYING,
             actor=actor or "system:verification",
-            note=f"Targeted verification scan dispatched (job {job.job_id})",
+            note=f"Targeted verification scan dispatched (job {job.job_id})"
+            + (
+                f"; observing sensor group '{regrouped['from']}' "
+                f"{_regroup_wording(regrouped['reason'])}, so it went to any sensor of the "
+                "tenant: a refused port cannot close it from there (vantage differs)"
+                if regrouped
+                else ""
+            ),
             detail={
                 "job_id": job.job_id,
                 "asset_id": row.asset_id,
-                "target": target,
+                "target": ", ".join([*plan.ips, *plan.names]),
                 "port": port,
                 "cve": row.cve,
                 "script_id": row.script_id,
+                "plan": plan.as_detail(),
+                **({"regrouped": {**regrouped, "dispatched_group": job.agent_group}} if regrouped else {}),
             },
         )
         session.flush()

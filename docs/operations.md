@@ -453,10 +453,19 @@ and not the next is not a ceiling:
   and browser screenshots off, and disables only the **direct-handshake
   fallback** of TLS posture. TLS posture itself stays enabled so it may parse
   certificate evidence already present in NSE/Pulse artifacts without opening
-  a new connection. For a tenant that is throttled rather than silenced,
-  `nuclei.rate_limit` is held to `per_host_rate` and every active secondary
-  pool (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
-  `screenshots.concurrency`) is held to `max_host_concurrency`.
+  a new connection. Domain monitoring keeps its DNS lookups but loses the
+  **subdomain-takeover confirmation GET**
+  (`discovery.domain_monitor.takeover_http_confirm`), so a resolving takeover
+  candidate is listed as unconfirmed instead of checked. For a tenant that is
+  throttled rather than silenced, `nuclei.rate_limit` is held to
+  `per_host_rate` and every active secondary pool
+  (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
+  `screenshots.concurrency`, `discovery.domain_monitor.takeover_http_concurrency`)
+  is held to `max_host_concurrency`. The ceiling counts endpoints in flight, not
+  connections: the TLS probe makes up to four handshakes per endpoint, one after
+  another in the same worker — two of them the TLS 1.0/1.1 checks, which
+  `tls_posture.probe_legacy_protocols: false` in the scanner config turns off
+  (the policy does not).
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
@@ -2561,6 +2570,51 @@ process never replaces itself, and nothing polls the server for a new version
 unless you install a timer for it. For a Docker install, pull the new image and
 re-run the installer with `--docker` (or roll the Kubernetes deployment).
 
+**Verification re-scans need an upgraded sensor** (#451, migration `0079`).
+A verification job asks for `config_overlay.v2`: it may pin the nuclei
+templates that found the finding, and it is judged on coverage evidence only
+that build writes. While no live sensor of the group the job would go to
+(the observing group, held to the approved scope; any sensor of the tenant for
+an ungrouped one, or when the observing group was deleted or has had no live
+sensor for longer than `OCTO_VERIFICATION_REGROUP_GRACE_SECONDS`, 1 h by
+default — the `verification_started` event then says so; inside that period
+**Verify** answers `409` "retry") declares it,
+**Verify** is refused (`409`, naming the group and the capability) rather than
+queuing a job nothing will run. "Live" is a scanner sensor reporting in, at or
+above `OCTO_AGENT_MIN_VERSION`: an endpoint agent put into a group does not
+count; a sensor that cannot take an already-queued one answers `426`
+naming it — every other job keeps going to the older sensors. A verification
+job that is queued and then never claimed still costs its NATS offer a
+delivery attempt per sensor that declines it (`JOBS_MAX_DELIVER`), as any job
+an outdated sensor cannot run does — known debt, not specific to #451. Two
+things to do around the upgrade:
+
+1. Finish rolling the API before anyone presses **Verify**: an API replica of
+   the previous release still closes a verification the old way, on absence
+   alone, which is the defect the release fixes.
+2. Expect findings to come back from `VERIFYING` as **verification
+   inconclusive** where the scan could not have seen them: a port that did
+   not refuse the connection (dropped, filtered) or was checked from another
+   vantage than the one that found it (another sensor group, another
+   ungrouped sensor, a finding seen from more than one), nuclei or its templates missing on the sensor, an NSE
+   script not in the sensor's NSE profile, a name the scope no longer covers.
+   The event's `detail.gaps` says which; fix that and verify again, or close
+   the finding by hand with the reason. A finding from before the upgrade
+   carries no vantage until a scan observes it again; once one has, a refusal
+   from that same place can close it. A `vantage_differs` because two sensors
+   or groups saw it is not fixed by verifying again — it closes on coverage,
+   or by hand. Findings left in `VERIFYING` by a
+   verification job that was cancelled while queued, or written off before
+   it uploaded anything, are not released automatically — move them back to
+   `FIXING` by hand.
+3. A port refused on every attempt closes a finding as `endpoint_unreachable`,
+   which is **not** machine-verified and does not count towards the verified
+   share: a firewall `REJECT` in front of a listening port is refused the same
+   way. Treat these closures as "not reachable from that sensor", and look at
+   them where reachability from elsewhere matters. The probe spaces its
+   attempts `reachability.attempt_interval_seconds` apart (5 s by default), so
+   a verification run takes a few seconds longer per probed endpoint batch.
+
 **Removing a sensor** from the Sensors page (`DELETE /api/agents/{id}`) only
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.
@@ -4049,6 +4103,13 @@ in `GET /api/vulnerabilities?source=retro_match`. A matcher killed mid-wave
 (rolling update) loses no announcement: unannounced findings are published by
 the next tick, whichever replica leads it.
 
+**An upgrade can be a wave too.** The marker carries a digest of the matcher's
+own tables (`+rules:` in `dataset_version`), so the first tick after an upgrade
+that taught the matcher products — such as the one that added eighteen, MySQL,
+MariaDB, PHP, Sendmail, Squid and Elasticsearch among them — re-matches every
+listener once, with nothing to run by hand. Findings for the newly named products
+land as `retro_match`; the event budget starts afresh with the new marker.
+
 **Watching it.** `GET /api/retro-match/status`: `dataset_version` (which file
 is being matched), `services_pending` (should drain to 0 within a few ticks of a
 refresh), `last_stats.errors` (listeners held off after an exception — each is
@@ -4057,9 +4118,9 @@ answer). `nvd_cpe` on `GET /api/system` shows the file's age and whether it
 clears the floor.
 
 **Forcing a re-check** — after replacing the dataset by hand, or to re-derive
-verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset or
-advisory feed does this by itself; the button is for the cases the marker
-cannot see.
+verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset,
+advisory feed or matcher table does this by itself; the button is for the cases
+the marker cannot see.
 
 **Rollback.** `0064` is expand-only. Rolling the image back leaves the tables
 unused and `retro_match` findings in the tracker as ordinary findings with an

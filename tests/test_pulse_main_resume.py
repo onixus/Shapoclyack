@@ -160,3 +160,56 @@ def test_resume_validation_does_not_enable_a_disabled_pulse_stage(cli, monkeypat
     assert cli.calls == []
     assert CheckpointStore(cli.checkpoint).done_items("pulse") == set(HOSTS)
     assert not (cli.output / "pulse/raw.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# The verification run's connect probe, as scanner.main wires it (#451)
+# ---------------------------------------------------------------------------
+
+
+def _reachability(cli, monkeypatch, tmp_path, *, enabled):
+    """The config a verification overlay produces: the finding's ports
+    explicit, one of them excluded by the tenant, the probe on; Pulse's
+    cache complete, so nothing but the probe has anything to do."""
+    from scanner import main as sm
+    from scanner.pipeline import reachability
+
+    config = sm._config_for_run(None)[0]
+    ports_file = tmp_path / "ports.txt"
+    ports_file.write_text("443,8443\n", encoding="utf-8")
+    config.ports.custom_ports_file = str(ports_file)
+    config.ports.exclude_ports = [8443]
+    config.reachability.enabled = enabled
+    config.reachability.attempt_interval_seconds = 0
+    save_json(cli.output / "pulse/raw.json", _payload(HOSTS))
+    seen = []
+    monkeypatch.setattr(
+        reachability, "_attempt", lambda host, port, timeout: seen.append((host, port)) or "refused"
+    )
+    return seen
+
+
+def test_a_verification_run_probes_its_hosts_on_the_explicit_ports(cli, monkeypatch, tmp_path):
+    """The run's own targets, on the ports it was sent to re-check, minus the
+    tenant's exclusions: a probe that skipped or never ran leaves nothing an
+    endpoint_unreachable closure could rest on, and one that ignored the
+    exclusions would connect where the tenant said not to."""
+    seen = _reachability(cli, monkeypatch, tmp_path, enabled=True)
+
+    assert cli.main() == 0
+
+    assert sorted(set(seen)) == [(host, 443) for host in HOSTS]
+    record = json.loads((cli.output / "reachability.json").read_text(encoding="utf-8"))
+    assert {(p["host"], p["port"], p["result"]) for p in record["probes"]} == {
+        (host, 443, "refused") for host in HOSTS
+    }
+    assert CheckpointStore(cli.checkpoint).is_done("reachability")
+
+
+def test_an_ordinary_run_makes_no_connect_probe(cli, monkeypatch, tmp_path):
+    seen = _reachability(cli, monkeypatch, tmp_path, enabled=False)
+
+    assert cli.main() == 0
+
+    assert seen == []
+    assert not (cli.output / "reachability.json").exists()

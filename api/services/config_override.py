@@ -366,9 +366,32 @@ def effective_config_path(
 
 #: What an agent reports when it hands a claim's ``config_overlay.json`` to the
 #: scanner as ``--config-overlay``: versioned with the set of settings the
-#: overlay may carry (scanner/pipeline/config_overlay.py). Kept equal to
+#: overlay may carry (scanner/pipeline/config_overlay.py), one entry per
+#: version it applies. Kept equal to the overlay half of
 #: ``agent/worker.CAPABILITIES``.
-AGENT_CAPABILITY = config_overlay.CAPABILITY
+AGENT_CAPABILITIES = config_overlay.CAPABILITIES
+
+#: What every job with an overlay asks of its claimant at least; a job whose
+#: overlay uses a newer setting asks for that version (:func:`overlay_capability`).
+AGENT_CAPABILITY = config_overlay.BASE_CAPABILITY
+
+#: ``scan_options`` key holding the capability a job's overlay needs. Written
+#: with the overlay (``job_submission.start_scan``); a job queued before it
+#: existed carries an overlay of the first version and nothing else.
+OVERLAY_CAPABILITY_OPTION = "config_overlay_capability"
+
+
+def overlay_capability(scan_options: dict[str, Any] | None) -> str | None:
+    """The capability a job's claimant must declare for its overlay, or ``None``.
+
+    Read from the job record rather than recomputed from the overlay, so the
+    claim's SQL filter (``job_control.claim_job``) and every Python reader
+    agree on one stored answer.
+    """
+    options = scan_options or {}
+    if not options.get("config_overlay"):
+        return None
+    return str(options.get(OVERLAY_CAPABILITY_OPTION) or AGENT_CAPABILITY)
 
 #: Editable settings that stay with the API's own host and are never sent to a
 #: sensor: the NVD key (a secret the sensor's scans do not use) and the nuclei

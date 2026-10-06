@@ -229,6 +229,12 @@ class Settings:
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # How long a finding's observing sensor group may go without a live
+    # sensor before its verification is sent to any sensor of the tenant
+    # instead (OCTO_VERIFICATION_REGROUP_GRACE_SECONDS, #451). Inside it the
+    # verification is refused with "retry": a sensor restarting is not a
+    # group gone, and the fallback is another network path.
+    verification_regroup_grace_seconds: int = 3600
     # Lowest agent version allowed to claim jobs (OCTO_AGENT_MIN_VERSION).
     # Empty = no floor, which is the default: a gate that refuses work by
     # default would strand every fleet on the upgrade that introduced it.
@@ -1462,6 +1468,20 @@ def _db_pool_bounds() -> tuple[int, int]:
 MAX_METRICS_TENANT_TOP_N = 50
 
 
+def _verification_regroup_grace_seconds() -> int:
+    """OCTO_VERIFICATION_REGROUP_GRACE_SECONDS: empty is the default, negative refused.
+
+    Empty means unset (a blank line in a values file), not zero: zero turns
+    the grace period off, and that is a choice somebody has to write down. A
+    negative wait is a typo; refused at startup like a value ``int()`` cannot
+    read, rather than quietly read as "reroute at once".
+    """
+    value = int(os.environ.get("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "3600") or "3600")
+    if value < 0:
+        raise ValueError(f"OCTO_VERIFICATION_REGROUP_GRACE_SECONDS must be 0 or more, got {value}")
+    return value
+
+
 def _metrics_tenant_top_n() -> int:
     """OCTO_METRICS_TENANT_TOP_N, clamped to ``[0, MAX_METRICS_TENANT_TOP_N]``.
 
@@ -2033,6 +2053,7 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=agent_stale_seconds,
+        verification_regroup_grace_seconds=_verification_regroup_grace_seconds(),
         agent_min_version=os.environ.get("OCTO_AGENT_MIN_VERSION", "").strip(),
         agent_bundle_dir=os.environ.get("OCTO_AGENT_BUNDLE_DIR", "").strip(),
         agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),

@@ -132,8 +132,12 @@ _CVE_AGE_RAISE = ((1.0, 0.0), (3.0, 4.0), (7.0, 8.0), (None, 12.0))
 #: Small on-path likelihood discount when fingerprint saw a CDN/WAF on the
 #: *same* host:port (#173). One observation, one discount — never per vendor
 #: and never a qualitative "minus a level" rule. Seeing Cloudflare is not
-#: evidence the WAF blocks this CVE. Names stay in lockstep with
-#: ``scanner.pipeline.fingerprint._CDN_WAF_SIGNATURES``.
+#: evidence the WAF blocks this CVE. These are the six providers Phase 9.1
+#: shipped; the fingerprint catalogue (``scanner/pipeline/
+#: fingerprint_catalogue.json``) keeps their ids and knows more CDN/WAFs since
+#: DQ4, which are reported but deliberately not added here -- earning the
+#: discount is a risk-model decision, not a side effect of a new signature.
+#: ``tests/test_fingerprint_exposures.py`` holds both directions.
 COMPENSATING_CONTROL_DISCOUNT = 6.0
 CDN_WAF_PROVIDERS = frozenset(
     {"cloudflare", "akamai", "sucuri", "imperva_incapsula", "cloudfront", "fastly"}

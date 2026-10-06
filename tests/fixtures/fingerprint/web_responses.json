@@ -1,0 +1,2407 @@
+{
+ "note": "Synthetic HTTP responses written for tests/test_fingerprint_catalogue.py from public knowledge of each product's markers. None is a capture of a real host: header values, cookies and page fragments are trimmed to what the catalogue matches on, and example.test stands in for every name. 'also' lists the other technologies a fixture is expected to identify; 'version' and 'cpe' what the catalogue must extract. 'negatives' must identify nothing at all.",
+ "positives": [
+  {
+   "tech": "cloudflare",
+   "label": "synthetic cloudflare response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "cloudflare"
+    ],
+    [
+     "CF-RAY",
+     "8a1b2c3d4e5f6a7b-AMS"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "akamai",
+   "label": "synthetic akamai response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Akamai-Transformed",
+     "9 12345 0 pmb=mRUM,1"
+    ],
+    [
+     "Server",
+     "AkamaiGHost"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "sucuri",
+   "label": "synthetic sucuri response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Sucuri-ID",
+     "15011"
+    ],
+    [
+     "X-Sucuri-Cache",
+     "HIT"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "imperva_incapsula",
+   "label": "synthetic imperva_incapsula response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Iinfo",
+     "13-123456-0 0CNN RT(1696600000000 0) q(0 0 0 -1) r(0 0) U5"
+    ],
+    [
+     "Set-Cookie",
+     "visid_incap_2812345=AbCdEf; path=/; HttpOnly"
+    ],
+    [
+     "Set-Cookie",
+     "incap_ses_1234_2812345=GhIjKl; path=/"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "cloudfront",
+   "label": "synthetic cloudfront response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Amz-Cf-Id",
+     "b3s0n_KjZ6Q-example-id=="
+    ],
+    [
+     "Via",
+     "1.1 3c3e0b8f1e2d.cloudfront.net (CloudFront)"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "fastly",
+   "label": "synthetic Fastly response; X-Served-By carries the word fastly so the legacy matcher is exercised",
+   "status": 200,
+   "headers": [
+    [
+     "X-Fastly-Request-ID",
+     "7c1a0d0e2b"
+    ],
+    [
+     "X-Served-By",
+     "cache-fra-fastly-FRA"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "qrator",
+   "label": "synthetic qrator response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "QRATOR"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "ddos_guard",
+   "label": "synthetic ddos_guard response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "ddos-guard"
+    ],
+    [
+     "Set-Cookie",
+     "__ddg1_=AbCdEf; Domain=.example.test; Path=/"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "variti",
+   "label": "synthetic variti response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Variti-Ccr",
+     "1"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "azure_front_door",
+   "label": "synthetic azure_front_door response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Azure-Ref",
+     "20261006T101010Z-17b8c9d0e1f2a3b4"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "vercel",
+   "label": "synthetic vercel response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Vercel-Id",
+     "fra1::abcd-1696600000000-0123456789ab"
+    ],
+    [
+     "Server",
+     "Vercel"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "barracuda_waf",
+   "label": "synthetic barracuda_waf response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "barra_counter_session=1234567890$12345; path=/"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "f5_bigip_asm",
+   "label": "synthetic f5_bigip_asm response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Request Rejected</title></head><body>The requested URL was rejected. Please consult with your administrator.<br><br>Your support ID is: 1234567890123456789<br><br><a href='javascript:history.back();'>[Go Back]</a></body></html>"
+  },
+  {
+   "tech": "f5_bigip_ltm",
+   "label": "synthetic f5_bigip_ltm response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "BIGipServerpool_web=1677787402.20480.0000; path=/; Httponly"
+    ],
+    [
+     "Server",
+     "BigIP"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "citrix_adc_lb",
+   "label": "synthetic citrix_adc_lb response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "NSC_wtsw_xfc_443=ffffffff09a1b2c345525d5f4f58455e445a4a423660;path=/"
+    ],
+    [
+     "Via",
+     "NS-CACHE-10.0: 1"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "aws_elb",
+   "label": "synthetic aws_elb response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "awselb/2.0"
+    ],
+    [
+     "Set-Cookie",
+     "AWSALB=abc; Path=/"
+    ],
+    [
+     "Set-Cookie",
+     "AWSALBCORS=abc; Path=/; SameSite=None"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "google_cloud_lb",
+   "label": "synthetic google_cloud_lb response",
+   "status": 200,
+   "headers": [
+    [
+     "Via",
+     "1.1 google"
+    ],
+    [
+     "Server",
+     "Google Frontend"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "yandex_cloud_alb",
+   "label": "synthetic yandex_cloud_alb response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "ycalb"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "squid",
+   "label": "synthetic squid response",
+   "status": 403,
+   "headers": [
+    [
+     "Server",
+     "squid/5.7"
+    ],
+    [
+     "X-Squid-Error",
+     "ERR_ACCESS_DENIED 0"
+    ]
+   ],
+   "body": "",
+   "version": "5.7",
+   "cpe": "cpe:2.3:a:squid-cache:squid:5.7:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "varnish",
+   "label": "synthetic varnish response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Varnish",
+     "32770 3"
+    ],
+    [
+     "Via",
+     "1.1 varnish (Varnish/7.4)"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "nginx",
+   "label": "synthetic nginx response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "nginx/1.24.0"
+    ]
+   ],
+   "body": "",
+   "version": "1.24.0",
+   "cpe": "cpe:2.3:a:f5:nginx_open_source:1.24.0:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "nginx",
+   "label": "synthetic distribution nginx: the upstream number in the banner is not the code that runs",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "nginx/1.18.0 (Ubuntu)"
+    ]
+   ],
+   "body": "",
+   "version": "1.18.0",
+   "cpe": "cpe:2.3:a:f5:nginx_open_source:*:*:*:*:*:*:*:*",
+   "distro_hint": "ubuntu"
+  },
+  {
+   "tech": "apache_httpd",
+   "label": "synthetic apache_httpd response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Apache/2.4.57 (Debian)"
+    ]
+   ],
+   "body": "",
+   "version": "2.4.57",
+   "cpe": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
+   "distro_hint": "debian"
+  },
+  {
+   "tech": "apache_httpd",
+   "label": "synthetic apache_httpd response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Apache/2.4.58"
+    ]
+   ],
+   "body": "",
+   "version": "2.4.58",
+   "cpe": "cpe:2.3:a:apache:http_server:2.4.58:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "microsoft_iis",
+   "label": "synthetic microsoft_iis response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Microsoft-IIS/10.0"
+    ]
+   ],
+   "body": "",
+   "version": "10.0"
+  },
+  {
+   "tech": "microsoft_httpapi",
+   "label": "synthetic microsoft_httpapi response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "Microsoft-HTTPAPI/2.0"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "litespeed",
+   "label": "synthetic litespeed response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "LiteSpeed"
+    ],
+    [
+     "X-Turbo-Charged-By",
+     "LiteSpeed"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "openresty",
+   "label": "synthetic openresty response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "openresty/1.21.4.3"
+    ]
+   ],
+   "body": "",
+   "version": "1.21.4.3"
+  },
+  {
+   "tech": "caddy",
+   "label": "synthetic caddy response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Caddy"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "envoy",
+   "label": "synthetic envoy response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "envoy"
+    ],
+    [
+     "X-Envoy-Upstream-Service-Time",
+     "12"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "lighttpd",
+   "label": "synthetic lighttpd response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "lighttpd/1.4.69"
+    ]
+   ],
+   "body": "",
+   "version": "1.4.69"
+  },
+  {
+   "tech": "angie",
+   "label": "synthetic angie response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Angie/1.4.1"
+    ]
+   ],
+   "body": "",
+   "version": "1.4.1"
+  },
+  {
+   "tech": "tengine",
+   "label": "synthetic tengine response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Tengine/2.4.1"
+    ]
+   ],
+   "body": "",
+   "version": "2.4.1"
+  },
+  {
+   "tech": "apache_tomcat",
+   "label": "synthetic apache_tomcat response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Apache-Coyote/1.1"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Apache Tomcat/9.0.83</title></head><body><h1>If you're seeing this, you've successfully installed Tomcat.</h1><h3>Apache Tomcat/9.0.83</h3></body></html>",
+   "version": "9.0.83",
+   "cpe": "cpe:2.3:a:apache:tomcat:9.0.83:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "apache_tomcat",
+   "label": "synthetic Tomcat error report: the version footer counts only on an error status",
+   "status": 404,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>HTTP Status 404 – Not Found</title></head><body><h1>HTTP Status 404 – Not Found</h1><hr class='line' /><h3>Apache Tomcat/10.1.16</h3></body></html>",
+   "version": "10.1.16"
+  },
+  {
+   "tech": "eclipse_jetty",
+   "label": "synthetic eclipse_jetty response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "Jetty(9.4.53.v20231009)"
+    ]
+   ],
+   "body": "",
+   "version": "9.4.53"
+  },
+  {
+   "tech": "gunicorn",
+   "label": "synthetic gunicorn response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "gunicorn/21.2.0"
+    ]
+   ],
+   "body": "",
+   "version": "21.2.0"
+  },
+  {
+   "tech": "werkzeug",
+   "label": "synthetic werkzeug response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Werkzeug/2.3.7 Python/3.11.4"
+    ]
+   ],
+   "body": "",
+   "version": "2.3.7"
+  },
+  {
+   "tech": "uvicorn",
+   "label": "synthetic uvicorn response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "uvicorn"
+    ]
+   ],
+   "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+   "tech": "kestrel",
+   "label": "synthetic kestrel response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "Kestrel"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "oracle_weblogic",
+   "label": "synthetic oracle_weblogic response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "WebLogic Server 12.2.1.4.0"
+    ]
+   ],
+   "body": "<HTML><HEAD><TITLE>Error 404--Not Found</TITLE></HEAD><BODY><H2>Error 404--Not Found</H2><H3>From RFC 2068 Hypertext Transfer Protocol -- HTTP/1.1:</H3><H4>10.4.5 404 Not Found</H4></BODY></HTML>"
+  },
+  {
+   "tech": "undertow",
+   "label": "synthetic undertow response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "Undertow/1"
+    ],
+    [
+     "Server",
+     "WildFly/10"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "glassfish",
+   "label": "synthetic glassfish response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "GlassFish Server Open Source Edition  4.1.2"
+    ],
+    [
+     "X-Powered-By",
+     "Servlet/3.1 JSP/2.3 (GlassFish Server Open Source Edition  4.1.2  Java/Oracle Corporation/1.8)"
+    ]
+   ],
+   "body": "",
+   "version": "4.1.2"
+  },
+  {
+   "tech": "phusion_passenger",
+   "label": "synthetic phusion_passenger response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "Phusion Passenger(R) 6.0.18"
+    ],
+    [
+     "Server",
+     "nginx/1.24.0 + Phusion Passenger(R) 6.0.18"
+    ]
+   ],
+   "body": "",
+   "also": [
+    "nginx"
+   ],
+   "version": "6.0.18"
+  },
+  {
+   "tech": "wordpress",
+   "label": "synthetic wordpress response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Generator",
+     "WordPress 6.4.2"
+    ],
+    [
+     "Link",
+     "<https://example.test/wp-json/>; rel=\"https://api.w.org/\""
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Example blog</title><meta name=\"generator\" content=\"WordPress 6.4.2\"><link rel='stylesheet' href='/wp-includes/css/dist/block-library/style.min.css'></head><body><img src='http://192.0.2.10/wp-content/uploads/2026/10/logo.png'></body></html>",
+   "version": "6.4.2",
+   "cpe": "cpe:2.3:a:wordpress:wordpress:6.4.2:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "drupal",
+   "label": "synthetic drupal response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Generator",
+     "Drupal 10 (https://www.drupal.org)"
+    ],
+    [
+     "X-Drupal-Cache",
+     "HIT"
+    ],
+    [
+     "X-Drupal-Dynamic-Cache",
+     "MISS"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Home | Example</title><meta name=\"generator\" content=\"Drupal 10 (https://www.drupal.org)\"><script type=\"application/json\" data-drupal-selector=\"drupal-settings-json\">{}</script></head><body><script>jQuery.extend(Drupal.settings, {\"basePath\":\"/\"});</script></body></html>"
+  },
+  {
+   "tech": "joomla",
+   "label": "synthetic joomla response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Content-Encoded-By",
+     "Joomla! 2.5"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Home</title><meta name=\"generator\" content=\"Joomla! - Open Source Content Management\"><script src=\"/media/jui/js/jquery.min.js\"></script><script src=\"/media/system/js/core.js\"></script><script type=\"application/json\" class=\"joomla-script-options new\">{}</script></head><body><a href=\"/index.php?option=com_content&view=article&id=1\"><img src=\"/components/com_k2/images/x.png\"></a></body></html>"
+  },
+  {
+   "tech": "bitrix",
+   "label": "synthetic bitrix response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-CMS",
+     "Bitrix Site Manager (d7f4e8b1c2a3b4c5d6e7f8a9b0c1d2e3)"
+    ],
+    [
+     "Set-Cookie",
+     "BITRIX_SM_GUEST_ID=123456; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Главная</title><script src=\"/bitrix/js/main/core/core.js\"></script><link href=\"/bitrix/templates/main/styles.css\" rel=\"stylesheet\"><link href=\"/bitrix/cache/css/s1/main/page.css\" rel=\"stylesheet\"></head><body></body></html>"
+  },
+  {
+   "tech": "tilda",
+   "label": "synthetic tilda response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Студия</title><link rel=\"stylesheet\" href=\"https://static.tildacdn.com/css/tilda-grid-3.0.min.css\"><script src=\"https://static.tildacdn.com/js/tilda-scripts-3.0.min.js\"></script></head><body></body></html>"
+  },
+  {
+   "tech": "modx",
+   "label": "synthetic modx response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "MODX Revolution"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Home</title><meta name=\"generator\" content=\"MODX Revolution\"></head><body></body></html>"
+  },
+  {
+   "tech": "typo3",
+   "label": "synthetic typo3 response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Home</title><meta name=\"generator\" content=\"TYPO3 CMS\"><link rel=\"stylesheet\" href=\"/typo3temp/assets/css/a1b2.css\"><script src=\"/typo3conf/ext/site/Resources/Public/main.js\"></script></head><body></body></html>"
+  },
+  {
+   "tech": "datalife_engine",
+   "label": "synthetic datalife_engine response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Новости</title><meta name=\"generator\" content=\"DataLife Engine (https://dle-news.ru)\"></head><body></body></html>"
+  },
+  {
+   "tech": "moodle",
+   "label": "synthetic moodle response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "MoodleSession=0a1b2c3d4e5f; path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Example LMS</title></head><body></body></html>"
+  },
+  {
+   "tech": "mediawiki",
+   "label": "synthetic mediawiki response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Main Page - Example Wiki</title><meta name=\"generator\" content=\"MediaWiki 1.39.5\"></head><body class=\"mediawiki ltr sitedir-ltr\"></body></html>",
+   "version": "1.39.5",
+   "cpe": "cpe:2.3:a:mediawiki:mediawiki:1.39.5:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "ghost",
+   "label": "synthetic ghost response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Example</title><meta name=\"generator\" content=\"Ghost 5.75\"></head><body></body></html>"
+  },
+  {
+   "tech": "magento",
+   "label": "synthetic magento response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "X-Magento-Vary=0a1b2c; path=/"
+    ],
+    [
+     "X-Magento-Cache-Debug",
+     "HIT"
+    ],
+    [
+     "X-Magento-Tags",
+     "cms_b_footer_links"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Home page</title></head><body><script type=\"text/x-magento-init\">{\"*\":{\"mage/cookies\":{}}}</script></body></html>"
+  },
+  {
+   "tech": "opencart",
+   "label": "synthetic opencart response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "OCSESSID=0a1b2c3d4e; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Your Store</title><link href=\"catalog/view/theme/default/stylesheet/stylesheet.css\" rel=\"stylesheet\"></head><body><a href=\"https://example.test/index.php?route=common/home\">Home</a></body></html>"
+  },
+  {
+   "tech": "prestashop",
+   "label": "synthetic prestashop response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "PrestaShop-a1b2c3d4e5f6=def50200; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Shop</title><meta name=\"generator\" content=\"PrestaShop\"></head><body><script>var prestashop = {\"cart\":{}};</script></body></html>"
+  },
+  {
+   "tech": "woocommerce",
+   "label": "synthetic woocommerce response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Shop</title><link rel='stylesheet' href='/wp-content/plugins/woocommerce/assets/css/woocommerce.css'></head><body class=\"home woocommerce-no-js\"></body></html>",
+   "also": [
+    "wordpress"
+   ]
+  },
+  {
+   "tech": "shopify",
+   "label": "synthetic shopify response",
+   "status": 200,
+   "headers": [
+    [
+     "X-ShopId",
+     "12345678"
+    ],
+    [
+     "X-Shopify-Stage",
+     "production"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Example Store</title><link href=\"//cdn.shopify.com/s/files/1/0000/0001/t/1/assets/theme.css\" rel=\"stylesheet\"></head><body></body></html>"
+  },
+  {
+   "tech": "nextjs",
+   "label": "synthetic nextjs response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "Next.js"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>App</title><script src=\"/_next/static/chunks/main-0a1b2c.js\" defer></script></head><body><div id=\"__next\"></div><script id=\"__NEXT_DATA__\" type=\"application/json\">{\"props\":{}}</script></body></html>"
+  },
+  {
+   "tech": "nuxt",
+   "label": "synthetic Nuxt response; X-Powered-By: Nuxt is set by some deployments, not by default",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "Nuxt"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>App</title><link rel=\"preload\" href=\"/_nuxt/entry.0a1b2c.js\" as=\"script\"></head><body><div id=\"__nuxt\"></div><script>window.__NUXT__={\"state\":{}}</script></body></html>"
+  },
+  {
+   "tech": "laravel",
+   "label": "synthetic laravel response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "XSRF-TOKEN=eyJpdiI6; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "laravel_session=eyJpdiI6; path=/; httponly"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "django",
+   "label": "synthetic django response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "django_language=ru; Path=/"
+    ],
+    [
+     "Set-Cookie",
+     "csrftoken=AbCdEf; Path=/; SameSite=Lax"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Sign in</title></head><body><form method=\"post\"><input type=\"hidden\" name=\"csrfmiddlewaretoken\" value=\"x\"></form></body></html>"
+  },
+  {
+   "tech": "spring_boot",
+   "label": "synthetic spring_boot response",
+   "status": 404,
+   "headers": [
+    [
+     "X-Application-Context",
+     "application:8080"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head></head><body><h1>Whitelabel Error Page</h1><p>This application has no explicit mapping for /error, so you are seeing this as a fallback.</p></body></html>"
+  },
+  {
+   "tech": "aspnet",
+   "label": "synthetic aspnet response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "ASP.NET"
+    ],
+    [
+     "X-AspNet-Version",
+     "4.0.30319"
+    ],
+    [
+     "X-AspNetMvc-Version",
+     "5.2"
+    ]
+   ],
+   "body": "",
+   "version": "4.0.30319"
+  },
+  {
+   "tech": "express",
+   "label": "synthetic express response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "Express"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "generic_php",
+   "label": "synthetic generic_php response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "PHP/8.1.2-1ubuntu2.14"
+    ]
+   ],
+   "body": "",
+   "version": "8.1.2",
+   "cpe": "cpe:2.3:a:php:php:*:*:*:*:*:*:*:*",
+   "distro_hint": "ubuntu"
+  },
+  {
+   "tech": "generic_php",
+   "label": "synthetic generic_php response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "PHP/8.2.12"
+    ]
+   ],
+   "body": "",
+   "version": "8.2.12",
+   "cpe": "cpe:2.3:a:php:php:8.2.12:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "codeigniter",
+   "label": "synthetic codeigniter response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "ci_session=0a1b2c3d; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Login</title></head><body><form><input type=\"hidden\" name=\"ci_csrf_token\" value=\"x\"></form></body></html>"
+  },
+  {
+   "tech": "symfony",
+   "label": "synthetic symfony response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Debug-Token",
+     "a1b2c3"
+    ],
+    [
+     "X-Debug-Token-Link",
+     "https://example.test/_profiler/a1b2c3"
+    ],
+    [
+     "Set-Cookie",
+     "sf_redirect=%7B%7D; path=/; httponly"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "webmin",
+   "label": "synthetic webmin response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "MiniServ/2.105"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Login to Webmin</title></head><body></body></html>",
+   "also": [
+    "miniserv"
+   ],
+   "version": "2.105",
+   "cpe": "cpe:2.3:a:webmin:webmin:2.105:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "usermin",
+   "label": "synthetic usermin response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "MiniServ/2.105"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Login to Usermin</title></head><body></body></html>",
+   "also": [
+    "miniserv"
+   ],
+   "version": "2.105",
+   "cpe": "cpe:2.3:a:webmin:usermin:2.105:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "miniserv",
+   "label": "synthetic miniserv response",
+   "status": 401,
+   "headers": [
+    [
+     "Server",
+     "MiniServ/2.105"
+    ]
+   ],
+   "body": "",
+   "version": "2.105"
+  },
+  {
+   "tech": "cpanel",
+   "label": "synthetic cpanel response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "cpsrvd/11.110.0.15"
+    ],
+    [
+     "Set-Cookie",
+     "cprelogin=no; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>cPanel Login</title></head><body></body></html>"
+  },
+  {
+   "tech": "cpanel_webmail",
+   "label": "synthetic cPanel webmail (port 2096): the mailbox login, also identifies cpsrvd",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "cpsrvd/11.110.0.15"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Webmail Login</title></head><body></body></html>",
+   "also": [
+    "cpanel"
+   ]
+  },
+  {
+   "tech": "plesk",
+   "label": "synthetic plesk response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Plesk Obsidian 18.0.56</title><meta name=\"plesk-build\" content=\"18.0.56.4\"></head><body><form method=\"post\" action=\"/login_up.php\"></form></body></html>"
+  },
+  {
+   "tech": "directadmin",
+   "label": "synthetic directadmin response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "DirectAdmin Daemon v1.65.2 Registered to Example"
+    ]
+   ],
+   "body": "",
+   "version": "1.65.2"
+  },
+  {
+   "tech": "rabbitmq_management",
+   "label": "synthetic rabbitmq_management response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>RabbitMQ Management</title></head><body></body></html>"
+  },
+  {
+   "tech": "minio_console",
+   "label": "synthetic minio_console response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>MinIO Console</title></head><body></body></html>"
+  },
+  {
+   "tech": "keycloak",
+   "label": "synthetic keycloak response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Welcome to Keycloak</title></head><body><a href=\"/admin/\">Administration Console</a></body></html>"
+  },
+  {
+   "tech": "vmware_vcenter",
+   "label": "synthetic vmware_vcenter response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>ID_VC_Welcome</title></head><body><a href=\"/vsphere-client/\">VMware vSphere Web Client</a></body></html>"
+  },
+  {
+   "tech": "django_admin",
+   "label": "synthetic django_admin response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Log in | Django site admin</title></head><body><form><input type=\"hidden\" name=\"csrfmiddlewaretoken\" value=\"x\"></form></body></html>",
+   "also": [
+    "django"
+   ]
+  },
+  {
+   "tech": "phpmyadmin",
+   "label": "synthetic phpmyadmin response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "phpMyAdmin_https=0a1b2c; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "pma_lang=en; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>phpMyAdmin</title></head><body></body></html>"
+  },
+  {
+   "tech": "phpmyadmin",
+   "label": "synthetic phpmyadmin response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>localhost / localhost | phpMyAdmin 5.2.1</title></head><body></body></html>",
+   "version": "5.2.1",
+   "cpe": "cpe:2.3:a:phpmyadmin:phpmyadmin:5.2.1:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "phpmyadmin",
+   "label": "synthetic phpmyadmin response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>phpMyAdmin</title></head><body><script>//<![CDATA[\nPMA_VERSION:\"4.9.11\",\n//]]></script></body></html>",
+   "version": "4.9.11"
+  },
+  {
+   "tech": "adminer",
+   "label": "synthetic adminer response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "adminer_sid=0a1b; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "adminer_key=2c3d; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Login - Adminer</title></head><body><h1><a href='https://www.adminer.org/' target=\"_blank\" id='h1'>Adminer</a> <span class=\"version\">4.8.1</span></h1></body></html>",
+   "version": "4.8.1"
+  },
+  {
+   "tech": "pgadmin",
+   "label": "synthetic pgadmin response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "pga4_session=0a1b2c; Path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>pgAdmin 4</title></head><body></body></html>"
+  },
+  {
+   "tech": "solr_admin",
+   "label": "synthetic solr_admin response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Solr Admin</title></head><body></body></html>"
+  },
+  {
+   "tech": "mongo_express",
+   "label": "synthetic mongo_express response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Mongo Express</title></head><body></body></html>"
+  },
+  {
+   "tech": "elasticsearch",
+   "label": "synthetic elasticsearch response",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\n  \"name\" : \"es-node-1\",\n  \"cluster_name\" : \"prod\",\n  \"version\" : {\n    \"number\" : \"7.17.15\",\n    \"build_flavor\" : \"default\"\n  },\n  \"tagline\" : \"You Know, for Search\"\n}\n",
+   "version": "7.17.15",
+   "cpe": "cpe:2.3:a:elastic:elasticsearch:7.17.15:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "opensearch",
+   "label": "synthetic opensearch response",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\n  \"name\" : \"os-node-1\",\n  \"version\" : {\n    \"distribution\" : \"opensearch\",\n    \"number\" : \"2.11.0\"\n  },\n  \"tagline\" : \"The OpenSearch Project: https://opensearch.org/\"\n}\n",
+   "version": "2.11.0"
+  },
+  {
+   "tech": "couchdb",
+   "label": "synthetic couchdb response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "CouchDB/3.3.3 (Erlang OTP/24)"
+    ],
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\"couchdb\":\"Welcome\",\"version\":\"3.3.3\",\"git_sha\":\"40afbcfc7\",\"features\":[\"search\"]}",
+   "version": "3.3.3"
+  },
+  {
+   "tech": "clickhouse",
+   "label": "synthetic clickhouse response",
+   "status": 200,
+   "headers": [
+    [
+     "X-ClickHouse-Server-Display-Name",
+     "ch-1"
+    ],
+    [
+     "X-ClickHouse-Summary",
+     "{\"read_rows\":\"0\",\"read_bytes\":\"0\"}"
+    ]
+   ],
+   "body": "Ok.\n"
+  },
+  {
+   "tech": "influxdb",
+   "label": "synthetic influxdb response",
+   "status": 404,
+   "headers": [
+    [
+     "X-Influxdb-Version",
+     "v2.7.4"
+    ],
+    [
+     "X-Influxdb-Build",
+     "OSS"
+    ]
+   ],
+   "body": "",
+   "version": "2.7.4"
+  },
+  {
+   "tech": "minio",
+   "label": "synthetic minio response",
+   "status": 403,
+   "headers": [
+    [
+     "Server",
+     "MinIO"
+    ]
+   ],
+   "body": "<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code></Error>"
+  },
+  {
+   "tech": "jenkins",
+   "label": "synthetic jenkins response",
+   "status": 403,
+   "headers": [
+    [
+     "X-Jenkins",
+     "2.414.3"
+    ],
+    [
+     "X-Hudson",
+     "1.395"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Dashboard [Jenkins]</title></head><body></body></html>",
+   "version": "2.414.3",
+   "cpe": "cpe:2.3:a:jenkins:jenkins:2.414.3:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "gitlab",
+   "label": "synthetic gitlab response",
+   "status": 200,
+   "url": "/users/sign_in",
+   "headers": [
+    [
+     "Set-Cookie",
+     "_gitlab_session=0a1b2c; path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Sign in · GitLab</title><meta content=\"GitLab\" property=\"og:site_name\"></head><body></body></html>"
+  },
+  {
+   "tech": "gitlab",
+   "label": "synthetic gitlab response",
+   "status": 200,
+   "url": "/users/sign_in",
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Example</title><meta property=\"og:site_name\" content=\"GitLab\"></head><body></body></html>"
+  },
+  {
+   "tech": "gitea",
+   "label": "synthetic gitea response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "i_like_gitea=0a1b2c; Path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Gitea: Git with a cup of tea</title><meta name=\"keywords\" content=\"go,git,self-hosted,gitea\"></head><body></body></html>"
+  },
+  {
+   "tech": "gogs",
+   "label": "synthetic gogs response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "i_like_gogits=0a1b2c; Path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Gogs</title></head><body></body></html>"
+  },
+  {
+   "tech": "jira",
+   "label": "synthetic jira response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>System Dashboard - Jira</title><meta name=\"application-name\" content=\"JIRA\" data-name=\"jira\" data-version=\"9.4.0\"><meta name=\"ajs-version-number\" content=\"9.4.0\"></head><body></body></html>",
+   "version": "9.4.0"
+  },
+  {
+   "tech": "confluence",
+   "label": "synthetic confluence response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Confluence-Request-Time",
+     "1696600000000"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Log In - Confluence</title><meta id=\"confluence-base-url\" name=\"confluence-base-url\" content=\"https://wiki.example.test\"><meta name=\"ajs-version-number\" content=\"7.19.16\"></head><body></body></html>",
+   "version": "7.19.16"
+  },
+  {
+   "tech": "sonarqube",
+   "label": "synthetic sonarqube response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>SonarQube</title><meta name=\"application-name\" content=\"SonarQube\"></head><body></body></html>"
+  },
+  {
+   "tech": "nexus",
+   "label": "synthetic nexus response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Nexus/3.61.0-02 (OSS)"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Nexus Repository Manager</title></head><body></body></html>",
+   "version": "3.61.0"
+  },
+  {
+   "tech": "harbor",
+   "label": "synthetic harbor response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Harbor</title></head><body><harbor-app>Loading...</harbor-app></body></html>"
+  },
+  {
+   "tech": "portainer",
+   "label": "synthetic portainer response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html lang=\"en\" ng-app=\"portainer\"><head><title>Portainer</title></head><body></body></html>"
+  },
+  {
+   "tech": "argocd",
+   "label": "synthetic argocd response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Argo CD</title></head><body></body></html>"
+  },
+  {
+   "tech": "kubernetes_dashboard",
+   "label": "synthetic kubernetes_dashboard response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html ng-app=\"kubernetesDashboard\"><head><title>Kubernetes Dashboard</title></head><body></body></html>"
+  },
+  {
+   "tech": "kubernetes_api",
+   "label": "synthetic kubernetes_api response",
+   "status": 403,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\n  \"kind\": \"Status\",\n  \"apiVersion\": \"v1\",\n  \"metadata\": {},\n  \"status\": \"Failure\",\n  \"message\": \"forbidden: User \\\"system:anonymous\\\" cannot get path \\\"/\\\"\",\n  \"reason\": \"Forbidden\",\n  \"code\": 403\n}"
+  },
+  {
+   "tech": "teamcity",
+   "label": "synthetic teamcity response",
+   "status": 200,
+   "headers": [
+    [
+     "TeamCity-Node-Id",
+     "MAIN_SERVER"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Log in to TeamCity — TeamCity</title><meta name=\"application-name\" content=\"TeamCity\"></head><body><span class=\"versionTag\"><span class=\"vWord\">Version</span> 2023.05.4 (build 129421)</span></body></html>",
+   "version": "2023.05.4"
+  },
+  {
+   "tech": "artifactory",
+   "label": "synthetic artifactory response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Artifactory-Id",
+     "0a1b2c3d4e5f"
+    ],
+    [
+     "X-JFrog-Version",
+     "Artifactory/7.71.5 77105900"
+    ],
+    [
+     "Server",
+     "Artifactory/7.71.5"
+    ]
+   ],
+   "body": "",
+   "version": "7.71.5"
+  },
+  {
+   "tech": "redmine",
+   "label": "synthetic redmine response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "_redmine_session=0a1b2c; path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Redmine</title><meta name=\"description\" content=\"Redmine\" /></head><body></body></html>"
+  },
+  {
+   "tech": "docker_registry",
+   "label": "synthetic docker_registry response",
+   "status": 200,
+   "headers": [
+    [
+     "Docker-Distribution-Api-Version",
+     "registry/2.0"
+    ]
+   ],
+   "body": "{}"
+  },
+  {
+   "tech": "consul",
+   "label": "synthetic consul response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Consul by HashiCorp</title></head><body></body></html>"
+  },
+  {
+   "tech": "vault",
+   "label": "synthetic vault response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Vault</title><meta name=\"vault/config/environment\" content=\"%7B%22modulePrefix%22%3A%22vault%22%7D\"></head><body></body></html>"
+  },
+  {
+   "tech": "jupyter",
+   "label": "synthetic jupyter response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Home Page - Select or create a notebook</title></head><body><script id=\"jupyter-config-data\" type=\"application/json\">{}</script></body></html>"
+  },
+  {
+   "tech": "grafana",
+   "label": "synthetic Grafana login page; a plugin version precedes buildInfo on purpose",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Grafana</title></head><body><script>window.grafanaBootData = {\"user\":{},\"settings\":{\"panels\":{\"text\":{\"info\":{\"version\":\"1.0.0\"}}},\"buildInfo\":{\"hideVersion\":false,\"version\":\"10.2.3\",\"commit\":\"1e84fede54\"}}};</script></body></html>",
+   "version": "10.2.3"
+  },
+  {
+   "tech": "kibana",
+   "label": "synthetic kibana response",
+   "status": 200,
+   "headers": [
+    [
+     "kbn-name",
+     "kibana"
+    ],
+    [
+     "kbn-version",
+     "8.11.1"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Elastic</title><kbn-injected-metadata data=\"{}\"></kbn-injected-metadata></head><body></body></html>",
+   "version": "8.11.1"
+  },
+  {
+   "tech": "prometheus",
+   "label": "synthetic prometheus response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Prometheus Time Series Collection and Processing Server</title></head><body></body></html>"
+  },
+  {
+   "tech": "alertmanager",
+   "label": "synthetic alertmanager response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Alertmanager</title></head><body></body></html>"
+  },
+  {
+   "tech": "zabbix",
+   "label": "synthetic zabbix response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "zbx_session=eyJ; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "zbx_sessionid=0a1b; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Zabbix</title></head><body onload=\"zbxCallPostScripts()\"></body></html>"
+  },
+  {
+   "tech": "nagios",
+   "label": "synthetic nagios response",
+   "status": 401,
+   "headers": [
+    [
+     "WWW-Authenticate",
+     "Basic realm=\"Nagios Access\""
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "graylog",
+   "label": "synthetic graylog response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Graylog-Node-ID",
+     "0a1b2c3d-4e5f"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "splunk",
+   "label": "synthetic splunk response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Splunkd"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "fortinet_fortigate",
+   "label": "synthetic fortinet_fortigate response",
+   "status": 200,
+   "url": "/remote/login?lang=en",
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title></title><script src=\"/remote/fgt_lang?lang=en\"></script></head><body></body></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortinet_fortigate_admin",
+   "label": "synthetic fortinet_fortigate_admin response",
+   "status": 200,
+   "url": "/login?redir=%2F",
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title></title></head><body><div class=\"ftnt-fortinet-grid\"><form><input type=\"password\" name=\"secretkey\"></form></div></body></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortinet_fortigate_admin",
+   "label": "synthetic FortiOS admin root: a script redirect to the GUI login",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": "<html><script type=\"text/javascript\">top.location=\"/login\";</script></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortios_httpsd",
+   "label": "synthetic fortios_httpsd response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "fortigate_slb",
+   "label": "synthetic site behind a FortiGate virtual server (persistence cookie)",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "FGTServer=0A1B2C; path=/; secure"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "fortinet_fortigate",
+   "label": "synthetic FortiGate SSL-VPN root: a script redirect the stage does not follow",
+   "status": 200,
+   "headers": [],
+   "body": "<html><script type=\"text/javascript\">if (window!=top) top.location=window.location;top.location=\"/remote/login\";</script></html>"
+  },
+  {
+   "tech": "ivanti_connect_secure",
+   "label": "synthetic ivanti_connect_secure response",
+   "status": 200,
+   "url": "/dana-na/auth/url_default/welcome.cgi",
+   "headers": [
+    [
+     "Set-Cookie",
+     "DSSIGNIN=url_default; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "DSSignInURL=/; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Ivanti Connect Secure</title><link rel=\"stylesheet\" href=\"/dana-na/css/ds.css\"></head><body></body></html>"
+  },
+  {
+   "tech": "citrix_gateway",
+   "label": "synthetic citrix_gateway response",
+   "status": 200,
+   "url": "/logon/LogonPoint/index.html",
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Citrix Gateway</title><script src=\"/logon/LogonPoint/receiver/js/ctxs.core.min.js\"></script></head><body></body></html>"
+  },
+  {
+   "tech": "paloalto_globalprotect",
+   "label": "synthetic paloalto_globalprotect response",
+   "status": 200,
+   "url": "/global-protect/login.esp",
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>GlobalProtect Portal</title><link rel=\"stylesheet\" href=\"/global-protect/portal/css/login.css\"></head><body></body></html>"
+  },
+  {
+   "tech": "cisco_asa_anyconnect",
+   "label": "synthetic cisco_asa_anyconnect response",
+   "status": 200,
+   "url": "/+CSCOE+/logon.html",
+   "headers": [
+    [
+     "Set-Cookie",
+     "webvpnlogin=1; path=/; secure"
+    ],
+    [
+     "Set-Cookie",
+     "webvpncontext=00@ab; path=/"
+    ]
+   ],
+   "body": "<html><script>document.location.replace(\"/+CSCOE+/logon.html\")</script><script src=\"/+CSCOU+/common.js\"></script></html>"
+  },
+  {
+   "tech": "f5_bigip_apm",
+   "label": "synthetic f5_bigip_apm response",
+   "status": 200,
+   "url": "/my.policy",
+   "headers": [
+    [
+     "Set-Cookie",
+     "MRHSession=0a1b2c; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "LastMRH_Session=0a1b; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>BIG-IP logout page</title></head><body><form action=\"/my.policy\" method=\"post\"></form></body></html>"
+  },
+  {
+   "tech": "sonicwall_sma",
+   "label": "synthetic sonicwall_sma response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "SonicWALL SSL-VPN Web Server"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "ms_rdweb",
+   "label": "synthetic ms_rdweb response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>RD Web Access</title></head><body></body></html>"
+  },
+  {
+   "tech": "openvpn_as",
+   "label": "synthetic openvpn_as response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "OpenVPN-AS"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "exchange_owa",
+   "label": "synthetic exchange_owa response",
+   "status": 200,
+   "url": "/owa/auth/logon.aspx?replaceCurrent=1&url=https%3a%2f%2fmail.example.test%2fowa%2f",
+   "headers": [
+    [
+     "X-OWA-Version",
+     "15.2.1258.12"
+    ],
+    [
+     "X-FEServer",
+     "EXCH01"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Outlook</title><link rel=\"stylesheet\" href=\"/owa/auth/15.2.1258.12/themes/resources/logon.css\"></head><body></body></html>",
+   "version": "15.2.1258.12",
+   "cpe": "cpe:2.3:a:microsoft:exchange_server:*:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "zimbra",
+   "label": "synthetic zimbra response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "ZM_TEST=true; Secure"
+    ],
+    [
+     "Set-Cookie",
+     "ZM_LOGIN_CSRF=0a1b; Secure"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Zimbra Web Client Sign In</title></head><body></body></html>"
+  },
+  {
+   "tech": "roundcube",
+   "label": "synthetic roundcube response",
+   "status": 200,
+   "url": "/?_task=login",
+   "headers": [
+    [
+     "Set-Cookie",
+     "roundcube_sessid=0a1b2c; path=/; secure; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Roundcube Webmail :: Welcome to Roundcube Webmail</title></head><body><input name=\"_user\" id=\"rcmloginuser\" required size=\"40\" autocapitalize=\"off\"></body></html>"
+  },
+  {
+   "tech": "kerio_connect",
+   "label": "synthetic kerio_connect response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Kerio Connect 9.4.2"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Kerio Connect Client</title></head><body></body></html>",
+   "version": "9.4.2"
+  },
+  {
+   "tech": "communigate_pro",
+   "label": "synthetic communigate_pro response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "CommuniGatePro/6.3.20"
+    ]
+   ],
+   "body": "",
+   "version": "6.3.20"
+  },
+  {
+   "tech": "mikrotik_routeros",
+   "label": "synthetic mikrotik_routeros response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>RouterOS router configuration page</title></head><body><h1>RouterOS v6.49.10</h1></body></html>",
+   "version": "6.49.10",
+   "cpe": "cpe:2.3:o:mikrotik:routeros:6.49.10:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "f5_bigip_tmui",
+   "label": "synthetic f5_bigip_tmui response",
+   "status": 200,
+   "url": "/tmui/login.jsp",
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>BIG-IP&reg;- bigip1.example.test (10.0.0.5)</title></head><body><img src=\"/tmui/tmui/login/images/logo_f5.png\"></body></html>"
+  },
+  {
+   "tech": "sonicwall_sonicos",
+   "label": "synthetic sonicwall_sonicos response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "SonicWALL"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "kerio_control",
+   "label": "synthetic kerio_control response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Kerio Control Embedded Web Server"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Kerio Control Administration</title></head><body></body></html>"
+  },
+  {
+   "tech": "opnsense",
+   "label": "synthetic opnsense response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>Login | OPNsense</title></head><body></body></html>"
+  },
+  {
+   "tech": "hpe_ilo",
+   "label": "synthetic hpe_ilo response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "HPE-iLO-Server/1.0"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "synology_dsm",
+   "label": "synthetic synology_dsm response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>DiskStation</title><meta name=\"application-name\" content=\"Synology DiskStation\"></head><body><noscript><div class='syno-no-script'>JavaScript is required.</div></noscript></body></html>"
+  },
+  {
+   "tech": "sharepoint",
+   "label": "synthetic sharepoint response",
+   "status": 200,
+   "headers": [
+    [
+     "MicrosoftSharePointTeamServices",
+     "16.0.0.10337"
+    ],
+    [
+     "SPRequestGuid",
+     "0a1b2c3d-4e5f"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Home</title><meta name=\"generator\" content=\"Microsoft SharePoint\"></head><body></body></html>",
+   "version": "16.0.0.10337",
+   "cpe": "cpe:2.3:a:microsoft:sharepoint_server:*:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "nextcloud",
+   "label": "synthetic nextcloud response",
+   "status": 200,
+   "headers": [
+    [
+     "Set-Cookie",
+     "__Host-nc_sameSiteCookielax=true; path=/; httponly; secure; samesite=lax"
+    ],
+    [
+     "Set-Cookie",
+     "__Host-nc_sameSiteCookiestrict=true; path=/; httponly; secure; samesite=strict"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "1c_enterprise",
+   "label": "synthetic 1c_enterprise response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>1С:Предприятие</title></head><body></body></html>"
+  },
+  {
+   "tech": "1c_enterprise",
+   "label": "synthetic 1c_enterprise response",
+   "status": 200,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>1C:Enterprise</title></head><body></body></html>"
+  },
+  {
+   "tech": "sap_netweaver",
+   "label": "synthetic sap_netweaver response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "SAP NetWeaver Application Server 7.53 / AS Java 7.50"
+    ]
+   ],
+   "body": ""
+  }
+ ],
+ "negatives": [
+  {
+   "name": "nginx default page without a Server header",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Welcome to nginx!</title></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the nginx web server is successfully installed and working.</p></body></html>"
+  },
+  {
+   "name": "apache default page without a Server header",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Apache2 Debian Default Page: It works</title></head><body><h1>It works!</h1></body></html>"
+  },
+  {
+   "name": "IIS default page without a Server header",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>IIS Windows Server</title></head><body><img src=\"iisstart.png\" alt=\"IIS\"></body></html>"
+  },
+  {
+   "name": "blog post that names the products",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>How we audit Jenkins, GitLab and Grafana exposure on the perimeter</title></head><body><article><p>Jenkins, GitLab, Gitea, Grafana, Kibana, Prometheus, Zabbix and SonarQube consoles should not face the internet. Neither should phpMyAdmin, Adminer, pgAdmin, Webmin, cPanel or Plesk. We also check FortiGate SSL-VPN, Ivanti (Pulse) Connect Secure, Citrix Gateway, GlobalProtect, AnyConnect, Check Point and SonicWall portals, Exchange OWA, Zimbra and Roundcube webmail, MikroTik RouterOS and UserGate.</p><p>CMS fleets: WordPress, Drupal, Joomla, 1C-Bitrix, Magento, OpenCart, Tilda and MODX; the 1С:Предприятие web client; Elasticsearch, which answers 'You Know, for Search'; and a Spring Boot Whitelabel Error Page left on.</p><p>Kubernetes API servers that answer system:anonymous, Docker registries, Jupyter, Consul and Vault round it off. RD Web Access and OpenVPN Access Server too.</p></article></body></html>"
+  },
+  {
+   "name": "intranet start page that links to the services",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Intranet</title></head><body><ul><li><a href=\"https://vpn.example.test/dana-na/auth/url_default/welcome.cgi\">VPN</a></li><li><a href=\"https://mail.example.test/owa/auth/logon.aspx\">Mail</a></li><li><a href=\"https://fw.example.test/remote/login\">Remote access</a></li><li><a href=\"https://gp.example.test/global-protect/login.esp\">GlobalProtect</a></li><li><a href=\"https://asa.example.test/+CSCOE+/logon.html\">AnyConnect</a></li><li><a href=\"https://citrix.example.test/logon/LogonPoint/index.html\">Citrix</a></li><li><a href=\"https://apm.example.test/my.policy\">F5 portal</a></li><li><a href=\"https://vc.example.test/vsphere-client/\">VMware vSphere</a></li><li><a href=\"https://jenkins.example.test/\">Jenkins</a></li><li><a href=\"https://grafana.example.test/\">Grafana</a></li></ul></body></html>"
+  },
+  {
+   "name": "JSON API 404",
+   "status": 404,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\"error\":\"not found\",\"status\":404}"
+  },
+  {
+   "name": "empty 204",
+   "status": 204,
+   "headers": [],
+   "body": ""
+  },
+  {
+   "name": "parked domain",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>example.test is for sale</title></head><body><h1>This domain may be for sale</h1></body></html>"
+  },
+  {
+   "name": "single page app shell",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Dashboard</title><link rel=\"stylesheet\" href=\"/static/css/main.css\"></head><body><div id=\"root\"></div><script src=\"/static/js/main.4f2a1b.js\"></script></body></html>"
+  },
+  {
+   "name": "generic 404 page",
+   "status": 404,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>Not Found</h1><p>The requested URL was not found on this server.</p></body></html>"
+  },
+  {
+   "name": "basic auth challenge",
+   "status": 401,
+   "headers": [
+    [
+     "WWW-Authenticate",
+     "Basic realm=\"Restricted area\""
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "name": "JSON that says kind status",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ]
+   ],
+   "body": "{\"kind\": \"Status\", \"ok\": true}"
+  },
+  {
+   "name": "pages titled like a common word",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Harbor</title></head><body><p>Seafood restaurant on the harbor.</p></body></html>"
+  },
+  {
+   "name": "vault as a word",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Vault</title></head><body><p>Your secure document vault.</p></body></html>"
+  },
+  {
+   "name": "Russian corporate page",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Внедрение 1С:Предприятие и Битрикс</title></head><body><p>Настраиваем 1С-Битрикс и Tilda.</p></body></html>"
+  },
+  {
+   "name": "other generators and session cookies",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Set-Cookie",
+     "PHPSESSID=0a1b2c; path=/"
+    ],
+    [
+     "Set-Cookie",
+     "JSESSIONID=3d4e5f; Path=/; HttpOnly"
+    ],
+    [
+     "Set-Cookie",
+     "ASP.NET_SessionId=6a7b8c; path=/; HttpOnly"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Example</title><meta name=\"generator\" content=\"Hugo 0.120.0\"><meta name=\"generator\" content=\"Elementor 3.18.0\"></head><body></body></html>"
+  },
+  {
+   "name": "a cookie whose value mentions products",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Set-Cookie",
+     "pref=laravel_session-and-incap_ses_like_text; path=/"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Example</title></head><body></body></html>"
+  },
+  {
+   "name": "tutorial quoting curl :9200 (Elasticsearch)",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Installing Elasticsearch 7 on Ubuntu</title></head><body><p>Check that it is up:</p><pre><code>$ curl localhost:9200\n{\n  \"name\" : \"node-1\",\n  \"version\" : {\n    \"number\" : \"7.17.0\"\n  },\n  \"tagline\" : \"You Know, for Search\"\n}</code></pre></body></html>"
+  },
+  {
+   "name": "tutorial quoting the CouchDB welcome",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>CouchDB quick start</title></head><body><pre>$ curl http://127.0.0.1:5984/\n{\"couchdb\":\"Welcome\",\"version\":\"3.1.0\",\"git_sha\":\"ff0feea20\"}</pre></body></html>"
+  },
+  {
+   "name": "JSON API that quotes a CouchDB welcome in a field",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/plain"
+    ]
+   ],
+   "body": "{\"couchdb\":\"Welcome\",\"version\":\"3.1.0\"}"
+  },
+  {
+   "name": "tutorial quoting the anonymous Kubernetes 403",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Why does kubectl say forbidden?</title></head><body><pre>{\n  \"kind\": \"Status\",\n  \"apiVersion\": \"v1\",\n  \"status\": \"Failure\",\n  \"message\": \"forbidden: User \\\"system:anonymous\\\" cannot get path \\\"/\\\"\",\n  \"code\": 403\n}</pre></body></html>"
+  },
+  {
+   "name": "article on fixing the Spring Whitelabel Error Page",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Fixing the Whitelabel Error Page in Spring Boot</title></head><body><p>You hit <b>Whitelabel Error Page</b>: \"This application has no explicit mapping for /error, so you are seeing this as a fallback.\"</p></body></html>"
+  },
+  {
+   "name": "blog post quoting the WebLogic 404",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>WebLogic 404 explained</title></head><body><blockquote>Error 404--Not Found<br>From RFC 2068 Hypertext Transfer Protocol -- HTTP/1.1:</blockquote></body></html>"
+  },
+  {
+   "name": "blog post quoting the F5 ASM block page",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>What does 'The requested URL was rejected' mean?</title></head><body><blockquote>The requested URL was rejected. Please consult with your administrator.<br>Your support ID is: 1234</blockquote></body></html>"
+  },
+  {
+   "name": "page that renders a Tomcat footer at 200",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Our stack</title></head><body><h3>Apache Tomcat/9.0.83</h3><p>is what we run.</p></body></html>"
+  },
+  {
+   "name": "RouterOS upgrade notes",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>RouterOS v7.12 upgrade notes</title></head><body><h1>RouterOS v7.12</h1></body></html>"
+  },
+  {
+   "name": "BIG-IP TMUI exploit write-up",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>BIG-IP TMUI RCE (CVE-2020-5902) explained</title></head><body><pre>curl -k \"https://host/tmui/login.jsp/..;/tmui/locallb/workspace/fileRead.jsp?fileName=/etc/passwd\"\nurl = \"/tmui/login.jsp\"</pre></body></html>"
+  },
+  {
+   "name": "Ivanti Connect Secure PoC write-up",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>CVE-2023-46805 walkthrough</title></head><body><pre>path = \"/dana-na/../dana/html5acc/guacamole/../../../etc/passwd\"\nrequests.get(base + path)</pre><p>The login page lives at /dana-na/auth/url_default/welcome.cgi.</p></body></html>"
+  },
+  {
+   "name": "portal page that links to the VPN and mail on the same host",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Build portal</title></head><body><a href='/ci/'>CI</a><a href='/dana-na/auth/url_default/welcome.cgi'>VPN</a><a href='/owa/auth/logon.aspx'>Mail</a><a href='/+CSCOE+/logon.html'>AnyConnect</a><a href='/remote/login'>SSL-VPN</a><a href='/global-protect/login.esp'>GP</a></body></html>"
+  },
+  {
+   "name": "write-up quoting the FortiGate and ASA root scripts",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>How SSL-VPN portals redirect</title></head><body><pre>top.location=\"/remote/login\";\ndocument.location.replace(\"/+CSCOE+/logon.html\")</pre></body></html>"
+  },
+  {
+   "name": "Grafana internals post",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Grafana boot data explained</title></head><body><pre>window.grafanaBootData = {&quot;settings&quot;: {}}</pre></body></html>"
+  },
+  {
+   "name": "framework tutorials in prose",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Hydration explained</title></head><body><p>Next.js puts state in __NEXT_DATA__ and serves chunks from /_next/static/; Nuxt uses window.__NUXT__ and /_nuxt/. Drupal 7 exposed Drupal.settings; Magento uses text/x-magento-init; PrestaShop declares var prestashop = {}.</p><pre>&lt;kbn-injected-metadata data=\"{}\"&gt;&lt;/kbn-injected-metadata&gt;\n&lt;body onload=\"zbxCallPostScripts()\"&gt;\n&lt;html ng-app=\"portainer\"&gt;\n&lt;script id=\"jupyter-config-data\"&gt;\n&lt;input id=\"rcmloginuser\"&gt;</pre></body></html>"
+  },
+  {
+   "name": "landing page hot-linking an image from a WordPress blog",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Acme</title></head><body><img src=\"https://news.partner.example/wp-content/uploads/2024/01/logo.png\"></body></html>"
+  },
+  {
+   "name": "WordPress tutorial",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Where WordPress keeps plugins</title></head><body><p>Upload the folder to wp-content/plugins/ and wp-includes/ stays alone.</p></body></html>"
+  },
+  {
+   "name": "Joomla migration notice",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Acme</title></head><body><p>Old links under /components/com_content/ and /media/jui/ now redirect.</p></body></html>"
+  },
+  {
+   "name": "a corporate webmail titled Webmail Login",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Webmail Login</title></head><body><form action='/login.php' method='post'><input name='user'></form></body></html>"
+  },
+  {
+   "name": "redirect page to a VPN on another host",
+   "status": 200,
+   "url": "/moved",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Moved</title></head><body><a href=\"https://vpn.example.test/remote/login?lang=en\">Continue</a></body></html>"
+  }
+ ]
+}
