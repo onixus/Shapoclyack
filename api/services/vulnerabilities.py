@@ -352,7 +352,24 @@ def merge_detectors(
             in located
         )
     ]
-    return [*observed, *kept][:MAX_DETECTORS]
+    merged = [*observed, *kept]
+    if len(merged) <= MAX_DETECTORS:
+        return merged
+    # Over the cap, an entry repeating a detector and ref a newer entry
+    # already holds (the same template seen on another address) goes first,
+    # oldest of those first; only then the oldest entries outright. Dropping
+    # the one entry of a detector would let a verification close the finding
+    # without that detector ever looking again.
+    held: set[tuple[Any, Any]] = set()
+    repeats: list[int] = []
+    for index, entry in enumerate(merged):
+        key = (entry.get("detector"), entry.get("ref") or None)
+        if key in held:
+            repeats.append(index)
+        held.add(key)
+    excess = len(merged) - MAX_DETECTORS
+    dropped = set(repeats[::-1][:excess])
+    return [entry for index, entry in enumerate(merged) if index not in dropped][:MAX_DETECTORS]
 
 
 def _severity_of(entry: dict[str, Any]) -> str:

@@ -472,6 +472,27 @@ def test_an_nse_detector_is_not_stood_in_for_by_an_uncovered_one(tmp_path, monke
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "pulse_cve_matching_off", "script_not_run")
 
 
+def test_an_nse_detector_on_another_address_is_not_stood_in_for(tmp_path, monkeypatch):
+    """vulners saw it on 10.0.0.6, Pulse on 10.0.0.5: Pulse covering .5
+    says nothing about what vulners found on .6."""
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nmap-nse", "script_id": "vulners"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    vuln = _tracked(settings, tenant_id, [both])
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln["vuln_id"])
+        row.detectors = [
+            {**entry, "host": "10.0.0.6"} if entry["detector"] == "nmap-nse" else entry
+            for entry in row.detectors
+        ]
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir)
+    _nmap(run_dir)
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "script_not_run")
+
+
 def _second_address(settings, tenant_id, vuln_id, address: str = "10.0.0.6") -> None:
     """Give the finding's asset a second IP, as an identity merge would."""
     with get_session(settings.postgres_url) as session:
@@ -607,6 +628,70 @@ def test_the_nse_rule_reads_script_names_as_nmap_takes_them():
     assert coverage._script_names("nmap -sV h") == set()
     assert coverage.normalize_host("[2001:DB8::1]") == "2001:db8::1"
     assert coverage.normalize_host("App.Example.COM.") == "app.example.com"
+
+
+def test_over_the_cap_a_repeated_detector_goes_before_a_lone_one():
+    """A template seen on one address long ago, and Pulse seen on many since:
+    dropping the oldest outright would drop the template's only entry, and a
+    verification would then close the finding without nuclei ever looking."""
+    lone = {"detector": "nuclei", "ref": TEMPLATE, "host": HOST, "port": "443"}
+    pulse_on = [
+        {"detector": "pulse", "ref": "local", "host": f"10.0.1.{n}", "port": "443"}
+        for n in range(vulns.MAX_DETECTORS)
+    ]
+    merged = vulns.merge_detectors([lone], pulse_on)
+    assert len(merged) == vulns.MAX_DETECTORS
+    assert lone in merged
+    # The newest Pulse entries stay; the oldest repeat made room.
+    assert merged[: vulns.MAX_DETECTORS - 1] == pulse_on[: vulns.MAX_DETECTORS - 1]
+
+
+def test_a_nuclei_template_on_another_port_is_not_this_endpoint(tmp_path, monkeypatch):
+    """The finding is on 443; nuclei was given the host's port 80 only."""
+    settings, tenant_id = _seed(tmp_path, findings=[NUCLEI_MEDIUM])
+    vuln = _tracked(settings, tenant_id, [NUCLEI_MEDIUM])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    monkeypatch.setattr(
+        nuclei_scan.shutil, "which", lambda name: "/usr/local/bin/nuclei" if name == "nuclei" else None
+    )
+
+    def clean_exit(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(nuclei_scan, "run_command", clean_exit)
+    nuclei_scan.run_nuclei_scan(
+        [f"{HOST}:80/tcp"],
+        NucleiConfig(templates_dir=str(_templates(tmp_path)), template_ids=[TEMPLATE]),
+        run_dir,
+    )
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "endpoint_not_targeted")
+
+
+def test_a_failed_verification_job_releases_only_its_own_findings(tmp_path):
+    """Two findings in VERIFYING behind two jobs; one job fails. The other
+    finding's verification is still running and must stay where it is."""
+    two = [NUCLEI_MEDIUM, {**PULSE, "cve": "CVE-2024-0002", "port": "80"}]
+    settings, tenant_id = _seed(tmp_path, findings=two)
+    _write_run(settings.output_dir, "run-1", HOSTS, two)
+    vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-1")
+    items, _ = vulns.list_vulnerabilities(settings, tenant_id=tenant_id, limit=50)
+    by_cve = {item["cve"]: item["vuln_id"] for item in items}
+    _park_in_verifying(settings, tenant_id, by_cve[CVE], "job-a")
+    _park_in_verifying(settings, tenant_id, by_cve["CVE-2024-0002"], "job-b")
+
+    moved = vulns.release_unfinished_verification(
+        settings, tenant_id=tenant_id, job_id="job-a", run_id="run-a", status="failed"
+    )
+
+    assert moved == 1
+    assert vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=by_cve[CVE])["state"] == vuln_states.FIXING
+    other = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=by_cve["CVE-2024-0002"])
+    assert other["state"] == vuln_states.VERIFYING
+    assert other["verification_job_id"] == "job-b"
 
 
 # --------------------------------------------------------------------------
