@@ -1079,6 +1079,8 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **CI: the sensor-update signal tests ran into their limits in Jenkins, and the root guard test failed outright.** Eleven tests in `tests/test_sensor_bundle.py` failed on every Jenkins build since the signed-bundle work (#363): PID 1 in a `docker.inside` container is `cat`, which never reaps, so processes a test orphans stay zombies, and `scripts/update-agent.sh` waits for the sensor's process group to empty (`kill -0 -- -PGID`) — a zombie is still a member, so on CI it never emptied. On a host, systemd reaps them at once; the script is unchanged. The test stage now runs its container with `--init`. `test_root_will_not_run_the_update_over_a_tree_another_account_owns` asserted a non-root owner that a root run cannot have; run as root it now hands the tree to another account first, so the guard is still exercised.
+
 - **`test_window_decays_without_operator_intervention` no longer depends on how
   fast bcrypt runs.** It used a real one-second limiter window, so the lockout
   only formed if two logins fitted in that second; under coverage on the CI

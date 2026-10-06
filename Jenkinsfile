@@ -135,7 +135,14 @@ pipeline {
                     "--network ${net} --network-alias nats",
                     "--jetstream --store_dir=/data --http_port=8222"
                   ) { nats ->
-                    docker.image(PYTHON_IMAGES[PY]).inside("--network ${net} ${PIP_CACHE}") {
+                    // --init: PID 1 in a docker.inside container is `cat`, which
+                    // never reaps, so every process orphaned by a test stays a
+                    // zombie. A zombie is still a member of its process group,
+                    // and update-agent.sh waits for the sensor's group to
+                    // empty (kill -0 -- -PGID) — on a host systemd reaps it at
+                    // once, here it never goes, and nine signal tests in
+                    // tests/test_sensor_bundle.py ran into their 20 s limit.
+                    docker.image(PYTHON_IMAGES[PY]).inside("--init --network ${net} ${PIP_CACHE}") {
                       withEnv([
                         'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
                         'OCTO_NATS_URL=nats://nats:4222',
