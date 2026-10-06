@@ -124,7 +124,13 @@ def _pulse(
     )
 
 
-def _nmap(run_dir: Path, *, scripts: str = "vulners,ssl-cert", port: int = 443, exit: str = "success") -> None:
+#: The NSE scripts a verification re-scan really runs: it is a ``safe`` mode
+#: scan, whose shipped NSE profile is ``baseline`` (scanner/config/default.yaml,
+#: k8s/shapoclyack/base/config/k8s.yaml) — two categories, no script by name.
+SAFE_MODE_SCRIPTS = "default,safe"
+
+
+def _nmap(run_dir: Path, *, scripts: str = SAFE_MODE_SCRIPTS, port: int = 443, exit: str = "success") -> None:
     nmap_dir = run_dir / "nmap" / "tcp"
     nmap_dir.mkdir(parents=True, exist_ok=True)
     (nmap_dir / f"tcp_{HOST}.xml").write_text(
@@ -419,13 +425,104 @@ def test_one_detector_short_of_full_coverage_is_still_inconclusive(tmp_path, mon
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "nuclei_not_run")
 
 
-def test_an_nse_finding_closes_when_its_script_ran_on_the_endpoint(tmp_path, monkeypatch):
+def test_an_nse_only_finding_is_inconclusive_under_what_safe_mode_runs(tmp_path, monkeypatch):
+    """The honest dead end: ``--script default,safe`` may well have run
+    vulners, but nmap's XML lists a script only when it printed something, so
+    a silent category run is no evidence about one script."""
     settings, tenant_id = _seed(tmp_path, findings=[NSE])
     vuln = _tracked(settings, tenant_id, [NSE])
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     _nmap(run_dir)
 
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "script_not_run")
+
+
+def test_a_pulse_finding_vulners_also_saw_closes_on_pulse_coverage(tmp_path, monkeypatch):
+    """Hybrid or nmap backend: Pulse and vulners report one CVE, the report
+    keeps Pulse's row and names vulners in also_detected_by. The safe-mode
+    re-scan cannot be asked for vulners by name — the NSE detector is stood
+    in for by Pulse, which re-checked the same address and did not see it.
+    Before, this finding could never be closed."""
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nmap-nse", "script_id": "vulners"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    vuln = _tracked(settings, tenant_id, [both])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir)
+    _nmap(run_dir)
+
     assert _fold(settings, tenant_id).verification_passed == 1
+    event = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert [(w["detector"], w["ref"], w["covered_by"]) for w in event["detail"]["waived"]] == [
+        ("nmap-nse", "vulners", "pulse")
+    ]
+
+
+def test_an_nse_detector_is_not_stood_in_for_by_an_uncovered_one(tmp_path, monkeypatch):
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nmap-nse", "script_id": "vulners"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    vuln = _tracked(settings, tenant_id, [both])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, cve=False)
+    _nmap(run_dir)
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "pulse_cve_matching_off", "script_not_run")
+
+
+def _second_address(settings, tenant_id, vuln_id, address: str = "10.0.0.6") -> None:
+    """Give the finding's asset a second IP, as an identity merge would."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln_id)
+        session.add(
+            models.AssetIdentifier(
+                asset_id=row.asset_id, tenant_id=tenant_id, identifier_type="ip", identifier_value=address
+            )
+        )
+
+
+def _forget_host(settings, vuln_id, detector: str) -> None:
+    """Make one detector a migrated, host-less entry (0079's backfill)."""
+    with get_session(settings.postgres_url) as session:
+        row = session.get(models.Vulnerability, vuln_id)
+        row.detectors = [
+            {**entry, "host": None} if entry["detector"] == detector else entry for entry in row.detectors
+        ]
+
+
+def test_a_hostless_detector_needs_coverage_on_every_address_of_the_asset(tmp_path, monkeypatch):
+    """A migrated nuclei entry never said where it looked. "Some address
+    answered" would let a re-scan of the address the finding was not on close
+    it, so each address has to be covered."""
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nuclei", "script_id": f"nuclei:{TEMPLATE}"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    vuln = _tracked(settings, tenant_id, [both])
+    _second_address(settings, tenant_id, vuln["vuln_id"])
+    _forget_host(settings, vuln["vuln_id"], "nuclei")
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir)
+    # nuclei looked at 10.0.0.5 only.
+    _nuclei(monkeypatch, run_dir, tmp_path, template_ids=[TEMPLATE])
+
+    _fold(settings, tenant_id)
+
+    event = _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "endpoint_not_targeted")
+    assert event["detail"]["gaps"][0]["host"] == "10.0.0.6"
+
+
+def test_a_hostless_detector_puts_every_address_of_the_asset_in_the_scan(tmp_path):
+    both = _row("pulse", "pulse:local", also_detected_by=[{"source": "nuclei", "script_id": f"nuclei:{TEMPLATE}"}])
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    approve_scan_scope(settings)
+    vuln = _tracked(settings, tenant_id, [both])
+    _second_address(settings, tenant_id, vuln["vuln_id"])
+    _forget_host(settings, vuln["vuln_id"], "nuclei")
+
+    job = _dispatch(settings, tenant_id, vuln["vuln_id"])
+
+    assert _inputs(settings, job.job_id, "ranges.txt") == [HOST, "10.0.0.6"]
 
 
 def test_still_observed_bounces_whatever_the_coverage(tmp_path, monkeypatch):

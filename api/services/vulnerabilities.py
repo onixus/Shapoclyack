@@ -1018,6 +1018,9 @@ def _asset_hosts(session: Any, row: models.Vulnerability) -> set[str]:
             select(models.AssetIdentifier.identifier_value).where(
                 models.AssetIdentifier.tenant_id == row.tenant_id,
                 models.AssetIdentifier.asset_id == row.asset_id,
+                # Addresses only: a certificate fingerprint is an identity,
+                # not something a scan can be pointed at.
+                models.AssetIdentifier.identifier_type.in_(("ip", "fqdn")),
             )
         )
         if value and str(value).strip()
@@ -1405,7 +1408,7 @@ def register_findings_from_run(
                 # a Pulse that did not match CVEs, a backend without NSE, a
                 # port that did not answer — each used to close the finding as
                 # verified-fixed here.
-                gaps = coverage.gaps(
+                gaps, waived = coverage.assess(
                     list(v_row.detectors or []),
                     port=v_row.port,
                     asset_hosts=_asset_hosts(session, v_row),
@@ -1460,6 +1463,9 @@ def register_findings_from_run(
                         # detector, or the legacy Pulse rule for a row that
                         # has none (verification_coverage.py).
                         "coverage_rule": "detectors" if v_row.detectors else "legacy",
+                        # NSE detectors another detector of the finding stood
+                        # in for (verification_coverage.assess).
+                        **({"waived": waived} if waived else {}),
                         **dropped_exception,
                     },
                 )
@@ -1860,28 +1866,6 @@ def _ticket_endpoint(
     return str(row.url), secret, headers, dict(row.transport_config or {})
 
 
-def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str | None, bool]:
-    """The address to re-scan for one finding, and whether it is an IP.
-
-    Assets carry no address column of their own — the addresses are the
-    ``asset_identifiers`` rows the ingest resolved the finding's host through —
-    so the target is read back from there. An IP is preferred over an FQDN
-    because it is what the original observation was made against.
-    """
-    identifiers = session.scalars(
-        select(models.AssetIdentifier).where(
-            models.AssetIdentifier.tenant_id == row.tenant_id,
-            models.AssetIdentifier.asset_id == row.asset_id,
-        )
-    ).all()
-    for wanted in ("ip", "fqdn"):
-        for identifier in identifiers:
-            value = str(identifier.identifier_value or "").strip()
-            if identifier.identifier_type == wanted and value:
-                return value, wanted == "ip"
-    return None, False
-
-
 #: The overlay version a verification job asks of its sensor, whatever its
 #: overlay carries: v2 is the build that loads pinned nuclei templates and
 #: writes the coverage evidence (nuclei.json ``coverage``, ``adapter.cve`` and
@@ -1950,22 +1934,25 @@ class VerificationPlan:
 def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationPlan:
     """Build the re-scan from ``row.detectors``; refuse what it cannot re-check.
 
-    A row with no detector host at all (one from before 0079, or backfilled by
-    it) is re-scanned at today's ``_verification_target``; its closure is then
-    held to the weaker legacy rule (verification_coverage.py).
+    A detector without a host (backfilled by 0079) or a row with none at
+    all adds every address of the asset to the targets, because its closure
+    then needs coverage on each of them (verification_coverage.assess).
     """
     detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
-    hosts = sorted({str(entry["host"]).strip() for entry in detectors if entry.get("host")})
-    if hosts:
-        ips = tuple(host for host in hosts if _is_ip(host))
-        names = tuple(host for host in hosts if not _is_ip(host))
-    else:
-        target, is_ip = _verification_target(session, row)
-        if not target:
-            raise VerificationDispatchError(
-                f"Vulnerability '{row.vuln_id}' has no scannable address on record"
-            )
-        ips, names = ((target,), ()) if is_ip else ((), (target,))
+    hosts = {str(entry["host"]).strip() for entry in detectors if entry.get("host")}
+    if not detectors or any(not entry.get("host") for entry in detectors):
+        # A detector that never recorded where it looked is held to every
+        # address of the asset (verification_coverage.assess), so every one of
+        # them is scanned: the IPs, or the names of an asset known by none.
+        addresses = _asset_hosts(session, row)
+        asset_ips = {host for host in addresses if _is_ip(host)}
+        hosts |= asset_ips or addresses
+    if not hosts:
+        raise VerificationDispatchError(
+            f"Vulnerability '{row.vuln_id}' has no scannable address on record"
+        )
+    ips = tuple(sorted(host for host in hosts if _is_ip(host)))
+    names = tuple(sorted(host for host in hosts if not _is_ip(host)))
     refs = sorted(
         {
             str(entry.get("ref") or "").strip()
@@ -1988,7 +1975,7 @@ def _verification_plan(session: Any, row: models.Vulnerability) -> VerificationP
         names=names,
         template_ids=tuple(refs),
         nse=any(entry.get("detector") == verification_coverage.NMAP_NSE for entry in detectors),
-        from_detectors=bool(hosts),
+        from_detectors=bool(detectors) and all(entry.get("host") for entry in detectors),
     )
 
 
@@ -2049,8 +2036,8 @@ def trigger_verification(
     produces a false "machine verified" closure later, so it is never created.
 
     It is refused outright for a ``endpoint_software`` finding. The asset does
-    have a scannable address, so ``_verification_target`` would happily return
-    one and a scan would happily run — and it would prove nothing, because an
+    have a scannable address, so a target would happily be found and a scan
+    would happily run — and it would prove nothing, because an
     installed package is not something a port scan observes. The finding would
     then be closed as machine-verified on the strength of a scan that never
     looked at it, which is the exact thing this whole path exists to prevent.

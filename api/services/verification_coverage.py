@@ -92,6 +92,14 @@ def normalize_host(value: str | None) -> str:
         return text
 
 
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _port(value: Any) -> int | None:
     try:
         port = int(str(value).strip().split("/")[0])
@@ -268,6 +276,94 @@ class RunCoverage:
                     return None
         return "endpoint_not_scanned"
 
+    def _reason(self, entry: dict[str, Any], hosts: set[str], port: int | None) -> str | None:
+        detector = str(entry.get("detector") or "")
+        ref = str(entry.get("ref") or "")
+        if detector == NUCLEI:
+            return self._nuclei_gap(ref, hosts, port)
+        if detector == PULSE:
+            return self._pulse_gap(ref, entry.get("ruleset"), hosts, port)
+        if detector == NMAP_NSE:
+            return self._nse_gap(ref, hosts, port)
+        return "no_coverage_rule"
+
+    def assess(
+        self,
+        detectors: list[dict[str, Any]],
+        *,
+        port: str | None,
+        asset_hosts: set[str],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """``(gaps, waived)``: what this run did not demonstrably re-check.
+
+        ``port`` is the finding's; ``asset_hosts`` every address its asset has.
+
+        A detector that never recorded where it looked (migrated by 0079, or
+        the legacy rule of a row with none) is held to **every** IP address of
+        the asset, one by one: "some address answered" would let a re-scan of
+        the address the finding was not on close it. An asset known only by
+        name falls back to its names, which no IP-based stage covers.
+
+        ``waived`` are NSE detectors excused by another detector of the same
+        finding: an NSE script the safe-mode re-scan cannot be asked to run by
+        name (its profile names categories) is covered when Pulse or a nuclei
+        template of the same finding re-checked the same address and did not
+        see it. An NSE-only finding has nobody to stand in for it.
+        """
+        known = {normalize_host(host) for host in asset_hosts if host}
+        ips = {host for host in known if _is_ip(host)}
+        hostless = sorted(ips or known)
+        entries = [entry for entry in detectors if isinstance(entry, dict)]
+        legacy = not entries
+        if legacy:
+            entries = [{"detector": PULSE, "ref": None, "host": None, "port": port}]
+        results: list[tuple[dict[str, Any], set[str], str | None, str | None]] = []
+        for entry in entries:
+            endpoint_port = _port(entry.get("port") if entry.get("port") not in (None, "") else port)
+            if entry.get("host"):
+                hosts = {normalize_host(entry["host"])}
+                results.append((entry, hosts, self._reason(entry, hosts, endpoint_port), None))
+                continue
+            failing: tuple[str | None, str | None] = (None, None)
+            if not hostless:
+                failing = ("no_address", None)
+            for host in hostless:
+                reason = self._reason(entry, {host}, endpoint_port)
+                if reason is not None:
+                    failing = (reason, host)
+                    break
+            results.append((entry, set(hostless), failing[0], failing[1]))
+
+        covered = [
+            (entry, hosts)
+            for entry, hosts, reason, _where in results
+            if reason is None and entry.get("detector") in (PULSE, NUCLEI)
+        ]
+        gaps: list[dict[str, Any]] = []
+        waived: list[dict[str, Any]] = []
+        for entry, hosts, reason, where in results:
+            if reason is None:
+                continue
+            detector = str(entry.get("detector") or "")
+            ref = str(entry.get("ref") or "")
+            row = {
+                "detector": detector or "unknown",
+                "ref": ref or None,
+                "host": entry.get("host") or where,
+                "port": entry.get("port") or port,
+                "reason": reason,
+                **({"legacy_rule": True} if legacy else {}),
+            }
+            if detector == NMAP_NSE:
+                stand_in = next(
+                    (other for other, other_hosts in covered if other_hosts & hosts), None
+                )
+                if stand_in is not None:
+                    waived.append({**row, "covered_by": stand_in.get("detector")})
+                    continue
+            gaps.append(row)
+        return gaps, waived
+
     def gaps(
         self,
         detectors: list[dict[str, Any]],
@@ -275,43 +371,8 @@ class RunCoverage:
         port: str | None,
         asset_hosts: set[str],
     ) -> list[dict[str, Any]]:
-        """What this run did not demonstrably re-check, one row per detector.
-
-        ``port`` is the finding's; ``asset_hosts`` every address its asset has,
-        used for a detector that never recorded where it looked.
-        """
-        fallback_hosts = {normalize_host(host) for host in asset_hosts if host}
-        entries = [entry for entry in detectors if isinstance(entry, dict)]
-        legacy = not entries
-        if legacy:
-            entries = [{"detector": PULSE, "ref": None, "host": None, "port": port}]
-        out: list[dict[str, Any]] = []
-        for entry in entries:
-            detector = str(entry.get("detector") or "")
-            ref = str(entry.get("ref") or "")
-            host = entry.get("host")
-            hosts = {normalize_host(host)} if host else fallback_hosts
-            endpoint_port = _port(entry.get("port") if entry.get("port") not in (None, "") else port)
-            if detector == NUCLEI:
-                reason = self._nuclei_gap(ref, hosts, endpoint_port)
-            elif detector == PULSE:
-                reason = self._pulse_gap(ref, entry.get("ruleset"), hosts, endpoint_port)
-            elif detector == NMAP_NSE:
-                reason = self._nse_gap(ref, hosts, endpoint_port)
-            else:
-                reason = "no_coverage_rule"
-            if reason is not None:
-                out.append(
-                    {
-                        "detector": detector or "unknown",
-                        "ref": ref or None,
-                        "host": host or None,
-                        "port": entry.get("port") or port,
-                        "reason": reason,
-                        **({"legacy_rule": True} if legacy else {}),
-                    }
-                )
-        return out
+        """The gaps of :meth:`assess`."""
+        return self.assess(detectors, port=port, asset_hosts=asset_hosts)[0]
 
 
 def describe(gaps: list[dict[str, Any]]) -> str:
