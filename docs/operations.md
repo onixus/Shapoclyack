@@ -2579,8 +2579,9 @@ things to do around the upgrade:
    the previous release still closes a verification the old way, on absence
    alone, which is the defect the release fixes.
 2. Expect findings to come back from `VERIFYING` as **verification
-   inconclusive** where the scan could not have seen them: a port closed
-   during the window, nuclei or its templates missing on the sensor, an NSE
+   inconclusive** where the scan could not have seen them: a port that did
+   not refuse the connection (dropped, filtered) or was checked from another
+   sensor group than the one that found it, nuclei or its templates missing on the sensor, an NSE
    script not in the sensor's NSE profile, a name the scope no longer covers.
    The event's `detail.gaps` says which; fix that and verify again, or close
    the finding by hand with the reason. Findings left in `VERIFYING` by a
