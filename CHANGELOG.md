@@ -1136,6 +1136,16 @@ All notable changes to Shapoclyack are documented in this file.
   any full NVD harvest: compared as written it put every MariaDB 10.x inside
   every 5.5 range and outside its own series'. The prefix is now cut (see the
   version shapes under *Added*).
+- **CI: the sensor-update signal tests ran into their limits in Jenkins, and the root guard test failed outright.** Eleven tests in `tests/test_sensor_bundle.py` failed on every Jenkins build since the signed-bundle work (#363): PID 1 in a `docker.inside` container is `cat`, which never reaps, so processes a test orphans stay zombies, and `scripts/update-agent.sh` waits for the sensor's process group to empty (`kill -0 -- -PGID`) — a zombie is still a member, so on CI it never emptied. On a host, systemd reaps them at once; the script is unchanged. The test stage now runs its container with `--init`. `test_root_will_not_run_the_update_over_a_tree_another_account_owns` asserted a non-root owner that a root run cannot have; run as root it now hands the tree to another account first, so the guard is still exercised.
+
+- **`test_window_decays_without_operator_intervention` no longer depends on how
+  fast bcrypt runs.** It used a real one-second limiter window, so the lockout
+  only formed if two logins fitted in that second; under coverage on the CI
+  container each took ~1.2 s and main #76 failed with `401 == 429`. The test
+  now holds `auth_audit._now` still and moves it across a 60-second window by
+  hand, and also checks the lock still holds one second before the edge. Test
+  only; the limiter is unchanged.
+
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run
