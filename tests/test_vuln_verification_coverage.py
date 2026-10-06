@@ -784,6 +784,25 @@ def test_a_row_without_detectors_is_never_closed_by_refusal(tmp_path, monkeypatc
     _still_open(settings, tenant_id, vuln["vuln_id"])
 
 
+@pytest.mark.parametrize(
+    ("detectors", "same"),
+    [
+        ([{"detector": "pulse", "vantages": ["local"]}], True),
+        ([{"detector": "pulse", "vantages": ["local", "group:dmz"]}], False),
+        ([{"detector": "pulse", "vantage": "local"}], True),  # before the list was kept
+        ([{"detector": "pulse"}], False),  # nobody recorded where
+        ([], False),  # no detector: nothing says where it was seen
+        (None, False),
+    ],
+)
+def test_one_observing_vantage_and_it_is_the_verifying_one(detectors, same):
+    """The rule itself, apart from the protocol lock that also keeps a
+    detector-less row from closing by refusal."""
+    row = models.Vulnerability(detectors=detectors)
+    assert vulns._same_vantage(row, {"vantage": "local"}) is same
+    assert vulns._same_vantage(row, None) is False
+
+
 def test_the_detector_records_where_it_was_seen_from(tmp_path):
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")

@@ -336,8 +336,9 @@ def _observed_detectors(
             "last_seen_at": _iso(now),
         }
         if vantage:
+            # ``vantages`` is written by merge_detectors, from this one and
+            # every earlier one; without a vantage it reads as unknown.
             candidate.update(vantage)
-        candidate["vantages"] = [str((vantage or {}).get("vantage") or UNKNOWN_VANTAGE)]
         protocol = str(row.get("protocol") or "").strip().lower()
         if protocol in ("tcp", "udp"):
             # Recorded so a UDP finding is never judged by a TCP re-check.
