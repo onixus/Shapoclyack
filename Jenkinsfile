@@ -55,7 +55,10 @@ pipeline {
     timestamps()
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    timeout(time: 90, unit: 'MINUTES')
+    // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
+    // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),
+    // и вместе с ожиданием executor'а мака 90 минут обрывали зелёную сборку.
+    timeout(time: 150, unit: 'MINUTES')
   }
 
   stages {
@@ -107,7 +110,14 @@ pipeline {
 
     stage('Checks on Linux') {
       agent { label 'gaming-amd64' }
-      options { skipDefaultCheckout() }
+      // timeout в options стадии действует до входа в agent, то есть и на
+      // ожидание узла: если хост упал между пробой выше и этой стадией,
+      // сборка не висит в очереди до общего таймаута. 85 минут — ~67 минут
+      // работы стадии плюс запас.
+      options {
+        skipDefaultCheckout()
+        timeout(time: 85, unit: 'MINUTES')
+      }
       stages {
         stage('Checkout from GitHub') {
           steps {
