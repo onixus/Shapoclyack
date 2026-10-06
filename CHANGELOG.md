@@ -1104,6 +1104,14 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Retro matching no longer matches nmap's Jenkins and CUPS CPEs.** The
+  product table never named either, but the CPE path took any key the dataset
+  knew: nmap's `cpe:/a:jenkins:jenkins:2.426.3` (a patched LTS) fell inside
+  CVE-2024-23897's weekly `< 2.442`, which NVD files under the same key as
+  the LTS range, and nmap's `cpe:/a:apple:cups:2.4` met NVD ranges in Apple's
+  own numbering (`< 499.4`), below which every Linux CUPS falls — a tracked
+  finding with a normal SLA, on any host, with any full NVD harvest. Listeners
+  carrying either CPE are now `unknown_product`.
 - **Retro matching read MariaDB 10+ as MariaDB 5.5.5.** nmap's MariaDB version
   and CPE keep the `5.5.5-` compatibility prefix (`5.5.5-10.3.39`), and the CPE
   path matched it whenever the dataset knew `mariadb:mariadb` — that is, with

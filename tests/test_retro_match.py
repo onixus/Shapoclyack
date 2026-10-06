@@ -927,7 +927,13 @@ def test_new_products_are_named_by_the_probers_own_strings(fingerprint, keys, vi
         # only by sw_edition, which the dataset does not keep: 2.426.3 LTS is
         # fixed for CVE-2024-23897 and still inside the weekly "< 2.442".
         rm.Fingerprint(product="Jenkins CI", version="2.426.3"),
-        rm.Fingerprint(product="Jenkins httpd", version="2.426.3"),
+        # nmap's Jenkins line (the agent listener) carries the CPE too, and the
+        # CPE path would take any key the dataset knows.
+        rm.Fingerprint(product="Jenkins httpd", version="2.426.3", cpe=("cpe:/a:jenkins:jenkins:2.426.3",)),
+        # nmap's ``Server: CUPS/2.4 IPP/2.1`` line: a series, not a version, under
+        # a key whose NVD ranges are in Apple's numbering (``< 499.4``).
+        rm.Fingerprint(product="CUPS", version="2.4", cpe=("cpe:/a:apple:cups:2.4",), service="ipp"),
+        rm.Fingerprint(product="CUPS", version="2.4.7", cpe=("cpe:/a:apple:cups:2.4.7",), service="ipp"),
         # Answers like Redis, versioned like nothing else.
         rm.Fingerprint(product="KeyDB", version="6.3.4"),
         # The connector's version, not Tomcat's.
@@ -1042,6 +1048,32 @@ def test_a_version_of_the_wrong_shape_is_no_version(fingerprint, key, statement)
     outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None)
     assert outcome.matches == ()
     assert outcome.reason == "no_version"
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "key", "statements"),
+    [
+        # Patched LTS 2.426.3: fixed for CVE-2024-23897 (LTS "< 2.426.3"), yet
+        # inside the weekly "< 2.442" NVD files under the same key.
+        (
+            rm.Fingerprint(product="Jenkins httpd", version="2.426.3", cpe=("cpe:/a:jenkins:jenkins:2.426.3",)),
+            "a:jenkins:jenkins",
+            (CpeRange("CVE-2024-23897", end_excluding="2.426.3"), CpeRange("CVE-2024-23897", end_excluding="2.442")),
+        ),
+        # CVE-2022-26691 under apple:cups is "< 499.4", Apple's numbering:
+        # every Linux CUPS falls below it.
+        (
+            rm.Fingerprint(product="CUPS", version="2.4.7", cpe=("cpe:/a:apple:cups:2.4.7",), service="ipp"),
+            "a:apple:cups",
+            (CpeRange("CVE-2022-26691", end_excluding="499.4"),),
+        ),
+    ],
+)
+def test_products_whose_nvd_ranges_cannot_be_compared_are_not_matched_by_cpe(fingerprint, key, statements) -> None:
+    for host in (None, rm.DistroHint("linux")):
+        outcome = rm.match(fingerprint, _one(key, *statements), lookup=lambda _d: None, host=host)
+        assert outcome.matches == ()
+        assert outcome.reason == "unknown_product"
 
 
 @pytest.mark.parametrize(

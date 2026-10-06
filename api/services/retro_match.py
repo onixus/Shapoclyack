@@ -300,6 +300,20 @@ _PRODUCT_SERVICES: dict[str, frozenset[str]] = {
     "memcached": frozenset({"memcached"}),
 }
 
+#: CPE keys a prober attaches whose NVD ranges cannot be compared with the
+#: version it reports, so a listener that carries one is not matched at all —
+#: the product table leaves these products out for the same reasons, and the
+#: CPE path must not take them in by the back door:
+#:
+#: * ``jenkins:jenkins`` (nmap's ``Jenkins httpd``): NVD files the LTS and the
+#:   weekly ranges under one key, told apart only by ``sw_edition``, which the
+#:   dataset does not keep. A patched 2.426.3 LTS is inside CVE-2024-23897's
+#:   weekly ``< 2.442``.
+#: * ``apple:cups`` (nmap's ``CUPS``): NVD's ranges under it are in Apple's own
+#:   numbering (CVE-2022-26691: ``< 499.4``), below which every Linux CUPS
+#:   falls; and the ``Server`` header names only a series (``CUPS/2.4``).
+_NOT_MATCHED_CPE = frozenset({"a:apple:cups", "a:jenkins:jenkins"})
+
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
 #: some NVD renames, and names some vendors its own way; without these an nginx
 #: or vsftpd CPE from nmap matches nothing. Checked against NVD's CPE
@@ -529,6 +543,7 @@ def rules_version() -> str:
         "banner_names": _BANNER_NAMES,
         "shapes": {key: shape.pattern for key, shape in _VERSION_SHAPES.items()},
         "first_number": sorted(_FIRST_NUMBER_VERSIONS),
+        "not_matched_cpe": sorted(_NOT_MATCHED_CPE),
     }
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
@@ -618,6 +633,10 @@ def product_keys(
             # the host, not this listener, and the listener's version applied
             # to it would match the kernel against OpenSSH's version number.
             continue
+        if key in _NOT_MATCHED_CPE:
+            # The listener is a product whose ranges cannot be compared with
+            # what it reports; nothing else on the line changes that.
+            return (), "", None
         entries.append((CPE_ALIASES.get(key, (key,)), version))
     if table:
         # nmap names what runs *inside* the listener too: Elasticsearch's line
