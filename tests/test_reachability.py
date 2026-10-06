@@ -32,7 +32,8 @@ def test_a_listening_port_is_open_and_a_closed_one_refused(tmp_path: Path):
     closed_port = _free_port()
     try:
         result = reachability.run_reachability_probe(
-            ["127.0.0.1"], {open_port, closed_port}, ReachabilityConfig(enabled=True, timeout_seconds=1), tmp_path
+            ["127.0.0.1"], {open_port, closed_port}, ReachabilityConfig(enabled=True, timeout_seconds=1, attempt_interval_seconds=0),
+            tmp_path,
         )
     finally:
         listener.close()
@@ -60,6 +61,26 @@ def test_a_listening_port_is_open_and_a_closed_one_refused(tmp_path: Path):
 )
 def test_only_refusal_on_every_attempt_is_refused(attempts, verdict):
     assert reachability._verdict(attempts) == verdict
+
+
+def test_attempts_on_one_endpoint_are_spaced_apart(monkeypatch):
+    """Two refusals back to back are one transient reset seen twice. The
+    default spaces them by seconds, and an accepted connect ends the probe."""
+    calls: list[object] = []
+    outcomes = {443: ["refused", "refused", "refused"], 80: ["refused", "open", "refused"]}
+    monkeypatch.setattr(reachability.time, "sleep", lambda seconds: calls.append(("sleep", seconds)))
+    monkeypatch.setattr(
+        reachability, "_attempt", lambda host, port, timeout: calls.append(port) or outcomes[port].pop(0)
+    )
+
+    assert ReachabilityConfig().attempt_interval_seconds >= 5
+    config = ReachabilityConfig(enabled=True, attempts=3, attempt_interval_seconds=7)
+    assert reachability.probe("10.0.0.1", 443, config)["result"] == "refused"
+    assert calls == [443, ("sleep", 7), 443, ("sleep", 7), 443]
+
+    calls.clear()
+    assert reachability.probe("10.0.0.1", 80, config)["result"] == "open"
+    assert calls == [80, ("sleep", 7), 80]
 
 
 def test_excluded_ports_are_not_touched_and_the_count_is_bounded(tmp_path: Path, monkeypatch):

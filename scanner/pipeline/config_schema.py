@@ -796,6 +796,11 @@ class ReachabilityConfig(BaseModel):
     concurrency: int = Field(default=8, ge=1, le=64)
     attempts: int = Field(default=2, ge=1, le=5)
     timeout_seconds: float = Field(default=3.0, ge=0.5, le=30.0)
+    # Seconds between two attempts on one endpoint. A refusal that comes
+    # back the same way twice a few seconds apart is less likely to be one
+    # transient reset; it is still not proof the host itself answered
+    # (reachability.py).
+    attempt_interval_seconds: float = Field(default=5.0, ge=0.0, le=60.0)
     max_probes: int = Field(default=256, ge=1, le=4096)
 
 
