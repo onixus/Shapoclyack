@@ -1491,8 +1491,10 @@ def register_findings_from_run(
                 # fixed, the port was out of one sensor's reach for one run.
                 # Restarting the clock there would let a verify/reopen cycle
                 # reset an overdue finding's deadline as often as anyone
-                # pressed Verify (#451), so it continues from where it was.
-                continue_clock = row.closure_reason == ENDPOINT_UNREACHABLE
+                # pressed Verify (#451), so it continues from where it was —
+                # within one SLA window of that closure. Seen again later than
+                # that, it is a new exposure (a redeploy months on), and its
+                # clock starts now like any other regression's.
                 previous = row.state
                 days, source = _resolve_sla_days(
                     session,
@@ -1500,8 +1502,11 @@ def register_findings_from_run(
                     severity=severity,
                     criticality=asset.asset_criticality,
                 )
-                if continue_clock:
-                    days, source = row.sla_days or days, row.sla_source or source
+                continue_clock = (
+                    row.closure_reason == ENDPOINT_UNREACHABLE
+                    and row.closed_at is not None
+                    and now - row.closed_at <= timedelta(days=row.sla_days or days)
+                )
                 row.state = vuln_states.OPEN
                 row.state_changed_at = now
                 row.state_changed_by = None

@@ -939,6 +939,40 @@ def test_a_reopen_after_an_unreachable_closure_keeps_the_sla_clock(tmp_path, mon
     assert reopened["detail"]["sla_continued"] is True
 
 
+@pytest.mark.parametrize(("later", "continued"), [("in_window", True), ("180_days", False)])
+def test_the_sla_clock_continues_only_within_one_window_of_the_closure(tmp_path, monkeypatch, later, continued):
+    """The round-2 delta review's probe: an exposure closed as unreachable,
+    and the port opened again 180 days later by a new deployment. That is a
+    new exposure, and it reopened already overdue on its first observation.
+    Within one SLA window of the closure it is the same one, and continues."""
+    from datetime import datetime, timedelta
+
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+    _fold(settings, tenant_id)
+    _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
+    assert vuln["sla_days"] < 180
+    offset = timedelta(days=vuln["sla_days"] - 1) if later == "in_window" else timedelta(days=180)
+    moment = vulns._now() + offset
+    monkeypatch.setattr(vulns, "_now", lambda: moment)
+
+    again = _tracked(settings, tenant_id, [EXPOSURE], run_id="run-later")
+
+    assert again["state"] == vuln_states.OPEN
+    reopened = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert reopened["kind"] == "reopened"
+    if continued:
+        assert again["due_at"] == vuln["due_at"]
+        assert reopened["detail"]["sla_continued"] is True
+    else:
+        assert datetime.fromisoformat(again["sla_started_at"].replace("Z", "")) == moment
+        assert again["due_at"] != vuln["due_at"]
+        assert "sla_continued" not in reopened["detail"]
+
+
 def test_a_reopen_after_a_verified_fix_still_restarts_the_clock(tmp_path, monkeypatch):
     """The control: a regression after a real fix is measured from its return."""
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
