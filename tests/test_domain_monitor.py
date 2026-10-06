@@ -1144,7 +1144,10 @@ def test_names_dnsx_wrote_no_row_for_are_listed_and_the_control_is_not_ok(tmp_pa
     controls = evaluate_controls(tmp_path, ControlsConfig(enabled=True))["controls"]
     dns = {control["control"]: control for control in controls}["dns_structure"]
     assert dns["status"] == "not_checked"
-    assert "2 in-scope name(s) got no usable DNS answer" in dns["why"]
+    assert (
+        "no usable DNS answer, not checked for dangling CNAMEs: "
+        "2 (app.example.com, docs.example.com)"
+    ) in dns["why"]
 
 
 def test_the_chain_is_walked_not_read_in_answer_order(tmp_path, monkeypatch):
@@ -1233,7 +1236,7 @@ def test_an_unanswered_verification_lookup_decides_nothing(tmp_path, monkeypatch
     dns = _dns_control(tmp_path)
     assert dns["coverage"] == {"checked": 1, "total": 2}
     assert "All" not in dns["why"]
-    assert "takeover candidate(s) left undecided by an unanswered lookup: app.example.com" in dns["why"]
+    assert "takeover candidates left undecided by an unanswered lookup: 1 (app.example.com)" in dns["why"]
 
 
 def _dns_control(output_dir: Path) -> dict:
@@ -1425,7 +1428,7 @@ def test_one_unanswered_name_among_many_leaves_the_control_rated(tmp_path, monke
     dns = _dns_control(tmp_path)
     assert dns["status"] == "ok"
     assert dns["coverage"] == {"checked": 20, "total": 21}
-    assert "20 of 21 names checked passed" in dns["why"]
+    assert "20 of 21 names checked, no DNS hygiene findings" in dns["why"]
     assert "lame.example.com" in dns["why"]
 
 
@@ -1472,6 +1475,9 @@ def test_an_unregistered_domain_that_reappears_on_the_second_ask_is_not_reported
         ("192.168.1.10", "private_address"),
         ("fd00::5", "private_address"),
         ("64:ff9b::a00:5", "private_address"),  # 10.0.0.5 through NAT64
+        ("64:ff9b::7f00:1", "sinkholed"),  # 127.0.0.1 through NAT64
+        ("fec0::1", "private_address"),  # deprecated site-local; ipaddress calls it global
+        ("198.18.0.7", "private_address"),  # benchmarking / fake-IP range
     ],
 )
 def test_a_non_public_answer_is_never_sent_the_request(
@@ -1601,3 +1607,90 @@ def test_the_pipeline_never_sends_the_request_to_an_address_the_scope_denies(
     denials = json.loads((run_dir / scan_scope.DENIED_ARTIFACT).read_text(encoding="utf-8"))
     assert denials["denied"] == ["resolved -> 127.0.0.1 (denied by 127.0.0.1/32)"]
     assert denials["denied_count"] == 1
+
+
+# --- naming every undecided candidate ------------------------------------------
+
+
+def test_every_undecided_candidate_is_counted_and_the_rest_summarised(tmp_path, monkeypatch):
+    """Twelve App Service candidates whose asuid lookup timed out: the
+    explanation gives the count and, past ten names, how many more."""
+    names = [f"app{i:02d}.example.com" for i in range(12)]
+    zone: dict[str, dict] = {}
+    for i, name in enumerate(names):
+        zone[name] = {"cname": [f"gone{i}.azurewebsites.net"], "status": "NXDOMAIN"}
+        zone[f"asuid.{name}"] = {"drop": True}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, names)
+
+    assert block["candidates_unanswered"] == names
+    why = _dns_control(tmp_path)["why"]
+    shown = ", ".join(names[:10])
+    assert f"takeover candidates left undecided by an unanswered lookup: 12 ({shown} +2 more)" in why
+
+
+def test_a_chain_into_a_service_whose_own_answer_broke_off_is_an_undecided_candidate(
+    tmp_path, monkeypatch
+):
+    """The A answer stops at org.github.io with no address and the AAAA query
+    times out: the name reached a claimable service, so it is a candidate."""
+    zone = {"cn6.example.com": {"cname": ["y.github.io"], "drop": ["aaaa"]}}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["cn6.example.com"])
+
+    [listed] = block["not_reported"]
+    assert (listed["reason"], listed["service"]) == ("dns_inconclusive", "github_pages")
+    assert block["candidates_unanswered"] == ["cn6.example.com"]
+
+
+def test_a_plain_name_whose_answer_broke_off_is_not_a_candidate(tmp_path, monkeypatch):
+    zone = {"lame.example.com": {"status": "SERVFAIL"}}
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["lame.example.com"])
+
+    assert block["dns_unanswered"] == ["lame.example.com"]
+    assert block["candidates_unanswered"] == []
+
+
+def test_candidates_the_http_check_could_not_decide_are_named(tmp_path, monkeypatch):
+    """No answer from the provider, a private answer, the check switched off:
+    none of these is a finding, and none of them may read as "all passed"."""
+    port = _closed_port()
+    _ports(monkeypatch, port, port)
+    zone = {
+        "gh3.example.com": {"cname": ["z.github.io"], "a": ["127.0.0.1"]},
+        "gh4.example.com": {"cname": ["w.github.io"], "a": ["10.0.0.7"]},
+        "www.example.com": {"a": ["203.0.113.10"]},
+    }
+
+    block, _ = _takeover_block(tmp_path, monkeypatch, zone, sorted(zone))
+
+    assert block["candidates_unconfirmed"] == ["gh3.example.com", "gh4.example.com"]
+    dns = _dns_control(tmp_path)
+    assert dns["status"] == "ok"
+    assert "All" not in dns["why"]
+    assert (
+        "takeover candidates not confirmed by HTTP: 2 (gh3.example.com, gh4.example.com)"
+        in dns["why"]
+    )
+
+
+def test_aaaa_is_asked_when_every_a_answer_is_unusable(tmp_path, monkeypatch):
+    """A fake-IP (198.18.0.0/15) or walled-garden A next to a real AAAA: the A
+    answer does not settle the name, so AAAA is asked and its address used."""
+    zone = {
+        "gh4.example.com": {
+            "cname": ["w.github.io"],
+            "a": ["198.18.0.7"],
+            "aaaa": ["2606:50c0:8000::153"],
+        }
+    }
+
+    block, fake = _takeover_block(
+        tmp_path, monkeypatch, zone, ["gh4.example.com"], takeover_http_confirm=False
+    )
+
+    assert fake.asked("cname_aaaa") == ["gh4.example.com"]
+    [listed] = block["not_reported"]
+    assert listed["reason"] == "http_confirm_disabled"
+    assert listed["evidence"]["addresses"] == ["198.18.0.7", "2606:50c0:8000::153"]

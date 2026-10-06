@@ -351,7 +351,17 @@ def _run_dnsx_cname(
         retries=retries,
         resolvers=resolvers,
     )
-    unsettled = [fqdn for fqdn in fqdns if not (rows_a.get(fqdn) or {}).get("a")]
+    # An A answer settles the name only with an address the confirmation could
+    # use; a fake-IP or walled-garden A (198.18.0.0/15, RFC 1918) may sit next
+    # to a real AAAA.
+    unsettled = [
+        fqdn
+        for fqdn in fqdns
+        if all(
+            _undialable_reason(str(address)) is not None
+            for address in (rows_a.get(fqdn) or {}).get("a") or []
+        )
+    ]
     rows_aaaa = dnsx_query(
         unsettled,
         output_dir,
@@ -427,6 +437,26 @@ _SINKHOLE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = 
 )
 
 
+#: not_reported reasons that leave a resolving takeover candidate undecided:
+#: the fingerprint check did not run or got no answer. (``fingerprint_not_matched``
+#: is an answer -- the provider served something else.)
+_HTTP_UNDECIDED = frozenset({
+    "http_inconclusive",
+    "http_confirm_disabled",
+    "http_target_cap",
+    "sinkholed",
+    "private_address",
+    "address_refused_by_scope",
+})
+
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+#: Deprecated IPv6 site-local space (RFC 3879). ``ipaddress`` and therefore
+#: ``safe_http.is_public_address`` call it global; it is not routed on the
+#: internet, so for this gate it is private. safe_http's own rule is left as
+#: is here -- the same gap there is a separate change.
+_SITE_LOCAL = ipaddress.IPv6Network("fec0::/10")
+
+
 def _undialable_reason(address: str) -> str | None:
     """Why the confirmation GET must not go to ``address``, or None when it may.
 
@@ -441,12 +471,13 @@ def _undialable_reason(address: str) -> str | None:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return "sinkholed"  # not an address at all: never dial it
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:
-        ip = mapped
-    if any(ip.version == network.version and ip in network for network in _SINKHOLE_NETWORKS):
+    embedded = getattr(ip, "ipv4_mapped", None)
+    if embedded is None and ip in _NAT64_WELL_KNOWN:
+        embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    inner = embedded if embedded is not None else ip
+    if any(inner.version == network.version and inner in network for network in _SINKHOLE_NETWORKS):
         return "sinkholed"
-    if not is_public_address(ip):
+    if not is_public_address(ip) or ip in _SITE_LOCAL:
         return "private_address"
     return None
 
@@ -600,10 +631,20 @@ def _classify_dangling_cname(
         service, pattern = matched if matched is not None else (None, None)
         return _Candidate(fqdn, chain, addresses, dns_status, hop, service, pattern, status_by_type)
 
-    if dns_status == "NO_ANSWER":
-        return _Verdict("not_reported", candidate_for(target), reason="dns_no_answer")
-    if dns_status == "INCONCLUSIVE":
-        return _Verdict("not_reported", candidate_for(target), reason="dns_inconclusive")
+    if dns_status in ("NO_ANSWER", "INCONCLUSIVE"):
+        # Whatever the chain reached before the answer broke off says whether
+        # this was a takeover candidate left undecided, or just a name.
+        reached = next(
+            (
+                (hop, matched)
+                for hop in chain
+                if (matched := catalogue.match(hop)) is not None and matched[0].claimable
+            ),
+            None,
+        )
+        candidate = candidate_for(*reached) if reached else candidate_for(target)
+        reason = "dns_no_answer" if dns_status == "NO_ANSWER" else "dns_inconclusive"
+        return _Verdict("not_reported", candidate, reason=reason)
     if not chain:
         return None
 
@@ -853,6 +894,10 @@ def _check_dangling_cnames(
             not_reported.append(_not_reported(verdict.candidate, verdict.reason))
             if verdict.reason in ("dns_no_answer", "dns_inconclusive"):
                 unanswered.append(fqdn)
+                if verdict.candidate.service is not None:
+                    # The chain reached a claimable service before the answer
+                    # broke off: a takeover nobody could rule in or out.
+                    candidates_unanswered.append(fqdn)
         elif verdict.action == "http":
             http_candidates.append(verdict.candidate)
         elif verdict.action == "nxdomain_service":
@@ -947,6 +992,10 @@ def _check_dangling_cnames(
         "truncated": truncated,
         "dns_unanswered": sorted(set(unanswered) | set(candidates_unanswered)),
         "candidates_unanswered": sorted(set(candidates_unanswered)),
+        # Resolving candidates the HTTP check could not decide either way.
+        "candidates_unconfirmed": sorted(
+            {entry["fqdn"] for entry in not_reported if entry["reason"] in _HTTP_UNDECIDED}
+        ),
         "findings": sorted(findings, key=lambda f: (f["fqdn"], f["kind"])),
         "not_reported": sorted(not_reported, key=lambda n: (n["fqdn"], n["reason"])),
     }
