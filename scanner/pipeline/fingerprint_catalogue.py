@@ -186,7 +186,9 @@ _ATTR_NAME_RE = re.compile(r"[^\s\"'=<>/`]{1,64}")
 _WS_RE = re.compile(r"\s{0,64}")
 _BARE_VALUE_RE = re.compile(r"[^\s>]{0,2048}")
 _TITLE_CLOSE_RE = re.compile(r"</title\s{0,8}>", re.IGNORECASE)
-_SCRIPT_CLOSE_RE = re.compile(r"</script\s{0,8}>", re.IGNORECASE)
+#: HTML ends a script at "</script" followed by whitespace, "/" or ">";
+#: the end tag itself then runs to the next ">".
+_SCRIPT_CLOSE_RE = re.compile(r"</script(?=[\s/>])", re.IGNORECASE)
 _JSON_START_RE = re.compile(r"\s{0,64}[\[{]")
 _MATRIX_RE = re.compile(r";[^/]{0,2048}")
 
@@ -515,22 +517,27 @@ def parse_page(body: str) -> Page:
             title = " ".join(html.unescape(body[pos : close.start()]).split())[:512] if close else ""
             if close:
                 pos = close.end()
-        elif name == "script" and len(scripts) < MAX_SCRIPTS:
+        elif name == "script":
             # Markup quoted inside a script (a form a SPA draws) is a string,
-            # not this page's: step over the whole script to its close. The
-            # search either finds the close and moves past it, or reaches the
-            # end once and stops the scan, so the walk stays linear.
+            # not this page's: step over the whole script to its close -- every
+            # script, kept or not; past MAX_SCRIPTS only the text is dropped.
+            # The search either finds the close and moves past it, or reaches
+            # the end once and stops the scan, so the walk stays linear.
+            keep = len(scripts) < MAX_SCRIPTS
             close = _SCRIPT_CLOSE_RE.search(body, pos)
             if close is None:
                 # The body was cut inside this script (body_max_bytes): what
                 # arrived of it is still script text -- Grafana's boot data
                 # alone outgrows a 64 KiB read. Nothing after it is markup.
-                if n > pos:
+                if keep and n > pos:
                     scripts.append(body[pos : pos + MAX_SCRIPT_LEN])
                 break
-            if close.start() > pos:
+            if keep and close.start() > pos:
                 scripts.append(body[pos : min(close.start(), pos + MAX_SCRIPT_LEN)])
-            pos = close.end()
+            end_tag = body.find(">", close.end())
+            if end_tag < 0:
+                break
+            pos = end_tag + 1
     metas: list[tuple[str, str]] = []
     generators: list[str] = []
     password = False

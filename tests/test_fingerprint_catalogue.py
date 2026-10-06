@@ -599,3 +599,29 @@ def test_the_budget_constants_match_the_stage_and_its_config():
     assert any(getattr(m, "le", None) == module.MAX_BODY_BYTES for m in ceiling)
     assert fp.CLASSIFY_SECONDS == module.CLASSIFY_BUDGET_SECONDS
     assert module.STRESS_BUDGET_SECONDS * module.MAX_BODY_BYTES / module.STRESS_INPUT_LEN < fp.CLASSIFY_SECONDS
+
+
+def test_scripts_past_the_kept_count_are_still_stepped_over():
+    """The 65th script's text is dropped, not read as the page's markup."""
+    body = (
+        "<script>var a = 1;</script>" * 70
+        + "<script>var t = '<title>fake</title><form><input type=\"password\"></form>';</script>"
+        + "<title>real</title>"
+    )
+    page = parse_page(body)
+    assert len(page.scripts) == 64
+    assert page.title == "real"
+    assert page.password_input is False
+
+
+@pytest.mark.parametrize("closer", ["</script/>", "</script foo>", "</script" + " " * 12 + "\n>", "</SCRIPT>"])
+def test_a_script_ends_where_html_ends_it(closer):
+    body = "<script>var f = '<input type=\"password\">';" + closer + "<title>after</title>"
+    page = parse_page(body)
+    assert page.title == "after"
+    assert page.password_input is False
+
+
+def test_an_unterminated_script_tail_is_cut_at_the_cap():
+    page = parse_page("<script>" + "x" * 100_000)
+    assert [len(text) for text in page.scripts] == [64 * 1024]
