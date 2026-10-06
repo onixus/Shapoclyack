@@ -2204,13 +2204,15 @@ NO_LIVE_SENSOR_FOR = "no_live_sensor_for_"
 
 
 def _duration(seconds: float) -> str:
-    """``45m``, ``3h``, ``2d``: rounded down, for a reason code and a note."""
+    """``42s``, ``45m``, ``3h``, ``2d``: rounded down, for a reason code and a note."""
     seconds = max(0, int(seconds))
     if seconds >= 86400:
         return f"{seconds // 86400}d"
     if seconds >= 3600:
         return f"{seconds // 3600}h"
-    return f"{seconds // 60}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 def _regroup_wording(reason: str) -> str:
