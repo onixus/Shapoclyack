@@ -1116,17 +1116,26 @@ All notable changes to Shapoclyack are documented in this file.
   Not observed and not covered → back to `FIXING` with a new
   `verification_inconclusive` event listing what was not covered
   (`RegisterStats.verification_inconclusive`), never machine-verified. Not
-  covered because the host **refused** the connection to the port — the
+  covered because the connection to the port was **refused** — the
   verification run's own TCP connect probe (new `reachability` stage,
-  `reachability.json`, refused on every attempt; a drop or timeout proves
-  nothing), the port in the port stage's explicit list in a batch that
-  finished (new `ports/<tag>.scan.json`), seen open by nothing; TCP findings
-  only, never a name → `CLOSED` with `closure_reason = endpoint_unreachable`
-  and a `verification_unreachable` event: machine-verified only for a Pulse
-  exposure finding re-checked from the sensor group that saw it (detectors
-  record `agent_id`/`agent_group`/`vantage`; the verification goes out from
-  that group), never for a CVE; a reopen after such a closure keeps the
-  original SLA clock. Rows of `vulnerabilities.json` and detectors carry the
+  `reachability.json`, refused on every attempt, attempts
+  `reachability.attempt_interval_seconds` apart, 5 s by default; a drop or
+  timeout proves nothing), the port in the port stage's explicit list in a
+  batch that finished (new `ports/<tag>.scan.json`), seen open by nothing;
+  TCP findings only, never a name; and the finding observed from exactly one
+  vantage, the verifying one (detectors record `agent_id`/`agent_group`/
+  `vantage` and keep every vantage they were seen from in `vantages`; the
+  verification goes out from the observing group, or tenant-wide with a note
+  when that group was deleted or has no live sensor) → `CLOSED` with
+  `closure_reason = endpoint_unreachable` and a `verification_unreachable`
+  event saying the port is not reachable from that vantage. **Never
+  machine-verified**, exposure or CVE, and not counted as a verified
+  closure: an iptables/kube-proxy `REJECT`, a `tcp-reset` rule or a fail2ban
+  ban in front of a listening port is refused the same way. Refused from
+  another vantage, or a finding seen from more than one, is inconclusive
+  (`vantage_differs`). A reopen within one SLA window of such a closure
+  keeps the original SLA clock; later than that the clock starts on
+  reopen. Rows of `vulnerabilities.json` and detectors carry the
   `protocol` they were seen on. A failed or cancelled verification run now releases
   its finding as inconclusive instead of leaving it in `VERIFYING`; a job that
   ends without publishing a run still does. `nuclei.template_ids` is config
@@ -1138,8 +1147,12 @@ All notable changes to Shapoclyack are documented in this file.
   verifications (`426` naming `config_overlay.v2` and why). With sensor
   execution and no live v2 sensor of the group the job would go to (the
   observing group, held to the approved scope), `POST /verify` is `409`
-  instead of a job nothing claims; `agent_group_unavailable` now also says
-  when a group's live sensors cannot take a queued job. The finding page lists the detectors and
+  instead of a job nothing claims, and advises an upgrade only when a live
+  sensor there is too old; `agent_group_unavailable` now also says when a
+  group's live sensors cannot take a queued job, and no longer counts an
+  endpoint agent or a sensor below `OCTO_AGENT_MIN_VERSION` as a live member
+  of a group. A Pulse ruleset id naming a date that does not exist is
+  unreadable, not newest. The finding page lists the detectors and
   labels audit-trail kinds and the new closure reason in English and Russian.
   docs/vulnerability-lifecycle.md has the rules and their limits;
   docs/operations.md the upgrade notes; docs/demo-remediation-loop.md the
