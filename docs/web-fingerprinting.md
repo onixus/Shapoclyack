@@ -71,20 +71,29 @@ linear scan with caps (2048 tags, 32 attributes each, 64 inline scripts of at
 most 64 KiB; HTML comments are skipped, so markup inside `<!-- -->` is text).
 A `<script>` cut off by `body_max_bytes` still counts as script up to the end
 of what arrived — Grafana's boot data alone outgrows a 64 KiB read. Catalogue
-regexes are checked twice when the catalogue loads:
+regexes are checked twice:
 
-* by shape — a repeat must be bounded (`{0,512}`, never `*`/`+`/`{n,}`, at
-  most 1024, nested products at most 4096), no alternation inside a repeat,
-  no two variable repeats in a row over overlapping characters (lookarounds
-  looked through);
-* by measurement — every pattern is run over hostile inputs built from its
-  own literals, growing one character at a time and then doubling to
-  64 KiB; one search over 50 ms refuses the whole catalogue.
+* by shape, when the catalogue loads — a repeat must be bounded (`{0,512}`,
+  never `*`/`+`/`{n,}`, at most 1024, nested products at most 4096), no
+  alternation inside a repeat, no two variable repeats in a row over
+  overlapping characters (lookarounds looked through). Deterministic, no
+  timing. An entry that fails it (or the schema) is dropped, logged and listed
+  in `fingerprint.json` under `catalogue.rejected`; the rest of the catalogue
+  and the run carry on. An unreadable file leaves an empty catalogue, not a
+  failed run.
+* by measurement, in the tests only — `tests/test_fingerprint_catalogue.py`
+  runs every shipped pattern over hostile inputs built from its own literals,
+  growing one character at a time and then doubling to 64 KiB, on CPU time
+  (median of three) against a 250 ms budget. Nothing is timed at scan time:
+  a timing on a busy sensor says as much about the machine as about the
+  pattern, and an early version that timed at load failed whole runs under
+  load.
 
 Classification runs in a worker thread against a 2-second deadline, with an
 outer timeout on the wait. The deadline is checked *between technologies*: a
 single `re.search` holds the GIL and cannot be pre-empted, which is why the
-patterns themselves are vetted at load rather than trusted to the timeout. An
+patterns themselves are vetted before they ship rather than trusted to the
+timeout. An
 endpoint past the deadline is reported with `error: classification_timeout`
 and nothing derived from its body.
 

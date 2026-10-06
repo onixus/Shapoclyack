@@ -66,6 +66,8 @@ from __future__ import annotations
 
 import functools
 import html
+import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -80,6 +82,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 CATALOGUE_PATH = Path(__file__).with_name("fingerprint_catalogue.json")
+LOG = logging.getLogger("shapoclyack.fingerprint")
 
 #: Categories the catalogue may use. ``fingerprint.py`` derives the legacy
 #: ``cdn_waf`` / ``cms_framework`` lists and the exposure findings from these.
@@ -269,8 +272,8 @@ def _bounded(pattern: str) -> None:
       (``a{0,99}a{0,99}``, ``\s{0,8}[ \t]{0,8}``): the split between them is
       tried every way. A lookaround between them is looked through.
 
-    These are shapes, not proofs; ``load_catalogue`` also runs every pattern
-    against a hostile corpus under a time budget (``_stress``).
+    These are shapes, not proofs. The tests also time every shipped pattern
+    against a hostile corpus (``stress``); nothing is timed at scan time.
     """
 
     def walk(items: Any, outer: int, in_repeat: bool) -> None:
@@ -313,10 +316,14 @@ def _bounded(pattern: str) -> None:
     walk(_sre_parser.parse(pattern), 1, False)
 
 
-#: Inputs every catalogue regex is timed against at load, built per pattern
-#: from its own literal characters and a few generic ones.
+#: Inputs the catalogue tests time every regex against, built per pattern from
+#: its own literal characters and a few generic ones. CPU time, median of
+#: STRESS_REPEATS: the shipped patterns take ~5 ms at worst, so the budget is
+#: wide enough that a busy machine does not fail a sound pattern and narrow
+#: enough that exponential backtracking is caught a few characters in.
 STRESS_INPUT_LEN = 64 * 1024
-STRESS_BUDGET_SECONDS = 0.05
+STRESS_BUDGET_SECONDS = 0.25
+STRESS_REPEATS = 3
 _STRESS_GENERIC = " a1<>\"'/.-:{"
 
 
@@ -355,10 +362,13 @@ def _stress_lengths() -> list[int]:
 def stress(pattern: re.Pattern[str], budget: float = STRESS_BUDGET_SECONDS) -> None:
     """Run ``pattern`` over growing hostile inputs; raise when a search exceeds ``budget``.
 
-    The shape lint cannot prove every pattern linear; this measures. A single
-    ``re.search`` holds the GIL and cannot be pre-empted by the stage's
-    deadline (checked between technologies), so a slow pattern has to be
-    refused before it ships, not timed out in a scan.
+    A test tool (``tests/test_fingerprint_catalogue.py``), never run at scan
+    time: a timing is a fact about the machine as much as about the pattern,
+    and a busy sensor must not refuse a sound catalogue. The shape lint in
+    ``_bounded`` is what loading enforces; this measures what the lint cannot
+    prove, before a pattern ships. A single ``re.search`` holds the GIL and
+    cannot be pre-empted by the stage's deadline (checked between
+    technologies), which is why that has to happen before, not during, a scan.
     """
     literal = _literals(pattern.pattern)
     units = list(dict.fromkeys(literal[:16] + _STRESS_GENERIC))
@@ -367,9 +377,12 @@ def stress(pattern: re.Pattern[str], budget: float = STRESS_BUDGET_SECONDS) -> N
     for unit in units:
         for length in _stress_lengths():
             text = (unit * (length // len(unit) + 1))[:length]
-            start = time.perf_counter()
-            pattern.search(text)
-            took = time.perf_counter() - start
+            timings = []
+            for _ in range(STRESS_REPEATS):
+                start = time.process_time()
+                pattern.search(text)
+                timings.append(time.process_time() - start)
+            took = sorted(timings)[len(timings) // 2]
             if took > budget:
                 raise ValueError(
                     f"regex {pattern.pattern!r} took {took:.3f}s on {length} hostile characters (budget {budget}s)"
@@ -904,6 +917,9 @@ class Catalogue(BaseModel):
     updated: str
     note: str
     technologies: list[Technology] = Field(min_length=1)
+    #: Entries ``load_catalogue`` dropped, ``{"id", "error"}`` -- recorded in
+    #: ``fingerprint.json`` rather than failing the run.
+    rejected: list[dict[str, str]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _unique(self) -> Catalogue:
@@ -1051,15 +1067,56 @@ def cpe_name(key: str, version: str | None) -> str:
     return f"cpe:2.3:{key}:{escaped}:*:*:*:*:*:*:*"
 
 
+def _empty_catalogue(rejected: list[dict[str, str]]) -> Catalogue:
+    return Catalogue.model_construct(schema_version=1, updated="", note="", technologies=[], rejected=rejected)
+
+
 @functools.lru_cache(maxsize=1)
 def load_catalogue(path: Path = CATALOGUE_PATH) -> Catalogue:
-    """The validated catalogue. A broken file raises (``pydantic.ValidationError``).
+    """The catalogue, entry by entry: a broken entry is dropped, never the run.
 
-    Every regex is also timed against a hostile corpus (``stress``); one over
-    budget refuses the whole catalogue, so a slow pattern fails the build's
-    tests rather than a scan.
+    Each technology is validated on its own (schema and the regex shape
+    lint, both deterministic). One that fails is logged, left out and listed
+    in ``rejected``, which the stage writes into ``fingerprint.json``; a
+    duplicate id keeps the first. An unreadable file leaves an empty
+    catalogue -- the stage then identifies nothing and says why -- because a
+    catalogue problem is a bug to fix, not a reason to lose the rest of the
+    scan. The tests hold the shipped file to zero rejections.
     """
-    catalogue = Catalogue.model_validate_json(path.read_text(encoding="utf-8"))
-    for pattern in catalogue.patterns():
-        stress(pattern)
-    return catalogue
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or not isinstance(raw.get("technologies"), list):
+            raise ValueError("no technologies list")
+    except (OSError, ValueError) as exc:
+        LOG.error("fingerprint catalogue %s unusable, nothing will be identified: %s", path, exc)
+        return _empty_catalogue([{"id": "", "error": _clip(f"catalogue unusable: {exc}", 300)}])
+    kept: list[Technology] = []
+    rejected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw["technologies"]:
+        tid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+        try:
+            tech = Technology.model_validate(entry)
+            if tech.id in seen:
+                raise ValueError(f"technology id {tech.id!r} appears twice")
+        except Exception as exc:  # noqa: BLE001 - one bad entry is dropped and reported, not fatal to the run
+            LOG.error("fingerprint catalogue: entry %r dropped: %s", tid, exc)
+            rejected.append({"id": tid, "error": _clip(str(exc), 300)})
+            continue
+        seen.add(tech.id)
+        kept.append(tech)
+    if not kept:
+        return _empty_catalogue(rejected)
+    try:
+        return Catalogue.model_validate(
+            {
+                "schema": raw.get("schema"),
+                "updated": raw.get("updated", ""),
+                "note": raw.get("note", ""),
+                "technologies": kept,
+                "rejected": rejected,
+            }
+        )
+    except ValueError as exc:
+        LOG.error("fingerprint catalogue %s header unusable, nothing will be identified: %s", path, exc)
+        return _empty_catalogue([*rejected, {"id": "", "error": _clip(f"catalogue header: {exc}", 300)}])

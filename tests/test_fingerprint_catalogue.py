@@ -75,6 +75,7 @@ def _raw() -> dict:
 
 def test_catalogue_loads_and_is_a_real_catalogue():
     catalogue = load_catalogue()
+    assert catalogue.rejected == []
     ids = [tech.id for tech in catalogue.technologies]
     assert len(ids) >= 100
     assert len(ids) == len(set(ids))
@@ -333,9 +334,10 @@ def test_a_hostile_body_classifies_in_bounded_time(unit, content_type):
     """1 MiB written by the scanned host to cost the classifier (5fe11059: ~1 h for <meta )."""
     body = (unit * (MIB // len(unit) + 1))[:MIB]
     headers = httpx.Headers({"content-type": content_type})
-    start = time.perf_counter()
+    start = time.process_time()
     load_catalogue().classify(404, headers, body, "http://192.0.2.10/")
-    assert time.perf_counter() - start < 1.0
+    # CPU time, so a busy machine does not fail it; ~0.1 s at worst unloaded.
+    assert time.process_time() - start < 1.0
 
 
 def test_a_deadline_stops_classification():
@@ -450,13 +452,46 @@ def test_inline_script_text_is_capped():
     assert [len(text) for text in page.scripts] == [64 * 1024]
 
 
-def test_loading_the_catalogue_runs_the_stress_check(monkeypatch):
-    """A pattern over budget refuses the whole file at load, not one scan later."""
+def test_loading_the_catalogue_times_nothing(monkeypatch):
+    """A timing is about the machine as much as the pattern: loading on a busy
+    sensor must not depend on one (7143f4ae..66a1dcf6 refused 7 of 8 loads
+    under +30 busy processes and failed the run)."""
     import scanner.pipeline.fingerprint_catalogue as module
 
     def over_budget(pattern, budget=module.STRESS_BUDGET_SECONDS):
         raise ValueError(f"regex {pattern.pattern!r} took too long")
 
     monkeypatch.setattr(module, "stress", over_budget)
-    with pytest.raises(ValueError, match="took too long"):
-        module.load_catalogue.__wrapped__(CATALOGUE_PATH)
+    catalogue = module.load_catalogue.__wrapped__(CATALOGUE_PATH)
+    assert len(catalogue.technologies) == len(load_catalogue().technologies)
+    assert catalogue.rejected == []
+
+
+def test_a_bad_entry_is_dropped_and_reported_not_fatal(tmp_path):
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    raw = _raw()
+    good = raw["technologies"][0]
+    slow = copy.deepcopy(raw["technologies"][1])
+    slow["match"] = [{"from": "body", "regex": "(?:a|ab){0,64}c"}]
+    raw["technologies"] = [good, slow, copy.deepcopy(good), {"id": "x"}]
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    catalogue = module.load_catalogue.__wrapped__(path)
+    assert [t.id for t in catalogue.technologies] == [good["id"]]
+    assert [r["id"] for r in catalogue.rejected] == [slow["id"], good["id"], "x"]
+    assert "alternation inside a repeat" in catalogue.rejected[0]["error"]
+    assert "appears twice" in catalogue.rejected[1]["error"]
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"schema": 1}', "[]", ""])
+def test_an_unusable_catalogue_file_identifies_nothing_instead_of_raising(tmp_path, content):
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    path = tmp_path / "catalogue.json"
+    path.write_text(content, encoding="utf-8")
+    catalogue = module.load_catalogue.__wrapped__(path)
+    assert catalogue.technologies == []
+    assert catalogue.rejected and "unusable" in catalogue.rejected[0]["error"]
+    assert catalogue.classify(200, httpx.Headers({"Server": "nginx/1.24.0"}), "") == []

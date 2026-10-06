@@ -494,9 +494,9 @@ def test_a_classification_past_its_deadline_is_reported_not_waited_for(site, tmp
 def test_a_hostile_page_does_not_stall_the_stage(site, tmp_path: Path):
     site.routes["/"] = (200, [("Content-Type", "text/html")], "<meta " * (1024 * 1024 // 6))
     config = FingerprintConfig(enabled=True, http_ports=[site.port], https_ports=[], body_max_bytes=1024 * 1024)
-    start = time.perf_counter()
+    start = time.process_time()
     result = fingerprint_hosts_sync([f"127.0.0.1:{site.port}/tcp"], config, tmp_path)
-    assert time.perf_counter() - start < 3.0
+    assert time.process_time() - start < 3.0
     assert result["findings"][0]["error"] is None
 
 
@@ -566,3 +566,20 @@ def test_a_search_that_ignores_the_deadline_is_still_timed_out(site, tmp_path: P
     site.routes["/"] = (200, [("X-Jenkins", "2.414.3")], "")
     (endpoint,) = _run(site, tmp_path)["findings"]
     assert endpoint["error"] == "classification_timeout"
+
+
+def test_a_rejected_catalogue_entry_is_recorded_and_the_stage_runs(site, tmp_path: Path, monkeypatch):
+    import scanner.pipeline.fingerprint as fp
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    raw = json.loads(module.CATALOGUE_PATH.read_text(encoding="utf-8"))
+    raw["technologies"][0]["match"] = [{"from": "body", "regex": "a.*b"}]
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(fp, "load_catalogue", lambda: module.load_catalogue.__wrapped__(path))
+    site.routes["/"] = (200, [("X-Jenkins", "2.414.3")], "")
+
+    result = _run(site, tmp_path)
+
+    assert [r["id"] for r in result["catalogue"]["rejected"]] == [raw["technologies"][0]["id"]]
+    assert [t["id"] for t in result["findings"][0]["technologies"]] == ["jenkins"]
