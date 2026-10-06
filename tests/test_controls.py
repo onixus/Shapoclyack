@@ -875,3 +875,41 @@ def test_web_technologies_is_not_ok_when_catalogue_entries_were_rejected(tmp_pat
     web = _web_control(tmp_path)
     assert web["status"] == "weak"
     assert "jenkins" in web["why"]
+
+
+def test_web_technologies_keeps_banner_findings_when_the_catalogue_was_unusable(tmp_path: Path):
+    """The banner rule needs no catalogue: an empty one must not hide nginx/1.18.0."""
+    data = _clean_fingerprint({
+        "schema": 1,
+        "updated": "",
+        "technologies": 0,
+        "rejected": [{"id": "", "error": "catalogue unusable: Expecting value"}],
+    })
+    data["findings"] = [{"host": "a.example.com", "port": 443, "server": "nginx/1.18.0", "x_powered_by": "PHP/7.4.3"}]
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["findings_by_severity"]["medium"] == 2
+    assert "catalogue unusable" in web["why"]
+
+
+def test_web_technologies_names_rejected_ids_alongside_other_findings(tmp_path: Path):
+    data = _clean_fingerprint({
+        "schema": 1,
+        "updated": "2026-10-06",
+        "technologies": 145,
+        "rejected": [{"id": "jenkins", "error": "regex 'a.*b' repeats without a bound"}],
+    })
+    data["findings"] = [{"host": "a.example.com", "port": 443, "server": "nginx/1.18.0", "x_powered_by": ""}]
+    data["exposures"] = [
+        _exposure("exposed_admin_interface", "high", "es.example.com", "Elasticsearch answers its API without authentication (HTTP 200)")
+    ]
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "fail"
+    assert "jenkins" in web["why"]
+    data["exposures"] = []
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "jenkins" in web["why"]
