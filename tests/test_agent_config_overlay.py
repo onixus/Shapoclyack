@@ -388,7 +388,7 @@ def test_a_sensor_declaring_the_unversioned_capability_is_refused(tmp_path, monk
 # changes, which is what the earlier entries pin.
 OVERLAY_PATHS_DIGEST = {
     1: "e32112da7d251a59295b425ed27fd5851cb0d679746ae4b1ba40e9aeb004a1fe",
-    2: "dca9190574a775d5e18afbeb967152792674c22e797557dcdffffc6a4be9743e",
+    2: "342e983c49846574883fdb39090ddc28efc22aebd1d6565b97665e8ccccd3145",
 }
 
 

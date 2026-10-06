@@ -169,6 +169,7 @@ def _port_stage(
     open_ports: tuple[int, ...] = (),
     explicit: bool = True,
     fails: bool = False,
+    exclude: tuple[int, ...] = (),
 ) -> None:
     """Run the real port stage (naabu stubbed) over ``run_dir`` for HOST."""
     from scanner.pipeline import ports as ports_stage
@@ -197,10 +198,49 @@ def _port_stage(
             udp_probes=False,
             tag="b0",
             scan_type="connect",
+            exclude_ports=list(exclude),
         )
     except subprocess.CalledProcessError:
         found = []
     (run_dir / "open_ports.txt").write_text("".join(f"{e}\n" for e in found), encoding="utf-8")
+
+
+def _reach(monkeypatch, run_dir: Path, outcomes: dict[str, list[str]], *, port: int = 443) -> None:
+    """Run the real reachability stage with each host's connect outcomes
+    scripted (``{"10.0.0.5": ["refused", "refused"]}``)."""
+    from scanner.pipeline import reachability
+    from scanner.pipeline.config_schema import ReachabilityConfig
+
+    script = {host: list(results) for host, results in outcomes.items()}
+    monkeypatch.setattr(reachability, "_attempt", lambda host, _port, _timeout: script[host].pop(0))
+    attempts = max(len(results) for results in outcomes.values())
+    reachability.run_reachability_probe(
+        list(outcomes), {port}, ReachabilityConfig(enabled=True, attempts=attempts), run_dir
+    )
+
+
+REFUSED = ["refused", "refused"]
+
+
+def _job_from(settings, tenant_id, job_id: str, run_id: str, *, agent: str | None = None, group: str | None = None):
+    """A job that produced ``run_id``: local, or a sensor (in ``group``)."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with get_session(settings.postgres_url) as session:
+        session.add(
+            models.Job(
+                job_id=job_id,
+                tenant_id=tenant_id,
+                status="succeeded",
+                run_id=run_id,
+                queued_at=now,
+                finished_at=now,
+                execution="agent" if agent else "local",
+                assigned_agent_id=agent,
+                agent_group=group,
+            )
+        )
 
 
 def _discovered(run_dir: Path, *, probed: bool = True) -> None:
@@ -493,18 +533,48 @@ def _closed_unreachable(settings, tenant_id, vuln_id) -> dict:
     assert after["closure_reason"] == "endpoint_unreachable"
     event = _last_event(settings, tenant_id, vuln_id)
     assert event["kind"] == "verification_unreachable"
-    assert event["detail"]["evidence"]["endpoints"][0]["host"] == HOST
+    assert event["detail"]["evidence"]["endpoints"][0]["probe"] == REFUSED
     return after
 
 
-def test_a_pulse_exposure_whose_port_is_closed_is_verified_gone(tmp_path, monkeypatch):
-    """The finding *is* "this port is reachable": a live host with the port
-    provably closed is that finding gone, and machine-verified."""
+def _tracked_from(settings, tenant_id, finding, **vantage) -> dict:
+    """Track ``finding`` from a run-1 a known job produced (local by default)."""
+    _job_from(settings, tenant_id, "job-observe", "run-1", **vantage)
+    return _tracked(settings, tenant_id, [finding])
+
+
+def _still_open(settings, tenant_id, vuln_id) -> dict:
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln_id)
+    assert after["state"] == vuln_states.FIXING
+    assert after["machine_verified"] is False
+    assert _last_event(settings, tenant_id, vuln_id)["kind"] == "verification_inconclusive"
+    return after
+
+
+def test_icmp_liveness_and_an_empty_naabu_close_nothing(tmp_path, monkeypatch):
+    """The delta review's P0: naabu reports open ports only, so a port a
+    firewall dropped and one that refused look alike — absent — and a host
+    that answered ping was enough to close the exposure machine-verified.
+    Without the connect probe's refusal there is no closure."""
     settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
-    vuln = _tracked(settings, tenant_id, [EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     _discovered(run_dir)
     _port_stage(monkeypatch, run_dir)
+
+    _fold(settings, tenant_id)
+
+    _still_open(settings, tenant_id, vuln["vuln_id"])
+
+
+def test_a_refused_port_closes_an_exposure_seen_from_the_same_place(tmp_path, monkeypatch):
+    """The finding *is* "this port is reachable": refused on every attempt,
+    from where it was seen, it is gone — machine-verified."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
 
     stats = _fold(settings, tenant_id)
 
@@ -512,50 +582,128 @@ def test_a_pulse_exposure_whose_port_is_closed_is_verified_gone(tmp_path, monkey
     assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is True
 
 
-def test_a_cve_whose_port_is_closed_is_closed_but_not_verified_fixed(tmp_path, monkeypatch):
+def test_a_refused_port_closes_a_cve_but_not_as_verified(tmp_path, monkeypatch):
     """The vulnerable service is out of reach; nothing showed it patched."""
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
-    vuln = _tracked(settings, tenant_id, [PULSE])
+    vuln = _tracked_from(settings, tenant_id, PULSE)
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    _discovered(run_dir)
     _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is False
+    assert vulns.summary(settings, tenant_id=tenant_id)["machine_verified_closed"] == 0
+
+
+def test_a_tls_observation_is_not_an_exposure(tmp_path, monkeypatch):
+    """Only ``pulse:exposure:*`` *is* the port being reachable. A CVE-less
+    TLS observation refused away is closed, but not machine-verified."""
+    tls = {**EXPOSURE, "script_id": "pulse:tls:443:weak-cipher"}
+    settings, tenant_id = _seed(tmp_path, findings=[tls])
+    vuln = _tracked_from(settings, tenant_id, tls)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is False
+
+
+@pytest.mark.parametrize(
+    ("observed", "why"),
+    [
+        ({"agent": "sensor-int", "group": "internal"}, "another sensor group"),
+        (None, "observing sensor unknown (a run no job owns)"),
+    ],
+)
+def test_an_exposure_refused_from_elsewhere_is_inconclusive(tmp_path, monkeypatch, observed, why):
+    """A DMZ sensor's refusal says nothing about what the internal one saw;
+    and its closure was what let a verify/reopen cycle reset the SLA."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = (
+        _tracked_from(settings, tenant_id, EXPOSURE, **observed)
+        if observed
+        else _tracked(settings, tenant_id, [EXPOSURE])
+    )
+    _park_in_verifying(settings, tenant_id, vuln["vuln_id"], "job-verify")
+    _write_run(settings.output_dir, "run-verify", HOSTS, [])
+    _job_from(settings, tenant_id, "job-verify", "run-verify", agent="sensor-dmz", group="dmz")
+    run_dir = settings.output_dir / "runs" / "run-verify"
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    _still_open(settings, tenant_id, vuln["vuln_id"])
+    gaps = _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["gaps"]
+    assert any(gap["reason"] == "vantage_differs" for gap in gaps), why
+
+
+def test_a_cve_refused_from_elsewhere_is_still_closed_unverified(tmp_path, monkeypatch):
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+    _park_in_verifying(settings, tenant_id, vuln["vuln_id"], "job-verify")
+    _write_run(settings.output_dir, "run-verify", HOSTS, [])
+    _job_from(settings, tenant_id, "job-verify", "run-verify", agent="sensor-dmz", group="dmz")
+    run_dir = settings.output_dir / "runs" / "run-verify"
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
 
     _fold(settings, tenant_id)
 
     after = _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
     assert after["machine_verified"] is False
-    assert vulns.summary(settings, tenant_id=tenant_id)["machine_verified_closed"] == 0
+    assert _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["verified_from"]["vantage"] == "group:dmz"
 
 
-def test_another_open_port_is_proof_of_life_too(tmp_path, monkeypatch):
-    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
-    vuln = _tracked(settings, tenant_id, [EXPOSURE])
-    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    # No discovery evidence: 22 answering is the proof of life.
-    _port_stage(monkeypatch, run_dir, asked=(443, 22), open_ports=(22,))
+def test_the_detector_records_where_it_was_seen_from(tmp_path):
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+    entry = vuln["detectors"][0]
+    assert (entry["agent_id"], entry["agent_group"], entry["vantage"]) == ("sensor-int", "internal", "group:internal")
 
-    _fold(settings, tenant_id)
 
-    event = _last_event(settings, tenant_id, vuln["vuln_id"])
-    assert event["kind"] == "verification_unreachable"
-    assert event["detail"]["evidence"]["endpoints"][0]["alive_by"] == "open_port"
+def test_the_verification_goes_out_from_the_observing_group(tmp_path):
+    from api.services import agent_groups
+
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="internal")
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+
+    job = _dispatch(settings, tenant_id, vuln["vuln_id"], sensor_group="internal")
+
+    assert job.agent_group == "internal"
 
 
 @pytest.mark.parametrize(
     ("setup", "why"),
     [
-        (lambda m, d: (_discovered(d, probed=False), _port_stage(m, d)), "discovery skipped: alive unproven"),
-        (lambda m, d: _port_stage(m, d), "no liveness signal at all"),
-        (lambda m, d: (_discovered(d), _port_stage(m, d, explicit=False)), "port only in -top-ports"),
-        (lambda m, d: (_discovered(d), _port_stage(m, d, fails=True)), "port batch did not finish"),
-        (lambda m, d: (_discovered(d), _port_stage(m, d), _pulse(m, d, ports=(443,), cve=False)), "Pulse saw it open"),
+        (lambda m, d: (_port_stage(m, d), _reach(m, d, {HOST: ["timeout", "timeout"]})), "dropped: timeout"),
+        (lambda m, d: (_port_stage(m, d), _reach(m, d, {HOST: ["refused", "timeout"]})), "one answer lost"),
+        (lambda m, d: (_port_stage(m, d), _reach(m, d, {HOST: ["unreachable", "unreachable"]})), "no route"),
+        (lambda m, d: (_port_stage(m, d), _reach(m, d, {HOST: ["refused", "open"]})), "the probe got in"),
+        (lambda m, d: (_port_stage(m, d, explicit=False), _reach(m, d, {HOST: REFUSED})), "-top-ports only"),
+        (lambda m, d: (_port_stage(m, d, fails=True), _reach(m, d, {HOST: REFUSED})), "batch did not finish"),
+        (lambda m, d: (_port_stage(m, d, exclude=(443,)), _reach(m, d, {HOST: REFUSED})), "port excluded"),
+        (lambda m, d: _reach(m, d, {HOST: REFUSED}), "no port-stage record"),
+        (
+            lambda m, d: (
+                _port_stage(m, d),
+                _reach(m, d, {HOST: REFUSED}),
+                _pulse(m, d, ports=(443,), cve=False),
+            ),
+            "Pulse saw it open",
+        ),
     ],
 )
 def test_short_of_every_condition_a_closed_port_stays_inconclusive(tmp_path, monkeypatch, setup, why):
-    """A host that is down, a port never asked about, a batch that died, a
-    probe that disagrees: the firewalled-during-the-window case, not a fix."""
+    """A dropped packet, a port never explicitly asked about, a batch that
+    died, a probe that disagrees: the firewalled-during-the-window case."""
     settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
-    vuln = _tracked(settings, tenant_id, [EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     setup(monkeypatch, run_dir)
 
@@ -563,7 +711,70 @@ def test_short_of_every_condition_a_closed_port_stays_inconclusive(tmp_path, mon
 
     after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
     assert after["state"] == vuln_states.FIXING, why
-    assert _last_event(settings, tenant_id, vuln["vuln_id"])["kind"] == "verification_inconclusive", why
+
+
+def test_a_name_is_never_judged_by_an_address_refusal(tmp_path, monkeypatch):
+    on_name = {**EXPOSURE, "host": NAME}
+    settings, tenant_id = _seed(tmp_path, findings=[on_name])
+    vuln = _tracked_from(settings, tenant_id, on_name)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    _still_open(settings, tenant_id, vuln["vuln_id"])
+
+
+def test_a_hostless_exposure_needs_refusal_on_every_address(tmp_path, monkeypatch):
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    _second_address(settings, tenant_id, vuln["vuln_id"])
+    _forget_host(settings, vuln["vuln_id"], "pulse")
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)  # HOST only
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})  # nothing about 10.0.0.6
+
+    _fold(settings, tenant_id)
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+
+
+def test_a_reopen_after_an_unreachable_closure_keeps_the_sla_clock(tmp_path, monkeypatch):
+    """Verify → closed unreachable → seen again → reopened: the deadline is
+    the original one, so the cycle cannot reset an overdue exposure."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+    _fold(settings, tenant_id)
+    _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
+
+    again = _tracked(settings, tenant_id, [EXPOSURE], run_id="run-3")
+
+    assert again["state"] == vuln_states.OPEN
+    assert again["sla_started_at"] == vuln["sla_started_at"]
+    assert again["due_at"] == vuln["due_at"]
+    reopened = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert reopened["kind"] == "reopened"
+    assert reopened["detail"]["sla_continued"] is True
+
+
+def test_a_reopen_after_a_verified_fix_still_restarts_the_clock(tmp_path, monkeypatch):
+    """The control: a regression after a real fix is measured from its return."""
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    vuln = _tracked_from(settings, tenant_id, PULSE)
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir)
+    assert _fold(settings, tenant_id).verification_passed == 1
+
+    again = _tracked(settings, tenant_id, [PULSE], run_id="run-3")
+
+    assert again["state"] == vuln_states.OPEN
+    assert again["sla_started_at"] != vuln["sla_started_at"]
+    assert "sla_continued" not in _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]
 
 
 @pytest.mark.parametrize(
@@ -580,8 +791,8 @@ def test_a_closed_tcp_port_says_nothing_about_a_udp_or_unknown_finding(tmp_path,
     settings, tenant_id = _seed(tmp_path, findings=[ntp])
     vuln = _tracked(settings, tenant_id, [ntp])
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    _discovered(run_dir)
     _port_stage(monkeypatch, run_dir, asked=(123,))
+    _reach(monkeypatch, run_dir, {HOST: REFUSED}, port=123)
 
     stats = _fold(settings, tenant_id)
 
@@ -906,14 +1117,22 @@ def test_a_failed_verification_job_releases_only_its_own_findings(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2")):
-    """A live scanner sensor of the tenant declaring ``capabilities``."""
+def _sensor(
+    settings,
+    tenant_id,
+    capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2"),
+    group: str | None = None,
+):
+    """A live scanner sensor of the tenant declaring ``capabilities``, in ``group``."""
+    from api.services import agent_groups
     from api.services import agents as agents_service
 
     agents_service.configure(settings)
-    agents_service.register_agent(
-        hostname=f"sensor-{len(capabilities)}", tenant_id=tenant_id, capabilities=list(capabilities)
+    agent = agents_service.register_agent(
+        hostname=f"sensor-{len(capabilities)}-{group}", tenant_id=tenant_id, capabilities=list(capabilities)
     )
+    if group:
+        agent_groups.set_agent_group(settings, tenant_id=tenant_id, agent_id=agent.agent_id, name=group)
 
 
 def _agent_mode(settings, tenant_id, **sensor) -> None:
@@ -921,8 +1140,8 @@ def _agent_mode(settings, tenant_id, **sensor) -> None:
     _sensor(settings, tenant_id, **sensor)
 
 
-def _dispatch(settings, tenant_id, vuln_id) -> models.Job:
-    _agent_mode(settings, tenant_id)
+def _dispatch(settings, tenant_id, vuln_id, *, sensor_group: str | None = None) -> models.Job:
+    _agent_mode(settings, tenant_id, group=sensor_group)
     _advance_to_fixing(settings, tenant_id, vuln_id)
     result = vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="alice")
     assert result["state"] == vuln_states.VERIFYING

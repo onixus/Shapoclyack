@@ -233,6 +233,8 @@ def test_secondary_active_stage_contract_is_central_and_fail_closed():
         "tls_posture",
         "fingerprint",
         "screenshots",
+        # A verification run's connect probe of the finding's ports (#451).
+        "reachability",
     }
     for stage, (concurrency_field, active_work_field) in (
         SECONDARY_ACTIVE_STAGE_POLICIES.items()

@@ -226,30 +226,14 @@ class RunCoverage:
     # ------------------------------------------------------------------
 
     @cached_property
-    def probed_alive(self) -> set[str]:
-        """Hosts discovery's probe ladder itself found alive in this run.
-
-        A batch's ``discover/<tag>.alive.txt`` counts only beside its
-        ``<tag>.probe_stats.json``, which the ladder writes when it actually
-        probed: with discovery skipped every target is written "alive"
-        without a packet sent, and that proves nothing.
-        """
-        if self.run_dir is None:
-            return set()
-        discover = self.run_dir / "discover"
-        if not discover.is_dir():
-            return set()
-        alive: set[str] = set()
-        for alive_file in discover.glob("*.alive.txt"):
-            stem = alive_file.name[: -len(".alive.txt")]
-            if not (discover / f"{stem}.probe_stats.json").is_file():
-                continue
-            alive.update(
-                normalize_host(line)
-                for line in alive_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                if line.strip()
-            )
-        return alive
+    def reachability(self) -> dict[tuple[str, int], dict[str, Any]]:
+        """The run's connect-probe results (``reachability.json``) by endpoint."""
+        document = self._json("reachability.json") or {}
+        out: dict[tuple[str, int], dict[str, Any]] = {}
+        for probe in document.get("probes") or []:
+            if isinstance(probe, dict) and _port(probe.get("port")):
+                out[(normalize_host(probe.get("host")), int(probe["port"]))] = probe
+        return out
 
     @cached_property
     def port_scans(self) -> list[dict[str, Any]]:
@@ -292,6 +276,7 @@ class RunCoverage:
                 for key in ("ip", "host"):
                     if row.get(key):
                         out.add((normalize_host(row[key]), port))
+        out.update(key for key, probe in self.reachability.items() if probe.get("result") == "open")
         return out
 
     def endpoint_unreachable(
@@ -303,11 +288,15 @@ class RunCoverage:
         the scanner, and which address the port stage saw for it is not
         recorded:
 
-        * the host is alive by a signal of its own: discovery's probes found
-          it, or another of its ports is open in this run;
+        * the host **refused** the connection: the run's own connect probe
+          (``reachability.json``, a verification run's) got ``ECONNREFUSED``
+          on every attempt. A refusal is the host's stack answering, so it is
+          the proof of life too; a timeout or an unreachable route is what a
+          firewall dropping the packets looks like, and proves nothing;
         * the port was in the port stage's explicit list for that host, in a
           batch that finished (a ``-top-ports`` set is not explicit);
-        * nothing in the run saw the port open — not naabu, not Pulse.
+        * nothing in the run saw the port open — not naabu, not Pulse, not
+          the probe.
 
         Anything short of that is the firewalled-during-the-window case the
         tracker does not forgive.
@@ -322,8 +311,8 @@ class RunCoverage:
                 return None
             if (host, port) in self.open_tcp:
                 return None
-            other_open = sorted(p for h, p in self.open_tcp if h == host and p != port)
-            if host not in self.probed_alive and not other_open:
+            probe = self.reachability.get((host, port))
+            if probe is None or probe.get("result") != "refused":
                 return None
             batches = [
                 record
@@ -339,12 +328,7 @@ class RunCoverage:
             ):
                 return None
             evidence.append(
-                {
-                    "host": host,
-                    "port": port,
-                    "alive_by": "discovery" if host in self.probed_alive else "open_port",
-                    **({"other_open_ports": other_open[:16]} if other_open else {}),
-                }
+                {"host": host, "port": port, "probe": list(probe.get("attempts") or [])}
             )
         return {"endpoints": evidence}
 

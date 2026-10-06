@@ -122,7 +122,7 @@ PATHS_BY_VERSION: dict[int, frozenset[str]] = {
     1: _V1_PATHS,
     # Set by the platform only, for a verification re-scan
     # (api/services/vulnerabilities.py): never a console setting.
-    2: _V1_PATHS | {"nuclei.template_ids"},
+    2: _V1_PATHS | {"nuclei.template_ids", "reachability.enabled"},
 }
 
 #: What this build accepts.

@@ -784,6 +784,21 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class ReachabilityConfig(BaseModel):
+    """Explicit TCP refusal evidence for a verification re-scan (#451).
+
+    Off by default and not an installation setting: a verification job turns
+    it on through its config overlay (overlay v2). See
+    ``scanner/pipeline/reachability.py``.
+    """
+
+    enabled: bool = False
+    concurrency: int = Field(default=8, ge=1, le=64)
+    attempts: int = Field(default=2, ge=1, le=5)
+    timeout_seconds: float = Field(default=3.0, ge=0.5, le=30.0)
+    max_probes: int = Field(default=256, ge=1, le=4096)
+
+
 class ScreenshotConfig(BaseModel):
     """Web screenshots (P4.4 / Phase 9.3). Opt-in.
 
@@ -1252,6 +1267,7 @@ class AppConfig(BaseModel):
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
+    reachability: ReachabilityConfig = Field(default_factory=ReachabilityConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)
