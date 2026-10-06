@@ -443,3 +443,20 @@ def test_every_shipped_pattern_passes_the_stress_budget():
     assert len(patterns) > 100
     for pattern in patterns:
         stress(pattern)
+
+
+def test_inline_script_text_is_capped():
+    page = parse_page("<script>" + "x" * 200_000 + "</script><title>after</title>" + "y" * 100_000)
+    assert [len(text) for text in page.scripts] == [64 * 1024]
+
+
+def test_loading_the_catalogue_runs_the_stress_check(monkeypatch):
+    """A pattern over budget refuses the whole file at load, not one scan later."""
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    def over_budget(pattern, budget=module.STRESS_BUDGET_SECONDS):
+        raise ValueError(f"regex {pattern.pattern!r} took too long")
+
+    monkeypatch.setattr(module, "stress", over_budget)
+    with pytest.raises(ValueError, match="took too long"):
+        module.load_catalogue.__wrapped__(CATALOGUE_PATH)
