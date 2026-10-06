@@ -55,7 +55,9 @@ list look the same -- as are a reset, a timeout, a server that asked for a
 client certificate (``client_cert_requested``) and a handshake the *local*
 stack aborted. A version the local OpenSSL cannot offer at all is
 ``not_performed`` (the ClientHello is built in memory first, so a crypto
-policy on the scanner host never reads as the server refusing TLS 1.0);
+policy on the scanner host never reads as the server refusing TLS 1.0), and
+so is one the server chose but the local policy would not finish (OpenSSL 3.0
+refusing the server's SHA-1 signature after the ServerHello);
 checks switched off by ``probe_legacy_protocols`` are ``not_evaluated``
 (``reason: disabled``); SSLv2/SSLv3 are ``not_testable``. A CertificateRequest
 is visible only up to TLS 1.2 (TLS 1.3 encrypts it). The probe offers OpenSSL's ``DEFAULT`` list
@@ -176,6 +178,18 @@ _VERSION_REFUSAL_REASONS = frozenset(
         "VERSION_TOO_LOW",
         "WRONG_SSL_VERSION",
         "TLSV1_ALERT_PROTOCOL_VERSION",
+    }
+)
+
+# ssl.SSLError reasons the *local* stack raises when its own security policy
+# will not accept what the server sent after choosing the version (OpenSSL 3.0
+# on Ubuntu builds a TLS 1.0 ClientHello at security level 1 and then refuses
+# the SHA-1 signature). The server accepted the version; the scanner host
+# could not finish the check.
+_LOCAL_POLICY_REASONS = frozenset(
+    {
+        "LEGACY_SIGALG_DISALLOWED_OR_UNSUPPORTED",
+        "DH_KEY_TOO_SMALL",
     }
 )
 
@@ -811,7 +825,13 @@ def _legacy_status(attempt: _Attempt, label: str) -> dict[str, Any]:
         return {"status": "rejected", "detail": f"server answered with {chosen}", "server_hello_version": chosen}
     if chosen == label:
         check: dict[str, Any] = {"status": "inconclusive", "server_hello_version": chosen}
-        if records.certificate_request:
+        local_reason = getattr(attempt.error, "reason", None)
+        if local_reason in _LOCAL_POLICY_REASONS:
+            check["status"] = "not_performed"
+            check["detail"] = (
+                f"server chose {label}; local OpenSSL policy would not finish the handshake ({local_reason})"
+            )
+        elif records.certificate_request:
             check["client_cert_requested"] = True
             check["detail"] = (
                 f"server chose {label} and asked for a client certificate; "

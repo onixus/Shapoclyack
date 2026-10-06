@@ -344,6 +344,22 @@ def test_client_certificate_request_is_recorded_not_read_as_a_refusal():
     assert check["server_hello_version"] == "TLSv1.0"
 
 
+def test_local_policy_ending_a_handshake_the_server_accepted_is_not_performed():
+    """OpenSSL 3.0 (Ubuntu 24.04) at security level 1 still builds a TLS 1.0
+    ClientHello, the server chooses TLS 1.0, and then the local stack refuses
+    the SHA-1 signature it would have to accept. The server said yes; the
+    scanner host could not finish -- the check was not performed, it is not
+    an inconclusive answer from the server."""
+    for reason in ("LEGACY_SIGALG_DISALLOWED_OR_UNSUPPORTED", "DH_KEY_TOO_SMALL"):
+        attempt = _attempt(_server_hello(0x0301), _ssl_error(reason))
+        check = _legacy_status(attempt, "TLSv1.0")
+        assert check["status"] == "not_performed"
+        assert check["server_hello_version"] == "TLSv1.0"
+        assert reason in check["detail"]
+    other = _attempt(_server_hello(0x0301), _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"))
+    assert _legacy_status(other, "TLSv1.0")["status"] == "inconclusive"
+
+
 def test_empty_trust_store_is_not_used_to_judge_chains(tmp_path: Path, monkeypatch):
     """No anchors at all would make every public certificate "untrusted"."""
     empty_dir = tmp_path / "certs"
