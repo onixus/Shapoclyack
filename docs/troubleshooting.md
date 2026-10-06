@@ -7,8 +7,14 @@ Start with the narrowest failing layer and preserve the first useful error.
 ```bash
 kubectl -n network-scan get pods
 kubectl -n network-scan logs deploy/shapoclyack-api --tail=200
-curl -v http://127.0.0.1:8080/api/health
+curl -v --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
 ```
+
+These commands target the kind stand created by `scripts/dev-up.sh`. It serves
+HTTPS and generates `.dev-tls/ca.crt`. A plaintext HTTP request to that port
+is not a health check of this stand. A certificate error means checking the CA
+and certificate SANs, rather than bypassing verification. For other deployments,
+use their configured URL and CA. See [TLS configuration](configuration.md#serving-the-api-over-tls).
 
 Check for a port collision on `8080`, invalid environment values, an
 unavailable PostgreSQL URL, or a read-only mounted output directory.
@@ -35,16 +41,16 @@ fresh install, which the API creates at first start — is allowed nothing until
 an admin approves something.
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/tenants/default/scan-scope
+curl -fsS --cacert .dev-tls/ca.crt -H "Authorization: Bearer $TOKEN" \
+  https://127.0.0.1:8080/api/tenants/default/scan-scope
 ```
 
 An empty list is the answer, not a missing one. The refusal itself is in the
 access-decision journal with the offending targets in `detail`:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
-  'http://127.0.0.1:8080/api/auth/events?outcome=denied'
+curl -fsS --cacert .dev-tls/ca.crt -H "Authorization: Bearer $TOKEN" \
+  'https://127.0.0.1:8080/api/auth/events?outcome=denied'
 ```
 
 Both routes are platform admin. Approve or widen the scope with

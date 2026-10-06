@@ -4,6 +4,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Documentation
+
+- Refresh the kind quick start and remediation demo for HTTPS and the generated
+  development CA; document the Node CA for the dev proxy, tenant-scoped run
+  paths, PostgreSQL setup and narrowed coverage runs. Align architecture and
+  network requirements with HTTPS result uploads and broker-independent job
+  claims, qualify asset identity correlation, and distinguish current `main`
+  from the published release and pending Lariska inventory/update work.
+
 ### Added
 
 - **Web fingerprinting from a catalogue: versions, CPE and exposed consoles

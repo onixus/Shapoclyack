@@ -12,6 +12,11 @@ Shapoclyack turns external discovery into a verifiable remediation workflow. It 
 
 **[Getting Started](docs/getting-started.md)** · **[Closed-loop Demo](docs/demo-remediation-loop.md)** · **[Architecture](docs/architecture.md)** · **[Web UI](docs/ui.md)** · **[Documentation](docs/README.md)** · **[Русская версия](README.ru.md)** · **[Changelog](CHANGELOG.md)** · **[Roadmap](ROADMAP.md)**
 
+> Documentation describes `main`, including changes after the latest published
+> release `shapoclyack-0.46-0922` (checked 2026-10-06). See
+> [version scope](docs/README.md#version-scope) and `Unreleased` in the changelog
+> before applying these instructions to a release installation.
+
 ## Closed-loop remediation at a glance
 
 ```mermaid
@@ -48,10 +53,10 @@ For a local evaluation cluster:
 git clone https://github.com/onixus/Shapoclyack.git
 cd Shapoclyack
 scripts/dev-up.sh
-curl --fail http://127.0.0.1:8080/api/health
+curl --fail --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
 ```
 
-Then open **http://127.0.0.1:8080**. The local `kind` setup, demo accounts, approved-scope workflow and first scan are documented step by step in [Getting Started](docs/getting-started.md).
+Trust the generated `.dev-tls/ca.crt` in your browser, then open **https://127.0.0.1:8080**. The local `kind` setup, demo accounts, approved-scope workflow and first scan are documented step by step in [Getting Started](docs/getting-started.md).
 
 **See the differentiator end to end:** [run the closed-loop remediation demo](docs/demo-remediation-loop.md) to take a real network finding through remediation, targeted re-scan, and either `machine_verified = true` or a return to `FIXING`.
 
@@ -77,7 +82,7 @@ Traditional vulnerability scanners and legacy vulnerability management tools suf
 ## Core Architectural Differentiators
 
 ### 1. Asset-Centric Identity (Defeating IP & DHCP Drift)
-Network IP addresses are ephemeral attributes in cloud and dynamic DHCP infrastructures. Shapoclyack anchors all observations, vulnerability lifecycles, SLAs, and ownership context to persistent **Asset** records (`asset_id`), correlated via cryptographic identities, FQDNs, and TLS certificate hashes. When a host reboots with a new DHCP lease or rotates an IP behind a load balancer, its remediation history, open tickets, and accepted exceptions remain intact without creating ghost assets or resurrected findings.  
+Network IP addresses are ephemeral attributes in cloud and dynamic DHCP infrastructures. Shapoclyack attaches observations, vulnerability lifecycles, SLAs, and ownership context to persistent **Asset** records (`asset_id`). Identifiers on one host record share an asset; separate IP and FQDN records merge only when forward DNS and the certificate on that IP corroborate a unique pair. Shared hosting is kept separate. History follows the retained asset and its known identifiers; an address change without corroborating identity is not automatically linked.
 *See [Asset Identity](docs/asset-identity.md) and [Asset Business Context](docs/asset-context.md).*
 
 ### 2. Dual-Axis Risk Scoring (NIST SP 800-30 Rev. 1)
@@ -201,10 +206,12 @@ flowchart TD
     A <--> P
     A <--> N
     N --> G
-    A --> S
+    A -->|local execution mode| S
     G --> S
-    S --> R
-    S --> C
+    G -->|HTTPS results| A
+    A -->|run publication| R
+    N -->|analytical ingest| C
+    A --> C
     A --> F
 ```
 
@@ -247,7 +254,10 @@ targets → resolve → discovery → hostnames → ports → NSE/Nuclei → enr
 
 ### Local Evaluation with Kubernetes (kind)
 
-Requirements: Docker, [kind](https://kind.sigs.k8s.io/), and `kubectl`, with at least 4 GB of free memory.
+Requirements: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, OpenSSL,
+and at least 4 GB of free memory. Local image builds also need `GITHUB_TOKEN`
+or an authenticated `gh` CLI with access to the Pulse release repository.
+See [Getting started](docs/getting-started.md#prerequisites).
 
 ```bash
 git clone https://github.com/onixus/Shapoclyack.git
@@ -258,7 +268,7 @@ scripts/dev-up.sh
 
 The script initializes a local `kind` cluster, builds the all-in-one image, loads it into the cluster, and applies the `k8s/shapoclyack/overlays/kind-dev` overlay (FastAPI control plane, Next.js console, PostgreSQL, NATS, ClickHouse, and the scanner-executor — the in-cluster sensor, in a namespace of its own; see [Kubernetes hardening](docs/k8s-hardening.md)).
 
-Open your browser at **<http://127.0.0.1:8080>** and authenticate:
+Trust `.dev-tls/ca.crt` in your browser, open **<https://127.0.0.1:8080>** and authenticate:
 
 ```text
 Username: operator
