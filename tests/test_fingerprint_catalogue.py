@@ -537,3 +537,8 @@ def test_markup_quoted_inside_a_script_is_not_the_page():
     assert parse_page(truncated).password_input is False
     long_script = "<script>var f = '" + "x" * (70 * 1024) + "<input type=\"password\">';</script><p>after</p>"
     assert parse_page(long_script).password_input is False
+
+
+def test_markup_after_a_long_script_is_still_read():
+    body = "<script>var x = '" + "x" * (70 * 1024) + "';</script><title>after</title>"
+    assert page_title(body) == "after"
