@@ -11,11 +11,14 @@ contract of what it reports; the stage's limits (`concurrency`, `max_targets`,
 ## What goes on the wire
 
 * One `GET scheme://address:port/` per candidate endpoint.
-* A redirect is followed — **at most three hops** — only while it stays on the
-  address the stage was given (any scheme or port of that address: the same
-  in-scope host). Anything else, a host name included, is recorded as
-  `redirect_location` with `redirected_off_host: true` and **not fetched**. A
-  redirect to a name is the virtual-host case; the name is a target of its own.
+* A redirect is followed — **at most three hops** — only to an
+  `(address, port)` the port stage reported open in this run: the same
+  address, on a port that was scanned. A port nobody scanned, or one the
+  tenant excluded (#362), is never contacted from here. Anything else —
+  another port, another address, a host name, `127.0.0.1.` with its trailing
+  dot — is recorded as `redirect_location` with `redirected_off_host: true`
+  and **not fetched**. A redirect to a name is the virtual-host case; the name
+  is a target of its own. Credentials in a `Location` are never sent.
 * `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` are ignored: scan traffic does not
   go through a proxy the sensor's environment happens to name.
 * No second path is requested. A `/favicon.ico` hash or a probe of a known
@@ -64,11 +67,26 @@ a negative corpus — tutorials, write-ups, quotes, link pages — that must
 identify nothing.
 
 **Bounded cost.** The scanned host writes the body. The page is read once by a
-linear scan with caps (2048 tags, 32 attributes each, 64 inline scripts),
-every catalogue regex must have a bounded repeat count (`{0,512}`, never
-`*`/`+`/`{n,}`; the loader refuses others), and classification runs in a
-worker thread against a 2-second deadline. An endpoint past it is reported
-with `error: classification_timeout` and nothing derived from its body.
+linear scan with caps (2048 tags, 32 attributes each, 64 inline scripts of at
+most 64 KiB; HTML comments are skipped, so markup inside `<!-- -->` is text).
+A `<script>` cut off by `body_max_bytes` still counts as script up to the end
+of what arrived — Grafana's boot data alone outgrows a 64 KiB read. Catalogue
+regexes are checked twice when the catalogue loads:
+
+* by shape — a repeat must be bounded (`{0,512}`, never `*`/`+`/`{n,}`, at
+  most 1024, nested products at most 4096), no alternation inside a repeat,
+  no two variable repeats in a row over overlapping characters (lookarounds
+  looked through);
+* by measurement — every pattern is run over hostile inputs built from its
+  own literals, growing one character at a time and then doubling to
+  64 KiB; one search over 50 ms refuses the whole catalogue.
+
+Classification runs in a worker thread against a 2-second deadline, with an
+outer timeout on the wait. The deadline is checked *between technologies*: a
+single `re.search` holds the GIL and cannot be pre-empted, which is why the
+patterns themselves are vetted at load rather than trusted to the timeout. An
+endpoint past the deadline is reported with `error: classification_timeout`
+and nothing derived from its body.
 
 **Confidence** has two levels. `high`: the product says so itself — its own
 header, cookie, exact page title or markup only it serves. `medium`: strong,
@@ -151,10 +169,14 @@ attributed to `:443`:
   page answered, rated by what it answered. `auth_required` is a 401/403, a
   password field, or a login path (`/login`, `/users/sign_in`, …).
   * **high**: a `database` answered its API at 2xx with no login — an open
-    database (Elasticsearch's tagline at 200). Not for products whose root is
-    public even with authentication on (`root_is_public`, CouchDB).
+    database (Elasticsearch's tagline at 200).
   * **medium**: a console with no login page in front.
-  * **low**: a login page — reachable, not open.
+  * **low**: a login page — reachable, not open (`auth_required: true`); or a
+    root that is served to anybody whether or not a login follows
+    (`root_is_public`: the Argo CD, Portainer, Harbor and Kubernetes
+    Dashboard app shells, the Keycloak and vCenter welcome pages, CouchDB's
+    welcome document) — `auth_required: null`, "authentication not
+    determinable from the landing page", never claimed open.
 * `exposed_remote_access_gateway` (info) — a VPN, remote-access or webmail
   portal. These are meant to be reachable, so it is an inventory item, not a
   weakness. They are also the products with the most entries in CISA KEV; each
@@ -182,7 +204,8 @@ carried.
   control, a console or login page makes it `weak`), and `why` says which —
   "N database API(s) answer without authentication", "N admin/management
   console(s) answer with no login page in front", "N admin login page(s)
-  reachable". Gateways and other info items move neither the counts nor the
+  reachable", "N admin console landing page(s) reachable, authentication not
+  determinable". Gateways and other info items move neither the counts nor the
   status, but `why` always counts the gateways and three of the ten
   `top_findings` are kept for them. The control's own banner rule for
   `Server` / `X-Powered-By` (versioned medium, bare low) is unchanged, and a
@@ -218,5 +241,10 @@ carried.
 * Only what the root (and same-address redirects) answers is seen. A console
   that redirects to its configured host name is found when that name is
   scanned, not on the address; a product mounted under a path is not found.
-* `auth_required` reads the first page: a single-page console that draws its
-  login form in JavaScript at `/` reads as "no login page" (medium).
+* `auth_required` reads the first page. The SPA consoles the catalogue knows
+  are `root_is_public` (low, not determinable); one it does not know draws its
+  login form in JavaScript and reads as "no login page" (medium).
+* Scanned by address, a site that writes its own asset URLs absolutely
+  (`src="https://www.example.com/wp-content/..."`) reads them as foreign, so
+  WordPress, Joomla and the like are missed on the address. The name-based
+  (virtual-host) targets planned for this stage and nuclei will see them.

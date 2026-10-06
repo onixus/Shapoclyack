@@ -21,10 +21,13 @@ All notable changes to Shapoclyack are documented in this file.
   quoting a product is not the product. Classification is bounded — a linear
   page scan, regexes with bounded repeats enforced at load, a worker thread
   with a deadline (`error: classification_timeout`) — because the body is the
-  scanned host's to write. Requests: the root, plus at most three redirect
-  hops that stay on the scanned address; a redirect elsewhere (a host name
-  included) is recorded as `redirect_location`, not fetched, and proxy
-  variables are ignored. Each endpoint gains `technologies[]` with `version`
+  scanned host's to write; every regex is also timed against hostile inputs
+  when the catalogue loads, and the whole catalogue is refused when one is
+  slow. Requests: the root, plus at most three redirect hops to an
+  `(address, port)` the port scan reported open in the run (never a port it
+  did not report, such as a tenant-excluded one, #362); a redirect elsewhere
+  (another port, a host name) is recorded as `redirect_location`, not
+  fetched, and proxy variables are ignored. Each endpoint gains `technologies[]` with `version`
   where the product states one reliably and an NVD-verified CPE 2.3 name
   (without the version when the banner names a distribution: `distro_hint`,
   `banner`), plus `final_url`, `redirect_location`, `redirected_off_host` and
@@ -32,7 +35,8 @@ All notable changes to Shapoclyack are documented in this file.
   `fingerprint.json` gains `exposures[]` for high-confidence matches, one per
   final origin, with `http_status`, `auth_required` and `detail`:
   `exposed_admin_interface` (an open database API high, a console with no
-  login page medium, a login page low), `exposed_remote_access_gateway`
+  login page medium, a login page or an SPA/welcome root whose login cannot
+  be seen low), `exposed_remote_access_gateway`
   (info, with `cpe`/`version` for a future KEV join — none exists yet) and
   `version_disclosure` (info, header-stated versions); none after a redirect
   off the address. `cdn_waf` and `cms_framework` keep their names; `cdn_waf`
@@ -43,6 +47,7 @@ All notable changes to Shapoclyack are documented in this file.
   `incap_ses` inside some other cookie's value no longer counts as Imperva on
   path (it used to take the −6). The *Технологии сайта* control tells open
   consoles from login pages in `why` and always counts and shows gateways.
+  `retro_match` aliases `f5:nginx_open_source` with the other nginx keys.
   See [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
   synthetic, not live captures.
 

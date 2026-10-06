@@ -39,10 +39,13 @@ a probe of a known login path would identify more and would be a request of
 its own, which is not made.
 
 The scanned host writes the body, so classification is bounded: the page is
-read by a linear scan, every catalogue regex has a bounded repeat count, and
-classification runs in a worker thread against a deadline
-(``CLASSIFY_SECONDS``). An endpoint that runs past it is reported with
-``error: classification_timeout`` and nothing derived from its body.
+read by a linear scan, every catalogue regex is shape-checked and timed
+against hostile inputs when the catalogue loads, and classification runs in a
+worker thread against a deadline (``CLASSIFY_SECONDS``) with an outer timeout
+on the wait. The deadline is checked between technologies; one ``re.search``
+holds the GIL and cannot be pre-empted, which is what the load-time checks
+are for. An endpoint past it is reported with ``error:
+classification_timeout`` and nothing derived from its body.
 
 HONESTY NOTE: the catalogue is a curated perimeter-first list (~150 entries),
 not Wappalyzer. Its markers are public knowledge checked against synthetic
