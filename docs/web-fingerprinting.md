@@ -1,13 +1,29 @@
 # Web technology fingerprinting
 
 The `fingerprint` stage (`scanner/pipeline/fingerprint.py`, opt-in with
-`fingerprint.enabled`) makes **one GET** to every already-open web port and
-classifies the answer against a catalogue of about 140 technologies. It never
-scans a port, never fetches a second path and never merges what it finds into
-scan scope. This page is the contract of what it reports; the stage's limits
-(`concurrency`, `max_targets`, `body_max_bytes`, `timeout_seconds`,
-`verify_tls`, the port lists) are in `FingerprintConfig`
-(`scanner/pipeline/config_schema.py`).
+`fingerprint.enabled`) GETs the root of every already-open web port and
+classifies the answer against a catalogue of about 150 technologies. It never
+scans a port and never merges what it finds into scan scope. This page is the
+contract of what it reports; the stage's limits (`concurrency`, `max_targets`,
+`body_max_bytes`, `timeout_seconds`, `verify_tls`, the port lists) are in
+`FingerprintConfig` (`scanner/pipeline/config_schema.py`).
+
+## What goes on the wire
+
+* One `GET scheme://address:port/` per candidate endpoint.
+* A redirect is followed — **at most three hops** — only while it stays on the
+  address the stage was given (any scheme or port of that address: the same
+  in-scope host). Anything else, a host name included, is recorded as
+  `redirect_location` with `redirected_off_host: true` and **not fetched**. A
+  redirect to a name is the virtual-host case; the name is a target of its own.
+* `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` are ignored: scan traffic does not
+  go through a proxy the sensor's environment happens to name.
+* No second path is requested. A `/favicon.ico` hash or a probe of a known
+  login path would identify more, and would be a request of its own.
+
+Every URL written to `fingerprint.json` (`final_url`, `redirect_location`,
+exposure `url`, URL evidence) is cut to `scheme://host:port/path`: no
+userinfo, query, fragment or `;path-parameters` (`;jsessionid=` is a session).
 
 ## The catalogue
 
@@ -23,56 +39,76 @@ an NVD `cpe` key (`part:vendor:product`).
 
 | Matcher source | Selects | Tests |
 |---|---|---|
-| `header` | `name` or `prefix` of a response header | none (presence), `contains`, `equals`, `regex` on the value |
-| `cookie` | `name` or `prefix` of a `Set-Cookie` | presence only — a cookie value is a session secret and is never read or reported |
-| `body` | the first `body_max_bytes` of the body | `contains` (5+ characters), `regex` |
-| `title` | the `<title>` text, entity-decoded | `equals`, `contains`, `regex` |
+| `header` | `name` or `prefix` of a response header | none (presence), `contains`, `equals`, `regex` |
+| `cookie` | `name` or `prefix` of a `Set-Cookie` | presence only — a cookie value is a session secret, never read or reported |
+| `status` | the HTTP status, as text | `equals`, `regex` |
+| `url` | path and query that answered (same-address hops followed) | `equals`, `contains`, `regex` |
+| `title` | the first `<title>`, entity-decoded | `equals`, `contains`, `regex` |
 | `generator` | each `<meta name="generator">` | `equals`, `contains`, `regex` |
-| `url` | path and query the answer came from, after redirects | `equals`, `contains`, `regex` |
+| `meta` | the `<meta>` whose `name`/`property` is `name` | none (presence) or a test on `content` |
+| `asset` | what the page loads or submits to: script/img/iframe `src`, `<link href>`, `<form action>` — same-origin as a path, anything else as `//host/path`; `<a href>` is navigation and is not an asset | `equals`, `contains`, `regex` |
+| `attr` | attribute `name` of element `tag` (or the element itself) | none (presence) or a test on the value |
+| `script` | text of inline `<script>` elements | `contains`, `regex` |
+| `json` | the body, only when the response is JSON (JSON content type, body opens with `{`/`[`) | `contains`, `regex` |
+| `body` | the raw body — last resort, for product text with no structure, always in an `all` with the status or title the product sends | `contains` (5+ characters), `regex` |
 | `all` | two or more of the above | all must hold |
 
-Everything is case-insensitive. Body markers are paths, element ids and script
-variables, never a product name on its own: a blog post about Jenkins is not
-Jenkins. Paths of the remote-access products are anchored to a quote
-(`["']/dana-na/`), so an intranet page *linking* to the VPN is not taken for
-the VPN. `tests/fixtures/fingerprint/web_responses.json` holds a positive
-fixture for every entry (every matcher must fire on one) and a negative corpus
-that must identify nothing at all.
+Everything is case-insensitive. The point of the structural sources is that
+somebody else's page quoting the product is not the product: a tutorial
+showing `curl :9200` output in `<pre>` is HTML, not Elasticsearch; an article
+on the Whitelabel Error Page is served with 200, not the error status; an
+intranet page *linking* to `/dana-na/` is not the VPN; a hot-linked image from
+somebody's WordPress is a foreign asset. `tests/fixtures/fingerprint/web_responses.json`
+holds a positive fixture for every entry (every matcher must fire on one) and
+a negative corpus — tutorials, write-ups, quotes, link pages — that must
+identify nothing.
+
+**Bounded cost.** The scanned host writes the body. The page is read once by a
+linear scan with caps (2048 tags, 32 attributes each, 64 inline scripts),
+every catalogue regex must have a bounded repeat count (`{0,512}`, never
+`*`/`+`/`{n,}`; the loader refuses others), and classification runs in a
+worker thread against a 2-second deadline. An endpoint past it is reported
+with `error: classification_timeout` and nothing derived from its body.
 
 **Confidence** has two levels. `high`: the product says so itself — its own
-header, cookie or exact page title. `medium`: strong, but a shared component,
-a reverse proxy or a customised page could produce it. Anything weaker is not
-a signature and is not in the file.
+header, cookie, exact page title or markup only it serves. `medium`: strong,
+but a shared component, a reverse proxy or a customised page could produce
+it. Only `high` raises exposure findings; `medium` is inventory.
 
 **Versions** are read only where the product states one reliably (`X-Jenkins`,
 `kbn-version`, `Server: nginx/1.24.0`, a WordPress generator tag). The capture
-must be a short token starting with a digit or it is dropped.
+must be a short token starting with a digit or it is dropped. When the header
+that states it also names a distribution (`Apache/2.4.52 (Ubuntu)`,
+`PHP/8.1.2-1ubuntu2.14`, `+deb12`, `.el8`), the version is kept but left out of
+the CPE, and the technology carries `distro_hint` and the raw `banner`: the
+upstream number is not the code that runs (backports), and a later CPE→CVE
+join must go through the distribution-aware logic, not around it.
 
 **CPE**. Keys were checked against the NVD CPE dictionary
 (`services.nvd.nist.gov/rest/json/cpes/2.0`) on the catalogue's `updated` date,
-taking the key NVD files *current* releases under (`f5:nginx`, not the
-deprecated `nginx:nginx`; `o:cisco:adaptive_security_appliance_software`, not
-the deprecated `a:` form). A product with no single key — per-model firmware,
-an edition the page does not reveal — has none, rather than a guess. The
-emitted value is a CPE 2.3 string (`cpe:2.3:a:jenkins:jenkins:2.414.3:*:…`)
-that `api/services/retro_match.parse_cpe` reads back. Where the product shows a
-build NVD does not file versions by (Exchange, SharePoint, MiniServ's shared
-numbering), `version_in_cpe: false` keeps the version out of the CPE and in
-`version` only.
+taking the key NVD files *current* releases under (`f5:nginx_open_source`, not
+`f5:nginx` or the deprecated `nginx:nginx`;
+`o:cisco:adaptive_security_appliance_software`, not the deprecated `a:` form).
+A product with no single key — per-model firmware, an edition the page does
+not reveal — has none, rather than a guess. The emitted value is a CPE 2.3
+string (`cpe:2.3:a:jenkins:jenkins:2.414.3:*:…`) that
+`api/services/retro_match.parse_cpe` reads back. Where the product shows a
+build NVD does not file versions by (Exchange, SharePoint),
+`version_in_cpe: false` keeps the version out of the CPE.
 
 ### Categories
 
 | Category | Examples | Exposure finding |
 |---|---|---|
 | `cdn_waf` | Cloudflare, Akamai, Imperva, Qrator, DDoS-Guard, Variti, Azure Front Door | — |
-| `load_balancer`, `proxy_cache` | BIG-IP LTM, NetScaler, AWS ELB, Yandex ALB, Squid, Varnish | — |
-| `web_server`, `app_server` | nginx, Apache, IIS, Angie, Tomcat, Jetty, WebLogic, Werkzeug | — |
+| `load_balancer`, `proxy_cache` | BIG-IP LTM, NetScaler, FortiGate SLB, AWS ELB, Yandex ALB, Squid, Varnish | — |
+| `web_server`, `app_server` | nginx, Apache, IIS, Angie, MiniServ, FortiOS httpsd, Tomcat, Jetty, WebLogic | — |
 | `framework`, `cms`, `ecommerce` | Next.js, Laravel, Spring Boot, ASP.NET, WordPress, 1C-Bitrix, Tilda, Magento | — |
 | `collaboration`, `business_app`, `storage` | SharePoint, Nextcloud, 1C:Enterprise web client, SAP NetWeaver, MinIO | — |
-| `admin_panel`, `database_ui`, `database` | Webmin, cPanel, Plesk, Keycloak, vCenter, phpMyAdmin, Adminer, Elasticsearch | `exposed_admin_interface`, medium |
-| `devops`, `monitoring` | Jenkins, GitLab, Jira, Confluence, Argo CD, Portainer, Grafana, Kibana, Zabbix | `exposed_admin_interface`, medium |
-| `network_appliance` | MikroTik RouterOS, BIG-IP TMUI, iLO, OPNsense, Synology DSM | `exposed_admin_interface`, medium |
-| `remote_access`, `mail_webmail` | FortiGate, Ivanti Connect Secure, Citrix Gateway, GlobalProtect, Cisco ASA, F5 APM, Exchange OWA, Zimbra, Roundcube | `exposed_remote_access_gateway`, info |
+| `admin_panel`, `database_ui`, `database` | Webmin, cPanel/WHM, Plesk, Keycloak, vCenter, phpMyAdmin, Adminer, Elasticsearch | `exposed_admin_interface` |
+| `devops`, `monitoring` | Jenkins, GitLab, Jira, Confluence, Argo CD, Portainer, Grafana, Kibana, Zabbix | `exposed_admin_interface` |
+| `network_appliance` | FortiGate admin GUI, MikroTik RouterOS, BIG-IP TMUI, iLO, OPNsense, Synology DSM | `exposed_admin_interface` |
+| `remote_access`, `mail_webmail` | FortiGate SSL-VPN, Ivanti Connect Secure, Citrix Gateway, GlobalProtect, Cisco ASA, F5 APM, Usermin, Exchange OWA, cPanel Webmail, Zimbra, Roundcube | `exposed_remote_access_gateway` |
 
 ## What lands in `fingerprint.json`
 
@@ -81,46 +117,56 @@ unchanged and these added:
 
 | Field | Meaning |
 |---|---|
-| `technologies[]` | `{id, name, category, version, cpe, confidence, evidence[]}`, in catalogue order |
-| `final_url` | where the answer came from after redirects, query dropped |
-| `redirected_off_host` | the redirects ended on another host name |
+| `technologies[]` | `{id, name, category, version, cpe, confidence, evidence[]}` (+ `distro_hint`, `banner` when a distribution was named), in catalogue order |
+| `final_url` | the URL that gave the answer (the endpoint, or a same-address hop), sanitized |
+| `redirect_location` | where an unfollowed redirect pointed, sanitized |
+| `redirected_off_host` | that redirect left the address |
 | `title` | the page title, cut to 200 characters |
 
-`cdn_waf` lists the CDN/WAF matches of **high** confidence, and `cms_framework`
-the CMS, framework and e-commerce matches. The original ids (`cloudflare` …
-`fastly`, `wordpress`, `drupal`, `joomla`, `nextjs`, `generic_php`) are kept;
-the lists now also carry what the catalogue added. Joomla is no longer "the
-word *joomla* anywhere in the body", and an Imperva cookie is matched by
-name, not by a value that happens to contain `incap_ses`.
+`cdn_waf` lists the CDN/WAF matches of **high** confidence on an endpoint that
+did not redirect elsewhere, and `cms_framework` the CMS, framework and
+e-commerce matches. The original ids (`cloudflare` … `fastly`, `wordpress`,
+`drupal`, `joomla`, `nextjs`, `generic_php`) are kept; the lists now also
+carry what the catalogue added. Joomla is no longer "the word *joomla*
+anywhere in the body", WordPress no longer `wp-content` in text or a foreign
+image, and an Imperva cookie is matched by name, not by a value that happens
+to contain `incap_ses`.
 
 At the top level, `catalogue` records the schema, `updated` date and size of
-the catalogue the run used, so an old run can be told apart from a new one.
-
-`exposures` is new, one item per finding, in the posture modules' shape plus
-what a later join needs:
+the catalogue the run used, and `exposures` holds the findings, one per final
+origin (`scheme://host:port`), so `:80` redirecting to `:443` is one finding,
+attributed to `:443`:
 
 ```json
-{"kind": "exposed_admin_interface", "severity": "medium",
- "host": "198.51.100.7", "port": 8080, "url": "http://198.51.100.7:8080/",
+{"kind": "exposed_admin_interface", "severity": "low",
+ "host": "198.51.100.7", "port": 8080, "url": "http://198.51.100.7:8080/login",
  "technology": "jenkins", "evidence": ["header x-jenkins: 2.414.3"],
  "name": "Jenkins", "category": "devops", "version": "2.414.3",
- "cpe": "cpe:2.3:a:jenkins:jenkins:2.414.3:*:*:*:*:*:*:*", "confidence": "high"}
+ "cpe": "cpe:2.3:a:jenkins:jenkins:2.414.3:*:*:*:*:*:*:*", "confidence": "high",
+ "http_status": 403, "auth_required": true,
+ "detail": "Jenkins login page reachable (HTTP 403)"}
 ```
 
-* `exposed_admin_interface` (medium) — a console, database UI or appliance
-  management page answered. A login page counts: reachable is the finding.
-* `exposed_remote_access_gateway` (info) — a VPN, remote-desktop or webmail
-  portal. These are meant to be reachable, so the finding is an inventory
-  item, not a weakness. They are also the products with the most entries in
-  CISA KEV; the `cpe` (and `version` where shown) is the join key —
-  `cpe` → NVD ranges (`scanner/data/nvd-cpe`) → CVE → KEV overlay.
+* `exposed_admin_interface` — a console, database UI or appliance management
+  page answered, rated by what it answered. `auth_required` is a 401/403, a
+  password field, or a login path (`/login`, `/users/sign_in`, …).
+  * **high**: a `database` answered its API at 2xx with no login — an open
+    database (Elasticsearch's tagline at 200). Not for products whose root is
+    public even with authentication on (`root_is_public`, CouchDB).
+  * **medium**: a console with no login page in front.
+  * **low**: a login page — reachable, not open.
+* `exposed_remote_access_gateway` (info) — a VPN, remote-access or webmail
+  portal. These are meant to be reachable, so it is an inventory item, not a
+  weakness. They are also the products with the most entries in CISA KEV; each
+  carries its `cpe` and `version` so that a later step can join them with KEV.
+  **No such join exists yet** — it is future work.
 * `version_disclosure` (info) — a version stated in a **response header**
-  (`header` names it). A version in the body is inventory, not a disclosure.
+  (`header` names it), once per header and origin. A version in the body is
+  inventory, not a disclosure.
 
-No exposure is raised for an endpoint whose redirects ended on another host:
-a root that redirects to a hosted SSO or a SaaS tracker says nothing about
-what that address exposes. Its technologies are still listed, with
-`final_url` showing where they were seen.
+No exposure, and no `cdn_waf`, comes from an endpoint whose answer was a
+redirect off its address: its technologies are what that redirect itself
+carried.
 
 ## Consumers
 
@@ -132,10 +178,14 @@ what that address exposes. Its technologies are still listed, with
   not even appear there. Adding a provider to the discount is a risk-model
   decision — see [Risk scoring](risk-scoring.md#compensating-controls-are-observed-not-assumed).
 * **Security controls** (`scanner/pipeline/controls.py`, *Технологии сайта*):
-  `exposed_admin_interface` counts as a medium finding and makes the control
-  `weak`; info items are listed in `top_findings` and move neither the counts
-  nor the status. The control's own banner rule for `Server` /
-  `X-Powered-By` (versioned medium, bare low) is unchanged, and a
+  console exposures count at their severity (an open database fails the
+  control, a console or login page makes it `weak`), and `why` says which —
+  "N database API(s) answer without authentication", "N admin/management
+  console(s) answer with no login page in front", "N admin login page(s)
+  reachable". Gateways and other info items move neither the counts nor the
+  status, but `why` always counts the gateways and three of the ten
+  `top_findings` are kept for them. The control's own banner rule for
+  `Server` / `X-Powered-By` (versioned medium, bare low) is unchanged, and a
   `version_disclosure` for those two headers is not counted again.
 * `fingerprint_matches.txt` keeps its `host:port:scheme:cdn_waf,cms_framework`
   lines.
@@ -143,12 +193,13 @@ what that address exposes. Its technologies are still listed, with
 ## Adding or changing an entry
 
 1. Add the entry to `fingerprint_catalogue.json`. Prefer the product's own
-   header, cookie or exact title; anchor body paths to a quote; use `all` when
-   two markers are only specific together.
+   header, cookie, exact title or markup (`meta`, `asset`, `attr`); use `json`
+   for an API's own document and `body` only inside an `all` with the status
+   or title the product sends. Every regex needs bounded repeats.
 2. Add a positive fixture to `tests/fixtures/fingerprint/web_responses.json`
    (synthetic, `example.test` names) that fires every matcher and checks the
-   version, and run `python -m pytest tests/test_fingerprint_catalogue.py -q`.
-   A fixture that also identifies another technology lists it in `also`.
+   version, and a negative one for any text marker (the tutorial that quotes
+   it). Run `python -m pytest tests/test_fingerprint_catalogue.py -q`.
 3. Look the CPE key up in the NVD CPE dictionary
    (`?cpeMatchString=cpe:2.3:a:vendor:product`) and take the one whose newest
    entries are not deprecated. Leave it out when there is no single key.
@@ -164,8 +215,8 @@ what that address exposes. Its technologies are still listed, with
   ship: Check Point Mobile Access, UserGate, StormWall, ISPmanager, pfSense,
   VMware Horizon, Apache Guacamole, Dell iDRAC, Juniper J-Web, and the
   Russian VPN gateways (Континент, ViPNet, С-Терра).
-* Only what the root answers is seen. Most consoles redirect `/` to their
-  login page and are found; a product mounted under a path is not.
-* A second request — a `/favicon.ico` hash, or a probe of a known login
-  path — would identify more. It would also double the stage's requests per
-  endpoint, so it is not made.
+* Only what the root (and same-address redirects) answers is seen. A console
+  that redirects to its configured host name is found when that name is
+  scanned, not on the address; a product mounted under a path is not found.
+* `auth_required` reads the first page: a single-page console that draws its
+  login form in JavaScript at `/` reads as "no login page" (medium).

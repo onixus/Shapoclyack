@@ -8,30 +8,42 @@ All notable changes to Shapoclyack are documented in this file.
 
 - **Web fingerprinting from a catalogue: versions, CPE and exposed consoles
   (DQ4).** The `fingerprint` stage's eleven hard-coded signatures are replaced
-  by `scanner/pipeline/fingerprint_catalogue.json` — 140 technologies across
+  by `scanner/pipeline/fingerprint_catalogue.json` — 146 technologies across
   CDN/WAF, load balancers, web and application servers, frameworks, CMS
   (1C-Bitrix, Tilda, MODX among them), shops, admin and database UIs, devops
   and monitoring consoles, SSL-VPN and remote-access portals (FortiGate,
-  Ivanti, Citrix, GlobalProtect, Cisco ASA, F5 APM), webmail (Exchange,
-  Zimbra, Roundcube, Kerio, CommuniGate), network appliances (MikroTik,
-  BIG-IP TMUI, iLO) and the 1C:Enterprise web client — validated at load,
-  matched against the same single GET (headers, cookie *names*, body
-  markers, `<title>`, meta generator, the path redirects ended on; no new
-  request). Each endpoint gains `technologies[]` with `version` where the
-  product states one reliably and an NVD-verified CPE 2.3 name, plus
-  `final_url`, `redirected_off_host` and `title`; `fingerprint.json` gains
-  `exposures[]`: `exposed_admin_interface` (medium),
-  `exposed_remote_access_gateway` (info, carrying the `cpe` a KEV join
-  needs) and `version_disclosure` (info, header-stated versions only), none
-  raised after a redirect to another host. `cdn_waf` and `cms_framework` keep
-  their names; `cdn_waf` lists high-confidence CDN/WAF only, and the risk
-  discount (#173) still applies to the original six providers alone. Two
-  matches narrowed on purpose: Joomla is no longer the word "joomla"
-  anywhere in the body, and an `incap_ses` inside some other cookie's value
-  no longer counts as Imperva on path (it used to take the −6). The
-  *Технологии сайта* control counts an exposed console as medium and lists
-  gateways and header versions without changing its status. See
-  [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
+  Ivanti, Citrix, GlobalProtect, Cisco ASA, F5 APM, Usermin), webmail
+  (Exchange, cPanel, Zimbra, Roundcube, Kerio, CommuniGate), network
+  appliances (FortiGate admin GUI, MikroTik, BIG-IP TMUI, iLO) and the
+  1C:Enterprise web client — validated at load and matched on structure
+  (headers, cookie *names*, status, title, metas, the page's own assets and
+  attributes, inline scripts, JSON only in a JSON response), so a tutorial
+  quoting a product is not the product. Classification is bounded — a linear
+  page scan, regexes with bounded repeats enforced at load, a worker thread
+  with a deadline (`error: classification_timeout`) — because the body is the
+  scanned host's to write. Requests: the root, plus at most three redirect
+  hops that stay on the scanned address; a redirect elsewhere (a host name
+  included) is recorded as `redirect_location`, not fetched, and proxy
+  variables are ignored. Each endpoint gains `technologies[]` with `version`
+  where the product states one reliably and an NVD-verified CPE 2.3 name
+  (without the version when the banner names a distribution: `distro_hint`,
+  `banner`), plus `final_url`, `redirect_location`, `redirected_off_host` and
+  `title`, all URLs stripped of userinfo, query and `;params`.
+  `fingerprint.json` gains `exposures[]` for high-confidence matches, one per
+  final origin, with `http_status`, `auth_required` and `detail`:
+  `exposed_admin_interface` (an open database API high, a console with no
+  login page medium, a login page low), `exposed_remote_access_gateway`
+  (info, with `cpe`/`version` for a future KEV join — none exists yet) and
+  `version_disclosure` (info, header-stated versions); none after a redirect
+  off the address. `cdn_waf` and `cms_framework` keep their names; `cdn_waf`
+  lists high-confidence CDN/WAF seen on the address itself, and the risk
+  discount (#173) still applies to the original six providers alone. Matches
+  narrowed on purpose: Joomla is no longer the word "joomla" in the body,
+  WordPress no longer `wp-content` in text or a hot-linked image, and an
+  `incap_ses` inside some other cookie's value no longer counts as Imperva on
+  path (it used to take the −6). The *Технологии сайта* control tells open
+  consoles from login pages in `why` and always counts and shows gateways.
+  See [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
   synthetic, not live captures.
 
 - **Client certificates for sensors and endpoint Agents

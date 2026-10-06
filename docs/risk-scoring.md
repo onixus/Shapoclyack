@@ -143,7 +143,9 @@ DDoS-Guard, Variti, Azure Front Door, …) and reports them, but they earn no
 discount until the risk model is changed to say so; a medium-confidence match
 (a Barracuda cookie, an F5 ASM block page) does not even reach the `cdn_waf`
 list. Imperva is matched by its cookie *names* — a cookie whose value merely
-contains `incap_ses` used to count and no longer does. A CMS match is not a
+contains `incap_ses` used to count and no longer does. An endpoint whose answer was a redirect off its
+address has an empty `cdn_waf`: a CDN in front of the name it points at is
+not in front of the address. A CMS match is not a
 control.
 
 The discount is small (−6) and named in `risk_explanation`, with the caveat
