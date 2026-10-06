@@ -427,7 +427,12 @@ def test_cms_framework_keeps_the_phase_9_1_names_and_gains_new_ones(site, tmp_pa
         # Elasticsearch answering its API at 200: an open database.
         ((200, [("Content-Type", "application/json")], '{"tagline" : "You Know, for Search"}'), None, "high", False),
         # CouchDB's welcome is public even with authentication on.
-        ((200, [("Content-Type", "application/json")], '{"couchdb":"Welcome","version":"3.3.3"}'), None, "medium", False),
+        ((200, [("Content-Type", "application/json")], '{"couchdb":"Welcome","version":"3.3.3"}'), None, "low", None),
+        # Elasticsearch answering with an error is not an open database.
+        ((500, [("Content-Type", "application/json")], '{"tagline" : "You Know, for Search"}'), None, "medium", False),
+        # An SPA shell and a welcome page say nothing about the login behind them.
+        ((200, [], "<html><head><title>Argo CD</title></head><body><div id=app></div></body></html>"), None, "low", None),
+        ((200, [], "<title>Welcome to Keycloak</title>"), None, "low", None),
         # Prometheus with nothing in front.
         ((200, [], "<title>Prometheus Time Series Collection and Processing Server</title>"), None, "medium", False),
         # Nagios behind basic auth.
@@ -437,7 +442,8 @@ def test_cms_framework_keeps_the_phase_9_1_names_and_gains_new_ones(site, tmp_pa
         # Grafana redirected to /login.
         ((200, [], '<title>Grafana</title><script>window.grafanaBootData = {}</script>'), "/login", "low", True),
     ],
-    ids=["es-open", "couchdb-root", "prometheus", "nagios-401", "pma-form", "grafana-login"],
+    ids=["es-open", "couchdb-root", "es-500", "argocd-spa", "keycloak-welcome", "prometheus", "nagios-401",
+         "pma-form", "grafana-login"],
 )
 def test_an_exposure_is_rated_by_what_the_console_answered(site, tmp_path, route, url, severity, auth_required):
     if url:
@@ -522,3 +528,10 @@ def test_a_trailing_dot_is_another_name_not_the_address(site, tmp_path: Path):
     (endpoint,) = _run(site, tmp_path)["findings"]
     assert site.requests == ["/"]
     assert endpoint["redirected_off_host"] is True
+
+
+def test_a_json_content_type_is_not_enough_for_a_json_marker(site, tmp_path: Path):
+    """An XSSI-guarded body under a JSON content type is not the API's own document."""
+    site.routes["/"] = (200, [("Content-Type", "application/json")], ')]}\'\n{"tagline" : "You Know, for Search"}')
+    (endpoint,) = _run(site, tmp_path)["findings"]
+    assert endpoint["technologies"] == []

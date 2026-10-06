@@ -296,17 +296,19 @@ def _auth_required(resp: Response) -> bool:
     return bool(_LOGIN_PATH_RE.search(resp.url_path.partition("?")[0]))
 
 
-def _console_rating(match: Match, resp: Response, auth_required: bool) -> tuple[str, str]:
+def _console_rating(match: Match, resp: Response, auth_required: bool) -> tuple[str, str, bool | None]:
+    """``(severity, detail, auth_required)``; ``None`` is "cannot tell from this page"."""
     name = match.technology.name
     if auth_required:
-        return "low", f"{name} login page reachable (HTTP {resp.status})"
-    if (
-        match.technology.category == "database"
-        and 200 <= resp.status < 300
-        and not match.technology.root_is_public
-    ):
-        return "high", f"{name} answers its API without authentication (HTTP {resp.status})"
-    return "medium", f"{name} answers with no login page in front (HTTP {resp.status})"
+        return "low", f"{name} login page reachable (HTTP {resp.status})", True
+    if match.technology.root_is_public:
+        # A single-page app shell, a welcome page, CouchDB's welcome document:
+        # served to anybody whether or not the console behind it asks for a
+        # login. Reachable is all it shows; it is not claimed open.
+        return "low", f"{name} reachable; authentication not determinable from the landing page (HTTP {resp.status})", None
+    if match.technology.category == "database" and 200 <= resp.status < 300:
+        return "high", f"{name} answers its API without authentication (HTTP {resp.status})", False
+    return "medium", f"{name} answers with no login page in front (HTTP {resp.status})", False
 
 
 def _finding(
@@ -342,11 +344,11 @@ def _exposures(outcome: dict[str, Any], matches: list[Match], resp: Response) ->
         kind = EXPOSURE_KIND_BY_CATEGORY.get(match.technology.category)
         if kind is not None and match.confidence == "high":
             if kind == "exposed_remote_access_gateway":
-                severity = "info"
+                severity, auth_state = "info", auth_required
                 detail = f"{match.technology.name} portal reachable (HTTP {resp.status})"
             else:
-                severity, detail = _console_rating(match, resp, auth_required)
-            found.append(_finding(kind, severity, outcome, match, auth_required=auth_required, detail=detail))
+                severity, detail, auth_state = _console_rating(match, resp, auth_required)
+            found.append(_finding(kind, severity, outcome, match, auth_required=auth_state, detail=detail))
         source = match.version_source or ""
         if not match.version or not source.startswith("header "):
             continue

@@ -927,6 +927,7 @@
       "category": "admin_panel",
       "confidence": "high",
       "cpe": "a:redhat:keycloak",
+      "root_is_public": true,
       "match": [
         {"from": "title", "equals": "welcome to keycloak"}
       ],
@@ -938,6 +939,7 @@
       "category": "admin_panel",
       "confidence": "high",
       "cpe": "a:vmware:vcenter_server",
+      "root_is_public": true,
       "match": [
         {"from": "title", "equals": "id_vc_welcome"}
       ]
@@ -1196,6 +1198,7 @@
       "category": "devops",
       "confidence": "high",
       "cpe": "a:linuxfoundation:harbor",
+      "root_is_public": true,
       "match": [
         {"all": [
           {"from": "title", "equals": "harbor"},
@@ -1209,6 +1212,7 @@
       "category": "devops",
       "confidence": "high",
       "cpe": "a:portainer:portainer",
+      "root_is_public": true,
       "match": [
         {"from": "attr", "tag": "html", "name": "ng-app", "equals": "portainer"},
         {"from": "title", "equals": "portainer", "confidence": "medium"}
@@ -1220,6 +1224,7 @@
       "category": "devops",
       "confidence": "high",
       "cpe": "a:argoproj:argo_cd",
+      "root_is_public": true,
       "match": [
         {"from": "title", "equals": "argo cd"}
       ],
@@ -1230,6 +1235,7 @@
       "name": "Kubernetes Dashboard",
       "category": "devops",
       "confidence": "high",
+      "root_is_public": true,
       "match": [
         {"from": "title", "equals": "kubernetes dashboard"},
         {"from": "attr", "name": "ng-app", "equals": "kubernetesdashboard"}

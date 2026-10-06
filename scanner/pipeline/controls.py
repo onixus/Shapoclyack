@@ -434,7 +434,7 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
     # this control, but it is never dropped from the view either. A version in
     # Server / X-Powered-By is already rated by the banner rule above and is not
     # counted a second time.
-    consoles = {"high": 0, "medium": 0, "low": 0}
+    consoles = {"high": 0, "medium": 0, "low": 0, "undetermined": 0}
     gateways = 0
     observations: list[dict[str, Any]] = []
     for item in fp_data.get("exposures") or []:
@@ -457,7 +457,10 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
         if sev in sev_counts:
             sev_counts[sev] += 1
             if kind == "exposed_admin_interface" and sev in consoles:
-                consoles[sev] += 1
+                # auth_required present and null: the stage could not tell from
+                # the landing page (an SPA shell, a welcome page).
+                undetermined = "auth_required" in item and item["auth_required"] is None
+                consoles["undetermined" if undetermined else sev] += 1
             findings.append(entry)
         else:
             observations.append(entry)
@@ -476,6 +479,11 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
         parts.append(f"{consoles['medium']} admin/management console(s) answer with no login page in front")
     if consoles["low"]:
         parts.append(f"{consoles['low']} admin login page(s) reachable")
+    if consoles["undetermined"]:
+        parts.append(
+            f"{consoles['undetermined']} admin console landing page(s) reachable, "
+            "authentication not determinable"
+        )
     if banner_count:
         parts.append(f"{banner_count} endpoint banner(s) disclose product/version information")
     inventory = f"{gateways} remote-access/webmail portal(s) inventoried" if gateways else ""

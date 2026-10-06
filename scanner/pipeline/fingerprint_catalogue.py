@@ -876,9 +876,11 @@ class Technology(BaseModel):
     #: False where the version the product shows is not the one NVD files it
     #: under (Exchange and SharePoint builds, MiniServ's shared numbering).
     version_in_cpe: bool = True
-    #: The product answers its root without credentials even when it enforces
-    #: them elsewhere (CouchDB's welcome document), so a 200 there proves no
-    #: open access and ``fingerprint.py`` does not rate it as one.
+    #: The root is served to anybody whether or not the product enforces a
+    #: login behind it -- a single-page app shell (Argo CD, Portainer, Harbor,
+    #: Kubernetes Dashboard), a welcome page (Keycloak, vCenter), CouchDB's
+    #: welcome document. ``fingerprint.py`` rates such a root "reachable,
+    #: authentication not determinable" rather than open.
     root_is_public: bool = False
     match: list[Matcher] = Field(min_length=1)
     version: list[VersionRule] = Field(default_factory=list)

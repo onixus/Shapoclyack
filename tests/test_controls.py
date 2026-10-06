@@ -613,3 +613,26 @@ def test_web_technologies_tells_an_open_database_from_a_login_page(tmp_path: Pat
         "1 admin/management console(s) answer with no login page in front; "
         "1 admin login page(s) reachable"
     )
+
+
+def test_web_technologies_does_not_call_an_spa_landing_page_a_login_page(tmp_path: Path):
+    item = _exposure(
+        "exposed_admin_interface",
+        "low",
+        "argo.example.com",
+        "Argo CD reachable; authentication not determinable from the landing page (HTTP 200)",
+    )
+    item["auth_required"] = None
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [],
+            "exposures": [item],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["why"] == "1 admin console landing page(s) reachable, authentication not determinable"
