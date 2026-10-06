@@ -195,4 +195,30 @@ Documentation is part of the feature definition. A behavior change is incomplete
 
 ## Version scope
 
-These guides describe `main` after release `shapoclyack-0.46-0922`. Release tags are immutable deployment references; `main` may contain additional behavior listed under `Unreleased` in [CHANGELOG.md](../CHANGELOG.md).
+This refresh was checked against `main` at `522c1dc2` on **2026-10-06**.
+The latest published release at that time was `shapoclyack-0.46-0922`
+(2026-09-22). These guides describe the checked source tree; downloading that
+release does not install every feature documented on `main`. Use the tagged
+documentation and [CHANGELOG.md](../CHANGELOG.md) for the release contract.
+
+Recent additions on `main`, still under `Unreleased`:
+
+| Area | Current guide |
+|---|---|
+| Tenant MFA coverage, IdP-authoritative OIDC and SCIM, scan queue admission, sensor mTLS and signed sensor bundles | [Identity, fleet trust and the scan queue](#identity-fleet-trust-and-the-scan-queue) |
+| Verification detector coverage, observing vantage and unreachable closure | [Vulnerability lifecycle](vulnerability-lifecycle.md) |
+| TLS certificate strength, chain trust and explicit probe coverage | [Pulse backend](pulse-backend.md#what-the-probe-checks-and-what-it-can-establish) |
+| Structured web technology catalogue and exposed consoles | [Web fingerprinting](web-fingerprinting.md) |
+| Confirmed subdomain takeover candidates and bounded HTTP confirmation | [Configuration](configuration.md#subdomain-takeover-detection) |
+| Expanded service product matching and distribution backports | [Retro CVE matching](retro-cve-matching.md) |
+
+Open branches and PRs are not part of this contract. In particular, endpoint
+inventory accepts **schema v1** on this revision; installation-aware inventory
+v2 and signed Lariska update manifests remain pending. Signed native **sensor**
+bundles are already on `main` and use a different update path. See
+[Endpoint inventory design record](../Agent_plan.md) and
+[the remaining roadmap](../ROADMAP.md).
+
+A source-tree review establishes documented behavior, not a successful
+deployment or CI run. Check the exact revision and completed validation for
+the build you install.

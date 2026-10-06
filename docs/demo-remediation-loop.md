@@ -70,7 +70,7 @@ For the local `kind` environment:
 
 ```bash
 scripts/dev-up.sh
-curl --fail http://127.0.0.1:8080/api/health
+curl --fail --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
 ```
 
 Use an authorized lab target that produces at least one **network-scan** finding.
@@ -83,9 +83,10 @@ The dev overlay seeds evaluation-only accounts. Do not expose these credentials
 outside the local lab.
 
 ```bash
-API=http://127.0.0.1:8080
+API=https://127.0.0.1:8080
+CA="$PWD/.dev-tls/ca.crt"
 
-TOKEN=$(curl -fsS "$API/api/auth/login" \
+TOKEN=$(curl -fsS --cacert "$CA" "$API/api/auth/login" \
   -H 'Content-Type: application/json' \
   -d '{"username":"operator","password":"operator-change-me"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
@@ -96,7 +97,7 @@ TOKEN=$(curl -fsS "$API/api/auth/login" \
 List open findings created by the network scanner:
 
 ```bash
-curl -fsS "$API/api/vulnerabilities?source=scan&open_only=true&limit=20" \
+curl -fsS --cacert "$CA" "$API/api/vulnerabilities?source=scan&open_only=true&limit=20" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
@@ -109,7 +110,7 @@ export VULN_ID='<vuln_id>'
 You can inspect the exact finding before changing state:
 
 ```bash
-curl -fsS "$API/api/vulnerabilities/$VULN_ID" \
+curl -fsS --cacert "$CA" "$API/api/vulnerabilities/$VULN_ID" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
@@ -119,17 +120,17 @@ A newly tracked finding normally starts at `OPEN`. Move it through the explicit
 workflow instead of jumping straight to a closed state:
 
 ```bash
-curl -fsS -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
+curl -fsS --cacert "$CA" -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"state":"ACKNOWLEDGED","note":"demo: triaged"}' | python3 -m json.tool
 
-curl -fsS -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
+curl -fsS --cacert "$CA" -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"state":"PLANNED","note":"demo: remediation planned"}' | python3 -m json.tool
 
-curl -fsS -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
+curl -fsS --cacert "$CA" -X POST "$API/api/vulnerabilities/$VULN_ID/transition" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"state":"FIXING","note":"demo: remediation in progress"}' | python3 -m json.tool
@@ -153,7 +154,7 @@ same observation that created the finding can be tested again after the change.
 ## 6. Trigger mechanical verification
 
 ```bash
-curl -fsS -X POST "$API/api/vulnerabilities/$VULN_ID/verify" \
+curl -fsS --cacert "$CA" -X POST "$API/api/vulnerabilities/$VULN_ID/verify" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
@@ -170,7 +171,7 @@ next accepted endpoint inventory snapshot, not by this route.
 Re-read the finding:
 
 ```bash
-curl -fsS "$API/api/vulnerabilities/$VULN_ID" \
+curl -fsS --cacert "$CA" "$API/api/vulnerabilities/$VULN_ID" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
@@ -193,7 +194,7 @@ safe-mode NSE profile names categories, so pick a Pulse or nuclei finding.
 Inspect the immutable finding timeline as the evidence trail:
 
 ```bash
-curl -fsS "$API/api/vulnerabilities/$VULN_ID/events?limit=100" \
+curl -fsS --cacert "$CA" "$API/api/vulnerabilities/$VULN_ID/events?limit=100" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 

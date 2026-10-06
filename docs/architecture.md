@@ -9,7 +9,7 @@ Shapoclyack separates control-plane state, scan execution, analytical results, a
 | Web UI | Operator workflows, tenant selection, and visualization | Browser JWT only |
 | FastAPI API | Auth, tenant scope, jobs, schedules, assets, reports, webhooks, config | PostgreSQL and run artifacts |
 | Scanner | Discovery, probing, enrichment, diff, and report generation | Run and checkpoint directories |
-| Sensor(s) | Claim scan jobs, execute the scanner, upload results (API resource `agents`, `agent_kind = scanner`) | Local temporary work |
+| Sensor(s) | Claim scan jobs, execute the scanner, upload results (API resource `agents`, `agent_kind = scanner`) | Persistent sensor identity, credentials and update state; temporary scan work |
 | Agent (Lariska) | In-guest endpoint inventory agent on managed hosts; submits snapshots to `POST /api/endpoint/inventory`, never claims jobs (`agent_kind = endpoint`) | None on the control plane beyond the registry row and its snapshots |
 | PostgreSQL | OLTP state, tenants, memberships, jobs, sensor/Agent registry (`agents`), endpoint inventory, schedules, webhook queue/audit, overrides | Database volume |
 | NATS JetStream | Job, ingest, asset-event, and integration messaging with durable delivery | JetStream volume |
@@ -25,9 +25,13 @@ flowchart TD
     A --> N["NATS JetStream"]
     N --> G["Sensor(s)"]
     G --> S["Scanner pipeline"]
-    S --> R["Run artifacts"]
-    S --> N
+    S --> T["Local scan artifacts"]
+    G -->|HTTPS result upload| A
+    A --> Q["Run publication and outbox"]
+    Q --> R["Tenant run artifacts"]
+    Q --> N
     N --> C["ClickHouse ingest"]
+    L["Agent Lariska"] -->|HTTPS inventory| A
     A --> R
     A --> C
     A --> E["Asset event publisher"]
@@ -39,6 +43,12 @@ flowchart TD
 ```
 
 In local execution mode (`OCTO_JOB_EXECUTION_MODE=local`, the setting's default), the API launches the scanner without the NATS job path. In agent mode (`OCTO_JOB_EXECUTION_MODE=agent`), a sensor claims the tenant-scoped job — pulled from NATS JetStream or polled over `POST /api/agent/jobs/claim` — and reports completion through the API. The Kubernetes manifests run agent mode, with the in-cluster sensor (the scanner-executor) in a namespace of its own, so that the API pod needs no raw-socket capability ([Kubernetes hardening](k8s-hardening.md)).
+
+Sensors upload result archives to the API; they do not need broker permission
+to publish analytical results. The API publishes run artifacts and hands the
+optional analytical-ingest message to NATS or its durable outbox. PostgreSQL
+remains authoritative for job ownership when NATS is unavailable. Lariska
+inventory uses a separate HTTPS route and never enters the scan-job queue.
 
 ## Control-plane state
 

@@ -59,11 +59,11 @@ run of names only ends with no targets.
 
 | From | To | Port | Protocol | Required |
 |---|---|---|---|---|
-| Ingress | API | 8080 | HTTP | **Yes** |
+| Ingress | API | 8080 | HTTP or HTTPS, matching the API listener | **Yes** |
 | API | Postgres | 5432 | TLS over TCP (`sslmode=verify-full`) | **Yes** |
-| API | NATS | 4222 | TCP or TLS | No — without it jobs run in `local` mode |
+| API | NATS | 4222 | TCP or TLS | No — in `agent` mode sensors fall back to HTTPS claim polling; `local` mode is a separate setting |
 | API | ClickHouse | 8123 / 8443 | HTTP / HTTPS | No — analytics only |
-| Prometheus | API `/metrics` | 8080 | HTTP | No |
+| Prometheus | API `/metrics` | 8080 | HTTP or HTTPS, matching the API listener | No |
 | NATS | NATS peers | 6222 | TCP | Only in an HA cluster |
 
 ### API → outside
