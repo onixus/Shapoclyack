@@ -393,7 +393,7 @@ def test_tls10_only_server_is_found_with_the_legacy_checks_off(tmp_path: Path):
 
     assert row["accepted_protocols"] == ["TLSv1.0"]
     assert row["checks"]["protocols"]["TLSv1.0"]["status"] == "accepted"
-    assert row["checks"]["protocols"]["TLSv1.1"]["status"] == "not_performed"
+    assert row["checks"]["protocols"]["TLSv1.1"]["status"] == "not_evaluated"
     assert [issue["version"] for issue in _issues(row, "weak_protocol")] == ["TLSv1.0"]
 
 
@@ -446,14 +446,17 @@ def test_local_stack_that_cannot_offer_tls10_reports_not_performed(tmp_path: Pat
     assert _issues(row, "weak_protocol") == []
 
 
-def test_legacy_switch_off_records_the_checks_as_not_performed(tmp_path: Path):
+def test_legacy_switch_off_records_the_checks_as_not_evaluated(tmp_path: Path):
+    """Switched off by configuration is a choice, like chain_trust: off -- not
+    a check that failed, which would keep the TLS control from ever being ok."""
     cert, key = _self_signed(tmp_path, "wide")
     with _tls_server(cert, key, minimum=ssl.TLSVersion.TLSv1) as port:
         row = _probe(port, probe_legacy_protocols=False)
 
     assert row["accepted_protocols"] == ["TLSv1.3"]
     check = row["checks"]["protocols"]["TLSv1.0"]
-    assert check["status"] == "not_performed"
+    assert check["status"] == "not_evaluated"
+    assert check["reason"] == "disabled"
     assert "probe_legacy_protocols" in check["detail"]
 
 
@@ -504,21 +507,26 @@ def test_failed_second_connection_keeps_what_the_first_one_showed(tmp_path: Path
 
 def test_tls10_server_without_a_common_cipher_still_yields_a_row(tmp_path: Path):
     """A TLS 1.0 server whose only suite OpenSSL's DEFAULT list does not offer
-    answers every ClientHello with an alert. It spoke TLS: the endpoint is
-    reported, with nothing accepted and no certificate, instead of dropped.
-
-    An OpenSSL server says protocol_version here -- it treats a version none
-    of its suites can serve as disabled -- so on the wire this is a version
-    refusal, and the probe reports what the wire said."""
+    answers the pinned ClientHello with handshake_failure: it speaks TLS 1.0,
+    the probe cannot tell a refused cipher list from a refused version, and the
+    endpoint is reported (nothing accepted, no certificate) instead of dropped.
+    The server runs at security level 0 like the other legacy servers here;
+    above it OpenSSL 3 would not speak TLS 1.0 at all."""
     cert, key = _self_signed(tmp_path, "ancient")
     with _tls_server(
-        cert, key, minimum=ssl.TLSVersion.TLSv1, maximum=ssl.TLSVersion.TLSv1, ciphers="AECDH-AES128-SHA"
+        cert,
+        key,
+        minimum=ssl.TLSVersion.TLSv1,
+        maximum=ssl.TLSVersion.TLSv1,
+        ciphers="AECDH-AES128-SHA:@SECLEVEL=0",
     ) as port:
         row = _probe(port)
 
     assert row["accepted_protocols"] == []
     assert row["negotiated_protocol"] is None
-    assert row["checks"]["protocols"]["TLSv1.0"] == {"status": "rejected", "detail": "protocol_version alert"}
+    tls10 = row["checks"]["protocols"]["TLSv1.0"]
+    assert tls10["status"] == "inconclusive"
+    assert "handshake_failure" in tls10["detail"]
     assert row["checks"]["cert_fields"] == {"status": "not_performed", "detail": "no certificate received"}
     assert row["cert"] is None
 
@@ -702,9 +710,14 @@ def test_expired_leaf_of_a_trusted_ca_is_expired_not_untrusted(tmp_path: Path):
     with _tls_server(cert, key) as port:
         row = _probe(port, ca_bundle=str(bundle))
 
-    assert row["checks"]["chain_trust"]["status"] == "trusted"
+    trust = row["checks"]["chain_trust"]
+    assert trust["status"] == "trusted"
     assert _issues(row, "cert_untrusted") == []
     assert len(_issues(row, "cert_expired")) == 1
+    # The leaf's own expiry fails the time check, so whether a CA certificate
+    # is out of its window too cannot be told: said, not guessed.
+    assert trust["validity_checked"] is False
+    assert _issues(row, "cert_chain_expired") == []
 
 
 def test_expired_intermediate_is_found(tmp_path: Path):
@@ -774,10 +787,126 @@ def test_unreadable_ca_bundle_does_not_flag_every_endpoint(tmp_path: Path):
     assert "missing.pem" in trust["detail"]
 
 
-def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
-    """Not TLS at all: no row, as before, and no legacy findings invented."""
+def _expired_intermediate_chain(tmp_path: Path, *, renewed_first: bool | None) -> tuple[Path, Path, Path]:
+    """Leaf under an intermediate that expired 10 days ago; with ``renewed_first``
+    set, the server also sends the re-issued intermediate (same subject, same
+    key), after (False) or before (True) the expired one."""
+    now = datetime.now(UTC)
+    root, root_key, bundle = _rsa_ca(tmp_path)
+    inter_key = _rsa_key()
+    expired = _certificate(
+        "Probe Intermediate", inter_key, issuer=root, issuer_key=root_key, ca=True,
+        not_before=now - timedelta(days=400), not_after=now - timedelta(days=10),
+    )
+    chain: tuple[x509.Certificate, ...] = (expired,)
+    if renewed_first is not None:
+        renewed = _certificate(
+            "Probe Intermediate", inter_key, issuer=root, issuer_key=root_key, ca=True,
+            not_before=now - timedelta(days=30), not_after=now + timedelta(days=700),
+        )
+        chain = (renewed, expired) if renewed_first else (expired, renewed)
+    leaf_key = _rsa_key()
+    # Both intermediates carry the same subject and key, so either signs the leaf.
+    leaf = _certificate("app.example.test", leaf_key, issuer=expired, issuer_key=inter_key)
+    cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=chain)
+    return cert, key, bundle
+
+
+def test_stale_duplicate_intermediate_is_not_an_expired_chain(tmp_path: Path):
+    """A server that still sends the expired intermediate next to its
+    re-issued twin (same subject, same key) -- stale fullchain files do -- is
+    accepted by an ordinary client. With the expired one listed first, a
+    verification without the time check picked it; the probe now checks time
+    the way a client does first."""
+    _require_trust_store()
+    cert, key, bundle = _expired_intermediate_chain(tmp_path, renewed_first=False)
+    with _tls_server(cert, key) as port:
+        ctx = ssl.create_default_context(cafile=str(bundle))
+        ctx.check_hostname = False
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            with ctx.wrap_socket(sock):
+                pass  # an ordinary client accepts this chain
+        row = _probe(port, ca_bundle=str(bundle))
+
+    assert row["checks"]["chain_trust"] == {"status": "trusted", "store": "system+ca_bundle", "validity_checked": True}
+    assert _issues(row, "cert_chain_expired") == []
+
+
+def test_chain_validity_without_a_verified_chain_is_said_not_assumed(tmp_path: Path, monkeypatch):
+    """When this Python cannot hand back the verified chain, the expired
+    intermediate cannot be named: validity_checked is false, not true."""
+    _require_trust_store()
+    monkeypatch.setattr("scanner.pipeline.tls_probe._verified_chain", lambda tls: None)
+    cert, key, bundle = _expired_intermediate_chain(tmp_path, renewed_first=None)
+    with _tls_server(cert, key) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    trust = row["checks"]["chain_trust"]
+    assert trust["status"] == "trusted"
+    assert trust["validity_checked"] is False
+    assert "verified chain" in trust["validity_detail"]
+    assert _issues(row, "cert_chain_expired") == []
+
+
+def test_intermediate_not_yet_valid_is_found(tmp_path: Path):
+    _require_trust_store()
+    now = datetime.now(UTC)
+    root, root_key, bundle = _rsa_ca(tmp_path)
+    inter_key = _rsa_key()
+    inter = _certificate(
+        "Probe Future Intermediate", inter_key, issuer=root, issuer_key=root_key, ca=True,
+        not_before=now + timedelta(days=3), not_after=now + timedelta(days=700),
+    )
+    leaf_key = _rsa_key()
+    leaf = _certificate("app.example.test", leaf_key, issuer=inter, issuer_key=inter_key)
+    cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=(inter,))
+    with _tls_server(cert, key) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    future = _issues(row, "cert_not_yet_valid")
+    assert [(issue["depth"], issue["severity"]) for issue in future] == [(1, "medium")]
+    assert _issues(row, "cert_chain_expired") == []
+
+
+def test_server_that_hangs_up_at_once_costs_no_timeout(tmp_path: Path):
+    """A clean close before any TLS byte ends each handshake at once; it must
+    not spin until the deadline."""
     listener = socket.create_server(("127.0.0.1", 0))
     port = listener.getsockname()[1]
+    stop = threading.Event()
+
+    def hang_up() -> None:
+        listener.settimeout(0.2)
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            conn.close()
+
+    thread = threading.Thread(target=hang_up, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    try:
+        rows = probe_tls_endpoints(
+            [f"127.0.0.1:{port}/tcp"], tls_ports={port}, timeout_seconds=4.0, concurrency=1
+        )
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(timeout=2)
+    assert rows == []
+    assert time.monotonic() - started < 3.0
+
+
+def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
+    """Not TLS at all: no row, as before, no legacy findings invented -- and
+    no pinned ClientHellos sent after the first answer showed it is not TLS."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    connections = [0]
 
     def answer() -> None:
         for _ in range(4):
@@ -785,6 +914,7 @@ def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
                 conn, _ = listener.accept()
             except OSError:
                 return
+            connections[0] += 1
             with conn:
                 conn.sendall(b"HTTP/1.0 400 Bad Request\r\n\r\n")
 
@@ -798,3 +928,4 @@ def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
         listener.close()
         thread.join(timeout=2)
     assert rows == []
+    assert connections[0] == 1

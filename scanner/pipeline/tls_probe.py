@@ -12,9 +12,10 @@ by ``timeout_seconds``:
 1. **Main handshake.** Offers every version the local OpenSSL can still speak,
    so a server whose *highest* version is TLS 1.0 answers. When chain trust is
    due (see CHAIN TRUST below) it verifies the presented chain against the
-   system store plus ``ca_bundle`` -- the chain only: names are
-   ``cert_name_mismatch``'s job, and the validity window is checked separately,
-   over every certificate of the verified chain and over the leaf.
+   system store plus ``ca_bundle`` with the time check on, as an ordinary
+   client does (names are ``cert_name_mismatch``'s job). A failure *on time*
+   earns one more, untimed verification -- the connection that replaces (2) --
+   to tell "trusted, a CA certificate outside its window" from "untrusted".
 2. **Collect handshake** (``CERT_NONE``), only when the chain did not verify,
    so protocol and cipher come from a completed handshake. Should it fail,
    what the first connection already showed is kept.
@@ -55,7 +56,9 @@ client certificate (``client_cert_requested``) and a handshake the *local*
 stack aborted. A version the local OpenSSL cannot offer at all is
 ``not_performed`` (the ClientHello is built in memory first, so a crypto
 policy on the scanner host never reads as the server refusing TLS 1.0);
-SSLv2/SSLv3 are ``not_testable``. The probe offers OpenSSL's ``DEFAULT`` list
+checks switched off by ``probe_legacy_protocols`` are ``not_evaluated``
+(``reason: disabled``); SSLv2/SSLv3 are ``not_testable``. A CertificateRequest
+is visible only up to TLS 1.2 (TLS 1.3 encrypts it). The probe offers OpenSSL's ``DEFAULT`` list
 at security level 0, which on OpenSSL 3 holds no RC4/DES/NULL/EXPORT/anon
 suite: it cannot see weak ciphers, and nmap ``ssl-enum-ciphers`` remains the
 enumerator.
@@ -103,10 +106,13 @@ _ASSESSMENT_CIPHERS = "DEFAULT:@SECLEVEL=0"
 _OP_LEGACY_SERVER_CONNECT = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
 
 # X509_V_FLAG_NO_CHECK_TIME (OpenSSL >= 1.1.0, x509_vfy.h). The ssl module has
-# no name for it; SSLContext.verify_flags passes the bit to OpenSSL as is. Trust
-# is judged with time switched off, and the validity of every certificate of
-# the verified chain is then checked on its own (cert_chain_expired), so an
-# expired intermediate is neither hidden nor reported as "untrusted".
+# no name for it; SSLContext.verify_flags passes the bit to OpenSSL as is. The
+# chain is verified with the time check first, as an ordinary client does; only
+# when that fails on time (codes 9/10) is it verified again without, to tell
+# "trusted but a CA certificate is outside its window" (cert_chain_expired)
+# from "untrusted". Verifying without the time check first would let OpenSSL
+# pick an expired duplicate intermediate the server also sends, where an
+# ordinary client picks the valid one.
 _X509_V_FLAG_NO_CHECK_TIME = 0x200000
 
 # Verification failures that say nothing about trust: the validity window
@@ -115,6 +121,8 @@ _X509_V_FLAG_NO_CHECK_TIME = 0x200000
 _NOT_TRUST_VERIFY_CODES = frozenset({9, 10, 13, 14, 66, 67, 68})
 # X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT: the leaf is its own issuer.
 _VERIFY_SELF_SIGNED_LEAF = 18
+# X509_V_ERR_CERT_NOT_YET_VALID / X509_V_ERR_CERT_HAS_EXPIRED.
+_TIME_VERIFY_CODES = frozenset({9, 10})
 
 # (label, ssl.TLSVersion member, ssl.HAS_* flag, ClientHello client_version)
 _LEGACY_PROTOCOLS = (
@@ -142,6 +150,7 @@ _MSG_SERVER_HELLO = 2
 _MSG_CERTIFICATE_REQUEST = 13
 _EXT_SUPPORTED_VERSIONS = 43
 _ALERT_PROTOCOL_VERSION = 70
+_ALERT_LEVEL_FATAL = 2
 _ALERT_NAMES = {
     0: "close_notify",
     10: "unexpected_message",
@@ -339,13 +348,18 @@ class ProbeContexts:
     """
 
     collect: ssl.SSLContext
+    # ``verify`` keeps OpenSSL's time check, as an ordinary client does;
+    # ``verify_untimed`` drops it, to tell a chain that is untrusted from one
+    # that is trusted but outside its validity window.
     verify: ssl.SSLContext | None = None
+    verify_untimed: ssl.SSLContext | None = None
     trust_skip_reason: str | None = None
     trust_store: str | None = None
     chain_trust: str = "public_only"
     ca_bundle_configured: bool = False
     legacy: dict[str, ssl.SSLContext] = field(default_factory=dict)
     legacy_skipped: dict[str, str] = field(default_factory=dict)
+    legacy_disabled: frozenset[str] = frozenset()
 
 
 def _set_minimum_version(ctx: ssl.SSLContext, version: ssl.TLSVersion) -> None:
@@ -429,9 +443,9 @@ def _trust_store_gap(ctx: ssl.SSLContext) -> str | None:
 
 
 def _verify_context(
-    floor: ssl.TLSVersion, ca_bundle: str | None
+    floor: ssl.TLSVersion, ca_bundle: str | None, *, check_time: bool = True
 ) -> tuple[ssl.SSLContext | None, str | None, str | None]:
-    """The main handshake's chain-verifying context.
+    """A chain-verifying context, with or without OpenSSL's time check.
 
     Returns ``(context, None, store)`` where ``store`` names what the chain is
     judged against, or ``(None, reason, None)`` when trust cannot be judged.
@@ -443,9 +457,10 @@ def _verify_context(
     _set_minimum_version(ctx, floor)
     # Python 3.13 turns on VERIFY_X509_STRICT in create_default_context: RFC
     # 5280 pedantry (a missing AKI) is not what "the chain is untrusted" means.
-    ctx.verify_flags = (int(ctx.verify_flags) | _X509_V_FLAG_NO_CHECK_TIME) & ~int(
-        getattr(ssl, "VERIFY_X509_STRICT", 0)
-    )
+    flags = int(ctx.verify_flags) & ~int(getattr(ssl, "VERIFY_X509_STRICT", 0))
+    if not check_time:
+        flags |= _X509_V_FLAG_NO_CHECK_TIME
+    ctx.verify_flags = flags
     gap = _trust_store_gap(ctx)
     if ca_bundle:
         try:
@@ -473,6 +488,7 @@ def build_probe_contexts(
         raise ValueError(f"chain_trust must be one of {', '.join(CHAIN_TRUST_MODES)}, not {chain_trust!r}")
     legacy: dict[str, ssl.SSLContext] = {}
     legacy_skipped: dict[str, str] = {}
+    legacy_disabled: set[str] = set()
     floor = ssl.TLSVersion.TLSv1_2
     for label, version_name, has_flag, client_version in reversed(_LEGACY_PROTOCOLS):
         ctx, reason = _legacy_context(label, version_name, has_flag, client_version)
@@ -484,7 +500,8 @@ def build_probe_contexts(
         if probe_legacy_protocols:
             legacy[label] = ctx
         else:
-            legacy_skipped[label] = "tls_posture.probe_legacy_protocols is off"
+            # Switched off by configuration: by design, not a check that failed.
+            legacy_disabled.add(label)
 
     collect = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     collect.check_hostname = False
@@ -494,10 +511,13 @@ def build_probe_contexts(
     _set_minimum_version(collect, floor)
 
     verify: ssl.SSLContext | None = None
+    verify_untimed: ssl.SSLContext | None = None
     trust_skip_reason: str | None = None
     trust_store: str | None = None
     if chain_trust != "off":
         verify, trust_skip_reason, trust_store = _verify_context(floor, ca_bundle)
+        if verify is not None:
+            verify_untimed, _reason, _store = _verify_context(floor, ca_bundle, check_time=False)
         if trust_skip_reason is not None:
             LOG.warning("tls_probe: chain trust not checked: %s", trust_skip_reason)
         elif trust_store == "ca_bundle":
@@ -507,12 +527,14 @@ def build_probe_contexts(
     return ProbeContexts(
         collect=collect,
         verify=verify,
+        verify_untimed=verify_untimed,
         trust_skip_reason=trust_skip_reason,
         trust_store=trust_store,
         chain_trust=chain_trust,
         ca_bundle_configured=bool(ca_bundle),
         legacy=dict(sorted(legacy.items())),
         legacy_skipped=legacy_skipped,
+        legacy_disabled=frozenset(legacy_disabled),
     )
 
 
@@ -536,6 +558,7 @@ class _ServerRecords:
         self.server_hello_version: str | None = None
         self.certificate_request = False
         self.alert: int | None = None
+        self._alert_fatal = False
         self._encrypted = False
         self._buffer = bytearray()
         self._handshake = bytearray()
@@ -559,8 +582,13 @@ class _ServerRecords:
                 self._encrypted = True
             elif self._encrypted:
                 continue
-            elif content_type == _RECORD_ALERT and len(body) >= 2 and self.alert is None:
-                self.alert = body[1]
+            elif content_type == _RECORD_ALERT and len(body) >= 2:
+                # The first fatal alert is the server's verdict; a warning
+                # before it (unrecognized_name, say) is not.
+                fatal = body[0] == _ALERT_LEVEL_FATAL
+                if self.alert is None or (fatal and not self._alert_fatal):
+                    self.alert = body[1]
+                    self._alert_fatal = fatal
             elif content_type == _RECORD_HANDSHAKE:
                 self._handshake += body
                 self._read_messages()
@@ -847,16 +875,26 @@ def _trust_skip(contexts: ProbeContexts, peer: str, peer_public: bool) -> dict[s
     return None
 
 
-def _chain_validity(chain: list[dict[str, Any]] | None, now: datetime) -> tuple[list[dict[str, Any]], str | None]:
-    """Validity-window issues of the CA certificates of a verified chain.
+def _chain_validity(
+    chain: list[dict[str, Any]] | None, now: datetime, time_failure: str
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Which CA certificate of a chain failed OpenSSL's time check.
 
-    Trust is judged with OpenSSL's time check off; a client that keeps it on
-    rejects a chain whose intermediate (or root) is outside its window, so that
-    is checked here, certificate by certificate. Returns the issues and, when
-    the chain could not be read, why not.
+    Called only when verification with the time check failed on time and the
+    untimed one then verified ``chain``. Returns the issues and, when the
+    culprit cannot be told, why not: with the leaf itself outside its window
+    (``cert_expired`` / ``cert_not_yet_valid``) the time failure may be the
+    leaf's alone.
     """
     if chain is None:
         return [], "this Python exposes no verified chain"
+    if chain:
+        leaf = _cert_dict_from_peercert(chain[0])
+        leaf_after, leaf_before = leaf.get("not_after_dt"), leaf.get("not_before_dt")
+        if (isinstance(leaf_after, datetime) and leaf_after < now) or (
+            isinstance(leaf_before, datetime) and leaf_before > now
+        ):
+            return [], "the leaf is outside its validity window, which hides whether a CA certificate is too"
     issues: list[dict[str, Any]] = []
     for depth, info in enumerate(chain[1:], start=1):
         cert = _cert_dict_from_peercert(info)
@@ -883,6 +921,16 @@ def _chain_validity(chain: list[dict[str, Any]] | None, now: datetime) -> tuple[
                     "detail": f"{name} in the verified chain is valid from {cert.get('not_before')}",
                 }
             )
+    if not issues:
+        # The time check failed on a CA certificate the untimed path did not
+        # pick; the failure itself is the evidence.
+        issues.append(
+            {
+                "kind": "cert_chain_expired",
+                "severity": "high",
+                "detail": f"a CA certificate of the chain failed the time check: {time_failure}",
+            }
+        )
     return issues, None
 
 
@@ -1008,10 +1056,37 @@ def _probe_one(
         # choke on a modern one (version intolerance) may still take one
         # pinned to TLS 1.0, so the legacy checks run before giving up.
 
+    # The main handshake verified with the time check, as an ordinary client
+    # does. Only a failure *on time* earns a second, untimed verification: it
+    # tells "trusted, but something is outside its window" from "untrusted".
+    retry: _Attempt | None = None
+    time_failure: str | None = None
     if skip is not None:
         trust = skip
     elif main.completed:
-        trust = {"status": "trusted", "store": contexts.trust_store}
+        # The whole chain, leaf included, passed OpenSSL's time check.
+        trust = {"status": "trusted", "store": contexts.trust_store, "validity_checked": True}
+    elif (
+        isinstance(main.error, ssl.SSLCertVerificationError)
+        and getattr(main.error, "verify_code", None) in _TIME_VERIFY_CODES
+        and contexts.verify_untimed is not None
+    ):
+        time_failure = getattr(main.error, "verify_message", None) or str(main.error)
+        try:
+            with _connect(host, port, timeout) as sock:
+                retry = _handshake(sock, contexts.verify_untimed, server_hostname, timeout)
+        except _Unreachable as exc:
+            LOG.debug("tls_probe %s:%s untimed verification unreachable: %s", host, port, exc)
+        if retry is not None and retry.completed:
+            trust = {"status": "trusted", "store": contexts.trust_store, "time_check": time_failure}
+        elif retry is not None and isinstance(retry.error, ssl.SSLCertVerificationError):
+            trust = _trust_from_verify_error(retry.error)
+            trust["store"] = contexts.trust_store
+        else:
+            trust = {
+                "status": "inconclusive",
+                "detail": f"time check failed ({time_failure}) and the untimed verification did not complete",
+            }
     elif isinstance(main.error, ssl.SSLCertVerificationError):
         trust = _trust_from_verify_error(main.error)
         trust["store"] = contexts.trust_store
@@ -1019,7 +1094,7 @@ def _probe_one(
         trust = {"status": "inconclusive", "detail": f"no handshake completed: {_describe(main.error)}"}
 
     collect: _Attempt | None = None
-    if isinstance(main.error, ssl.SSLCertVerificationError):
+    if isinstance(main.error, ssl.SSLCertVerificationError) and time_failure is None:
         # The verifying handshake stopped at the certificate; a second one
         # without verification shows protocol and cipher of a completed
         # handshake. If it fails, the first one's ServerHello and certificate
@@ -1030,7 +1105,7 @@ def _probe_one(
         except _Unreachable as exc:
             LOG.debug("tls_probe %s:%s collect handshake unreachable: %s", host, port, exc)
 
-    attempts: list[_Attempt] = [a for a in (collect, main) if a is not None]
+    attempts: list[_Attempt] = [a for a in (collect, retry, main) if a is not None]
     completed: dict[str, _Attempt] = {}
     for attempt in attempts:
         if attempt.completed and attempt.version:
@@ -1046,6 +1121,13 @@ def _probe_one(
     for label, _version_name, _has_flag, _client_version in _LEGACY_PROTOCOLS:
         if label in completed:
             protocols[label] = {"status": "accepted", "detail": "negotiated by the main handshake"}
+            continue
+        if label in contexts.legacy_disabled:
+            protocols[label] = {
+                "status": "not_evaluated",
+                "reason": "disabled",
+                "detail": "tls_posture.probe_legacy_protocols is off",
+            }
             continue
         ctx = contexts.legacy.get(label)
         if ctx is None:
@@ -1070,7 +1152,7 @@ def _probe_one(
     accepted = sorted(completed, key=lambda v: _PROTOCOL_ORDER.index(v) if v in _PROTOCOL_ORDER else 99)
     # The best a client got: the main handshake, else the highest version a
     # pinned one completed (a server that refused the modern ClientHello).
-    base = next((a for a in (collect, main) if a is not None and a.completed), None)
+    base = next((a for a in (collect, retry, main) if a is not None and a.completed), None)
     if base is None and accepted:
         base = completed[accepted[-1]]
     cert_source = base or next((a for a in attempts if a.leaf or a.der), None)
@@ -1081,11 +1163,12 @@ def _probe_one(
         # The chain verified to an anchor the operator trusts (the system store
         # or ca_bundle): a matching subject and issuer is not "nobody vouches".
         issues = [issue for issue in issues if issue["kind"] != "self_signed"]
-        validity_issues, validity_gap = _chain_validity(main.verified_chain, now)
-        issues.extend(validity_issues)
-        trust["validity_checked"] = validity_gap is None
-        if validity_gap is not None:
-            trust["validity_detail"] = validity_gap
+        if time_failure is not None and retry is not None:
+            validity_issues, validity_gap = _chain_validity(retry.verified_chain, now, time_failure)
+            issues.extend(validity_issues)
+            trust["validity_checked"] = validity_gap is None
+            if validity_gap is not None:
+                trust["validity_detail"] = validity_gap
     elif trust["status"] == "untrusted" and trust.get("verify_code") == _VERIFY_SELF_SIGNED_LEAF:
         # Verification established what the heuristic guesses: one finding,
         # and a certain one, rather than self_signed plus cert_untrusted.

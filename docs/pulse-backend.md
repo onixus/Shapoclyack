@@ -345,9 +345,14 @@ disappearing from `tls_posture.json`.
 1. **Main handshake.** It offers every version the local OpenSSL can speak, so
    a server whose highest version is TLS 1.0 is found even with the legacy
    checks off. When chain trust is due (below) it verifies the presented chain
-   against the system trust store plus `ca_bundle` — the chain only: names are
-   `cert_name_mismatch`'s job, and the validity window is checked separately,
-   over the leaf and over every CA certificate of the verified chain.
+   against the system trust store plus `ca_bundle`, with OpenSSL's time check
+   on, as an ordinary client does. Names are `cert_name_mismatch`'s job. Only
+   when that verification fails *on time* is the chain verified again with the
+   time check off: if it then verifies, it is trusted and the CA certificate
+   outside its window is the finding (`cert_chain_expired`), not
+   `cert_untrusted`. Checking time first matters: a server that still sends an
+   expired intermediate next to its re-issued twin is accepted by clients,
+   which pick the valid one, and is not flagged.
 2. **Collect handshake** without verification, only when the chain did not
    verify, so protocol and cipher come from a completed handshake. If it
    fails, what the first connection showed (its ServerHello, the certificate,
@@ -378,7 +383,7 @@ Findings, in the same shapes as the nmap path:
 | Finding | Severity | When |
 |---------|----------|------|
 | `weak_protocol` | high | a TLS 1.0 / 1.1 handshake completed (`version` says which) |
-| `cert_chain_expired` | high | a CA certificate of the verified chain is past its not-after (or before its not-before: `cert_not_yet_valid`); a client that checks time rejects the chain. `depth` and `subject` say which |
+| `cert_chain_expired` | high | the chain failed the time check on a CA certificate, and verifies without it: a client that checks time rejects it. `depth` and `subject` say which (a CA certificate before its not-before is `cert_not_yet_valid` with a `depth`). When the leaf itself is outside its window the CA certificates cannot be told apart from it: `validity_checked: false` |
 | `cert_not_yet_valid` | medium | the leaf's not-before is in the future (also from nmap's `ssl-cert` and Pulse) |
 | `cert_untrusted` | medium | the chain does not verify to the system store or `ca_bundle`; `detail` is OpenSSL's reason (`unable to get local issuer certificate`, `self-signed certificate in certificate chain`) |
 | `self_signed` | medium | the leaf is its own issuer: certain (`heuristic: false`) when verification said so, then **instead of** `cert_untrusted`; otherwise the subject/issuer heuristic, dropped when the chain verifies |
@@ -400,11 +405,12 @@ not run never reads as a clean result:
     connection limiter and a middlebox look the same), a timeout, a handshake
     the local stack aborted, and a server that chose the version and then
     asked for a client certificate (`client_cert_requested: true`, also on the
-    row);
+    row; visible up to TLS 1.2 only — in TLS 1.3 the CertificateRequest is
+    encrypted);
   * `not_performed` — the local OpenSSL cannot offer that version (checked by
     building the ClientHello in memory first, so a crypto policy on the
-    scanner host is never reported as "server refuses TLS 1.0"), or
-    `probe_legacy_protocols` is off;
+    scanner host is never reported as "server refuses TLS 1.0");
+  * `not_evaluated` with `reason: disabled` — `probe_legacy_protocols` is off;
   * `not_testable` — SSLv2 and SSLv3, always: modern OpenSSL cannot send them;
     nmap `ssl-enum-ciphers` can.
 * `checks.chain_trust` — `trusted` (with `store` and `validity_checked`),
@@ -419,19 +425,25 @@ not run never reads as a clean result:
 
 The org-profile TLS control reads these: an endpoint with a check that is
 `not_performed` or `inconclusive` (or a trusted chain whose validity could
-not be read) is not counted as checked, and with no finding the control says
-`not_checked` with the gaps listed, instead of "all endpoints passed".
-`not_evaluated` and `not_testable` are by design and do not count against it.
+not be read) is not counted in `coverage.checked`, and the control's `why`
+lists the gaps. With no finding it stays `ok` as long as at least one endpoint
+was fully checked — `coverage` shows how many of how many, as the credential
+leaks control does — and is `not_checked` only when none was. `not_evaluated`
+(chain trust skipped by policy, legacy checks switched off) and
+`not_testable` are by design and do not count against it.
 
 Limits worth knowing:
 
-* `rejected` is what the server said, and an OpenSSL server says
-  `protocol_version` also when none of *its* suites for that version is in the
-  probe's offer — so a TLS 1.0 server with only RC4 or export suites reads as
-  rejected. The probe offers OpenSSL's `DEFAULT` list at security level 0,
-  which on OpenSSL 3 holds no RC4/DES/NULL/EXPORT/anon suite: it cannot see
-  weak ciphers at all, and `weak_cipher_name` comes from nmap
-  `ssl-enum-ciphers` only.
+* A TLS 1.0 server whose suites are all outside the probe's offer (RC4,
+  export, anonymous) answers `handshake_failure`, which reads as
+  `inconclusive`: the probe cannot tell that from a refused version. The probe
+  offers OpenSSL's `DEFAULT` list at security level 0, which on OpenSSL 3 holds
+  no RC4/DES/NULL/EXPORT/anon suite: it cannot see weak ciphers at all, and
+  `weak_cipher_name` comes from nmap `ssl-enum-ciphers` only.
+* Where chain trust is `not_evaluated` (an internal address under
+  `public_only`), the chain's validity is not judged either: an expired
+  intermediate on an internal endpoint is visible only with `ca_bundle` or
+  `chain_trust: always`.
 * Names and dates of the presented certificates are read with the stdlib.
   Key size and signature algorithm need the `cryptography` package, which
   both images install; without it `checks.cert_strength` is `not_performed`.

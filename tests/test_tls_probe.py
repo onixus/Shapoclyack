@@ -307,6 +307,29 @@ def test_answers_that_do_not_name_a_version_are_inconclusive():
         assert _legacy_status(attempt, "TLSv1.0")["status"] == "inconclusive", name
 
 
+def _warning(description: int) -> bytes:
+    return _record(21, bytes([1, description]))
+
+
+def test_the_fatal_alert_is_the_servers_verdict():
+    """A warning (unrecognized_name for an SNI it does not know) may come
+    before the fatal alert that refuses the version, and a close_notify may
+    follow it; neither is the answer."""
+    for stream in (_warning(112) + _alert(70), _alert(70) + _warning(0)):
+        attempt = _attempt(stream, _ssl_error("TLSV1_ALERT_PROTOCOL_VERSION"))
+        assert _legacy_status(attempt, "TLSv1.0") == {"status": "rejected", "detail": "protocol_version alert"}
+
+
+def test_openssl_version_reason_decides_when_the_records_named_no_version():
+    """The server answered in TLS records that carried neither a ServerHello
+    nor an alert; OpenSSL's own WRONG_VERSION_NUMBER is then the only signal,
+    and it is version-specific."""
+    attempt = _attempt(_record(23, bytes(16)), _ssl_error("WRONG_VERSION_NUMBER"))
+    assert _legacy_status(attempt, "TLSv1.0") == {"status": "rejected", "detail": "WRONG_VERSION_NUMBER"}
+    reset = _attempt(_record(23, bytes(16)), ConnectionResetError(54, "Connection reset by peer"))
+    assert _legacy_status(reset, "TLSv1.0")["status"] == "inconclusive"
+
+
 def test_client_certificate_request_is_recorded_not_read_as_a_refusal():
     attempt = _attempt(
         _server_hello(0x0301) + _record(22, _handshake_message(13, b"\x01\x01\x00\x00")) + _alert(40),
