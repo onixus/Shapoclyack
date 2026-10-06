@@ -503,7 +503,7 @@ describe("A verification that found the port closed (#451)", () => {
           from_state: "VERIFYING",
           to_state: "CLOSED",
           actor: "system:verification",
-          note: "Verification run run-4 found the host up and port 443 closed; the service is out of reach, not shown fixed",
+          note: "Verification run run-4: port 443 not reachable from group:dmz (connect refused on every attempt); closed, not machine-verified",
           detail: { closure_reason: "endpoint_unreachable", machine_verified: false },
         },
       ],
@@ -519,7 +519,9 @@ describe("A verification that found the port closed (#451)", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("Host up, port closed")).toBeInTheDocument();
-    expect(screen.getAllByText("Port closed on a live host").length).toBeGreaterThanOrEqual(1);
+    // A refusal is "not reachable from there", never a fix: neither label
+    // may read as one.
+    expect(await screen.findByText("Not reachable from the scanner")).toBeInTheDocument();
+    expect(screen.getAllByText("Not reachable from the scanner (not verified)").length).toBeGreaterThanOrEqual(1);
   });
 });

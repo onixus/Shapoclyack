@@ -2954,8 +2954,8 @@ export type TrackedVulnerability = {
   verification_job_id?: string | null;
   last_verified_at?: string | null;
   /** verified_remediated | patched | manual | ticket_resolved | false_positive |
-   * endpoint_unreachable (host up, port closed; machine-verified only for a
-   * Pulse exposure). */
+   * endpoint_unreachable (connect refused on every attempt from the vantage
+   * that observed it: not reachable from there, never machine-verified). */
   closure_reason?: string | null;
   /** False-positive verdict, an expiring attribute of the finding rather than a
    * state of its own. `fp_suppressed` is the server's derived answer to "does a
