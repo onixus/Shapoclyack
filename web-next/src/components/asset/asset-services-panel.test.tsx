@@ -171,6 +171,6 @@ describe("AssetServicesPanel", () => {
     renderPanel();
 
     expect(await screen.findByText("lookalike")).toBeInTheDocument();
-    expect(screen.getByText(/The banner names a fork that answers like this product/)).toBeInTheDocument();
+    expect(screen.getByText(/The scan names an engine that answers like this product/)).toBeInTheDocument();
   });
 });

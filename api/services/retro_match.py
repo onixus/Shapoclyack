@@ -328,9 +328,23 @@ _NOT_MATCHED_CPE = frozenset({"a:apple:cups", "a:jenkins:jenkins"})
 #: tell — nmap stores no INFO text for Redis, so nmap's "Redis key-value store"
 #: row catches a fork only when a hybrid run kept Pulse's raw INFO reply as
 #: the banner. A Valkey nmap alone saw is still "Redis 7.2.4".
+#: KeyDB's marker is in the pattern for completeness, but no prober is known to
+#: keep it: its INFO names it on the ``executable:`` line, past the eight lines
+#: (240 characters) Pulse keeps of a reply.
+#:
+#: MySQL: TiDB (``5.7.25-TiDB-v7.1.5``) and Vitess (``8.0.30-Vitess``) answer
+#: MySQL's handshake with MySQL's version and their own name appended; nmap's
+#: generic MySQL line copies both into the version and the CPE. Pulse cuts the
+#: version to ``x.y.z`` and keeps no handshake, so through Pulse they are
+#: MySQL. Every other suffix is MySQL's own (``-log``, ``-debug``,
+#: ``-commercial``, ``-cll-lve``, ``-cluster``, package revisions).
+_REDIS_FORKS = re.compile(r"server_name:valkey|valkey_version|dragonfly_version|keydb", re.IGNORECASE)
+_MYSQL_ENGINES = re.compile(r"\d-(?:tidb|vitess)\b", re.IGNORECASE)
 _LOOKALIKES: dict[str, re.Pattern[str]] = {
-    key: re.compile(r"server_name:valkey|valkey_version|dragonfly_version|keydb", re.IGNORECASE)
-    for key in ("a:redis:redis", "a:redislabs:redis")
+    "a:redis:redis": _REDIS_FORKS,
+    "a:redislabs:redis": _REDIS_FORKS,
+    "a:oracle:mysql": _MYSQL_ENGINES,
+    "a:mysql:mysql": _MYSQL_ENGINES,
 }
 
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
@@ -475,19 +489,17 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:php:php": ("x-powered-by: php",),
 }
 
-#: MySQL's version string: the upstream version, then only what MySQL builds
-#: append — a package revision (Ubuntu's ``-0ubuntu0.18.04.1``, Debian's
-#: ``-0+deb8u1``, Percona's ``-28``), ``-log``, ``-debug``, Oracle's
-#: ``-community``. Not any suffix: engines that speak MySQL's protocol borrow
-#: its version and append their own name (TiDB ``5.7.25-TiDB-v7.1.5``, Vitess
-#: ``8.0.30-Vitess``), and MySQL's CVEs are not theirs. The ``5.5.5-``
-#: lookahead is belt and braces: MariaDB's compatibility prefix would pass the
-#: revision rule as MySQL 5.5.5, and no prober writes it under "MySQL" today
-#: only because nmap's MariaDB line precedes its MySQL one and Pulse cuts the
-#: version to ``x.y.z``.
-_MYSQL_SHAPE = re.compile(
-    r"(?!5\.5\.5-\d)(\d+\.\d+\.\d+[a-z]?)(?:-(?:log|debug|community(?:-log)?|\d[\w.+~]*(?:-log)?))?"
-)
+#: MySQL's version string: the upstream version, then whatever the build
+#: appended — a package revision (Ubuntu's ``-0ubuntu0.18.04.1``, Percona's
+#: ``-28``), ``-log``, ``-debug``, Oracle's ``-commercial`` and
+#: ``-enterprise-commercial-advanced``, CloudLinux's ``-cll-lve``,
+#: ``-cluster``. An allow-list of those dropped real Oracle builds; the engines
+#: that borrow MySQL's version and append their name (TiDB, Vitess) are
+#: refused by name instead (:data:`_LOOKALIKES`). The ``5.5.5-`` lookahead is
+#: belt and braces: MariaDB's compatibility prefix would read as MySQL 5.5.5,
+#: and no prober writes it under "MySQL" today only because nmap's MariaDB line
+#: precedes its MySQL one and Pulse cuts the version to ``x.y.z``.
+_MYSQL_SHAPE = re.compile(r"(?!5\.5\.5-\d)(\d+\.\d+\.\d+[a-z]?)(?:-\S*)?")
 #: Jetty 7-9 date their releases (``9.4.44.v20210927``); NVD's bounds are the
 #: version alone. Pre-releases (``9.4.0.RC1``, ``.M1``, ``-SNAPSHOT``) fit no shape.
 _JETTY_SHAPE = re.compile(r"(\d+\.\d+\.\d+)(?:\.v\d{8}(?:\d{6})?)?", re.IGNORECASE)

@@ -678,9 +678,9 @@ All notable changes to Shapoclyack are documented in this file.
   8.1.10 is "Redis 7.2.4" to it). A listener whose banner names a Redis fork
   (`server_name:valkey`, `valkey_version`, `dragonfly_version`, `keydb`) is a
   new `match_status`, `lookalike`, shown on the asset's Services section.
-  MySQL's shape accepts only MySQL's own suffixes (revisions, `-log`,
-  `-community`): TiDB's `5.7.25-TiDB-v7.1.5` and Vitess's `8.0.30-Vitess` are
-  not MySQL. Products whose
+  A MySQL version naming TiDB (`5.7.25-TiDB-v7.1.5`) or Vitess
+  (`8.0.30-Vitess`) is `lookalike` too; every other suffix is MySQL's own
+  (`-commercial`, `-cll-lve`, `-cluster`, `-debug`, `-log`, revisions). Products whose
   version string carries more than the version are cut to it by a per-product
   shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
   Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and

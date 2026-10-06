@@ -945,7 +945,7 @@ export const en = {
   "services.reason.no_version":
     "The scan recorded no version, so no range could be compared — which is not the same as clean.",
   "services.reason.lookalike":
-    "The banner names a fork that answers like this product but is versioned on its own (Valkey, Dragonfly, KeyDB as Redis), so the product's CVEs were not compared — which is not the same as clean.",
+    "The scan names an engine that answers like this product but is versioned on its own (Valkey or Dragonfly as Redis, TiDB or Vitess as MySQL), so the product's CVEs were not compared — which is not the same as clean.",
   "services.reason.too_old":
     "Not observed recently enough to re-check; the next scan that sees it brings it back.",
   "services.reason.no_dataset":
@@ -2777,7 +2777,7 @@ export const ru: Record<MsgKey, string> = {
   "services.reason.no_version":
     "Скан не записал версию, сравнивать с диапазоном нечего — это не то же самое, что «чисто».",
   "services.reason.lookalike":
-    "Баннер называет форк, который отвечает как этот продукт, но версионируется сам по себе (Valkey, Dragonfly, KeyDB вместо Redis), поэтому CVE продукта не сравнивались — это не то же самое, что «чисто».",
+    "Скан называет движок, который отвечает как этот продукт, но версионируется сам по себе (Valkey или Dragonfly вместо Redis, TiDB или Vitess вместо MySQL), поэтому CVE продукта не сравнивались — это не то же самое, что «чисто».",
   "services.reason.too_old":
     "Сервис давно не наблюдался и не перепроверяется; следующий скан, который его увидит, вернёт его в работу.",
   "services.reason.no_dataset":

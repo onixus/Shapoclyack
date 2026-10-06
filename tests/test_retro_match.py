@@ -987,25 +987,6 @@ def test_lookalikes_of_the_new_products_are_not_matched(fingerprint) -> None:
             "a:oracle:mysql",
             CpeRange("CVE-2023-22084", start_including="5.5.0", end_including="5.7.43"),
         ),
-        # Engines that speak MySQL's protocol and borrow its version: TiDB
-        # v7.1.5's real handshake, through nmap's generic MySQL line.
-        (
-            rm.Fingerprint(
-                product="MySQL",
-                version="5.7.25-TiDB-v7.1.5",
-                cpe=("cpe:/a:mysql:mysql:5.7.25-TiDB-v7.1.5",),
-                service="mysql",
-            ),
-            "a:oracle:mysql",
-            CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43"),
-        ),
-        (
-            rm.Fingerprint(
-                product="MySQL", version="8.0.30-Vitess", cpe=("cpe:/a:mysql:mysql:8.0.30-Vitess",), service="mysql"
-            ),
-            "a:oracle:mysql",
-            CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35"),
-        ),
         # Pulse's MySQL rule takes the first x.y.z of a port-3306 reply; in a
         # refusal that is the scanner's own address.
         (
@@ -1117,11 +1098,41 @@ def _nmap_redis(banner: str) -> rm.Fingerprint:
         # nothing; a hybrid run's merge prefers Pulse's raw banner.
         "$5764 | # Server | redis_version:7.2.4 | server_name:valkey | valkey_version:8.1.10 | redis_git_sha1:00000000",
         "$4310 | # Server | redis_version:7.4.0 | dragonfly_version:df-v1.21.2 | redis_mode:standalone",
-        "$3990 | # Server | redis_version:6.3.4 | redis_git_sha1:00000000 | executable:/usr/local/bin/keydb-server",
     ],
 )
 def test_a_redis_fork_the_banner_names_is_a_lookalike_not_redis(banner) -> None:
     outcome = rm.match(_nmap_redis(banner), _one("a:redis:redis", *REDIS_RANGE), lookup=lambda _d: None)
+    assert outcome.matches == ()
+    assert outcome.reason == "lookalike"
+
+
+def test_a_fork_is_named_a_lookalike_even_without_a_version() -> None:
+    """What the listener is outranks what it failed to say: a Valkey whose
+    version nobody recorded is a lookalike, not "no version"."""
+    fingerprint = rm.Fingerprint(
+        product="Redis key-value store",
+        banner="$5764 | # Server | redis_version:7.2.4 | server_name:valkey | valkey_version:8.1.10",
+        service="redis",
+    )
+    outcome = rm.match(fingerprint, _one("a:redis:redis", *REDIS_RANGE), lookup=lambda _d: None)
+    assert outcome.reason == "lookalike"
+
+
+@pytest.mark.parametrize(
+    ("version", "statement"),
+    [
+        # TiDB v7.1.5's real handshake, and Vitess's, through nmap's generic
+        # MySQL line: engines that borrow MySQL's version and append their name.
+        ("5.7.25-TiDB-v7.1.5", CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43")),
+        ("8.0.30-Vitess", CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35")),
+    ],
+)
+def test_an_engine_that_borrows_mysqls_version_is_a_lookalike(version, statement) -> None:
+    outcome = rm.match(
+        rm.Fingerprint(product="MySQL", version=version, cpe=(f"cpe:/a:mysql:mysql:{version}",), service="mysql"),
+        _one("a:oracle:mysql", statement),
+        lookup=lambda _d: None,
+    )
     assert outcome.matches == ()
     assert outcome.reason == "lookalike"
 
@@ -1142,6 +1153,14 @@ def test_redis_that_says_it_is_redis_is_still_matched() -> None:
         ("8.0.35-27", "8.0.35"),
         ("5.7.44-48-log", "5.7.44"),
         ("5.6.51-community", "5.6.51"),
+        # Oracle's own commercial and cluster builds, CloudLinux's (cPanel's
+        # MySQL, the most exposed there is) and debug builds.
+        ("8.0.33-commercial", "8.0.33"),
+        ("5.7.42-enterprise-commercial-advanced-log", "5.7.42"),
+        ("5.7.42-cll-lve", "5.7.42"),
+        ("8.0.35-cluster", "8.0.35"),
+        ("8.0.33-25-debug", "8.0.33"),
+        ("8.0.36-0ubuntu0.22.04.1-debug", "8.0.36"),
         ("8.0.36", "8.0.36"),
     ],
 )
