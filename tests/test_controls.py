@@ -215,7 +215,7 @@ def test_tls_severity_read_from_nested_issues(tmp_path: Path):
     assert tls["status"] == "fail"
     assert tls["findings_by_severity"]["critical"] == 1
     assert tls["findings_by_severity"]["medium"] == 0
-    assert tls["coverage"] == {"checked": 2, "total": 2}
+    assert tls["coverage"] == {"checked": 2, "total": 2, "partial": False}
 
 
 def _tls_control(tmp_path: Path, issues: list[dict]) -> dict:
@@ -289,7 +289,7 @@ def test_tls_probe_row_with_every_check_run_passes(tmp_path: Path):
     modern OpenSSL can test are by design, not gaps."""
     tls = _tls_control_for_checks(tmp_path, _probe_checks())
     assert tls["status"] == "ok"
-    assert tls["coverage"] == {"checked": 1, "total": 1}
+    assert tls["coverage"] == {"checked": 1, "total": 1, "partial": False}
 
 
 def test_tls_check_that_did_not_run_is_not_a_pass(tmp_path: Path):
@@ -300,7 +300,7 @@ def test_tls_check_that_did_not_run_is_not_a_pass(tmp_path: Path):
         _probe_checks(cert_strength={"status": "not_performed", "detail": "cryptography package not installed"}),
     )
     assert tls["status"] == "not_checked"
-    assert tls["coverage"] == {"checked": 0, "total": 1}
+    assert tls["coverage"] == {"checked": 0, "total": 1, "partial": False}
     assert "cert_strength not_performed" in tls["why"]
     assert "passed" not in tls["why"]
 
@@ -334,9 +334,56 @@ def test_one_unresolvable_endpoint_does_not_unrate_the_tls_control(tmp_path: Pat
     summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
     tls = {c["control"]: c for c in summary["controls"]}["tls_certificates"]
     assert tls["status"] == "ok"
-    assert tls["coverage"] == {"checked": 99, "total": 100}
+    assert tls["coverage"] == {"checked": 99, "total": 100, "partial": True}
+    assert tls["why"].startswith("partial coverage (99 of 100")
     assert "TLSv1.0 inconclusive" in tls["why"]
     assert tls["risk_level"] != "unassessed"
+
+
+def test_partial_tls_coverage_makes_the_overall_verdict_partial(tmp_path: Path, monkeypatch):
+    """Every other control ok: one TLS control that passed over 1 of 51
+    endpoints must not read as a clean matrix."""
+    from scanner.pipeline import controls
+
+    clean = {
+        "status": "ok",
+        "coverage": {"checked": 1, "total": 1},
+        "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "top_findings": [],
+        "evidence": [],
+        "why": "ok",
+    }
+    for cid in list(controls._EXTRACTORS):  # noqa: SLF001
+        if cid != "tls_certificates":
+            monkeypatch.setitem(controls._EXTRACTORS, cid, lambda output_dir: dict(clean))  # noqa: SLF001
+    rows = [{"host": "10.0.0.1", "port": "443", "issues": [], "checks": _probe_checks()}]
+    rows += [
+        {
+            "host": f"10.0.1.{i}",
+            "port": "443",
+            "issues": [],
+            "checks": _probe_checks(protocols={"TLSv1.0": {"status": "inconclusive"}}),
+        }
+        for i in range(50)
+    ]
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({"targets_considered": 51, "checked_count": 51, "findings": rows, "skipped_reason": None}),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    tls = {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+    assert tls["status"] == "ok"
+    assert tls["coverage"]["partial"] is True
+    assert tls["why"].startswith("partial coverage (1 of 51")
+    assert summary["overall_verdict"] == "partial"
+
+    # The same matrix with the TLS control fully covered reads ok.
+    rows = rows[:1]
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({"targets_considered": 1, "checked_count": 1, "findings": rows, "skipped_reason": None}),
+        encoding="utf-8",
+    )
+    assert evaluate_controls(tmp_path, ControlsConfig(enabled=True))["overall_verdict"] == "ok"
 
 
 def test_legacy_checks_switched_off_are_not_a_gap(tmp_path: Path):
@@ -347,7 +394,7 @@ def test_legacy_checks_switched_off_are_not_a_gap(tmp_path: Path):
         tmp_path, _probe_checks(protocols={"TLSv1.0": dict(disabled), "TLSv1.1": dict(disabled)})
     )
     assert tls["status"] == "ok"
-    assert tls["coverage"] == {"checked": 1, "total": 1}
+    assert tls["coverage"] == {"checked": 1, "total": 1, "partial": False}
 
 
 def test_tls_gaps_that_count(tmp_path: Path):

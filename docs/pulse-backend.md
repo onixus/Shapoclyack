@@ -435,8 +435,10 @@ The org-profile TLS control reads these: an endpoint with a check that is
 `not_performed` or `inconclusive` (or a trusted chain whose validity could
 not be read) is not counted in `coverage.checked`, and the control's `why`
 lists the gaps. With no finding it stays `ok` as long as at least one endpoint
-was fully checked — `coverage` shows how many of how many, as the credential
-leaks control does — and is `not_checked` only when none was. `not_evaluated`
+was fully checked, as the credential leaks control does, but the partial
+share is explicit: `coverage.partial: true`, a `why` that starts with
+"partial coverage (N of M)", and an overall org-profile verdict of `partial`
+instead of `ok`. It is `not_checked` only when no endpoint was fully checked. `not_evaluated`
 (chain trust skipped by policy, legacy checks switched off) and
 `not_testable` are by design and do not count against it.
 

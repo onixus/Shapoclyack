@@ -37,8 +37,11 @@ All notable changes to Shapoclyack are documented in this file.
   carries `checks.{protocols,chain_trust,cert_fields,cert_strength}`, and the
   org-profile TLS control reads them: an endpoint with a check that did not
   run or could not decide is left out of `coverage.checked` and named in
-  `why`, and the control is `not_checked` only when no endpoint was fully
-  checked; checks switched off by configuration (`chain_trust`, and
+  `why`. With part of the endpoints fully checked and no finding the control
+  stays `ok` but says so — `coverage.partial: true`, a `why` that starts with
+  "partial coverage (N of M)" (new optional `partial` field in the controls
+  API's `coverage`) — and the overall verdict reads `partial`; it is
+  `not_checked` only when no endpoint was fully checked. Checks switched off by configuration (`chain_trust`, and
   `probe_legacy_protocols: false`, recorded as `not_evaluated` / `disabled`)
   are not gaps. Pulse `tls[]` rows carry no key or signature fields, so that path
   has no strength findings. See

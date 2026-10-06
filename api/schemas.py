@@ -2895,6 +2895,10 @@ class ControlFinding(BaseModel):
 class ControlCoverage(BaseModel):
     checked: int = 0
     total: int = 0
+    # True when the control is "ok" over part of what it covers (the TLS
+    # control: some endpoints only partly checked); the overall verdict then
+    # reads "partial".
+    partial: bool = False
 
 
 class ControlItem(BaseModel):

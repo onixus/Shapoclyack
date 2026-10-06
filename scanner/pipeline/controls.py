@@ -324,12 +324,16 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings" + gap_note
     elif checked_targets > 0 and partly_checked:
-        # The credential_leaks pattern: the fully checked endpoints passed,
-        # coverage says how many of how many, and the rest are named. One
-        # endpoint a middlebox resets must not take the control out of the risk
-        # matrix for the other 99.
+        # The credential_leaks pattern: the fully checked endpoints passed and
+        # the rest are named. One endpoint a middlebox resets must not take the
+        # control out of the risk matrix for the other 99 -- but the share is
+        # not hidden either: coverage says "partial", the why leads with it,
+        # and the overall verdict reads "partial", not "ok".
         status = "ok"
-        why = f"{checked_targets} fully checked TLS endpoint(s) passed validation{gap_note}"
+        why = (
+            f"partial coverage ({checked_targets} of {inspected} TLS endpoints fully checked): "
+            f"no findings{gap_note}"
+        )
     elif checked_targets > 0:
         status = "ok"
         why = f"All {checked_targets} inspected TLS endpoints passed validation"
@@ -343,7 +347,14 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
 
     return {
         "status": status,
-        "coverage": {"checked": checked_targets, "total": total_targets},
+        "coverage": {
+            "checked": checked_targets,
+            "total": total_targets,
+            # Some, not none, of the endpoints that answered in TLS: one that
+            # never did is not a TLS endpoint, and counting it would make every
+            # run "partial"; none at all is not_checked, not partial.
+            "partial": 0 < checked_targets < inspected,
+        },
         "findings_by_severity": sev_counts,
         "top_findings": findings[:10],
         "evidence": ["tls_posture.json"],
@@ -719,6 +730,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
     has_ok = False
     has_error = False
     has_not_checked = False
+    has_partial = False
 
     for defn in CONTROL_DEFINITIONS:
         cid = defn["id"]
@@ -740,6 +752,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
             has_weak = True
         elif status == "ok":
             has_ok = True
+            has_partial = has_partial or bool((result.get("coverage") or {}).get("partial"))
         elif status == "error":
             has_error = True
         else:
@@ -771,7 +784,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
         overall_verdict = "weak"
     elif has_error:
         overall_verdict = "error"
-    elif has_ok and not has_not_checked:
+    elif has_ok and not has_not_checked and not has_partial:
         overall_verdict = "ok"
     elif has_ok:
         overall_verdict = "partial"
