@@ -474,8 +474,52 @@ describe("Detectors and an inconclusive verification (#451)", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("Проверка не дала результата")).toBeInTheDocument();
+    expect(await screen.findByText("Проверка неубедительна")).toBeInTheDocument();
     expect(screen.getByText(/nuclei_binary_missing/)).toBeInTheDocument();
     expect(screen.getByTestId("detectors-card")).toHaveTextContent("Детекторы");
+  });
+});
+
+describe("A verification that found the port closed (#451)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppearanceStore.setState({ locale: "en" });
+    useAuthStore.setState({ user: null, canOperate: false, hydrated: true, loading: false });
+  });
+
+  it("names the closure and the event for what they are", async () => {
+    signIn({ role: "viewer" });
+    vi.spyOn(apiModule, "fetchTrackedVulnerability").mockResolvedValue(
+      vuln({ state: "CLOSED", closure_reason: "endpoint_unreachable", machine_verified: false }),
+    );
+    vi.spyOn(apiModule, "fetchVulnerabilityEvents").mockResolvedValue({
+      items: [
+        {
+          id: 9,
+          vuln_id: "vln_1",
+          tenant_id: "default",
+          occurred_at: "2026-10-06T10:00:00Z",
+          kind: "verification_unreachable",
+          from_state: "VERIFYING",
+          to_state: "CLOSED",
+          actor: "system:verification",
+          note: "Verification run run-4 found the host up and port 443 closed; the service is out of reach, not shown fixed",
+          detail: { closure_reason: "endpoint_unreachable", machine_verified: false },
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <VulnerabilityDetailPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Host up, port closed")).toBeInTheDocument();
+    expect(screen.getAllByText("Port closed on a live host").length).toBeGreaterThanOrEqual(1);
   });
 });

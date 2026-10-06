@@ -129,6 +129,10 @@ VULN_EVENT_KINDS = (
     # finish at all. Neither fixed nor still there: back to FIXING, never
     # machine-verified, with what was not covered in ``detail.gaps`` (#451).
     "verification_inconclusive",
+    # The verification run found the host up and the finding's port closed
+    # (closure_reason endpoint_unreachable): machine-verified for a Pulse
+    # exposure, not for a CVE (#451).
+    "verification_unreachable",
     "ticket_synced",
     # SLA escalation (#349): the worker reassigned the finding or raised its
     # severity because its deadline passed. Recorded as an event of its own
@@ -176,7 +180,16 @@ SOURCES = ("scan", "endpoint_software", "retro_match")
 #: Why a finding is closed. Never taken from a request body — the value of
 #: ``machine_verified`` is that it cannot be self-attested. ``patched`` is the
 #: software path's: a later accepted inventory snapshot no longer matches it.
-CLOSURE_REASONS = ("verified_remediated", "patched", "manual", "ticket_resolved")
+CLOSURE_REASONS = (
+    "verified_remediated",
+    "patched",
+    "manual",
+    "ticket_resolved",
+    # A verification found the host up and the port closed (#451).
+    "endpoint_unreachable",
+)
+
+ENDPOINT_UNREACHABLE = "endpoint_unreachable"
 
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
@@ -197,6 +210,8 @@ class RegisterStats:
     # Not observed, but not demonstrably looked for either: sent back to
     # FIXING rather than closed (verification_coverage.py).
     verification_inconclusive: int = 0
+    # Closed as endpoint_unreachable: host up, port provably closed.
+    verification_unreachable: int = 0
     # Findings seen again while a false-positive verdict suppressed them, and
     # verdicts this run broke early because the assessment got worse.
     fp_suppressed: int = 0
@@ -1044,6 +1059,34 @@ def _asset_hosts(session: Any, row: models.Vulnerability) -> set[str]:
     }
 
 
+def _finding_hosts(row: models.Vulnerability, addresses: set[str]) -> set[str]:
+    """Where the finding's port has to be closed for it to be unreachable.
+
+    Each detector's own host, and for one that never recorded it (or a row
+    with none) every IP of the asset — the same set its coverage is held to.
+    """
+    normalized = {verification_coverage.normalize_host(a) for a in addresses}
+    asset_ips = {a for a in normalized if _is_ip(a)}
+    detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
+    hosts = {
+        verification_coverage.normalize_host(entry["host"])
+        for entry in detectors
+        if entry.get("host")
+    }
+    if not detectors or any(not entry.get("host") for entry in detectors):
+        hosts |= asset_ips
+    return hosts
+
+
+def _is_exposure(row: models.Vulnerability) -> bool:
+    """A Pulse ``exposure`` finding: "this port is reachable", no CVE.
+
+    Its identity says so: pulse's CVE-less findings are keyed
+    ``pulse:<finding_class>:<port>:<slug>`` (scanner/pipeline/service_schema.py).
+    """
+    return not row.cve and str(row.script_id or "").startswith("pulse:exposure:")
+
+
 def _send_back_inconclusive(
     session: Any,
     row: models.Vulnerability,
@@ -1132,6 +1175,7 @@ def register_findings_from_run(
     now = _now()
     created = reobserved = reopened = skipped = 0
     verification_passed = verification_failed = verification_inconclusive = 0
+    verification_unreachable = 0
     fp_suppressed_observations = fp_overridden = 0
     # Read only if a finding is waiting on this run, and then once.
     coverage = verification_coverage.RunCoverage(run_dir)
@@ -1425,11 +1469,64 @@ def register_findings_from_run(
                 # a Pulse that did not match CVEs, a backend without NSE, a
                 # port that did not answer — each used to close the finding as
                 # verified-fixed here.
+                addresses = _asset_hosts(session, v_row)
                 gaps, waived = coverage.assess(
                     list(v_row.detectors or []),
                     port=v_row.port,
-                    asset_hosts=_asset_hosts(session, v_row),
+                    asset_hosts=addresses,
                 )
+                unreachable = (
+                    coverage.endpoint_unreachable(
+                        _finding_hosts(v_row, addresses), verification_coverage.port_of(v_row.port)
+                    )
+                    if gaps
+                    else None
+                )
+                if unreachable is not None:
+                    # No detector re-checked it because there was nothing to
+                    # re-check: the host answered, the port was asked about in
+                    # a batch that finished, and nothing saw it open. For a
+                    # Pulse exposure — "this port is reachable" — that is the
+                    # finding gone, machine-verified. For a CVE it is the
+                    # vulnerable service out of reach, not shown fixed: closed,
+                    # and not counted as verified remediation.
+                    exposure = _is_exposure(v_row)
+                    v_row.state = vuln_states.CLOSED
+                    v_row.state_changed_at = now
+                    v_row.state_changed_by = "system:verification"
+                    v_row.closed_at = now
+                    v_row.last_verified_at = now
+                    v_row.machine_verified = exposure
+                    v_row.closure_reason = ENDPOINT_UNREACHABLE
+                    dropped_exception = _drop_exception(v_row)
+                    v_row.updated_at = now
+                    _record_event(
+                        session,
+                        vuln_id=v_row.vuln_id,
+                        tenant_id=tenant_id,
+                        kind="verification_unreachable",
+                        occurred_at=now,
+                        from_state=vuln_states.VERIFYING,
+                        to_state=vuln_states.CLOSED,
+                        actor="system:verification",
+                        note=(
+                            f"Verification run {run_id} found the host up and port "
+                            f"{v_row.port} closed"
+                            + (" — the exposure is gone" if exposure else
+                               "; the service is out of reach, not shown fixed")
+                        ),
+                        detail={
+                            "run_id": run_id,
+                            "job_id": v_row.verification_job_id,
+                            "machine_verified": exposure,
+                            "closure_reason": ENDPOINT_UNREACHABLE,
+                            "evidence": unreachable,
+                            "gaps": gaps,
+                            **dropped_exception,
+                        },
+                    )
+                    verification_unreachable += 1
+                    continue
                 if gaps:
                     _send_back_inconclusive(
                         session,
@@ -1497,12 +1594,14 @@ def register_findings_from_run(
         verification_passed=verification_passed,
         verification_failed=verification_failed,
         verification_inconclusive=verification_inconclusive,
+        verification_unreachable=verification_unreachable,
         fp_suppressed=fp_suppressed_observations,
         fp_overridden=fp_overridden,
     )
     LOG.info(
         "Vulnerability tracker: run=%s tenant=%s seen=%s created=%s reobserved=%s "
-        "reopened=%s skipped=%s verification passed=%s failed=%s inconclusive=%s",
+        "reopened=%s skipped=%s verification passed=%s failed=%s inconclusive=%s "
+        "unreachable=%s",
         run_id,
         tenant_id,
         stats.findings_seen,
@@ -1513,6 +1612,7 @@ def register_findings_from_run(
         stats.verification_passed,
         stats.verification_failed,
         stats.verification_inconclusive,
+        stats.verification_unreachable,
     )
 
     try:

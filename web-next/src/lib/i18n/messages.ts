@@ -878,6 +878,8 @@ export const en = {
   "vuln.event.verification_passed": "Verified fixed",
   "vuln.event.verification_failed": "Still present",
   "vuln.event.verification_inconclusive": "Verification inconclusive",
+  "vuln.event.verification_unreachable": "Host up, port closed",
+  "vuln.reason.endpointUnreachable": "Port closed on a live host",
 
   // Endpoint software findings (Track E, M3).
   "vuln.reason.patched": "Patched on the endpoint",
@@ -2732,7 +2734,9 @@ export const ru: Record<MsgKey, string> = {
   "vuln.event.verification_started": "Проверка запущена",
   "vuln.event.verification_passed": "Исправление подтверждено",
   "vuln.event.verification_failed": "Всё ещё обнаруживается",
-  "vuln.event.verification_inconclusive": "Проверка не дала результата",
+  "vuln.event.verification_inconclusive": "Проверка неубедительна",
+  "vuln.event.verification_unreachable": "Хост отвечает, порт закрыт",
+  "vuln.reason.endpointUnreachable": "Порт закрыт на живом хосте",
 
   // Находки из инвентаря ПО на хостах (Track E, M3).
   "vuln.reason.patched": "Обновлено на хосте",

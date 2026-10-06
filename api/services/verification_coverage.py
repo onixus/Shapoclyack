@@ -69,6 +69,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from api.services import runs as runs_service
 from scanner.pipeline import pulse_progress
+from scanner.pipeline.protocol import parse_endpoint
 from scanner.pipeline.pulse_probe import ruleset_order
 
 LOG = logging.getLogger("shapoclyack.verification")
@@ -106,6 +107,28 @@ def _endpoint(value: Any) -> tuple[str, int | None]:
     """``(host, port)`` from nuclei's ``host:port`` / ``[v6]:port`` spelling."""
     host, _, port = str(value).strip().rpartition(":")
     return normalize_host(host), _port(port)
+
+
+def port_of(value: Any) -> int | None:
+    """A finding's port as the rules compare it, or ``None``."""
+    return _port(value) if value not in (None, "") else None
+
+
+def _explicit_ports(port_args: Any) -> set[int]:
+    """The TCP ports a naabu ``-p`` list names; empty for ``-top-ports``."""
+    args = [str(arg) for arg in port_args or []]
+    if "-p" not in args or args.index("-p") + 1 >= len(args):
+        return set()
+    out: set[int] = set()
+    for part in args[args.index("-p") + 1].split(","):
+        part = part.strip()
+        if part.startswith("u:"):
+            continue
+        low, _, high = part.partition("-")
+        first, last = _port(low), _port(high) if high else _port(low)
+        if first and last and first <= last and last - first <= 65535:
+            out.update(range(first, last + 1))
+    return out
 
 
 def _port(value: Any) -> int | None:
@@ -196,6 +219,129 @@ class RunCoverage:
                     run.open_ports.setdefault(address, set()).update(ports)
             runs.append(run)
         return runs
+
+    # ------------------------------------------------------------------
+    # Reachability: what the port stage and discovery recorded
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def probed_alive(self) -> set[str]:
+        """Hosts discovery's probe ladder itself found alive in this run.
+
+        A batch's ``discover/<tag>.alive.txt`` counts only beside its
+        ``<tag>.probe_stats.json``, which the ladder writes when it actually
+        probed: with discovery skipped every target is written "alive"
+        without a packet sent, and that proves nothing.
+        """
+        if self.run_dir is None:
+            return set()
+        discover = self.run_dir / "discover"
+        if not discover.is_dir():
+            return set()
+        alive: set[str] = set()
+        for alive_file in discover.glob("*.alive.txt"):
+            stem = alive_file.name[: -len(".alive.txt")]
+            if not (discover / f"{stem}.probe_stats.json").is_file():
+                continue
+            alive.update(
+                normalize_host(line)
+                for line in alive_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                if line.strip()
+            )
+        return alive
+
+    @cached_property
+    def port_scans(self) -> list[dict[str, Any]]:
+        """The port stage's per-batch records (``ports/<tag>.scan.json``, v2)."""
+        if self.run_dir is None:
+            return []
+        ports = self.run_dir / "ports"
+        if not ports.is_dir():
+            return []
+        records = []
+        for record_file in sorted(ports.glob("*.scan.json")):
+            record = runs_service._load_json(record_file)  # noqa: SLF001
+            if isinstance(record, dict) and record.get("protocol") == "tcp":
+                records.append(record)
+        return records
+
+    @cached_property
+    def open_tcp(self) -> set[tuple[str, int]]:
+        """Every TCP endpoint anything in this run saw open: naabu, Pulse."""
+        out: set[tuple[str, int]] = set()
+        if self.run_dir is None:
+            return out
+        sources = [self.run_dir / "open_ports.txt"]
+        ports_dir = self.run_dir / "ports"
+        if ports_dir.is_dir():
+            sources.extend(sorted(ports_dir.glob("*.open.txt")))
+        for source in sources:
+            if not source.is_file():
+                continue
+            for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+                parsed = parse_endpoint(line.strip()) if line.strip() else None
+                if parsed is not None and parsed.protocol == "tcp" and _port(parsed.port):
+                    out.add((normalize_host(parsed.host), int(parsed.port)))
+        for row in (self.pulse or {}).get("open") or []:
+            if not isinstance(row, dict):
+                continue
+            proto = str(row.get("protocol") or "tcp").lower()
+            port = _port(row.get("port"))
+            if proto in {"tcp", "tcpsyn", "syn"} and port and row.get("open") is not False:
+                for key in ("ip", "host"):
+                    if row.get(key):
+                        out.add((normalize_host(row[key]), port))
+        return out
+
+    def endpoint_unreachable(self, hosts: set[str], port: int | None) -> dict[str, Any] | None:
+        """Evidence that ``port`` is closed on every one of ``hosts``, or ``None``.
+
+        All of it has to hold, on each host — an IP: a name is resolved by
+        the scanner, and which address the port stage saw for it is not
+        recorded:
+
+        * the host is alive by a signal of its own: discovery's probes found
+          it, or another of its ports is open in this run;
+        * the port was in the port stage's explicit list for that host, in a
+          batch that finished (a ``-top-ports`` set is not explicit);
+        * nothing in the run saw the port open — not naabu, not Pulse.
+
+        Anything short of that is the firewalled-during-the-window case the
+        tracker does not forgive.
+        """
+        if port is None or not hosts:
+            return None
+        evidence = []
+        for host in sorted(hosts):
+            if not _is_ip(host):
+                return None
+            if (host, port) in self.open_tcp:
+                return None
+            other_open = sorted(p for h, p in self.open_tcp if h == host and p != port)
+            if host not in self.probed_alive and not other_open:
+                return None
+            batches = [
+                record
+                for record in self.port_scans
+                if host in {normalize_host(h) for h in record.get("hosts") or []}
+            ]
+            if not batches or not all(record.get("complete") is True for record in batches):
+                return None
+            if not any(
+                port in _explicit_ports(record.get("port_args"))
+                and port not in set(record.get("exclude_ports") or [])
+                for record in batches
+            ):
+                return None
+            evidence.append(
+                {
+                    "host": host,
+                    "port": port,
+                    "alive_by": "discovery" if host in self.probed_alive else "open_port",
+                    **({"other_open_ports": other_open[:16]} if other_open else {}),
+                }
+            )
+        return {"endpoints": evidence}
 
     # ------------------------------------------------------------------
     # The rules

@@ -161,6 +161,68 @@ def _nmap(run_dir: Path, *, scripts: str = SAFE_MODE_SCRIPTS, port: int = 443, e
     )
 
 
+def _port_stage(
+    monkeypatch,
+    run_dir: Path,
+    *,
+    asked: tuple[int, ...] = (443,),
+    open_ports: tuple[int, ...] = (),
+    explicit: bool = True,
+    fails: bool = False,
+) -> None:
+    """Run the real port stage (naabu stubbed) over ``run_dir`` for HOST."""
+    from scanner.pipeline import ports as ports_stage
+
+    def naabu(command, **kwargs):
+        if fails:
+            raise subprocess.CalledProcessError(1, command)
+        stdout = "".join(f"{HOST}:{p}\n" for p in open_ports)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(ports_stage, "run_command", naabu)
+    custom = run_dir / "ports_input.txt"
+    custom.write_text(",".join(str(p) for p in asked) + "\n" if explicit else "", encoding="utf-8")
+    try:
+        found = ports_stage.fast_port_scan(
+            [HOST],
+            output_dir=run_dir,
+            rate=100,
+            top_ports=100,
+            top_udp_ports=0,
+            timeout=5,
+            retries=0,
+            protocol_mode="tcp",
+            custom_ports_file=custom,
+            custom_udp_ports_file=run_dir / "none.txt",
+            udp_probes=False,
+            tag="b0",
+            scan_type="connect",
+        )
+    except subprocess.CalledProcessError:
+        found = []
+    (run_dir / "open_ports.txt").write_text("".join(f"{e}\n" for e in found), encoding="utf-8")
+
+
+def _discovered(run_dir: Path, *, probed: bool = True) -> None:
+    """discover/<tag>.* as host_discovery leaves them; without the probe
+    stats when discovery was skipped and every target written alive."""
+    discover = run_dir / "discover"
+    discover.mkdir(parents=True, exist_ok=True)
+    (discover / "all.alive.txt").write_text(f"{HOST}\n", encoding="utf-8")
+    if probed:
+        (discover / "all.probe_stats.json").write_text('{"icmp": 1, "tcp": 0, "naabu": 0}', encoding="utf-8")
+
+
+EXPOSURE = {
+    "host": HOST,
+    "port": "443",
+    "cve": None,
+    "severity": "medium",
+    "source": "pulse",
+    "script_id": "pulse:exposure:443:admin-panel-reachable",
+}
+
+
 # --------------------------------------------------------------------------
 # Helpers around the tracker
 # --------------------------------------------------------------------------
@@ -418,6 +480,90 @@ def test_a_port_that_did_not_answer_proves_nothing(tmp_path, monkeypatch):
     _fold(settings, tenant_id)
 
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "endpoint_not_probed")
+
+
+# --------------------------------------------------------------------------
+# Host up, port closed: endpoint_unreachable
+# --------------------------------------------------------------------------
+
+
+def _closed_unreachable(settings, tenant_id, vuln_id) -> dict:
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln_id)
+    assert after["state"] == vuln_states.CLOSED
+    assert after["closure_reason"] == "endpoint_unreachable"
+    event = _last_event(settings, tenant_id, vuln_id)
+    assert event["kind"] == "verification_unreachable"
+    assert event["detail"]["evidence"]["endpoints"][0]["host"] == HOST
+    return after
+
+
+def test_a_pulse_exposure_whose_port_is_closed_is_verified_gone(tmp_path, monkeypatch):
+    """The finding *is* "this port is reachable": a live host with the port
+    provably closed is that finding gone, and machine-verified."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked(settings, tenant_id, [EXPOSURE])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _discovered(run_dir)
+    _port_stage(monkeypatch, run_dir)
+
+    stats = _fold(settings, tenant_id)
+
+    assert stats.verification_unreachable == 1
+    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is True
+
+
+def test_a_cve_whose_port_is_closed_is_closed_but_not_verified_fixed(tmp_path, monkeypatch):
+    """The vulnerable service is out of reach; nothing showed it patched."""
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    vuln = _tracked(settings, tenant_id, [PULSE])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _discovered(run_dir)
+    _port_stage(monkeypatch, run_dir)
+
+    _fold(settings, tenant_id)
+
+    after = _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
+    assert after["machine_verified"] is False
+    assert vulns.summary(settings, tenant_id=tenant_id)["machine_verified_closed"] == 0
+
+
+def test_another_open_port_is_proof_of_life_too(tmp_path, monkeypatch):
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked(settings, tenant_id, [EXPOSURE])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    # No discovery evidence: 22 answering is the proof of life.
+    _port_stage(monkeypatch, run_dir, asked=(443, 22), open_ports=(22,))
+
+    _fold(settings, tenant_id)
+
+    event = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert event["kind"] == "verification_unreachable"
+    assert event["detail"]["evidence"]["endpoints"][0]["alive_by"] == "open_port"
+
+
+@pytest.mark.parametrize(
+    ("setup", "why"),
+    [
+        (lambda m, d: (_discovered(d, probed=False), _port_stage(m, d)), "discovery skipped: alive unproven"),
+        (lambda m, d: _port_stage(m, d), "no liveness signal at all"),
+        (lambda m, d: (_discovered(d), _port_stage(m, d, explicit=False)), "port only in -top-ports"),
+        (lambda m, d: (_discovered(d), _port_stage(m, d, fails=True)), "port batch did not finish"),
+        (lambda m, d: (_discovered(d), _port_stage(m, d), _pulse(m, d, ports=(443,), cve=False)), "Pulse saw it open"),
+    ],
+)
+def test_short_of_every_condition_a_closed_port_stays_inconclusive(tmp_path, monkeypatch, setup, why):
+    """A host that is down, a port never asked about, a batch that died, a
+    probe that disagrees: the firewalled-during-the-window case, not a fix."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked(settings, tenant_id, [EXPOSURE])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    setup(monkeypatch, run_dir)
+
+    _fold(settings, tenant_id)
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING, why
+    assert _last_event(settings, tenant_id, vuln["vuln_id"])["kind"] == "verification_inconclusive", why
 
 
 # --------------------------------------------------------------------------

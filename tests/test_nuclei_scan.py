@@ -613,3 +613,43 @@ def test_a_sweep_keeps_quiet_and_does_not_claim_a_template_count(tmp_path: Path,
     result = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(templates)), tmp_path)
     assert "-silent" in seen["argv"]
     assert result["coverage"]["templates_loaded"] is None
+
+
+def test_the_port_stage_records_what_it_asked_and_whether_it_finished(tmp_path: Path, monkeypatch):
+    """ports/<tag>.scan.json (#451): the evidence a verification needs to tell
+    a closed port from one never asked about."""
+    import subprocess
+
+    import pytest
+
+    from scanner.pipeline import ports as ports_stage
+
+    custom = tmp_path / "custom.txt"
+    custom.write_text("443,8000-8001\n", encoding="utf-8")
+
+    def scan(fails):
+        def naabu(command, **kwargs):
+            if fails:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(ports_stage, "run_command", naabu)
+        return ports_stage.fast_port_scan(
+            ["10.0.0.5"], output_dir=tmp_path, rate=10, top_ports=100, top_udp_ports=0, timeout=5,
+            retries=0, protocol_mode="tcp", custom_ports_file=custom,
+            custom_udp_ports_file=tmp_path / "none", udp_probes=False, tag="b0", scan_type="connect",
+            exclude_ports=[8001],
+        )
+
+    scan(fails=False)
+    record = json.loads((tmp_path / "ports" / "b0.scan.json").read_text(encoding="utf-8"))
+    assert record == {
+        "protocol": "tcp",
+        "hosts": ["10.0.0.5"],
+        "port_args": ["-p", "443,8000-8001"],
+        "exclude_ports": [8001],
+        "complete": True,
+    }
+    with pytest.raises(subprocess.CalledProcessError):
+        scan(fails=True)
+    assert json.loads((tmp_path / "ports" / "b0.scan.json").read_text(encoding="utf-8"))["complete"] is False

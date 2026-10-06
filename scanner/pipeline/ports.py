@@ -7,7 +7,7 @@ from pathlib import Path
 from .config_schema import NaabuScanType
 from .protocol import ScanProtocol, format_endpoint, naabu_udp_port_spec, parse_endpoint, top_udp_port_list
 from .scan_policy import single_host_rate
-from .utils import read_lines, run_command, write_lines
+from .utils import read_lines, run_command, save_json, write_lines
 
 # Whether naabu's SYN mode actually works here, decided once per run:
 # "untested" until a batch has shown one way or the other, then "ok" or
@@ -208,6 +208,21 @@ def _run_naabu(
     if not alive_hosts:
         write_lines(output_file, [])
         return []
+    # What this batch asked naabu, and whether it got an answer. Written
+    # incomplete first and completed after naabu returns, so a batch that died
+    # half way reads as such. A verification needs it to tell "the port is
+    # closed" from "the port was never asked about" (#451): closing a finding
+    # as endpoint_unreachable rests on the port having been in the list, on
+    # this host, in a batch that finished.
+    record_file = batch_dir / f"{tag}.scan.json"
+    record = {
+        "protocol": protocol,
+        "hosts": list(alive_hosts),
+        "port_args": list(port_args),
+        "exclude_ports": sorted(set(exclude_ports or [])),
+        "complete": False,
+    }
+    save_json(record_file, record)
 
     # -Pn: same reasoning as the nmap path in nse.py -- these hosts were already
     # proven alive by the discovery phase, so naabu's own host discovery is pure
@@ -243,6 +258,7 @@ def _run_naabu(
         command, protocol=protocol, scan_type=scan_type, timeout=timeout, retries=retries, tag=tag
     )
     write_lines(output_file, entries)
+    save_json(record_file, {**record, "complete": True})
     return entries
 
 

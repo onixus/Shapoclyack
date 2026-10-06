@@ -128,6 +128,8 @@ function closureReasonLabel(t: ReturnType<typeof useT>, reason: string): string 
       return t("vuln.reason.patched");
     case "false_positive":
       return t("vuln.reason.falsePositive");
+    case "endpoint_unreachable":
+      return t("vuln.reason.endpointUnreachable");
     default:
       return reason;
   }
@@ -365,7 +367,9 @@ function VulnerabilityDetailInner() {
               <Field label="Observations" value={String(vuln.observation_count)} />
               <Field label="Reopens" value={String(vuln.reopen_count)} />
               <Field label="Machine verified" value={vuln.machine_verified ? "Yes (Re-scan confirmed)" : "No"} />
-              {vuln.closure_reason ? <Field label="Closure reason" value={vuln.closure_reason} /> : null}
+              {vuln.closure_reason ? (
+                <Field label={t("vuln.closureReason")} value={closureReasonLabel(t, vuln.closure_reason)} />
+              ) : null}
               {vuln.last_verified_at ? <Field label="Last verified" value={formatWhen(vuln.last_verified_at)} /> : null}
               <Field
                 label={t("select.sla")}
