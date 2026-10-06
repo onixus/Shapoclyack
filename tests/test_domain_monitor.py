@@ -686,6 +686,7 @@ class _Provider:
         self.lock = threading.Lock()
         self.port = 0
         self.sni: list[str | None] = []
+        self.user_agents: list[str] = []
 
 
 def _handler(provider: _Provider) -> type[BaseHTTPRequestHandler]:
@@ -694,6 +695,7 @@ def _handler(provider: _Provider) -> type[BaseHTTPRequestHandler]:
             host = self.headers.get("Host", "")
             with provider.lock:
                 provider.requests.append((host, self.path))
+                provider.user_agents.append(self.headers.get("User-Agent", ""))
                 provider.in_flight += 1
                 provider.max_in_flight = max(provider.max_in_flight, provider.in_flight)
             try:
@@ -830,8 +832,10 @@ def test_the_provider_page_confirms_the_takeover(tmp_path, monkeypatch, provider
     assert evidence["address"] == "127.0.0.1"
     assert [attempt["scheme"] for attempt in evidence["attempts"]] == ["https", "http"]
     assert evidence["attempts"][0]["error"] is not None
-    # Asked for the org's own name, at the address its lookup returned.
+    # Asked for the org's own name, at the address its lookup returned, and
+    # saying who is asking.
     assert provider.requests == [("docs.example.com", "/")]
+    assert provider.user_agents == [takeover.USER_AGENT]
 
 
 def test_a_live_resource_without_the_fingerprint_is_not_reported(tmp_path, monkeypatch, provider):
