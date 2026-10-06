@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -68,23 +69,31 @@ from .service_schema import (
 from .utils import run_command, save_json, write_lines
 
 
-def ruleset_order(value: str | None) -> tuple:
-    """Sort key for pulse ruleset ids (``YYYY.MM.DD-hN``), oldest first.
+#: pulse's ruleset id: ``YYYY.MM.DD`` with an optional ``-hN`` hotfix
+#: (pulse 1.1.0 prints ``2026.07.29-h1``).
+_RULESET = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-h(\d+))?")
 
-    The date, then the hotfix number, numerically; anything else sorts before
-    every dated ruleset, so an id this cannot read is never taken for a newer
-    one.
+
+def parse_ruleset(value: str | None) -> tuple[int, int, int, int] | None:
+    """``(year, month, day, hotfix)`` of a pulse ruleset id, or ``None``.
+
+    Case and surrounding space do not matter, and a missing hotfix is hotfix
+    0 (``2026.07.29`` == ``2026.07.29-h0``). Anything else is ``None``: a
+    verification must not decide "older or newer" about an id it cannot read
+    (#451 review — ``2026-08-02`` used to sort oldest, so any dated run
+    "covered" it).
     """
-    text = str(value or "").strip()
-    date_part, _, suffix = text.partition("-")
-    try:
-        date = tuple(int(piece) for piece in date_part.split("."))
-    except ValueError:
-        return (0, (), 0, text)
-    if len(date) != 3:
-        return (0, (), 0, text)
-    hotfix = int(suffix[1:]) if suffix[:1] == "h" and suffix[1:].isdigit() else 0
-    return (1, date, hotfix, text)
+    match = _RULESET.fullmatch(str(value or "").strip().lower())
+    if match is None:
+        return None
+    year, month, day, hotfix = match.groups()
+    return int(year), int(month), int(day), int(hotfix or 0)
+
+
+def ruleset_order(value: str | None) -> tuple:
+    """Sort key, oldest first; an unreadable id sorts before every readable one."""
+    parsed = parse_ruleset(value)
+    return (0, (), str(value or "")) if parsed is None else (1, parsed, "")
 
 
 def resolve_pulse_bin(configured: str = "") -> str:

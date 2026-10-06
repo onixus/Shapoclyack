@@ -70,7 +70,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 from api.services import runs as runs_service
 from scanner.pipeline import pulse_progress
 from scanner.pipeline.protocol import parse_endpoint
-from scanner.pipeline.pulse_probe import ruleset_order
+from scanner.pipeline.pulse_probe import parse_ruleset
 
 LOG = logging.getLogger("shapoclyack.verification")
 
@@ -403,7 +403,11 @@ class RunCoverage:
             current = adapter.get("ruleset")
             if not current:
                 return "pulse_ruleset_not_recorded"
-            if ruleset_order(str(current)) < ruleset_order(ruleset):
+            found_with, run_with = parse_ruleset(ruleset), parse_ruleset(str(current))
+            if found_with is None or run_with is None:
+                # No "older or newer" about an id either side cannot read.
+                return "pulse_ruleset_unparseable"
+            if run_with < found_with:
                 # A rule added in the newer ruleset is the one that matched.
                 return "pulse_ruleset_older"
         receipts = {

@@ -567,6 +567,17 @@ def test_ruleset_order_reads_dates_and_hotfixes_not_strings():
     assert sorted(reversed(ordered), key=ruleset_order) == ordered
 
 
+def test_ruleset_ids_parse_strictly_and_normalise_the_harmless_differences():
+    from scanner.pipeline.pulse_probe import parse_ruleset
+
+    assert parse_ruleset("2026.07.29-h1") == (2026, 7, 29, 1)
+    # Case, space and a missing hotfix do not make a dead end.
+    assert parse_ruleset(" 2026.07.29-H0 ") == parse_ruleset("2026.07.29") == (2026, 7, 29, 0)
+    assert parse_ruleset("2026.07.29-h9") < parse_ruleset("2026.07.29-h10")
+    for unreadable in ("2026-08-02", "v2026.07.29", "2026.07.29-rc1", "", None):
+        assert parse_ruleset(unreadable) is None
+
+
 def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):
     """Every later chunk would hit the same refusal; do not pay it per chunk."""
     calls, _ = _run_probe(

@@ -499,6 +499,36 @@ def test_a_verification_with_an_older_ruleset_proves_nothing(tmp_path, monkeypat
     assert vuln["detectors"][0]["ruleset"] == "2026.08.02-h0"
 
 
+@pytest.mark.parametrize(
+    ("found_with", "verified_with", "reason"),
+    [
+        ("2026.07.29-h10", "2026.07.29-h9", "pulse_ruleset_older"),  # numbers, not strings
+        ("2026-08-02", "2026.07.29-h1", "pulse_ruleset_unparseable"),  # used to sort oldest
+        ("2026.08.02-h0", "nightly", "pulse_ruleset_unparseable"),
+    ],
+)
+def test_a_ruleset_is_compared_only_when_both_sides_read(tmp_path, monkeypatch, found_with, verified_with, reason):
+    found = _row("pulse", "pulse:local", ruleset_version=found_with)
+    settings, tenant_id = _seed(tmp_path, findings=[found])
+    vuln = _tracked(settings, tenant_id, [found])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, ruleset=verified_with)
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
+
+
+def test_a_ruleset_without_its_hotfix_is_not_a_dead_end(tmp_path, monkeypatch):
+    found = _row("pulse", "pulse:local", ruleset_version="2026.07.29")
+    settings, tenant_id = _seed(tmp_path, findings=[found])
+    vuln = _tracked(settings, tenant_id, [found])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, ruleset="2026.07.29-H0")
+
+    assert _fold(settings, tenant_id).verification_passed == 1
+
+
 def test_a_verification_with_the_same_or_newer_ruleset_closes(tmp_path, monkeypatch):
     found = _row("pulse", "pulse:local", ruleset_version="2026.07.29-h1")
     settings, tenant_id = _seed(tmp_path, findings=[found])
