@@ -92,6 +92,7 @@ def test_to_vulnerability_rows_falls_back_to_severity_floor_without_cvss():
             "severity": "high",
             "script_id": "nuclei:some-cve-check",
             "source": "nuclei",
+            "protocol": "tcp",
             "cwe": [],
         }
     ]
@@ -313,6 +314,8 @@ def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: 
         "-concurrency", "10",
         "-timeout", "10",
         "-retries", "1",
+        "-max-host-error", "30",
+        "-elog", str(out / "nuclei_errors.jsonl"),
         "-silent",
         "-no-color",
         # No public interactsh servers (test_nuclei_oast.py).
@@ -366,3 +369,381 @@ def test_the_pipeline_hands_nuclei_the_configured_resolvers():
     assert len(calls) == 1, "expected exactly one run_nuclei_scan call in scanner/main.py"
     passed = {kw.arg: ast.unparse(kw.value) for kw in calls[0].keywords}
     assert passed.get("resolvers") == "config.dns.resolvers"
+
+
+# ---------------------------------------------------------------------------
+# A verification run pins the templates that found the finding (#451)
+# ---------------------------------------------------------------------------
+
+
+def _template(directory: Path, template_id: str, *, severity: str = "medium", tags: str = "cve") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{template_id}.yaml").write_text(
+        f"id: {template_id}\n\ninfo:\n  name: {template_id}\n  author: tests\n"
+        f"  severity: {severity}\n  description: |\n    A template.\n  tags: {tags}\n\n"
+        "http:\n  - method: GET\n    path:\n      - '{{BaseURL}}/'\n",
+        encoding="utf-8",
+    )
+
+
+#: nuclei v3.11.1's INFO lines, as printed in the aio image (checked live).
+LOADED = "[INF] Templates loaded for current scan: {n}\n[INF] Targets loaded for current scan: 1\n"
+
+
+def _clean_exit(seen: dict | None = None, stderr: str | None = None):
+    """nuclei stubbed: exits 0, reports loading every id it was given."""
+    import subprocess
+
+    def fake_run_command(command, **kwargs):
+        if seen is not None:
+            seen["argv"] = list(command)
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        ids = command[command.index("-id") + 1].split(",") if "-id" in command else []
+        text = stderr if stderr is not None else LOADED.format(n=len(ids))
+        return subprocess.CompletedProcess(command, 0, "", text)
+
+    return fake_run_command
+
+
+def test_pinned_templates_run_by_id_whatever_their_severity(tmp_path: Path, monkeypatch):
+    """A medium template re-checked under a critical/high floor was never
+    loaded, and its silence closed the finding as verified-fixed."""
+    templates = tmp_path / "templates"
+    _template(templates / "http" / "cves" / "2024", "CVE-2024-0001", severity="medium")
+    _template(templates / "http" / "misc", "unrelated-detect", severity="info")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    out = tmp_path / "out"
+    out.mkdir()
+    config = NucleiConfig(
+        templates_dir=str(templates),
+        template_ids=["CVE-2024-0001"],
+        severities=["critical", "high"],
+        tags=["panel"],
+    )
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, out)
+
+    argv = seen["argv"]
+    assert argv[argv.index("-id") + 1] == "CVE-2024-0001"
+    assert "-severity" not in argv
+    assert "-tags" not in argv
+    # The host's own exclusions still apply to a platform-sent id.
+    assert "-exclude-tags" in argv
+    coverage = result["coverage"]
+    assert coverage == {
+        "ran": True,
+        "returncode": 0,
+        "targets": ["https://10.0.0.5:443/"],
+        "template_ids_requested": ["CVE-2024-0001"],
+        "template_ids_missing": [],
+        "template_ids_excluded": [],
+        "severities": None,
+        "templates_loaded": 1,
+        "templates_expected": 1,
+        "template_ids_ambiguous": [],
+        "skipped_targets": [],
+        "max_host_error": 30,
+        "errors_log_truncated": False,
+    }
+    assert json.loads((out / "nuclei.json").read_text(encoding="utf-8"))["coverage"] == coverage
+    # The loaded-templates line is INFO, which -silent hides.
+    assert "-silent" not in argv
+
+
+def test_a_pinned_id_the_host_does_not_have_is_recorded_missing(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001", "CVE-2099-9999"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert seen["argv"][seen["argv"].index("-id") + 1] == "CVE-2024-0001"
+    assert result["coverage"]["template_ids_missing"] == ["CVE-2099-9999"]
+    assert result["coverage"]["ran"] is True
+
+
+def test_no_pinned_id_on_the_host_means_nuclei_does_not_run(tmp_path: Path, monkeypatch):
+    """nuclei given ``-id`` that matches nothing either errors or, beside a
+    match, says nothing; neither may read as "looked and found nothing"."""
+    templates = tmp_path / "templates"
+    _template(templates, "something-else")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr(
+        "scanner.pipeline.nuclei_scan.run_command",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("nuclei must not run")),
+    )
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2099-9999"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert result["skipped_reason"] == "template_ids_missing"
+    assert result["coverage"]["ran"] is False
+    assert result["coverage"]["template_ids_missing"] == ["CVE-2099-9999"]
+
+
+def test_a_pinned_template_the_host_excludes_is_not_run(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001", tags="cve,intrusive")
+    _template(templates, "CVE-2024-0002", tags="cve")
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001", "CVE-2024-0002"])
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)
+
+    assert seen["argv"][seen["argv"].index("-id") + 1] == "CVE-2024-0002"
+    assert result["coverage"]["template_ids_excluded"] == ["CVE-2024-0001"]
+
+    only_excluded = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"])
+    skipped = run_nuclei_scan(["10.0.0.5:443/tcp"], only_excluded, tmp_path)
+    assert skipped["skipped_reason"] == "template_ids_excluded"
+    assert skipped["coverage"]["ran"] is False
+
+
+def test_an_unpinned_run_keeps_its_severity_floor(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen))
+
+    result = run_nuclei_scan(
+        ["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(templates), severities=["critical"]), tmp_path
+    )
+
+    assert "-id" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("-severity") + 1] == "critical"
+    assert result["coverage"]["severities"] == ["critical"]
+
+
+def test_a_skipped_or_failed_nuclei_is_not_coverage(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", lambda name: None)
+    skipped = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(tmp_path)), tmp_path)
+    assert skipped["skipped_reason"] == "nuclei_binary_missing"
+    assert skipped["coverage"]["ran"] is False
+
+    import subprocess
+
+    def exits_one(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, "", "[FTL] Could not run nuclei")
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", exits_one)
+    failed = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(tmp_path)), tmp_path)
+    # Its findings are kept as before; it is just not a run that looked.
+    assert failed["skipped_reason"] is None
+    assert failed["coverage"]["ran"] is False
+    assert failed["coverage"]["returncode"] == 1
+
+
+def test_a_template_id_outside_the_alphabet_is_refused():
+    """The id crosses the platform-to-sensor boundary and lands in argv."""
+    import pytest
+    from pydantic import ValidationError
+
+    for bad in ("a,b", "*", "../etc/passwd", "-tags", "", "id with space", "x" * 201):
+        with pytest.raises(ValidationError):
+            NucleiConfig(template_ids=[bad])
+    assert NucleiConfig(template_ids=["CVE-2021-44228", "tech_detect.v2", "CVE-2021-44228"]).template_ids == [
+        "CVE-2021-44228",
+        "tech_detect.v2",
+    ]
+
+
+def test_the_template_index_reads_ids_not_file_names(tmp_path: Path):
+    from scanner.pipeline.nuclei_scan import index_template_ids
+
+    (tmp_path / "renamed.yaml").write_text("# header\nid: CVE-2024-0001\ninfo:\n  tags: cve, rce\n", encoding="utf-8")
+    (tmp_path / "CVE-2024-0002.yaml").write_text("id: other-id\n", encoding="utf-8")
+    found = index_template_ids(["CVE-2024-0001", "CVE-2024-0002"], [tmp_path])
+    assert found == {"CVE-2024-0001": [{"cve", "rce"}]}
+
+
+def test_nuclei_s_own_account_of_the_run_is_recorded(tmp_path: Path, monkeypatch):
+    """What nuclei v3.11.1 printed and logged for a refused port, in the aio
+    image: the target is dropped, and the run says so."""
+    import subprocess
+
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+
+    def nuclei(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        Path(command[command.index("-elog") + 1]).write_text(
+            json.dumps(
+                {
+                    "template": "/t/CVE-2024-0001.yaml",
+                    "type": "http",
+                    "input": "https://10.0.0.6:443/x",
+                    "address": "10.0.0.6:443",
+                    "error": "port closed or filtered",
+                    "kind": "network-permanent-error",
+                    "attrs": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stderr = LOADED.format(n=1) + (
+            '[INF] Skipped 10.0.0.5:443 from target list as found unresponsive permanently: Get '
+            '"https://10.0.0.5:443/x": cause="port closed or filtered" address=10.0.0.5:443\n'
+        )
+        return subprocess.CompletedProcess(command, 0, "", stderr)
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", nuclei)
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"], max_host_error=5)
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp", "10.0.0.6:443/tcp"], config, tmp_path)
+
+    assert result["coverage"]["templates_loaded"] == 1
+    assert result["coverage"]["skipped_targets"] == ["10.0.0.5:443", "10.0.0.6:443"]
+    # nuclei raises a -max-host-error below -concurrency (10) to it; the
+    # record says what nuclei applied (seen live: "Adjusting max-host-error").
+    assert result["coverage"]["max_host_error"] == 10
+
+
+def test_a_sweep_keeps_quiet_and_does_not_claim_a_template_count(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen, stderr=""))
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(templates)), tmp_path)
+    assert "-silent" in seen["argv"]
+    assert result["coverage"]["templates_loaded"] is None
+
+
+def test_the_port_stage_records_what_it_asked_and_whether_it_finished(tmp_path: Path, monkeypatch):
+    """ports/<tag>.scan.json (#451): the evidence a verification needs to tell
+    a closed port from one never asked about."""
+    import subprocess
+
+    import pytest
+
+    from scanner.pipeline import ports as ports_stage
+
+    custom = tmp_path / "custom.txt"
+    custom.write_text("443,8000-8001\n", encoding="utf-8")
+
+    def scan(fails):
+        def naabu(command, **kwargs):
+            if fails:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(ports_stage, "run_command", naabu)
+        return ports_stage.fast_port_scan(
+            ["10.0.0.5"], output_dir=tmp_path, rate=10, top_ports=100, top_udp_ports=0, timeout=5,
+            retries=0, protocol_mode="tcp", custom_ports_file=custom,
+            custom_udp_ports_file=tmp_path / "none", udp_probes=False, tag="b0", scan_type="connect",
+            exclude_ports=[8001],
+        )
+
+    scan(fails=False)
+    record = json.loads((tmp_path / "ports" / "b0.scan.json").read_text(encoding="utf-8"))
+    assert record == {
+        "protocol": "tcp",
+        "hosts": ["10.0.0.5"],
+        "port_args": ["-p", "443,8000-8001"],
+        "exclude_ports": [8001],
+        "complete": True,
+    }
+    with pytest.raises(subprocess.CalledProcessError):
+        scan(fails=True)
+    assert json.loads((tmp_path / "ports" / "b0.scan.json").read_text(encoding="utf-8"))["complete"] is False
+
+
+def test_an_id_in_two_template_dirs_is_ambiguous(tmp_path: Path, monkeypatch):
+    """A custom copy beside the baked template: nuclei loads both under one
+    id, and its count could hide one that did not parse behind the other."""
+    templates = tmp_path / "templates"
+    custom = tmp_path / "custom"
+    _template(templates, "CVE-2024-0001")
+    _template(custom, "CVE-2024-0001")
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit())
+    config = NucleiConfig(
+        templates_dir=str(templates), custom_templates_dir=str(custom), template_ids=["CVE-2024-0001"]
+    )
+
+    coverage = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)["coverage"]
+
+    assert coverage["template_ids_ambiguous"] == ["CVE-2024-0001"]
+    assert coverage["templates_expected"] == 2
+
+
+def test_only_permanent_errors_drop_a_target(tmp_path: Path, monkeypatch):
+    """-elog lists every failed request; a timeout or an EOF is not nuclei
+    giving the target up (seen live: the unroutable host's EOFs were logged
+    and the host was not skipped)."""
+    import subprocess
+
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+
+    def nuclei(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        Path(command[command.index("-elog") + 1]).write_text(
+            json.dumps({"address": "10.0.0.5:443", "error": 'cause="EOF"', "kind": "unknown-error"}) + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", LOADED.format(n=1))
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", nuclei)
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"])
+
+    assert run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)["coverage"]["skipped_targets"] == []
+
+
+def test_the_errors_log_is_capped_after_it_is_read(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    from scanner.pipeline import nuclei_scan
+
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+    line = json.dumps({"address": "10.0.0.9:443", "error": "refused", "kind": "network-permanent-error"}) + "\n"
+
+    def nuclei(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        Path(command[command.index("-elog") + 1]).write_text(line * 400, encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", LOADED.format(n=1))
+
+    monkeypatch.setattr(nuclei_scan, "_ERRORS_LOG_MAX_BYTES", 1000)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", nuclei)
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"])
+
+    coverage = run_nuclei_scan(["10.0.0.5:443/tcp"], config, tmp_path)["coverage"]
+
+    assert coverage["errors_log_truncated"] is True
+    assert coverage["skipped_targets"] == ["10.0.0.9:443"]
+    kept = (tmp_path / "nuclei_errors.jsonl").read_text(encoding="utf-8")
+    assert len(kept.encode()) <= 1000 and kept.endswith("\n")
+
+
+def test_a_first_error_line_over_the_cap_is_kept_cut_not_dropped(tmp_path: Path, monkeypatch):
+    """Whole lines only, with the first one longer than the cap, left an
+    empty file: the operator saw no error where nuclei wrote one."""
+    from scanner.pipeline import nuclei_scan
+
+    monkeypatch.setattr(nuclei_scan, "_ERRORS_LOG_MAX_BYTES", 100)
+    errors = tmp_path / "nuclei_errors.jsonl"
+    long_line = json.dumps({"address": "10.0.0.9:443", "error": "x" * 300}) + "\n"
+    errors.write_text(long_line * 2, encoding="utf-8")
+
+    assert nuclei_scan._cap_errors_log(errors) is True
+
+    kept = errors.read_bytes()
+    assert 0 < len(kept) <= 100
+    assert kept.endswith(b"\n")
+    assert long_line.encode().startswith(kept[:-1])

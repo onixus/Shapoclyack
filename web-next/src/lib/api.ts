@@ -2858,6 +2858,21 @@ export type RetroMatchEvidence = {
   } | null;
 };
 
+/** One detector that observed a tracked finding (#451): `pulse`, `nuclei` or
+ * `nmap-nse`, the template / script / pulse origin, and the host as the scanner
+ * addressed it — null on an entry migrated from `script_id`, which never
+ * recorded one. */
+export type VulnerabilityDetector = {
+  detector: string;
+  ref: string | null;
+  host: string | null;
+  port: string | null;
+  last_run_id: string | null;
+  last_seen_at: string | null;
+  /** Pulse only: the offline CVE ruleset the match was made with. */
+  ruleset?: string | null;
+};
+
 export type TrackedVulnerability = {
   vuln_id: string;
   tenant_id: string;
@@ -2868,7 +2883,10 @@ export type TrackedVulnerability = {
   device_id: string | null;
   cve: string | null;
   cwe: string[];
+  /** The first detector's id only; `detectors` has all of them. */
   script_id: string | null;
+  /** Newest first. Absent from an API older than #451. */
+  detectors?: VulnerabilityDetector[];
   title: string;
   port: string | null;
   severity: string;
@@ -2938,7 +2956,9 @@ export type TrackedVulnerability = {
   machine_verified?: boolean;
   verification_job_id?: string | null;
   last_verified_at?: string | null;
-  /** verified_remediated | patched | manual | ticket_resolved | false_positive. */
+  /** verified_remediated | patched | manual | ticket_resolved | false_positive |
+   * endpoint_unreachable (connect refused on every attempt from the vantage
+   * that observed it: not reachable from there, never machine-verified). */
   closure_reason?: string | null;
   /** False-positive verdict, an expiring attribute of the finding rather than a
    * state of its own. `fp_suppressed` is the server's derived answer to "does a

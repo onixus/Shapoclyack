@@ -217,6 +217,7 @@ NOT_SUBJECT_COLUMNS: dict[tuple[str, str], str] = {
     ("endpoint_devices", "labels"): "host labels",
     ("asset_services", "cpe"): "a service fingerprint",
     ("asset_services", "match_summary"): "a CVE match summary",
+    ("vulnerabilities", "detectors"): "the scanner checks that observed a finding and their sensor vantages",
     ("config_overrides", "data"): "scanner configuration",
     ("endpoint_agent_policies", "settings"): "agent collection settings",
     ("endpoint_inventory_snapshots", "collector_warnings"): "agent warnings about a host",

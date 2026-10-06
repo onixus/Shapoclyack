@@ -66,12 +66,15 @@ def _host_address(host: ET.Element) -> str:
     return address_node.attrib.get("addr", "unknown") if address_node is not None else "unknown"
 
 
-def _script_record(host: str, port: str, script: ET.Element) -> dict:
+def _script_record(host: str, port: str, script: ET.Element, protocol: str | None = None) -> dict:
     output = (script.attrib.get("output", "") or "").strip()
     has_cve = bool(_CVE_RE.search(output))
     return {
         "host": host,
         "port": port,
+        # tcp | udp from nmap's <port protocol=...>; None for a host script.
+        # A UDP finding must never be judged by a TCP re-check (#451).
+        "protocol": protocol,
         "script_id": script.attrib.get("id", ""),
         "output": output,
         "vulnerable": "VULNERABLE" in output.upper() or has_cve,
@@ -132,7 +135,9 @@ def _parse_nmap_xml(nmap_dir: Path) -> tuple[list[dict], list[dict], list[dict]]
                     }
                 )
                 for script in port.findall("script"):
-                    script_findings.append(_script_record(address, portid, script))
+                    script_findings.append(
+                        _script_record(address, portid, script, port.attrib.get("protocol") or None)
+                    )
 
     return services, os_matches, script_findings
 
@@ -154,6 +159,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                         "cvss": cvss,
                         "severity": _severity(cvss),
                         "source": "nmap-nse",
+                        "protocol": finding.get("protocol"),
                     }
                 )
         elif "VULNERABLE" in output.upper():
@@ -166,6 +172,7 @@ def _build_vulnerabilities(script_findings: list[dict]) -> list[dict]:
                     "cvss": None,
                     "severity": "unknown",
                     "source": "nmap-nse",
+                    "protocol": finding.get("protocol"),
                 }
             )
 
@@ -181,16 +188,37 @@ def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
 
     Rows without a CVE id are keyed by host:port:script_id so non-CVE
     VULNERABLE scripts still appear once.
+
+    The detectors of a dropped row are not dropped with it: the kept row
+    lists them under ``also_detected_by`` (``source`` and ``script_id`` each,
+    and Pulse's ``ruleset_version``; only when there were any). One CVE seen
+    by Pulse and by a nuclei template is one finding, but the API has to know
+    both looked -- a verification re-scan is only allowed to close it once
+    both have looked again (docs/vulnerability-lifecycle.md).
     """
-    seen: set[tuple[str, str, str]] = set()
+    kept: dict[tuple[str, str, str], dict] = {}
     out: list[dict] = []
     for item in vulnerabilities:
         cve = item.get("cve")
         cve_key = str(cve).upper() if cve else f"script:{(item.get('script_id') or '')}"
         key = (str(item.get("host") or ""), str(item.get("port") or ""), cve_key)
-        if key in seen:
+        first = kept.get(key)
+        if first is not None:
+            ident = {"source": item.get("source"), "script_id": item.get("script_id")}
+            first_ident = {"source": first.get("source"), "script_id": first.get("script_id")}
+            others = first.get("also_detected_by") or []
+            if ident != first_ident and not any(
+                {"source": o.get("source"), "script_id": o.get("script_id")} == ident for o in others
+            ):
+                detector = dict(ident)
+                # The protocol it was seen on and the CVE ruleset a Pulse match
+                # was made with travel too: a verification is judged on both.
+                for extra in ("protocol", "ruleset_version"):
+                    if item.get(extra):
+                        detector[extra] = item[extra]
+                first["also_detected_by"] = [*others, detector]
             continue
-        seen.add(key)
+        kept[key] = item
         out.append(item)
     return out
 

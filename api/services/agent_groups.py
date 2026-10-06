@@ -467,8 +467,16 @@ def live_agent_count(settings: Settings, *, tenant_id: str, name: str) -> int:
         )
 
 
-def live_groups(settings: Settings, tenant_ids: set[str]) -> set[tuple[str, str]]:
-    """``(tenant_id, group)`` pairs that have an agent able to take a job now.
+def live_groups(
+    settings: Settings, tenant_ids: set[str]
+) -> dict[tuple[str, str], list[frozenset[str]]]:
+    """``(tenant_id, group)`` pairs that have an agent able to take a job now,
+    with the capabilities of each such agent.
+
+    Capabilities because "an agent is listening" is not "an agent would be
+    handed this job": a job whose overlay or purpose needs a capability no
+    agent of the group declares waits exactly like one with nobody listening
+    (#451 review), and has to say so the same way.
 
     The set form of :func:`live_agent_count`, for rendering a page of jobs: the
     queue view asks it once and answers "is anything listening to this job's
@@ -479,22 +487,67 @@ def live_groups(settings: Settings, tenant_ids: set[str]) -> set[tuple[str, str]
     Computed where it is read, never stored: a job queued while the group's
     only agent was restarting would otherwise carry "nothing to execute it"
     for the rest of its life, minutes after the agent came back.
+
+    The same agents as :func:`live_sensors`: scanner kind (an endpoint agent
+    put into a group is refused every scan job on claim) and not below the
+    version floor (refused too). Counting either let a verification be parked
+    behind a group nothing in it would ever claim from (#451 review).
     """
     if not tenant_ids:
-        return set()
+        return {}
+    from api.services import agents as agents_service
+
     cutoff = _now() - timedelta(seconds=settings.agent_stale_seconds)
     with get_session(settings.postgres_url) as session:
-        return {
-            (tenant_id, name)
-            for tenant_id, name in session.execute(
-                select(models.Agent.tenant_id, models.Agent.agent_group).where(
-                    models.Agent.tenant_id.in_(sorted(tenant_ids)),
-                    models.Agent.agent_group.is_not(None),
-                    models.Agent.lifecycle_status == "active",
-                    models.Agent.last_seen_at >= cutoff,
-                )
-            ).all()
-        }
+        rows = session.execute(
+            select(
+                models.Agent.tenant_id, models.Agent.agent_group, models.Agent.detail, models.Agent.version
+            ).where(
+                models.Agent.tenant_id.in_(sorted(tenant_ids)),
+                models.Agent.agent_group.is_not(None),
+                models.Agent.agent_kind == "scanner",
+                models.Agent.lifecycle_status == "active",
+                models.Agent.last_seen_at >= cutoff,
+            )
+        ).all()
+    out: dict[tuple[str, str], list[frozenset[str]]] = {}
+    for tenant_id, name, detail, version in rows:
+        if agents_service.is_below_min_version(version or ""):
+            continue
+        capabilities = agents_service._extract_detail(detail)[2]  # noqa: SLF001
+        out.setdefault((tenant_id, name), []).append(frozenset(capabilities or []))
+    return out
+
+
+def last_heard_from(settings: Settings, *, tenant_id: str, name: str) -> datetime | None:
+    """When ``name`` last had a sensor that could take a job, or None.
+
+    The newest heartbeat of the group's sensors that a claim would not
+    refuse (scanner kind, active, not below the version floor — the agents
+    :func:`live_groups` counts); for a group none of whose current members
+    ever qualified, its creation, since that is how long it has gone without
+    one. None when the tenant has no such group. How long a group has been
+    silent is what tells a sensor restarting from a group nobody will come
+    back to (#451 review, round 3).
+    """
+    from api.services import agents as agents_service
+
+    with get_session(settings.postgres_url) as session:
+        group = _row_by_name(session, tenant_id=tenant_id, name=name)
+        if group is None:
+            return None
+        rows = session.execute(
+            select(models.Agent.last_seen_at, models.Agent.version).where(
+                models.Agent.tenant_id == tenant_id,
+                models.Agent.agent_group == name,
+                models.Agent.agent_kind == "scanner",
+                models.Agent.lifecycle_status == "active",
+                models.Agent.last_seen_at.is_not(None),
+            )
+        ).all()
+        created = group.created_at
+    seen = [last for last, version in rows if not agents_service.is_below_min_version(version or "")]
+    return max(seen) if seen else created
 
 
 def live_sensors(settings: Settings, tenant_ids: set[str]) -> dict[str, list[frozenset[str]]]:
@@ -509,7 +562,7 @@ def live_sensors(settings: Settings, tenant_ids: set[str]) -> dict[str, list[fro
     agent is refused scan jobs on claim), and not below the version floor
     (refused too, #363). Capabilities rather than a yes/no because the answer
     depends on the job: one with a scan policy or a config overlay needs a
-    sensor that declares it (review round 2).
+    sensor that declares it.
     """
     if not tenant_ids:
         return {}

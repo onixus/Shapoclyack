@@ -56,6 +56,8 @@ SECONDARY_ACTIVE_STAGE_POLICIES: dict[str, tuple[str, str]] = {
     "tls_posture": ("probe_concurrency", "probe_fallback"),
     "fingerprint": ("concurrency", "enabled"),
     "screenshots": ("concurrency", "enabled"),
+    # A verification's connect probe of the finding's ports (#451).
+    "reachability": ("concurrency", "enabled"),
 }
 
 #: Every other pipeline stage, with the reason it is not a secondary active

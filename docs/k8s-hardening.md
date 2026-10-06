@@ -283,12 +283,19 @@ a sensor gentler, never rougher — to make a sensor faster, raise its own file.
 Stage switches (nuclei on or off, the organisation-profile stages) follow the
 overlay, since that is what an intent is.
 
-The capability is versioned with the set of settings the overlay may carry:
-`config_overlay.v1`. A sensor that does not declare the version the API sends
-is never handed such a job — the claim hands it the jobs it can run first, and
-answers `426` only when nothing else is waiting — and the job stays queued for
-one that can, flagged `sensor_unavailable` while no live sensor of the tenant
-declares it. Three things deliberately do not travel: the NVD API key, a secret
+The capability is versioned with the set of settings the overlay may carry,
+and asked for per job: `config_overlay.v1` for the intents and the
+configurator's settings, `config_overlay.v2` for every verification re-scan,
+which may pin nuclei templates by id (`nuclei.template_ids`, #451) and is
+judged on coverage evidence only a v2 build writes — asked for explicitly,
+whatever the job's overlay carries. A sensor built from this tree
+declares both. A sensor that does not declare the version a job needs is never
+handed that job — the claim hands it the jobs it can run first, and answers
+`426` only when nothing else is waiting — and the job stays queued for one
+that can, flagged `sensor_unavailable` while no live sensor of the tenant
+declares it. So after an API upgrade the older sensors keep scanning; only
+verifications wait for an upgraded one. The fleet summary's
+`scan_ready_agents` counts sensors that can take an ordinary scan (`v1`). Three things deliberately do not travel: the NVD API key, a secret
 the executor's scans do not use (its config leaves online CVE lookups off) —
 give an executor that needs it its own `NVD_API_KEY`; the nuclei templates
 directory, a path on the API's host; and a custom wordlist, a file of up to

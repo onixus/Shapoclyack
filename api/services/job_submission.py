@@ -39,6 +39,7 @@ from api.services import scan_intents
 from api.services import scan_surface
 from api.services import tenants as tenants_service
 from api.settings import Settings
+from scanner.pipeline import config_overlay
 
 _log = logging.getLogger(__name__)
 
@@ -229,6 +230,9 @@ def start_scan(
     idempotency_key: str | None = None,
     quota_exempt: bool = False,
     widen_with_promoted: bool = True,
+    config_extra: dict[str, Any] | None = None,
+    min_overlay_version: int = 1,
+    verification_of: str | None = None,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
 
@@ -246,6 +250,20 @@ def start_scan(
     of *this dispatch*: the requester's name is the analyst's on that path, so
     recognising the exemption by username would be both wrong and forgeable.
 
+    ``config_extra`` is a per-job scanner setting the platform adds on top of
+    the intent's — today the verification re-scan's pinned nuclei templates.
+    It travels exactly where the intent's settings do (the local run's merged
+    config, the sensor's overlay) and is merged after them. Never from a
+    request body: it is held to the overlay allow-list here, and a job whose
+    overlay needs a newer version than the console's settings asks its
+    claimant for that version (``config_overlay.required_capability``).
+
+    ``min_overlay_version`` raises that requirement for a job whose *purpose*
+    needs a newer sensor whatever its overlay carries, and
+    ``verification_of`` names the finding such a job re-checks (stored as
+    ``scan_options.verification_of``): both are the verification re-scan's,
+    whose closure is judged on evidence only an overlay-v2 build writes.
+
     ``build_command``, ``run_local_job`` and ``publish_offer`` are passed in
     rather than imported so that the jobs facade stays the seam existing tests
     replace, and so this module does not depend on the executor it starts.
@@ -254,6 +272,10 @@ def start_scan(
         raise RuntimeError(
             "Scan start disabled by OCTO_ALLOW_SCAN_START"
         )
+    if config_extra:
+        # Before anything is admitted or written: a setting a sensor would
+        # refuse is refused where the job is created, as the overlay is.
+        config_overlay.check_config(config_extra)
 
     job_id = uuid.uuid4().hex[:12]
     execution = (
@@ -289,7 +311,6 @@ def start_scan(
     promoted_refused = list(admission.promoted_refused)
     policy_snapshot = admission.policy_snapshot
     agent_group = admission.agent_group
-    group_has_live_agent = admission.group_has_live_agent
 
     resolved = scan_intents.resolve_scan_options(
         intent=request.intent,
@@ -297,7 +318,9 @@ def start_scan(
         delta=request.delta,
         skip_nse=request.skip_nse,
     )
-    intent_extra = resolved.config_extra
+    intent_extra = (
+        scan_intents.merge_config_extras(resolved.config_extra, config_extra) or {}
+    )
     if execution == "agent" and request.wordlist_id:
         # A custom wordlist lives in the API's Postgres and is materialized
         # onto the API pod's filesystem; a remote agent never sees it. Refused
@@ -428,6 +451,19 @@ def start_scan(
             # a job carrying one is only handed to an agent that applies it.
             # Never holds a secret — ``agent_overlay`` leaves SECRET_PATHS out.
             **({"config_overlay": overlay} if overlay else {}),
+            # And which overlay version that claimant has to apply: the
+            # lowest that covers it, so a sensor that predates a setting is
+            # refused only the jobs that use it (config_overlay.py).
+            **(
+                {
+                    config_override_service.OVERLAY_CAPABILITY_OPTION: config_overlay.capability(
+                        max(config_overlay.required_version(overlay), min_overlay_version)
+                    )
+                }
+                if overlay
+                else {}
+            ),
+            **({"verification_of": verification_of} if verification_of else {}),
             "surface": surface,
             "surface_source": (
                 "operator"
@@ -516,11 +552,7 @@ def start_scan(
             info = job_store.to_info(
                 row,
                 (
-                    (
-                        {(tenant_id, agent_group)}
-                        if group_has_live_agent
-                        else set()
-                    )
+                    agent_groups_service.live_groups(settings, {tenant_id})
                     if agent_group
                     else None
                 ),

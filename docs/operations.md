@@ -2570,6 +2570,51 @@ process never replaces itself, and nothing polls the server for a new version
 unless you install a timer for it. For a Docker install, pull the new image and
 re-run the installer with `--docker` (or roll the Kubernetes deployment).
 
+**Verification re-scans need an upgraded sensor** (#451, migration `0079`).
+A verification job asks for `config_overlay.v2`: it may pin the nuclei
+templates that found the finding, and it is judged on coverage evidence only
+that build writes. While no live sensor of the group the job would go to
+(the observing group, held to the approved scope; any sensor of the tenant for
+an ungrouped one, or when the observing group was deleted or has had no live
+sensor for longer than `OCTO_VERIFICATION_REGROUP_GRACE_SECONDS`, 1 h by
+default — the `verification_started` event then says so; inside that period
+**Verify** answers `409` "retry") declares it,
+**Verify** is refused (`409`, naming the group and the capability) rather than
+queuing a job nothing will run. "Live" is a scanner sensor reporting in, at or
+above `OCTO_AGENT_MIN_VERSION`: an endpoint agent put into a group does not
+count; a sensor that cannot take an already-queued one answers `426`
+naming it — every other job keeps going to the older sensors. A verification
+job that is queued and then never claimed still costs its NATS offer a
+delivery attempt per sensor that declines it (`JOBS_MAX_DELIVER`), as any job
+an outdated sensor cannot run does — known debt, not specific to #451. Two
+things to do around the upgrade:
+
+1. Finish rolling the API before anyone presses **Verify**: an API replica of
+   the previous release still closes a verification the old way, on absence
+   alone, which is the defect the release fixes.
+2. Expect findings to come back from `VERIFYING` as **verification
+   inconclusive** where the scan could not have seen them: a port that did
+   not refuse the connection (dropped, filtered) or was checked from another
+   vantage than the one that found it (another sensor group, another
+   ungrouped sensor, a finding seen from more than one), nuclei or its templates missing on the sensor, an NSE
+   script not in the sensor's NSE profile, a name the scope no longer covers.
+   The event's `detail.gaps` says which; fix that and verify again, or close
+   the finding by hand with the reason. A finding from before the upgrade
+   carries no vantage until a scan observes it again; once one has, a refusal
+   from that same place can close it. A `vantage_differs` because two sensors
+   or groups saw it is not fixed by verifying again — it closes on coverage,
+   or by hand. Findings left in `VERIFYING` by a
+   verification job that was cancelled while queued, or written off before
+   it uploaded anything, are not released automatically — move them back to
+   `FIXING` by hand.
+3. A port refused on every attempt closes a finding as `endpoint_unreachable`,
+   which is **not** machine-verified and does not count towards the verified
+   share: a firewall `REJECT` in front of a listening port is refused the same
+   way. Treat these closures as "not reachable from that sensor", and look at
+   them where reachability from elsewhere matters. The probe spaces its
+   attempts `reachability.attempt_interval_seconds` apart (5 s by default), so
+   a verification run takes a few seconds longer per probed endpoint batch.
+
 **Removing a sensor** from the Sensors page (`DELETE /api/agents/{id}`) only
 forgets the registration. Stop `shapoclyack-agent.service` (or the container)
 on the host first, otherwise the next heartbeat registers it again.

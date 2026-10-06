@@ -1047,10 +1047,13 @@ def get_fleet_summary(
     counted for ``ready_tenant_id`` (the caller's tenant; a platform admin's
     unscoped view is still fleet-wide for every other count) and only for
     agents a claim would not refuse: online, active, scanner kind, not below
-    the version floor, declaring every capability a job may need (#338).
+    the version floor, declaring every capability a console scan may need
+    (#338). That is the first overlay version: a verification re-scan that
+    pins nuclei templates also needs ``config_overlay.v2``, and such a job
+    reports ``sensor_unavailable`` itself when no live sensor declares it.
     """
     from api.services.scan_policy import AGENT_CAPABILITY as POLICY_CAPABILITY
-    from scanner.pipeline.config_overlay import CAPABILITY as OVERLAY_CAPABILITY
+    from scanner.pipeline.config_overlay import BASE_CAPABILITY as OVERLAY_CAPABILITY
 
     needed = {POLICY_CAPABILITY, OVERLAY_CAPABILITY}
     settings = _require_settings()

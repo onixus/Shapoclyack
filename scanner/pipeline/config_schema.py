@@ -23,6 +23,18 @@ _INTERACTSH_SERVER_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: ``nuclei.template_ids``: one nuclei template id, as nuclei-templates spells
+#: them (``CVE-2021-44228``, ``apache-detect``, ``tech-detect``). The value is
+#: an argv element on a sensor, and it crosses the platform-to-sensor trust
+#: boundary in the job's config overlay, so anything outside this alphabet --
+#: a comma that would turn one id into two, a ``*`` that nuclei reads as a
+#: wildcard, a path, a leading dash -- is refused rather than passed on.
+NUCLEI_TEMPLATE_ID_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]{0,199}")
+
+#: How many template ids one run may pin. A verification re-checks one finding,
+#: which a handful of templates detected; a list longer than this is not that.
+MAX_NUCLEI_TEMPLATE_IDS = 64
+
 
 def normalize_resolver(value: str) -> str:
     """One DNS resolver in the form dnsx's ``-r`` takes: ``ip:port``.
@@ -784,6 +796,26 @@ class FingerprintConfig(BaseModel):
         return ports
 
 
+class ReachabilityConfig(BaseModel):
+    """Explicit TCP refusal evidence for a verification re-scan (#451).
+
+    Off by default and not an installation setting: a verification job turns
+    it on through its config overlay (overlay v2). See
+    ``scanner/pipeline/reachability.py``.
+    """
+
+    enabled: bool = False
+    concurrency: int = Field(default=8, ge=1, le=64)
+    attempts: int = Field(default=2, ge=1, le=5)
+    timeout_seconds: float = Field(default=3.0, ge=0.5, le=30.0)
+    # Seconds between two attempts on one endpoint. A refusal that comes
+    # back the same way twice a few seconds apart is less likely to be one
+    # transient reset; it is still not proof the host itself answered
+    # (reachability.py).
+    attempt_interval_seconds: float = Field(default=5.0, ge=0.0, le=60.0)
+    max_probes: int = Field(default=256, ge=1, le=4096)
+
+
 class ScreenshotConfig(BaseModel):
     """Web screenshots (P4.4 / Phase 9.3). Opt-in.
 
@@ -840,11 +872,20 @@ class NucleiConfig(BaseModel):
     five more) and has every scanned host call back to them, so the default
     is off and the only way to turn it on is to name a server the operator
     runs. See ``docs/network-requirements.md``.
+
+    ``template_ids`` pins the run to those templates (nuclei ``-id``) and is
+    what a verification re-scan sets: the job re-checking a finding has to
+    load the template that found it, whatever that template's severity, so
+    while it is non-empty ``severities`` and ``tags`` do not apply.
+    ``exclude_tags`` still does -- it is the host's own safety floor, and a
+    platform-sent id must not be a way around it. Empty, the default, is the
+    ordinary sweep. Each id is checked against ``NUCLEI_TEMPLATE_ID_RE``.
     """
 
     enabled: bool = True
     templates_dir: str = "/usr/share/nuclei-templates"
     custom_templates_dir: str = ""
+    template_ids: list[str] = Field(default_factory=list, max_length=MAX_NUCLEI_TEMPLATE_IDS)
     severities: list[str] = Field(default_factory=lambda: ["critical", "high", "medium"])
     tags: list[str] = Field(default_factory=list)
     exclude_tags: list[str] = Field(default_factory=lambda: ["intrusive", "fuzz", "dos"])
@@ -853,6 +894,11 @@ class NucleiConfig(BaseModel):
     rate_limit: int = Field(default=150, ge=1, le=10_000)
     timeout_seconds: int = Field(default=10, ge=1, le=60)
     retries: int = Field(default=1, ge=0, le=5)
+    # nuclei's -max-host-error, passed explicitly: after this many errors a
+    # target is dropped from the scan (nuclei raises it to -concurrency when
+    # lower). Its own default, 30, spelled out so a nuclei upgrade that
+    # changes it does not change which hosts a run quietly stops checking.
+    max_host_error: int = Field(default=30, ge=1, le=10_000)
     # Hard cap on the whole nuclei subprocess invocation, independent of
     # per-request timeout_seconds -- mirrors runtime.nse_timeout_seconds'
     # role of bounding one external-tool call regardless of target count.
@@ -868,6 +914,23 @@ class NucleiConfig(BaseModel):
             if port < 1 or port > 65535:
                 raise ValueError(f"invalid nuclei port: {port}")
         return ports
+
+    @field_validator("template_ids")
+    @classmethod
+    def validate_template_ids(cls, ids: list[str]) -> list[str]:
+        """Each id whole and in the template-id alphabet; duplicates dropped.
+
+        Refused rather than filtered: an overlay carrying an id this rejects
+        was not built by the platform, and running the rest of the list would
+        record a verification that never loaded what it was sent to load.
+        """
+        out: list[str] = []
+        for value in ids:
+            if not isinstance(value, str) or NUCLEI_TEMPLATE_ID_RE.fullmatch(value) is None:
+                raise ValueError(f"invalid nuclei template id: {value!r}")
+            if value not in out:
+                out.append(value)
+        return out
 
     @field_validator("interactsh_server")
     @classmethod
@@ -1234,6 +1297,7 @@ class AppConfig(BaseModel):
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
     fingerprint: FingerprintConfig = Field(default_factory=FingerprintConfig)
     screenshots: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
+    reachability: ReachabilityConfig = Field(default_factory=ReachabilityConfig)
     nuclei: NucleiConfig = Field(default_factory=NucleiConfig)
     tls_posture: TlsPostureConfig = Field(default_factory=TlsPostureConfig)
     org_profile: OrgProfileConfig = Field(default_factory=OrgProfileConfig)

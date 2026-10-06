@@ -61,6 +61,8 @@ from scanner.pipeline.hostnames import (
 from scanner.pipeline.nse import run_nse
 from scanner.pipeline.ownership import resolve_ownership
 from scanner.pipeline.ports import custom_tcp_ports, fast_port_scan
+from scanner.pipeline.coverage_tracker import expand_target_ips
+from scanner.pipeline.reachability import run_reachability_probe
 from scanner.pipeline.pulse_probe import run_pulse_probe, sync_report_primary_marker
 from scanner.pipeline.scan_policy import (
     ScanPolicyError,
@@ -861,6 +863,28 @@ def _run_pipeline_body(
             return sorted(open_set)
 
         open_ports = _run_stage("ports", _ports_stage)
+
+    # A verification job's refusal evidence (#451): naabu reports open ports
+    # only, so "closed" and "dropped" look alike in its output. Off unless the
+    # job's overlay turns it on.
+    if config.reachability.enabled:
+        if args.resume and checkpoint.is_done("reachability"):
+            timer.skip("reachability")
+        else:
+            _run_policy_controlled_secondary_stage(
+                "reachability",
+                lambda: run_reachability_probe(
+                    [
+                        str(host)
+                        for host in expand_target_ips(all_targets, max_hosts=config.reachability.max_probes)
+                    ],
+                    custom_tcp_ports(Path(config.ports.custom_ports_file)),
+                    config.reachability,
+                    paths.output_dir,
+                    exclude_ports=config.ports.exclude_ports,
+                ),
+            )
+            checkpoint.mark_done("reachability")
 
     def _verify_alive() -> list[str]:
         verified = verify_alive_without_ports(
