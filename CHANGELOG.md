@@ -24,7 +24,8 @@ All notable changes to Shapoclyack are documented in this file.
   scanned host's to write; every shipped regex is also timed against hostile
   inputs by the tests (never at scan time), and an entry that fails
   validation is dropped and listed in `catalogue.rejected` rather than
-  failing the run. Requests: the root, plus at most three redirect hops to an
+  failing the run (the web technologies control then says so instead of
+  passing). Requests: the root, plus at most three redirect hops to an
   `(address, port)` the port scan reported open in the run (never a port it
   did not report, such as a tenant-excluded one, #362); a redirect elsewhere
   (another port, a host name) is recorded as `redirect_location`, not

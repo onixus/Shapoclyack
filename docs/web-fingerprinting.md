@@ -79,12 +79,16 @@ regexes are checked twice:
   overlapping characters (lookarounds looked through). Deterministic, no
   timing. An entry that fails it (or the schema) is dropped, logged and listed
   in `fingerprint.json` under `catalogue.rejected`; the rest of the catalogue
-  and the run carry on. An unreadable file leaves an empty catalogue, not a
-  failed run.
+  and the run carry on, and the stage's log line names them. An unreadable
+  file leaves an empty catalogue, not a failed run. Neither reads as a pass:
+  the web technologies control is `not_checked` on an empty catalogue and at
+  best `weak` with rejected entries, naming them in `why`.
 * by measurement, in the tests only — `tests/test_fingerprint_catalogue.py`
   runs every shipped pattern over hostile inputs built from its own literals,
   growing one character at a time and then doubling to 64 KiB, on CPU time
-  (median of three) against a 250 ms budget. Nothing is timed at scan time:
+  (median of three) against a 62.5 ms budget: a 64 KiB sample is 1/16 of the
+  largest body the stage may read (1 MiB), and sixteen times the sample has to
+  fit the 2-second classification deadline twice over. Nothing is timed at scan time:
   a timing on a busy sensor says as much about the machine as about the
   pattern, and an early version that timed at load failed whole runs under
   load.
