@@ -2153,8 +2153,8 @@ VERIFICATION_OVERLAY_VERSION = 2
 VERIFICATION_CAPABILITY = f"config_overlay.v{VERIFICATION_OVERLAY_VERSION}"
 
 
-def _verification_sensor_live(settings: Settings, tenant_id: str, group: str | None) -> bool:
-    """Whether a live sensor that would be handed the verification declares v2.
+def _verification_sensors(settings: Settings, tenant_id: str, group: str | None) -> list[frozenset[str]]:
+    """The capabilities of each live sensor that would be offered the job.
 
     ``group`` is the one the job will carry (the observing group, held to the
     approved scope): only that group's sensors claim it. With none, any
@@ -2165,10 +2165,33 @@ def _verification_sensor_live(settings: Settings, tenant_id: str, group: str | N
     from api.services import agent_groups as agent_groups_service
 
     if group:
-        live = agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group), [])
-    else:
-        live = agent_groups_service.live_sensors(settings, {tenant_id}).get(tenant_id, [])
-    return any(VERIFICATION_CAPABILITY in capabilities for capabilities in live)
+        return agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group), [])
+    return agent_groups_service.live_sensors(settings, {tenant_id}).get(tenant_id, [])
+
+
+#: How a verification's event and refusal say why it left its observing group.
+_REGROUP_REASONS = {"deleted": "was deleted", "no_live_sensor": "has no live sensor"}
+
+
+def _observing_group_gone(settings: Settings, tenant_id: str, group: str | None) -> str | None:
+    """Why the finding's observing group cannot take its verification, or None.
+
+    ``deleted`` when the tenant no longer has the group, ``no_live_sensor``
+    when nothing in it could claim a job now (sensors moved out, stopped,
+    refused at claim). Either way pinning the job there would be refused or
+    sit queued forever, so the verification goes out tenant-wide instead —
+    and since that is another vantage, a refusal from it closes nothing
+    (``vantage_differs``); the coverage-based closure is unaffected.
+    """
+    from api.services import agent_groups as agent_groups_service
+
+    if not group:
+        return None
+    if group not in agent_groups_service.existing_names(settings, tenant_id):
+        return "deleted"
+    if not agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group)):
+        return "no_live_sensor"
+    return None
 
 
 def _is_ip(value: str) -> bool:
@@ -2382,10 +2405,18 @@ def trigger_verification(
             "Scan dispatch is disabled on this server (OCTO_ALLOW_SCAN_START), "
             "so this finding cannot be machine-verified"
         )
+    # The group the re-scan goes out from: the observing one, unless that
+    # one can no longer take it (deleted, or emptied by a regroup).
+    requested_group = plan.agent_group
+    regrouped: dict[str, Any] | None = None
     if settings.job_execution_mode == "agent":
         from api.services import agent_groups as agent_groups_service
         from api.services import scan_scopes as scopes
 
+        gone = _observing_group_gone(settings, owning_tenant, plan.agent_group)
+        if gone:
+            regrouped = {"from": plan.agent_group, "reason": gone}
+            requested_group = None
         ranges_text = "\n".join(plan.ips) or None
         domains_text = "\n".join(plan.names) or None
         try:
@@ -2394,7 +2425,7 @@ def trigger_verification(
             group = agent_groups_service.resolve_for_scan(
                 settings,
                 tenant_id=owning_tenant,
-                requested=plan.agent_group,
+                requested=requested_group,
                 required=scopes.required_agent_groups(
                     settings,
                     tenant_id=owning_tenant,
@@ -2404,17 +2435,29 @@ def trigger_verification(
             )
         except (ValueError, PermissionError) as exc:
             raise VerificationDispatchError(f"Could not dispatch a verification scan: {exc}") from exc
-        if not _verification_sensor_live(settings, owning_tenant, group):
+        live = _verification_sensors(settings, owning_tenant, group)
+        if not any(VERIFICATION_CAPABILITY in capabilities for capabilities in live):
             # Refused rather than queued: the job would wait for a sensor
             # that may never come, with the finding parked in VERIFYING
             # meanwhile — the state this function exists never to create. A
             # local-execution installation runs the scan itself.
             where = f"sensor group '{group}'" if group else "this tenant"
+            if regrouped and not group:
+                where += f" (its observing group '{plan.agent_group}' {_REGROUP_REASONS[regrouped['reason']]})"
+            if live:
+                raise VerificationDispatchError(
+                    f"No live sensor of {where} can run a verification re-scan: it needs "
+                    f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
+                    "loads pinned nuclei templates and records the coverage evidence the "
+                    "closure is judged on). Upgrade a sensor there and verify again."
+                )
+            # Nothing there to upgrade: no active scanner sensor with a recent
+            # heartbeat at or above the version floor.
             raise VerificationDispatchError(
-                f"No live sensor of {where} can run a verification re-scan: it needs "
-                f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
-                "loads pinned nuclei templates and records the coverage evidence the "
-                "closure is judged on). Upgrade a sensor there and verify again."
+                f"No live sensor of {where} can run a verification re-scan: none is "
+                "active and reporting in, of scanner kind and at or above the version "
+                f"floor. Bring one online (with capability {VERIFICATION_CAPABILITY}) "
+                "and verify again."
             )
 
     from api.schemas import StartScanRequest
@@ -2433,7 +2476,7 @@ def trigger_verification(
         # a default port sweep is how "not observed" stops meaning "fixed".
         ports=port or None,
         skip_nse=False,
-        agent_group=plan.agent_group,
+        agent_group=requested_group,
     )
     try:
         job = jobs_service.start_scan(
@@ -2500,7 +2543,14 @@ def trigger_verification(
             from_state=previous,
             to_state=vuln_states.VERIFYING,
             actor=actor or "system:verification",
-            note=f"Targeted verification scan dispatched (job {job.job_id})",
+            note=f"Targeted verification scan dispatched (job {job.job_id})"
+            + (
+                f"; observing sensor group '{regrouped['from']}' "
+                f"{_REGROUP_REASONS[regrouped['reason']]}, so it went to any sensor of the "
+                "tenant: a refused port cannot close it from there (vantage differs)"
+                if regrouped
+                else ""
+            ),
             detail={
                 "job_id": job.job_id,
                 "asset_id": row.asset_id,
@@ -2509,6 +2559,7 @@ def trigger_verification(
                 "cve": row.cve,
                 "script_id": row.script_id,
                 "plan": plan.as_detail(),
+                **({"regrouped": {**regrouped, "dispatched_group": job.agent_group}} if regrouped else {}),
             },
         )
         session.flush()

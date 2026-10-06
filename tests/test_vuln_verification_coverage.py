@@ -1480,6 +1480,96 @@ def test_a_scope_pinned_group_with_a_v2_sensor_gets_the_job(tmp_path):
     assert job.agent_group == "dmz"
 
 
+@pytest.mark.parametrize("regroup", ["deleted", "no_live_sensor"])
+def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wide(tmp_path, regroup):
+    """The round-2 delta review's probes: the sensors of ``internal`` moved
+    to ``msk``, and ``internal`` deleted — or kept, empty. Pinning the job to
+    ``internal`` was a 409 forever (unknown group) or one telling the
+    operator to upgrade a sensor in a group that has none. It goes out to
+    any sensor of the tenant instead, and says so."""
+    from api.services import agent_groups
+
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="internal")
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="msk")
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+    if regroup == "deleted":
+        agent_groups.delete_group(settings, tenant_id=tenant_id, name="internal")
+
+    job = _dispatch(settings, tenant_id, vuln["vuln_id"], sensor_group="msk")
+
+    assert job.agent_group is None
+    started = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert started["detail"]["regrouped"] == {"from": "internal", "reason": regroup, "dispatched_group": None}
+    assert "observing sensor group 'internal'" in started["note"]
+    assert "vantage differs" in started["note"]
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        {"agent_kind": "endpoint"},  # refused every scan job on claim (403)
+        {"version": "1.0"},  # below the floor: refused on claim (426)
+    ],
+    ids=["endpoint-agent", "below-floor"],
+)
+def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp_path, member):
+    """The round-2 delta review's probes: the observing group's only member
+    declares v2 but could never claim the job. The verification was queued
+    there and the finding parked in VERIFYING. Now the group counts as having
+    no live sensor; with none elsewhere either, it is refused — and the
+    refusal does not tell anyone to upgrade a sensor that does not exist."""
+    from api.services import agent_groups
+    from api.services import agents as agents_service
+
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-dmz", group="dmz")
+    settings.job_execution_mode = "agent"
+    settings.agent_min_version = "9.0"
+    agents_service.configure(settings)
+    agent = agents_service.register_agent(
+        hostname="dmz-member",
+        tenant_id=tenant_id,
+        capabilities=["scan_policy", "config_overlay.v1", "config_overlay.v2"],
+        **{"version": "9.1", **member},
+    )
+    agent_groups.set_agent_group(settings, tenant_id=tenant_id, agent_id=agent.agent_id, name="dmz")
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    with pytest.raises(vulns.VerificationDispatchError) as refused:
+        vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+    assert "Upgrade" not in str(refused.value)
+    assert "observing group 'dmz' has no live sensor" in str(refused.value)
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+    with get_session(settings.postgres_url) as session:
+        # Only the job that observed it: no verification was queued.
+        assert [job.job_id for job in session.query(models.Job).filter(models.Job.tenant_id == tenant_id)] == [
+            "job-observe"
+        ]
+
+
+def test_a_group_with_only_old_sensors_is_told_to_upgrade_one(tmp_path):
+    """The control: live v1 sensors in the observing group — there is
+    something to upgrade, and the job stays pinned to where it was seen."""
+    from api.services import agent_groups
+
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-dmz", group="dmz")
+    _agent_mode(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"), group="dmz")
+    _sensor(settings, tenant_id)  # a v2 sensor elsewhere does not take it
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    with pytest.raises(vulns.VerificationDispatchError, match="sensor group 'dmz'.*Upgrade a sensor there"):
+        vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+
 def test_a_template_id_a_sensor_would_refuse_is_refused_at_dispatch(tmp_path):
     odd = _row("nuclei", "nuclei:bad,id")
     settings, tenant_id = _seed(tmp_path, findings=[odd])
