@@ -137,7 +137,7 @@ def test_cpe_name_escapes_a_version_and_wildcards_a_missing_one():
             ),
             "only sub-matchers",
         ),
-        (lambda t: t.update(version=[{"from": "header", "name": "server", "regex": "\\d+"}]), "no (?P<version>"),
+        (lambda t: t.update(version=[{"from": "header", "name": "server", "regex": "\\d{1,6}"}]), "no (?P<version>"),
         (lambda t: t.update(version=[{"from": "body", "name": "server", "regex": "(?P<version>\\d)"}]), "names a header"),
     ],
 )
@@ -220,7 +220,7 @@ def test_a_loose_version_rule_still_cannot_return_something_that_is_not_a_versio
                     "name": "Loose",
                     "category": "web_server",
                     "match": [{"from": "header", "name": "server"}],
-                    "version": [{"from": "header", "name": "server", "regex": "^(?P<version>\\S+)"}],
+                    "version": [{"from": "header", "name": "server", "regex": "^(?P<version>\\S{1,64})"}],
                 }
             ],
         }

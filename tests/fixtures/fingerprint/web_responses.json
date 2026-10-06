@@ -314,7 +314,22 @@
    ],
    "body": "",
    "version": "1.24.0",
-   "cpe": "cpe:2.3:a:f5:nginx:1.24.0:*:*:*:*:*:*:*"
+   "cpe": "cpe:2.3:a:f5:nginx_open_source:1.24.0:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "nginx",
+   "label": "synthetic distribution nginx: the upstream number in the banner is not the code that runs",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "nginx/1.18.0 (Ubuntu)"
+    ]
+   ],
+   "body": "",
+   "version": "1.18.0",
+   "cpe": "cpe:2.3:a:f5:nginx_open_source:*:*:*:*:*:*:*:*",
+   "distro_hint": "ubuntu"
   },
   {
    "tech": "apache_httpd",
@@ -328,7 +343,22 @@
    ],
    "body": "",
    "version": "2.4.57",
-   "cpe": "cpe:2.3:a:apache:http_server:2.4.57:*:*:*:*:*:*:*"
+   "cpe": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
+   "distro_hint": "debian"
+  },
+  {
+   "tech": "apache_httpd",
+   "label": "synthetic apache_httpd response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "Apache/2.4.58"
+    ]
+   ],
+   "body": "",
+   "version": "2.4.58",
+   "cpe": "cpe:2.3:a:apache:http_server:2.4.58:*:*:*:*:*:*:*"
   },
   {
    "tech": "microsoft_iis",
@@ -464,6 +494,14 @@
    "body": "<!DOCTYPE html><html><head><title>Apache Tomcat/9.0.83</title></head><body><h1>If you're seeing this, you've successfully installed Tomcat.</h1><h3>Apache Tomcat/9.0.83</h3></body></html>",
    "version": "9.0.83",
    "cpe": "cpe:2.3:a:apache:tomcat:9.0.83:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "apache_tomcat",
+   "label": "synthetic Tomcat error report: the version footer counts only on an error status",
+   "status": 404,
+   "headers": [],
+   "body": "<!DOCTYPE html><html><head><title>HTTP Status 404 – Not Found</title></head><body><h1>HTTP Status 404 – Not Found</h1><hr class='line' /><h3>Apache Tomcat/10.1.16</h3></body></html>",
+   "version": "10.1.16"
   },
   {
    "tech": "eclipse_jetty",
@@ -607,7 +645,7 @@
      "<https://example.test/wp-json/>; rel=\"https://api.w.org/\""
     ]
    ],
-   "body": "<!DOCTYPE html><html><head><title>Example blog</title><meta name=\"generator\" content=\"WordPress 6.4.2\"><link rel='stylesheet' href='https://example.test/wp-includes/css/dist/block-library/style.min.css'></head><body><img src='https://example.test/wp-content/uploads/2026/10/logo.png'></body></html>",
+   "body": "<!DOCTYPE html><html><head><title>Example blog</title><meta name=\"generator\" content=\"WordPress 6.4.2\"><link rel='stylesheet' href='/wp-includes/css/dist/block-library/style.min.css'></head><body><img src='http://192.0.2.10/wp-content/uploads/2026/10/logo.png'></body></html>",
    "version": "6.4.2",
    "cpe": "cpe:2.3:a:wordpress:wordpress:6.4.2:*:*:*:*:*:*:*"
   },
@@ -903,7 +941,22 @@
    ],
    "body": "",
    "version": "8.1.2",
-   "cpe": "cpe:2.3:a:php:php:8.1.2:*:*:*:*:*:*:*"
+   "cpe": "cpe:2.3:a:php:php:*:*:*:*:*:*:*:*",
+   "distro_hint": "ubuntu"
+  },
+  {
+   "tech": "generic_php",
+   "label": "synthetic generic_php response",
+   "status": 200,
+   "headers": [
+    [
+     "X-Powered-By",
+     "PHP/8.2.12"
+    ]
+   ],
+   "body": "",
+   "version": "8.2.12",
+   "cpe": "cpe:2.3:a:php:php:8.2.12:*:*:*:*:*:*:*"
   },
   {
    "tech": "codeigniter",
@@ -948,8 +1001,41 @@
     ]
    ],
    "body": "<!DOCTYPE html><html><head><title>Login to Webmin</title></head><body></body></html>",
+   "also": [
+    "miniserv"
+   ],
    "version": "2.105",
-   "cpe": "cpe:2.3:a:webmin:webmin:*:*:*:*:*:*:*:*"
+   "cpe": "cpe:2.3:a:webmin:webmin:2.105:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "usermin",
+   "label": "synthetic usermin response",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "MiniServ/2.105"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Login to Usermin</title></head><body></body></html>",
+   "also": [
+    "miniserv"
+   ],
+   "version": "2.105",
+   "cpe": "cpe:2.3:a:webmin:usermin:2.105:*:*:*:*:*:*:*"
+  },
+  {
+   "tech": "miniserv",
+   "label": "synthetic miniserv response",
+   "status": 401,
+   "headers": [
+    [
+     "Server",
+     "MiniServ/2.105"
+    ]
+   ],
+   "body": "",
+   "version": "2.105"
   },
   {
    "tech": "cpanel",
@@ -966,6 +1052,21 @@
     ]
    ],
    "body": "<!DOCTYPE html><html><head><title>cPanel Login</title></head><body></body></html>"
+  },
+  {
+   "tech": "cpanel_webmail",
+   "label": "synthetic cPanel webmail (port 2096): the mailbox login, also identifies cpsrvd",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "cpsrvd/11.110.0.15"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Webmail Login</title></head><body></body></html>",
+   "also": [
+    "cpanel"
+   ]
   },
   {
    "tech": "plesk",
@@ -1136,6 +1237,10 @@
     [
      "Server",
      "CouchDB/3.3.3 (Erlang OTP/24)"
+    ],
+    [
+     "Content-Type",
+     "application/json"
     ]
    ],
    "body": "{\"couchdb\":\"Welcome\",\"version\":\"3.3.3\",\"git_sha\":\"40afbcfc7\",\"features\":[\"search\"]}",
@@ -1509,13 +1614,67 @@
     [
      "Server",
      "xxxxxxxx-xxxxx"
-    ],
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title></title><script src=\"/remote/fgt_lang?lang=en\"></script></head><body></body></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortinet_fortigate_admin",
+   "label": "synthetic fortinet_fortigate_admin response",
+   "status": 200,
+   "url": "/login?redir=%2F",
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title></title></head><body><div class=\"ftnt-fortinet-grid\"><form><input type=\"password\" name=\"secretkey\"></form></div></body></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortinet_fortigate_admin",
+   "label": "synthetic FortiOS admin root: a script redirect to the GUI login",
+   "status": 200,
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": "<html><script type=\"text/javascript\">top.location=\"/login\";</script></html>",
+   "also": [
+    "fortios_httpsd"
+   ]
+  },
+  {
+   "tech": "fortios_httpsd",
+   "label": "synthetic fortios_httpsd response",
+   "status": 404,
+   "headers": [
+    [
+     "Server",
+     "xxxxxxxx-xxxxx"
+    ]
+   ],
+   "body": ""
+  },
+  {
+   "tech": "fortigate_slb",
+   "label": "synthetic site behind a FortiGate virtual server (persistence cookie)",
+   "status": 200,
+   "headers": [
     [
      "Set-Cookie",
      "FGTServer=0A1B2C; path=/; secure"
     ]
    ],
-   "body": "<!DOCTYPE html><html><head><title></title><script src=\"/remote/fgt_lang?lang=en\"></script></head><body><div class=\"ftnt-fortinet-grid\"></div></body></html>"
+   "body": ""
   },
   {
    "tech": "fortinet_fortigate",
@@ -1572,7 +1731,7 @@
      "webvpncontext=00@ab; path=/"
     ]
    ],
-   "body": "<html><script>document.location.replace(\"/+CSCOE+/logon.html\")</script></html>"
+   "body": "<html><script>document.location.replace(\"/+CSCOE+/logon.html\")</script><script src=\"/+CSCOU+/common.js\"></script></html>"
   },
   {
    "tech": "f5_bigip_apm",
@@ -2022,6 +2181,215 @@
     ]
    ],
    "body": "<!DOCTYPE html><html><head><title>Example</title></head><body></body></html>"
+  },
+  {
+   "name": "tutorial quoting curl :9200 (Elasticsearch)",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Installing Elasticsearch 7 on Ubuntu</title></head><body><p>Check that it is up:</p><pre><code>$ curl localhost:9200\n{\n  \"name\" : \"node-1\",\n  \"version\" : {\n    \"number\" : \"7.17.0\"\n  },\n  \"tagline\" : \"You Know, for Search\"\n}</code></pre></body></html>"
+  },
+  {
+   "name": "tutorial quoting the CouchDB welcome",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>CouchDB quick start</title></head><body><pre>$ curl http://127.0.0.1:5984/\n{\"couchdb\":\"Welcome\",\"version\":\"3.1.0\",\"git_sha\":\"ff0feea20\"}</pre></body></html>"
+  },
+  {
+   "name": "JSON API that quotes a CouchDB welcome in a field",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/plain"
+    ]
+   ],
+   "body": "{\"couchdb\":\"Welcome\",\"version\":\"3.1.0\"}"
+  },
+  {
+   "name": "tutorial quoting the anonymous Kubernetes 403",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Why does kubectl say forbidden?</title></head><body><pre>{\n  \"kind\": \"Status\",\n  \"apiVersion\": \"v1\",\n  \"status\": \"Failure\",\n  \"message\": \"forbidden: User \\\"system:anonymous\\\" cannot get path \\\"/\\\"\",\n  \"code\": 403\n}</pre></body></html>"
+  },
+  {
+   "name": "article on fixing the Spring Whitelabel Error Page",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Fixing the Whitelabel Error Page in Spring Boot</title></head><body><p>You hit <b>Whitelabel Error Page</b>: \"This application has no explicit mapping for /error, so you are seeing this as a fallback.\"</p></body></html>"
+  },
+  {
+   "name": "blog post quoting the WebLogic 404",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>WebLogic 404 explained</title></head><body><blockquote>Error 404--Not Found<br>From RFC 2068 Hypertext Transfer Protocol -- HTTP/1.1:</blockquote></body></html>"
+  },
+  {
+   "name": "blog post quoting the F5 ASM block page",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>What does 'The requested URL was rejected' mean?</title></head><body><blockquote>The requested URL was rejected. Please consult with your administrator.<br>Your support ID is: 1234</blockquote></body></html>"
+  },
+  {
+   "name": "page that renders a Tomcat footer at 200",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Our stack</title></head><body><h3>Apache Tomcat/9.0.83</h3><p>is what we run.</p></body></html>"
+  },
+  {
+   "name": "RouterOS upgrade notes",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>RouterOS v7.12 upgrade notes</title></head><body><h1>RouterOS v7.12</h1></body></html>"
+  },
+  {
+   "name": "BIG-IP TMUI exploit write-up",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>BIG-IP TMUI RCE (CVE-2020-5902) explained</title></head><body><pre>curl -k \"https://host/tmui/login.jsp/..;/tmui/locallb/workspace/fileRead.jsp?fileName=/etc/passwd\"\nurl = \"/tmui/login.jsp\"</pre></body></html>"
+  },
+  {
+   "name": "Ivanti Connect Secure PoC write-up",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>CVE-2023-46805 walkthrough</title></head><body><pre>path = \"/dana-na/../dana/html5acc/guacamole/../../../etc/passwd\"\nrequests.get(base + path)</pre><p>The login page lives at /dana-na/auth/url_default/welcome.cgi.</p></body></html>"
+  },
+  {
+   "name": "portal page that links to the VPN and mail on the same host",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Build portal</title></head><body><a href='/ci/'>CI</a><a href='/dana-na/auth/url_default/welcome.cgi'>VPN</a><a href='/owa/auth/logon.aspx'>Mail</a><a href='/+CSCOE+/logon.html'>AnyConnect</a><a href='/remote/login'>SSL-VPN</a><a href='/global-protect/login.esp'>GP</a></body></html>"
+  },
+  {
+   "name": "write-up quoting the FortiGate and ASA root scripts",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>How SSL-VPN portals redirect</title></head><body><pre>top.location=\"/remote/login\";\ndocument.location.replace(\"/+CSCOE+/logon.html\")</pre></body></html>"
+  },
+  {
+   "name": "Grafana internals post",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Grafana boot data explained</title></head><body><pre>window.grafanaBootData = {&quot;settings&quot;: {}}</pre></body></html>"
+  },
+  {
+   "name": "framework tutorials in prose",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Hydration explained</title></head><body><p>Next.js puts state in __NEXT_DATA__ and serves chunks from /_next/static/; Nuxt uses window.__NUXT__ and /_nuxt/. Drupal 7 exposed Drupal.settings; Magento uses text/x-magento-init; PrestaShop declares var prestashop = {}.</p><pre>&lt;kbn-injected-metadata data=\"{}\"&gt;&lt;/kbn-injected-metadata&gt;\n&lt;body onload=\"zbxCallPostScripts()\"&gt;\n&lt;html ng-app=\"portainer\"&gt;\n&lt;script id=\"jupyter-config-data\"&gt;\n&lt;input id=\"rcmloginuser\"&gt;</pre></body></html>"
+  },
+  {
+   "name": "landing page hot-linking an image from a WordPress blog",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Acme</title></head><body><img src=\"https://news.partner.example/wp-content/uploads/2024/01/logo.png\"></body></html>"
+  },
+  {
+   "name": "WordPress tutorial",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Where WordPress keeps plugins</title></head><body><p>Upload the folder to wp-content/plugins/ and wp-includes/ stays alone.</p></body></html>"
+  },
+  {
+   "name": "Joomla migration notice",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Acme</title></head><body><p>Old links under /components/com_content/ and /media/jui/ now redirect.</p></body></html>"
+  },
+  {
+   "name": "a corporate webmail titled Webmail Login",
+   "status": 200,
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": "<!DOCTYPE html><html><head><title>Webmail Login</title></head><body><form action='/login.php' method='post'><input name='user'></form></body></html>"
   },
   {
    "name": "redirect page to a VPN on another host",

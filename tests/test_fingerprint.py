@@ -52,7 +52,7 @@ def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatc
                 ("Content-Type", "text/html"),
             ]
         )
-        body = "<html><head></head><body>wp-content/themes/example</body></html>"
+        body = "<html><head><link rel='stylesheet' href='/wp-content/themes/example/style.css'></head></html>"
         return _Fetched(200, headers, body, url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)

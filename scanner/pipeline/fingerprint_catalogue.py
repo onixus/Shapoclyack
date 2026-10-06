@@ -1,52 +1,65 @@
 """Web technology catalogue for ``fingerprint.py`` (DQ4).
 
-The stage makes one GET per open web port; this module decides what that one
-response says. The knowledge lives in ``fingerprint_catalogue.json`` next to
-this file -- data, not code, so adding a product is a reviewed JSON entry plus
-a fixture, never a new lambda. It sits next to the module rather than under
-``scanner/data`` for the reason ``public_suffix.py`` gives: the images mount
-the shared enrichment volume over ``scanner/data``, and a volume seeded before
-this file existed would hide it.
+The stage fetches the root of each open web port; this module decides what
+that answer says. The knowledge lives in ``fingerprint_catalogue.json`` next
+to this file -- data, not code, so adding a product is a reviewed JSON entry
+plus a fixture, never a new lambda. It sits next to the module rather than
+under ``scanner/data`` for the reason ``public_suffix.py`` gives: the images
+mount the shared enrichment volume over ``scanner/data``, and a volume seeded
+before this file existed would hide it.
 
 Every entry names a technology, its category, the matchers that identify it,
 optionally how to read its version, and optionally its NVD CPE
 ``part:vendor:product``. The file is validated when it is loaded (pydantic,
-``extra="forbid"``): an unknown category, a regex that does not compile, a
-version rule without a ``version`` group or a matcher that reads a cookie's
-value is refused instead of silently matching nothing.
+``extra="forbid"``): an unknown category, a regex that does not compile or
+can repeat without bound, a version rule without a ``version`` group or a
+matcher that reads a cookie's value is refused instead of matching nothing.
 
 Matchers
 --------
-``{"from": <source>, ...}`` with one source and at most one test:
+``{"from": <source>, ...}`` with one source and at most one test
+(``contains`` / ``equals`` / ``regex``):
 
-* ``header`` -- ``name`` or ``prefix`` (header names, case-insensitive); with
-  no test the header's presence is the match, else ``contains`` / ``equals``
-  / ``regex`` against its value;
-* ``cookie`` -- ``name`` or ``prefix`` of a ``Set-Cookie`` name. Presence only:
-  a cookie's value is a session secret and is never read or reported;
-* ``body`` -- ``contains`` or ``regex`` over the (size-capped) body;
-* ``title`` -- ``equals`` / ``contains`` / ``regex`` over the ``<title>`` text;
-* ``generator`` -- the same tests over each ``<meta name="generator">``;
-* ``url`` -- the same tests over the path (and query) the response came from
-  once redirects were followed: a root that redirects to
-  ``/dana-na/auth/url_default/welcome.cgi`` has said what it is.
+* ``header`` -- ``name`` or ``prefix``; no test means presence;
+* ``cookie`` -- ``name`` or ``prefix`` of a ``Set-Cookie``. Presence only: a
+  cookie's value is a session secret and is never read or reported;
+* ``status`` -- the HTTP status code, as text;
+* ``url`` -- path and query of the URL that answered (same-address redirects
+  followed): a root that redirects to ``/dana-na/...`` has said what it is;
+* ``title`` -- the first ``<title>``;
+* ``generator`` -- each ``<meta name="generator">``;
+* ``meta`` -- the ``content`` of the ``<meta>`` whose ``name`` or ``property``
+  is ``name``; no test means presence;
+* ``asset`` -- what the page itself loads or submits to: ``src`` of script,
+  img, iframe..., ``href`` of ``<link>``, ``action`` of ``<form>``. A
+  same-origin reference reads as a path (``/wp-content/...``), any other as
+  ``//host/path``, so a hot-linked image from someone's WordPress is not
+  WordPress here. An ``<a href>`` is navigation, not an asset, and is skipped;
+* ``attr`` -- an attribute (``name``) of an element (``tag``), or the element
+  itself when no ``name`` is given;
+* ``script`` -- the text of inline ``<script>`` elements;
+* ``json`` -- the body, but only when the response *is* JSON: a JSON content
+  type and a body that opens with ``{`` or ``[``. A tutorial quoting
+  ``curl :9200`` inside ``<pre>`` is HTML and is not Elasticsearch;
+* ``body`` -- the raw body. Last resort, for product text that has no
+  structure (an error page); always paired in an ``all`` with something only
+  the product sends -- the status it answers with, its title.
 
 ``{"all": [...]}`` is a conjunction for markers that are only specific
 together. All comparisons ignore case. A matcher may override the entry's
 ``confidence``; a technology's confidence is the best of the matchers that
 fired. There are two levels on purpose: ``high`` (the product says so itself
--- its own header, cookie or exact page title) and ``medium`` (strong, but a
-shared component or a reverse proxy could produce it). Anything weaker is not
-a signature and has no place here.
+-- its own header, cookie, exact page title, or markup only it serves) and
+``medium`` (strong, but a shared component, a reverse proxy or a customised
+page could produce it). ``fingerprint.py`` raises exposure findings on
+``high`` only; ``medium`` is inventory.
 
-What this is not: it never sends a request, never follows a link and never
-looks at anything but the response ``fingerprint.py`` already fetched. Body
-markers are paths, element ids and script variables -- never a product name
-on its own, because a blog post about Jenkins is not Jenkins -- and the
-paths of the most consequential products are anchored to a quote (``["']/dana-na/``)
-so an intranet page *linking* to the VPN is not taken for the VPN. The negative
-corpus in ``tests/fixtures/fingerprint/web_responses.json`` holds the catalogue
-to that.
+Cost is bounded on purpose, because the input is written by the host being
+scanned. The page is read once by a linear scan (``parse_page``) with caps on
+tags, attributes and script text; every catalogue regex must have a bounded
+repeat count (``{0,512}``, never ``*``/``+``), which the loader enforces; and
+``classify`` takes a deadline, checked between technologies, after which it
+raises :class:`ClassificationTimeout` instead of running on.
 """
 
 from __future__ import annotations
@@ -54,9 +67,13 @@ from __future__ import annotations
 import functools
 import html
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from re import _constants as _sre_constants  # type: ignore[attr-defined]
+from re import _parser as _sre_parser  # type: ignore[attr-defined]
 from typing import Any, Literal, get_args
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
@@ -89,25 +106,89 @@ Category = Literal[
 CATEGORIES: tuple[str, ...] = get_args(Category)
 Confidence = Literal["high", "medium"]
 CONFIDENCE_RANK = {"medium": 1, "high": 2}
+Source = Literal[
+    "header", "cookie", "status", "url", "title", "generator", "meta", "asset", "attr", "script", "json", "body"
+]
+VersionSource = Literal["header", "title", "generator", "meta", "asset", "script", "json", "body"]
 
 #: Body needles shorter than this are words, not markers.
 MIN_BODY_NEEDLE = 5
+#: The largest repeat a catalogue regex may ask for, and the largest product
+#: of nested repeats. A pattern over a body the scanned host wrote must not be
+#: able to backtrack across all of it.
+MAX_REGEX_REPEAT = 1024
+MAX_REGEX_NESTED = 4096
 #: A disclosed version is a short dotted token that starts with a digit.
 #: Anything else a version regex captured is a mis-anchored rule, not a version.
 _VERSION_RE = re.compile(r"^\d[0-9A-Za-z.+~_-]{0,39}$")
 #: ``part:vendor:product`` as NVD writes it, CPE 2.3 escapes (``joomla\!``) kept.
-_CPE_KEY_RE = re.compile(r"^[aho]:(?:[a-z0-9._~-]|\\[^a-z0-9])+:(?:[a-z0-9._~-]|\\[^a-z0-9])+$")
+_CPE_KEY_RE = re.compile(r"^[aho]:(?:[a-z0-9._~-]|\\[^a-z0-9]){1,64}:(?:[a-z0-9._~-]|\\[^a-z0-9]){1,64}$")
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_]{1,47}$")
+#: A distribution's build of the product: the upstream version in the banner
+#: is not the code that runs (backports), so it stays out of the CPE.
+_DISTRO_RE = re.compile(
+    r"(ubuntu|debian|[+~.-]deb\d{1,2}|\.el\d{1,2}|centos|red ?hat|rhel|fedora|suse|alpine|amzn|astra|red ?os|alt ?linux)",
+    re.IGNORECASE,
+)
+_DISTRO_NAMES = (
+    ("ubuntu", "ubuntu"),
+    ("debian", "debian"),
+    ("deb", "debian"),
+    (".el", "rhel"),
+    ("centos", "centos"),
+    ("redos", "redos"),
+    ("red os", "redos"),
+    ("red", "rhel"),
+    ("rhel", "rhel"),
+    ("fedora", "fedora"),
+    ("suse", "suse"),
+    ("alpine", "alpine"),
+    ("amzn", "amazon"),
+    ("astra", "astra"),
+    ("alt", "altlinux"),
+)
 
 #: Evidence strings are for a human reading a finding, not a copy of the
-#: response: header values and titles are cut, bodies are never quoted beyond
-#: the marker itself.
+#: response: values are cut, bodies are never quoted beyond the marker itself.
 EVIDENCE_MAX = 160
 MAX_EVIDENCE_ITEMS = 5
 
-_TITLE_RE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.IGNORECASE | re.DOTALL)
-_META_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
-_ATTR_RE = re.compile(r"""([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""")
+#: Page-scan caps. A real login page has a few dozen tags; these leave room
+#: for a heavy portal and stop a hostile one from costing more than a bounded
+#: amount of work.
+MAX_TAGS = 2048
+MAX_TAG_LEN = 2048
+MAX_ATTRS = 32
+MAX_VALUE = 2048
+MAX_SCRIPTS = 64
+MAX_SCRIPT_LEN = 64 * 1024
+MAX_TITLE_LEN = 4096
+
+#: Where a URL-valued attribute is an asset of the page rather than a link.
+_ASSET_ATTRS = {
+    "script": "src",
+    "img": "src",
+    "iframe": "src",
+    "frame": "src",
+    "embed": "src",
+    "source": "src",
+    "link": "href",
+    "form": "action",
+    "object": "data",
+}
+
+_TAG_NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9:_-]{0,63}")
+_ATTR_NAME_RE = re.compile(r"[^\s\"'=<>/`]{1,64}")
+_WS_RE = re.compile(r"\s{0,64}")
+_BARE_VALUE_RE = re.compile(r"[^\s>]{0,2048}")
+_TITLE_CLOSE_RE = re.compile(r"</title\s{0,8}>", re.IGNORECASE)
+_SCRIPT_CLOSE_RE = re.compile(r"</script\s{0,8}>", re.IGNORECASE)
+_JSON_START_RE = re.compile(r"\s{0,64}[\[{]")
+_MATRIX_RE = re.compile(r";[^/]{0,2048}")
+
+
+class ClassificationTimeout(Exception):
+    """``classify`` ran past its deadline; the response is left unclassified."""
 
 
 def _clip(text: str, limit: int = EVIDENCE_MAX) -> str:
@@ -115,75 +196,171 @@ def _clip(text: str, limit: int = EVIDENCE_MAX) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _strip_matrix(path: str) -> str:
+    """``/a;jsessionid=x/b`` -> ``/a/b``: a path parameter can be a session id."""
+    return _MATRIX_RE.sub("", path)
+
+
+def _bounded(pattern: str) -> None:
+    """Refuse a regex that can repeat without bound (``*``, ``+``, ``{n,}``)."""
+
+    def walk(items: Any, outer: int) -> None:
+        for op, av in items:
+            if op in (_sre_constants.MAX_REPEAT, _sre_constants.MIN_REPEAT, _sre_constants.POSSESSIVE_REPEAT):
+                low, high, sub = av
+                if high == _sre_constants.MAXREPEAT or high > MAX_REGEX_REPEAT:
+                    raise ValueError(
+                        f"regex {pattern!r} repeats without a bound; write {{0,{MAX_REGEX_REPEAT}}} or less"
+                    )
+                if outer * max(high, 1) > MAX_REGEX_NESTED:
+                    raise ValueError(f"regex {pattern!r} nests repeats beyond {MAX_REGEX_NESTED}")
+                walk(sub, outer * max(high, 1))
+                continue
+            for part in av if isinstance(av, (list, tuple)) else (av,):
+                if isinstance(part, _sre_parser.SubPattern):
+                    walk(part, outer)
+                elif isinstance(part, list):
+                    for sub in part:
+                        if isinstance(sub, _sre_parser.SubPattern):
+                            walk(sub, outer)
+
+    walk(_sre_parser.parse(pattern), 1)
+
+
 def _compile(pattern: str) -> re.Pattern[str]:
     try:
-        return re.compile(pattern, re.IGNORECASE)
+        compiled = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
         raise ValueError(f"regex {pattern!r} does not compile: {exc}") from exc
+    _bounded(pattern)
+    return compiled
+
+
+# ---------------------------------------------------------------- the page
 
 
 @dataclass(frozen=True)
-class Response:
-    """The one response the stage fetched, pre-digested for matching."""
+class Tag:
+    name: str
+    attrs: tuple[tuple[str, str], ...]
 
-    status: int
-    headers: httpx.Headers
-    body: str
-    body_lower: str
-    title: str
-    generators: tuple[str, ...]
-    cookies: frozenset[str]
-    #: Path and query of the URL that answered ('' when unknown).
-    url_path: str = ""
-
-    @classmethod
-    def build(cls, status: int, headers: httpx.Headers, body: str, url: str = "") -> Response:
-        return cls(
-            status=status,
-            headers=headers,
-            body=body,
-            body_lower=body.lower(),
-            title=page_title(body),
-            generators=meta_generators(body),
-            cookies=cookie_names(headers),
-            url_path=url_path(url),
-        )
-
-    def header_value(self, name: str) -> str | None:
-        values = self.headers.get_list(name)
-        if not values:
-            return None
-        return ", ".join(values)
+    def get(self, name: str) -> str | None:
+        for key, value in self.attrs:
+            if key == name:
+                return value
+        return None
 
 
-def url_path(url: str) -> str:
-    """``/path?query`` of ``url``; '' for an empty or unparsable one."""
-    if not url:
-        return ""
-    try:
-        return httpx.URL(url).raw_path.decode("ascii", errors="replace")
-    except (httpx.InvalidURL, TypeError, ValueError):
-        return ""
+@dataclass(frozen=True)
+class Page:
+    """What the HTML says, read once."""
+
+    title: str = ""
+    tags: tuple[Tag, ...] = ()
+    scripts: tuple[str, ...] = ()
+    metas: tuple[tuple[str, str], ...] = ()
+    generators: tuple[str, ...] = ()
+    password_input: bool = False
+
+
+def _parse_attrs(inner: str) -> tuple[tuple[str, str], ...]:
+    """Attributes of one tag, in a single forward pass (no backtracking)."""
+    found: list[tuple[str, str]] = []
+    i, n = 0, len(inner)
+    while i < n and len(found) < MAX_ATTRS:
+        name_match = _ATTR_NAME_RE.search(inner, i)
+        if name_match is None:
+            break
+        name = name_match.group(0).lower()
+        j = _WS_RE.match(inner, name_match.end()).end()  # type: ignore[union-attr]
+        value = ""
+        if j < n and inner[j] == "=":
+            j = _WS_RE.match(inner, j + 1).end()  # type: ignore[union-attr]
+            if j < n and inner[j] in "\"'":
+                close = inner.find(inner[j], j + 1)
+                end = close if close >= 0 else n
+                value = inner[j + 1 : end]
+                i = end + 1
+            else:
+                bare = _BARE_VALUE_RE.match(inner, j)
+                value = bare.group(0) if bare else ""
+                i = bare.end() if bare and bare.end() > j else j + 1
+        else:
+            i = max(j, name_match.end())
+        found.append((name, html.unescape(value[:MAX_VALUE])))
+    return tuple(found)
+
+
+def parse_page(body: str) -> Page:
+    """Tags, title, inline scripts and metas of ``body`` in one linear scan.
+
+    Every step is bounded: a ``<`` with no ``>`` within ``MAX_TAG_LEN`` is not
+    a tag, the next ``>`` is found once and reused for every ``<`` before it,
+    and at most ``MAX_TAGS`` tags and ``MAX_SCRIPTS`` scripts are kept.
+    """
+    tags: list[Tag] = []
+    scripts: list[str] = []
+    title: str | None = None
+    n = len(body)
+    pos = 0
+    gt = -1
+    while len(tags) < MAX_TAGS:
+        lt = body.find("<", pos)
+        if lt < 0 or lt + 1 >= n:
+            break
+        if gt <= lt:
+            gt = body.find(">", lt + 1)
+            if gt < 0:
+                break
+        name_match = _TAG_NAME_RE.match(body, lt + 1)
+        if name_match is None or gt - lt > MAX_TAG_LEN:
+            pos = lt + 1
+            continue
+        name = name_match.group(0).lower()
+        tags.append(Tag(name, _parse_attrs(body[name_match.end() : gt])))
+        pos = gt + 1
+        if name == "title" and title is None:
+            close = _TITLE_CLOSE_RE.search(body, pos, min(n, pos + MAX_TITLE_LEN))
+            title = " ".join(html.unescape(body[pos : close.start()]).split())[:512] if close else ""
+            if close:
+                pos = close.end()
+        elif name == "script" and len(scripts) < MAX_SCRIPTS:
+            close = _SCRIPT_CLOSE_RE.search(body, pos, min(n, pos + MAX_SCRIPT_LEN))
+            if close:
+                if close.start() > pos:
+                    scripts.append(body[pos : close.start()])
+                pos = close.end()
+    metas: list[tuple[str, str]] = []
+    generators: list[str] = []
+    password = False
+    for tag in tags:
+        if tag.name == "meta":
+            key = (tag.get("name") or tag.get("property") or "").strip().lower()
+            content = " ".join((tag.get("content") or "").split())
+            if key:
+                metas.append((key, content))
+                if key == "generator" and content:
+                    generators.append(content)
+        elif tag.name == "input" and (tag.get("type") or "").strip().lower() == "password":
+            password = True
+    return Page(
+        title=title or "",
+        tags=tuple(tags),
+        scripts=tuple(scripts),
+        metas=tuple(metas),
+        generators=tuple(generators),
+        password_input=password,
+    )
 
 
 def page_title(body: str) -> str:
     """The first ``<title>``, entity-decoded and whitespace-collapsed ('' if none)."""
-    match = _TITLE_RE.search(body)
-    if match is None:
-        return ""
-    return " ".join(html.unescape(match.group(1)).split())[:512]
+    return parse_page(body).title
 
 
 def meta_generators(body: str) -> tuple[str, ...]:
     """``content`` of every ``<meta name="generator">``, in document order."""
-    found: list[str] = []
-    for tag in _META_RE.findall(body):
-        attrs: dict[str, str] = {}
-        for name, dq, sq, bare in _ATTR_RE.findall(tag):
-            attrs[name.lower()] = html.unescape(dq or sq or bare)
-        if attrs.get("name", "").strip().lower() == "generator" and attrs.get("content", "").strip():
-            found.append(" ".join(attrs["content"].split()))
-    return tuple(found)
+    return parse_page(body).generators
 
 
 def cookie_names(headers: httpx.Headers) -> frozenset[str]:
@@ -196,16 +373,102 @@ def cookie_names(headers: httpx.Headers) -> frozenset[str]:
     return frozenset(names)
 
 
+def url_path(url: str) -> str:
+    """``/path?query`` of ``url``, matrix parameters dropped; '' when unknown."""
+    if not url:
+        return ""
+    try:
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, TypeError, ValueError):
+        return ""
+    path = _strip_matrix(parsed.path or "/")
+    query = parsed.query.decode("ascii", errors="replace")
+    return f"{path}?{query}" if query else path
+
+
+def _assets(tags: tuple[Tag, ...], page_url: str) -> tuple[str, ...]:
+    try:
+        base = httpx.URL(page_url) if page_url else None
+    except (httpx.InvalidURL, TypeError, ValueError):
+        base = None
+    base_host = (base.host or "").lower() if base is not None else ""
+    base_path = (base.path or "/") if base is not None else "/"
+    found: list[str] = []
+    for tag in tags:
+        attr = _ASSET_ATTRS.get(tag.name)
+        raw = (tag.get(attr) or "").strip() if attr else ""
+        if not raw or raw.startswith(("#", "data:", "javascript:", "mailto:")):
+            continue
+        parts = urlsplit(raw if "://" in raw or raw.startswith("//") else urljoin(base_path, raw))
+        host = (parts.hostname or "").lower()
+        path = _strip_matrix(parts.path or "/")
+        if parts.query:
+            path = f"{path}?{parts.query}"
+        found.append(path if not host or host == base_host else f"//{host}{path}")
+    return tuple(value[:MAX_VALUE] for value in found)
+
+
+@dataclass(frozen=True)
+class Response:
+    """The one response the stage classifies, pre-digested for matching."""
+
+    status: int
+    headers: httpx.Headers
+    body: str
+    body_lower: str
+    page: Page
+    cookies: frozenset[str]
+    #: Path and query of the URL that answered ('' when unknown).
+    url_path: str = ""
+    assets: tuple[str, ...] = ()
+    is_json: bool = False
+
+    @classmethod
+    def build(cls, status: int, headers: httpx.Headers, body: str, url: str = "") -> Response:
+        page = parse_page(body)
+        content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        is_json = (content_type == "application/json" or content_type.endswith("+json")) and bool(
+            _JSON_START_RE.match(body)
+        )
+        return cls(
+            status=status,
+            headers=headers,
+            body=body,
+            body_lower=body.lower(),
+            page=page,
+            cookies=cookie_names(headers),
+            url_path=url_path(url),
+            assets=_assets(page.tags, url),
+            is_json=is_json,
+        )
+
+    @property
+    def title(self) -> str:
+        return self.page.title
+
+    @property
+    def generators(self) -> tuple[str, ...]:
+        return self.page.generators
+
+    def header_value(self, name: str) -> str | None:
+        values = self.headers.get_list(name)
+        if not values:
+            return None
+        return ", ".join(values)[:MAX_VALUE]
+
+
+# ---------------------------------------------------------------- matchers
+
+
 class Matcher(BaseModel):
     """One condition over the response; see the module docstring for the grammar."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    source: Literal["header", "cookie", "body", "title", "generator", "url"] | None = Field(
-        default=None, alias="from"
-    )
+    source: Source | None = Field(default=None, alias="from")
     name: str | None = None
     prefix: str | None = None
+    tag: str | None = None
     contains: str | None = None
     equals: str | None = None
     regex: str | None = None
@@ -216,10 +479,9 @@ class Matcher(BaseModel):
 
     @model_validator(mode="after")
     def _shape(self) -> Matcher:
-        selectors = (self.name, self.prefix)
         tests = [t for t in (self.contains, self.equals, self.regex) if t is not None]
         if self.all_of is not None:
-            if self.source is not None or any(s is not None for s in selectors) or tests:
+            if self.source is not None or self.name or self.prefix or self.tag or tests:
                 raise ValueError("an 'all' matcher carries only sub-matchers (and a confidence)")
             if len(self.all_of) < 2:
                 raise ValueError("an 'all' matcher needs at least two sub-matchers")
@@ -230,24 +492,41 @@ class Matcher(BaseModel):
             raise ValueError("a matcher takes at most one of contains/equals/regex")
         if any(t == "" for t in tests):
             raise ValueError("an empty test matches everything")
+        for written in (self.name, self.prefix, self.tag):
+            if written is not None and written != written.lower():
+                raise ValueError("header, cookie, meta, tag and attribute names are written lower-case")
+        if self.prefix is not None and self.source not in ("header", "cookie"):
+            raise ValueError(f"a {self.source} matcher takes no prefix")
+        if self.tag is not None and self.source != "attr":
+            raise ValueError(f"a {self.source} matcher takes no tag")
         if self.source in ("header", "cookie"):
             if (self.name is None) == (self.prefix is None):
                 raise ValueError(f"a {self.source} matcher needs exactly one of name/prefix")
             if self.source == "cookie" and tests:
                 raise ValueError("cookie matchers test presence only: a cookie value is a secret")
-            if (self.name or self.prefix or "") != (self.name or self.prefix or "").lower():
-                raise ValueError("header and cookie names are written lower-case")
             if self.source == "header" and "set-cookie".startswith(self.name or self.prefix or "-"):
                 raise ValueError("Set-Cookie is read through a cookie matcher, which never sees values")
+        elif self.source == "meta":
+            if self.name is None:
+                raise ValueError("a meta matcher names the meta (name or property)")
+        elif self.source == "attr":
+            if self.tag is None and self.name is None:
+                raise ValueError("an attr matcher names a tag, an attribute or both")
+            if self.name is None and tests:
+                raise ValueError("an attr matcher without an attribute tests the element's presence only")
         else:
-            if any(s is not None for s in selectors):
-                raise ValueError(f"a {self.source} matcher takes no name/prefix")
+            if self.name is not None:
+                raise ValueError(f"a {self.source} matcher takes no name")
             if not tests:
                 raise ValueError(f"a {self.source} matcher needs contains/equals/regex")
-            if self.source == "body" and self.equals is not None:
-                raise ValueError("a body matcher takes contains or regex, not equals")
-            if self.source == "body" and self.contains is not None and len(self.contains) < MIN_BODY_NEEDLE:
-                raise ValueError(f"body needle {self.contains!r} is too short to be a marker")
+            if self.source in ("body", "script", "json") and self.equals is not None:
+                raise ValueError(f"a {self.source} matcher takes contains or regex, not equals")
+            if (
+                self.source in ("body", "script", "json")
+                and self.contains is not None
+                and len(self.contains) < MIN_BODY_NEEDLE
+            ):
+                raise ValueError(f"needle {self.contains!r} is too short to be a marker")
         if self.regex is not None:
             self._pattern = _compile(self.regex)
         return self
@@ -262,33 +541,67 @@ class Matcher(BaseModel):
                     return None
                 parts.append(hit)
             return " + ".join(parts)
-        if self.source == "header":
+        source = self.source
+        if source == "header":
             return self._evaluate_header(resp)
-        if self.source == "cookie":
+        if source == "cookie":
             if self.name is not None:
                 return f"cookie {self.name}" if self.name in resp.cookies else None
             assert self.prefix is not None
             hits = sorted(c for c in resp.cookies if c.startswith(self.prefix))
             return f"cookie {hits[0]}" if hits else None
-        if self.source == "body":
-            if self.contains is not None:
-                return f'body contains "{self.contains}"' if self.contains.lower() in resp.body_lower else None
-            assert self._pattern is not None
-            found = self._pattern.search(resp.body)
-            return f'body matches "{_clip(found.group(0), 80)}"' if found else None
-        if self.source == "title":
-            return f'title "{_clip(resp.title)}"' if resp.title and self._test(resp.title) else None
-        if self.source == "url":
+        if source == "status":
+            return f"status {resp.status}" if self._test(str(resp.status)) else None
+        if source == "url":
             if not resp.url_path or not self._test(resp.url_path):
                 return None
             # The path, not the query: a redirect target's query can carry a
             # return URL or a token, and the path is what identified it.
             path, _, query = resp.url_path.partition("?")
             return f'url "{_clip(path, 120)}{"?…" if query else ""}"'
-        for generator in resp.generators:
-            if self._test(generator):
-                return f'generator "{_clip(generator)}"'
-        return None
+        if source == "title":
+            return f'title "{_clip(resp.title)}"' if resp.title and self._test(resp.title) else None
+        if source == "generator":
+            for generator in resp.generators:
+                if self._test(generator):
+                    return f'generator "{_clip(generator)}"'
+            return None
+        if source == "meta":
+            for key, content in resp.page.metas:
+                if key == self.name and (self._untested or self._test(content)):
+                    return _clip(f'meta {key}="{content}"')
+            return None
+        if source == "asset":
+            for asset in resp.assets:
+                if self._test(asset):
+                    return f'asset "{_clip(asset.partition("?")[0], 120)}"'
+            return None
+        if source == "attr":
+            return self._evaluate_attr(resp)
+        if source == "script":
+            for text in resp.page.scripts:
+                hit = self._search(text, text.lower())
+                if hit is not None:
+                    return f"script {hit}"
+            return None
+        if source == "json":
+            if not resp.is_json:
+                return None
+            hit = self._search(resp.body, resp.body_lower)
+            return f"json {hit}" if hit is not None else None
+        hit = self._search(resp.body, resp.body_lower)
+        return f"body {hit}" if hit is not None else None
+
+    @property
+    def _untested(self) -> bool:
+        return self.contains is None and self.equals is None and self._pattern is None
+
+    def _search(self, text: str, lowered: str) -> str | None:
+        if self.contains is not None:
+            return f'contains "{self.contains}"' if self.contains.lower() in lowered else None
+        assert self._pattern is not None
+        found = self._pattern.search(text)
+        return f'matches "{_clip(found.group(0), 80)}"' if found else None
 
     def _evaluate_header(self, resp: Response) -> str | None:
         if self.name is not None:
@@ -300,10 +613,23 @@ class Matcher(BaseModel):
             value = resp.header_value(name)
             if value is None:
                 continue
-            if self.contains is None and self.equals is None and self._pattern is None:
+            if self._untested:
                 return _clip(f"header {name}: {value}") if value else f"header {name}"
             if self._test(value):
                 return _clip(f"header {name}: {value}")
+        return None
+
+    def _evaluate_attr(self, resp: Response) -> str | None:
+        for tag in resp.page.tags:
+            if self.tag is not None and tag.name != self.tag:
+                continue
+            if self.name is None:
+                return f"element <{tag.name}>"
+            value = tag.get(self.name)
+            if value is None:
+                continue
+            if self._untested or self._test(value):
+                return _clip(f'attr <{tag.name}> {self.name}="{value}"')
         return None
 
     def _test(self, value: str) -> bool:
@@ -320,7 +646,7 @@ class VersionRule(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    source: Literal["header", "body", "title", "generator"] = Field(alias="from")
+    source: VersionSource = Field(alias="from")
     name: str | None = None
     regex: str
 
@@ -328,34 +654,44 @@ class VersionRule(BaseModel):
 
     @model_validator(mode="after")
     def _shape(self) -> VersionRule:
-        if (self.source == "header") != (self.name is not None):
-            raise ValueError("a version rule names a header exactly when it reads one")
+        if (self.source in ("header", "meta")) != (self.name is not None):
+            raise ValueError("a version rule names a header or meta exactly when it reads one")
         if self.name is not None and self.name != self.name.lower():
-            raise ValueError("header names are written lower-case")
+            raise ValueError("header and meta names are written lower-case")
         self._pattern = _compile(self.regex)
         if "version" not in self._pattern.groupindex:
             raise ValueError(f"version regex {self.regex!r} has no (?P<version>...) group")
         return self
 
-    def extract(self, resp: Response) -> str | None:
+    def texts(self, resp: Response) -> list[str]:
         if self.source == "header":
             assert self.name is not None
-            texts = [resp.header_value(self.name) or ""]
-        elif self.source == "body":
-            texts = [resp.body]
-        elif self.source == "title":
-            texts = [resp.title]
-        else:
-            texts = list(resp.generators)
-        for text in texts:
+            return [resp.header_value(self.name) or ""]
+        if self.source == "meta":
+            return [content for key, content in resp.page.metas if key == self.name]
+        if self.source == "title":
+            return [resp.title]
+        if self.source == "generator":
+            return list(resp.generators)
+        if self.source == "asset":
+            return list(resp.assets)
+        if self.source == "script":
+            return list(resp.page.scripts)
+        if self.source == "json":
+            return [resp.body] if resp.is_json else []
+        return [resp.body]
+
+    def extract(self, resp: Response) -> tuple[str, str] | None:
+        """``(version, the text it was read from)``."""
+        for text in self.texts(resp):
             found = self._pattern.search(text)
             if found and found.group("version") and _VERSION_RE.match(found.group("version")):
-                return found.group("version")
+                return found.group("version"), text
         return None
 
     @property
     def label(self) -> str:
-        return f"header {self.name}" if self.source == "header" else self.source
+        return f"{self.source} {self.name}" if self.name is not None else self.source
 
 
 class Technology(BaseModel):
@@ -373,6 +709,10 @@ class Technology(BaseModel):
     #: False where the version the product shows is not the one NVD files it
     #: under (Exchange and SharePoint builds, MiniServ's shared numbering).
     version_in_cpe: bool = True
+    #: The product answers its root without credentials even when it enforces
+    #: them elsewhere (CouchDB's welcome document), so a 200 there proves no
+    #: open access and ``fingerprint.py`` does not rate it as one.
+    root_is_public: bool = False
     match: list[Matcher] = Field(min_length=1)
     version: list[VersionRule] = Field(default_factory=list)
     note: str | None = None
@@ -405,11 +745,28 @@ class Catalogue(BaseModel):
             seen.add(tech.id)
         return self
 
-    def classify(self, status: int, headers: httpx.Headers, body: str, url: str = "") -> list[Match]:
-        """Every technology the response identifies, in catalogue order."""
-        resp = Response.build(status, headers, body, url)
+    def classify(
+        self,
+        status: int,
+        headers: httpx.Headers,
+        body: str,
+        url: str = "",
+        *,
+        deadline: float | None = None,
+    ) -> list[Match]:
+        """Every technology the response identifies, in catalogue order.
+
+        ``deadline`` is a ``time.monotonic()`` instant; past it the remaining
+        technologies are not tried and :class:`ClassificationTimeout` is raised.
+        """
+        return self.match_response(Response.build(status, headers, body, url), deadline=deadline)
+
+    def match_response(self, resp: Response, *, deadline: float | None = None) -> list[Match]:
+        """``classify`` for a response already built (``fingerprint.py`` keeps the page)."""
         found = []
         for tech in self.technologies:
+            if deadline is not None and time.monotonic() > deadline:
+                raise ClassificationTimeout(f"stopped before {tech.id}")
             hit = match_technology(tech, resp)
             if hit is not None:
                 found.append(hit)
@@ -422,18 +779,21 @@ class Match:
     confidence: str
     evidence: tuple[str, ...]
     version: str | None = None
-    #: ``header x-jenkins`` / ``body`` / ``title`` / ``generator``.
+    #: ``header x-jenkins`` / ``generator`` / ``json`` / ...
     version_source: str | None = None
+    #: The distribution named next to a header-stated version, and that header.
+    distro_hint: str | None = None
+    banner: str | None = None
 
     @property
     def cpe(self) -> str | None:
         if self.technology.cpe is None:
             return None
-        version = self.version if self.technology.version_in_cpe else None
+        version = self.version if self.technology.version_in_cpe and self.distro_hint is None else None
         return cpe_name(self.technology.cpe, version)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "id": self.technology.id,
             "name": self.technology.name,
             "category": self.technology.category,
@@ -442,6 +802,22 @@ class Match:
             "confidence": self.confidence,
             "evidence": list(self.evidence),
         }
+        if self.distro_hint is not None:
+            out["distro_hint"] = self.distro_hint
+            out["banner"] = self.banner
+        return out
+
+
+def distro_of(text: str) -> str | None:
+    """The distribution a banner names (``Apache/2.4.52 (Ubuntu)``), if any."""
+    found = _DISTRO_RE.search(text)
+    if found is None:
+        return None
+    token = found.group(1).lower().lstrip("+~-")
+    for prefix, name in _DISTRO_NAMES:
+        if token.startswith(prefix):
+            return name
+    return token
 
 
 def match_technology(tech: Technology, resp: Response) -> Match | None:
@@ -455,11 +831,15 @@ def match_technology(tech: Technology, resp: Response) -> Match | None:
         best = max(best, CONFIDENCE_RANK[matcher.confidence or tech.confidence])
     if not evidence:
         return None
-    version = version_source = None
+    version = version_source = distro = banner = None
     for rule in tech.version:
-        version = rule.extract(resp)
-        if version is not None:
+        extracted = rule.extract(resp)
+        if extracted is not None:
+            version, text = extracted
             version_source = rule.label
+            if rule.source == "header":
+                distro = distro_of(text)
+                banner = _clip(text) if distro else None
             break
     confidence = next(name for name, rank in CONFIDENCE_RANK.items() if rank == best)
     return Match(
@@ -468,6 +848,8 @@ def match_technology(tech: Technology, resp: Response) -> Match | None:
         evidence=tuple(evidence[:MAX_EVIDENCE_ITEMS]),
         version=version,
         version_source=version_source,
+        distro_hint=distro,
+        banner=banner,
     )
 
 

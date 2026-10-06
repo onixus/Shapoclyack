@@ -33,6 +33,7 @@ Route = tuple[int, list[tuple[str, str]], str]
 
 class _Site(ThreadingHTTPServer):
     routes: dict[str, Route]
+    requests: list[str]
 
     @property
     def port(self) -> int:
@@ -45,6 +46,7 @@ def site():
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - http.server hook
+            self.server.requests.append(self.path)  # type: ignore[attr-defined]
             route = self.server.routes.get(urlsplit(self.path).path)  # type: ignore[attr-defined]
             if route is None:
                 self.send_error(404)
@@ -65,6 +67,7 @@ def site():
 
     server = _Site(("127.0.0.1", 0), Handler)
     server.routes = {}
+    server.requests = []
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
@@ -114,7 +117,7 @@ def test_stage_reports_technologies_with_version_cpe_and_exposures(site, tmp_pat
     assert endpoint["cdn_waf"] == [] and endpoint["cms_framework"] == []
 
     assert _kinds(result) == {
-        ("exposed_admin_interface", "jenkins", "medium"),
+        ("exposed_admin_interface", "jenkins", "low"),
         ("version_disclosure", "jenkins", "info"),
         ("version_disclosure", "eclipse_jetty", "info"),
     }
@@ -122,6 +125,9 @@ def test_stage_reports_technologies_with_version_cpe_and_exposures(site, tmp_pat
     assert admin["host"] == "127.0.0.1" and admin["port"] == site.port
     assert admin["url"] == f"http://127.0.0.1:{site.port}/"
     assert admin["cpe"] == "cpe:2.3:a:jenkins:jenkins:2.414.3:*:*:*:*:*:*:*"
+    # A 403 is a login, not an open console.
+    assert admin["http_status"] == 403 and admin["auth_required"] is True
+    assert admin["detail"] == "Jenkins login page reachable (HTTP 403)"
     disclosure = next(e for e in result["exposures"] if e["kind"] == "version_disclosure" and e["header"] == "x-jenkins")
     assert disclosure["evidence"] == ["x-jenkins: 2.414.3"]
 
@@ -187,17 +193,103 @@ def test_inventory_only_categories_raise_no_exposure(site, tmp_path: Path):
     assert result["exposures"] == []
 
 
-def test_off_host_redirect_keeps_the_inventory_but_raises_no_exposure(site, tmp_path: Path):
-    site.routes["/"] = (302, [("Location", f"http://localhost:{site.port}/login")], "")
+def test_a_redirect_to_a_name_is_recorded_not_fetched(site, tmp_path: Path):
+    """The stage was given 127.0.0.1; a name is the virtual-host case and a target of its own."""
+    site.routes["/"] = (
+        302,
+        [("Location", f"http://user:s3cret@localhost:{site.port}/login;jsessionid=ABC?next=%2Ftoken%3Dx"), ("CF-RAY", "8a1b-AMS")],
+        "",
+    )
     site.routes["/login"] = (200, [("X-Jenkins", "2.414.3")], "<html><title>Sign in [Jenkins]</title></html>")
 
     result = _run(site, tmp_path)
 
+    assert site.requests == ["/"]
     (endpoint,) = result["findings"]
     assert endpoint["redirected_off_host"] is True
-    assert endpoint["final_url"] == f"http://localhost:{site.port}/login"
-    assert [t["id"] for t in endpoint["technologies"]] == ["jenkins"]
+    assert endpoint["redirect_location"] == f"http://localhost:{site.port}/login"
+    assert endpoint["final_url"] == f"http://127.0.0.1:{site.port}/"
+    # What the target itself said is inventory; the CDN header does not earn
+    # the discount for an address that points somewhere else.
+    assert [t["id"] for t in endpoint["technologies"]] == ["cloudflare"]
+    assert endpoint["cdn_waf"] == []
+    assert index_cdn_waf(result) == {}
     assert result["exposures"] == []
+    saved = (tmp_path / "fingerprint.json").read_text(encoding="utf-8")
+    assert "s3cret" not in saved and "jsessionid" not in saved and "token" not in saved
+
+
+def test_same_address_hops_are_followed_three_times_at_most(site, tmp_path: Path):
+    for hop in range(5):
+        site.routes["/" if hop == 0 else f"/h{hop}"] = (302, [("Location", f"/h{hop + 1}")], "")
+    result = _run(site, tmp_path)
+    assert site.requests == ["/", "/h1", "/h2", "/h3"]
+    (endpoint,) = result["findings"]
+    assert endpoint["http_status"] == 302
+    assert endpoint["redirect_location"] == f"http://127.0.0.1:{site.port}/h4"
+    assert endpoint["redirected_off_host"] is False
+
+
+def test_credentials_and_path_parameters_never_reach_the_artifact(site, tmp_path: Path):
+    site.routes["/"] = (302, [("Location", f"http://u:s3cret@127.0.0.1:{site.port}/login;jsessionid=ABC?t=1")], "")
+    site.routes["/login"] = (403, [("X-Jenkins", "2.414.3")], "")
+    result = _run(site, tmp_path)
+    (endpoint,) = result["findings"]
+    assert site.requests == ["/", "/login;jsessionid=ABC?t=1"]
+    assert endpoint["final_url"] == f"http://127.0.0.1:{site.port}/login"
+    assert all(e["url"] == f"http://127.0.0.1:{site.port}/login" for e in result["exposures"])
+    saved = (tmp_path / "fingerprint.json").read_text(encoding="utf-8")
+    assert "s3cret" not in saved and "jsessionid" not in saved
+
+
+def test_a_proxy_in_the_environment_is_not_used(site, tmp_path: Path, monkeypatch):
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    site.routes["/"] = (200, [("X-Jenkins", "2.414.3")], "")
+    (endpoint,) = _run(site, tmp_path)["findings"]
+    assert endpoint["error"] is None
+    assert [t["id"] for t in endpoint["technologies"]] == ["jenkins"]
+
+
+@pytest.fixture()
+def second_site():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server hook
+            self.server.requests.append(self.path)  # type: ignore[attr-defined]
+            payload = b"<html><title>Sign in [Jenkins]</title></html>"
+            self.send_response_only(403)
+            self.send_header("X-Jenkins", "2.414.3")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args) -> None:
+            return
+
+    server = _Site(("127.0.0.1", 0), Handler)
+    server.routes = {}
+    server.requests = []
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_redirect_to_another_port_of_the_address_is_one_finding_at_the_final_origin(site, second_site, tmp_path: Path):
+    """``return 301 http://$ip:other/`` must not make one Jenkins two findings."""
+    site.routes["/"] = (301, [("Location", f"http://127.0.0.1:{second_site.port}/login")], "")
+    config = FingerprintConfig(enabled=True, http_ports=[site.port, second_site.port], https_ports=[])
+    result = fingerprint_hosts_sync(
+        [f"127.0.0.1:{site.port}/tcp", f"127.0.0.1:{second_site.port}/tcp"], config, tmp_path
+    )
+    admin = [e for e in result["exposures"] if e["kind"] == "exposed_admin_interface"]
+    assert len(admin) == 1
+    assert admin[0]["port"] == second_site.port
+    assert admin[0]["url"].startswith(f"http://127.0.0.1:{second_site.port}/")
 
 
 @pytest.mark.parametrize("name", [fx["name"] for fx in FIXTURES["negatives"] if fx["status"] != 204])

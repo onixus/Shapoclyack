@@ -299,19 +299,22 @@ def test_web_technologies_reads_the_exposures_the_fingerprint_stage_writes(tmp_p
 
     web = _web_control(tmp_path)
     assert web["status"] == "weak"
-    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 1, "low": 0}
+    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 0, "low": 1}
     assert web["top_findings"][0] == {
         "id": "exposed_admin_interface",
         "domain": "198.51.100.7:8080",
-        "severity": "medium",
-        "detail": "Jenkins at http://198.51.100.7:8080/",
+        "severity": "low",
+        "detail": "Jenkins login page reachable (HTTP 403)",
     }
     listed = {(f["id"], f["domain"], f["severity"]) for f in web["top_findings"][1:]}
     assert listed == {
         ("exposed_remote_access_gateway", "198.51.100.8:443", "info"),
         ("version_disclosure", "198.51.100.7:8080", "info"),
     }
-    assert "1 exposed admin/management interface(s)" in web["why"]
+    # A login page is not an open console, and the why must not read as one.
+    assert "1 admin login page(s) reachable" in web["why"]
+    assert "without" not in web["why"]
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
 
 
 def test_web_technologies_lists_a_remote_access_gateway_without_degrading_the_control(tmp_path: Path):
@@ -341,7 +344,7 @@ def test_web_technologies_lists_a_remote_access_gateway_without_degrading_the_co
     assert web["status"] == "ok"
     assert sum(web["findings_by_severity"].values()) == 0
     assert [(f["id"], f["severity"]) for f in web["top_findings"]] == [("exposed_remote_access_gateway", "info")]
-    assert "listed for inventory" in web["why"]
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
 
 
 def test_web_technologies_keeps_an_exposed_console_in_the_top_ten(tmp_path: Path):
@@ -559,3 +562,54 @@ def test_one_passing_control_among_unchecked_ones_is_not_ok(tmp_path):
     assert "ok" in statuses.values()
     assert "not_checked" in statuses.values()
     assert summary["overall_verdict"] == "partial"
+
+
+def _exposure(kind: str, severity: str, host: str, detail: str) -> dict:
+    return {"kind": kind, "severity": severity, "host": host, "port": 443, "url": f"https://{host}:443/", "detail": detail}
+
+
+def test_web_technologies_never_drops_a_gateway_behind_banners(tmp_path: Path):
+    """Ten bare banners plus a VPN portal: the portal stays in view and in the why."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 11,
+            "checked_count": 11,
+            "findings": [{"host": f"h{i}.example.com", "port": 443, "server": "nginx", "x_powered_by": ""} for i in range(10)],
+            "exposures": [
+                _exposure("exposed_remote_access_gateway", "info", "vpn.example.com", "Ivanti Connect Secure portal reachable")
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "exposed_remote_access_gateway" in [f["id"] for f in web["top_findings"]]
+    assert len(web["top_findings"]) == 10
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
+
+
+def test_web_technologies_tells_an_open_database_from_a_login_page(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 3,
+            "checked_count": 3,
+            "findings": [],
+            "exposures": [
+                _exposure("exposed_admin_interface", "high", "es.example.com", "Elasticsearch answers its API without authentication (HTTP 200)"),
+                _exposure("exposed_admin_interface", "medium", "prom.example.com", "Prometheus answers with no login page in front (HTTP 200)"),
+                _exposure("exposed_admin_interface", "low", "ci.example.com", "Jenkins login page reachable (HTTP 403)"),
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "fail"
+    assert web["findings_by_severity"] == {"critical": 0, "high": 1, "medium": 1, "low": 1}
+    assert [f["severity"] for f in web["top_findings"]] == ["high", "medium", "low"]
+    assert web["why"] == (
+        "1 database API(s) answer without authentication; "
+        "1 admin/management console(s) answer with no login page in front; "
+        "1 admin login page(s) reachable"
+    )
