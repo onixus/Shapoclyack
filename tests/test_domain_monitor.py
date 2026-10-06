@@ -1643,8 +1643,17 @@ def test_a_chain_into_a_service_whose_own_answer_broke_off_is_an_undecided_candi
     assert block["candidates_unanswered"] == ["cn6.example.com"]
 
 
-def test_a_plain_name_whose_answer_broke_off_is_not_a_candidate(tmp_path, monkeypatch):
-    zone = {"lame.example.com": {"status": "SERVFAIL"}}
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"status": "SERVFAIL"},  # no chain at all
+        {"cname": ["d111.cloudfront.net"], "status": "SERVFAIL"},  # a service nobody can claim
+    ],
+)
+def test_a_name_whose_answer_broke_off_short_of_a_claimable_service_is_not_a_candidate(
+    tmp_path, monkeypatch, entry
+):
+    zone = {"lame.example.com": entry}
 
     block, _ = _takeover_block(tmp_path, monkeypatch, zone, ["lame.example.com"])
 

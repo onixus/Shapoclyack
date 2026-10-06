@@ -200,6 +200,30 @@ def test_every_private_block_is_attributed_to_its_own_header(rule, operator):
     assert owners[rule] == operator
 
 
+def test_rules_after_a_blank_line_belong_to_no_one_until_a_header_says(tmp_path, monkeypatch):
+    """The shipped list has no header-less group today (614 of 614 have one),
+    so this pins the rule on a list made for it: a registry's block ends at
+    the blank line, and what follows is not the registry's."""
+    snapshot = tmp_path / "public_suffix_list.dat"
+    snapshot.write_text(
+        "// ===BEGIN ICANN DOMAINS===\ncom\n// ===END ICANN DOMAINS===\n\n"
+        "// ===BEGIN PRIVATE DOMAINS===\n\n"
+        "// CentralNic : https://teaminternet.com/\nuk.com\n\n"
+        "headerless.com\n\n"
+        "// Some Host\nhost.com\n"
+        "// ===END PRIVATE DOMAINS===\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(public_suffix, "PSL_PATH", snapshot)
+    public_suffix._snapshot.cache_clear()
+    try:
+        assert public_suffix.private_operators()["CentralNic"] == {"uk.com"}
+        assert registrable_domain("www.gone.uk.com", registries_only=True) == "gone.uk.com"
+        assert registrable_domain("www.a.headerless.com", registries_only=True) == "headerless.com"
+    finally:
+        public_suffix._snapshot.cache_clear()
+
+
 @pytest.mark.parametrize("platform", ["x.firebaseapp.com", "x.github.io", "x.ras.ru"])
 def test_a_platform_that_followed_a_registry_block_is_not_a_registry(platform):
     assert registrable_domain(platform, registries_only=True) != platform
