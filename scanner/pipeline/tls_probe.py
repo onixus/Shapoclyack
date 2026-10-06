@@ -875,26 +875,29 @@ def _trust_skip(contexts: ProbeContexts, peer: str, peer_public: bool) -> dict[s
     return None
 
 
+def _in_window(info: dict[str, Any] | None, now: datetime) -> bool | None:
+    """Whether a stdlib-decoded certificate is within its validity window now;
+    ``None`` when its dates are unknown."""
+    if not info:
+        return None
+    cert = _cert_dict_from_peercert(info)
+    not_after, not_before = cert.get("not_after_dt"), cert.get("not_before_dt")
+    if not isinstance(not_after, datetime) or not isinstance(not_before, datetime):
+        return None
+    return not_before <= now <= not_after
+
+
 def _chain_validity(
-    chain: list[dict[str, Any]] | None, now: datetime, time_failure: str
+    chain: list[dict[str, Any]] | None, now: datetime
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Which CA certificate of a chain failed OpenSSL's time check.
 
     Called only when verification with the time check failed on time and the
     untimed one then verified ``chain``. Returns the issues and, when the
-    culprit cannot be told, why not: with the leaf itself outside its window
-    (``cert_expired`` / ``cert_not_yet_valid``) the time failure may be the
-    leaf's alone.
+    answer cannot be told, why not.
     """
     if chain is None:
         return [], "this Python exposes no verified chain"
-    if chain:
-        leaf = _cert_dict_from_peercert(chain[0])
-        leaf_after, leaf_before = leaf.get("not_after_dt"), leaf.get("not_before_dt")
-        if (isinstance(leaf_after, datetime) and leaf_after < now) or (
-            isinstance(leaf_before, datetime) and leaf_before > now
-        ):
-            return [], "the leaf is outside its validity window, which hides whether a CA certificate is too"
     issues: list[dict[str, Any]] = []
     for depth, info in enumerate(chain[1:], start=1):
         cert = _cert_dict_from_peercert(info)
@@ -921,16 +924,16 @@ def _chain_validity(
                     "detail": f"{name} in the verified chain is valid from {cert.get('not_before')}",
                 }
             )
+    if chain and _in_window(chain[0], now) is False:
+        if not issues:
+            # Every CA certificate is within its window: the time failure was
+            # the leaf's own, which cert_expired / cert_not_yet_valid report.
+            return [], None
+        # The untimed verification may have picked an expired twin a client
+        # would not; with the leaf failing too, the two cannot be told apart.
+        return [], "the leaf and a CA certificate are both outside their windows; which one a client trips on cannot be told"
     if not issues:
-        # The time check failed on a CA certificate the untimed path did not
-        # pick; the failure itself is the evidence.
-        issues.append(
-            {
-                "kind": "cert_chain_expired",
-                "severity": "high",
-                "detail": f"a CA certificate of the chain failed the time check: {time_failure}",
-            }
-        )
+        return [], "the time check failed, but no certificate of the re-verified chain is outside its window"
     return issues, None
 
 
@@ -1061,6 +1064,7 @@ def _probe_one(
     # tells "trusted, but something is outside its window" from "untrusted".
     retry: _Attempt | None = None
     time_failure: str | None = None
+    chain_issue_without_depth: dict[str, Any] | None = None
     if skip is not None:
         trust = skip
     elif main.completed:
@@ -1087,6 +1091,16 @@ def _probe_one(
                 "status": "inconclusive",
                 "detail": f"time check failed ({time_failure}) and the untimed verification did not complete",
             }
+            if _in_window(main.leaf, now) is True:
+                # OpenSSL checks time only on a chain it has built to a trust
+                # anchor (an unanchored one fails with code 20 first), so a
+                # time failure with the leaf in its window names a CA
+                # certificate -- which one, the lost re-verification would have said.
+                chain_issue_without_depth = {
+                    "kind": "cert_chain_expired",
+                    "severity": "high",
+                    "detail": f"a CA certificate of the chain failed the time check: {time_failure}",
+                }
     elif isinstance(main.error, ssl.SSLCertVerificationError):
         trust = _trust_from_verify_error(main.error)
         trust["store"] = contexts.trust_store
@@ -1164,7 +1178,7 @@ def _probe_one(
         # or ca_bundle): a matching subject and issuer is not "nobody vouches".
         issues = [issue for issue in issues if issue["kind"] != "self_signed"]
         if time_failure is not None and retry is not None:
-            validity_issues, validity_gap = _chain_validity(retry.verified_chain, now, time_failure)
+            validity_issues, validity_gap = _chain_validity(retry.verified_chain, now)
             issues.extend(validity_issues)
             trust["validity_checked"] = validity_gap is None
             if validity_gap is not None:
@@ -1190,6 +1204,8 @@ def _probe_one(
                 "verify_code": trust.get("verify_code"),
             }
         )
+    if chain_issue_without_depth is not None:
+        issues.append(chain_issue_without_depth)
     issues.extend(cert_strength_issues(cert))
     for version in accepted:
         if version in _WEAK_PROTOCOLS:
@@ -1235,7 +1251,8 @@ def _probe_one(
         ],
         "issues": issues,
         "source": "pulse-tls-probe",
-        "negotiated_protocol": base.version if base is not None else None,
+        # Without a completed handshake, what the main one's ServerHello chose.
+        "negotiated_protocol": base.version if base is not None else main.version,
         "negotiated_cipher": cname,
         "accepted_protocols": accepted,
         "checks": {

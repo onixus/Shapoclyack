@@ -258,6 +258,7 @@ def _tls_server(
     client_ca: Path | None = None,
     accept_limit: int | None = None,
     intolerant_above: int | None = None,
+    connections: list[int] | None = None,
 ) -> Iterator[int]:
     """A TLS server on 127.0.0.1 that handshakes every connection; yields its port.
 
@@ -290,6 +291,8 @@ def _tls_server(
 
     def handle(conn: socket.socket) -> None:
         accepted[0] += 1
+        if connections is not None:
+            connections[0] += 1
         if accept_limit is not None and accepted[0] > accept_limit:
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, (1).to_bytes(4, "little") + bytes(4))
             return
@@ -745,10 +748,37 @@ def test_expired_leaf_of_a_trusted_ca_is_expired_not_untrusted(tmp_path: Path):
     assert trust["status"] == "trusted"
     assert _issues(row, "cert_untrusted") == []
     assert len(_issues(row, "cert_expired")) == 1
-    # The leaf's own expiry fails the time check, so whether a CA certificate
-    # is out of its window too cannot be told: said, not guessed.
-    assert trust["validity_checked"] is False
+    # Every CA certificate of the re-verified chain is in its window: the time
+    # failure was the leaf's own, and the chain counts as checked.
+    assert trust["validity_checked"] is True
     assert _issues(row, "cert_chain_expired") == []
+
+
+def test_expired_leaf_under_an_expired_intermediate_is_said_undecidable(tmp_path: Path):
+    """Leaf and intermediate both out of their windows: the untimed
+    verification may have picked a twin a client would not, so the chain
+    validity is reported as not checked rather than guessed."""
+    _require_trust_store()
+    now = datetime.now(UTC)
+    root, root_key, bundle = _rsa_ca(tmp_path)
+    inter_key = _rsa_key()
+    inter = _certificate(
+        "Probe Intermediate", inter_key, issuer=root, issuer_key=root_key, ca=True,
+        not_before=now - timedelta(days=400), not_after=now - timedelta(days=10),
+    )
+    leaf_key = _rsa_key()
+    leaf = _certificate(
+        "app.example.test", leaf_key, issuer=inter, issuer_key=inter_key,
+        not_before=now - timedelta(days=300), not_after=now - timedelta(days=5),
+    )
+    cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=(inter,))
+    with _tls_server(cert, key) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    trust = row["checks"]["chain_trust"]
+    assert trust["status"] == "trusted"
+    assert trust["validity_checked"] is False
+    assert len(_issues(row, "cert_expired")) == 1
 
 
 def test_expired_intermediate_is_found(tmp_path: Path):
@@ -771,7 +801,8 @@ def test_expired_intermediate_is_found(tmp_path: Path):
     leaf_key = _rsa_key()
     leaf = _certificate("app.example.test", leaf_key, issuer=inter, issuer_key=inter_key)
     cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=(inter,))
-    with _tls_server(cert, key) as port:
+    connections = [0]
+    with _tls_server(cert, key, connections=connections) as port:
         row = _probe(port, ca_bundle=str(bundle))
 
     assert row["checks"]["chain_trust"]["status"] == "trusted"
@@ -781,6 +812,51 @@ def test_expired_intermediate_is_found(tmp_path: Path):
     assert expired[0]["depth"] == 1
     assert "Probe Intermediate" in expired[0]["subject"]
     assert _issues(row, "cert_expired") == []
+    # Protocol and cipher come from the completed untimed re-verification.
+    assert row["accepted_protocols"] == ["TLSv1.3"]
+    assert row["negotiated_cipher"]
+    # The documented ceiling: timed verification, untimed re-verification and
+    # two pinned handshakes -- the collect handshake is not run on this path.
+    assert connections[0] == 4
+
+
+def test_untrusted_chain_costs_at_most_four_connections(tmp_path: Path):
+    _require_trust_store()
+    cert, key = CA("Probe Test CA").server("127.0.0.1").write(tmp_path, "leaf")
+    connections = [0]
+    with _tls_server(cert, key, connections=connections) as port:
+        row = _probe(port, chain_trust="always")
+
+    assert row["checks"]["chain_trust"]["status"] == "untrusted"
+    assert connections[0] == 4  # verify, collect, TLS 1.0, TLS 1.1
+
+
+def test_expired_intermediate_behind_a_connection_limiter_is_still_found(tmp_path: Path):
+    """The limiter resets the untimed re-verification. OpenSSL checks time only
+    on a chain it built to a trust anchor (an unanchored one fails with code 20
+    first), so a time failure with the leaf in its window already names a CA
+    certificate -- found without a depth, not lost."""
+    _require_trust_store()
+    now = datetime.now(UTC)
+    root, root_key, bundle = _rsa_ca(tmp_path)
+    inter_key = _rsa_key()
+    inter = _certificate(
+        "Probe Intermediate", inter_key, issuer=root, issuer_key=root_key, ca=True,
+        not_before=now - timedelta(days=400), not_after=now - timedelta(days=10),
+    )
+    leaf_key = _rsa_key()
+    leaf = _certificate("app.example.test", leaf_key, issuer=inter, issuer_key=inter_key)
+    cert, key = _write(tmp_path, "leaf", leaf, leaf_key, chain=(inter,))
+    with _tls_server(cert, key, accept_limit=1) as port:
+        row = _probe(port, ca_bundle=str(bundle))
+
+    assert row["checks"]["chain_trust"]["status"] == "inconclusive"
+    expired = _issues(row, "cert_chain_expired")
+    assert len(expired) == 1
+    assert expired[0]["severity"] == "high"
+    assert "certificate has expired" in expired[0]["detail"]
+    assert "depth" not in expired[0]
+    assert row["negotiated_protocol"] == "TLSv1.3"  # from the main ServerHello
 
 
 def test_leaf_not_yet_valid_is_found(tmp_path: Path):

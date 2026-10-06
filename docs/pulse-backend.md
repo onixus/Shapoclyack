@@ -352,11 +352,19 @@ disappearing from `tls_posture.json`.
    outside its window is the finding (`cert_chain_expired`), not
    `cert_untrusted`. Checking time first matters: a server that still sends an
    expired intermediate next to its re-issued twin is accepted by clients,
-   which pick the valid one, and is not flagged.
+   which pick the valid one, and is not flagged. If the re-verification cannot
+   connect (a per-source connection limiter), the finding still stands, without
+   a `depth`: OpenSSL checks time only on a chain it has built to a trust
+   anchor — an unanchored chain fails with "unable to get local issuer
+   certificate" first — so a time failure with the leaf in its window names a
+   CA certificate. Chain trust is then `inconclusive`, and the protocol is the
+   one the main handshake's ServerHello chose.
 2. **Collect handshake** without verification, only when the chain did not
-   verify, so protocol and cipher come from a completed handshake. If it
-   fails, what the first connection showed (its ServerHello, the certificate,
-   the verdict on the chain) is kept.
+   verify for a reason other than time, so protocol and cipher come from a
+   completed handshake. On the time path the untimed re-verification takes its
+   place, so an endpoint never costs more than four connections. If it fails,
+   what the first connection showed (its ServerHello, the certificate, the
+   verdict on the chain) is kept.
 3. **TLS 1.0 and TLS 1.1 handshakes**, each pinned to one version
    (`probe_legacy_protocols`). A server that also speaks TLS 1.3 picks 1.3 for
    a client offering everything; only a ClientHello offering nothing newer
@@ -383,7 +391,7 @@ Findings, in the same shapes as the nmap path:
 | Finding | Severity | When |
 |---------|----------|------|
 | `weak_protocol` | high | a TLS 1.0 / 1.1 handshake completed (`version` says which) |
-| `cert_chain_expired` | high | the chain failed the time check on a CA certificate, and verifies without it: a client that checks time rejects it. `depth` and `subject` say which (a CA certificate before its not-before is `cert_not_yet_valid` with a `depth`). When the leaf itself is outside its window the CA certificates cannot be told apart from it: `validity_checked: false` |
+| `cert_chain_expired` | high | the chain failed the time check on a CA certificate, and verifies without it: a client that checks time rejects it. `depth` and `subject` say which (a CA certificate before its not-before is `cert_not_yet_valid` with a `depth`). When the leaf itself is outside its window, the chain counts as checked if every CA certificate of the re-verified chain is within its window; if one is not, which one a client trips on cannot be told: `validity_checked: false` |
 | `cert_not_yet_valid` | medium | the leaf's not-before is in the future (also from nmap's `ssl-cert` and Pulse) |
 | `cert_untrusted` | medium | the chain does not verify to the system store or `ca_bundle`; `detail` is OpenSSL's reason (`unable to get local issuer certificate`, `self-signed certificate in certificate chain`) |
 | `self_signed` | medium | the leaf is its own issuer: certain (`heuristic: false`) when verification said so, then **instead of** `cert_untrusted`; otherwise the subject/issuer heuristic, dropped when the chain verifies |
