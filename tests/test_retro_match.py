@@ -1473,6 +1473,55 @@ def test_a_release_ships_the_series_of_its_newest_fix_only(version, statements) 
     }
 
 
+def test_a_release_that_only_inherited_the_series_does_not_identify_it() -> None:
+    """A Debian host whose release nobody named. The tracker's trixie and sid
+    inherited 10.11 fixes built on 10.11.6, so "fixes built on this upstream"
+    named four releases, three of which then refused to answer for 10.11 —
+    "releases disagree" where bookworm alone ships 10.11."""
+    inherited = [
+        _advisory(cve, release=release, package="mariadb", fixed=fixed)
+        for release in ("trixie", "sid")
+        for cve, fixed in (
+            ("CVE-2023-22084", "1:10.11.6-1"),
+            ("CVE-2024-21096", "1:10.11.8-1"),
+            ("CVE-2023-52969", "1:11.8.2-1"),
+        )
+    ]
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="bookworm", package="mariadb", fixed="1:10.11.6-0+deb12u1"),
+        _advisory("CVE-2024-21096", release="bookworm", package="mariadb", fixed="1:10.11.8-0+deb12u1"),
+        *inherited,
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version="5.5.5-10.11.6", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.11.6",)),
+        _one("a:mariadb:mariadb", CpeRange("CVE-2024-21096", start_including="10.11.0", end_excluding="10.11.8")),
+        lookup=lambda _d: provider,
+        host=rm.DistroHint("debian"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+    assert only.evidence["advisory"]["release"] == "bookworm"
+
+
+def test_the_newest_fix_is_compared_without_the_epoch() -> None:
+    """The tracker drops the epoch on some trixie records. Compared by dpkg,
+    ``1:10.11.6-1`` (inherited) outranks ``11.8.6-0+deb13u1`` and made trixie a
+    10.11 release; as upstream versions 11.8.6 is the newer."""
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="trixie", package="mariadb", fixed="1:10.11.6-1"),
+        _advisory("CVE-2025-13699", release="trixie", package="mariadb", fixed="11.8.6-0+deb13u1"),
+        _advisory("CVE-2024-21096", release="trixie", package="mariadb", state="not_affected"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version="5.5.5-10.11.6", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.11.6",)),
+        _one("a:mariadb:mariadb", CpeRange("CVE-2024-21096", start_including="10.11.0", end_excluding="10.11.8")),
+        lookup=lambda _d: provider,
+        host=rm.DistroHint("debian", "trixie"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.evidence["advisory"]["reason"]) == ("possible", "no_vendor_statement")
+
+
 def test_the_release_is_found_through_the_unversioned_source() -> None:
     """A Debian host whose release nobody named: bookworm is the release whose
     ``mariadb`` fixes are built on 10.11.6 — found only by asking ``mariadb``."""

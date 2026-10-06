@@ -1093,9 +1093,17 @@ def vendor_verdict(
         if shipping is not None and memo_key in shipping:
             releases = shipping[memo_key]
         else:
-            # A fix built on this very upstream version is a fix of its series,
-            # so the shared name is safe to search here.
-            releases = _releases_shipping(provider, (*packages, *([shared] if shared else [])), upstream)
+            # The shared name counts only where the release ships the series
+            # (_ships_series): the tracker's trixie and sid inherited 10.11
+            # fixes built on 10.11.6, and counting them named four releases
+            # where bookworm alone ships 10.11 — "releases disagree".
+            releases = _releases_shipping(provider, packages, upstream)
+            if shared:
+                releases += [
+                    release
+                    for release in _releases_shipping(provider, (shared,), upstream)
+                    if release not in releases and _ships_series(provider, release, shared, upstream)
+                ]
             if shipping is not None:
                 shipping[memo_key] = releases
         if not releases:
