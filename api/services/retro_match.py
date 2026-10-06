@@ -733,8 +733,16 @@ def _usable(version: str | None) -> str | None:
     return version
 
 
-def upstream_version(fingerprint: Fingerprint, keys: Iterable[str], cpe_version: str | None) -> str | None:
+def upstream_version(
+    fingerprint: Fingerprint, keys: Iterable[str], cpe_version: str | None, *, via: str = ""
+) -> str | None:
     """The upstream version the fingerprint discloses, or ``None``.
+
+    ``via`` is :func:`product_keys`'s: a product named by its banner token
+    (``via="banner"``) takes its version from that token only. The ``version``
+    field and the CPE are about the product the prober named — Pulse writes
+    "H2O 2.2.6" for a listener whose banner also says ``X-Powered-By:
+    PHP/8.1.30``, and 2.2.6 is not that PHP's version.
 
     The prober's own doubt wins over everything: a ``version`` field that says
     ``3.X - 4.X``, ``4.x`` or ``2.0.8 or later`` is nmap declining to name a
@@ -748,6 +756,9 @@ def upstream_version(fingerprint: Fingerprint, keys: Iterable[str], cpe_version:
     Whatever is found must pin a release (:func:`_usable`).
     """
     keys = tuple(keys)
+    if via == "banner":
+        fingerprint = Fingerprint(banner=fingerprint.banner, service=fingerprint.service)
+        cpe_version = None
     raw = (fingerprint.version or "").strip()
     if raw and _UNCERTAIN_VERSION.search(raw):
         return None
@@ -1242,10 +1253,15 @@ def match(
         return MatchOutcome(reason=REASON_UNKNOWN_PRODUCT)
     if any(key in _LOOKALIKES and _LOOKALIKES[key].search(fingerprint.text) for key in keys):
         return MatchOutcome(reason=REASON_LOOKALIKE, product_keys=keys)
-    upstream = upstream_version(fingerprint, keys, cpe_version)
+    upstream = upstream_version(fingerprint, keys, cpe_version, via=via)
     if not upstream:
         return MatchOutcome(reason=REASON_NO_VERSION, product_keys=keys)
-    own = own_hint(fingerprint, keys, cpe_version)
+    if via == "banner":
+        # The version field and the CPE are the named product's, and so is
+        # any revision in them (upstream_version reads the same way).
+        own = own_hint(Fingerprint(banner=fingerprint.banner, service=fingerprint.service), keys, None)
+    else:
+        own = own_hint(fingerprint, keys, cpe_version)
 
     # One statement per CVE: the first product key that covers the version
     # wins, so nginx:nginx and f5:nginx naming the same CVE is one match.

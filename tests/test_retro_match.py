@@ -181,7 +181,7 @@ def test_parse_cpe(name: str, expected) -> None:
 def test_product_and_version(fingerprint, keys, via, version) -> None:
     found, found_via, cpe_version = rm.product_keys(fingerprint)
     assert (found, found_via) == (keys, via)
-    assert rm.upstream_version(fingerprint, found, cpe_version) == version
+    assert rm.upstream_version(fingerprint, found, cpe_version, via=found_via) == version
 
 
 @pytest.mark.parametrize(
@@ -912,7 +912,7 @@ PDNS_AUTHORITATIVE = ("a:powerdns:authoritative_server", "a:powerdns:authoritati
 def test_new_products_are_named_by_the_probers_own_strings(fingerprint, keys, via, version) -> None:
     found, found_via, cpe_version = rm.product_keys(fingerprint)
     assert (found, found_via) == (keys, via)
-    assert rm.upstream_version(fingerprint, found, cpe_version) == version
+    assert rm.upstream_version(fingerprint, found, cpe_version, via=found_via) == version
 
 
 @pytest.mark.parametrize(
@@ -1523,6 +1523,37 @@ def test_phps_revision_is_not_the_web_servers(fingerprint) -> None:
     assert (only.verdict, only.confidence) == ("possible", "backport_possible")
     assert only.evidence["advisory"]["reason"] == "revision_not_disclosed"
     assert "distro_revision" not in only.evidence
+
+
+@pytest.mark.parametrize(
+    ("product", "version", "banner"),
+    [
+        # Pulse names the server by its Server rule and writes the server's
+        # version; the PHP behind it is only in X-Powered-By.
+        ("H2O", "2.2.6", "HTTP/1.1 200 OK | Server: h2o/2.2.6 | X-Powered-By: PHP/8.1.30"),
+        (
+            "OpenLiteSpeed",
+            "1.7.19",
+            "HTTP/1.1 200 OK | Server: OpenLiteSpeed/1.7.19 | X-Powered-By: PHP/8.1.30 | Content-Type: text/html",
+        ),
+    ],
+)
+def test_a_product_named_by_its_banner_takes_the_version_from_its_banner(product, version, banner) -> None:
+    """Identified by ``X-Powered-By: PHP/8.1.30``, the listener's PHP is 8.1.30
+    — not the web server's version in the ``version`` field, which made a
+    patched PHP 8.1.30 "PHP 2.2.6" with CVE-2012-1823."""
+    dataset = _one(
+        "a:php:php",
+        CpeRange("CVE-2012-1823", end_excluding="5.3.12"),
+        CpeRange("CVE-2024-4577", start_including="8.1.0", end_excluding="8.1.29"),
+    )
+    outcome = rm.match(
+        rm.Fingerprint(product=product, version=version, banner=banner, service="http"),
+        dataset,
+        lookup=lambda _d: None,
+    )
+    assert outcome.upstream_version == "8.1.30"
+    assert outcome.matches == ()
 
 
 def test_another_products_header_says_nothing_about_the_listeners_distribution() -> None:
