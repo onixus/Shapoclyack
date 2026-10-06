@@ -205,44 +205,72 @@ keep candidate/concurrency caps, and review their data-handling policies.
 ### Subdomain takeover detection
 
 `discovery.domain_monitor` (off by default) resolves every in-scope FQDN with
-its CNAME chain, addresses and DNS status, and judges the chain against the
-takeover catalogue in `scanner/pipeline/takeover_fingerprints.json`. Each of
-its entries names a service, the CNAME targets it hands out, how an unclaimed
-resource shows (NXDOMAIN of the target, or a page the provider serves), and a
-status: `vulnerable`, `edge_case` (claimable only under the condition its note
-names) or `not_vulnerable`. Findings land in `domain_monitor.json` under the
-`dangling_cname` section, each with an `evidence` block (chain, DNS status,
-service and its status, which check ran, fingerprint id, HTTP status, the
-names that returned NXDOMAIN):
+its CNAME chain and addresses, and judges the chain against the takeover
+catalogue in `scanner/pipeline/takeover_fingerprints.json`. Each of its entries
+names a service, the CNAME targets it hands out, how an unclaimed resource
+shows (NXDOMAIN of the target, or a page the provider serves), and a status:
+`vulnerable`, `edge_case` (claimable only under the condition its note names;
+the note is quoted in the finding) or `not_vulnerable`. Findings land in
+`domain_monitor.json` under the `dangling_cname` section, each with an
+`evidence` block (chain, DNS status per record type, service and its status,
+which check ran, fingerprint id, HTTP status, the names that returned NXDOMAIN
+and what the repeat query said):
 
 | `kind` / `confidence` | Severity | When |
 |---|---|---|
-| `subdomain_takeover` / `confirmed` | high | NXDOMAIN of a claimable resource name (Azure, Elastic Beanstalk, …), or the provider's unclaimed-resource page for the org's name |
-| `subdomain_takeover` / `heuristic` | medium | The chain points at a claimable service and the name has no address, so nothing could be checked |
-| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain (Public Suffix List) does not exist either. A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
+| `subdomain_takeover` / `confirmed` | high (`vulnerable`), medium (`edge_case`) | NXDOMAIN of a claimable resource name (Azure, Elastic Beanstalk, …) on both A and AAAA and again on a repeat query — for App Service, also no `asuid.<name>` TXT verification record — or the provider's unclaimed-resource page for the org's name |
+| `subdomain_takeover` / `heuristic` | medium (`vulnerable`), low (`edge_case`) | The chain points at a claimable service and the name has no address, so nothing could be checked |
+| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain does not exist either, asked twice. Only for a registrable domain from the ICANN section of the Public Suffix List, under a TLD on that list and not special-use (`.local`, `.internal`, `.test`, `home.arpa`, …). A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
+| `dangling_cname` / `heuristic` | low | The chain ends at a non-existent name under a hosting platform's suffix (the list's private section) that the catalogue does not know. Whether the platform lets a stranger re-create that name is unknown — check it |
 
-A chain into a `not_vulnerable` service (CloudFront, Fastly, Zendesk, …), a
-resource that answered without the fingerprint, a check that got no answer and
-a name the scope refused are not findings; they are listed under
-`not_reported` with the reason, so a reviewer can see what was looked at.
+What matched but is not a finding is listed under `not_reported` with the
+reason, so a reviewer can see what was looked at: `service_not_vulnerable`,
+`target_exists`, `fingerprint_not_matched`, `http_inconclusive`,
+`http_confirm_disabled`, `http_target_cap`, `sinkholed` (the address was
+0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is what a filtering resolver
+answers; the request is never sent), `address_refused_by_scope` (also written
+to the run's scope-denials artifact), `domain_verified`,
+`registrable_domain_exists`, `target_not_registrable`,
+`nxdomain_not_repeated`, `dns_inconclusive` and `dns_no_answer`.
+
+The DNS side is strict on purpose. A and AAAA are asked in separate dnsx runs:
+with both in one run dnsx 1.2.3 reports the rcode of the last query only, which
+turned a name with an A record into NXDOMAIN. An address from either query means
+the name resolves; NXDOMAIN needs both. SERVFAIL, REFUSED, a timeout (dnsx then
+writes no row at all) or the two queries disagreeing decide nothing: the name
+is `dns_inconclusive` or `dns_no_answer` whatever service it points at, it is
+listed under `dns_unanswered`, and the DNS structure control reads
+`not_checked` instead of `ok` while any name went unanswered.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `takeover_http_confirm` | `true` | For a candidate that resolves: one GET per scheme (HTTPS, then HTTP) to the org's own name, pinned to the address just resolved, `Host` and TLS SNI set to that name. It lands on the provider's infrastructure, not the org's. No redirect is followed, at most 64 KiB is read, the proxy environment is ignored, TLS is not verified, and an address the approved scan scope denies is never contacted. Off, such candidates are `not_reported` with `http_confirm_disabled` |
+| `takeover_http_confirm` | `true` | For a candidate that resolves: one GET per scheme (HTTPS, then HTTP) to the org's own name, pinned to the address just resolved, `Host` and TLS SNI set to that name. It lands on the provider's infrastructure, not the org's. No redirect is followed, at most 64 KiB is read, the proxy environment is ignored, TLS is not verified, and a sinkhole answer or an address the approved scan scope denies is never contacted. Off, such candidates are `not_reported` with `http_confirm_disabled` |
 | `takeover_http_concurrency` | `5` | Requests in flight. Held to the tenant policy's `max_host_concurrency` |
 | `takeover_http_timeout_seconds` | `10` | Hard deadline per attempt, whole exchange included |
 | `takeover_http_max_targets` | `200` | Names probed per run; the rest are `not_reported` with `http_target_cap` and the section says `truncated` |
 
 The tenant scan policy's `skip_service_probe` (the `fragile` profile) turns
-`takeover_http_confirm` off and never back on; the DNS lookups stay. The
-catalogue is loaded and validated when the check starts, and a malformed file
-stops the stage rather than reporting nothing. Statuses come from public
-research — mainly [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz)
-and the nuclei-templates takeover set — and each entry records its sources and
-the date they were read. To refresh an entry, re-read its sources, update
-`status`/`fingerprints`/`checked`, and run `tests/test_takeover_catalogue.py`.
-Providers change their error pages without notice; until the entry is updated,
-what would have been a confirmation shows up as `fingerprint_not_matched`.
+`takeover_http_confirm` off and never back on; the DNS lookups stay.
+
+**Resolvers.** The verdicts are only as good as `dns.resolvers`. A filtering
+resolver (RPZ, a blocking public resolver) that answers NXDOMAIN for names it
+blocks makes a CNAME into a blocked provider look unclaimed. The repeat query
+catches a flapping answer, not a consistent policy, so point `dns.resolvers` at
+a plain recursive resolver when this check is on.
+
+**The catalogue.** It is loaded and validated before the stage's first lookup;
+a malformed file raises, and like any stage error that fails the whole run
+(`STAGE_FAILURE`) rather than reporting nothing. Statuses come from public
+research — mainly [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz),
+the comments in its issue threads, and the nuclei-templates takeover set — and
+each entry records its sources and the date they were read; `checked` is that
+date, not a live re-test of the provider. An entry whose sources leave the
+takeover in doubt is `edge_case`, and the schema refuses an `edge_case` without
+a note. To refresh an entry, re-read its sources, update
+`status`/`fingerprints`/`note`/`checked`, and run
+`tests/test_takeover_catalogue.py`. Providers change their error pages without
+notice; until the entry is updated, what would have been a confirmation shows
+up as `fingerprint_not_matched`.
 
 ### Tenant-uploaded wordlists
 

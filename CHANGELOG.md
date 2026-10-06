@@ -667,31 +667,42 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
-- **Subdomain takeover detection with a fingerprint catalogue (DQ3).**
+- **Subdomain takeover detection with a fingerprint catalogue.**
   `domain_monitor`'s dangling-CNAME check now judges each in-scope name's CNAME
   chain against `scanner/pipeline/takeover_fingerprints.json` — 58 services
-  (31 `vulnerable`, 13 `edge_case`, 14 `not_vulnerable`), each with its CNAME
+  (28 `vulnerable`, 16 `edge_case`, 14 `not_vulnerable`), each with its CNAME
   targets, how an unclaimed resource shows (NXDOMAIN or the provider's page),
-  fingerprints, sources and the date checked; the file is validated when the
-  check starts. Findings in the `dangling_cname` section are now
-  `subdomain_takeover` with `confidence: confirmed` (high: NXDOMAIN of a
-  claimable resource name, or the provider's unclaimed page) or `heuristic`
-  (medium: claimable service, no address), and `dangling_cname_nxdomain`
-  (high: the chain ends at a name whose registrable domain does not exist).
-  Every finding carries `severity`, `detail` and an `evidence` block; what
-  matched but is not a finding is listed under `not_reported` with a reason.
+  fingerprints, a note for every edge case, sources and the date they were
+  read; the file is validated before the first lookup. Findings in the
+  `dangling_cname` section are `subdomain_takeover` with `confidence:
+  confirmed` (NXDOMAIN of a claimable resource name on A and AAAA and on a
+  repeat query, no `asuid` record for App Service; or the provider's unclaimed
+  page) or `heuristic` (claimable service, no address) — high/medium for a
+  `vulnerable` service, medium/low for an `edge_case` one, whose note goes into
+  the detail; `dangling_cname_nxdomain` (high: the chain ends at a name whose
+  registrable domain, from the ICANN section of the Public Suffix List under a
+  delegated, non-special-use TLD, does not exist on two asks); and
+  `dangling_cname` (low: a non-existent name at a hosting platform the
+  catalogue does not know). Every finding carries `severity`, `detail` and an
+  `evidence` block; what matched but is not a finding is listed under
+  `not_reported` with a reason, and names whose DNS answer was missing or
+  unusable (SERVFAIL, REFUSED, timeout, A and AAAA disagreeing) under
+  `dns_unanswered` — the DNS structure control is then `not_checked`, not `ok`.
   The confirmation is one bounded GET per scheme to the org's own name, pinned
   to the resolved address with `Host`/SNI set to it, no redirects, 64 KiB, a
-  hard deadline, no proxy, never to an address the scan scope denies
+  hard deadline, no proxy, never to a sinkhole answer or to an address the scan
+  scope denies (that refusal joins the run's denials artifact)
   (`discovery.domain_monitor.takeover_http_confirm`, default on, with
   `takeover_http_concurrency`/`_timeout_seconds`/`_max_targets`). The tenant
   policy's `skip_service_probe` turns it off and `max_host_concurrency` caps
-  it. Old readers keep `fqdn`, `cname_target` and `matched_suffix`; the finding
+  it. Old readers keep `fqdn`, `cname_target` and `matched_suffix`; a takeover's
   `kind` is no longer `dangling_cname`, `domain_monitor_findings.txt` lines are
-  `<kind>:<confidence>:<fqdn>:<target>`, and a confirmed takeover now makes the
-  "DNS structure" control `fail` instead of `weak`. Statuses adapted from
-  can-i-take-over-xyz (CC BY 4.0, attributed in `NOTICE`). See
-  `docs/configuration.md` § Subdomain takeover detection.
+  `<kind>:<confidence>:<fqdn>:<target>`, and a confirmed takeover of a
+  `vulnerable` service makes the "DNS structure" control `fail` instead of
+  `weak`. A resolver that answers NXDOMAIN for blocked names (RPZ) skews the
+  verdicts; `dns.resolvers` says so. Statuses adapted from can-i-take-over-xyz
+  (CC BY 4.0, attributed in `NOTICE`). See `docs/configuration.md` § Subdomain
+  takeover detection.
 
 ### Changed
 
@@ -1399,9 +1410,12 @@ All notable changes to Shapoclyack are documented in this file.
   Unbounce, Zendesk) belong to services that do not allow a takeover;
   `s3-website` could never end a real name, so S3 website endpoints were never
   matched; and matching was not label-bounded (`evilgithub.io` matched
-  `github.io`). The lookup is now `-a -aaaa` (whole chain, addresses, and the
-  NXDOMAIN of the chain's end, which `-cname` beside `-a` would overwrite) and
-  matching goes through the takeover catalogue above.
+  `github.io`). The chain is now resolved with separate `-a` and `-aaaa` runs —
+  with several record types in one run dnsx reports the rcode of the last query
+  only, so `-cname` beside `-a` hid an NXDOMAIN and `-aaaa` beside `-a` invented
+  one for a name with an A record — and walked in resolution order from the
+  `all` records rather than taken in answer order; matching goes through the
+  takeover catalogue above.
 
 ### Documentation
 
