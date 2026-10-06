@@ -957,11 +957,30 @@ def test_lookalikes_of_the_new_products_are_not_matched(fingerprint) -> None:
 @pytest.mark.parametrize(
     ("fingerprint", "key", "statement"),
     [
-        # A MariaDB greeting misread as MySQL 5.5.5.
+        # A MariaDB greeting misread as MySQL 5.5.5 (no prober does this today).
         (
             rm.Fingerprint(product="MySQL", version="5.5.5-10.3.39"),
             "a:oracle:mysql",
             CpeRange("CVE-2023-22084", start_including="5.5.0", end_including="5.7.43"),
+        ),
+        # Engines that speak MySQL's protocol and borrow its version: TiDB
+        # v7.1.5's real handshake, through nmap's generic MySQL line.
+        (
+            rm.Fingerprint(
+                product="MySQL",
+                version="5.7.25-TiDB-v7.1.5",
+                cpe=("cpe:/a:mysql:mysql:5.7.25-TiDB-v7.1.5",),
+                service="mysql",
+            ),
+            "a:oracle:mysql",
+            CpeRange("CVE-2023-22084", start_including="5.7.0", end_including="5.7.43"),
+        ),
+        (
+            rm.Fingerprint(
+                product="MySQL", version="8.0.30-Vitess", cpe=("cpe:/a:mysql:mysql:8.0.30-Vitess",), service="mysql"
+            ),
+            "a:oracle:mysql",
+            CpeRange("CVE-2024-20961", start_including="8.0.0", end_including="8.0.35"),
         ),
         # Pulse's MySQL rule takes the first x.y.z of a port-3306 reply; in a
         # refusal that is the scanner's own address.
@@ -1023,6 +1042,25 @@ def test_a_version_of_the_wrong_shape_is_no_version(fingerprint, key, statement)
     outcome = rm.match(fingerprint, _one(key, statement), lookup=lambda _d: None)
     assert outcome.matches == ()
     assert outcome.reason == "no_version"
+
+
+@pytest.mark.parametrize(
+    ("version", "upstream"),
+    [
+        # Ubuntu's revision, Debian's with binary logging on, Percona's build,
+        # Oracle's own Windows build: MySQL, each.
+        ("5.7.33-0ubuntu0.18.04.1", "5.7.33"),
+        ("5.5.62-0+deb8u1-log", "5.5.62"),
+        ("8.0.35-27", "8.0.35"),
+        ("5.7.44-48-log", "5.7.44"),
+        ("5.6.51-community", "5.6.51"),
+        ("8.0.36", "8.0.36"),
+    ],
+)
+def test_mysql_builds_keep_their_upstream_version(version, upstream) -> None:
+    fingerprint = rm.Fingerprint(product="MySQL", version=version, cpe=(f"cpe:/a:mysql:mysql:{version}",))
+    keys, _, cpe_version = rm.product_keys(fingerprint)
+    assert rm.upstream_version(fingerprint, keys, cpe_version) == upstream
 
 
 def test_mariadbs_compatibility_prefix_is_not_its_version() -> None:

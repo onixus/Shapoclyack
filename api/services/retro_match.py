@@ -440,10 +440,19 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:apache:couchdb": ("server: couchdb",),
 }
 
-#: MySQL's version string: the upstream version, then whatever the build
-#: appended — Ubuntu's ``-0ubuntu0.18.04.1``, Percona's ``-28``, ``-log``. Not
-#: ``5.5.5-…``: that is MariaDB's compatibility prefix, never a MySQL.
-_MYSQL_SHAPE = re.compile(r"(?!5\.5\.5-\d)(\d+\.\d+\.\d+[a-z]?)(?:-\S*)?")
+#: MySQL's version string: the upstream version, then only what MySQL builds
+#: append — a package revision (Ubuntu's ``-0ubuntu0.18.04.1``, Debian's
+#: ``-0+deb8u1``, Percona's ``-28``), ``-log``, ``-debug``, Oracle's
+#: ``-community``. Not any suffix: engines that speak MySQL's protocol borrow
+#: its version and append their own name (TiDB ``5.7.25-TiDB-v7.1.5``, Vitess
+#: ``8.0.30-Vitess``), and MySQL's CVEs are not theirs. The ``5.5.5-``
+#: lookahead is belt and braces: MariaDB's compatibility prefix would pass the
+#: revision rule as MySQL 5.5.5, and no prober writes it under "MySQL" today
+#: only because nmap's MariaDB line precedes its MySQL one and Pulse cuts the
+#: version to ``x.y.z``.
+_MYSQL_SHAPE = re.compile(
+    r"(?!5\.5\.5-\d)(\d+\.\d+\.\d+[a-z]?)(?:-(?:log|debug|community(?:-log)?|\d[\w.+~]*(?:-log)?))?"
+)
 #: Jetty 7-9 date their releases (``9.4.44.v20210927``); NVD's bounds are the
 #: version alone. Pre-releases (``9.4.0.RC1``, ``.M1``, ``-SNAPSHOT``) fit no shape.
 _JETTY_SHAPE = re.compile(r"(\d+\.\d+\.\d+)(?:\.v\d{8}(?:\d{6})?)?", re.IGNORECASE)
