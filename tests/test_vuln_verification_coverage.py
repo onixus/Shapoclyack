@@ -1249,6 +1249,29 @@ def test_the_detector_list_is_bounded(tmp_path):
     assert latest["detectors"][0]["ref"] == f"template-{vulns.MAX_DETECTORS + 2}"
 
 
+@pytest.mark.parametrize(
+    ("detectors", "protocol"),
+    [
+        ([{"detector": "pulse"}], "tcp"),
+        ([{"detector": "nmap-nse", "protocol": "udp"}], "udp"),
+        # TCP evidence for a finding one of whose detectors saw it on UDP.
+        ([{"detector": "pulse"}, {"detector": "nmap-nse", "protocol": "udp"}], None),
+        # An NSE entry from before the protocol was recorded: unknown, and
+        # Pulse being TCP does not make it TCP.
+        ([{"detector": "pulse"}, {"detector": "nmap-nse"}], None),
+        ([], None),
+    ],
+    ids=["pulse", "nse-udp", "tcp-and-udp", "tcp-and-unknown", "none"],
+)
+def test_a_finding_is_tcp_only_when_every_detector_says_so(detectors, protocol):
+    """The delta review's surviving mutants: "any detector is TCP" and
+    "ignore the unknown ones" each let a refused TCP port close a finding a
+    UDP or protocol-unknown detector also stands behind."""
+    from api.services import verification_coverage as coverage
+
+    assert coverage.finding_protocol(detectors) == protocol
+
+
 def test_the_nse_rule_reads_script_names_as_nmap_takes_them():
     from api.services import verification_coverage as coverage
 
@@ -1384,6 +1407,8 @@ def test_a_finding_seen_on_a_name_is_re_scanned_on_that_name_with_its_template(t
     overlay = job.scan_options["config_overlay"]
     assert overlay["nuclei"]["template_ids"] == [TEMPLATE]
     assert overlay["nuclei"]["enabled"] is True
+    # The connect probe a refusal is judged on, on every verification.
+    assert overlay["reachability"] == {"enabled": True}
     assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
     started = _last_event(settings, tenant_id, vuln["vuln_id"])
     assert started["detail"]["plan"]["template_ids"] == [TEMPLATE]
@@ -1416,6 +1441,7 @@ def test_an_nse_finding_is_re_scanned_with_nse_on(tmp_path):
 
     assert _inputs(settings, job.job_id, "ranges.txt") == [HOST]
     assert job.scan_options["config_overlay"]["service_probe"] == {"backend": "hybrid"}
+    assert job.scan_options["config_overlay"]["reachability"] == {"enabled": True}
     # Nothing to pin, and still a verification: asked for v2 explicitly.
     assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
     assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
