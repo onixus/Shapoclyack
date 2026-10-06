@@ -707,6 +707,41 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
+- **Retro CVE matching names eighteen more products.** Sendmail, Dovecot,
+  Pure-FTPd, FileZilla Server, MySQL, MariaDB, MongoDB, Elasticsearch,
+  Memcached, CouchDB, Squid, HAProxy, Jetty, PHP, Unbound, PowerDNS
+  Authoritative and Recursor, and libssh join the 16, each under the strings
+  nmap and Pulse really emit (checked against `nmap-service-probes` and Pulse's
+  probe database), each key against NVD's CPE dictionary; Pulse's own names for
+  IIS and Dropbear, which the table did not know, too — but not Pulse's
+  "Redis", which is whatever answers INFO with `redis_version` first (Valkey
+  8.1.10 is "Redis 7.2.4" to it). A listener whose banner names a Redis fork
+  (`server_name:valkey`, `valkey_version`, `dragonfly_version`; KeyDB names
+  itself nowhere a prober keeps) is a
+  new `match_status`, `lookalike`, shown on the asset's Services section.
+  A MySQL version whose suffix carries a word MySQL's own builds never append
+  is `lookalike` too — TiDB `5.7.25-TiDB-v7.1.5`, Vitess `8.0.30-Vitess`,
+  OceanBase, MatrixOne, TDDL, and whatever engine is next. MySQL's own:
+  package revisions and Percona builds, and `log`, `debug`, `community`,
+  `commercial`, `enterprise`, `advanced`, `cll`, `lve`, `cluster`. Products whose
+  version string carries more than the version are cut to it by a per-product
+  shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
+  Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and
+  the cut-off revision still goes to the backport check. When the table knows
+  the product, a line's other CPEs are dropped with their versions (nmap's
+  Elasticsearch line names Lucene's first). Debian/Ubuntu source
+  packages named after the upstream series (`mysql-5.7`, `mariadb-10.5`,
+  `php8.1`) are derived from the listener's own version, and the unversioned
+  `mariadb` of Debian 12/13 and Ubuntu 24.04 is asked only in a release that
+  builds the listener's series from it. Elasticsearch, MongoDB, CouchDB, Jetty
+  and FileZilla Server are not treated as distribution builds. Deliberately not
+  matched, with the reason in
+  [docs/retro-cve-matching.md](docs/retro-cve-matching.md#products): Jenkins (NVD's
+  LTS and weekly ranges share a key), PostgreSQL (no prober reports a version),
+  Exchange (build ≠ CU), CUPS, Webmin, Erlang/OTP SSH and others. The worker's
+  marker now carries a digest of the matcher's tables (`…+rules:<digest>`), so
+  the upgrade re-matches every listener once by itself — expect a wave of
+  `retro_match` findings on the first tick (docs/operations.md).
 
 ### Changed
 
@@ -1142,6 +1177,38 @@ All notable changes to Shapoclyack are documented in this file.
   memory first); `not_testable` for SSLv2/SSLv3. Verified against Python `ssl`
   servers on loopback in the test suite (OpenSSL 3.6 on macOS, 3.5 in the CI
   `python:3.11/3.12-slim` images); `openssl s_server` checked by hand.
+- **Retro matching no longer matches nmap's Jenkins and CUPS CPEs.** The
+  product table never named either, but the CPE path took any key the dataset
+  knew: nmap's `cpe:/a:jenkins:jenkins:2.426.3` (a patched LTS) fell inside
+  CVE-2024-23897's weekly `< 2.442`, which NVD files under the same key as
+  the LTS range, and nmap's `cpe:/a:apple:cups:2.4` met NVD ranges in Apple's
+  own numbering (`< 499.4`), below which every Linux CUPS falls — a tracked
+  finding with a normal SLA, on any host, with any full NVD harvest. Listeners
+  carrying either CPE are now `unknown_product`.
+- **Retro matching took PHP's package revision for the web server's.** Pulse
+  keeps twelve HTTP header lines as the banner, and a hybrid run's merge
+  prefers it, so an Ubuntu Apache's banner carried `X-Powered-By:
+  PHP/7.4.3-4ubuntu2.19`, whose `4ubuntu2.19` was read as Apache's revision: a
+  patched `2.4.41-4ubuntu3.17` became `2.4.41-4ubuntu2.19`, below the focal
+  fix — a vendor-confirmed finding — and an unpatched nginx became `fixed`. A
+  revision is now read only from the version field, the CPE's version or the
+  product's own banner token; `X-Powered-By` lines count only for PHP.
+- **Retro matching read MariaDB 10+ as MariaDB 5.5.5.** nmap's MariaDB version
+  and CPE keep the `5.5.5-` compatibility prefix (`5.5.5-10.3.39`), and the CPE
+  path matched it whenever the dataset knew `mariadb:mariadb` — that is, with
+  any full NVD harvest: compared as written it put every MariaDB 10.x inside
+  every 5.5 range and outside its own series'. The prefix is now cut (see the
+  version shapes under *Added*).
+- **CI: the sensor-update signal tests ran into their limits in Jenkins, and the root guard test failed outright.** Eleven tests in `tests/test_sensor_bundle.py` failed on every Jenkins build since the signed-bundle work (#363): PID 1 in a `docker.inside` container is `cat`, which never reaps, so processes a test orphans stay zombies, and `scripts/update-agent.sh` waits for the sensor's process group to empty (`kill -0 -- -PGID`) — a zombie is still a member, so on CI it never emptied. On a host, systemd reaps them at once; the script is unchanged. The test stage now runs its container with `--init`. `test_root_will_not_run_the_update_over_a_tree_another_account_owns` asserted a non-root owner that a root run cannot have; run as root it now hands the tree to another account first, so the guard is still exercised.
+
+- **`test_window_decays_without_operator_intervention` no longer depends on how
+  fast bcrypt runs.** It used a real one-second limiter window, so the lockout
+  only formed if two logins fitted in that second; under coverage on the CI
+  container each took ~1.2 s and main #76 failed with `401 == 429`. The test
+  now holds `auth_audit._now` still and moves it across a 60-second window by
+  hand, and also checks the lock still holds one second before the edge. Test
+  only; the limiter is unchanged.
+
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run

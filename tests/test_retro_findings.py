@@ -25,7 +25,7 @@ from sqlalchemy import func, select, update
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import asset_services, cpe_ranges, retro_findings, retro_match_worker
+from api.services import asset_services, cpe_ranges, retro_findings, retro_match, retro_match_worker
 from api.services import assets as assets_service
 from api.services import runs as runs_service
 from api.services import tenants as tenants_service
@@ -408,6 +408,21 @@ def test_the_worker_runs_on_a_new_dataset_and_not_again_without_one(settings) ->
     assert second["services"] == 2
     assert second["created"] == 1
     assert "CVE-2099-0001" in {row.cve for row in retro_rows(settings)}
+    assert retro_match_worker.sweep_tenant(settings, "default") == {"services": 0}
+
+
+def test_a_matcher_that_learned_a_product_requeues_every_listener_once(settings, monkeypatch) -> None:
+    """A release that widens the product table leaves the dataset alone, so a
+    marker made of datasets alone would never re-ask about the listeners the
+    old table called ``unknown_product``. The table is part of the marker:
+    every listener is due once after the upgrade, then not again."""
+    write_run(settings, "run-1")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-1")
+    assert retro_match_worker.sweep_tenant(settings, "default")["services"] == 2
+    assert retro_match_worker.sweep_tenant(settings, "default") == {"services": 0}
+
+    monkeypatch.setitem(retro_match.PRODUCT_TABLE, "frobnicator httpd", ("a:frob:frobnicator",))
+    assert retro_match_worker.sweep_tenant(settings, "default")["services"] == 2
     assert retro_match_worker.sweep_tenant(settings, "default") == {"services": 0}
 
 
@@ -987,6 +1002,35 @@ def test_nmaps_vsftpd_cpe_finds_the_seed_cve_end_to_end(settings) -> None:
     asset_services.record_run(settings, tenant_id="default", run_id="run-ftp")
     retro_match_worker.sweep_tenant(settings, "default")
     assert {row.cve for row in retro_rows(settings)} == {"CVE-2021-30047"}
+
+
+def test_a_pulse_only_run_is_matched_under_pulses_own_product_name(settings) -> None:
+    """Pulse, the default prober, writes no CPE and names IIS "Microsoft IIS"
+    (its probe database's ``server:\\s*microsoft-iis/([0-9.]+)`` rule). The
+    table knew only nmap's "Microsoft IIS httpd", so a Pulse-only estate's IIS
+    listeners were ``unknown_product`` whenever the banner was not kept."""
+    run_dir = settings.output_dir / "runs" / "run-pulse"
+    run_dir.mkdir(parents=True)
+    (run_dir / "alive_hosts.json").write_text(json.dumps([{"host": "10.0.0.31"}]), encoding="utf-8")
+    (run_dir / "vulnerabilities.json").write_text("[]", encoding="utf-8")
+    (run_dir / "services.json").write_text(
+        json.dumps([
+            {
+                "schema_version": "octo.service.v1",
+                "ip": "10.0.0.31",
+                "port": 80,
+                "service": "http",
+                "product": "Microsoft IIS",
+                "version": "6.0",
+                "source": "pulse",
+            }
+        ]),
+        encoding="utf-8",
+    )
+    assets_service.upsert_assets_from_run(settings, tenant_id="default", run_id="run-pulse")
+    asset_services.record_run(settings, tenant_id="default", run_id="run-pulse")
+    retro_match_worker.sweep_tenant(settings, "default")
+    assert {row.cve for row in retro_rows(settings)} == {"CVE-2017-7269"}
 
 
 def test_merging_assets_keeps_the_absorbed_assets_fingerprints(settings) -> None:

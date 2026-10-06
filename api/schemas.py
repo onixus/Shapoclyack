@@ -3662,6 +3662,7 @@ class AssetServiceInfo(BaseModel):
 
     ``match_status`` is what the retro matcher concluded about it: ``matched``
     (it could ask), or why it could not — ``unknown_product``, ``no_version``,
+    ``lookalike`` (the banner names a fork, e.g. Valkey answering as Redis),
     ``too_old`` — so an empty CVE list is never read as "clean" when it means
     "not assessable". ``possible_cves`` are the NVD hits a visible distribution
     may have backported; they are deliberately not tracked findings.
