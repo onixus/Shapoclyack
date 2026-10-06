@@ -452,6 +452,14 @@ service_probe:
 # compares against the *forward* names in hostnames.json only (PTR names are
 # assigned by the address-block owner, not the service owner), so an IP-only
 # target produces no finding rather than a false one.
+# The probe also judges chain trust (cert_untrusted) against the system store
+# plus ca_bundle -- a PEM of the organisation's own CAs. chain_trust:
+# public_only (default) judges it only on publicly routable addresses unless
+# ca_bundle is set, so an intranet's own CA is not flagged; always / off. With
+# probe_legacy_protocols the probe makes two more handshakes per endpoint
+# pinned to TLS 1.0 and TLS 1.1 (a server that also speaks 1.3 never shows them
+# otherwise). These three are sensor-config only: the platform's config
+# overlay does not carry them. See docs/pulse-backend.md.
 tls_posture:
   enabled: false
   max_targets: 2000
@@ -461,6 +469,9 @@ tls_posture:
   probe_timeout_seconds: 5.0
   probe_concurrency: 20
   probe_tls_ports: [443, 8443, 9443, 4443, 10443, 6443]
+  probe_legacy_protocols: true
+  chain_trust: public_only
+  ca_bundle: null
 
 # EPIC #182, org_profile M1 — domain ownership via RDAP (opt-in). One HTTPS GET
 # per seed domain to the registry RDAP server from the IANA bootstrap file

@@ -669,6 +669,8 @@ export type ControlFinding = {
 export type ControlCoverage = {
   checked: number;
   total: number;
+  /** "ok" over part of what the control covers; the overall verdict is then "partial". */
+  partial?: boolean;
 };
 
 export type ControlStatus = "ok" | "weak" | "fail" | "not_checked" | "error";
