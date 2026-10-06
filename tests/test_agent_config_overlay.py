@@ -632,7 +632,7 @@ def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monk
     refused = _claim(client, _register(client, "v1-sensor", ["scan_policy", CAPABILITY]))
     assert refused.status_code == 426, refused.text
     detail = refused.json()["detail"]
-    assert "config_overlay.v2" in detail and "verification re-scan" in detail
+    assert "config_overlay.v2" in detail and "coverage evidence" in detail
     assert "console's config overrides" not in detail
 
     claimed = _claim(client, _register(client, "v2-sensor", ["scan_policy", CAPABILITY, "config_overlay.v2"]))
