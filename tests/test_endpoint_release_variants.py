@@ -14,7 +14,7 @@ from api.schemas import AgentHeartbeatRequest, AgentRegisterRequest
 from api.services.agents import _reported_capabilities
 from api.services import endpoint_agent_mgmt as management
 from tests.conftest import auth_headers, requires_postgres
-from tests.test_endpoint_agent_management import _agent_token, _setup
+from tests.test_endpoint_agent_management import BUILD, PLATFORM, _agent_token, _setup
 from tests.test_endpoint_signed_updates import _envelope
 
 LINUX = "x86_64-unknown-linux-gnu"
@@ -115,6 +115,56 @@ def _heartbeat(client, headers, agent_id, **extra):
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@requires_postgres
+@pytest.mark.parametrize("rollback_version", ["0.4.0", "0.5.0", None])
+def test_legacy_reregistration_revokes_native_updates_until_renegotiated(
+    tmp_path, monkeypatch, rollback_version
+):
+    _, client, key = _setup(tmp_path, monkeypatch)
+    headers = _agent_token(client, key, "rollback")
+    registration = dict(
+        agent_id="rollback", hostname="host", version="0.5.0", agent_kind="endpoint"
+    )
+    modern = client.post(
+        "/api/agent/register", headers=headers,
+        json={**registration, "signed_updates": True, "capabilities": ["self_update"]},
+    )
+    assert modern.status_code == 200, modern.text
+    envelope = _envelope(version="0.6.0")
+    management.store_release(
+        version="0.6.0", platform=PLATFORM, content=BUILD, signed_manifest=envelope
+    )
+    management.set_policy(tenant_id="acme", agent_id=None, desired_version="0.6.0")
+
+    def beat():
+        # Both modern and legacy clients may omit declarations on heartbeat.
+        response = client.post(
+            "/api/agent/heartbeat", headers=headers,
+            json=dict(agent_id="rollback", platform=PLATFORM),
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert beat()["managed_update"]["signed_manifest"] == envelope
+    legacy = {**registration, "version": rollback_version}
+    if rollback_version is None:
+        legacy.pop("version")
+    restarted = client.post("/api/agent/register", headers=headers, json=legacy)
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()["capabilities"] == ["self_update"]
+    blocked = beat()
+    assert blocked["managed_update"] is None
+    assert blocked["managed_update_blocked"]
+    assert "signed_updates" not in blocked["capabilities"]
+    # Explicit list negotiation remains supported on restart.
+    renewed = client.post(
+        "/api/agent/register", headers=headers,
+        json={**registration, "capabilities": ["self_update", "signed_updates"]},
+    )
+    assert renewed.status_code == 200, renewed.text
+    assert beat()["managed_update"]["signed_manifest"]["manifest"]["package_kind"] == "msi"
 
 
 @requires_postgres

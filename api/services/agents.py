@@ -818,6 +818,17 @@ def register_agent(
             # forever. A changed reported version is the only evidence the host
             # acted on it, so that is what clears it.
             _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
+            # Registration starts a new client session. Legacy Lariska builds
+            # declare neither capability field, including after a manual
+            # rollback with the same agent identity or version string. They
+            # must not inherit permission to execute native installer bytes.
+            # Heartbeat omission still preserves a session's declarations.
+            if (
+                row.agent_kind == KIND_ENDPOINT
+                and capabilities is None
+                and signed_updates is None
+            ):
+                prev_caps = [value for value in prev_caps if value != "signed_updates"]
             if prev_upgrade and row.version != previous_version:
                 prev_upgrade = False
             row.detail = _pack_detail(

@@ -80,7 +80,10 @@ any key trust.
 
 Lariska declares `signed_updates: true` on registration and heartbeat. The server
 maps this boolean to its stored `signed_updates` capability; explicit `false`
-removes it, omission preserves it, and other declared capabilities are retained.
+removes it, heartbeat omission preserves it, and other declared capabilities are retained.
+Endpoint re-registration renegotiates native update support: omitting both
+capability fields removes a previously stored `signed_updates` declaration,
+including rollback to an older client with the same identity or version string.
 Clients using `capabilities: ["signed_updates"]` remain supported. The server blocks an unsigned
 release for those agents and carries the exact envelope in `managed_update`.
 Old agents can continue using existing unsigned releases during fleet migration.
