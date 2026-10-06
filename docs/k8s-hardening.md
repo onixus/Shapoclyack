@@ -285,9 +285,10 @@ overlay, since that is what an intent is.
 
 The capability is versioned with the set of settings the overlay may carry,
 and asked for per job: `config_overlay.v1` for the intents and the
-configurator's settings, `config_overlay.v2` for a verification re-scan, which
-pins nuclei templates by id (`nuclei.template_ids`, #451) and is judged on
-coverage evidence only a v2 build writes. A sensor built from this tree
+configurator's settings, `config_overlay.v2` for every verification re-scan,
+which may pin nuclei templates by id (`nuclei.template_ids`, #451) and is
+judged on coverage evidence only a v2 build writes — asked for explicitly,
+whatever the job's overlay carries. A sensor built from this tree
 declares both. A sensor that does not declare the version a job needs is never
 handed that job — the claim hands it the jobs it can run first, and answers
 `426` only when nothing else is waiting — and the job stays queued for one

@@ -2008,8 +2008,9 @@ carrying a **config overlay** — its scan intent's settings and the
 configurator's overrides, sent as the claim input `config_overlay.json` because
 a sensor scans with its own config file — is handed only to a sensor reporting
 the capability of the overlay version **that job** needs — `config_overlay.v1`
-for the intents and the configurator's settings, `config_overlay.v2` for a
-verification re-scan that pins nuclei templates
+for the intents and the configurator's settings, `config_overlay.v2` for every
+verification re-scan (`scan_options.verification_of`), which may pin nuclei
+templates and is judged on coverage evidence only that build writes
 ([#451](https://github.com/onixus/Shapoclyack/issues/451)); the job records it
 as `scan_options.config_overlay_capability`, and the `426` names it. Versioned
 with the settings the overlay may carry, so a sensor that knows an older set

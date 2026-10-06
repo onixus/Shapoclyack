@@ -1880,6 +1880,29 @@ def _verification_target(session: Any, row: models.Vulnerability) -> tuple[str |
     return None, False
 
 
+#: The overlay version a verification job asks of its sensor, whatever its
+#: overlay carries: v2 is the build that loads pinned nuclei templates and
+#: writes the coverage evidence (nuclei.json ``coverage``, ``adapter.cve`` and
+#: ``adapter.ruleset`` in pulse/raw.json, the port-scan record) the closure is
+#: judged on. A v1 sensor's run of a pulse-only verification would carry none
+#: of it and end inconclusive every time.
+VERIFICATION_OVERLAY_VERSION = 2
+VERIFICATION_CAPABILITY = f"config_overlay.v{VERIFICATION_OVERLAY_VERSION}"
+
+
+def _verification_sensor_live(settings: Settings, tenant_id: str) -> bool:
+    """Whether a live scanner sensor of the tenant declares the verification capability.
+
+    The tenant-wide question only: an approved scope that restricts the
+    target to one sensor group is answered later, as for any scan, by the
+    job's ``agent_group_unavailable``.
+    """
+    from api.services import agent_groups as agent_groups_service
+
+    live = agent_groups_service.live_sensors(settings, {tenant_id})
+    return any(VERIFICATION_CAPABILITY in capabilities for capabilities in live.get(tenant_id, []))
+
+
 def _is_ip(value: str) -> bool:
     try:
         ipaddress.ip_address(value.strip().strip("[]"))
@@ -1906,14 +1929,9 @@ class VerificationPlan:
     from_detectors: bool
 
     def config_extra(self) -> dict[str, Any]:
-        # ``template_ids`` is sent even when empty, i.e. when no nuclei
-        # detector saw the finding: it is an overlay v2 setting, so the job is
-        # handed only to a sensor that also records the coverage evidence this
-        # verification will be judged on (scanner/pipeline/config_overlay.py).
-        # Empty, it changes nothing about the run.
-        extra: dict[str, Any] = {"nuclei": {"template_ids": list(self.template_ids)}}
+        extra: dict[str, Any] = {}
         if self.template_ids:
-            extra["nuclei"]["enabled"] = True
+            extra["nuclei"] = {"enabled": True, "template_ids": list(self.template_ids)}
         if self.nse:
             extra["service_probe"] = {"backend": "hybrid"}
         return extra
@@ -2084,6 +2102,19 @@ def trigger_verification(
             "Scan dispatch is disabled on this server (OCTO_ALLOW_SCAN_START), "
             "so this finding cannot be machine-verified"
         )
+    if settings.job_execution_mode == "agent" and not _verification_sensor_live(
+        settings, owning_tenant
+    ):
+        # Refused rather than queued: the job would wait for a sensor that
+        # may never come, with the finding parked in VERIFYING meanwhile —
+        # the state this function exists never to create. A local-execution
+        # installation runs the scan itself and is not asked.
+        raise VerificationDispatchError(
+            "No live sensor of this tenant can run a verification re-scan: it needs "
+            f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
+            "loads pinned nuclei templates and records the coverage evidence the "
+            "closure is judged on). Upgrade a sensor and verify again."
+        )
 
     from api.schemas import StartScanRequest
     from api.services import jobs as jobs_service
@@ -2117,6 +2148,11 @@ def trigger_verification(
             widen_with_promoted=False,
             # The detectors' own settings, on the same path as the intent's.
             config_extra=plan.config_extra(),
+            # Explicitly, not through some setting the overlay happens to
+            # carry: a verification is only handed to a build that writes the
+            # coverage evidence it will be judged on.
+            min_overlay_version=VERIFICATION_OVERLAY_VERSION,
+            verification_of=vuln_id,
         )
     except scan_scopes.ScanScopeDenied as exc:
         LOG.warning("Verification dispatch refused by scope for %s: %s", vuln_id, exc)

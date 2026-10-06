@@ -448,8 +448,23 @@ def test_the_nse_rule_reads_script_names_as_nmap_takes_them():
 # --------------------------------------------------------------------------
 
 
-def _dispatch(settings, tenant_id, vuln_id) -> models.Job:
+def _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2")):
+    """A live scanner sensor of the tenant declaring ``capabilities``."""
+    from api.services import agents as agents_service
+
+    agents_service.configure(settings)
+    agents_service.register_agent(
+        hostname=f"sensor-{len(capabilities)}", tenant_id=tenant_id, capabilities=list(capabilities)
+    )
+
+
+def _agent_mode(settings, tenant_id, **sensor) -> None:
     settings.job_execution_mode = "agent"
+    _sensor(settings, tenant_id, **sensor)
+
+
+def _dispatch(settings, tenant_id, vuln_id) -> models.Job:
+    _agent_mode(settings, tenant_id)
     _advance_to_fixing(settings, tenant_id, vuln_id)
     result = vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln_id, actor="alice")
     assert result["state"] == vuln_states.VERIFYING
@@ -488,7 +503,7 @@ def test_a_name_out_of_scope_is_refused_not_swapped_for_the_address(tmp_path):
     settings, tenant_id = _seed(tmp_path, findings=[on_name])
     approve_scan_scope(settings, entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8"}])
     vuln = _tracked(settings, tenant_id, [on_name])
-    settings.job_execution_mode = "agent"
+    _agent_mode(settings, tenant_id)
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
     with pytest.raises(vulns.VerificationDispatchError, match=NAME):
@@ -510,7 +525,28 @@ def test_an_nse_finding_is_re_scanned_with_nse_on(tmp_path):
 
     assert _inputs(settings, job.job_id, "ranges.txt") == [HOST]
     assert job.scan_options["config_overlay"]["service_probe"] == {"backend": "hybrid"}
-    assert job.scan_options["config_overlay"]["nuclei"]["template_ids"] == []
+    # Nothing to pin, and still a verification: asked for v2 explicitly.
+    assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert job.scan_options["verification_of"] == vuln["vuln_id"]
+
+
+def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):
+    """Sensor execution, and only sensors from before #451 online: the job
+    would wait for one that never comes while the finding sat in VERIFYING."""
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    vuln = _tracked(settings, tenant_id, [PULSE])
+    _agent_mode(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"))
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    with pytest.raises(vulns.VerificationDispatchError, match="config_overlay.v2"):
+        vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
 
 
 def test_a_template_id_a_sensor_would_refuse_is_refused_at_dispatch(tmp_path):
@@ -518,7 +554,7 @@ def test_a_template_id_a_sensor_would_refuse_is_refused_at_dispatch(tmp_path):
     settings, tenant_id = _seed(tmp_path, findings=[odd])
     approve_scan_scope(settings)
     vuln = _tracked(settings, tenant_id, [odd])
-    settings.job_execution_mode = "agent"
+    _agent_mode(settings, tenant_id)
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
     with pytest.raises(vulns.VerificationDispatchError, match="bad,id"):

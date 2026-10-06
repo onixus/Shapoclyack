@@ -303,11 +303,18 @@ def claim_job(
                 row.job_id,
                 needed,
             )
+            what = (
+                "its jobs carry the scan intent and the console's config "
+                "overrides, which it would currently ignore"
+                if needed == config_override.AGENT_CAPABILITY
+                else "the job is a verification re-scan, which pins nuclei templates "
+                "by id and is judged on coverage evidence (nuclei.json coverage, "
+                "pulse/raw.json adapter, the port-scan record) this build does not "
+                "write"
+            )
             raise config_override.AgentOverlayUnsupported(
                 f"agent {agent_id} cannot apply the job's config overlay "
-                f"(capability {needed}); upgrade the agent — its jobs carry the "
-                "scan intent and the console's config overrides, which it would "
-                "currently ignore"
+                f"(capability {needed}); upgrade the agent — {what}"
             )
 
         # ``claimed``, not ``running`` (P1.3): the agent owns the job but has

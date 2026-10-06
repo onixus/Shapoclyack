@@ -2562,12 +2562,16 @@ unless you install a timer for it. For a Docker install, pull the new image and
 re-run the installer with `--docker` (or roll the Kubernetes deployment).
 
 **Verification re-scans need an upgraded sensor** (#451, migration `0079`).
-A verification job asks for `config_overlay.v2`: it pins the nuclei templates
-that found the finding, and it is judged on coverage evidence only that build
-writes. Until a sensor of the tenant declares it, such a job stays queued with
-`sensor_unavailable` and a sensor that cannot take it answers `426` naming the
-capability — every other job keeps going to the older sensors. Two things to
-do around the upgrade:
+A verification job asks for `config_overlay.v2`: it may pin the nuclei
+templates that found the finding, and it is judged on coverage evidence only
+that build writes. While no live sensor of the tenant declares it, **Verify**
+is refused (`409`, naming the capability) rather than queuing a job nothing
+will run; a sensor that cannot take an already-queued one answers `426`
+naming it — every other job keeps going to the older sensors. A verification
+job that is queued and then never claimed still costs its NATS offer a
+delivery attempt per sensor that declines it (`JOBS_MAX_DELIVER`), as any job
+an outdated sensor cannot run does — known debt, not specific to #451. Two
+things to do around the upgrade:
 
 1. Finish rolling the API before anyone presses **Verify**: an API replica of
    the previous release still closes a verification the old way, on absence

@@ -231,6 +231,8 @@ def start_scan(
     quota_exempt: bool = False,
     widen_with_promoted: bool = True,
     config_extra: dict[str, Any] | None = None,
+    min_overlay_version: int = 1,
+    verification_of: str | None = None,
 ) -> JobInfo:
     """Admit, persist and dispatch one new scan job.
 
@@ -255,6 +257,12 @@ def start_scan(
     request body: it is held to the overlay allow-list here, and a job whose
     overlay needs a newer version than the console's settings asks its
     claimant for that version (``config_overlay.required_capability``).
+
+    ``min_overlay_version`` raises that requirement for a job whose *purpose*
+    needs a newer sensor whatever its overlay carries, and
+    ``verification_of`` names the finding such a job re-checks (stored as
+    ``scan_options.verification_of``): both are the verification re-scan's,
+    whose closure is judged on evidence only an overlay-v2 build writes.
 
     ``build_command``, ``run_local_job`` and ``publish_offer`` are passed in
     rather than imported so that the jobs facade stays the seam existing tests
@@ -449,13 +457,14 @@ def start_scan(
             # refused only the jobs that use it (config_overlay.py).
             **(
                 {
-                    config_override_service.OVERLAY_CAPABILITY_OPTION: (
-                        config_overlay.required_capability(overlay)
+                    config_override_service.OVERLAY_CAPABILITY_OPTION: config_overlay.capability(
+                        max(config_overlay.required_version(overlay), min_overlay_version)
                     )
                 }
                 if overlay
                 else {}
             ),
+            **({"verification_of": verification_of} if verification_of else {}),
             "surface": surface,
             "surface_source": (
                 "operator"

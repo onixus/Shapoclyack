@@ -537,9 +537,6 @@ def test_a_document_is_written_at_the_lowest_version_that_covers_it():
     assert config_overlay.required_capability({"nuclei": {"enabled": False}}) == CAPABILITY
     assert config_overlay.to_document(PINNED)["overlay_version"] == 2
     assert config_overlay.required_capability(PINNED) == "config_overlay.v2"
-    # Empty is still the setting: a verification without a nuclei detector
-    # sends it so that it is run by a build that records its coverage.
-    assert config_overlay.required_version({"nuclei": {"template_ids": []}}) == 2
 
 
 def test_a_v1_document_cannot_carry_a_v2_setting(tmp_path):
@@ -608,6 +605,40 @@ def test_a_sensor_that_predates_template_ids_is_refused_only_the_jobs_that_pin_t
     assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 2
     config, _ = _executor_run_config(tmp_path, claimed.json())
     assert config.nuclei.template_ids == ["CVE-2021-44228"]
+
+
+@requires_postgres
+def test_a_verification_job_needs_v2_whatever_its_overlay_carries(tmp_path, monkeypatch):
+    """A pulse-only verification pins nothing, so its overlay is a v1 one; it
+    still has to go to a build that writes the coverage evidence its closure
+    is judged on. Asked for explicitly, not through a setting it happens to
+    carry."""
+    from api.schemas import StartScanRequest
+    from api.services import jobs as jobs_service
+
+    settings = _agent_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    job = jobs_service.start_scan(
+        settings,
+        StartScanRequest(mode="safe", intent="vuln", ranges="127.0.0.1\n", ports="443"),
+        username="system:verification",
+        min_overlay_version=2,
+        verification_of="vln_1",
+    )
+    assert "template_ids" not in job.scan_options["config_overlay"]["nuclei"]
+    assert job.scan_options["config_overlay_capability"] == "config_overlay.v2"
+    assert job.scan_options["verification_of"] == "vln_1"
+
+    refused = _claim(client, _register(client, "v1-sensor", ["scan_policy", CAPABILITY]))
+    assert refused.status_code == 426, refused.text
+    detail = refused.json()["detail"]
+    assert "config_overlay.v2" in detail and "verification re-scan" in detail
+    assert "console's config overrides" not in detail
+
+    claimed = _claim(client, _register(client, "v2-sensor", ["scan_policy", CAPABILITY, "config_overlay.v2"]))
+    assert claimed.status_code == 200, claimed.text
+    # The document itself stays the lowest version that covers it.
+    assert json.loads(claimed.json()["inputs"][OVERLAY_INPUT])["overlay_version"] == 1
 
 
 @requires_postgres
