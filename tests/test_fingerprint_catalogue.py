@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -22,11 +23,13 @@ from scanner.pipeline.fingerprint_catalogue import (
     CATALOGUE_PATH,
     CATEGORIES,
     Catalogue,
+    ClassificationTimeout,
     Response,
     cpe_name,
     load_catalogue,
     meta_generators,
     page_title,
+    parse_page,
 )
 
 FIXTURES = json.loads(
@@ -139,6 +142,16 @@ def test_cpe_name_escapes_a_version_and_wildcards_a_missing_one():
         ),
         (lambda t: t.update(version=[{"from": "header", "name": "server", "regex": "\\d{1,6}"}]), "no (?P<version>"),
         (lambda t: t.update(version=[{"from": "body", "name": "server", "regex": "(?P<version>\\d)"}]), "names a header"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "<meta[^>]+content"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "a.*b"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "title", "regex": "x{2,}"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "(?:a{0,64}){0,128}"}]), "nests repeats"),
+        (lambda t: t.update(version=[{"from": "json", "regex": "(?P<version>\\d+)"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "json", "equals": "{}"}]), "not equals"),
+        (lambda t: t.update(match=[{"from": "attr", "contains": "x"}]), "names a tag"),
+        (lambda t: t.update(match=[{"from": "attr", "tag": "div", "contains": "x"}]), "presence only"),
+        (lambda t: t.update(match=[{"from": "meta", "equals": "x"}]), "names the meta"),
+        (lambda t: t.update(match=[{"from": "asset", "tag": "img", "contains": "/x/"}]), "takes no tag"),
     ],
 )
 def test_schema_refuses_a_broken_entry(mutate, message):
@@ -191,6 +204,7 @@ def test_positive_fixture_identifies_exactly_its_technology(fixture):
         assert own.version == fixture["version"]
     if "cpe" in fixture:
         assert own.cpe == fixture["cpe"]
+    assert own.distro_hint == fixture.get("distro_hint")
 
 
 @pytest.mark.parametrize("fixture", NEGATIVES, ids=lambda fx: fx["name"])
@@ -290,3 +304,86 @@ def test_title_and_generator_parsing():
     assert page_title(body) == "Sign in · GitLab"
     assert meta_generators(body) == ("WordPress 6.5", "Elementor 3.21")
     assert page_title("<html><title>unterminated") == ""
+
+
+# ---------------------------------------------------------------- hostile bodies
+
+MIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "<meta ",
+        '<meta name="x" content="',
+        "<title>",
+        "<script>",
+        "<a href='/dana-na/",
+        "<x y=1>",
+        '"buildinfo":{',
+        "<h3>apache tomcat/",
+        "a" * 63 + "=",
+    ],
+    ids=lambda u: u[:16],
+)
+@pytest.mark.parametrize("content_type", ["text/html", "application/json"])
+def test_a_hostile_body_classifies_in_bounded_time(unit, content_type):
+    """1 MiB written by the scanned host to cost the classifier (5fe11059: ~1 h for <meta )."""
+    body = (unit * (MIB // len(unit) + 1))[:MIB]
+    headers = httpx.Headers({"content-type": content_type})
+    start = time.perf_counter()
+    load_catalogue().classify(404, headers, body, "http://192.0.2.10/")
+    assert time.perf_counter() - start < 1.0
+
+
+def test_a_deadline_stops_classification():
+    with pytest.raises(ClassificationTimeout):
+        load_catalogue().classify(200, httpx.Headers(), "<html></html>", deadline=time.monotonic() - 1)
+
+
+def test_the_page_scan_keeps_its_caps():
+    assert len(parse_page("<p a=1>" * 10_000).tags) == 2048
+    assert len(parse_page("<title>" + "x" * 900 + "</title>").title) == 512
+
+
+def test_every_generator_is_read_and_the_first_title_wins():
+    body = (
+        '<html><head><title>Example blog</title><meta name="generator" content="Elementor 3.18">'
+        '<meta name="generator" content="WordPress 6.4.2"></head><body><svg><title>icon</title></svg></body></html>'
+    )
+    (wordpress,) = load_catalogue().classify(200, httpx.Headers(), body)
+    assert wordpress.technology.id == "wordpress" and wordpress.version == "6.4.2"
+    assert page_title(body) == "Example blog"
+
+
+def test_assets_read_as_same_origin_paths_or_foreign_hosts():
+    body = (
+        "<link href='/a.css'><script src='http://192.0.2.10/b.js'></script><img src='//cdn.example/c.png'>"
+        "<img src='https://other.example/d;jsessionid=X/e.png?x=1'><form action='login.php'></form>"
+        "<a href='/not-an-asset'>x</a>"
+    )
+    resp = Response.build(200, httpx.Headers(), body, "http://192.0.2.10/portal/index.html")
+    assert resp.assets == ("/a.css", "/b.js", "//cdn.example/c.png", "//other.example/d/e.png?x=1", "/portal/login.php")
+
+
+def test_json_markers_need_a_json_response():
+    body = '{"tagline" : "You Know, for Search", "version": {"number": "8.11.1"}}'
+    assert load_catalogue().classify(200, httpx.Headers({"content-type": "text/html"}), body) == []
+    (es,) = load_catalogue().classify(200, httpx.Headers({"content-type": "application/json; charset=utf-8"}), body)
+    assert es.technology.id == "elasticsearch" and es.version == "8.11.1"
+
+
+@pytest.mark.parametrize(
+    "banner, distro",
+    [
+        ("Apache/2.4.52 (Ubuntu)", "ubuntu"),
+        ("nginx/1.22.1", None),
+        ("nginx/1.14.1 (Red Hat Enterprise Linux)", "rhel"),
+    ],
+)
+def test_a_distribution_banner_keeps_its_version_out_of_the_cpe(banner, distro):
+    (match,) = [m for m in load_catalogue().classify(200, httpx.Headers({"Server": banner}), "") if m.version]
+    assert match.distro_hint == distro
+    assert (match.version in match.cpe) is (distro is None)
+    if distro:
+        assert match.as_dict()["banner"] == banner

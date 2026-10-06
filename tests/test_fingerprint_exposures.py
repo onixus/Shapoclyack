@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -408,3 +409,79 @@ def test_cms_framework_keeps_the_phase_9_1_names_and_gains_new_ones(site, tmp_pa
     assert endpoint["cms_framework"] == ["wordpress", "bitrix", "nextjs", "generic_php"]
     lines = (tmp_path / "fingerprint_matches.txt").read_text(encoding="utf-8").splitlines()
     assert lines == [f"127.0.0.1:{site.port}:http:wordpress,bitrix,nextjs,generic_php"]
+
+
+# ------------------------------------------------- what an exposure says (P2-8)
+
+
+@pytest.mark.parametrize(
+    "route, url, severity, auth_required",
+    [
+        # Elasticsearch answering its API at 200: an open database.
+        ((200, [("Content-Type", "application/json")], '{"tagline" : "You Know, for Search"}'), None, "high", False),
+        # CouchDB's welcome is public even with authentication on.
+        ((200, [("Content-Type", "application/json")], '{"couchdb":"Welcome","version":"3.3.3"}'), None, "medium", False),
+        # Prometheus with nothing in front.
+        ((200, [], "<title>Prometheus Time Series Collection and Processing Server</title>"), None, "medium", False),
+        # Nagios behind basic auth.
+        ((401, [("WWW-Authenticate", 'Basic realm="Nagios Access"')], ""), None, "low", True),
+        # phpMyAdmin's login form.
+        ((200, [], '<title>phpMyAdmin</title><form><input type="password" name="pma_password"></form>'), None, "low", True),
+        # Grafana redirected to /login.
+        ((200, [], '<title>Grafana</title><script>window.grafanaBootData = {}</script>'), "/login", "low", True),
+    ],
+    ids=["es-open", "couchdb-root", "prometheus", "nagios-401", "pma-form", "grafana-login"],
+)
+def test_an_exposure_is_rated_by_what_the_console_answered(site, tmp_path, route, url, severity, auth_required):
+    if url:
+        site.routes["/"] = (302, [("Location", url)], "")
+        site.routes[url] = route
+    else:
+        site.routes["/"] = route
+    (admin,) = [e for e in _run(site, tmp_path)["exposures"] if e["kind"] == "exposed_admin_interface"]
+    assert admin["severity"] == severity
+    assert admin["auth_required"] is auth_required
+    assert admin["http_status"] == route[0]
+
+
+def test_a_medium_confidence_match_is_inventory_not_a_finding(site, tmp_path: Path):
+    site.routes["/"] = (200, [], "<html><title>Grafana</title><body>Team page about our Grafana</body></html>")
+    result = _run(site, tmp_path)
+    (endpoint,) = result["findings"]
+    assert [(t["id"], t["confidence"]) for t in endpoint["technologies"]] == [("grafana", "medium")]
+    assert result["exposures"] == []
+
+
+def test_one_header_is_one_version_disclosure(site, tmp_path: Path):
+    """nginx and Passenger both read their version from Server: one disclosure, not two."""
+    site.routes["/"] = (200, [("Server", "nginx/1.24.0 + Phusion Passenger(R) 6.0.18")], "")
+    result = _run(site, tmp_path)
+    (endpoint,) = result["findings"]
+    assert {t["id"] for t in endpoint["technologies"]} == {"nginx", "phusion_passenger"}
+    disclosures = [e for e in result["exposures"] if e["kind"] == "version_disclosure"]
+    assert [(d["header"], d["technology"]) for d in disclosures] == [("server", "nginx")]
+
+
+def test_the_title_in_the_artifact_is_cut(site, tmp_path: Path):
+    site.routes["/"] = (200, [], "<title>" + "x" * 400 + "</title>")
+    (endpoint,) = _run(site, tmp_path)["findings"]
+    assert endpoint["title"] == "x" * 200
+
+
+def test_a_classification_past_its_deadline_is_reported_not_waited_for(site, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("scanner.pipeline.fingerprint.CLASSIFY_SECONDS", 0.0)
+    site.routes["/"] = (200, [("CF-RAY", "8a1b-AMS"), ("X-Jenkins", "2.414.3")], "")
+    result = _run(site, tmp_path)
+    (endpoint,) = result["findings"]
+    assert endpoint["error"] == "classification_timeout"
+    assert endpoint["technologies"] == [] and endpoint["cdn_waf"] == []
+    assert result["exposures"] == []
+
+
+def test_a_hostile_page_does_not_stall_the_stage(site, tmp_path: Path):
+    site.routes["/"] = (200, [("Content-Type", "text/html")], "<meta " * (1024 * 1024 // 6))
+    config = FingerprintConfig(enabled=True, http_ports=[site.port], https_ports=[], body_max_bytes=1024 * 1024)
+    start = time.perf_counter()
+    result = fingerprint_hosts_sync([f"127.0.0.1:{site.port}/tcp"], config, tmp_path)
+    assert time.perf_counter() - start < 3.0
+    assert result["findings"][0]["error"] is None
