@@ -1396,6 +1396,67 @@ def test_the_unversioned_source_of_another_series_is_not_asked() -> None:
     assert only.evidence["advisory"]["reason"] == "no_vendor_statement"
 
 
+#: trixie's ``mariadb`` as the Debian tracker states it (2026-10-06): fixes
+#: inherited from unstable on the 10.11 and 11.4 series sit beside trixie's
+#: own 11.8 ones, one of them without the epoch, and one CVE is open.
+TRIXIE_MARIADB = _Provider([
+    _advisory("CVE-2022-47015", release="trixie", package="mariadb", fixed="1:10.11.3-1"),
+    _advisory("CVE-2023-22084", release="trixie", package="mariadb", fixed="1:10.11.6-1"),
+    _advisory("CVE-2024-21096", release="trixie", package="mariadb", fixed="1:10.11.8-1"),
+    _advisory("CVE-2025-21490", release="trixie", package="mariadb", fixed="1:11.4.5-1"),
+    _advisory("CVE-2023-52969", release="trixie", package="mariadb", fixed="1:11.8.2-1"),
+    _advisory("CVE-2025-13699", release="trixie", package="mariadb", fixed="11.8.6-0+deb13u1"),
+    _advisory("CVE-2026-32710", release="trixie", package="mariadb", fixed="1:11.8.6-0+deb13u1"),
+    _advisory("CVE-2026-44168", release="trixie", package="mariadb", state="open"),
+])
+
+
+@pytest.mark.parametrize(
+    ("version", "statements"),
+    [
+        # A 10.11 container: the inherited 10.11 fixes made the first cut say
+        # trixie ships 10.11, and handed it 11.8's verdicts.
+        (
+            "5.5.5-10.11.6",
+            (
+                CpeRange("CVE-2023-52969", start_including="10.11.0", end_excluding="10.11.12"),
+                CpeRange("CVE-2026-44168", start_including="10.11.0", end_excluding="10.11.99"),
+            ),
+        ),
+        # An 11.4 one: same major as trixie's 11.8, another series.
+        ("5.5.5-11.4.3", (CpeRange("CVE-2025-21490", start_including="11.4.0", end_excluding="11.4.5"),)),
+    ],
+)
+def test_a_release_ships_the_series_of_its_newest_fix_only(version, statements) -> None:
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version=version, cpe=(f"cpe:/a:mariadb:mariadb:{version}",)),
+        _one("a:mariadb:mariadb", *statements),
+        lookup=lambda _d: TRIXIE_MARIADB,
+        host=rm.DistroHint("debian", "trixie"),
+    )
+    assert {(m.verdict, m.evidence["advisory"].get("reason")) for m in outcome.matches} == {
+        ("possible", "no_vendor_statement")
+    }
+
+
+def test_the_release_is_found_through_the_unversioned_source() -> None:
+    """A Debian host whose release nobody named: bookworm is the release whose
+    ``mariadb`` fixes are built on 10.11.6 — found only by asking ``mariadb``."""
+    provider = _Provider([
+        _advisory("CVE-2023-22084", release="bookworm", package="mariadb", fixed="1:10.11.6-0+deb12u1"),
+        _advisory("CVE-2024-21096", release="bookworm", package="mariadb", fixed="1:10.11.8-0+deb12u1"),
+    ])
+    outcome = rm.match(
+        rm.Fingerprint(product="MariaDB", version="5.5.5-10.11.6", cpe=("cpe:/a:mariadb:mariadb:5.5.5-10.11.6",)),
+        _one("a:mariadb:mariadb", CpeRange("CVE-2024-21096", start_including="10.11.0", end_excluding="10.11.8")),
+        lookup=lambda _d: provider,
+        host=rm.DistroHint("debian"),
+    )
+    (only,) = outcome.matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "vendor_advisory")
+    assert only.evidence["advisory"]["release"] == "bookworm"
+
+
 #: Pulse keeps twelve header lines as an HTTP listener's banner, and a hybrid
 #: run's merge prefers that raw banner to nmap's extrainfo: the web server's
 #: banner carries PHP's package revision too.

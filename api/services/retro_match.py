@@ -424,8 +424,8 @@ SERIES_SOURCE_PACKAGES: dict[str, str] = {
 
 #: NVD key → the unversioned source package some releases build *one* series
 #: from: Debian 12 and Ubuntu 24.04 build MariaDB 10.11 from ``mariadb``,
-#: Debian 13 builds 11.8 from it. It is asked only in a release whose records
-#: for it name a fix of the listener's own series (:func:`_ships_series`):
+#: Debian 13 builds 11.8 from it. It is asked only in a release whose newest
+#: fix for it is of the listener's own series (:func:`_ships_series`):
 #: trixie's "not affected" is about its 11.8, not about a 10.11 container on a
 #: trixie host.
 SHARED_SOURCE_PACKAGES: dict[str, str] = {
@@ -922,18 +922,25 @@ def source_packages(product_key: str, upstream: str) -> tuple[str, ...]:
 def _ships_series(provider: Any, release: str, package: str, upstream: str) -> bool:
     """Does ``release`` build ``upstream``'s series from ``package``?
 
-    Yes when one of its records for the package names a fix of that series. No
-    record with a fix — only "open" or "not affected" — is no evidence, and the
-    package is not asked: a "not affected" about another series is exactly the
-    wrong answer to borrow.
+    Yes when the release's *newest* fix for the package is of that series. Not
+    "any fix": Debian's tracker gives trixie the fixes it inherited from
+    unstable — 10.11 and 11.4 ones beside its own 11.8 — and "any" made trixie
+    a 10.11 release, handing a 10.11 container 11.8's verdicts. Compared as
+    upstream versions, since the tracker drops the epoch on some records
+    (``11.8.6-0+deb13u1`` beside ``1:11.8.6-0+deb13u1``). No record with a fix —
+    only "open" or "not affected" — is no evidence, and the package is not
+    asked: a "not affected" about another series is exactly the wrong answer
+    to borrow.
     """
     series = _series(upstream)
     if series is None:
         return False
-    return any(
-        record.fixed_version and _series(_fixed_upstream(record.fixed_version)) == series
-        for record in provider.advisories_for(release=release, source_package=package)
-    )
+    newest: str | None = None
+    for record in provider.advisories_for(release=release, source_package=package):
+        fixed = _fixed_upstream(record.fixed_version) if record.fixed_version else None
+        if fixed and (newest is None or compare_upstream(fixed, newest) > 0):
+            newest = fixed
+    return newest is not None and _series(newest) == series
 
 
 def _releases_shipping(provider: Any, packages: Iterable[str], upstream: str) -> list[str]:
