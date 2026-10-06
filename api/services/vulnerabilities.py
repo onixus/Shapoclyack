@@ -277,7 +277,9 @@ MAX_DETECTORS = 16
 MAX_VANTAGES = 8
 
 #: The vantage of an observation nobody recorded: a run no job owns, or an
-#: entry from before vantages were kept (backfilled by 0079).
+#: entry from before vantages were kept (backfilled by 0079). It means "we
+#: do not know", not "somewhere else": the first known vantage recorded for
+#: the detector replaces it (:func:`_union_vantages`).
 UNKNOWN_VANTAGE = "unknown"
 
 
@@ -376,10 +378,18 @@ def _vantages_of(entry: dict[str, Any]) -> list[str]:
 
 
 def _union_vantages(*lists: list[str]) -> list[str]:
+    """The vantages of ``lists``, newest first, once each, capped.
+
+    :data:`UNKNOWN_VANTAGE` only while nothing else is known: kept beside a
+    known vantage it would hold the detector to a place that was never
+    named, and a finding from before the upgrade could then never be shown
+    unreachable from anywhere (#451 review, round 3).
+    """
     out: list[str] = []
     for values in lists:
         out.extend(value for value in values if value not in out)
-    return out[:MAX_VANTAGES]
+    known = [value for value in out if value != UNKNOWN_VANTAGE]
+    return (known or out)[:MAX_VANTAGES]
 
 
 def _loose_detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
@@ -398,26 +408,24 @@ def merge_detectors(
     by the same detector and ref observed with a host — the observation now
     says where it looked.
 
-    Vantages are only ever added to: an entry seen again from another sensor
-    group keeps the one it was seen from before (``vantages``), and an entry
-    the cap drops hands its vantages to the newest one. A refusal from one
-    vantage says nothing about what another observed, so a later observer
-    must not erase an earlier one (#451 review).
+    Known vantages are only ever added to: an entry seen again from another
+    sensor group keeps the one it was seen from before (``vantages``), and an
+    entry the cap drops hands its vantages to the newest one. A refusal from
+    one vantage says nothing about what another observed, so a later observer
+    must not erase an earlier one (#451 review). ``unknown`` is the exception
+    — it goes once a known vantage is recorded — and a replaced host-less
+    entry hands nothing on: it never recorded where it was seen from.
     """
     previous = [entry for entry in (existing or []) if isinstance(entry, dict)]
     fresh = {_detector_key(entry) for entry in observed}
     located = {_loose_detector_key(entry) for entry in observed if entry.get("host")}
 
-    def replaced_by(old: dict[str, Any], new: dict[str, Any]) -> bool:
-        if _detector_key(old) == _detector_key(new):
-            return True
-        return not old.get("host") and bool(new.get("host")) and _loose_detector_key(old) == _loose_detector_key(new)
-
     renewed = [
         {
             **entry,
             "vantages": _union_vantages(
-                _vantages_of(entry), *(_vantages_of(old) for old in previous if replaced_by(old, entry))
+                _vantages_of(entry),
+                *(_vantages_of(old) for old in previous if _detector_key(old) == _detector_key(entry)),
             ),
         }
         for entry in observed

@@ -765,6 +765,29 @@ def test_two_detectors_seen_from_two_places_close_nothing_by_refusal(tmp_path, m
     _still_open(settings, tenant_id, vuln["vuln_id"])
 
 
+def test_a_finding_from_before_the_upgrade_can_be_shown_unreachable(tmp_path, monkeypatch):
+    """The round-3 delta review's probe: a backfilled finding (0079: host-less,
+    no vantage) re-observed from the local executor carried ``unknown`` into
+    every later merge, so a refusal from that same executor could never close
+    it — the whole pre-upgrade backlog was stuck inconclusive by refusal."""
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    vuln = _tracked_from(settings, tenant_id, PULSE)
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Vulnerability, vuln["vuln_id"]).detectors = [
+            {"detector": "pulse", "ref": "local", "host": None, "port": "443"}
+        ]
+    _job_from(settings, tenant_id, "job-again", "run-again")
+    again = _tracked(settings, tenant_id, [PULSE], run_id="run-again")
+    assert again["detectors"][0]["vantages"] == ["local"]
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is False
+
+
 def test_a_row_without_detectors_is_never_closed_by_refusal(tmp_path, monkeypatch):
     """A row with no detector recorded none of where it was seen, nor over
     which protocol: a refusal from the verifying run's own place says nothing
@@ -811,14 +834,22 @@ def test_the_detector_records_where_it_was_seen_from(tmp_path):
     assert entry["vantages"] == ["group:internal"]
 
 
-def test_vantages_survive_the_detector_cap_and_the_hostless_backfill():
-    """Whatever the merge drops, the vantages it was seen from stay on the
-    row: the entry the cap evicts hands them to the newest one, and the
-    host-less entry 0079 backfilled (seen from nobody knows where) leaves
-    ``unknown`` behind when a located one replaces it."""
+def test_vantages_survive_the_detector_cap_and_unknown_gives_way_to_a_known_one():
+    """Whatever the merge drops, the known vantages it was seen from stay on
+    the row: the entry the cap evicts hands them to the newest one. ``unknown``
+    is "nobody recorded where", not another place — the host-less entry 0079
+    backfilled hands nothing on, and an observation from a run no job owns
+    gives way to the first known vantage of the same detector."""
     backfilled = {"detector": "pulse", "ref": "local", "host": None, "port": "443"}
-    located = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443", "vantage": "local", "vantages": ["local"]}
-    assert vulns.merge_detectors([backfilled], [located])[0]["vantages"] == ["local", "unknown"]
+    located = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443", "vantage": "local"}
+    assert vulns.merge_detectors([backfilled], [located])[0]["vantages"] == ["local"]
+
+    ownerless = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443"}
+    first = vulns.merge_detectors([], [ownerless])
+    assert first[0]["vantages"] == ["unknown"]
+    assert vulns.merge_detectors(first, [located])[0]["vantages"] == ["local"]
+    # And once known, a later ownerless observation does not bring it back.
+    assert vulns.merge_detectors(vulns.merge_detectors(first, [located]), [ownerless])[0]["vantages"] == ["local"]
 
     old = {"detector": "nuclei", "ref": "t-old", "host": HOST, "port": "443", "vantages": ["group:internal"]}
     repeat = {**old, "host": "10.0.0.9", "vantages": ["group:dmz"]}

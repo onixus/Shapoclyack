@@ -2588,7 +2588,11 @@ things to do around the upgrade:
    ungrouped sensor, a finding seen from more than one), nuclei or its templates missing on the sensor, an NSE
    script not in the sensor's NSE profile, a name the scope no longer covers.
    The event's `detail.gaps` says which; fix that and verify again, or close
-   the finding by hand with the reason. Findings left in `VERIFYING` by a
+   the finding by hand with the reason. A finding from before the upgrade
+   carries no vantage until a scan observes it again; once one has, a refusal
+   from that same place can close it. A `vantage_differs` because two sensors
+   or groups saw it is not fixed by verifying again — it closes on coverage,
+   or by hand. Findings left in `VERIFYING` by a
    verification job that was cancelled while queued, or written off before
    it uploaded anything, are not released automatically — move them back to
    `FIXING` by hand.
