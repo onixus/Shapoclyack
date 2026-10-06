@@ -162,7 +162,8 @@ def _script_names(args: str) -> set[str]:
 @dataclass
 class _NseRun:
     scripts: set[str]
-    open_ports: dict[str, set[int]] = field(default_factory=dict)
+    # host -> {(port, "tcp"|"udp")}
+    open_ports: dict[str, set[tuple[int, str]]] = field(default_factory=dict)
 
 
 class RunCoverage:
@@ -209,7 +210,7 @@ class RunCoverage:
                     if address.attrib.get("addrtype") in ("ipv4", "ipv6")
                 }
                 ports = {
-                    port
+                    (port, str(element.attrib.get("protocol") or "tcp").lower())
                     for element in host.findall("./ports/port")
                     if (state := element.find("state")) is not None
                     and state.attrib.get("state") == "open"
@@ -293,7 +294,9 @@ class RunCoverage:
                         out.add((normalize_host(row[key]), port))
         return out
 
-    def endpoint_unreachable(self, hosts: set[str], port: int | None) -> dict[str, Any] | None:
+    def endpoint_unreachable(
+        self, hosts: set[str], port: int | None, *, protocol: str | None = "tcp"
+    ) -> dict[str, Any] | None:
         """Evidence that ``port`` is closed on every one of ``hosts``, or ``None``.
 
         All of it has to hold, on each host — an IP: a name is resolved by
@@ -309,7 +312,9 @@ class RunCoverage:
         Anything short of that is the firewalled-during-the-window case the
         tracker does not forgive.
         """
-        if port is None or not hosts:
+        if port is None or not hosts or protocol != "tcp":
+            # Every piece of evidence here is TCP; a UDP or protocol-unknown
+            # finding is never closed by it.
             return None
         evidence = []
         for host in sorted(hosts):
@@ -427,7 +432,9 @@ class RunCoverage:
                 return None
         return "endpoint_not_probed"
 
-    def _nse_gap(self, ref: str, hosts: set[str], port: int | None) -> str | None:
+    def _nse_gap(
+        self, ref: str, hosts: set[str], port: int | None, protocol: str | None = None
+    ) -> str | None:
         runs = self.nse
         if not runs:
             return "nse_not_run"
@@ -439,7 +446,9 @@ class RunCoverage:
                 ports = run.open_ports.get(host)
                 if ports is None:
                     continue
-                if port is None or port in ports:
+                if port is None or any(
+                    p == port and (protocol is None or proto == protocol) for p, proto in ports
+                ):
                     return None
         return "endpoint_not_scanned"
 
@@ -451,7 +460,7 @@ class RunCoverage:
         if detector == PULSE:
             return self._pulse_gap(ref, entry.get("ruleset"), hosts, port)
         if detector == NMAP_NSE:
-            return self._nse_gap(ref, hosts, port)
+            return self._nse_gap(ref, hosts, port, detector_protocol(entry))
         return "no_coverage_rule"
 
     def assess(
@@ -540,6 +549,25 @@ class RunCoverage:
     ) -> list[dict[str, Any]]:
         """The gaps of :meth:`assess`."""
         return self.assess(detectors, port=port, asset_hosts=asset_hosts)[0]
+
+
+def detector_protocol(entry: dict[str, Any]) -> str | None:
+    """``tcp``/``udp`` a detector observed on; pulse and nuclei are TCP-only."""
+    recorded = str(entry.get("protocol") or "").lower()
+    if recorded in ("tcp", "udp"):
+        return recorded
+    return "tcp" if entry.get("detector") in (PULSE, NUCLEI) else None
+
+
+def finding_protocol(detectors: list[dict[str, Any]]) -> str | None:
+    """The finding's protocol when every detector agrees on it, else ``None``.
+
+    ``None`` — a legacy row with no detector, an NSE entry from before the
+    protocol was recorded, detectors disagreeing — means "unknown", and
+    nothing that rests on TCP evidence alone applies.
+    """
+    seen = {detector_protocol(e) for e in detectors if isinstance(e, dict)}
+    return seen.pop() if len(seen) == 1 and None not in seen else None
 
 
 def describe(gaps: list[dict[str, Any]]) -> str:

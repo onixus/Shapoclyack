@@ -76,3 +76,26 @@ def test_default_nuclei_enabled():
     assert cfg.nuclei.enabled is True
     assert cfg.service_probe.backend == "pulse"
     assert cfg.service_probe.pulse.cve is True
+
+
+def test_nse_rows_keep_the_protocol_nmap_saw_them_on(tmp_path):
+    """A UDP finding must never be judged by a TCP re-check (#451): the row
+    says which one it was."""
+    from scanner.pipeline.report import _build_vulnerabilities, _parse_nmap_xml
+
+    nmap = tmp_path / "nmap"
+    nmap.mkdir()
+    (nmap / "udp_10.0.0.1.xml").write_text(
+        '<?xml version="1.0"?><nmaprun args="nmap -sU --script vulners -p 123 10.0.0.1">'
+        '<host><address addr="10.0.0.1" addrtype="ipv4"/><ports>'
+        '<port protocol="udp" portid="123"><state state="open"/>'
+        '<script id="vulners" output="CVE-2023-0001 7.5"/></port>'
+        '<port protocol="tcp" portid="443"><state state="open"/>'
+        '<script id="vulners" output="CVE-2023-0002 9.8"/></port>'
+        "</ports></host></nmaprun>",
+        encoding="utf-8",
+    )
+    _services, _os, scripts = _parse_nmap_xml(nmap)
+    rows = {row["cve"]: row for row in _build_vulnerabilities(scripts)}
+    assert rows["CVE-2023-0001"]["protocol"] == "udp"
+    assert rows["CVE-2023-0002"]["protocol"] == "tcp"

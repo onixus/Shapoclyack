@@ -245,6 +245,7 @@ def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
             "severity": finding["severity"],
             "script_id": f"nuclei:{finding['template_id']}",
             "source": "nuclei",
+            "protocol": "tcp",
             "cwe": finding.get("cwe") or [],
         }
         for cve in finding["cve"]

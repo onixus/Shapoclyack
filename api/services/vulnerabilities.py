@@ -318,6 +318,10 @@ def _observed_detectors(
             "last_run_id": run_id,
             "last_seen_at": _iso(now),
         }
+        protocol = str(row.get("protocol") or "").strip().lower()
+        if protocol in ("tcp", "udp"):
+            # Recorded so a UDP finding is never judged by a TCP re-check.
+            candidate["protocol"] = protocol
         ruleset = str(row.get("ruleset_version") or "").strip()[:64]
         if name == verification_coverage.PULSE and ruleset:
             # The offline ruleset this match was made with: a verification
@@ -1477,7 +1481,9 @@ def register_findings_from_run(
                 )
                 unreachable = (
                     coverage.endpoint_unreachable(
-                        _finding_hosts(v_row, addresses), verification_coverage.port_of(v_row.port)
+                        _finding_hosts(v_row, addresses),
+                        verification_coverage.port_of(v_row.port),
+                        protocol=verification_coverage.finding_protocol(list(v_row.detectors or [])),
                     )
                     if gaps
                     else None

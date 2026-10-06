@@ -92,6 +92,7 @@ def test_to_vulnerability_rows_falls_back_to_severity_floor_without_cvss():
             "severity": "high",
             "script_id": "nuclei:some-cve-check",
             "source": "nuclei",
+            "protocol": "tcp",
             "cwe": [],
         }
     ]

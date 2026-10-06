@@ -566,6 +566,32 @@ def test_short_of_every_condition_a_closed_port_stays_inconclusive(tmp_path, mon
     assert _last_event(settings, tenant_id, vuln["vuln_id"])["kind"] == "verification_inconclusive", why
 
 
+@pytest.mark.parametrize(
+    "protocol",
+    [
+        "udp",  # NTP's vulners finding is on UDP 123
+        None,  # an NSE detector from before the protocol was recorded
+    ],
+)
+def test_a_closed_tcp_port_says_nothing_about_a_udp_or_unknown_finding(tmp_path, monkeypatch, protocol):
+    """The delta review's probe: a vulners CVE on UDP 123, re-checked by a
+    TCP port stage that saw 123 closed, was closed as endpoint_unreachable."""
+    ntp = _row("nmap-nse", "vulners", port="123", **({"protocol": protocol} if protocol else {}))
+    settings, tenant_id = _seed(tmp_path, findings=[ntp])
+    vuln = _tracked(settings, tenant_id, [ntp])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _discovered(run_dir)
+    _port_stage(monkeypatch, run_dir, asked=(123,))
+
+    stats = _fold(settings, tenant_id)
+
+    assert stats.verification_unreachable == 0
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+    if protocol:
+        assert vuln["detectors"][0]["protocol"] == protocol
+
+
 # --------------------------------------------------------------------------
 # What still closes, and what still bounces
 # --------------------------------------------------------------------------
