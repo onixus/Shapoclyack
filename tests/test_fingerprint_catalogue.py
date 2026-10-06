@@ -387,3 +387,24 @@ def test_a_distribution_banner_keeps_its_version_out_of_the_cpe(banner, distro):
     assert (match.version in match.cpe) is (distro is None)
     if distro:
         assert match.as_dict()["banner"] == banner
+
+
+def test_a_script_cut_by_the_body_limit_is_still_script():
+    """Grafana's boot data outgrows a 64 KiB read; the stage sees an unterminated <script>."""
+    panels = ",".join(f'"panel{i}":{{"info":{{"version":"1.0.{i}"}}}}' for i in range(4000))
+    page = (
+        '<!DOCTYPE html><html><head><title>Grafana</title></head><body><script nonce="">'
+        'window.grafanaBootData = {"settings":{"buildInfo":{"hideVersion":false,"version":"10.2.3"},'
+        f'"panels":{{{panels}}}}}}};</script></body></html>'
+    )
+    assert len(page) > 120_000
+    (grafana,) = load_catalogue().classify(200, httpx.Headers(), page[: 64 * 1024])
+    assert grafana.technology.id == "grafana"
+    assert grafana.confidence == "high"
+    assert grafana.version == "10.2.3"
+
+
+def test_markup_inside_a_comment_is_text():
+    body = "<!-- <title>Login to Webmin</title> --><title>Acme</title><!-- <meta name=generator content='WordPress 6.4'> -->"
+    assert page_title(body) == "Acme"
+    assert load_catalogue().classify(200, httpx.Headers(), body) == []

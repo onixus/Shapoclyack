@@ -258,6 +258,7 @@ class Page:
     title: str = ""
     tags: tuple[Tag, ...] = ()
     scripts: tuple[str, ...] = ()
+    scripts_lower: tuple[str, ...] = ()
     metas: tuple[tuple[str, str], ...] = ()
     generators: tuple[str, ...] = ()
     password_input: bool = False
@@ -312,6 +313,13 @@ def parse_page(body: str) -> Page:
             gt = body.find(">", lt + 1)
             if gt < 0:
                 break
+        if body.startswith("<!--", lt):
+            # A comment is not markup: a <title> or <script> inside it is text.
+            end = body.find("-->", lt + 4)
+            if end < 0:
+                break
+            pos = end + 3
+            continue
         name_match = _TAG_NAME_RE.match(body, lt + 1)
         if name_match is None or gt - lt > MAX_TAG_LEN:
             pos = lt + 1
@@ -330,6 +338,15 @@ def parse_page(body: str) -> Page:
                 if close.start() > pos:
                     scripts.append(body[pos : close.start()])
                 pos = close.end()
+            elif pos + MAX_SCRIPT_LEN >= n:
+                # The body was cut inside this script (body_max_bytes): what
+                # arrived of it is still script text -- Grafana's boot data
+                # alone outgrows a 64 KiB read. Nothing after it is markup.
+                if n > pos:
+                    scripts.append(body[pos:])
+                break
+            else:
+                scripts.append(body[pos : pos + MAX_SCRIPT_LEN])
     metas: list[tuple[str, str]] = []
     generators: list[str] = []
     password = False
@@ -347,6 +364,7 @@ def parse_page(body: str) -> Page:
         title=title or "",
         tags=tuple(tags),
         scripts=tuple(scripts),
+        scripts_lower=tuple(text.lower() for text in scripts),
         metas=tuple(metas),
         generators=tuple(generators),
         password_input=password,
@@ -579,8 +597,8 @@ class Matcher(BaseModel):
         if source == "attr":
             return self._evaluate_attr(resp)
         if source == "script":
-            for text in resp.page.scripts:
-                hit = self._search(text, text.lower())
+            for text, lowered in zip(resp.page.scripts, resp.page.scripts_lower):
+                hit = self._search(text, lowered)
                 if hit is not None:
                     return f"script {hit}"
             return None
