@@ -582,3 +582,20 @@ def _capped(code: str, seconds: float = 20.0) -> str:
         pytest.fail(f"did not return within {seconds}s (a scan loop that never advances)")
     assert done.returncode == 0, done.stderr[-2000:]
     return done.stdout.strip()
+
+
+def test_the_stress_budget_scales_to_the_largest_body():
+    """Linear but slow: 64 KiB is 1/16 of body_max_bytes, and the whole response has 2 s."""
+    with pytest.raises(ValueError, match="hostile characters"):
+        stress(re.compile(r"\w{0,1024}="))
+
+
+def test_the_budget_constants_match_the_stage_and_its_config():
+    import scanner.pipeline.fingerprint as fp
+    import scanner.pipeline.fingerprint_catalogue as module
+    from scanner.pipeline.config_schema import FingerprintConfig
+
+    ceiling = FingerprintConfig.model_fields["body_max_bytes"].metadata
+    assert any(getattr(m, "le", None) == module.MAX_BODY_BYTES for m in ceiling)
+    assert fp.CLASSIFY_SECONDS == module.CLASSIFY_BUDGET_SECONDS
+    assert module.STRESS_BUDGET_SECONDS * module.MAX_BODY_BYTES / module.STRESS_INPUT_LEN < fp.CLASSIFY_SECONDS

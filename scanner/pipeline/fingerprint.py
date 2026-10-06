@@ -84,6 +84,7 @@ import httpx
 
 from .config_schema import FingerprintConfig
 from .fingerprint_catalogue import (
+    CLASSIFY_BUDGET_SECONDS,
     Catalogue,
     ClassificationTimeout,
     Match,
@@ -102,7 +103,7 @@ MAX_REDIRECT_HOPS = 3
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 #: Wall-clock budget for classifying one response. Normal pages take
 #: milliseconds; the budget is for a body written to cost more.
-CLASSIFY_SECONDS = 2.0
+CLASSIFY_SECONDS = CLASSIFY_BUDGET_SECONDS
 
 #: Categories whose high-confidence match is a finding, and its kind. Every
 #: other category is inventory only. Webmail is a remote-access portal to the

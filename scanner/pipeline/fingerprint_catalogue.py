@@ -318,11 +318,17 @@ def _bounded(pattern: str) -> None:
 
 #: Inputs the catalogue tests time every regex against, built per pattern from
 #: its own literal characters and a few generic ones. CPU time, median of
-#: STRESS_REPEATS: the shipped patterns take ~5 ms at worst, so the budget is
-#: wide enough that a busy machine does not fail a sound pattern and narrow
-#: enough that exponential backtracking is caught a few characters in.
+#: STRESS_REPEATS: the shipped patterns take ~5 ms at worst, against a budget
+#: of ~62 ms derived below -- room for a busy machine, and exponential
+#: backtracking is caught a few characters in.
 STRESS_INPUT_LEN = 64 * 1024
-STRESS_BUDGET_SECONDS = 0.25
+#: The largest body the stage reads (``FingerprintConfig.body_max_bytes``'s
+#: ceiling) and the time one response may take (``fingerprint.CLASSIFY_SECONDS``):
+#: a pattern that costs ``b`` on a 64 KiB sample costs ~16 b on a full body, and
+#: that has to fit the response's budget twice over.
+MAX_BODY_BYTES = 1_048_576
+CLASSIFY_BUDGET_SECONDS = 2.0
+STRESS_BUDGET_SECONDS = CLASSIFY_BUDGET_SECONDS / (MAX_BODY_BYTES / STRESS_INPUT_LEN) / 2
 STRESS_REPEATS = 3
 _STRESS_GENERIC = " a1<>\"'/.-:{"
 
