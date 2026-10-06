@@ -28,6 +28,7 @@ Two rules run through all of it:
 | Sensor | NATS broker | 443 | WebSocket over TLS (`wss://`) | No | Alternative again, where a raw TCP ingress is not available |
 | Sensor | DNS resolver | 53 | UDP/TCP | **Yes** | Name resolution for the API host and for every scan target. nuclei uses the host's own resolver or `dns.resolvers`. dnsx still asks public resolvers; see [DNS resolvers](#dns-resolvers) |
 | Sensor | scan targets | as scoped | TCP/UDP/ICMP | **Yes** | The scan itself. The tenant's approved scan scope decides the range |
+| Sensor | address an in-scope name's CNAME resolves to (a SaaS or cloud provider) | 443, then 80 | HTTPS/HTTP, direct | No | Subdomain-takeover confirmation (`discovery.domain_monitor.takeover_http_confirm`). Without it, a resolving takeover candidate stays unconfirmed. Never through the proxy: the address is pinned |
 
 A sensor needs **no inbound rule at all**. An Agent (Lariska) needs only the
 first row — HTTPS to the API — for `POST /api/endpoint/inventory`. `k8s/shapoclyack/examples/networkpolicy-agent.example.yaml`

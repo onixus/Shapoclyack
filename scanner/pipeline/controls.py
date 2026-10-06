@@ -118,6 +118,18 @@ def nist_risk_level(likelihood: str | None, impact: str) -> str:
     return _RISK_MATRIX[likelihood][col_idx]
 
 
+#: How many names a control's explanation spells out before "+N more".
+_WHY_NAMES = 10
+
+
+def _count_and_names(names: list[str]) -> str:
+    """``"3 (a, b, c)"``: always the count, then at most ``_WHY_NAMES`` names."""
+    ordered = sorted(names)
+    shown = ", ".join(ordered[:_WHY_NAMES])
+    more = len(ordered) - _WHY_NAMES
+    return f"{len(ordered)} ({shown}{f' +{more} more' if more > 0 else ''})"
+
+
 def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     hygiene_file = output_dir / "dns_hygiene.json"
     dm_file = output_dir / "domain_monitor.json"
@@ -157,7 +169,26 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     # domain_monitor.json nests its findings under the two sub-checks it runs
     # (``typosquat`` / ``dangling_cname``); there is no top-level ``findings``
     # array and no ``monitored_domains`` list -- see domain_monitor.run().
+    # Names whose DNS answer was missing or unusable were not checked: they
+    # count in the coverage's total and not in its checked, and the why names
+    # them -- a takeover candidate whose follow-up lookup went unanswered by
+    # name. One SERVFAIL among hundreds does not un-rate the control; only a
+    # check in which nothing was answered at all is not_checked.
+    dm_names = 0
+    dm_unanswered: list[str] = []
+    dm_candidates_unanswered: list[str] = []
+    dm_candidates_unconfirmed: list[str] = []
     if isinstance(dm_data, dict) and not dm_data.get("skipped_reason"):
+        dangling_block = dm_data.get("dangling_cname")
+        if isinstance(dangling_block, dict):
+            dm_names = int(dangling_block.get("checked") or 0)
+            dm_unanswered = [str(name) for name in dangling_block.get("dns_unanswered") or []]
+            dm_candidates_unanswered = [
+                str(name) for name in dangling_block.get("candidates_unanswered") or []
+            ]
+            dm_candidates_unconfirmed = [
+                str(name) for name in dangling_block.get("candidates_unconfirmed") or []
+            ]
         evidence.append("domain_monitor.json")
         for section, default_kind in (
             ("typosquat", "typosquat_candidate"),
@@ -175,9 +206,12 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
                     "severity": f.get("severity", "medium"),
                     "detail": f.get("detail") or f.get("kind", default_kind),
                 })
-        for dom in dm_data.get("seed_domains") or []:
-            total_domains.add(dom)
-            checked_domains.add(dom)
+        # Seed domains are what the typosquat sub-check looked at; without it
+        # they were not checked by anything here.
+        if isinstance(dm_data.get("typosquat"), dict):
+            for dom in dm_data.get("seed_domains") or []:
+                total_domains.add(dom)
+                checked_domains.add(dom)
 
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for f in findings:
@@ -185,8 +219,8 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
         if s in sev_counts:
             sev_counts[s] += 1
 
-    total_count = len(total_domains)
-    checked_count = len(checked_domains)
+    total_count = len(total_domains) + dm_names
+    checked_count = len(checked_domains) + max(0, dm_names - len(dm_unanswered))
     if total_count == 0 and findings:
         total_count = len(findings)
         checked_count = len(findings)
@@ -197,12 +231,31 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
         why = f"{sev_counts['medium'] + sev_counts['low']} medium/low DNS hygiene findings detected"
-    elif checked_count > 0:
+    elif checked_count > 0 and not (dm_unanswered or dm_candidates_unconfirmed):
         status = "ok"
         why = f"All {checked_count} domains passed DNS hygiene checks"
+    elif checked_count > 0:
+        # Rated by its findings, but not "all passed": something stayed open.
+        status = "ok"
+        why = f"{checked_count} of {total_count} names checked, no DNS hygiene findings"
     else:
         status = "not_checked"
         why = "No domains checked for DNS hygiene"
+    if dm_unanswered:
+        why += (
+            "; in-scope names with no usable DNS answer, not checked for dangling "
+            f"CNAMEs: {_count_and_names(dm_unanswered)}"
+        )
+    if dm_candidates_unanswered:
+        why += (
+            "; takeover candidates left undecided by an unanswered lookup: "
+            f"{_count_and_names(dm_candidates_unanswered)}"
+        )
+    if dm_candidates_unconfirmed:
+        why += (
+            "; takeover candidates not confirmed by HTTP: "
+            f"{_count_and_names(dm_candidates_unconfirmed)}"
+        )
 
     return {
         "status": status,

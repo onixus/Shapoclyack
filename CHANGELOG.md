@@ -707,6 +707,50 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
+- **Subdomain takeover detection with a fingerprint catalogue.**
+  `domain_monitor`'s dangling-CNAME check now judges each in-scope name's CNAME
+  chain against `scanner/pipeline/takeover_fingerprints.json` — 58 services
+  (28 `vulnerable`, 16 `edge_case`, 14 `not_vulnerable`), each with its CNAME
+  targets, how an unclaimed resource shows (NXDOMAIN or the provider's page),
+  fingerprints, a note for every edge case, sources and the date they were
+  read; the file is validated before the first lookup. Findings in the
+  `dangling_cname` section are `subdomain_takeover` with `confidence:
+  confirmed` (NXDOMAIN of a claimable resource name on A and AAAA and on a
+  repeat query, no `asuid` record for App Service; or the provider's unclaimed
+  page) or `heuristic` (claimable service, no address) — high/medium for a
+  `vulnerable` service, medium/low for an `edge_case` one, whose note goes into
+  the detail; `dangling_cname_nxdomain` (high: the chain ends at a name whose
+  registrable domain -- under an ICANN-section suffix of the Public Suffix List
+  or a public registry's private-section one (`com.ru`, `org.ru`, `uk.com`,
+  `co.cz`, `eu.org`, `krakow.pl`, …; each PSL block attributed to its own
+  header),
+  and a delegated, non-special-use TLD -- does not exist on two asks); and
+  `dangling_cname` (low: a non-existent name at a hosting platform the
+  catalogue does not know). Every finding carries `severity`, `detail` and an
+  `evidence` block; what matched but is not a finding is listed under
+  `not_reported` with a reason, and names whose DNS answer was missing or
+  unusable (SERVFAIL, REFUSED, timeout, A and AAAA disagreeing) under
+  `dns_unanswered`; a candidate whose own answer or follow-up lookup
+  (registrable domain, `asuid`, repeat query) went unanswered is in
+  `candidates_unanswered`, and one the HTTP check could not decide in
+  `candidates_unconfirmed`. The DNS structure control stays rated, counts only
+  answered names in its coverage and names all three lists, with a count, ten
+  names and "+N more" — never "all passed" while one is non-empty.
+  The confirmation is one bounded GET per scheme to the org's own name, pinned
+  to the resolved address with `Host`/SNI set to it, no redirects, 64 KiB, a
+  hard deadline, no proxy, only to a public address and never to one the scan
+  scope denies (that refusal joins the run's denials artifact)
+  (`discovery.domain_monitor.takeover_http_confirm`, default on, with
+  `takeover_http_concurrency`/`_timeout_seconds`/`_max_targets`). The tenant
+  policy's `skip_service_probe` turns it off and `max_host_concurrency` caps
+  it. Old readers keep `fqdn`, `cname_target` and `matched_suffix`; a takeover's
+  `kind` is no longer `dangling_cname`, `domain_monitor_findings.txt` lines are
+  `<kind>:<confidence>:<fqdn>:<target>`, and a confirmed takeover of a
+  `vulnerable` service makes the "DNS structure" control `fail` instead of
+  `weak`. A resolver that answers NXDOMAIN for blocked names (RPZ) skews the
+  verdicts; `dns.resolvers` says so. Statuses adapted from can-i-take-over-xyz
+  (CC BY 4.0, attributed in `NOTICE`). See `docs/configuration.md` § Subdomain
+  takeover detection.
 - **Retro CVE matching names eighteen more products.** Sendmail, Dovecot,
   Pure-FTPd, FileZilla Server, MySQL, MariaDB, MongoDB, Elasticsearch,
   Memcached, CouchDB, Squid, HAProxy, Jetty, PHP, Unbound, PowerDNS
@@ -742,6 +786,7 @@ All notable changes to Shapoclyack are documented in this file.
   marker now carries a digest of the matcher's tables (`…+rules:<digest>`), so
   the upgrade re-matches every listener once by itself — expect a wave of
   `retro_match` findings on the first tick (docs/operations.md).
+
 
 ### Changed
 
@@ -1496,6 +1541,20 @@ All notable changes to Shapoclyack are documented in this file.
     of starting a second one beside it.
   - A failed `import agent.worker` check now prints the last lines of the
     traceback instead of discarding them.
+- **The dangling-CNAME check reported live resources.** Its dnsx lookup was
+  `-cname -resp`, which (measured on dnsx 1.2.3) returns the first hop of a
+  chain and never an address, so the "no A/AAAA" gate held for every name and
+  any CNAME into the 14 listed suffixes was a finding — a working GitHub Pages
+  site included. Five of those suffixes (CloudFront, Fastly, WP Engine,
+  Unbounce, Zendesk) belong to services that do not allow a takeover;
+  `s3-website` could never end a real name, so S3 website endpoints were never
+  matched; and matching was not label-bounded (`evilgithub.io` matched
+  `github.io`). The chain is now resolved with separate `-a` and `-aaaa` runs —
+  with several record types in one run dnsx reports the rcode of the last query
+  only, so `-cname` beside `-a` hid an NXDOMAIN and `-aaaa` beside `-a` invented
+  one for a name with an A record — and walked in resolution order from the
+  `all` records rather than taken in answer order; matching goes through the
+  takeover catalogue above.
 
 ### Documentation
 
