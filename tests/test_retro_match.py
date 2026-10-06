@@ -1525,6 +1525,33 @@ def test_phps_revision_is_not_the_web_servers(fingerprint) -> None:
     assert "distro_revision" not in only.evidence
 
 
+def test_another_products_header_says_nothing_about_the_listeners_distribution() -> None:
+    """``X-Powered-By`` is the application's, not the server's: a Debian PHP
+    behind an Apache that names no distribution does not make the Apache a
+    Debian build (its hit stays a range finding with no host hint)."""
+    fingerprint = rm.Fingerprint(
+        product="Apache httpd",
+        version="2.4.41",
+        banner="HTTP/1.1 200 OK | Server: Apache/2.4.41 | X-Powered-By: PHP/7.3.31-1~deb10u5",
+    )
+    assert rm.own_hint(fingerprint, ("a:apache:http_server",), None) == rm.DistroHint()
+    (only,) = rm.match(fingerprint, FOCAL_WEB_RANGES, lookup=lambda _d: FOCAL_WEB).matches
+    assert (only.verdict, only.confidence) == ("vulnerable", "version_range")
+    # PHP's own reading of the same banner keeps both.
+    assert rm.own_hint(fingerprint, ("a:php:php",), None) == rm.DistroHint("debian", "buster", "1~deb10u5")
+
+
+def test_a_revision_comes_only_from_the_products_own_token() -> None:
+    """Any line that is not the product's own carries someone else's package
+    revision, whatever header it rides in."""
+    fingerprint = rm.Fingerprint(
+        product="Apache httpd",
+        version="2.4.41",
+        banner="HTTP/1.1 200 OK | Server: Apache/2.4.41 (Ubuntu) | X-Backend: php7.4-fpm/7.4.3-4ubuntu2.19",
+    )
+    assert rm.own_hint(fingerprint, ("a:apache:http_server",), None) == rm.DistroHint("ubuntu")
+
+
 def test_nmaps_php_cpe_carries_the_revision_to_the_backport_check() -> None:
     """nmap's ``X-Powered-By: PHP/(\\d[\\w._-]+)`` softmatch writes the whole
     string into the CPE: compared as written, 7.4.3-4ubuntu2.19 is not 7.4.3."""
