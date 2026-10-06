@@ -1055,6 +1055,24 @@ def test_an_address_from_either_query_means_the_name_resolves(tmp_path, monkeypa
     assert listed["evidence"]["dns_status_by_type"] == by_type
 
 
+def test_the_chain_comes_from_the_aaaa_answer_when_the_a_query_timed_out(tmp_path, monkeypatch):
+    zone = {
+        "v6.example.com": {
+            "cname": ["org.github.io"],
+            "aaaa": ["2606:50c0:8000::153"],
+            "drop": ["a"],
+        }
+    }
+
+    block, _ = _takeover_block(
+        tmp_path, monkeypatch, zone, ["v6.example.com"], takeover_http_confirm=False
+    )
+
+    [listed] = block["not_reported"]
+    assert (listed["service"], listed["reason"]) == ("github_pages", "http_confirm_disabled")
+    assert listed["evidence"]["cname_chain"] == ["org.github.io"]
+
+
 def test_nxdomain_needs_both_record_types(tmp_path, monkeypatch):
     """The reverse: an A NXDOMAIN that ``-a -aaaa`` hid behind the AAAA NOERROR."""
     zone = {
@@ -1448,6 +1466,7 @@ def test_an_unregistered_domain_that_reappears_on_the_second_ask_is_not_reported
         ("::", "sinkholed"),
         ("::ffff:127.0.0.1", "sinkholed"),
         ("::ffff:0.0.0.0", "sinkholed"),
+        ("999.0.0.1", "sinkholed"),  # not an address at all: never dialled
         # A walled garden or a split-horizon view: the GET would not reach the provider.
         ("10.0.0.5", "private_address"),
         ("192.168.1.10", "private_address"),
