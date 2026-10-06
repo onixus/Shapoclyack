@@ -2096,17 +2096,22 @@ VERIFICATION_OVERLAY_VERSION = 2
 VERIFICATION_CAPABILITY = f"config_overlay.v{VERIFICATION_OVERLAY_VERSION}"
 
 
-def _verification_sensor_live(settings: Settings, tenant_id: str) -> bool:
-    """Whether a live scanner sensor of the tenant declares the verification capability.
+def _verification_sensor_live(settings: Settings, tenant_id: str, group: str | None) -> bool:
+    """Whether a live sensor that would be handed the verification declares v2.
 
-    The tenant-wide question only: an approved scope that restricts the
-    target to one sensor group is answered later, as for any scan, by the
-    job's ``agent_group_unavailable``.
+    ``group`` is the one the job will carry (the observing group, held to the
+    approved scope): only that group's sensors claim it. With none, any
+    scanner sensor of the tenant does — a grouped one takes ungrouped jobs too.
+    A tenant-wide answer here once refused nothing while the job went to a
+    group of v1 sensors and sat in VERIFYING behind 426s (#451 review).
     """
     from api.services import agent_groups as agent_groups_service
 
-    live = agent_groups_service.live_sensors(settings, {tenant_id})
-    return any(VERIFICATION_CAPABILITY in capabilities for capabilities in live.get(tenant_id, []))
+    if group:
+        live = agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group), [])
+    else:
+        live = agent_groups_service.live_sensors(settings, {tenant_id}).get(tenant_id, [])
+    return any(VERIFICATION_CAPABILITY in capabilities for capabilities in live)
 
 
 def _is_ip(value: str) -> bool:
@@ -2320,19 +2325,40 @@ def trigger_verification(
             "Scan dispatch is disabled on this server (OCTO_ALLOW_SCAN_START), "
             "so this finding cannot be machine-verified"
         )
-    if settings.job_execution_mode == "agent" and not _verification_sensor_live(
-        settings, owning_tenant
-    ):
-        # Refused rather than queued: the job would wait for a sensor that
-        # may never come, with the finding parked in VERIFYING meanwhile —
-        # the state this function exists never to create. A local-execution
-        # installation runs the scan itself and is not asked.
-        raise VerificationDispatchError(
-            "No live sensor of this tenant can run a verification re-scan: it needs "
-            f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
-            "loads pinned nuclei templates and records the coverage evidence the "
-            "closure is judged on). Upgrade a sensor and verify again."
-        )
+    if settings.job_execution_mode == "agent":
+        from api.services import agent_groups as agent_groups_service
+        from api.services import scan_scopes as scopes
+
+        ranges_text = "\n".join(plan.ips) or None
+        domains_text = "\n".join(plan.names) or None
+        try:
+            # The group the job will carry, decided now as start_scan will:
+            # the observing group, held to what the approved scope allows.
+            group = agent_groups_service.resolve_for_scan(
+                settings,
+                tenant_id=owning_tenant,
+                requested=plan.agent_group,
+                required=scopes.required_agent_groups(
+                    settings,
+                    tenant_id=owning_tenant,
+                    ranges_text=ranges_text,
+                    domains_text=domains_text,
+                ),
+            )
+        except (ValueError, PermissionError) as exc:
+            raise VerificationDispatchError(f"Could not dispatch a verification scan: {exc}") from exc
+        if not _verification_sensor_live(settings, owning_tenant, group):
+            # Refused rather than queued: the job would wait for a sensor
+            # that may never come, with the finding parked in VERIFYING
+            # meanwhile — the state this function exists never to create. A
+            # local-execution installation runs the scan itself.
+            where = f"sensor group '{group}'" if group else "this tenant"
+            raise VerificationDispatchError(
+                f"No live sensor of {where} can run a verification re-scan: it needs "
+                f"capability {VERIFICATION_CAPABILITY} (a sensor from this release, which "
+                "loads pinned nuclei templates and records the coverage evidence the "
+                "closure is judged on). Upgrade a sensor there and verify again."
+            )
 
     from api.schemas import StartScanRequest
     from api.services import jobs as jobs_service

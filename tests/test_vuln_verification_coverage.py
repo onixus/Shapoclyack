@@ -1226,6 +1226,46 @@ def test_a_verification_no_live_sensor_can_run_is_refused_not_parked(tmp_path):
         assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
 
 
+def _dmz_scope(settings, tenant_id) -> None:
+    from api.services import agent_groups
+
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
+    approve_scan_scope(
+        settings, entries=[{"effect": "allow", "kind": "cidr", "value": "10.0.0.0/8", "agent_groups": ["dmz"]}]
+    )
+
+
+def test_a_scope_pinned_group_without_a_v2_sensor_is_refused(tmp_path):
+    """The delta review's probe: a v2 sensor outside any group, a v1 sensor
+    in ``dmz``, a scope that sends 10.0.0.0/8 to ``dmz``. The tenant-wide
+    check passed, the job went to ``dmz``, every claim was a 426 and the
+    finding sat in VERIFYING with nothing on screen."""
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    _dmz_scope(settings, tenant_id)
+    vuln = _tracked(settings, tenant_id, [PULSE])
+    _agent_mode(settings, tenant_id)  # v2, ungrouped
+    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1"), group="dmz")
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    with pytest.raises(vulns.VerificationDispatchError, match="dmz"):
+        vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+    with get_session(settings.postgres_url) as session:
+        assert session.query(models.Job).filter(models.Job.tenant_id == tenant_id).count() == 0
+
+
+def test_a_scope_pinned_group_with_a_v2_sensor_gets_the_job(tmp_path):
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    _dmz_scope(settings, tenant_id)
+    vuln = _tracked(settings, tenant_id, [PULSE])
+
+    job = _dispatch(settings, tenant_id, vuln["vuln_id"], sensor_group="dmz")
+
+    assert job.agent_group == "dmz"
+
+
 def test_a_template_id_a_sensor_would_refuse_is_refused_at_dispatch(tmp_path):
     odd = _row("nuclei", "nuclei:bad,id")
     settings, tenant_id = _seed(tmp_path, findings=[odd])

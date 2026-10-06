@@ -311,7 +311,6 @@ def start_scan(
     promoted_refused = list(admission.promoted_refused)
     policy_snapshot = admission.policy_snapshot
     agent_group = admission.agent_group
-    group_has_live_agent = admission.group_has_live_agent
 
     resolved = scan_intents.resolve_scan_options(
         intent=request.intent,
@@ -553,11 +552,7 @@ def start_scan(
             info = job_store.to_info(
                 row,
                 (
-                    (
-                        {(tenant_id, agent_group)}
-                        if group_has_live_agent
-                        else set()
-                    )
+                    agent_groups_service.live_groups(settings, {tenant_id})
                     if agent_group
                     else None
                 ),

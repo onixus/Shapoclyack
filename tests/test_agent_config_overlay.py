@@ -684,3 +684,31 @@ def test_the_platform_may_not_pin_a_setting_outside_the_allow_list(tmp_path):
             username="x",
             config_extra={"nuclei": {"templates_dir": "/tmp"}},
         )
+
+
+
+@requires_postgres
+def test_a_group_whose_sensors_cannot_take_the_job_says_so(tmp_path, monkeypatch):
+    """``agent_group_unavailable`` used to mean "nobody of the group is
+    listening"; a group of v1 sensors listening to a v2 job is the same wait
+    and now reads the same (#451 review)."""
+    from api.schemas import StartScanRequest
+    from api.services import agent_groups
+    from api.services import jobs as jobs_service
+
+    settings = _agent_settings(tmp_path)
+    client = configured_client(tmp_path, monkeypatch, settings=settings)
+    agent_groups.create_group(settings, tenant_id="default", name="dmz")
+    sensor = _register(client, "v1-dmz", ["scan_policy", CAPABILITY])
+    agent_groups.set_agent_group(settings, tenant_id="default", agent_id=sensor, name="dmz")
+
+    def start(**extra):
+        return jobs_service.start_scan(
+            settings,
+            StartScanRequest(mode="safe", intent="vuln", ranges="127.0.0.1\n", agent_group="dmz"),
+            username="x",
+            **extra,
+        )
+
+    assert start().agent_group_unavailable is False
+    assert start(min_overlay_version=2, verification_of="vln_1").agent_group_unavailable is True

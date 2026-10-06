@@ -2564,8 +2564,10 @@ re-run the installer with `--docker` (or roll the Kubernetes deployment).
 **Verification re-scans need an upgraded sensor** (#451, migration `0079`).
 A verification job asks for `config_overlay.v2`: it may pin the nuclei
 templates that found the finding, and it is judged on coverage evidence only
-that build writes. While no live sensor of the tenant declares it, **Verify**
-is refused (`409`, naming the capability) rather than queuing a job nothing
+that build writes. While no live sensor of the group the job would go to
+(the observing group, held to the approved scope; any sensor of the tenant for
+an ungrouped one) declares it, **Verify** is refused (`409`, naming the group
+and the capability) rather than queuing a job nothing
 will run; a sensor that cannot take an already-queued one answers `426`
 naming it — every other job keeps going to the older sensors. A verification
 job that is queued and then never claimed still costs its NATS offer a

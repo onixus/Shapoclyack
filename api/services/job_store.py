@@ -55,7 +55,7 @@ def sensor_available(
 
 def to_info(
     row: models.Job,
-    live_groups: set[tuple[str, str]] | None = None,
+    live_groups: dict[tuple[str, str], list[frozenset[str]]] | None = None,
     live_sensors: dict[str, list[frozenset[str]]] | None = None,
 ) -> JobInfo:
     """One job row as the API reports it.
@@ -100,7 +100,13 @@ def to_info(
             bool(row.agent_group)
             and row.status == job_states.QUEUED
             and live_groups is not None
-            and (tenant_id, row.agent_group) not in live_groups
+            # Not just "nobody of the group is listening": nobody who would
+            # be handed it — a v2-only verification behind v1 sensors waits
+            # all the same (#451 review).
+            and not any(
+                required_capabilities(row.scan_options) <= capabilities
+                for capabilities in live_groups.get((tenant_id, row.agent_group), [])
+            )
         ),
         # Ungrouped only, so the two flags never both speak for one job: a
         # grouped job with no agent at all already reads "no sensor online in
