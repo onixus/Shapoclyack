@@ -161,11 +161,48 @@ def test_truncated_snapshot_is_refused(tmp_path: Path, monkeypatch):
         public_suffix._snapshot.cache_clear()
 
 
-@pytest.mark.parametrize("operator", sorted(public_suffix.PUBLIC_REGISTRY_OPERATORS))
-def test_every_public_registry_operator_still_has_its_block(operator):
-    """A refresh that renames a block header would silently drop its suffixes
-    back into "hosting platform"."""
-    assert public_suffix.private_operators().get(operator), operator
+#: Suffixes in the list's private section under which a registry sells or
+#: assigns names to unrelated parties. Fixed here, not derived from
+#: PUBLIC_REGISTRY_OPERATORS, so dropping an operator -- or a refresh renaming
+#: its block header -- fails the suffix rather than quietly shrinking the test.
+PUBLIC_REGISTRY_SUFFIXES = (
+    "com.ru", "msk.ru", "spb.ru", "ru.net",  # FAITID
+    "net.ru", "org.ru", "pp.ru",  # MSK-IX
+    "uk.com", "br.com", "us.com", "gb.net",  # CentralNic
+    "co.com", "co.ca", "eu.org", "pp.ua", "co.ua", "v.ua", "co.cz", "za.net", "za.org",
+    "us.org", "gr.com", "uk.cc", "us.cc", "name.pm", "org.yt", "biz.ng",
+    "krakow.pl", "poznan.pl", "lodz.pl", "gda.pl",
+)
+
+
+@pytest.mark.parametrize("suffix", PUBLIC_REGISTRY_SUFFIXES)
+def test_a_public_registrys_suffix_is_registrable_under_registries_only(suffix):
+    assert registrable_domain(f"www.gone.{suffix}", registries_only=True) == f"gone.{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("rule", "operator"),
+    [
+        # Blocks whose header has no "operator : url" form used to inherit the
+        # previous block's operator.
+        ("firebaseapp.com", "Firebase, Inc."),
+        ("github.io", "GitHub, Inc."),
+        ("ras.ru", "Russian Academy of Sciences"),
+        # "Name: url" without the space before the colon.
+        ("v.ua", "V.UA Domain Registry"),
+        ("uk.cc", "TechEdge Limited"),
+    ],
+)
+def test_every_private_block_is_attributed_to_its_own_header(rule, operator):
+    owners = {
+        owned: name for name, rules in public_suffix.private_operators().items() for owned in rules
+    }
+    assert owners[rule] == operator
+
+
+@pytest.mark.parametrize("platform", ["x.firebaseapp.com", "x.github.io", "x.ras.ru"])
+def test_a_platform_that_followed_a_registry_block_is_not_a_registry(platform):
+    assert registrable_domain(platform, registries_only=True) != platform
 
 
 @pytest.mark.parametrize(

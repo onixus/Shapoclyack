@@ -68,18 +68,37 @@ SPECIAL_USE_DOMAINS = frozenset({
 
 #: Private-section blocks whose suffixes are sold or given out to the public
 #: by a registry, keyed by the operator name in the block's header line
-#: (``// <operator> : <url>``) -- the list itself documents each one there.
-#: Matching by block rather than by suffix keeps every suffix the operator
-#: submitted (FAITID alone has dozens of ``.ru``/``.su`` names) and is checked
-#: against the snapshot by ``tests/test_public_suffix.py``.
+#: (``// <operator> : <url>``) -- the list itself documents each one there,
+#: with the URL quoted beside each entry below. Matching by block rather than
+#: by suffix keeps every suffix the operator submitted (FAITID alone has dozens
+#: of ``.ru``/``.su`` names); ``tests/test_public_suffix.py`` pins a fixed list
+#: of suffixes that must come out registrable, so a renamed header shows.
+#: Left out until somebody checks they sell to unrelated parties: KV GmbH
+#: (co.de), UDR Limited (hk.com), Radix (in.net), Africa.com, Globe Hosting
+#: (co.ro), priv.at, Smallregistry, NGO.US, Bielsko-Biala.
 PUBLIC_REGISTRY_OPERATORS = frozenset({
     "CentralNic",  # br.com, uk.com, us.com, gb.net, ... (https://teaminternet.com/)
     "co.com Registry, LLC",  # co.com (https://registry.co.com)
     "co.ca",  # co.ca (http://registry.co.ca/)
     "FAITID",  # com.ru, msk.ru, spb.ru, ru.net, ... (https://faitid.org/)
+    "MSK-IX",  # net.ru, org.ru, pp.ru (https://www.msk-ix.ru/)
     "EU.org",  # eu.org and its country subzones (https://eu.org/)
     "Service Online LLC",  # biz.ua, co.ua, pp.ua (http://drs.ua/)
+    "V.UA Domain Registry",  # v.ua (https://www.v.ua/)
+    "i-registry s.r.o.",  # co.cz (http://www.i-registry.cz/)
+    "ZaNiC",  # za.net, za.org (http://www.za.net/)
+    "UNIVERSAL DOMAIN REGISTRY",  # name.pm, org.yt, ... (https://www.udr.org.yt/)
+    "HOSTBIP REGISTRY",  # biz.ng, col.ng, ... (https://www.hostbip.com/)
+    "US REGISTRY LLC",  # us.org (http://us.org)
+    "iDOT Services Limited",  # gr.com (http://www.domain.gr.com)
+    "TechEdge Limited",  # uk.cc, us.cc, eu.cc, ... (https://www.nic.uk.cc/)
+    ".pl domains (grandfathered)",  # krakow.pl, poznan.pl, ... (NASK regional domains)
+    "Lodz University of Technology LODMAN regional domains",  # lodz.pl, ... (https://www.man.lodz.pl/dns)
+    "TASK geographical domains",  # gda.pl, gdansk.pl, ... (https://task.gda.pl/en/services/for-entrepreneurs/)
 })
+
+#: Where a block header's operator name ends: before ": http(s)://".
+_HEADER_URL = re.compile(r"\s*:\s*(?=https?://)")
 
 
 @dataclass(frozen=True)
@@ -141,12 +160,17 @@ def _snapshot() -> _Snapshot:
         elif "===END ICANN DOMAINS===" in line:
             in_icann = False
         if not line:
+            # A block ends at a blank line; whatever follows is somebody else's
+            # until its own header says whose.
             previous_blank = True
+            operator = ""
             continue
         if line.startswith("//"):
-            # A private-section block opens with "// <operator> : <url>".
-            if previous_blank and not in_icann and " : " in line:
-                operator = line[2:].split(" : ", 1)[0].strip()
+            # A private-section block opens with a header naming its operator:
+            # "// <operator> : <url>", "// <operator>: <url>" or just
+            # "// <operator>". Every block has its own; none inherits.
+            if previous_blank and not in_icann:
+                operator = _HEADER_URL.split(line[2:].strip(), maxsplit=1)[0].strip()
             previous_blank = False
             continue
         previous_blank = False
