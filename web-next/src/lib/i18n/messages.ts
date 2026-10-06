@@ -944,6 +944,8 @@ export const en = {
     "The product is not in the NVD CPE data, so it could not be checked — which is not the same as clean.",
   "services.reason.no_version":
     "The scan recorded no version, so no range could be compared — which is not the same as clean.",
+  "services.reason.lookalike":
+    "The banner names a fork that answers like this product but is versioned on its own (Valkey, Dragonfly, KeyDB as Redis), so the product's CVEs were not compared — which is not the same as clean.",
   "services.reason.too_old":
     "Not observed recently enough to re-check; the next scan that sees it brings it back.",
   "services.reason.no_dataset":
@@ -2774,6 +2776,8 @@ export const ru: Record<MsgKey, string> = {
     "Продукта нет в данных CPE из NVD, проверить его нельзя — это не то же самое, что «чисто».",
   "services.reason.no_version":
     "Скан не записал версию, сравнивать с диапазоном нечего — это не то же самое, что «чисто».",
+  "services.reason.lookalike":
+    "Баннер называет форк, который отвечает как этот продукт, но версионируется сам по себе (Valkey, Dragonfly, KeyDB вместо Redis), поэтому CVE продукта не сравнивались — это не то же самое, что «чисто».",
   "services.reason.too_old":
     "Сервис давно не наблюдался и не перепроверяется; следующий скан, который его увидит, вернёт его в работу.",
   "services.reason.no_dataset":
@@ -3779,6 +3783,7 @@ export const STATUS_EN: Record<string, string> = {
   assessed: "assessed",
   "unknown product": "unknown product",
   "no version": "no version",
+  lookalike: "lookalike",
   "too old": "too old",
   "no dataset": "no dataset",
   "not yet matched": "not yet matched",
@@ -3901,6 +3906,7 @@ export const STATUS_RU: Record<string, string> = {
   assessed: "проверен",
   "unknown product": "неизвестный продукт",
   "no version": "нет версии",
+  lookalike: "двойник продукта",
   "too old": "давно не виден",
   "no dataset": "нет данных NVD",
   "not yet matched": "ещё не проверен",

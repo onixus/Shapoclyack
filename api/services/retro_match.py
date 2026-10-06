@@ -80,6 +80,10 @@ CONFIDENCES = (CONFIDENCE_VENDOR, CONFIDENCE_RANGE, CONFIDENCE_BACKPORT)
 REASON_UNKNOWN_PRODUCT = "unknown_product"
 REASON_NO_VERSION = "no_version"
 REASON_NO_DATASET = "no_dataset"
+#: The banner names a fork or a compatible engine that answers like a known
+#: product but is versioned on its own (Valkey answering INFO with
+#: ``redis_version:7.2.4``): not that product's CVEs.
+REASON_LOOKALIKE = "lookalike"
 
 #: ``DistroHint.distro`` for a host known to run Linux whose distribution is
 #: not (nmap OS detection, a ``linux_kernel`` CPE).
@@ -239,9 +243,13 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     # nmap-service-probes (7.99) and Pulse's probes.json / fingerprint.rs, the
     # keys against NVD's CPE dictionary (names per key in brackets).
     #
-    # Pulse's names for products above: its probe database's "Redis" (from
-    # ``redis_version:``) and "Microsoft IIS", its banner parser's "Dropbear".
-    "redis": ("a:redis:redis", "a:redislabs:redis"),
+    # Pulse's names for products above: its probe database's "Microsoft IIS",
+    # its banner parser's "Dropbear". Not Pulse's "Redis": its redis_version
+    # rule precedes its KeyDB and Dragonfly rules, so Valkey 8.1.10 (INFO:
+    # ``redis_version:7.2.4``) is "Redis 7.2.4" to it, with a banner of
+    # ``+PONG`` that names nothing — and CVE-2025-49844 on a Valkey that is
+    # fixed. Until Pulse reads server_name/valkey_version first, it is not
+    # matched (_LOOKALIKES guards nmap's row where the banner can tell).
     "microsoft iis": ("a:microsoft:internet_information_services", "a:microsoft:iis"),
     "dropbear": ("a:dropbear_ssh_project:dropbear_ssh", "a:matt_johnston:dropbear_ssh_server"),
     # Mail. Dovecot's greeting names no version (nmap infers one from a few
@@ -313,6 +321,17 @@ _PRODUCT_SERVICES: dict[str, frozenset[str]] = {
 #:   numbering (CVE-2022-26691: ``< 499.4``), below which every Linux CUPS
 #:   falls; and the ``Server`` header names only a series (``CUPS/2.4``).
 _NOT_MATCHED_CPE = frozenset({"a:apple:cups", "a:jenkins:jenkins"})
+
+#: NVD key → what in a listener's text gives away a lookalike of the product:
+#: an engine that answers the product's protocol, reports the product's
+#: version field, and is versioned on its own. Only what the scan kept can
+#: tell — nmap stores no INFO text for Redis, so nmap's "Redis key-value store"
+#: row catches a fork only when a hybrid run kept Pulse's raw INFO reply as
+#: the banner. A Valkey nmap alone saw is still "Redis 7.2.4".
+_LOOKALIKES: dict[str, re.Pattern[str]] = {
+    key: re.compile(r"server_name:valkey|valkey_version|dragonfly_version|keydb", re.IGNORECASE)
+    for key in ("a:redis:redis", "a:redislabs:redis")
+}
 
 #: nmap CPE key → the NVD keys it stands for. nmap's service database predates
 #: some NVD renames, and names some vendors its own way; without these an nginx
@@ -544,6 +563,7 @@ def rules_version() -> str:
         "shapes": {key: shape.pattern for key, shape in _VERSION_SHAPES.items()},
         "first_number": sorted(_FIRST_NUMBER_VERSIONS),
         "not_matched_cpe": sorted(_NOT_MATCHED_CPE),
+        "lookalikes": {key: pattern.pattern for key, pattern in _LOOKALIKES.items()},
     }
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
@@ -1174,6 +1194,8 @@ def match(
     keys, via, cpe_version = product_keys(fingerprint, known=lambda key: bool(dataset.ranges_for(key)))
     if not keys:
         return MatchOutcome(reason=REASON_UNKNOWN_PRODUCT)
+    if any(key in _LOOKALIKES and _LOOKALIKES[key].search(fingerprint.text) for key in keys):
+        return MatchOutcome(reason=REASON_LOOKALIKE, product_keys=keys)
     upstream = upstream_version(fingerprint, keys, cpe_version)
     if not upstream:
         return MatchOutcome(reason=REASON_NO_VERSION, product_keys=keys)

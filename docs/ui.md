@@ -607,7 +607,8 @@ owner or service.
   with the possible CVEs — NVD says affected, a visible distribution may have
   backported the fix — in a collapsed list, because they are deliberately not
   tracked findings. Every other row says why it could not be assessed
-  (`unknown product`, `no version`, `too old`, `no dataset`, or `not yet
+  (`unknown product`, `no version`, `lookalike` — the banner names a fork such
+  as Valkey answering as Redis —, `too old`, `no dataset`, or `not yet
   matched`) and shows no counts, so an empty CVE column is never read as clean;
 - **Software** — the endpoint Agent's (Lariska) inventory when an endpoint
   is linked;

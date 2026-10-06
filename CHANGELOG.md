@@ -673,7 +673,14 @@ All notable changes to Shapoclyack are documented in this file.
   Authoritative and Recursor, and libssh join the 16, each under the strings
   nmap and Pulse really emit (checked against `nmap-service-probes` and Pulse's
   probe database), each key against NVD's CPE dictionary; Pulse's own names for
-  Redis, IIS and Dropbear, which the table did not know, too. Products whose
+  IIS and Dropbear, which the table did not know, too — but not Pulse's
+  "Redis", which is whatever answers INFO with `redis_version` first (Valkey
+  8.1.10 is "Redis 7.2.4" to it). A listener whose banner names a Redis fork
+  (`server_name:valkey`, `valkey_version`, `dragonfly_version`, `keydb`) is a
+  new `match_status`, `lookalike`, shown on the asset's Services section.
+  MySQL's shape accepts only MySQL's own suffixes (revisions, `-log`,
+  `-community`): TiDB's `5.7.25-TiDB-v7.1.5` and Vitess's `8.0.30-Vitess` are
+  not MySQL. Products whose
   version string carries more than the version are cut to it by a per-product
   shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
   Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and

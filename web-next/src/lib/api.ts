@@ -1305,6 +1305,7 @@ export type AssetServiceMatchStatus =
   | "matched"
   | "unknown_product"
   | "no_version"
+  | "lookalike"
   | "too_old"
   | "no_dataset";
 

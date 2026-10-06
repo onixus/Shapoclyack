@@ -163,4 +163,14 @@ describe("AssetServicesPanel", () => {
     expect(await screen.findByText("неизвестный продукт")).toBeInTheDocument();
     expect(screen.getByText("Порт")).toBeInTheDocument();
   });
+
+  it("says why a Redis fork was not matched as Redis", async () => {
+    vi.spyOn(apiModule, "fetchAssetServices").mockResolvedValue([
+      service({ match_status: "lookalike", match_counts: {} }),
+    ]);
+    renderPanel();
+
+    expect(await screen.findByText("lookalike")).toBeInTheDocument();
+    expect(screen.getByText(/The banner names a fork that answers like this product/)).toBeInTheDocument();
+  });
 });

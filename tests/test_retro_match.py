@@ -861,7 +861,6 @@ PDNS_AUTHORITATIVE = ("a:powerdns:authoritative_server", "a:powerdns:authoritati
             "0.8.1",
         ),
         # Products covered before, under the strings Pulse writes for them.
-        (rm.Fingerprint(product="Redis", version="7.0.15"), ("a:redis:redis", "a:redislabs:redis"), "product_table", "7.0.15"),
         (
             rm.Fingerprint(product="Microsoft IIS", version="10.0"),
             ("a:microsoft:internet_information_services", "a:microsoft:iis"),
@@ -936,6 +935,10 @@ def test_new_products_are_named_by_the_probers_own_strings(fingerprint, keys, vi
         rm.Fingerprint(product="CUPS", version="2.4.7", cpe=("cpe:/a:apple:cups:2.4.7",), service="ipp"),
         # Answers like Redis, versioned like nothing else.
         rm.Fingerprint(product="KeyDB", version="6.3.4"),
+        # Pulse's "Redis" is whatever answers INFO with redis_version first:
+        # valkey/valkey:8.1 (8.1.10) says redis_version:7.2.4, and Pulse's
+        # redis_version rule precedes its KeyDB and Dragonfly rules.
+        rm.Fingerprint(product="Redis", version="7.2.4", banner="+PONG", service="redis"),
         # The connector's version, not Tomcat's.
         rm.Fingerprint(product="Apache Tomcat Coyote", version="1.1"),
         rm.Fingerprint(product="OpenSearch", version="2.11.0"),
@@ -1074,6 +1077,44 @@ def test_products_whose_nvd_ranges_cannot_be_compared_are_not_matched_by_cpe(fin
         outcome = rm.match(fingerprint, _one(key, *statements), lookup=lambda _d: None, host=host)
         assert outcome.matches == ()
         assert outcome.reason == "unknown_product"
+
+
+#: nmap's Redis line reads ``redis_version`` from INFO; Valkey, Dragonfly and
+#: KeyDB report one too. NVD's redis:redis range of CVE-2025-49844, which
+#: Valkey 8.1.10 does not carry.
+REDIS_RANGE = (CpeRange("CVE-2025-49844", start_including="7.0", end_excluding="7.2.11"),)
+
+
+def _nmap_redis(banner: str) -> rm.Fingerprint:
+    return rm.Fingerprint(
+        product="Redis key-value store",
+        version="7.2.4",
+        cpe=("cpe:/a:redislabs:redis:7.2.4",),
+        banner=banner,
+        service="redis",
+    )
+
+
+@pytest.mark.parametrize(
+    "banner",
+    [
+        # Pulse keeps the INFO reply as the banner when its greeting read got
+        # nothing; a hybrid run's merge prefers Pulse's raw banner.
+        "$5764 | # Server | redis_version:7.2.4 | server_name:valkey | valkey_version:8.1.10 | redis_git_sha1:00000000",
+        "$4310 | # Server | redis_version:7.4.0 | dragonfly_version:df-v1.21.2 | redis_mode:standalone",
+        "$3990 | # Server | redis_version:6.3.4 | redis_git_sha1:00000000 | executable:/usr/local/bin/keydb-server",
+    ],
+)
+def test_a_redis_fork_the_banner_names_is_a_lookalike_not_redis(banner) -> None:
+    outcome = rm.match(_nmap_redis(banner), _one("a:redis:redis", *REDIS_RANGE), lookup=lambda _d: None)
+    assert outcome.matches == ()
+    assert outcome.reason == "lookalike"
+
+
+def test_redis_that_says_it_is_redis_is_still_matched() -> None:
+    banner = "$3910 | # Server | redis_version:7.2.4 | redis_git_sha1:00000000 | redis_mode:standalone"
+    outcome = rm.match(_nmap_redis(banner), _one("a:redis:redis", *REDIS_RANGE), lookup=lambda _d: None)
+    assert [(m.cve, m.verdict) for m in outcome.matches] == [("CVE-2025-49844", "vulnerable")]
 
 
 @pytest.mark.parametrize(
