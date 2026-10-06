@@ -31,20 +31,18 @@ def required_capabilities(scan_options: dict[str, Any] | None) -> frozenset[str]
     """What an agent must declare to be handed a job with these options.
 
     The same two checks ``job_control.claim_job`` refuses on (#362, #338), so
-    the queue flag and the claim cannot disagree about who can take a job.
+    the queue flag and the claim cannot disagree about who can take a job. The
+    overlay's is the version that job's overlay needs, not the newest one.
     """
+    from api.services import config_override
     from api.services import scan_policy
-    from scanner.pipeline import config_overlay
 
     options = scan_options or {}
-    return frozenset(
-        capability
-        for key, capability in (
-            ("scan_policy", scan_policy.AGENT_CAPABILITY),
-            ("config_overlay", config_overlay.CAPABILITY),
-        )
-        if options.get(key)
-    )
+    required = {scan_policy.AGENT_CAPABILITY} if options.get("scan_policy") else set()
+    overlay = config_override.overlay_capability(options)
+    if overlay:
+        required.add(overlay)
+    return frozenset(required)
 
 
 def sensor_available(
@@ -57,7 +55,7 @@ def sensor_available(
 
 def to_info(
     row: models.Job,
-    live_groups: set[tuple[str, str]] | None = None,
+    live_groups: dict[tuple[str, str], list[frozenset[str]]] | None = None,
     live_sensors: dict[str, list[frozenset[str]]] | None = None,
 ) -> JobInfo:
     """One job row as the API reports it.
@@ -102,7 +100,13 @@ def to_info(
             bool(row.agent_group)
             and row.status == job_states.QUEUED
             and live_groups is not None
-            and (tenant_id, row.agent_group) not in live_groups
+            # Not just "nobody of the group is listening": nobody who would
+            # be handed it — a v2-only verification behind v1 sensors waits
+            # all the same (#451 review).
+            and not any(
+                required_capabilities(row.scan_options) <= capabilities
+                for capabilities in live_groups.get((tenant_id, row.agent_group), [])
+            )
         ),
         # Ungrouped only, so the two flags never both speak for one job: a
         # grouped job with no agent at all already reads "no sensor online in

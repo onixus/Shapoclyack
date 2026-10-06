@@ -76,13 +76,17 @@ BEFORE_454 = {
 
 #: One matrix for both paths, keyed by outcome alone (``run_completion.
 #: POST_PUBLICATION``). A local job cancelled before it started has no run
-#: and so no publication at all.
+#: and so no publication at all. ``verification`` (#451) came after #454: a
+#: run that did not succeed gives back the finding its job was verifying.
 MATRIX = {
     "succeeded": ["scope_denials", "assets", "findings", "services", "events", "notify"],
-    "failed": ["scope_denials"],
-    "cancelled": ["scope_denials"],
-    "partial": ["scope_denials"],
+    "failed": ["scope_denials", "verification"],
+    "cancelled": ["scope_denials", "verification"],
+    "partial": ["scope_denials", "verification"],
 }
+
+#: Steps added to the matrix after #454, left out of its before/after record.
+AFTER_454 = {"verification"}
 
 
 def _expected(mode: str, case: str) -> list[str]:
@@ -126,6 +130,9 @@ def derived(monkeypatch) -> _Derived:
     spy = _Derived()
     monkeypatch.setattr(assets_service, "upsert_assets_from_run", spy.record("assets"))
     monkeypatch.setattr(vulns_service, "register_findings_from_run", spy.record("findings"))
+    monkeypatch.setattr(
+        vulns_service, "release_unfinished_verification", spy.record("verification", 0)
+    )
     monkeypatch.setattr(asset_services, "record_run", spy.record("services", {}))
     monkeypatch.setattr(asset_events, "publish_run_events", spy.record("events", 0))
     monkeypatch.setattr(channels_service, "notify_run_complete_async", spy.record("notify"))
@@ -361,7 +368,10 @@ def test_the_recorded_change_against_main_is_the_documented_one():
     module's matrix against ``main`` before the change (commit c7d882e7, as a
     strict xfail); this only keeps the two tables saying what the CHANGELOG
     says. ``test_derived_updates_by_outcome`` is the test of the code."""
-    changed = {key for key, before in BEFORE_454.items() if before != _expected(*key)}
+    def _at_454(mode: str, case: str) -> list[str]:
+        return [n for n in _expected(mode, case) if n not in AFTER_454]
+
+    changed = {key for key, before in BEFORE_454.items() if before != _at_454(*key)}
     assert changed == {
         ("sensor", "succeeded"),
         ("sensor", "failed"),
@@ -370,7 +380,9 @@ def test_the_recorded_change_against_main_is_the_documented_one():
     }
     assert sorted(BEFORE_454[("sensor", "succeeded")]) == sorted(MATRIX["succeeded"])
     for case in ("failed", "cancelled", "partial"):
-        assert [n for n in BEFORE_454[("sensor", case)] if n != "assets"] == MATRIX[case]
+        assert [n for n in BEFORE_454[("sensor", case)] if n != "assets"] == [
+            n for n in MATRIX[case] if n not in AFTER_454
+        ]
 
 
 @pytest.mark.parametrize("mode", ["local", "sensor"])

@@ -440,7 +440,14 @@ as `ticket_sync_error`.
 Verification is not a drag: the finding detail page has a **Verify** action that
 dispatches a targeted re-scan and parks the card in `VERIFYING`. The card leaves
 that column when the run comes back — closed and marked machine-verified if the
-finding was not observed, back to `FIXING` if it was. See
+finding was not observed *and* the run shows every detector of it looked again,
+back to `FIXING` if it was observed, and back to `FIXING` as **Verification
+inconclusive** if it was not observed but the run could not have seen it (or
+the run failed); to `CLOSED` as **Not reachable from the scanner (not
+verified)** (`endpoint_unreachable`) when every connect to the port was
+refused from the one vantage that observed the finding — never marked
+machine-verified, since a `REJECT` rule in front of a listening port is
+refused the same way. See
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md#verification-who-is-allowed-to-say-it-is-fixed).
 
 Evidence on the board is the last observing run. File attachments are out of
@@ -569,9 +576,21 @@ operator's next, different batch mints its own key.
 - CVSS / risk / owner / first-and-last-seen / SLA, plus EPSS, KEV and the
   risk explanation copied from the last observing run when that run is still
   on disk;
+- for a scan finding, **Detectors** (#451): every check that has observed it —
+  `pulse`, `nuclei` or `nmap-nse`, the template or script, the host and port it
+  saw it on (an entry migrated from the old `script_id` says "any address of
+  the asset") and the run that last saw it. This is what a verification
+  re-scan is built from and what it has to cover before the finding may close;
+  a finding with none recorded says it is held to the older Pulse rule;
 - the audit trail (`observed`, `state_change`, `reopened`, `assigned`,
   `exception_requested`, `exception_request_withdrawn`, `exception_approved`,
-  `exception_rejected`, `exception_expired`, `exception_cleared`).
+  `exception_rejected`, `exception_expired`, `exception_cleared`, and the
+  verification kinds). Event kinds are labelled in English and Russian; a
+  `verification_inconclusive` row is marked amber and its note names each
+  detector, host and reason that was not covered; `verification_unreachable`
+  ("Not reachable from the scanner") is grey, and its closure reason reads
+  "Not reachable from the scanner (not verified)" — it is never
+  machine-verified, for an exposure as for a CVE.
 
 For an endpoint-software finding the **Verify** button is not shown at all: the
 API refuses the dispatch (`409`) because a re-scan does not observe an installed
@@ -607,7 +626,8 @@ owner or service.
   with the possible CVEs — NVD says affected, a visible distribution may have
   backported the fix — in a collapsed list, because they are deliberately not
   tracked findings. Every other row says why it could not be assessed
-  (`unknown product`, `no version`, `too old`, `no dataset`, or `not yet
+  (`unknown product`, `no version`, `lookalike` — the scan names an engine
+  answering as another product, Valkey as Redis or TiDB as MySQL —, `too old`, `no dataset`, or `not yet
   matched`) and shows no counts, so an empty CVE column is never read as clean;
 - **Software** — the endpoint Agent's (Lariska) inventory when an endpoint
   is linked;

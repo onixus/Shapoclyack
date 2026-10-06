@@ -236,6 +236,7 @@ export const ASSET_SERVICE_MATCH_STATUS: Record<AssetServiceMatchStatus, StatusS
   matched: { label: "assessed", className: SUCCESS },
   unknown_product: { label: "unknown product", variant: "outline", className: IN_PROGRESS },
   no_version: { label: "no version", variant: "outline", className: IN_PROGRESS },
+  lookalike: { label: "lookalike", variant: "outline", className: IN_PROGRESS },
   too_old: { label: "too old", variant: "outline", className: IN_PROGRESS },
   no_dataset: { label: "no dataset", variant: "outline", className: IN_PROGRESS },
 };

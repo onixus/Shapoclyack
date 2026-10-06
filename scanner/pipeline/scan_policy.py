@@ -56,6 +56,8 @@ SECONDARY_ACTIVE_STAGE_POLICIES: dict[str, tuple[str, str]] = {
     "tls_posture": ("probe_concurrency", "probe_fallback"),
     "fingerprint": ("concurrency", "enabled"),
     "screenshots": ("concurrency", "enabled"),
+    # A verification's connect probe of the finding's ports (#451).
+    "reachability": ("concurrency", "enabled"),
 }
 
 #: Every other pipeline stage, with the reason it is not a secondary active
@@ -87,7 +89,11 @@ NON_SECONDARY_ACTIVE_STAGES: dict[str, str] = {
     "cloud": "HTTP to cloud storage provider endpoints, not to in-scope addresses",
     "resolve": "dnsx lookups through resolvers",
     "discover-hostnames": "dnsx PTR lookups through resolvers",
-    "domain_monitor": "DNS lookups only; never contacts the flagged service",
+    "domain_monitor": (
+        "DNS lookups through resolvers; the takeover confirmation (one GET per scheme "
+        "to an in-scope name whose CNAME points at a catalogued provider) off with "
+        "skip_service_probe, its pool held to max_host_concurrency"
+    ),
     "dns_hygiene": (
         "DNS queries through resolvers; the opt-in axfr_probe makes one TCP/53 "
         "transfer per public nameserver, gated by the scanner config (docs/operations.md)"
@@ -382,6 +388,24 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     if l2_updates:
         discovery_updates["l2"] = config.discovery.l2.model_copy(update=l2_updates)
 
+    # The takeover confirmation is an HTTP GET to an in-scope name -- the same
+    # kind of request fingerprint and screenshots make -- so it obeys the same
+    # two knobs. The DNS half of the stage is untouched. Nested under
+    # ``discovery`` like l2, hence handled here and not by the secondary-stage
+    # registry, which reads top-level config sections.
+    domain_monitor = config.discovery.domain_monitor
+    domain_monitor_updates: dict[str, Any] = {}
+    if max_concurrency is not None:
+        domain_monitor_updates["takeover_http_concurrency"] = _ceiling(
+            domain_monitor.takeover_http_concurrency, max_concurrency
+        )
+    if policy.get("skip_service_probe"):
+        domain_monitor_updates["takeover_http_confirm"] = False
+    if domain_monitor_updates:
+        discovery_updates["domain_monitor"] = domain_monitor.model_copy(
+            update=domain_monitor_updates
+        )
+
     nuclei_updates = _nuclei_ceilings(
         config.nuclei.rate_limit, config.nuclei.concurrency, per_host_rate, max_concurrency
     )
@@ -436,6 +460,13 @@ def apply_policy(config: AppConfig, policy: dict[str, Any]) -> AppConfig:
     )
     if config.nuclei.enabled and not tightened.nuclei.enabled:
         logging.info("Scan policy: nuclei stage turned off (skip_service_probe)")
+    if (
+        config.discovery.domain_monitor.takeover_http_confirm
+        and not tightened.discovery.domain_monitor.takeover_http_confirm
+    ):
+        logging.info(
+            "Scan policy: domain_monitor takeover HTTP confirmation turned off (skip_service_probe)"
+        )
     if skip_service_probe:
         disabled_secondary = [
             stage

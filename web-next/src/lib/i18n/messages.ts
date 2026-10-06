@@ -857,6 +857,35 @@ export const en = {
   "vuln.reason.ticketResolved": "Resolved in tracker",
   "vuln.verificationRate": "Machine verification rate",
   "vuln.verifiedClosedCount": "{count} verified closures",
+  // Which detectors observed a finding (#451). A verification closes it only
+  // once every one of them has looked again.
+  "vuln.detectors.title": "Detectors",
+  "vuln.detectors.subtitle":
+    "Every check that has observed this finding. A verification re-scan closes it only once each of them has demonstrably re-checked the endpoint.",
+  "vuln.detectors.empty":
+    "No detector recorded (a finding from before detectors were tracked). Its verification is held to the older rule: Pulse with CVE matching on the port.",
+  "vuln.detectors.detector": "Detector",
+  "vuln.detectors.ref": "Template / script",
+  "vuln.detectors.where": "Observed on",
+  "vuln.detectors.lastSeen": "Last seen",
+  "vuln.detectors.anyAddress": "any address of the asset",
+  // Audit-trail event kinds (api/services/vulnerabilities.py VULN_EVENT_KINDS).
+  "vuln.event.observed": "Observed",
+  "vuln.event.state_change": "State changed",
+  "vuln.event.reopened": "Reopened",
+  "vuln.event.assigned": "Assigned",
+  "vuln.event.exception_set": "Risk accepted",
+  "vuln.event.exception_cleared": "Acceptance revoked",
+  "vuln.event.exception_request_withdrawn": "Request withdrawn",
+  "vuln.event.comment": "Comment",
+  "vuln.event.ticket_set": "Ticket linked",
+  "vuln.event.ticket_cleared": "Ticket unlinked",
+  "vuln.event.verification_started": "Verification started",
+  "vuln.event.verification_passed": "Verified fixed",
+  "vuln.event.verification_failed": "Still present",
+  "vuln.event.verification_inconclusive": "Verification inconclusive",
+  "vuln.event.verification_unreachable": "Not reachable from the scanner",
+  "vuln.reason.endpointUnreachable": "Not reachable from the scanner (not verified)",
 
   // Endpoint software findings (Track E, M3).
   "vuln.reason.patched": "Patched on the endpoint",
@@ -950,6 +979,8 @@ export const en = {
     "The product is not in the NVD CPE data, so it could not be checked — which is not the same as clean.",
   "services.reason.no_version":
     "The scan recorded no version, so no range could be compared — which is not the same as clean.",
+  "services.reason.lookalike":
+    "The scan names an engine that answers like this product but is versioned on its own (Valkey or Dragonfly as Redis), or a MySQL version carries a suffix no MySQL build uses (TiDB, OceanBase: may not be Oracle MySQL), so the product's CVEs were not compared — which is not the same as clean.",
   "services.reason.too_old":
     "Not observed recently enough to re-check; the next scan that sees it brings it back.",
   "services.reason.no_dataset":
@@ -2694,6 +2725,32 @@ export const ru: Record<MsgKey, string> = {
   "vuln.reason.ticketResolved": "Решено в трекере",
   "vuln.verificationRate": "Доля закрытий, подтверждённых сканом",
   "vuln.verifiedClosedCount": "{count} подтверждено сканом",
+  "vuln.detectors.title": "Детекторы",
+  "vuln.detectors.subtitle":
+    "Все проверки, которые видели эту находку. Повторный скан закрывает её, только если каждая из них заново проверила этот адрес и порт.",
+  "vuln.detectors.empty":
+    "Детектор не записан (находка старше учёта детекторов). Её проверка идёт по прежнему правилу: Pulse с сопоставлением CVE на этом порту.",
+  "vuln.detectors.detector": "Детектор",
+  "vuln.detectors.ref": "Шаблон / скрипт",
+  "vuln.detectors.where": "Где обнаружено",
+  "vuln.detectors.lastSeen": "Последнее наблюдение",
+  "vuln.detectors.anyAddress": "любой адрес актива",
+  "vuln.event.observed": "Обнаружено",
+  "vuln.event.state_change": "Смена статуса",
+  "vuln.event.reopened": "Открыто заново",
+  "vuln.event.assigned": "Назначено",
+  "vuln.event.exception_set": "Риск принят",
+  "vuln.event.exception_cleared": "Принятие отозвано",
+  "vuln.event.exception_request_withdrawn": "Запрос отозван",
+  "vuln.event.comment": "Комментарий",
+  "vuln.event.ticket_set": "Тикет привязан",
+  "vuln.event.ticket_cleared": "Тикет отвязан",
+  "vuln.event.verification_started": "Проверка запущена",
+  "vuln.event.verification_passed": "Исправление подтверждено",
+  "vuln.event.verification_failed": "Всё ещё обнаруживается",
+  "vuln.event.verification_inconclusive": "Проверка неубедительна",
+  "vuln.event.verification_unreachable": "Недоступен с точки сканирования",
+  "vuln.reason.endpointUnreachable": "Недоступен с точки сканирования (не подтверждено)",
 
   // Находки из инвентаря ПО на хостах (Track E, M3).
   "vuln.reason.patched": "Обновлено на хосте",
@@ -2786,6 +2843,8 @@ export const ru: Record<MsgKey, string> = {
     "Продукта нет в данных CPE из NVD, проверить его нельзя — это не то же самое, что «чисто».",
   "services.reason.no_version":
     "Скан не записал версию, сравнивать с диапазоном нечего — это не то же самое, что «чисто».",
+  "services.reason.lookalike":
+    "Скан называет движок, который отвечает как этот продукт, но версионируется сам по себе (Valkey или Dragonfly вместо Redis), или версия MySQL несёт суффикс, которого у сборок MySQL не бывает (TiDB, OceanBase: возможно, это не Oracle MySQL), поэтому CVE продукта не сравнивались — это не то же самое, что «чисто».",
   "services.reason.too_old":
     "Сервис давно не наблюдался и не перепроверяется; следующий скан, который его увидит, вернёт его в работу.",
   "services.reason.no_dataset":
@@ -3791,6 +3850,7 @@ export const STATUS_EN: Record<string, string> = {
   assessed: "assessed",
   "unknown product": "unknown product",
   "no version": "no version",
+  lookalike: "lookalike",
   "too old": "too old",
   "no dataset": "no dataset",
   "not yet matched": "not yet matched",
@@ -3913,6 +3973,7 @@ export const STATUS_RU: Record<string, string> = {
   assessed: "проверен",
   "unknown product": "неизвестный продукт",
   "no version": "нет версии",
+  lookalike: "двойник продукта",
   "too old": "давно не виден",
   "no dataset": "нет данных NVD",
   "not yet matched": "ещё не проверен",

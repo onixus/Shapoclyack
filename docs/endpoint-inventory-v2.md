@@ -22,7 +22,7 @@ installation, so a fixed parallel copy cannot close a vulnerable one.
 V2 rejects raw `install_location` values. The agent computes endpoint-scoped
 instance hashes locally; neither canonical private paths nor registry key paths
 are needed by the server. Existing v1 digests, comparison keys, rows and replay
-responses are preserved by migration 0079. The first v1-to-v2 snapshot establishes
+responses are preserved by migration 0080. The first v1-to-v2 snapshot establishes
 a new installation baseline without synthetic installed/removed events. A v1
 rollback after v2 retains the v2 inventory and marks its sources degraded until
 a v2 complete collection arrives.

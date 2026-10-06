@@ -257,6 +257,29 @@ def _job_for_run(settings, tenant_id, job_id, run_id):
         session.commit()
 
 
+def _pulse_looked(settings, run_id, host="10.0.0.5", ports=(80, 443)):
+    """The evidence a verification run has to carry before it may close (#451).
+
+    These findings carry neither ``source`` nor ``script_id``, so they are held
+    to the legacy rule: Pulse ran with CVE matching and has a success receipt
+    for the endpoint. Written as ``scanner/pipeline/pulse_probe.py`` writes it.
+    """
+    pulse = settings.output_dir / "runs" / run_id / "pulse"
+    pulse.mkdir(parents=True, exist_ok=True)
+    (pulse / "raw.json").write_text(
+        json.dumps(
+            {
+                "adapter": {"cve": True},
+                "completion": {
+                    "schema": "octo.pulse_completion.v1",
+                    "hosts": {host: {"ports": sorted(ports), "returncode": 0}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 @requires_postgres
 def test_unrelated_run_does_not_close_a_verifying_finding(tmp_path):
     """The regression this feature is one bad query away from.
@@ -300,6 +323,7 @@ def test_verification_run_that_finds_nothing_closes_the_finding(tmp_path):
         [{"host": "10.0.0.5", "port": "80", "cve": "CVE-2024-0002", "severity": "medium"}],
     )
     _job_for_run(settings, tenant_id, "job-verify", "run-verify")
+    _pulse_looked(settings, "run-verify")
     stats = vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-verify")
 
     assert stats.verification_passed == 1
@@ -338,6 +362,7 @@ def test_verification_closing_a_finding_drops_its_accepted_risk(tmp_path):
 
     _write_run(settings.output_dir, "run-clean", [{"host": "10.0.0.5"}], [])
     _job_for_run(settings, tenant_id, "job-verify", "run-clean")
+    _pulse_looked(settings, "run-clean")
     assert (
         vulns.register_findings_from_run(
             settings, tenant_id=tenant_id, run_id="run-clean"
@@ -369,6 +394,7 @@ def test_an_empty_verification_run_still_closes_the_loop(tmp_path):
 
     _write_run(settings.output_dir, "run-clean", [{"host": "10.0.0.5"}], [])
     _job_for_run(settings, tenant_id, "job-verify", "run-clean")
+    _pulse_looked(settings, "run-clean")
     stats = vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-clean")
 
     assert stats.verification_passed == 1
@@ -428,6 +454,7 @@ def test_reopening_clears_the_verification_verdict(tmp_path):
     _park_in_verifying(settings, tenant_id, target, "job-verify")
     _write_run(settings.output_dir, "run-clean", [{"host": "10.0.0.5"}], [])
     _job_for_run(settings, tenant_id, "job-verify", "run-clean")
+    _pulse_looked(settings, "run-clean")
     vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-clean")
 
     reopened = vulns.transition(
@@ -526,6 +553,7 @@ def test_summary_reports_the_verification_rate(tmp_path):
     _park_in_verifying(settings, tenant_id, verified, "job-verify")
     _write_run(settings.output_dir, "run-clean", [{"host": "10.0.0.5"}], [])
     _job_for_run(settings, tenant_id, "job-verify", "run-clean")
+    _pulse_looked(settings, "run-clean")
     vulns.register_findings_from_run(settings, tenant_id=tenant_id, run_id="run-clean")
     vulns.transition(
         settings, tenant_id=tenant_id, vuln_id=manual, to_state=vuln_states.CLOSED, actor="alice"

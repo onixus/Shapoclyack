@@ -155,6 +155,34 @@ def track_vulnerabilities_best_effort(
         )
 
 
+def release_verification_best_effort(
+    settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str, status: str
+) -> None:
+    """A failed or cancelled verification scan gives its finding back (#451).
+
+    The one thing a run that did not succeed feeds besides the journal: not
+    anything *from* the run — its artifacts are no evidence of anything — but
+    the fact that it ended. A finding whose verification job ended that way
+    used to stay ``VERIFYING`` with nothing looking at it; it goes back to
+    ``FIXING`` with a ``verification_inconclusive`` event
+    (``vulnerabilities.release_unfinished_verification``).
+
+    Quiet on failure like the fold: the finding stays where it was, which an
+    operator can still move by hand.
+    """
+    try:
+        vulns_service.release_unfinished_verification(
+            settings, tenant_id=tenant_id, job_id=job_id, run_id=run_id, status=status
+        )
+    except Exception:  # noqa: BLE001
+        _log.exception(
+            "Releasing the verification of job %s failed (run %s, tenant=%s)",
+            job_id,
+            run_id,
+            tenant_id,
+        )
+
+
 def record_services_best_effort(
     settings: Settings, *, tenant_id: str, run_id: str | None, job_id: str | None = None
 ) -> None:
@@ -328,6 +356,7 @@ def record_scope_denials_best_effort(
 SCOPE_DENIALS = "scope_denials"
 ASSETS = publication_marks.ASSETS
 FINDINGS = publication_marks.FINDINGS
+VERIFICATION = "verification"
 SERVICES = "services"
 EVENTS = "events"
 NOTIFY = "notify"
@@ -348,11 +377,13 @@ NOTIFY = "notify"
 #: itself stays published and readable, and the next complete scan observes
 #: the same hosts. The scanner's scope refusals are journalled whatever the
 #: outcome: a target refused was refused whether or not the scan after it
-#: finished (#244).
+#: finished (#244). And a finding a failed or cancelled *verification* scan
+#: was holding in ``VERIFYING`` is given back to ``FIXING`` (#451): that reads
+#: the outcome, not the run, and is not derived from anything the run says.
 POST_PUBLICATION: dict[str, tuple[str, ...]] = {
     job_states.SUCCEEDED: (SCOPE_DENIALS, ASSETS, FINDINGS, SERVICES, EVENTS, NOTIFY),
-    job_states.FAILED: (SCOPE_DENIALS,),
-    job_states.CANCELLED: (SCOPE_DENIALS,),
+    job_states.FAILED: (SCOPE_DENIALS, VERIFICATION),
+    job_states.CANCELLED: (SCOPE_DENIALS, VERIFICATION),
 }
 
 
@@ -399,6 +430,9 @@ def project_published_run(
             run_id=run_id,
             job_id=job_id,
             publication_id=publication_id,
+        ),
+        VERIFICATION: lambda: release_verification_best_effort(
+            settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id, status=status
         ),
         SERVICES: lambda: record_services_best_effort(
             settings, tenant_id=tenant_id, run_id=run_id, job_id=job_id

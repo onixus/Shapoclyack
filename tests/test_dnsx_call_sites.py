@@ -35,14 +35,26 @@ CONFIGURED = ["192.0.2.53", "[2001:db8::53]:5353"]
 CONFIGURED_FLAG = "192.0.2.53:53,[2001:db8::53]:5353"
 SYSTEM_FLAG = "10.96.0.10:53"
 
+#: The two dangling CNAMEs domain_monitor is shown: one into a domain nobody
+#: holds any more (its registrable domain is looked up, then both NXDOMAINs
+#: asked again), one into a deleted App Service app (its asuid TXT record is
+#: looked up).
+_DANGLING = [
+    {"host": "www.customer.example", "cname": ["www.retired-campaign.com"], "status_code": "NXDOMAIN"},
+    {"host": "app.customer.example", "cname": ["old-app.azurewebsites.net"], "status_code": "NXDOMAIN"},
+]
+
 #: What the fake dnsx answers, by the stem of the ``-o`` file each call site
 #: writes. Enough for every stage to reach its next lookup: an SPF include to
-#: walk, an alive address to PTR.
+#: walk, an alive address to PTR, dangling CNAMEs to follow up.
 ANSWERS = {
     "dnsx_records": [{"host": "www.customer.example", "a": ["203.0.113.10"]}],
     "policy_records": [
         {"host": "customer.example", "txt": ["v=spf1 include:_spf.mail.example -all"]}
     ],
+    "cname_records": _DANGLING,
+    "cname_aaaa_records": _DANGLING,
+    "registrable_records": [{"host": "retired-campaign.com", "status_code": "NXDOMAIN"}],
 }
 
 
@@ -98,7 +110,7 @@ def _run_every_stage(tmp_path: Path, resolvers: list[str]) -> None:
     )
     domain_monitor.monitor_domains(
         ["customer.example"],
-        ["www.customer.example"],
+        ["www.customer.example", "app.customer.example"],
         DomainMonitorConfig(enabled=True, max_candidates=5),
         out,
         resolvers=resolvers,
@@ -119,9 +131,13 @@ EVERY_RUN = [
     "dnsx_records.jsonl",
     # discover-hostnames
     "ptr.records.jsonl",
-    # domain_monitor
+    # domain_monitor: A and AAAA of the chain, then the follow-ups
     "typosquat_records.jsonl",
     "cname_records.jsonl",
+    "cname_aaaa_records.jsonl",
+    "registrable_records.jsonl",
+    "asuid_records.jsonl",
+    "nxdomain_recheck_records.jsonl",
     # dns_hygiene (no NS came back, so no ns_addresses batch)
     "ns_records.jsonl",
     "soa_records.jsonl",
@@ -230,6 +246,9 @@ def test_the_pipeline_hands_dns_resolvers_to_every_dnsx_stage(tmp_path: Path, mo
         "dnsx_records.jsonl",
         "typosquat_records.jsonl",
         "cname_records.jsonl",
+        "cname_aaaa_records.jsonl",
+        "registrable_records.jsonl",
+        "nxdomain_recheck_records.jsonl",
         "ns_records.jsonl",
         "soa_records.jsonl",
         "caa_records.jsonl",

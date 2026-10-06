@@ -1,14 +1,14 @@
 """Installation identity, per-source completeness, and signed endpoint releases.
 
-Revision ID: 0079_endpoint_inventory_v2
-Revises: 0077_agent_client_certs
+Revision ID: 0080_endpoint_inventory_v2
+Revises: 0079_vuln_detectors
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0079_endpoint_inventory_v2"
-down_revision = "0077_agent_client_certs"
+revision = "0080_endpoint_inventory_v2"
+down_revision = "0079_vuln_detectors"
 branch_labels = None
 depends_on = None
 

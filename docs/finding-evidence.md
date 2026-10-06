@@ -99,7 +99,11 @@ reports differing fields, identifies the latest dated cohort and separately
 lists undated observations. It does not choose a risk-score winner, infer the
 time of undated observations from filesystem timestamps, or use "strongest
 forever" as a state machine. `machine_verified` is always false. Actual negative
-verification, sufficient coverage and state transitions remain the tracker's job.
+verification, sufficient coverage and state transitions remain the tracker's job:
+since [#451](https://github.com/onixus/Shapoclyack/issues/451) a verification
+closes a finding only when the run's own artifacts show every detector of it
+re-checked the endpoint (`api/services/verification_coverage.py`,
+[vulnerability-lifecycle.md](vulnerability-lifecycle.md#what-the-run-has-to-show)).
 
 Engine/ruleset versions missing from source data stay null. A Docker pin is not
 proof of which executable produced an imported file. Likewise, missing

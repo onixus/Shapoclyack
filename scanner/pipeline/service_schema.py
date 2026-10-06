@@ -184,6 +184,8 @@ def cves_to_extra_vulnerabilities(cves: list[CveRecord]) -> list[dict[str, Any]]
                 "port": str(c.port) if c.port else "",
                 "script_id": f"pulse:{origin}" if c.cve_id else finding_key(c),
                 "source": "pulse",
+                # pulse probes TCP endpoints only (pulse_probe._group_tcp_ports).
+                "protocol": "tcp",
                 "cve": c.cve_id,
                 "cvss": c.cvss,
                 "severity": severity,

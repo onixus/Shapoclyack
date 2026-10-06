@@ -2369,6 +2369,28 @@ class TenantPatchGap(BaseModel):
     truncated: bool = False
 
 
+class VulnerabilityDetectorInfo(BaseModel):
+    """One detector that observed a tracked finding (#451). Read-only.
+
+    ``detector`` is ``pulse``, ``nuclei`` or ``nmap-nse``; ``ref`` the pulse
+    origin, nuclei template id or NSE script; ``host`` the address as the
+    scanner addressed it — ``null`` on an entry migration 0079 derived from a
+    row's ``script_id``, which never recorded it. A verification re-scan is
+    built from these and may only close the finding once every one of them has
+    looked again (docs/vulnerability-lifecycle.md).
+    """
+
+    detector: str
+    ref: str | None = None
+    host: str | None = None
+    port: str | None = None
+    last_run_id: str | None = None
+    last_seen_at: str | None = None
+    # Pulse only: the offline CVE ruleset the match was made with. A
+    # verification has to match with one at least as new.
+    ruleset: str | None = None
+
+
 class VulnerabilityInfo(BaseModel):
     """One tracked finding with its lifecycle and SLA state (#145).
 
@@ -2397,6 +2419,9 @@ class VulnerabilityInfo(BaseModel):
     cwe: list[str] = Field(default_factory=list)
     script_id: str | None = None
     port: str | None = None
+    # Every detector that has observed it, newest first (#451). ``script_id``
+    # above is only the first one's.
+    detectors: list[VulnerabilityDetectorInfo] = Field(default_factory=list)
     title: str = ""
     severity: str = "unknown"
     risk_level: str | None = None
@@ -2973,6 +2998,10 @@ class ControlFinding(BaseModel):
 class ControlCoverage(BaseModel):
     checked: int = 0
     total: int = 0
+    # True when the control is "ok" over part of what it covers (the TLS
+    # control: some endpoints only partly checked); the overall verdict then
+    # reads "partial".
+    partial: bool = False
 
 
 class ControlItem(BaseModel):
@@ -3737,6 +3766,7 @@ class AssetServiceInfo(BaseModel):
 
     ``match_status`` is what the retro matcher concluded about it: ``matched``
     (it could ask), or why it could not — ``unknown_product``, ``no_version``,
+    ``lookalike`` (the banner names a fork, e.g. Valkey answering as Redis),
     ``too_old`` — so an empty CVE list is never read as "clean" when it means
     "not assessable". ``possible_cves`` are the NVD hits a visible distribution
     may have backported; they are deliberately not tracked findings.

@@ -1533,6 +1533,17 @@ class Vulnerability(Base):
     cwe: Mapped[list] = mapped_column(JSON, default=list)
     script_id: Mapped[str | None] = mapped_column(default=None)
     port: Mapped[str | None] = mapped_column(default=None)
+    # Which detectors have observed this finding, and where: one entry per
+    # (detector, ref, host, port) -- ``pulse`` / ``nuclei`` / ``nmap-nse``, the
+    # template id, NSE script or pulse origin, and the host spelled as the
+    # scanner addressed it -- with the run and time it was last seen. Merged on
+    # every observation, newest first, capped (vulnerabilities.MAX_DETECTORS).
+    # ``script_id`` above is only the first observer's; one CVE seen by Pulse
+    # and by a nuclei template is one finding with two of these. A
+    # verification closure needs every one of them to have looked again
+    # (api/services/verification_coverage.py). Empty means unknown: a row
+    # from before 0079 whose ``script_id`` said nothing about its detector.
+    detectors: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     title: Mapped[str] = mapped_column(default="")
     # Latest observation's assessment (api/services/risk_scoring.py, nist-1).
     severity: Mapped[str] = mapped_column(default="unknown")

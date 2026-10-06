@@ -25,7 +25,9 @@ flowchart TD
     Fix --> Verify{"6. Инструментальная верификация<br/>(POST /api/vulnerabilities/{id}/verify)"}
     
     Verify -->|Уязвимость осталась| Fix
-    Verify -->|Уязвимость устранена| Close["7. Закрытие с признаком<br/>machine_verified = true"]
+    Verify -->|Прогон не мог её увидеть<br/>verification_inconclusive| Fix
+    Verify -->|Устранена, каждый детектор<br/>проверил заново| Close["7. Закрытие с признаком<br/>machine_verified = true"]
+    Verify -->|Порт отклонил соединение<br/>с точки, откуда находку видели| Unreach["Закрытие endpoint_unreachable<br/>machine_verified = false"]
     
     Ticket -.->|Невозможно устранить в срок| Except["Согласование исключения<br/>(Risk Acceptance с дедлайном)"]
     Except -.->|Истек срок исключения| Triage

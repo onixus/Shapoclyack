@@ -1012,6 +1012,11 @@ def test_root_will_not_run_the_update_over_a_tree_another_account_owns(tmp_path,
     """The accident guard: ``sudo python -m agent.update`` by hand, on a tree
     the sensor's account owns, stops before it touches anything."""
     install = _cli_install(tmp_path, "0.46-0922")
+    if os.geteuid() == 0:
+        # Run as root (CI containers are), the tree is root's to begin with:
+        # hand it to another account, as the sensor's own tree would be.
+        for path in (install, *install.rglob("*")):
+            os.lchown(path, 65534, 65534)
     assert install.stat().st_uid != 0
     key_file = tmp_path / "release.pub"
     key_file.write_bytes(_pem(signing_key))

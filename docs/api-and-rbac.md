@@ -1607,6 +1607,13 @@ every `endpoint_software` finding: a port scan does not observe an installed
 package, so a "machine verified" closure from one would be false. Those
 findings are verified by their device's next accepted inventory snapshot — see
 [software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings).
+With sensor execution it also answers `409` when no live sensor that would be
+handed the re-scan declares `config_overlay.v2`, and when the finding's
+observing sensor group has had no live sensor for less than
+`OCTO_VERIFICATION_REGROUP_GRACE_SECONDS` (retry). When that group was
+deleted, or has been without one for longer, the re-scan goes to any sensor
+of the tenant instead and `verification_started` carries
+`detail.regrouped`.
 **False positives.** `POST /api/vulnerabilities/{id}/false-positive` (admin)
 closes a finding as never having been real and suppresses its re-opening for
 `suppress_days` (1–365, default 90); `reason` is required and `evidence` is a
@@ -2007,9 +2014,15 @@ A third since [#338](https://github.com/onixus/Shapoclyack/issues/338): a job
 carrying a **config overlay** — its scan intent's settings and the
 configurator's overrides, sent as the claim input `config_overlay.json` because
 a sensor scans with its own config file — is handed only to a sensor reporting
-the `config_overlay.v1` capability — versioned with the settings the overlay
-may carry, so a sensor that knows an older set is refused rather than failing
-the run — which passes it to `scanner.main` as
+the capability of the overlay version **that job** needs — `config_overlay.v1`
+for the intents and the configurator's settings, `config_overlay.v2` for every
+verification re-scan (`scan_options.verification_of`), which may pin nuclei
+templates and is judged on coverage evidence only that build writes
+([#451](https://github.com/onixus/Shapoclyack/issues/451)); the job records it
+as `scan_options.config_overlay_capability`, and the `426` names it. Versioned
+with the settings the overlay may carry, so a sensor that knows an older set
+is refused only the jobs that use a newer one, rather than failing the run. A
+sensor passes the overlay to `scanner.main` as
 `--config-overlay`. The overlay never holds a secret (the NVD key is left out),
 the scanner accepts only the settings listed in
 `scanner/pipeline/config_overlay.py`, and the tenant's scan policy is applied
