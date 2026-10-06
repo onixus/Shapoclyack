@@ -487,6 +487,11 @@ def live_groups(
     Computed where it is read, never stored: a job queued while the group's
     only agent was restarting would otherwise carry "nothing to execute it"
     for the rest of its life, minutes after the agent came back.
+
+    The same agents as :func:`live_sensors`: scanner kind (an endpoint agent
+    put into a group is refused every scan job on claim) and not below the
+    version floor (refused too). Counting either let a verification be parked
+    behind a group nothing in it would ever claim from (#451 review).
     """
     if not tenant_ids:
         return {}
@@ -495,15 +500,20 @@ def live_groups(
     cutoff = _now() - timedelta(seconds=settings.agent_stale_seconds)
     with get_session(settings.postgres_url) as session:
         rows = session.execute(
-            select(models.Agent.tenant_id, models.Agent.agent_group, models.Agent.detail).where(
+            select(
+                models.Agent.tenant_id, models.Agent.agent_group, models.Agent.detail, models.Agent.version
+            ).where(
                 models.Agent.tenant_id.in_(sorted(tenant_ids)),
                 models.Agent.agent_group.is_not(None),
+                models.Agent.agent_kind == "scanner",
                 models.Agent.lifecycle_status == "active",
                 models.Agent.last_seen_at >= cutoff,
             )
         ).all()
     out: dict[tuple[str, str], list[frozenset[str]]] = {}
-    for tenant_id, name, detail in rows:
+    for tenant_id, name, detail, version in rows:
+        if agents_service.is_below_min_version(version or ""):
+            continue
         capabilities = agents_service._extract_detail(detail)[2]  # noqa: SLF001
         out.setdefault((tenant_id, name), []).append(frozenset(capabilities or []))
     return out
