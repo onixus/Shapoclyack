@@ -476,7 +476,9 @@ def test_local_stack_that_cannot_offer_tls10_reports_not_performed(tmp_path: Pat
     for label in ("TLSv1.0", "TLSv1.1"):
         check = row["checks"]["protocols"][label]
         assert check["status"] == "not_performed"
-        assert "NO_PROTOCOLS_AVAILABLE" in check["detail"]
+        # OpenSSL 3.5 refuses to build the ClientHello; 3.0 (Ubuntu) builds
+        # it and refuses the server's SHA-1 signature after the ServerHello.
+        assert any(r in check["detail"] for r in ("NO_PROTOCOLS_AVAILABLE", "LEGACY_SIGALG_DISALLOWED"))
     assert _issues(row, "weak_protocol") == []
 
 
