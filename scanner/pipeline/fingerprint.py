@@ -1,30 +1,58 @@
-"""Tech stack fingerprinting (Phase 9.1).
+"""Tech stack fingerprinting (Phase 9.1, catalogue since DQ4).
 
 Reuses the already-discovered ``open_ports.txt`` endpoints from the ports
 stage — this module never scans a new port itself. For each open TCP
 endpoint that looks like a web port (``http_ports`` / ``https_ports``), it
-issues a single, size-capped HTTP GET and classifies the response against a
-small, hand-picked set of signatures:
+GETs the root, size-capped, and classifies the answer against the
+data-driven catalogue in ``fingerprint_catalogue.json`` (format, matcher
+grammar and confidence levels: ``fingerprint_catalogue.py``):
 
-  * CDN / WAF detection from response headers (``cf-ray``, ``x-akamai-*``,
-    ``x-sucuri-id``, ``via``, ``x-amz-cf-id``, ``x-served-by``, ...).
-  * CMS / framework detection from a mix of headers and lightweight
-    body/meta-tag markers (WordPress, Drupal, Joomla, Next.js, generic PHP).
+  * every technology the response identifies -- CDN/WAF, load balancer, web
+    and application server, framework, CMS, shop, admin and database UI,
+    devops and monitoring console, VPN and remote-access portal, webmail,
+    network appliance -- with its version where the product states one
+    reliably and its NVD CPE where there is a single key for it;
+  * the two lists consumers read since Phase 9.1, derived from the above:
+    ``cdn_waf`` (CDN/WAF matches of *high* confidence only) and
+    ``cms_framework`` (CMS, framework and e-commerce matches). Their names
+    for the original eleven signatures are unchanged;
+  * exposure findings (``exposures`` in ``fingerprint.json``) for
+    high-confidence matches only: a console or management UI answering
+    (``exposed_admin_interface``, rated by what it answered -- an open
+    database API high, a console without a login page medium, a login page
+    low), a VPN, remote-access or webmail portal
+    (``exposed_remote_access_gateway``, info), and a version stated in a
+    response header (``version_disclosure``, info).
 
-NSE (``nse.py``) drives nmap's own ``-sV``/NSE script checks, but does not
-currently emit structured, parseable HTTP header/body data this module could
-reuse -- reusing it would mean scraping nmap's text output instead of doing
-one dedicated GET per candidate endpoint. To avoid a *second* independent
-HTTP client stack duplicating requests against the same hosts, this module
-performs exactly one GET per endpoint and derives both CDN/WAF and CMS
-signals from that single response.
+Requests. One GET to ``scheme://host:port/``. A redirect is followed -- at
+most ``MAX_REDIRECT_HOPS`` times -- only to an ``(address, port)`` the port
+stage reported open in this run: the same address, and a port that was
+scanned (a tenant-excluded port, #362, never is). A redirect anywhere else --
+another port, another address, a host name -- is recorded as
+``redirect_location`` with ``redirected_off_host`` and not fetched: the stage
+contacts nothing the run did not already reach, and a name is the
+virtual-host case, which is a target of its own. The client ignores ``HTTP(S)_PROXY`` (``trust_env``
+off): scan traffic must not go through whatever proxy the sensor's
+environment names. NSE (``nse.py``) emits no structured HTTP data this could
+reuse, so this is the one HTTP client per endpoint; a ``/favicon.ico`` hash or
+a probe of a known login path would identify more and would be a request of
+its own, which is not made.
 
-HONESTY NOTE: the signature set here is intentionally small and not meant to
-be exhaustive fingerprinting (à la Wappalyzer/BuiltWith) -- it is a first
-pass covering the handful of CDN/WAF providers and CMS/frameworks common
-enough to matter for prioritization. Add signatures incrementally in
-``_CDN_WAF_SIGNATURES`` / ``_CMS_FRAMEWORK_SIGNATURES`` rather than trying to
-cover everything up front.
+The scanned host writes the body, so classification is bounded: the page is
+read by a linear scan, every catalogue regex is shape-checked when the
+catalogue loads (and timed against hostile inputs by the tests, never at scan
+time), and classification runs in a worker thread against a deadline
+(``CLASSIFY_SECONDS``) with an outer timeout on the wait. The deadline is
+checked between technologies; one ``re.search`` holds the GIL and cannot be
+pre-empted, which is what the shape lint and the tests are for. An endpoint
+past it is reported with ``error: classification_timeout`` and nothing derived
+from its body. A catalogue entry that fails validation is dropped and listed
+in ``catalogue.rejected``; it never fails the run.
+
+HONESTY NOTE: the catalogue is a curated perimeter-first list (~150 entries),
+not Wappalyzer. Its markers are public knowledge checked against synthetic
+fixtures, not against a corpus of live captures; a product the catalogue does
+not know, or one that hides its markers, is simply absent from the output.
 
 SAFETY: disabled by default (``fingerprint.enabled = false``). Requests are
 capped by ``concurrency`` (in-flight) and ``body_max_bytes`` (per-response,
@@ -36,19 +64,33 @@ asset identity (same non-escalation principle as ``cloud_discovery.py``).
 Risk scoring may apply a small named likelihood discount when ``cdn_waf``
 was observed on the same host:port (#173); that is not a claim the
 control blocks the CVE, and it is not merging the fingerprint into scope.
+Only the six providers ``risk_scoring.CDN_WAF_PROVIDERS`` names earn it -- a
+CDN/WAF the catalogue learned later is reported, not discounted -- and an
+endpoint that redirected elsewhere has an empty ``cdn_waf``: a CDN in front
+of the name it points at is not in front of this address.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
-from collections.abc import Callable
+import re
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
 from .config_schema import FingerprintConfig
+from .fingerprint_catalogue import (
+    CLASSIFY_BUDGET_SECONDS,
+    Catalogue,
+    ClassificationTimeout,
+    Match,
+    Response,
+    load_catalogue,
+)
 from .protocol import is_ipv6, parse_endpoint
 from .utils import save_json, write_lines
 
@@ -56,58 +98,49 @@ LOG = logging.getLogger("shapoclyack.fingerprint")
 
 USER_AGENT = "shapoclyack/fingerprint"
 
+#: Redirects followed per endpoint, all on the address the stage was given.
+MAX_REDIRECT_HOPS = 3
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+#: Wall-clock budget for classifying one response. Normal pages take
+#: milliseconds; the budget is for a body written to cost more.
+CLASSIFY_SECONDS = CLASSIFY_BUDGET_SECONDS
 
-def _header_has_prefix(headers: httpx.Headers, prefix: str) -> bool:
-    return any(key.lower().startswith(prefix) for key in headers.keys())
+#: Categories whose high-confidence match is a finding, and its kind. Every
+#: other category is inventory only. Webmail is a remote-access portal to the
+#: mailbox and is filed with them; the category stays on the finding.
+EXPOSURE_KIND_BY_CATEGORY: dict[str, str] = {
+    "admin_panel": "exposed_admin_interface",
+    "database_ui": "exposed_admin_interface",
+    "database": "exposed_admin_interface",
+    "devops": "exposed_admin_interface",
+    "monitoring": "exposed_admin_interface",
+    "network_appliance": "exposed_admin_interface",
+    "remote_access": "exposed_remote_access_gateway",
+    "mail_webmail": "exposed_remote_access_gateway",
+}
+VERSION_DISCLOSURE = ("version_disclosure", "info")
+
+#: Categories that make up the Phase 9.1 ``cms_framework`` list.
+CMS_FRAMEWORK_CATEGORIES = frozenset({"cms", "framework", "ecommerce"})
+
+#: A path that is a login page by name (``/login``, ``/users/sign_in``,
+#: ``/dana-na/auth/...``).
+_LOGIN_PATH_RE = re.compile(
+    r"(?:^|/)(?:login|log-in|logon|signin|sign-in|sign_in|auth|sso)(?:[/._?;-]|$)", re.IGNORECASE
+)
+_MATRIX_RE = re.compile(r";[^/]{0,2048}")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def _cookies_contain(headers: httpx.Headers, needles: tuple[str, ...]) -> bool:
-    blob = " ".join(headers.get_list("set-cookie")).lower()
-    return any(needle in blob for needle in needles)
-
-
-# Each entry: (name, predicate(headers) -> bool). Headers lookups are
-# case-insensitive (httpx.Headers). Keep this list small and add signatures
-# one at a time rather than trying to be exhaustive -- see module docstring.
-_CDN_WAF_SIGNATURES: list[tuple[str, Callable[[httpx.Headers], bool]]] = [
-    ("cloudflare", lambda h: "cf-ray" in h or "cloudflare" in h.get("server", "").lower()),
-    (
-        "akamai",
-        lambda h: _header_has_prefix(h, "x-akamai") or "akamai" in h.get("server", "").lower(),
-    ),
-    ("sucuri", lambda h: "x-sucuri-id" in h or "x-sucuri-cache" in h),
-    (
-        "imperva_incapsula",
-        lambda h: "x-iinfo" in h or _cookies_contain(h, ("incap_ses", "visid_incap")),
-    ),
-    ("cloudfront", lambda h: "x-amz-cf-id" in h or "cloudfront" in h.get("via", "").lower()),
-    (
-        "fastly",
-        lambda h: "x-fastly-request-id" in h or "fastly" in h.get("x-served-by", "").lower(),
-    ),
-]
-
-# Each entry: (name, predicate(headers, lowercased_body) -> bool).
-_CMS_FRAMEWORK_SIGNATURES: list[tuple[str, Callable[[httpx.Headers, str], bool]]] = [
-    (
-        "wordpress",
-        lambda h, b: "wordpress" in h.get("x-generator", "").lower()
-        or "wp-content" in b
-        or "wp-includes" in b,
-    ),
-    (
-        "drupal",
-        lambda h, b: "drupal" in h.get("x-generator", "").lower()
-        or "drupal.settings" in b
-        or 'content="drupal' in b,
-    ),
-    ("joomla", lambda h, b: "joomla" in b),
-    (
-        "nextjs",
-        lambda h, b: "next.js" in h.get("x-powered-by", "").lower() or "__next_data__" in b,
-    ),
-    ("generic_php", lambda h, b: h.get("x-powered-by", "").lower().startswith("php")),
-]
+class _Fetched(NamedTuple):
+    status: int
+    headers: httpx.Headers
+    body: str
+    #: The URL that gave this answer (the endpoint, or a same-address hop).
+    url: str
+    #: Where an unfollowed redirect pointed, sanitized.
+    redirect_location: str | None = None
+    redirected_off_host: bool = False
 
 
 def _candidate_endpoints(
@@ -153,23 +186,198 @@ def _build_url(host: str, port: int, scheme: str) -> str:
     return f"{scheme}://{hostpart}:{port}/"
 
 
-async def _fetch(
-    client: httpx.AsyncClient, url: str, timeout: float, max_bytes: int
-) -> tuple[int, httpx.Headers, str] | None:
+def _effective_port(url: httpx.URL) -> int:
+    return url.port if url.port is not None else _DEFAULT_PORTS.get(url.scheme, 0)
+
+
+def sanitize_url(url: str) -> str:
+    """``scheme://host:port/path`` -- no userinfo, query, fragment or ``;params``.
+
+    Every URL that reaches ``fingerprint.json`` goes through here: a redirect
+    target's query can carry a return URL or a token, a path parameter a
+    session id, and userinfo a password.
+    """
     try:
-        async with client.stream("GET", url, timeout=timeout) as resp:
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in resp.aiter_bytes():
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= max_bytes:
-                    break
-            body = b"".join(chunks).decode("utf-8", errors="ignore")
-            return resp.status_code, resp.headers, body
-    except httpx.HTTPError as exc:
-        LOG.debug("fingerprint: request failed for %s: %s", url, exc)
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, TypeError, ValueError):
+        return ""
+    if parsed.scheme not in _DEFAULT_PORTS or not parsed.host:
+        return ""
+    host = f"[{parsed.host}]" if is_ipv6(parsed.host) else parsed.host
+    return f"{parsed.scheme}://{host}:{_effective_port(parsed)}{_MATRIX_RE.sub('', parsed.path or '/')}"
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, TypeError, ValueError):
         return None
+    return parsed.scheme, (parsed.host or "").lower(), _effective_port(parsed)
+
+
+def _address_key(host: str) -> str:
+    """An address as one spelling: IPs canonical, names lower-cased (a trailing dot is another name)."""
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host.lower()
+
+
+def _open_endpoints(open_ports: list[str]) -> frozenset[tuple[str, int]]:
+    """Every open TCP ``(address, port)`` the port stage reported -- the run's scope for a hop."""
+    found = set()
+    for entry in open_ports:
+        parsed = parse_endpoint(entry)
+        if parsed is None or parsed.protocol != "tcp":
+            continue
+        try:
+            found.add((_address_key(parsed.host), int(parsed.port)))
+        except ValueError:
+            continue
+    return frozenset(found)
+
+
+async def _read(resp: httpx.Response, max_bytes: int) -> str:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= max_bytes:
+            break
+    return b"".join(chunks).decode("utf-8", errors="ignore")
+
+
+async def _fetch(
+    client: httpx.AsyncClient,
+    url: str,
+    timeout: float,
+    max_bytes: int,
+    allowed: frozenset[tuple[str, int]] = frozenset(),
+) -> _Fetched | None:
+    """GET ``url``, following a redirect only to an open port the run already knows.
+
+    ``allowed`` is the port stage's ``(address, port)`` set: a hop must stay on
+    the endpoint's address *and* land on a port that scan reported. A port the
+    tenant excluded, or one nobody scanned, is never contacted from here. A hop
+    that fails returns the redirect that led to it, so what the target itself
+    said is kept.
+    """
+    target = _address_key(httpx.URL(url).host)
+    current = url
+    last: _Fetched | None = None
+    for hop in range(MAX_REDIRECT_HOPS + 1):
+        try:
+            async with client.stream("GET", current, timeout=timeout) as resp:
+                body = await _read(resp, max_bytes)
+                status, headers = resp.status_code, resp.headers
+        except httpx.HTTPError as exc:
+            LOG.debug("fingerprint: request failed for %s: %s", current, exc)
+            return last
+        location = headers.get("location") if status in REDIRECT_STATUSES else None
+        if not location:
+            return _Fetched(status, headers, body, current)
+        try:
+            nxt = httpx.URL(current).join(location.strip())
+        except (httpx.InvalidURL, TypeError, ValueError):
+            return _Fetched(status, headers, body, current)
+        same = (
+            nxt.scheme in _DEFAULT_PORTS
+            and bool(nxt.host)
+            and _address_key(nxt.host) == target
+            and (target, _effective_port(nxt)) in allowed
+        )
+        last = _Fetched(status, headers, body, current, sanitize_url(str(nxt)) or None, not same)
+        if not same:
+            return last
+        # The hop itself carries no credentials, whatever the Location said.
+        current = str(httpx.URL(scheme=nxt.scheme, host=nxt.host, port=nxt.port, raw_path=nxt.raw_path))
+    return last
+
+
+def _auth_required(resp: Response) -> bool:
+    """The answer is a login: 401/403, a password field, or a login path."""
+    if resp.status in (401, 403) or resp.page.password_input:
+        return True
+    return bool(_LOGIN_PATH_RE.search(resp.url_path.partition("?")[0]))
+
+
+def _console_rating(match: Match, resp: Response, auth_required: bool) -> tuple[str, str, bool | None]:
+    """``(severity, detail, auth_required)``; ``None`` is "cannot tell from this page"."""
+    name = match.technology.name
+    if auth_required:
+        return "low", f"{name} login page reachable (HTTP {resp.status})", True
+    if match.technology.root_is_public:
+        # A single-page app shell, a welcome page, CouchDB's welcome document:
+        # served to anybody whether or not the console behind it asks for a
+        # login. Reachable is all it shows; it is not claimed open.
+        return "low", f"{name} reachable; authentication not determinable from the landing page (HTTP {resp.status})", None
+    if match.technology.category == "database" and 200 <= resp.status < 300:
+        return "high", f"{name} answers its API without authentication (HTTP {resp.status})", False
+    return "medium", f"{name} answers with no login page in front (HTTP {resp.status})", False
+
+
+def _finding(
+    kind: str, severity: str, outcome: dict[str, Any], match: Match, **extra: Any
+) -> dict[str, Any]:
+    origin = _origin(outcome["final_url"] or outcome["url"])
+    return {
+        "kind": kind,
+        "severity": severity,
+        "host": outcome["host"],
+        "port": origin[2] if origin else outcome["port"],
+        "url": outcome["final_url"] or sanitize_url(outcome["url"]),
+        "technology": match.technology.id,
+        "evidence": list(match.evidence),
+        "name": match.technology.name,
+        "category": match.technology.category,
+        "version": match.version,
+        "cpe": match.cpe,
+        "confidence": match.confidence,
+        "http_status": outcome["http_status"],
+        **extra,
+    }
+
+
+def _exposures(outcome: dict[str, Any], matches: list[Match], resp: Response) -> list[dict[str, Any]]:
+    """Exposure findings for one endpoint; none when its answer was a redirect elsewhere."""
+    if outcome["redirected_off_host"]:
+        return []
+    auth_required = _auth_required(resp)
+    found: list[dict[str, Any]] = []
+    disclosed: set[str] = set()
+    for match in matches:
+        kind = EXPOSURE_KIND_BY_CATEGORY.get(match.technology.category)
+        if kind is not None and match.confidence == "high":
+            if kind == "exposed_remote_access_gateway":
+                severity, auth_state = "info", auth_required
+                detail = f"{match.technology.name} portal reachable (HTTP {resp.status})"
+            else:
+                severity, detail, auth_state = _console_rating(match, resp, auth_required)
+            found.append(_finding(kind, severity, outcome, match, auth_required=auth_state, detail=detail))
+        source = match.version_source or ""
+        if not match.version or not source.startswith("header "):
+            continue
+        header = source.removeprefix("header ")
+        if header in disclosed:
+            continue
+        disclosed.add(header)
+        value = resp.header_value(header) or ""
+        disclosure = _finding(
+            *VERSION_DISCLOSURE,
+            outcome,
+            match,
+            header=header,
+            detail=f"{header}: {value}"[:160],
+        )
+        disclosure["evidence"] = [f"{header}: {value}"[:160]]
+        found.append(disclosure)
+    return found
+
+
+def _classify(catalogue: Catalogue, fetched: _Fetched, deadline: float) -> tuple[Response, list[Match]]:
+    resp = Response.build(fetched.status, fetched.headers, fetched.body, fetched.url)
+    return resp, catalogue.match_response(resp, deadline=deadline)
 
 
 async def _fingerprint_one(
@@ -179,35 +387,76 @@ async def _fingerprint_one(
     scheme: str,
     timeout: float,
     max_bytes: int,
-) -> dict[str, Any]:
+    catalogue: Catalogue,
+    allowed: frozenset[tuple[str, int]] = frozenset(),
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     url = _build_url(host, port, scheme)
     outcome: dict[str, Any] = {
         "host": host,
         "port": port,
         "scheme": scheme,
         "url": url,
+        "final_url": None,
+        "redirect_location": None,
+        "redirected_off_host": False,
         "http_status": None,
         "server": "",
         "x_powered_by": "",
+        "title": "",
         "cdn_waf": [],
         "cms_framework": [],
+        "technologies": [],
         "error": None,
     }
-    fetched = await _fetch(client, url, timeout, max_bytes)
+    fetched = await _fetch(client, url, timeout, max_bytes, allowed=allowed)
     if fetched is None:
         outcome["error"] = "request_failed"
-        return outcome
+        return outcome, []
 
-    status, headers, body = fetched
-    body_lower = body.lower()
-    outcome["http_status"] = status
-    outcome["server"] = headers.get("server", "")
-    outcome["x_powered_by"] = headers.get("x-powered-by", "")
-    outcome["cdn_waf"] = [name for name, matches in _CDN_WAF_SIGNATURES if matches(headers)]
+    outcome["final_url"] = sanitize_url(fetched.url)
+    outcome["redirect_location"] = fetched.redirect_location
+    outcome["redirected_off_host"] = fetched.redirected_off_host
+    outcome["http_status"] = fetched.status
+    outcome["server"] = fetched.headers.get("server", "")
+    outcome["x_powered_by"] = fetched.headers.get("x-powered-by", "")
+    # Off the event loop and against a deadline: the body is the scanned
+    # host's to write, and one slow page must not stall every other request.
+    deadline = time.monotonic() + CLASSIFY_SECONDS
+    try:
+        resp, matches = await asyncio.wait_for(
+            asyncio.to_thread(_classify, catalogue, fetched, deadline), timeout=CLASSIFY_SECONDS + 1.0
+        )
+    except (ClassificationTimeout, asyncio.TimeoutError):
+        LOG.warning("fingerprint: classification of %s ran past %.1fs; left unclassified", url, CLASSIFY_SECONDS)
+        outcome["error"] = "classification_timeout"
+        return outcome, []
+
+    outcome["title"] = resp.title[:200]
+    outcome["technologies"] = [match.as_dict() for match in matches]
+    # Phase 9.1 consumers: the risk model reads cdn_waf for the #173 discount,
+    # so only a CDN/WAF the catalogue is sure of, seen on this address, may
+    # appear in it.
+    if not fetched.redirected_off_host:
+        outcome["cdn_waf"] = [
+            m.technology.id for m in matches if m.technology.category == "cdn_waf" and m.confidence == "high"
+        ]
     outcome["cms_framework"] = [
-        name for name, matches in _CMS_FRAMEWORK_SIGNATURES if matches(headers, body_lower)
+        m.technology.id for m in matches if m.technology.category in CMS_FRAMEWORK_CATEGORIES
     ]
-    return outcome
+    return outcome, _exposures(outcome, matches, resp)
+
+
+def _dedupe_by_origin(exposures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One finding per origin: ``:80`` redirecting to ``:443`` is one console, not two."""
+    seen: set[tuple[Any, ...]] = set()
+    kept = []
+    for item in exposures:
+        key = (item["kind"], item["technology"], item.get("header"), _origin(item["url"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept
 
 
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
@@ -231,6 +480,7 @@ async def fingerprint_hosts(
         "targets_considered": 0,
         "checked_count": 0,
         "findings": [],
+        "exposures": [],
         "truncated": False,
         "skipped_reason": None,
     }
@@ -248,34 +498,53 @@ async def fingerprint_hosts(
         _persist(output_dir, result)
         return result
 
+    catalogue = load_catalogue()
+    result["catalogue"] = {
+        "schema": catalogue.schema_version,
+        "updated": catalogue.updated,
+        "technologies": len(catalogue.technologies),
+        "rejected": catalogue.rejected,
+    }
     truncated = len(candidates) > config.max_targets
     candidates = candidates[: config.max_targets]
 
     timeout = float(config.timeout_seconds)
+    allowed = _open_endpoints(open_ports)
     semaphore = asyncio.Semaphore(config.concurrency)
     headers = {"User-Agent": USER_AGENT}
 
-    async with httpx.AsyncClient(headers=headers, verify=config.verify_tls, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        headers=headers, verify=config.verify_tls, follow_redirects=False, trust_env=False
+    ) as client:
 
-        async def _guarded(host: str, port: int, scheme: str) -> dict[str, Any]:
+        async def _guarded(host: str, port: int, scheme: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             async with semaphore:
-                return await _fingerprint_one(client, host, port, scheme, timeout, config.body_max_bytes)
+                return await _fingerprint_one(
+                    client, host, port, scheme, timeout, config.body_max_bytes, catalogue, allowed
+                )
 
-        findings = await asyncio.gather(
+        outcomes = await asyncio.gather(
             *(_guarded(host, port, scheme) for host, port, scheme in candidates)
         )
 
+    findings = [outcome for outcome, _ in outcomes]
     result["checked_count"] = len(findings)
-    result["findings"] = list(findings)
+    result["findings"] = findings
+    result["exposures"] = _dedupe_by_origin([exposure for _, exposures in outcomes for exposure in exposures])
     result["truncated"] = truncated
 
-    matched = sum(1 for f in findings if f["cdn_waf"] or f["cms_framework"])
+    matched = sum(1 for f in findings if f["technologies"])
     _persist(output_dir, result)
+    rejected = catalogue.rejected
     LOG.info(
-        "fingerprint: %d endpoint(s) checked -> %d with cdn/waf or cms/framework signal(s)%s",
+        "fingerprint: %d endpoint(s) checked -> %d with an identified technology, %d exposure(s)%s%s",
         len(findings),
         matched,
+        len(result["exposures"]),
         " [truncated]" if truncated else "",
+        f"; {len(rejected)} catalogue entry(ies) rejected: {', '.join(r['id'] or '<file>' for r in rejected)}"
+        if rejected
+        else "",
     )
     return result
 

@@ -153,12 +153,18 @@ def test_parse_cpe(name: str, expected) -> None:
         # nmap's pre-rename nginx vendor reaches both NVD keys.
         (
             rm.Fingerprint(product="nginx", version="1.18.0", cpe=("cpe:/a:igor_sysoev:nginx:1.18.0",)),
-            ("a:f5:nginx", "a:nginx:nginx"),
+            ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
             "cpe",
             "1.18.0",
         ),
         # No CPE: the curated table.
         (rm.Fingerprint(product="Apache httpd", version="2.4.41"), ("a:apache:http_server",), "product_table", "2.4.41"),
+        (
+            rm.Fingerprint(product="nginx", version="1.18.0"),
+            ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
+            "product_table",
+            "1.18.0",
+        ),
         (rm.Fingerprint(product="Exim smtpd", version="4.92"), ("a:exim:exim",), "product_table", "4.92"),
         (
             rm.Fingerprint(product="Microsoft IIS httpd", version="10.0"),
@@ -175,7 +181,16 @@ def test_parse_cpe(name: str, expected) -> None:
         ),
         (rm.Fingerprint(product="", banner="220 (vsFTPd 3.0.3)"), ("a:vsftpd_project:vsftpd",), "banner", "3.0.3"),
         (rm.Fingerprint(product="", banner="220 ProFTPD 1.3.5 Server (Debian)"), ("a:proftpd:proftpd",), "banner", "1.3.5"),
-        (rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)"), ("a:f5:nginx", "a:nginx:nginx"), "banner", "1.18.0"),
+        (rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)"), ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"), "banner", "1.18.0"),
+        # A CPE under NVD's current nginx key (f5:nginx_open_source) reaches the
+        # older keys as well. Production does not feed this path yet: the
+        # fingerprint stage's CPEs do not reach AssetService; nmap/Pulse ones do.
+        (
+            rm.Fingerprint(product="", cpe=("cpe:2.3:a:f5:nginx_open_source:1.24.0:*:*:*:*:*:*:*",)),
+            ("a:f5:nginx_open_source", "a:f5:nginx", "a:nginx:nginx"),
+            "cpe",
+            "1.24.0",
+        ),
     ],
 )
 def test_product_and_version(fingerprint, keys, via, version) -> None:
@@ -716,6 +731,35 @@ def test_a_vendor_open_statement_with_a_real_severity_is_unfixed_not_tracked() -
     )
     (only,) = outcome.matches
     assert (only.verdict, only.is_finding) == ("unfixed", False)
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        rm.Fingerprint(product="nginx", version="1.18.0", cpe=("cpe:/a:igor_sysoev:nginx:1.18.0",)),
+        rm.Fingerprint(product="nginx", version="1.18.0"),
+        rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0"),
+    ],
+    ids=["nmap-cpe", "pulse-product", "banner"],
+)
+@pytest.mark.parametrize("host", [rm.DistroHint("linux"), rm.DistroHint("ubuntu", "focal")], ids=["linux", "ubuntu"])
+def test_every_nginx_key_is_treated_as_a_distribution_package(fingerprint, host) -> None:
+    """A CVE NVD filed only under f5:nginx_open_source must get the same backport
+    caution as one under f5:nginx on the same listener, not a bare version-range hit."""
+    dataset = cpe_ranges.CpeRangeDataset(
+        index={
+            "a:f5:nginx": (CpeRange("CVE-2021-23017", start_including="0.6.18", end_excluding="1.20.1"),),
+            "a:f5:nginx_open_source": (CpeRange("CVE-2025-23419", start_including="1.11.4", end_excluding="1.27.4"),),
+        },
+        marker="t",
+        present=True,
+    )
+    outcome = rm.match(fingerprint, dataset, lookup=lambda _d: None, host=host)
+    verdicts = {m.cve: (m.evidence["cpe"], m.verdict) for m in outcome.matches}
+    assert verdicts == {
+        "CVE-2021-23017": ("a:f5:nginx", "possible"),
+        "CVE-2025-23419": ("a:f5:nginx_open_source", "possible"),
+    }
 
 
 # --------------------------------------------------------------------------

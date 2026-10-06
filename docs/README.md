@@ -102,6 +102,7 @@ Enterprise knowledge base with role-based usage scenarios, security processes, a
 | [Advisory coverage](advisory-coverage.md) | When a package reads `unknown` (no advisory data for the host's release) rather than assessed, and what a loaded dataset does not guarantee |
 | [RPM advisories](rpm-advisories.md) | RHEL, SLES and Amazon Linux binary-RPM providers: supported inputs, explicit channel bindings, dataset overrides (#358, feed acceptance still open) |
 | [Retro CVE matching](retro-cve-matching.md) | Matching stored service fingerprints against CVEs published after the scan |
+| [Web fingerprinting](web-fingerprinting.md) | The one-GET technology catalogue: categories, versions, CPE keys, exposed consoles and remote-access gateways, and what earns the CDN/WAF risk discount |
 | [Reports and compliance](reports-and-compliance.md) | Branded report factory (templates, schedules, delivery) and PCI DSS / CIS / ISO 27001 / ФСТЭК / ГОСТ Р 57580.1 control mapping, with what it deliberately does not claim |
 | [Custom compliance catalogues](custom-compliance.md) | A customer's own control catalogue mapped onto the platform's evidence signals (W11 / #356), БДУ provenance and signed evidence packages |
 | [Asset business context](asset-context.md) | Owner, service, environment, classification, exposure; CMDB/AD file import (`POST /api/assets/import`) and audit trail |

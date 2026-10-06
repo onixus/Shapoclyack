@@ -6,6 +6,54 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- **Web fingerprinting from a catalogue: versions, CPE and exposed consoles
+  (DQ4).** The `fingerprint` stage's eleven hard-coded signatures are replaced
+  by `scanner/pipeline/fingerprint_catalogue.json` — 146 technologies across
+  CDN/WAF, load balancers, web and application servers, frameworks, CMS
+  (1C-Bitrix, Tilda, MODX among them), shops, admin and database UIs, devops
+  and monitoring consoles, SSL-VPN and remote-access portals (FortiGate,
+  Ivanti, Citrix, GlobalProtect, Cisco ASA, F5 APM, Usermin), webmail
+  (Exchange, cPanel, Zimbra, Roundcube, Kerio, CommuniGate), network
+  appliances (FortiGate admin GUI, MikroTik, BIG-IP TMUI, iLO) and the
+  1C:Enterprise web client — validated at load and matched on structure
+  (headers, cookie *names*, status, title, metas, the page's own assets and
+  attributes, inline scripts, JSON only in a JSON response), so a tutorial
+  quoting a product is not the product. Classification is bounded — a linear
+  page scan, regexes with bounded repeats enforced at load, a worker thread
+  with a deadline (`error: classification_timeout`) — because the body is the
+  scanned host's to write; every shipped regex is also timed against hostile
+  inputs by the tests (never at scan time), and an entry that fails
+  validation is dropped and listed in `catalogue.rejected` rather than
+  failing the run (the web technologies control then says so instead of
+  passing). Requests: the root, plus at most three redirect hops to an
+  `(address, port)` the port scan reported open in the run (never a port it
+  did not report, such as a tenant-excluded one, #362); a redirect elsewhere
+  (another port, a host name) is recorded as `redirect_location`, not
+  fetched, and proxy variables are ignored. Each endpoint gains `technologies[]` with `version`
+  where the product states one reliably and an NVD-verified CPE 2.3 name
+  (without the version when the banner names a distribution: `distro_hint`,
+  `banner`), plus `final_url`, `redirect_location`, `redirected_off_host` and
+  `title`, all URLs stripped of userinfo, query and `;params`.
+  `fingerprint.json` gains `exposures[]` for high-confidence matches, one per
+  final origin, with `http_status`, `auth_required` and `detail`:
+  `exposed_admin_interface` (an open database API high, a console with no
+  login page medium, a login page or an SPA/welcome root whose login cannot
+  be seen low), `exposed_remote_access_gateway`
+  (info, with `cpe`/`version` for a future KEV join — none exists yet) and
+  `version_disclosure` (info, header-stated versions); none after a redirect
+  off the address. `cdn_waf` and `cms_framework` keep their names; `cdn_waf`
+  lists high-confidence CDN/WAF seen on the address itself, and the risk
+  discount (#173) still applies to the original six providers alone. Matches
+  narrowed on purpose: Joomla is no longer the word "joomla" in the body,
+  WordPress no longer `wp-content` in text or a hot-linked image, and an
+  `incap_ses` inside some other cookie's value no longer counts as Imperva on
+  path (it used to take the −6). The *Технологии сайта* control tells open
+  consoles from login pages in `why` and always counts and shows gateways.
+  `retro_match` treats `f5:nginx_open_source` as the same distribution-packaged
+  nginx as `f5:nginx` and `nginx:nginx` (aliases, source package, banner name,
+  product table).
+  See [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
+  synthetic, not live captures.
 - **TLS posture judges the certificate, not only its dates.** New findings in
   `tls_posture.json`: `weak_key` (RSA/DSA under 2048 bits or EC under 224,
   medium; high under 1024) and `weak_signature` (leaf signed with MD2/MD4/MD5

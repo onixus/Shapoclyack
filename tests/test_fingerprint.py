@@ -8,8 +8,7 @@ import httpx
 from scanner.pipeline.config_schema import FingerprintConfig
 from scanner.pipeline.fingerprint import (
     _candidate_endpoints,
-    _CDN_WAF_SIGNATURES,
-    _CMS_FRAMEWORK_SIGNATURES,
+    _Fetched,
     fingerprint_hosts_sync,
 )
 
@@ -45,7 +44,7 @@ def test_candidate_endpoints_filters_and_dedupes():
 
 
 def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         headers = httpx.Headers(
             [
                 ("Server", "cloudflare"),
@@ -53,8 +52,8 @@ def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatc
                 ("Content-Type", "text/html"),
             ]
         )
-        body = "<html><head></head><body>wp-content/themes/example</body></html>"
-        return 200, headers, body
+        body = "<html><head><link rel='stylesheet' href='/wp-content/themes/example/style.css'></head></html>"
+        return _Fetched(200, headers, body, url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
 
@@ -78,8 +77,8 @@ def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatc
 
 
 def test_fingerprint_no_signal_omitted_from_matches_file(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
-        return 200, httpx.Headers([("Server", "nginx")]), "<html>hello</html>"
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
+        return _Fetched(200, httpx.Headers([("Server", "nginx")]), "<html>hello</html>", url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
 
@@ -96,7 +95,7 @@ def test_fingerprint_no_signal_omitted_from_matches_file(tmp_path: Path, monkeyp
 
 
 def test_fingerprint_fail_soft_on_request_error(tmp_path: Path, monkeypatch):
-    async def failing_fetch(client, url, timeout, max_bytes):
+    async def failing_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         return None
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", failing_fetch)
@@ -114,8 +113,8 @@ def test_fingerprint_fail_soft_on_request_error(tmp_path: Path, monkeypatch):
 
 
 def test_fingerprint_truncates_at_max_targets(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
-        return 200, httpx.Headers([]), "<html></html>"
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
+        return _Fetched(200, httpx.Headers([]), "<html></html>", url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
 
@@ -129,10 +128,3 @@ def test_fingerprint_truncates_at_max_targets(tmp_path: Path, monkeypatch):
     assert result["targets_considered"] == 5
     assert result["truncated"] is True
     assert result["checked_count"] == 2
-
-
-def test_signature_sets_are_non_empty_and_named():
-    assert len(_CDN_WAF_SIGNATURES) >= 5
-    assert len(_CMS_FRAMEWORK_SIGNATURES) >= 4
-    names = [name for name, _ in _CDN_WAF_SIGNATURES] + [name for name, _ in _CMS_FRAMEWORK_SIGNATURES]
-    assert len(names) == len(set(names))

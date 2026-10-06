@@ -1,9 +1,12 @@
 """SSRF-safe outbound HTTPS for scanner stages (org_profile M1).
 
-Every other outbound client in ``scanner/`` (``asn_discovery.py``,
-``fingerprint.py``, ``cloud_discovery.py``, ``hostnames.py``) talks to a
-*constant* host, follows redirects and never looks at the address it lands on.
-That is safe only because the URL is a literal in the source. ``ownership.py``
+The pipeline's other outbound clients for constant services
+(``asn_discovery.py``, ``cloud_discovery.py``, ``hostnames.py``) talk to a
+*constant* host, follow redirects and never look at the address they land on.
+That is safe only because the URL is a literal in the source.
+``fingerprint.py`` is not one of them: it talks to scan targets, so it follows
+no redirect off the address it was given and ignores proxy variables (see its
+module docstring). ``ownership.py``
 is the first stage whose next hop is chosen by a remote party -- the IANA
 bootstrap file names the registry server, and ``rdap.org`` answers with a 302 to
 one -- so the address has to be validated on this side of the wire.

@@ -753,9 +753,10 @@ class FingerprintConfig(BaseModel):
 
     Runs against already-discovered open TCP ports (``open_ports.txt``) that
     look like web ports -- no new port scan happens here. One GET per
-    candidate endpoint is issued and classified against a small built-in
-    CDN/WAF and CMS/framework signature set (see ``fingerprint.py`` module
-    docstring for the honesty note on scope). ``body_max_bytes`` caps how
+    candidate endpoint is issued and classified against the built-in web
+    technology catalogue (``fingerprint_catalogue.json``; see the
+    ``fingerprint.py`` module docstring for the honesty note on scope), which
+    also yields the ``exposures`` findings. ``body_max_bytes`` caps how
     much of each response is read (streamed, not buffered fully) and
     ``max_targets`` caps how many endpoints get probed per run -- past the
     cap, remaining endpoints are skipped and the run is flagged "truncated".

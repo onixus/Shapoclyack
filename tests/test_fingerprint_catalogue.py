@@ -1,0 +1,634 @@
+"""The web technology catalogue behind ``scanner/pipeline/fingerprint.py`` (DQ4).
+
+Fixtures are synthetic (``tests/fixtures/fingerprint/web_responses.json``,
+see its ``note``): they hold the catalogue to its own markers and to the
+negative corpus, not to the internet.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import re
+import time
+from collections import Counter
+from pathlib import Path
+
+import httpx
+import pydantic
+import pytest
+
+from api.services.retro_match import parse_cpe
+from scanner.pipeline.fingerprint_catalogue import (
+    CATALOGUE_PATH,
+    CATEGORIES,
+    Catalogue,
+    ClassificationTimeout,
+    Response,
+    _bounded,
+    cpe_name,
+    load_catalogue,
+    meta_generators,
+    page_title,
+    parse_page,
+    stress,
+)
+
+FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "fingerprint" / "web_responses.json").read_text(encoding="utf-8")
+)
+POSITIVES = FIXTURES["positives"]
+NEGATIVES = FIXTURES["negatives"]
+ENDPOINT = "http://192.0.2.10"
+
+#: What the task that introduced the catalogue asked to be covered, by
+#: category. A category losing its last entry is a regression, not a cleanup.
+REQUIRED_CATEGORIES = (
+    "cdn_waf",
+    "cms",
+    "framework",
+    "web_server",
+    "app_server",
+    "admin_panel",
+    "remote_access",
+    "mail_webmail",
+    "devops",
+    "monitoring",
+    "database_ui",
+    "network_appliance",
+    "ecommerce",
+)
+
+
+def _classify(fixture: dict) -> list:
+    return load_catalogue().classify(
+        fixture["status"], httpx.Headers(fixture["headers"]), fixture["body"], ENDPOINT + fixture.get("url", "/")
+    )
+
+
+def _raw() -> dict:
+    return json.loads(CATALOGUE_PATH.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- schema
+
+
+def test_catalogue_loads_and_is_a_real_catalogue():
+    catalogue = load_catalogue()
+    assert catalogue.rejected == []
+    ids = [tech.id for tech in catalogue.technologies]
+    assert len(ids) >= 100
+    assert len(ids) == len(set(ids))
+    counts = Counter(tech.category for tech in catalogue.technologies)
+    assert set(counts) <= set(CATEGORIES)
+    missing = [category for category in REQUIRED_CATEGORIES if counts[category] == 0]
+    assert not missing, f"categories without a single entry: {missing}"
+
+
+def test_the_original_eleven_signatures_keep_their_names_and_order():
+    ids = [tech.id for tech in load_catalogue().technologies]
+    legacy_cdn = ["cloudflare", "akamai", "sucuri", "imperva_incapsula", "cloudfront", "fastly"]
+    legacy_cms = ["wordpress", "drupal", "joomla", "nextjs", "generic_php"]
+    assert ids[:6] == legacy_cdn
+    positions = [ids.index(name) for name in legacy_cms]
+    assert positions == sorted(positions)
+
+
+def test_every_cpe_key_is_part_vendor_product_and_round_trips_through_the_retro_parser():
+    for tech in load_catalogue().technologies:
+        if tech.cpe is None:
+            continue
+        part, vendor, product = re.split(r"(?<!\\):", tech.cpe)
+        assert part in ("a", "o", "h"), tech.id
+        assert vendor and product, tech.id
+        name = cpe_name(tech.cpe, "1.2.3")
+        assert len(re.split(r"(?<!\\):", name)) == 13, name
+        assert parse_cpe(name) == (tech.cpe, "1.2.3"), tech.id
+
+
+def test_cpe_name_escapes_a_version_and_wildcards_a_missing_one():
+    assert cpe_name("a:jenkins:jenkins", None) == "cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*"
+    assert cpe_name("a:example:thing", "1.0+git~2") == "cpe:2.3:a:example:thing:1.0\\+git\\~2:*:*:*:*:*:*:*"
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda t: t.update(category="vpn"), "category"),
+        (lambda t: t.update(confidence="low"), "confidence"),
+        (lambda t: t.update(cpe="cpe:2.3:a:x:y"), "part:vendor:product"),
+        (lambda t: t.update(id="Bad Id"), "lower-case"),
+        (lambda t: t.update(unexpected=True), "Extra inputs"),
+        (lambda t: t.update(match=[]), "at least 1"),
+        (lambda t: t.update(match=[{"from": "cookie", "name": "sid", "contains": "x"}]), "presence only"),
+        (lambda t: t.update(match=[{"from": "cookie", "name": "SID"}]), "lower-case"),
+        (lambda t: t.update(match=[{"from": "header", "name": "set-cookie", "contains": "x"}]), "never sees values"),
+        (lambda t: t.update(match=[{"from": "header", "prefix": "set-"}]), "never sees values"),
+        (lambda t: t.update(match=[{"from": "header", "name": "x-a", "prefix": "x-"}]), "exactly one of name/prefix"),
+        (lambda t: t.update(match=[{"from": "body", "contains": "wp"}]), "too short"),
+        (lambda t: t.update(match=[{"from": "body", "equals": "<html>"}]), "not equals"),
+        (lambda t: t.update(match=[{"from": "title"}]), "contains/equals/regex"),
+        (lambda t: t.update(match=[{"from": "title", "regex": "("}]), "does not compile"),
+        (lambda t: t.update(match=[{"from": "title", "contains": ""}]), "empty test"),
+        (lambda t: t.update(match=[{"all": [{"from": "title", "equals": "x"}]}]), "at least two"),
+        (
+            lambda t: t.update(
+                match=[
+                    {
+                        "from": "title",
+                        "equals": "x",
+                        "all": [{"from": "title", "equals": "a"}, {"from": "title", "equals": "b"}],
+                    }
+                ]
+            ),
+            "only sub-matchers",
+        ),
+        (lambda t: t.update(version=[{"from": "header", "name": "server", "regex": "\\d{1,6}"}]), "no (?P<version>"),
+        (lambda t: t.update(version=[{"from": "body", "name": "server", "regex": "(?P<version>\\d)"}]), "names a header"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "<meta[^>]+content"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "a.*b"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "title", "regex": "x{2,}"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "body", "regex": "(?:a{0,64}){0,128}"}]), "nests repeats"),
+        (lambda t: t.update(version=[{"from": "json", "regex": "(?P<version>\\d+)"}]), "without a bound"),
+        (lambda t: t.update(match=[{"from": "json", "equals": "{}"}]), "not equals"),
+        (lambda t: t.update(match=[{"from": "attr", "contains": "x"}]), "names a tag"),
+        (lambda t: t.update(match=[{"from": "attr", "tag": "div", "contains": "x"}]), "presence only"),
+        (lambda t: t.update(match=[{"from": "meta", "equals": "x"}]), "names the meta"),
+        (lambda t: t.update(match=[{"from": "asset", "tag": "img", "contains": "/x/"}]), "takes no tag"),
+    ],
+)
+def test_schema_refuses_a_broken_entry(mutate, message):
+    raw = _raw()
+    broken = copy.deepcopy(raw)
+    mutate(broken["technologies"][0])
+    with pytest.raises(pydantic.ValidationError, match=re.escape(message)):
+        Catalogue.model_validate(broken)
+
+
+def test_schema_refuses_a_duplicate_id():
+    raw = _raw()
+    raw["technologies"].append(copy.deepcopy(raw["technologies"][0]))
+    with pytest.raises(pydantic.ValidationError, match="appears twice"):
+        Catalogue.model_validate(raw)
+
+
+# ---------------------------------------------------------------- fixtures
+
+
+def test_every_technology_and_every_matcher_is_exercised_by_a_fixture():
+    """A matcher no fixture fires is a matcher nobody has seen work."""
+    catalogue = load_catalogue()
+    by_id = {tech.id: tech for tech in catalogue.technologies}
+    unknown = sorted({fx["tech"] for fx in POSITIVES} - set(by_id))
+    assert not unknown, f"fixtures for technologies the catalogue does not have: {unknown}"
+    silent = []
+    for tech in catalogue.technologies:
+        mine = [fx for fx in POSITIVES if fx["tech"] == tech.id]
+        assert mine, f"{tech.id} has no positive fixture"
+        responses = [
+            Response.build(fx["status"], httpx.Headers(fx["headers"]), fx["body"], ENDPOINT + fx.get("url", "/"))
+            for fx in mine
+        ]
+        for index, matcher in enumerate(tech.match):
+            if not any(matcher.evaluate(resp) is not None for resp in responses):
+                silent.append(f"{tech.id}#{index}")
+        if tech.version:
+            assert any("version" in fx for fx in mine), f"{tech.id} extracts a version no fixture checks"
+    assert not silent, f"matchers no fixture fires: {silent}"
+
+
+@pytest.mark.parametrize("fixture", POSITIVES, ids=lambda fx: fx["tech"])
+def test_positive_fixture_identifies_exactly_its_technology(fixture):
+    matches = _classify(fixture)
+    assert {m.technology.id for m in matches} == {fixture["tech"], *fixture.get("also", [])}
+    own = next(m for m in matches if m.technology.id == fixture["tech"])
+    assert own.evidence
+    if "version" in fixture:
+        assert own.version == fixture["version"]
+    if "cpe" in fixture:
+        assert own.cpe == fixture["cpe"]
+    assert own.distro_hint == fixture.get("distro_hint")
+
+
+@pytest.mark.parametrize("fixture", NEGATIVES, ids=lambda fx: fx["name"])
+def test_negative_corpus_identifies_nothing(fixture):
+    assert [(m.technology.id, m.evidence) for m in _classify(fixture)] == []
+
+
+# ---------------------------------------------------------------- behaviour
+
+
+def test_an_unversioned_banner_yields_no_version_and_a_wildcard_cpe():
+    (jenkins,) = load_catalogue().classify(200, httpx.Headers({"X-Jenkins": "unknown"}), "")
+    assert jenkins.technology.id == "jenkins"
+    assert jenkins.version is None
+    assert jenkins.cpe == "cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*"
+
+
+def test_a_loose_version_rule_still_cannot_return_something_that_is_not_a_version():
+    catalogue = Catalogue.model_validate(
+        {
+            "schema": 1,
+            "updated": "2026-10-06",
+            "note": "test",
+            "technologies": [
+                {
+                    "id": "loose",
+                    "name": "Loose",
+                    "category": "web_server",
+                    "match": [{"from": "header", "name": "server"}],
+                    "version": [{"from": "header", "name": "server", "regex": "^(?P<version>\\S{1,64})"}],
+                }
+            ],
+        }
+    )
+    (garbage,) = catalogue.classify(200, httpx.Headers({"Server": "build-<script>"}), "")
+    assert garbage.version is None
+    (good,) = catalogue.classify(200, httpx.Headers({"Server": "2.4.1"}), "")
+    assert good.version == "2.4.1"
+
+
+def test_version_stays_out_of_the_cpe_where_the_product_numbers_builds():
+    (owa,) = load_catalogue().classify(200, httpx.Headers({"X-OWA-Version": "15.1.2507.6"}), "")
+    assert owa.version == "15.1.2507.6"
+    assert owa.cpe == "cpe:2.3:a:microsoft:exchange_server:*:*:*:*:*:*:*:*"
+
+
+def test_a_cookie_value_never_reaches_the_evidence():
+    secret = "s3cr3t-session-value"
+    headers = httpx.Headers([("Set-Cookie", f"laravel_session={secret}; path=/; httponly")])
+    (laravel,) = load_catalogue().classify(200, headers, "")
+    assert laravel.evidence == ("cookie laravel_session",)
+    assert secret not in json.dumps(laravel.as_dict())
+
+
+def test_url_evidence_keeps_the_path_and_drops_the_query():
+    (owa,) = load_catalogue().classify(200, httpx.Headers(), "", "https://192.0.2.10/owa/auth/logon.aspx?token=abc")
+    assert owa.evidence == ('url "/owa/auth/logon.aspx?…"',)
+
+
+def test_evidence_is_bounded():
+    headers = httpx.Headers({"Server": "nginx/1.25.3 " + "x" * 5000})
+    (nginx,) = load_catalogue().classify(200, headers, "")
+    assert all(len(item) <= 160 for item in nginx.evidence)
+
+
+@pytest.mark.parametrize(
+    "server, expected",
+    [
+        ("Apache/2.4.57 (Debian)", {"apache_httpd"}),
+        ("Apache", {"apache_httpd"}),
+        ("Apache-Coyote/1.1", {"apache_tomcat"}),
+        ("Apache Tomcat/9.0.83", set()),
+        ("nginx/1.24.0 + Phusion Passenger(R) 6.0.18", {"nginx", "phusion_passenger"}),
+        ("openresty", {"openresty"}),
+        ("nginxproxy", set()),
+    ],
+)
+def test_server_banners_are_anchored(server, expected):
+    """A banner names one product at its start; a longer name is another product."""
+    found = {m.technology.id for m in load_catalogue().classify(200, httpx.Headers({"Server": server}), "")}
+    assert found == expected
+
+
+def test_confidence_is_the_best_matcher_that_fired():
+    catalogue = load_catalogue()
+    (weak,) = catalogue.classify(200, httpx.Headers(), "<title>Dashboard [Jenkins]</title>")
+    assert weak.confidence == "medium"
+    (strong,) = catalogue.classify(200, httpx.Headers({"X-Jenkins": "2.440.1"}), "<title>Dashboard [Jenkins]</title>")
+    assert strong.confidence == "high"
+
+
+def test_title_and_generator_parsing():
+    body = (
+        '<html><head><TITLE>\n  Sign in &middot;  GitLab \n</TITLE>'
+        "<meta content='WordPress 6.5' name=generator><meta name=\"generator\" content=\"Elementor 3.21\">"
+    )
+    assert page_title(body) == "Sign in · GitLab"
+    assert meta_generators(body) == ("WordPress 6.5", "Elementor 3.21")
+    assert page_title("<html><title>unterminated") == ""
+
+
+# ---------------------------------------------------------------- hostile bodies
+
+MIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "<meta ",
+        '<meta name="x" content="',
+        "<title>",
+        "<script>",
+        "<a href='/dana-na/",
+        "<x y=1>",
+        '"buildinfo":{',
+        "<h3>apache tomcat/",
+        "a" * 63 + "=",
+    ],
+    ids=lambda u: u[:16],
+)
+@pytest.mark.parametrize("content_type", ["text/html", "application/json"])
+def test_a_hostile_body_classifies_in_bounded_time(unit, content_type):
+    """1 MiB written by the scanned host to cost the classifier (5fe11059: ~1 h for <meta )."""
+    body = (unit * (MIB // len(unit) + 1))[:MIB]
+    headers = httpx.Headers({"content-type": content_type})
+    start = time.process_time()
+    load_catalogue().classify(404, headers, body, "http://192.0.2.10/")
+    # CPU time, so a busy machine does not fail it; ~0.1 s at worst unloaded.
+    assert time.process_time() - start < 1.0
+
+
+def test_a_deadline_stops_classification():
+    with pytest.raises(ClassificationTimeout):
+        load_catalogue().classify(200, httpx.Headers(), "<html></html>", deadline=time.monotonic() - 1)
+
+
+def test_the_page_scan_keeps_its_caps():
+    assert len(parse_page("<p a=1>" * 10_000).tags) == 2048
+    assert len(parse_page("<title>" + "x" * 900 + "</title>").title) == 512
+
+
+def test_every_generator_is_read_and_the_first_title_wins():
+    body = (
+        '<html><head><title>Example blog</title><meta name="generator" content="Elementor 3.18">'
+        '<meta name="generator" content="WordPress 6.4.2"></head><body><svg><title>icon</title></svg></body></html>'
+    )
+    (wordpress,) = load_catalogue().classify(200, httpx.Headers(), body)
+    assert wordpress.technology.id == "wordpress" and wordpress.version == "6.4.2"
+    assert page_title(body) == "Example blog"
+
+
+def test_assets_read_as_same_origin_paths_or_foreign_hosts():
+    body = (
+        "<link href='/a.css'><script src='http://192.0.2.10/b.js'></script><img src='//cdn.example/c.png'>"
+        "<img src='https://other.example/d;jsessionid=X/e.png?x=1'><form action='login.php'></form>"
+        "<a href='/not-an-asset'>x</a>"
+    )
+    resp = Response.build(200, httpx.Headers(), body, "http://192.0.2.10/portal/index.html")
+    assert resp.assets == ("/a.css", "/b.js", "//cdn.example/c.png", "//other.example/d/e.png?x=1", "/portal/login.php")
+
+
+def test_json_markers_need_a_json_response():
+    body = '{"tagline" : "You Know, for Search", "version": {"number": "8.11.1"}}'
+    assert load_catalogue().classify(200, httpx.Headers({"content-type": "text/html"}), body) == []
+    (es,) = load_catalogue().classify(200, httpx.Headers({"content-type": "application/json; charset=utf-8"}), body)
+    assert es.technology.id == "elasticsearch" and es.version == "8.11.1"
+
+
+@pytest.mark.parametrize(
+    "banner, distro",
+    [
+        ("Apache/2.4.52 (Ubuntu)", "ubuntu"),
+        ("nginx/1.22.1", None),
+        ("nginx/1.14.1 (Red Hat Enterprise Linux)", "rhel"),
+    ],
+)
+def test_a_distribution_banner_keeps_its_version_out_of_the_cpe(banner, distro):
+    (match,) = [m for m in load_catalogue().classify(200, httpx.Headers({"Server": banner}), "") if m.version]
+    assert match.distro_hint == distro
+    assert (match.version in match.cpe) is (distro is None)
+    if distro:
+        assert match.as_dict()["banner"] == banner
+
+
+def test_a_script_cut_by_the_body_limit_is_still_script():
+    """Grafana's boot data outgrows a 64 KiB read; the stage sees an unterminated <script>."""
+    panels = ",".join(f'"panel{i}":{{"info":{{"version":"1.0.{i}"}}}}' for i in range(4000))
+    page = (
+        '<!DOCTYPE html><html><head><title>Grafana</title></head><body><script nonce="">'
+        'window.grafanaBootData = {"settings":{"buildInfo":{"hideVersion":false,"version":"10.2.3"},'
+        f'"panels":{{{panels}}}}}}};</script></body></html>'
+    )
+    assert len(page) > 120_000
+    (grafana,) = load_catalogue().classify(200, httpx.Headers(), page[: 64 * 1024])
+    assert grafana.technology.id == "grafana"
+    assert grafana.confidence == "high"
+    assert grafana.version == "10.2.3"
+
+
+def test_markup_inside_a_comment_is_text():
+    body = "<!-- <title>Login to Webmin</title> --><title>Acme</title><!-- <meta name=generator content='WordPress 6.4'> -->"
+    assert page_title(body) == "Acme"
+    assert load_catalogue().classify(200, httpx.Headers(), body) == []
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(?:a|a){0,1024}b",
+        r"(?:ab|a){0,64}c",
+        r"a{0,1000}a{0,1000}a{0,1000}c",
+        r"a{0,1000}(?=a{0,1000})a{0,10}c",
+        r"\s{0,8}[ \t]{0,8}x",
+        # Only the lookaround's own repeat overlaps the one before it.
+        r"a{0,1000}(?=a{0,1000}b)c",
+        # Overlaps outside ASCII: Latin-1 and Cyrillic.
+        "\u00e9{0,99}[\u00e0-\u00ff]{0,99}x",
+        "[\u0430-\u044f]{0,99}\u0434{0,99}x",
+    ],
+)
+def test_the_lint_refuses_backtracking_shapes(pattern):
+    """Patterns the delta review timed at seconds on a few dozen characters."""
+    with pytest.raises(ValueError, match="alternation inside a repeat|adjacent repeats"):
+        _bounded(pattern)
+
+
+@pytest.mark.parametrize("pattern", [r"\s{0,8}:\s{0,8}", r"x{0,9}y{0,9}", r"^big-ip®?\s{0,4}-"])
+def test_the_lint_lets_separated_or_disjoint_repeats_through(pattern):
+    _bounded(pattern)
+
+
+def test_the_load_time_stress_refuses_a_slow_pattern():
+    with pytest.raises(ValueError, match="hostile characters"):
+        stress(re.compile(r"(?:a|a){0,1024}b"), budget=0.05)
+
+
+def test_every_shipped_pattern_passes_the_stress_budget():
+    patterns = load_catalogue().patterns()
+    assert len(patterns) > 100
+    for pattern in patterns:
+        stress(pattern)
+
+
+def test_inline_script_text_is_capped():
+    page = parse_page("<script>" + "x" * 200_000 + "</script><title>after</title>" + "y" * 100_000)
+    assert [len(text) for text in page.scripts] == [64 * 1024]
+
+
+def test_loading_the_catalogue_times_nothing(monkeypatch):
+    """A timing is about the machine as much as the pattern: loading on a busy
+    sensor must not depend on one (7143f4ae..66a1dcf6 refused 7 of 8 loads
+    under +30 busy processes and failed the run)."""
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    def over_budget(pattern, budget=module.STRESS_BUDGET_SECONDS):
+        raise ValueError(f"regex {pattern.pattern!r} took too long")
+
+    monkeypatch.setattr(module, "stress", over_budget)
+    catalogue = module.load_catalogue.__wrapped__(CATALOGUE_PATH)
+    assert len(catalogue.technologies) == len(load_catalogue().technologies)
+    assert catalogue.rejected == []
+
+
+def test_a_bad_entry_is_dropped_and_reported_not_fatal(tmp_path):
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    raw = _raw()
+    good = raw["technologies"][0]
+    slow = copy.deepcopy(raw["technologies"][1])
+    slow["match"] = [{"from": "body", "regex": "(?:a|ab){0,64}c"}]
+    raw["technologies"] = [good, slow, copy.deepcopy(good), {"id": "x"}]
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    catalogue = module.load_catalogue.__wrapped__(path)
+    assert [t.id for t in catalogue.technologies] == [good["id"]]
+    assert [r["id"] for r in catalogue.rejected] == [slow["id"], good["id"], "x"]
+    assert "alternation inside a repeat" in catalogue.rejected[0]["error"]
+    assert "appears twice" in catalogue.rejected[1]["error"]
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"schema": 1}', "[]", ""])
+def test_an_unusable_catalogue_file_identifies_nothing_instead_of_raising(tmp_path, content):
+    import scanner.pipeline.fingerprint_catalogue as module
+
+    path = tmp_path / "catalogue.json"
+    path.write_text(content, encoding="utf-8")
+    catalogue = module.load_catalogue.__wrapped__(path)
+    assert catalogue.technologies == []
+    assert catalogue.rejected and "unusable" in catalogue.rejected[0]["error"]
+    assert catalogue.classify(200, httpx.Headers({"Server": "nginx/1.24.0"}), "") == []
+
+
+
+def _raw_regex_count() -> int:
+    """Regexes in the file, counted from the JSON itself rather than through the model."""
+
+    def count(matchers: list) -> int:
+        return sum(count(m["all"]) if "all" in m else int("regex" in m) for m in matchers)
+
+    return sum(count(t["match"]) + len(t.get("version", [])) for t in _raw()["technologies"])
+
+
+def test_every_regex_in_the_file_is_linted_and_stressed():
+    """patterns() feeds the stress test; a rule it skipped (version rules) would never be timed."""
+    assert len(load_catalogue().patterns()) == _raw_regex_count()
+
+
+@pytest.mark.parametrize(
+    "body, title",
+    [
+        ("<!--><title>a</title>", "a"),
+        ("<!---><title>b</title>", "b"),
+        ("<!-- <title>no</title> --!><title>c</title>", "c"),
+        ("<!-- <title>no</title> --><title>d</title>", "d"),
+        ("<!-- <title>no</title>", ""),
+        # Two comments in a row: the cached closer must move past the first.
+        ("<!-- a --><!-- b --><title>x</title>", "x"),
+        ("<!-- a --!><!-- b --><title>y</title>", "y"),
+        ("<!-- a --><!-- b --!><title>z</title>", "z"),
+    ],
+)
+def test_comment_forms_follow_the_html_spec(body, title):
+    assert _capped(f"print(page_title({body!r}))") == title
+
+
+@pytest.mark.parametrize("unit", ["<!-- -->", "<!-- --!>", "<!-- a --!><!-- b -->"])
+def test_a_hostile_page_of_comments_classifies_in_bounded_time(unit):
+    """A comment closer cached past its use would loop on the next comment forever."""
+    took = _capped(
+        f"import time, httpx; body = ({unit!r} * {MIB // len(unit) + 1})[:{MIB}]; t = time.process_time(); "
+        "load_catalogue().classify(200, httpx.Headers(), body, 'http://192.0.2.10/'); "
+        "print(time.process_time() - t)"
+    )
+    assert float(took) < 1.0
+
+
+def test_markup_quoted_inside_a_script_is_not_the_page():
+    """A login form drawn by JavaScript is a string, not an <input> of this page."""
+    truncated = "<title>Prometheus Time Series Collection and Processing Server</title><script>var f = '<input type=\"password\">';"
+    assert parse_page(truncated).password_input is False
+    long_script = "<script>var f = '" + "x" * (70 * 1024) + "<input type=\"password\">';</script><p>after</p>"
+    assert parse_page(long_script).password_input is False
+
+
+def test_markup_after_a_long_script_is_still_read():
+    body = "<script>var x = '" + "x" * (70 * 1024) + "';</script><title>after</title>"
+    assert page_title(body) == "after"
+
+
+
+def _capped(code: str, seconds: float = 20.0) -> str:
+    """Run ``code`` in a child interpreter under a hard wall-clock cap; its stdout.
+
+    For checks whose failure mode is a loop that never advances: in-process a
+    hung parse holds the GIL and stalls the whole suite; a child is killed.
+    """
+    import subprocess
+    import sys
+
+    prelude = "from scanner.pipeline.fingerprint_catalogue import load_catalogue, page_title\n"
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", prelude + code],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=seconds,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"did not return within {seconds}s (a scan loop that never advances)")
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout.strip()
+
+
+def test_the_stress_budget_scales_to_the_largest_body():
+    """Linear but slow: 64 KiB is 1/16 of body_max_bytes, and the whole response has 2 s."""
+    with pytest.raises(ValueError, match="hostile characters"):
+        stress(re.compile(r"\w{0,1024}="))
+
+
+def test_the_budget_constants_match_the_stage_and_its_config():
+    import scanner.pipeline.fingerprint as fp
+    import scanner.pipeline.fingerprint_catalogue as module
+    from scanner.pipeline.config_schema import FingerprintConfig
+
+    ceiling = FingerprintConfig.model_fields["body_max_bytes"].metadata
+    assert any(getattr(m, "le", None) == module.MAX_BODY_BYTES for m in ceiling)
+    assert fp.CLASSIFY_SECONDS == module.CLASSIFY_BUDGET_SECONDS
+    assert module.STRESS_BUDGET_SECONDS * module.MAX_BODY_BYTES / module.STRESS_INPUT_LEN < fp.CLASSIFY_SECONDS
+
+
+def test_scripts_past_the_kept_count_are_still_stepped_over():
+    """The 65th script's text is dropped, not read as the page's markup."""
+    body = (
+        "<script>var a = 1;</script>" * 70
+        + "<script>var t = '<title>fake</title><form><input type=\"password\"></form>';</script>"
+        + "<title>real</title>"
+    )
+    page = parse_page(body)
+    assert len(page.scripts) == 64
+    assert page.title == "real"
+    assert page.password_input is False
+
+
+@pytest.mark.parametrize("closer", ["</script/>", "</script foo>", "</script" + " " * 12 + "\n>", "</SCRIPT>"])
+def test_a_script_ends_where_html_ends_it(closer):
+    body = "<script>var f = '<input type=\"password\">';" + closer + "<title>after</title>"
+    page = parse_page(body)
+    assert page.title == "after"
+    assert page.password_input is False
+
+
+def test_an_unterminated_script_tail_is_cut_at_the_cap():
+    page = parse_page("<script>" + "x" * 100_000)
+    assert [len(text) for text in page.scripts] == [64 * 1024]
+
+
+def test_an_end_tag_with_a_quoted_attribute_runs_to_its_first_gt():
+    """`</script x='<title>t'>`: the end tag is everything up to the first `>`, so the
+    `<title>` inside the quoted value is not markup and the real title still is."""
+    page = parse_page("<script>var a = 1;</script x='<title>t'><title>real</title>")
+    assert page.title == "real"

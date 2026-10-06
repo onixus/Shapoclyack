@@ -37,6 +37,11 @@ LOG = logging.getLogger("shapoclyack.controls")
 # A banner discloses a version when it carries a digit-dotted token
 # ("nginx/1.24.0", "PHP/8.1.2"), as opposed to a bare product name ("nginx").
 _BANNER_VERSION_RE = re.compile(r"\d+\.\d+")
+#: The headers the web technologies control rates as banners itself.
+_BANNER_HEADERS = frozenset({"server", "x-powered-by"})
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+#: Slots of the web control's top ten kept for info observations (gateways).
+_OBSERVATION_ROOM = 3
 
 STAGE = "controls"
 
@@ -507,6 +512,20 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
             "why": f"Web technology fingerprinting skipped: {fp_data['skipped_reason']}",
         }
 
+    # The catalogue the stage matched with. A broken file loads empty and a bad
+    # entry is dropped rather than failing the run -- so "nothing found" here
+    # can mean "nothing could be looked for", and the control must say so.
+    catalogue = fp_data.get("catalogue") if isinstance(fp_data.get("catalogue"), dict) else {}
+    rejected = [r for r in (catalogue.get("rejected") or []) if isinstance(r, dict)]
+    # An empty catalogue leaves only the banner rule below, which needs none:
+    # its findings still count, but a clean result is not a pass.
+    unusable = ""
+    if catalogue and int(catalogue.get("technologies") or 0) == 0:
+        reasons = "; ".join(str(r.get("error") or "") for r in rejected)[:300]
+        unusable = f"Web technology catalogue unusable, nothing could be identified: {reasons or 'no entries'}"
+        rejected = []
+    rejected_ids = [str(r.get("id") or "?") for r in rejected]
+
     # fingerprint.json findings are per-endpoint observations
     # ({host, port, scheme, server, x_powered_by, cdn_waf, cms_framework}) with
     # no severity of their own -- an endpoint that simply answered is not a
@@ -541,16 +560,98 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
                 "severity": sev,
                 "detail": f"{header_name}: {banner.strip()}",
             })
+    banner_count = len(findings)
 
+    # fingerprint.json ``exposures`` (catalogue matches that are findings in
+    # their own right). A console counts at the severity the stage gave it,
+    # which already says what it answered: an open database API high, a
+    # console with no login page in front medium, a login page low. An
+    # info-level item -- a VPN or webmail portal, a version stated in some
+    # other header -- is listed for the reader and moves neither the counts nor
+    # the status: a gateway that is meant to be reachable is not a weakness of
+    # this control, but it is never dropped from the view either. A version in
+    # Server / X-Powered-By is already rated by the banner rule above and is not
+    # counted a second time.
+    consoles = {"high": 0, "medium": 0, "low": 0, "undetermined": 0}
+    gateways = 0
+    observations: list[dict[str, Any]] = []
+    for item in fp_data.get("exposures") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "web_exposure")
+        if kind == "version_disclosure" and str(item.get("header") or "").lower() in _BANNER_HEADERS:
+            continue
+        endpoint = str(item.get("host") or "")
+        if item.get("port"):
+            endpoint = f"{endpoint}:{item['port']}"
+        detail = str(item.get("detail") or "")
+        if not detail:
+            name = item.get("name") or item.get("technology") or "web technology"
+            detail = f"{name} at {item.get('url') or endpoint}"
+        sev = str(item.get("severity") or "medium").lower()
+        entry = {"id": kind, "domain": endpoint, "severity": sev, "detail": detail}
+        if kind == "exposed_remote_access_gateway":
+            gateways += 1
+        if sev in sev_counts:
+            sev_counts[sev] += 1
+            if kind == "exposed_admin_interface" and sev in consoles:
+                # auth_required present and null: the stage could not tell from
+                # the landing page (an SPA shell, a welcome page).
+                undetermined = "auth_required" in item and item["auth_required"] is None
+                consoles["undetermined" if undetermined else sev] += 1
+            findings.append(entry)
+        else:
+            observations.append(entry)
+    findings.sort(key=lambda f: _SEVERITY_ORDER.get(f["severity"], len(_SEVERITY_ORDER)))
+    # Gateways first among the observations, and room kept for them: twelve
+    # bare banners must not hide the VPN portal the estate exposes.
+    observations.sort(key=lambda f: f["id"] != "exposed_remote_access_gateway")
+    room = min(len(observations), _OBSERVATION_ROOM)
+    top_findings = findings[: 10 - room] + observations
+    top_findings = top_findings[:10]
+
+    parts = []
+    if consoles["high"]:
+        parts.append(f"{consoles['high']} database API(s) answer without authentication")
+    if consoles["medium"]:
+        parts.append(f"{consoles['medium']} admin/management console(s) answer with no login page in front")
+    if consoles["low"]:
+        parts.append(f"{consoles['low']} admin login page(s) reachable")
+    if consoles["undetermined"]:
+        parts.append(
+            f"{consoles['undetermined']} admin console landing page(s) reachable, "
+            "authentication not determinable"
+        )
+    if banner_count:
+        parts.append(f"{banner_count} endpoint banner(s) disclose product/version information")
+    inventory = f"{gateways} remote-access/webmail portal(s) inventoried" if gateways else ""
+
+    gap = unusable or (
+        f"{len(rejected_ids)} catalogue entr(ies) rejected and not looked for: {', '.join(rejected_ids[:10])}"
+        if rejected_ids
+        else ""
+    )
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
-        why = f"{sev_counts['critical'] + sev_counts['high']} high/critical tech stack exposures"
+        why = "; ".join(p for p in [*parts, inventory, gap] if p)
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = f"{sev_counts['medium'] + sev_counts['low']} endpoint banner(s) disclose product/version information"
+        why = "; ".join(p for p in [*parts, inventory, gap] if p)
+    elif unusable:
+        status = "not_checked"
+        why = unusable
+    elif checked_count > 0 and gap:
+        # Clean, but with part of the catalogue missing: not a pass.
+        status = "weak"
+        why = "; ".join(p for p in [f"{checked_count} web endpoint(s) fingerprinted with a partial catalogue", gap, inventory] if p)
     elif checked_count > 0:
         status = "ok"
-        why = f"{checked_count} web endpoint(s) fingerprinted with no product/version banner disclosure"
+        why = (
+            f"{checked_count} web endpoint(s) fingerprinted with no exposed console "
+            "or product/version banner disclosure"
+        )
+        if inventory:
+            why += f"; {inventory}"
     else:
         status = "not_checked"
         why = "No web targets fingerprinted"
@@ -559,7 +660,7 @@ def _extract_web_technologies_control(output_dir: Path) -> dict[str, Any]:
         "status": status,
         "coverage": {"checked": checked_count, "total": total_count},
         "findings_by_severity": sev_counts,
-        "top_findings": findings[:10],
+        "top_findings": top_findings,
         "evidence": ["fingerprint.json"],
         "why": why,
     }

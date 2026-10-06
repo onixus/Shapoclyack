@@ -216,7 +216,7 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
     "apache http server": ("a:apache:http_server",),
     # NVD moved nginx from nginx:nginx to f5:nginx in 2022; old CVEs still
     # carry the first key, new ones the second.
-    "nginx": ("a:f5:nginx", "a:nginx:nginx"),
+    "nginx": ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
     "openssl": ("a:openssl:openssl",),
     # NVD's CPE dictionary has only vsftpd_project:vsftpd (checked 2026-09-23:
     # 42 names, none under beasts); beasts is nmap's name, aliased below.
@@ -372,9 +372,11 @@ def _foreign_mysql_engine(fingerprint: Fingerprint, cpe_version: str | None) -> 
 #: or vsftpd CPE from nmap matches nothing. Checked against NVD's CPE
 #: dictionary on 2026-09-23.
 CPE_ALIASES: dict[str, tuple[str, ...]] = {
-    "a:igor_sysoev:nginx": ("a:f5:nginx", "a:nginx:nginx"),
-    "a:nginx:nginx": ("a:nginx:nginx", "a:f5:nginx"),
-    "a:f5:nginx": ("a:f5:nginx", "a:nginx:nginx"),
+    "a:igor_sysoev:nginx": ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
+    "a:nginx:nginx": ("a:nginx:nginx", "a:f5:nginx", "a:f5:nginx_open_source"),
+    "a:f5:nginx": ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
+    # Since 2024-08 NVD files nginx (old releases re-filed too) under f5:nginx_open_source.
+    "a:f5:nginx_open_source": ("a:f5:nginx_open_source", "a:f5:nginx", "a:nginx:nginx"),
     "a:beasts:vsftpd": ("a:vsftpd_project:vsftpd",),
     "a:vsftpd:vsftpd": ("a:vsftpd_project:vsftpd",),
     "a:matt_johnston:dropbear_ssh_server": (
@@ -413,6 +415,7 @@ SOURCE_PACKAGES: dict[str, tuple[str, ...]] = {
     "a:apache:http_server": ("apache2",),
     "a:f5:nginx": ("nginx",),
     "a:nginx:nginx": ("nginx",),
+    "a:f5:nginx_open_source": ("nginx",),
     "a:openssl:openssl": ("openssl",),
     "a:vsftpd_project:vsftpd": ("vsftpd",),
     "a:proftpd:proftpd": ("proftpd-dfsg",),
@@ -494,6 +497,7 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:apache:http_server": ("apache",),
     "a:f5:nginx": ("nginx",),
     "a:nginx:nginx": ("nginx",),
+    "a:f5:nginx_open_source": ("nginx",),
     "a:openssl:openssl": ("openssl",),
     "a:vsftpd_project:vsftpd": ("vsftpd",),
     "a:proftpd:proftpd": ("proftpd",),
