@@ -79,23 +79,28 @@ pipeline {
 
     // Узел живёт, только пока включены винда и VM. Без этой стадии
     // выключенная VM означала бы, что сборка молча висит в очереди до
-    // общего таймаута в 90 минут. Таймаут стадии в declarative считает и
-    // ожидание агента, поэтому через 10 минут без узла сборка обрывается с
-    // сообщением ниже. Запасного пути на мак нет намеренно: сборка, которая
-    // без узла позеленела бы без тестов, хуже красной.
+    // общего таймаута в 90 минут. Здесь на то, чтобы узел взял сборку, есть
+    // 10 минут, после чего она падает (FAILURE, не ABORTED) с сообщением,
+    // что искать. Таймаут и node — в script, а не через agent и options:
+    // post стадии с agent выполняется на её узле и без узла не печатает
+    // ничего (билд #3 этой ветки закончился голым ABORTED). Запасного пути на
+    // мак нет намеренно: сборка, которая без узла позеленела бы без тестов,
+    // хуже красной.
     stage('Linux node') {
-      agent { label 'gaming-amd64' }
-      options {
-        skipDefaultCheckout()
-        timeout(time: 10, unit: 'MINUTES')
-      }
       steps {
-        sh 'echo "[ci] node: $(uname -srm), docker $(docker version --format {{.Server.Version}})"'
-      }
-      post {
-        unsuccessful {
-          echo 'gaming-amd64 did not take the build within 10 minutes: is VM Fedor running? ' +
-            'See the gaming-amd64 section of the local-jenkins notes (VBoxManage list runningvms on win116).'
+        script {
+          try {
+            timeout(time: 10, unit: 'MINUTES') {
+              node('gaming-amd64') {
+                sh 'echo "[ci] node: $(uname -srm), docker $(docker version --format {{.Server.Version}})"'
+              }
+            }
+          } catch (err) {
+            // Ручной Abort сюда тоже попадает, но результат сборки от error
+            // не улучшится: ABORTED хуже FAILURE и остаётся.
+            error "gaming-amd64 did not take the build within 10 minutes (${err}): is VM Fedor running? " +
+              'See the gaming-amd64 section of the local-jenkins notes (VBoxManage list runningvms on win116).'
+          }
         }
       }
     }
