@@ -633,7 +633,7 @@ def _still_open(settings, tenant_id, vuln_id) -> dict:
 
 
 def test_icmp_liveness_and_an_empty_naabu_close_nothing(tmp_path, monkeypatch):
-    """The delta review's P0: naabu reports open ports only, so a port a
+    """Naabu reports open ports only, so a port a
     firewall dropped and one that refused look alike — absent — and a host
     that answered ping was enough to close the exposure machine-verified.
     Without the connect probe's refusal there is no closure."""
@@ -714,7 +714,7 @@ def test_a_port_refused_from_elsewhere_is_inconclusive(tmp_path, monkeypatch, fi
 
 @pytest.mark.parametrize("verify_from", ["dmz", "internal"])
 def test_a_later_observer_does_not_erase_an_earlier_one(tmp_path, monkeypatch, verify_from):
-    """The round-2 delta review's probe: the internal sensors saw the
+    """The internal sensors saw the
     exposure, then the DMZ sensor saw it too. The detector entry used to
     take the DMZ vantage over, and a DMZ refusal then closed what the
     internal path still reached. Seen from two places, a refusal from
@@ -766,7 +766,7 @@ def test_two_detectors_seen_from_two_places_close_nothing_by_refusal(tmp_path, m
 
 
 def test_a_finding_from_before_the_upgrade_can_be_shown_unreachable(tmp_path, monkeypatch):
-    """The round-3 delta review's probe: a backfilled finding (0079: host-less,
+    """A backfilled finding (0079: host-less,
     no vantage) re-observed from the local executor carried ``unknown`` into
     every later merge, so a refusal from that same executor could never close
     it — the whole pre-upgrade backlog was stuck inconclusive by refusal."""
@@ -1083,7 +1083,7 @@ def test_a_reopen_after_a_verified_fix_still_restarts_the_clock(tmp_path, monkey
     ],
 )
 def test_a_closed_tcp_port_says_nothing_about_a_udp_or_unknown_finding(tmp_path, monkeypatch, protocol):
-    """The delta review's probe: a vulners CVE on UDP 123, re-checked by a
+    """A vulners CVE on UDP 123, re-checked by a
     TCP port stage that saw 123 closed, was closed as endpoint_unreachable."""
     ntp = _row("nmap-nse", "vulners", port="123", **({"protocol": protocol} if protocol else {}))
     settings, tenant_id = _seed(tmp_path, findings=[ntp])
@@ -1351,7 +1351,7 @@ def test_the_detector_list_is_bounded(tmp_path):
     ids=["pulse", "nse-udp", "tcp-and-udp", "tcp-and-unknown", "none"],
 )
 def test_a_finding_is_tcp_only_when_every_detector_says_so(detectors, protocol):
-    """The delta review's surviving mutants: "any detector is TCP" and
+    """Surviving mutants: "any detector is TCP" and
     "ignore the unknown ones" each let a refused TCP port close a finding a
     UDP or protocol-unknown detector also stands behind."""
     from api.services import verification_coverage as coverage
@@ -1563,7 +1563,7 @@ def _dmz_scope(settings, tenant_id) -> None:
 
 
 def test_a_scope_pinned_group_without_a_v2_sensor_is_refused(tmp_path):
-    """The delta review's probe: a v2 sensor outside any group, a v1 sensor
+    """A v2 sensor outside any group, a v1 sensor
     in ``dmz``, a scope that sends 10.0.0.0/8 to ``dmz``. The tenant-wide
     check passed, the job went to ``dmz``, every claim was a 426 and the
     finding sat in VERIFYING with nothing on screen."""
@@ -1611,7 +1611,7 @@ def _age(settings, tenant_id, group: str, *, by) -> None:
     [("deleted", "group_deleted"), ("emptied_2h_ago", "no_live_sensor_for_2h")],
 )
 def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wide(tmp_path, regroup, reason):
-    """The round-2 delta review's probes: the sensors of ``internal`` moved
+    """The sensors of ``internal`` moved
     to ``msk``, and ``internal`` deleted — or kept, empty for longer than the
     grace period. Pinning the job to ``internal`` was a 409 forever (unknown
     group) or one telling the operator to upgrade a sensor in a group that
@@ -1650,7 +1650,7 @@ def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wi
     ],
 )
 def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, monkeypatch, silent, outcome):
-    """The round-3 delta review's probe: the observing group's only sensor
+    """The observing group's only sensor
     missed two heartbeats (a restart), and the verification went tenant-wide
     from another network path with an event saying the group was gone. Inside
     the grace period (OCTO_VERIFICATION_REGROUP_GRACE_SECONDS, 1 h) it is
@@ -1705,7 +1705,7 @@ def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, m
     ids=["endpoint-agent", "below-floor"],
 )
 def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp_path, member, aged):
-    """The round-2 delta review's probes: the observing group's only member
+    """The observing group's only member
     declares v2 but could never claim the job. The verification was queued
     there and the finding parked in VERIFYING. Now the group counts as having
     no live sensor: refused with "retry" inside the grace period, and past

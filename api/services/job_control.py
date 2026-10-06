@@ -179,7 +179,7 @@ def claim_job(
     # What this agent cannot run (#362, #338). Filtered out of the claim
     # rather than refused at the head of the queue: a sensor that predates the
     # config overlay used to be handed the oldest job, refuse it, and never
-    # reach the plain jobs queued behind it (review round 2).
+    # reach the plain jobs queued behind it.
     #
     # The overlay is versioned per job: a job asks for the capability of the
     # lowest overlay version that covers it (``config_overlay_capability``,

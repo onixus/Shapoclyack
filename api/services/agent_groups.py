@@ -562,7 +562,7 @@ def live_sensors(settings: Settings, tenant_ids: set[str]) -> dict[str, list[fro
     agent is refused scan jobs on claim), and not below the version floor
     (refused too, #363). Capabilities rather than a yes/no because the answer
     depends on the job: one with a scan policy or a config overlay needs a
-    sensor that declares it (review round 2).
+    sensor that declares it.
     """
     if not tenant_ids:
         return {}

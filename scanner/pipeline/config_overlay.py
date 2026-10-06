@@ -22,7 +22,7 @@ whole run on anything else rather than applying the part it recognises.
 
 And one installation-wide console override now reaches every tenant's
 sensors, so for the settings that decide how hard a sensor hits its network
-the host's own file stays the limit (review round 2): rates, concurrency and
+the host's own file stays the limit: rates, concurrency and
 nmap timing take the lower of the two, nuclei's excluded tags are the union,
 and screenshots run only where the host enabled them. An overlay can make a
 sensor gentler, never rougher; a tenant scan policy (#362) lowers it further.
