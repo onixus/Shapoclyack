@@ -281,17 +281,20 @@ class RunCoverage:
     def endpoint_unreachable(
         self, hosts: set[str], port: int | None, *, protocol: str | None = "tcp"
     ) -> dict[str, Any] | None:
-        """Evidence that ``port`` is closed on every one of ``hosts``, or ``None``.
+        """Evidence that ``port`` is not reachable on any of ``hosts`` from
+        where this run looked, or ``None``.
 
         All of it has to hold, on each host — an IP: a name is resolved by
         the scanner, and which address the port stage saw for it is not
         recorded:
 
-        * the host **refused** the connection: the run's own connect probe
+        * the connection was **refused**: the run's own connect probe
           (``reachability.json``, a verification run's) got ``ECONNREFUSED``
-          on every attempt. A refusal is the host's stack answering, so it is
-          the proof of life too; a timeout or an unreachable route is what a
-          firewall dropping the packets looks like, and proves nothing;
+          on every attempt. That says nothing about what answered — the host,
+          or an iptables/kube-proxy ``REJECT``, a tcp-reset rule, a fail2ban
+          ban in front of a listening port — so it is "not reachable from
+          here", never a verified fix. A timeout or an unreachable route is
+          what dropped packets look like, and proves nothing at all;
         * the port was in the port stage's explicit list for that host, in a
           batch that finished (a ``-top-ports`` set is not explicit);
         * nothing else in the run saw the port open — not naabu, not Pulse

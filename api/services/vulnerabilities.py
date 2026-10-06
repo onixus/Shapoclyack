@@ -129,9 +129,10 @@ VULN_EVENT_KINDS = (
     # finish at all. Neither fixed nor still there: back to FIXING, never
     # machine-verified, with what was not covered in ``detail.gaps`` (#451).
     "verification_inconclusive",
-    # The verification run found the host up and the finding's port closed
-    # (closure_reason endpoint_unreachable): machine-verified for a Pulse
-    # exposure, not for a CVE (#451).
+    # The verification run's connect probe was refused on the finding's port
+    # (closure_reason endpoint_unreachable): not reachable from where the run
+    # looked. Never machine-verified — a firewall REJECT in front of a
+    # listening port answers the same way (#451).
     "verification_unreachable",
     "ticket_synced",
     # SLA escalation (#349): the worker reassigned the finding or raised its
@@ -185,7 +186,8 @@ CLOSURE_REASONS = (
     "patched",
     "manual",
     "ticket_resolved",
-    # A verification found the host up and the port closed (#451).
+    # A verification's connect probe was refused on the finding's port, from
+    # the vantage that observed it (#451). Not a verified fix.
     "endpoint_unreachable",
 )
 
@@ -210,7 +212,8 @@ class RegisterStats:
     # Not observed, but not demonstrably looked for either: sent back to
     # FIXING rather than closed (verification_coverage.py).
     verification_inconclusive: int = 0
-    # Closed as endpoint_unreachable: host up, port provably closed.
+    # Closed as endpoint_unreachable: refused from the observing vantage,
+    # not machine-verified.
     verification_unreachable: int = 0
     # Findings seen again while a false-positive verdict suppressed them, and
     # verdicts this run broke early because the assessment got worse.
@@ -267,6 +270,15 @@ def finding_key(*, asset_id: str, cve: str | None, script_id: str | None, port: 
 #: row nobody may ever close; sixteen is far more detectors and addresses than
 #: one CVE on one port plausibly has.
 MAX_DETECTORS = 16
+
+#: How many vantages one detector entry remembers (``vantages``, newest
+#: first). Only "one, and it is the verifying one" ever lets a refusal close
+#: a finding, so a bound that keeps at least two loses no decision.
+MAX_VANTAGES = 8
+
+#: The vantage of an observation nobody recorded: a run no job owns, or an
+#: entry from before vantages were kept (backfilled by 0079).
+UNKNOWN_VANTAGE = "unknown"
 
 
 def _detector_of(source: Any, script_id: Any) -> tuple[str, str] | None:
@@ -325,6 +337,7 @@ def _observed_detectors(
         }
         if vantage:
             candidate.update(vantage)
+        candidate["vantages"] = [str((vantage or {}).get("vantage") or UNKNOWN_VANTAGE)]
         protocol = str(row.get("protocol") or "").strip().lower()
         if protocol in ("tcp", "udp"):
             # Recorded so a UDP finding is never judged by a TCP re-check.
@@ -349,6 +362,29 @@ def _detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _vantages_of(entry: dict[str, Any]) -> list[str]:
+    """Every vantage ``entry`` was observed from, newest first.
+
+    An entry written before the list was kept names one (``vantage``) or
+    none, and none is :data:`UNKNOWN_VANTAGE`, not "anywhere".
+    """
+    listed = entry.get("vantages")
+    if isinstance(listed, list) and listed:
+        return [str(value) for value in listed]
+    return [str(entry.get("vantage") or UNKNOWN_VANTAGE)]
+
+
+def _union_vantages(*lists: list[str]) -> list[str]:
+    out: list[str] = []
+    for values in lists:
+        out.extend(value for value in values if value not in out)
+    return out[:MAX_VANTAGES]
+
+
+def _loose_detector_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    return (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""))
+
+
 def merge_detectors(
     existing: list[dict[str, Any]] | None, observed: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -360,25 +396,38 @@ def merge_detectors(
     still owes it a look. A host-less entry (backfilled by 0079) is replaced
     by the same detector and ref observed with a host — the observation now
     says where it looked.
+
+    Vantages are only ever added to: an entry seen again from another sensor
+    group keeps the one it was seen from before (``vantages``), and an entry
+    the cap drops hands its vantages to the newest one. A refusal from one
+    vantage says nothing about what another observed, so a later observer
+    must not erase an earlier one (#451 review).
     """
+    previous = [entry for entry in (existing or []) if isinstance(entry, dict)]
     fresh = {_detector_key(entry) for entry in observed}
-    located = {
-        (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""))
+    located = {_loose_detector_key(entry) for entry in observed if entry.get("host")}
+
+    def replaced_by(old: dict[str, Any], new: dict[str, Any]) -> bool:
+        if _detector_key(old) == _detector_key(new):
+            return True
+        return not old.get("host") and bool(new.get("host")) and _loose_detector_key(old) == _loose_detector_key(new)
+
+    renewed = [
+        {
+            **entry,
+            "vantages": _union_vantages(
+                _vantages_of(entry), *(_vantages_of(old) for old in previous if replaced_by(old, entry))
+            ),
+        }
         for entry in observed
-        if entry.get("host")
-    }
+    ]
     kept = [
         entry
-        for entry in (existing or [])
-        if isinstance(entry, dict)
-        and _detector_key(entry) not in fresh
-        and not (
-            not entry.get("host")
-            and (entry.get("detector"), entry.get("ref") or None, str(entry.get("port") or ""))
-            in located
-        )
+        for entry in previous
+        if _detector_key(entry) not in fresh
+        and not (not entry.get("host") and _loose_detector_key(entry) in located)
     ]
-    merged = [*observed, *kept]
+    merged = [*renewed, *kept]
     if len(merged) <= MAX_DETECTORS:
         return merged
     # Over the cap, an entry repeating a detector and ref a newer entry
@@ -395,7 +444,16 @@ def merge_detectors(
         held.add(key)
     excess = len(merged) - MAX_DETECTORS
     dropped = set(repeats[::-1][:excess])
-    return [entry for index, entry in enumerate(merged) if index not in dropped][:MAX_DETECTORS]
+    survivors = [index for index in range(len(merged)) if index not in dropped][:MAX_DETECTORS]
+    capped = [merged[index] for index in survivors]
+    lost = [
+        vantage
+        for index, entry in enumerate(merged)
+        if index not in survivors
+        for vantage in _vantages_of(entry)
+    ]
+    capped[0] = {**capped[0], "vantages": _union_vantages(_vantages_of(capped[0]), lost)}
+    return capped
 
 
 def _severity_of(entry: dict[str, Any]) -> str:
@@ -1076,15 +1134,28 @@ def _run_vantage(session: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]
     }
 
 
-def _same_vantage(row: models.Vulnerability, verifying: dict[str, Any] | None) -> bool:
-    """Whether every detector of ``row`` observed it from where the run looked.
+def _observed_vantages(row: models.Vulnerability) -> set[str]:
+    """Every vantage any detector of ``row`` ever observed it from."""
+    return {
+        vantage
+        for entry in (row.detectors or [])
+        if isinstance(entry, dict)
+        for vantage in _vantages_of(entry)
+    }
 
-    False whenever either side is unknown: a legacy detector that never
-    recorded its sensor, or a run no job owns.
+
+def _same_vantage(row: models.Vulnerability, verifying: dict[str, Any] | None) -> bool:
+    """Whether ``row`` was only ever observed from where the run looked.
+
+    One observing vantage, and it is the verifying one. A finding two sensor
+    groups saw is not shown unreachable by a refusal from either: each one's
+    path is its own. False whenever either side is unknown — an observation
+    nobody recorded the sensor of, a row with no detector, a run no job owns.
+    An ungrouped sensor is its own vantage (``agent:<id>``), so a refusal
+    another ungrouped sensor got does not count either.
     """
     key = (verifying or {}).get("vantage")
-    detectors = [entry for entry in (row.detectors or []) if isinstance(entry, dict)]
-    return bool(key) and bool(detectors) and all(entry.get("vantage") == key for entry in detectors)
+    return bool(key) and _observed_vantages(row) == {key}
 
 
 def _asset_hosts(session: Any, row: models.Vulnerability) -> set[str]:
@@ -1128,15 +1199,6 @@ def _finding_hosts(row: models.Vulnerability, addresses: set[str]) -> set[str]:
     if not detectors or any(not entry.get("host") for entry in detectors):
         hosts |= asset_ips
     return hosts
-
-
-def _is_exposure(row: models.Vulnerability) -> bool:
-    """A Pulse ``exposure`` finding: "this port is reachable", no CVE.
-
-    Its identity says so: pulse's CVE-less findings are keyed
-    ``pulse:<finding_class>:<port>:<slug>`` (scanner/pipeline/service_schema.py).
-    """
-    return not row.cve and str(row.script_id or "").startswith("pulse:exposure:")
 
 
 def _send_back_inconclusive(
@@ -1554,15 +1616,11 @@ def register_findings_from_run(
                     if gaps
                     else None
                 )
-                if (
-                    unreachable is not None
-                    and _is_exposure(v_row)
-                    and not _same_vantage(v_row, vantage)
-                ):
-                    # The exposure is "reachable from where it was seen". A
-                    # refusal from another vantage — a DMZ sensor for a
-                    # finding the internal one saw — says nothing about that,
-                    # so it closes nothing either way.
+                if unreachable is not None and not _same_vantage(v_row, vantage):
+                    # A refusal is about the path from where the run looked.
+                    # One from a DMZ sensor says nothing about what an internal
+                    # one saw, and a finding seen from two places is not shown
+                    # unreachable from either: it closes nothing.
                     gaps = [
                         *gaps,
                         {
@@ -1571,32 +1629,27 @@ def register_findings_from_run(
                             "host": None,
                             "port": v_row.port,
                             "reason": "vantage_differs",
-                            "observed_from": sorted(
-                                {
-                                    str(entry.get("vantage") or "unknown")
-                                    for entry in (v_row.detectors or [])
-                                    if isinstance(entry, dict)
-                                }
-                            ),
-                            "verified_from": (vantage or {}).get("vantage") or "unknown",
+                            "observed_from": sorted(_observed_vantages(v_row)) or [UNKNOWN_VANTAGE],
+                            "verified_from": (vantage or {}).get("vantage") or UNKNOWN_VANTAGE,
                         },
                     ]
                     unreachable = None
                 if unreachable is not None:
-                    # No detector re-checked it because there was nothing to
-                    # re-check: the host answered, the port was asked about in
-                    # a batch that finished, and nothing saw it open. For a
-                    # Pulse exposure — "this port is reachable" — that is the
-                    # finding gone, machine-verified. For a CVE it is the
-                    # vulnerable service out of reach, not shown fixed: closed,
-                    # and not counted as verified remediation.
-                    exposure = _is_exposure(v_row)
+                    # No detector re-checked it because nothing got through:
+                    # the port was asked about in a batch that finished, nothing
+                    # saw it open, and every connect was refused, from the one
+                    # vantage that ever observed the finding. That is "not
+                    # reachable from there", not a fix: an iptables or
+                    # kube-proxy REJECT, a tcp-reset rule or a fail2ban ban in
+                    # front of a listening port is refused the same way. So it
+                    # closes, and is never machine-verified, exposure or CVE.
+                    verified_from = (vantage or {}).get("vantage") or UNKNOWN_VANTAGE
                     v_row.state = vuln_states.CLOSED
                     v_row.state_changed_at = now
                     v_row.state_changed_by = "system:verification"
                     v_row.closed_at = now
                     v_row.last_verified_at = now
-                    v_row.machine_verified = exposure
+                    v_row.machine_verified = False
                     v_row.closure_reason = ENDPOINT_UNREACHABLE
                     dropped_exception = _drop_exception(v_row)
                     v_row.updated_at = now
@@ -1610,15 +1663,14 @@ def register_findings_from_run(
                         to_state=vuln_states.CLOSED,
                         actor="system:verification",
                         note=(
-                            f"Verification run {run_id} found the host up and port "
-                            f"{v_row.port} closed"
-                            + (" — the exposure is gone" if exposure else
-                               "; the service is out of reach, not shown fixed")
+                            f"Verification run {run_id}: port {v_row.port} not reachable "
+                            f"from {verified_from} (connect refused on every attempt); "
+                            "closed, not machine-verified"
                         ),
                         detail={
                             "run_id": run_id,
                             "job_id": v_row.verification_job_id,
-                            "machine_verified": exposure,
+                            "machine_verified": False,
                             "closure_reason": ENDPOINT_UNREACHABLE,
                             "evidence": unreachable,
                             "verified_from": vantage,

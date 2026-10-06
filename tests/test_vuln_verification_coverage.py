@@ -215,7 +215,10 @@ def _reach(monkeypatch, run_dir: Path, outcomes: dict[str, list[str]], *, port: 
     monkeypatch.setattr(reachability, "_attempt", lambda host, _port, _timeout: script[host].pop(0))
     attempts = max(len(results) for results in outcomes.values())
     reachability.run_reachability_probe(
-        list(outcomes), {port}, ReachabilityConfig(enabled=True, attempts=attempts), run_dir
+        list(outcomes),
+        {port},
+        ReachabilityConfig(enabled=True, attempts=attempts, attempt_interval_seconds=0),
+        run_dir,
     )
 
 
@@ -601,7 +604,7 @@ def test_a_port_that_did_not_answer_proves_nothing(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Host up, port closed: endpoint_unreachable
+# Refused from the observing vantage: endpoint_unreachable, never verified
 # --------------------------------------------------------------------------
 
 
@@ -645,11 +648,23 @@ def test_icmp_liveness_and_an_empty_naabu_close_nothing(tmp_path, monkeypatch):
     _still_open(settings, tenant_id, vuln["vuln_id"])
 
 
-def test_a_refused_port_closes_an_exposure_seen_from_the_same_place(tmp_path, monkeypatch):
-    """The finding *is* "this port is reachable": refused on every attempt,
-    from where it was seen, it is gone — machine-verified."""
-    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
-    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+@pytest.mark.parametrize(
+    "finding",
+    [
+        EXPOSURE,  # "this port is reachable": a REJECT rule makes it look gone
+        PULSE,  # a CVE: the vulnerable service out of reach, not shown patched
+        {**EXPOSURE, "script_id": "pulse:tls:443:weak-cipher"},
+    ],
+    ids=["exposure", "cve", "tls"],
+)
+def test_a_refused_port_closes_but_is_never_machine_verified(tmp_path, monkeypatch, finding):
+    """The round-3 decision: an iptables/kube-proxy REJECT, a tcp-reset rule or
+    a fail2ban ban in front of a listening port is refused on every attempt
+    just like a closed one. So a refusal closes the finding as not reachable
+    from where the run looked — for an exposure as much as for a CVE — and is
+    not a verified fix, nor counted as one."""
+    settings, tenant_id = _seed(tmp_path, findings=[finding])
+    vuln = _tracked_from(settings, tenant_id, finding)
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     _port_stage(monkeypatch, run_dir)
     _reach(monkeypatch, run_dir, {HOST: REFUSED})
@@ -657,53 +672,31 @@ def test_a_refused_port_closes_an_exposure_seen_from_the_same_place(tmp_path, mo
     stats = _fold(settings, tenant_id)
 
     assert stats.verification_unreachable == 1
-    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is True
-
-
-def test_a_refused_port_closes_a_cve_but_not_as_verified(tmp_path, monkeypatch):
-    """The vulnerable service is out of reach; nothing showed it patched."""
-    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
-    vuln = _tracked_from(settings, tenant_id, PULSE)
-    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    _port_stage(monkeypatch, run_dir)
-    _reach(monkeypatch, run_dir, {HOST: REFUSED})
-
-    _fold(settings, tenant_id)
-
     assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is False
     assert vulns.summary(settings, tenant_id=tenant_id)["machine_verified_closed"] == 0
+    event = _last_event(settings, tenant_id, vuln["vuln_id"])
+    assert event["detail"]["machine_verified"] is False
+    assert "not reachable from local" in event["note"]
+    assert "not machine-verified" in event["note"]
 
 
-def test_a_tls_observation_is_not_an_exposure(tmp_path, monkeypatch):
-    """Only ``pulse:exposure:*`` *is* the port being reachable. A CVE-less
-    TLS observation refused away is closed, but not machine-verified."""
-    tls = {**EXPOSURE, "script_id": "pulse:tls:443:weak-cipher"}
-    settings, tenant_id = _seed(tmp_path, findings=[tls])
-    vuln = _tracked_from(settings, tenant_id, tls)
-    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    _port_stage(monkeypatch, run_dir)
-    _reach(monkeypatch, run_dir, {HOST: REFUSED})
-
-    _fold(settings, tenant_id)
-
-    assert _closed_unreachable(settings, tenant_id, vuln["vuln_id"])["machine_verified"] is False
-
-
+@pytest.mark.parametrize("finding", [EXPOSURE, PULSE], ids=["exposure", "cve"])
 @pytest.mark.parametrize(
     ("observed", "why"),
     [
         ({"agent": "sensor-int", "group": "internal"}, "another sensor group"),
+        ({"agent": "sensor-solo"}, "another, ungrouped sensor"),
         (None, "observing sensor unknown (a run no job owns)"),
     ],
 )
-def test_an_exposure_refused_from_elsewhere_is_inconclusive(tmp_path, monkeypatch, observed, why):
-    """A DMZ sensor's refusal says nothing about what the internal one saw;
-    and its closure was what let a verify/reopen cycle reset the SLA."""
-    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+def test_a_port_refused_from_elsewhere_is_inconclusive(tmp_path, monkeypatch, finding, observed, why):
+    """A DMZ sensor's refusal says nothing about the path the internal one
+    saw the finding on — exposure or CVE alike."""
+    settings, tenant_id = _seed(tmp_path, findings=[finding])
     vuln = (
-        _tracked_from(settings, tenant_id, EXPOSURE, **observed)
+        _tracked_from(settings, tenant_id, finding, **observed)
         if observed
-        else _tracked(settings, tenant_id, [EXPOSURE])
+        else _tracked(settings, tenant_id, [finding])
     )
     _park_in_verifying(settings, tenant_id, vuln["vuln_id"], "job-verify")
     _write_run(settings.output_dir, "run-verify", HOSTS, [])
@@ -719,9 +712,47 @@ def test_an_exposure_refused_from_elsewhere_is_inconclusive(tmp_path, monkeypatc
     assert any(gap["reason"] == "vantage_differs" for gap in gaps), why
 
 
-def test_a_cve_refused_from_elsewhere_is_still_closed_unverified(tmp_path, monkeypatch):
+@pytest.mark.parametrize("verify_from", ["dmz", "internal"])
+def test_a_later_observer_does_not_erase_an_earlier_one(tmp_path, monkeypatch, verify_from):
+    """The round-2 delta review's probe: the internal sensors saw the
+    exposure, then the DMZ sensor saw it too. The detector entry used to
+    take the DMZ vantage over, and a DMZ refusal then closed what the
+    internal path still reached. Seen from two places, a refusal from
+    either one closes nothing."""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    _job_from(settings, tenant_id, "job-int", "run-1", agent="sensor-int", group="internal")
+    first = _tracked(settings, tenant_id, [EXPOSURE], run_id="run-1")
+    _job_from(settings, tenant_id, "job-dmz", "run-2", agent="sensor-dmz", group="dmz")
+    second = _tracked(settings, tenant_id, [EXPOSURE], run_id="run-2")
+    assert second["detectors"][0]["vantages"] == ["group:dmz", "group:internal"]
+
+    _park_in_verifying(settings, tenant_id, first["vuln_id"], "job-verify")
+    _write_run(settings.output_dir, "run-verify", HOSTS, [])
+    _job_from(settings, tenant_id, "job-verify", "run-verify", agent=f"sensor-{verify_from}", group=verify_from)
+    run_dir = settings.output_dir / "runs" / "run-verify"
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    _still_open(settings, tenant_id, first["vuln_id"])
+    gap = next(
+        gap
+        for gap in _last_event(settings, tenant_id, first["vuln_id"])["detail"]["gaps"]
+        if gap["reason"] == "vantage_differs"
+    )
+    assert gap["observed_from"] == ["group:dmz", "group:internal"]
+    assert gap["verified_from"] == f"group:{verify_from}"
+
+
+def test_two_detectors_seen_from_two_places_close_nothing_by_refusal(tmp_path, monkeypatch):
+    """Pulse from the internal group, nuclei from the DMZ: the refusal from
+    the DMZ matches one of them and not the other."""
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
-    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+    _job_from(settings, tenant_id, "job-int", "run-1", agent="sensor-int", group="internal")
+    vuln = _tracked(settings, tenant_id, [PULSE], run_id="run-1")
+    _job_from(settings, tenant_id, "job-dmz", "run-2", agent="sensor-dmz", group="dmz")
+    _tracked(settings, tenant_id, [NUCLEI_MEDIUM], run_id="run-2")
     _park_in_verifying(settings, tenant_id, vuln["vuln_id"], "job-verify")
     _write_run(settings.output_dir, "run-verify", HOSTS, [])
     _job_from(settings, tenant_id, "job-verify", "run-verify", agent="sensor-dmz", group="dmz")
@@ -731,9 +762,26 @@ def test_a_cve_refused_from_elsewhere_is_still_closed_unverified(tmp_path, monke
 
     _fold(settings, tenant_id)
 
-    after = _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
-    assert after["machine_verified"] is False
-    assert _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["verified_from"]["vantage"] == "group:dmz"
+    _still_open(settings, tenant_id, vuln["vuln_id"])
+
+
+def test_a_row_without_detectors_is_never_closed_by_refusal(tmp_path, monkeypatch):
+    """A row with no detector recorded none of where it was seen, nor over
+    which protocol: a refusal from the verifying run's own place says nothing
+    about it. (Two locks hold here — no protocol, no vantage — so a mutant
+    that loosens either one alone survives this test; each is pinned on its
+    own by the protocol and vantage tests.)"""
+    settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
+    vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    with get_session(settings.postgres_url) as session:
+        session.get(models.Vulnerability, vuln["vuln_id"]).detectors = None
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+
+    _fold(settings, tenant_id)
+
+    _still_open(settings, tenant_id, vuln["vuln_id"])
 
 
 def test_the_detector_records_where_it_was_seen_from(tmp_path):
@@ -741,6 +789,27 @@ def test_the_detector_records_where_it_was_seen_from(tmp_path):
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
     entry = vuln["detectors"][0]
     assert (entry["agent_id"], entry["agent_group"], entry["vantage"]) == ("sensor-int", "internal", "group:internal")
+    assert entry["vantages"] == ["group:internal"]
+
+
+def test_vantages_survive_the_detector_cap_and_the_hostless_backfill():
+    """Whatever the merge drops, the vantages it was seen from stay on the
+    row: the entry the cap evicts hands them to the newest one, and the
+    host-less entry 0079 backfilled (seen from nobody knows where) leaves
+    ``unknown`` behind when a located one replaces it."""
+    backfilled = {"detector": "pulse", "ref": "local", "host": None, "port": "443"}
+    located = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443", "vantage": "local", "vantages": ["local"]}
+    assert vulns.merge_detectors([backfilled], [located])[0]["vantages"] == ["local", "unknown"]
+
+    old = {"detector": "nuclei", "ref": "t-old", "host": HOST, "port": "443", "vantages": ["group:internal"]}
+    repeat = {**old, "host": "10.0.0.9", "vantages": ["group:dmz"]}
+    newer = [
+        {"detector": "nuclei", "ref": f"t-{n}", "host": HOST, "port": "443", "vantages": ["group:dmz"]}
+        for n in range(vulns.MAX_DETECTORS - 1)
+    ]
+    merged = vulns.merge_detectors([repeat, old], newer)
+    assert len(merged) == vulns.MAX_DETECTORS
+    assert {v for entry in merged for v in entry["vantages"]} == {"group:dmz", "group:internal"}
 
 
 def test_the_verification_goes_out_from_the_observing_group(tmp_path):
@@ -1171,7 +1240,10 @@ def test_over_the_cap_a_repeated_detector_goes_before_a_lone_one():
     assert len(merged) == vulns.MAX_DETECTORS
     assert lone in merged
     # The newest Pulse entries stay; the oldest repeat made room.
-    assert merged[: vulns.MAX_DETECTORS - 1] == pulse_on[: vulns.MAX_DETECTORS - 1]
+    assert [
+        {key: value for key, value in entry.items() if key != "vantages"}
+        for entry in merged[: vulns.MAX_DETECTORS - 1]
+    ] == pulse_on[: vulns.MAX_DETECTORS - 1]
 
 
 def test_a_nuclei_template_on_another_port_is_not_this_endpoint(tmp_path, monkeypatch):
