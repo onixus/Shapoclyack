@@ -511,6 +511,17 @@ def plan_for_agent(
                 ),
             )
 
+        if release.signed_manifest and "signed_updates" not in (capabilities or []):
+            return AgentPlan(
+                settings=merged,
+                revision=revision,
+                update=None,
+                update_blocked=(
+                    "this agent lacks signed native update support; migrate it to "
+                    "a native installation before requesting this release"
+                ),
+            )
+
         if "signed_updates" in (capabilities or []) and not release.signed_manifest:
             return AgentPlan(
                 settings=merged,

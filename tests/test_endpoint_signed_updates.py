@@ -187,3 +187,33 @@ def test_cross_repository_manifest_canonicalization_and_real_signature():
     validated = management.validate_signed_manifest(envelope, version=manifest["version"],
         platform=manifest["platform"], digest=hashlib.sha256(b"package").hexdigest(), size_bytes=7)
     assert validated == envelope
+
+
+@requires_postgres
+def test_legacy_agent_is_not_offered_a_native_package(tmp_path, monkeypatch):
+    _, client, key = _setup(tmp_path, monkeypatch)
+    headers = _agent_token(client, key, "legacy-agent")
+    registered = client.post(
+        "/api/agent/register",
+        json=dict(
+            agent_id="legacy-agent",
+            hostname="legacy-host",
+            version="0.4.0",
+            agent_kind="endpoint",
+            capabilities=["self_update"],
+        ),
+        headers=headers,
+    )
+    assert registered.status_code == 200, registered.text
+    management.store_release(
+        version="0.5.0", platform=PLATFORM, content=BUILD, signed_manifest=_envelope()
+    )
+    management.set_policy(tenant_id="acme", agent_id=None, desired_version="0.5.0")
+    beat = client.post(
+        "/api/agent/heartbeat",
+        json=dict(agent_id="legacy-agent", platform=PLATFORM),
+        headers=headers,
+    )
+    assert beat.status_code == 200, beat.text
+    assert beat.json()["managed_update"] is None
+    assert "signed native update support" in beat.json()["managed_update_blocked"]
