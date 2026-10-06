@@ -276,7 +276,6 @@ class RunCoverage:
                 for key in ("ip", "host"):
                     if row.get(key):
                         out.add((normalize_host(row[key]), port))
-        out.update(key for key, probe in self.reachability.items() if probe.get("result") == "open")
         return out
 
     def endpoint_unreachable(
@@ -295,8 +294,8 @@ class RunCoverage:
           firewall dropping the packets looks like, and proves nothing;
         * the port was in the port stage's explicit list for that host, in a
           batch that finished (a ``-top-ports`` set is not explicit);
-        * nothing in the run saw the port open — not naabu, not Pulse, not
-          the probe.
+        * nothing else in the run saw the port open — not naabu, not Pulse
+          (the probe's own "open" is already not a refusal).
 
         Anything short of that is the firewalled-during-the-window case the
         tracker does not forgive.

@@ -791,13 +791,25 @@ def test_short_of_every_condition_a_closed_port_stays_inconclusive(tmp_path, mon
     assert after["state"] == vuln_states.FIXING, why
 
 
-def test_a_name_is_never_judged_by_an_address_refusal(tmp_path, monkeypatch):
+def test_a_name_is_never_judged_by_refusal(tmp_path, monkeypatch):
+    """Even with a refusal and a finished port batch recorded under the name
+    itself: which address the name led to is not recorded, so a name is never
+    closed this way."""
+    import json as _json
+
     on_name = {**EXPOSURE, "host": NAME}
     settings, tenant_id = _seed(tmp_path, findings=[on_name])
     vuln = _tracked_from(settings, tenant_id, on_name)
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
-    _port_stage(monkeypatch, run_dir)
-    _reach(monkeypatch, run_dir, {HOST: REFUSED})
+    ports = run_dir / "ports"
+    ports.mkdir(parents=True, exist_ok=True)
+    (ports / "b0.scan.json").write_text(
+        _json.dumps(
+            {"protocol": "tcp", "hosts": [NAME], "port_args": ["-p", "443"], "exclude_ports": [], "complete": True}
+        ),
+        encoding="utf-8",
+    )
+    _reach(monkeypatch, run_dir, {NAME: REFUSED})
 
     _fold(settings, tenant_id)
 
@@ -812,6 +824,24 @@ def test_a_hostless_exposure_needs_refusal_on_every_address(tmp_path, monkeypatc
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     _port_stage(monkeypatch, run_dir)  # HOST only
     _reach(monkeypatch, run_dir, {HOST: REFUSED})  # nothing about 10.0.0.6
+
+    _fold(settings, tenant_id)
+
+    after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
+    assert after["state"] == vuln_states.FIXING
+
+
+def test_a_hostless_detector_beside_a_located_one_still_needs_every_address(tmp_path, monkeypatch):
+    """Pulse saw it on 10.0.0.5; a migrated nuclei entry never said where.
+    A refusal on .5 alone would close it while .6 was never asked."""
+    exposure_both = {**EXPOSURE, "also_detected_by": [{"source": "nuclei", "script_id": "nuclei:panel-detect"}]}
+    settings, tenant_id = _seed(tmp_path, findings=[exposure_both])
+    vuln = _tracked_from(settings, tenant_id, exposure_both)
+    _second_address(settings, tenant_id, vuln["vuln_id"])
+    _forget_host(settings, vuln["vuln_id"], "nuclei")
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _port_stage(monkeypatch, run_dir)
+    _reach(monkeypatch, run_dir, {HOST: REFUSED})
 
     _fold(settings, tenant_id)
 
