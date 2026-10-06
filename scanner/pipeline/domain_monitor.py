@@ -750,7 +750,7 @@ def _triage_unknown_nxdomain(
         if is_special_use(target) or not has_icann_tld(target):
             not_reported.append(_not_reported(candidate, "target_not_registrable", nxdomain_names=[target]))
             continue
-        icann_domain = registrable_domain(target, icann_only=True)
+        icann_domain = registrable_domain(target, registries_only=True)
         if not icann_domain:
             not_reported.append(_not_reported(candidate, "no_registrable_domain", nxdomain_names=[target]))
             continue

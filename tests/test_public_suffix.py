@@ -159,3 +159,36 @@ def test_truncated_snapshot_is_refused(tmp_path: Path, monkeypatch):
             registrable_domain("x.github.io")
     finally:
         public_suffix._snapshot.cache_clear()
+
+
+@pytest.mark.parametrize("operator", sorted(public_suffix.PUBLIC_REGISTRY_OPERATORS))
+def test_every_public_registry_operator_still_has_its_block(operator):
+    """A refresh that renames a block header would silently drop its suffixes
+    back into "hosting platform"."""
+    assert public_suffix.private_operators().get(operator), operator
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Public registries in the private section: the registrable domain is the same.
+        ("www.gone.com.ru", "gone.com.ru"),
+        ("x.msk.ru", "x.msk.ru"),
+        ("shop.gone.pp.ua", "gone.pp.ua"),
+        ("www.gone.uk.com", "gone.uk.com"),
+        ("www.gone.eu.org", "gone.eu.org"),
+        # Hosting platforms: the tenant name gives way to the platform's domain.
+        ("abc.execute-api.us-east-1.amazonaws.com", "amazonaws.com"),
+        ("org.github.io", "github.io"),
+    ],
+)
+def test_registries_only_keeps_registries_and_drops_platforms(name, expected):
+    assert registrable_domain(name, registries_only=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("x.co.ck", True), ("a.b.jm", True), ("x.com", True), ("srv.corp", False), ("files.lan", False)],
+)
+def test_a_tld_named_only_by_a_wildcard_rule_counts(name, expected):
+    assert public_suffix.has_icann_tld(name) is expected

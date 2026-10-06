@@ -20,9 +20,13 @@ existed would hide it.
 Both sections of the list are used. The private section is the part that
 matters most here: ``github.io``, ``com.ru`` and ``herokuapp.com`` are all
 private-section entries, suffixes under which unrelated parties hold names.
-``icann_only=True`` reads the ICANN section alone -- the domains a registry
-sells -- for the one question where a hosting platform's tenant name must not
-pass for a domain: "could anybody register this?".
+``registries_only=True`` is for the one question where a hosting platform's
+tenant name must not pass for a domain: "could anybody register this?". It
+reads the ICANN section plus the private-section blocks of operators that run
+public registries (:data:`PUBLIC_REGISTRY_OPERATORS`: CentralNic's ``uk.com``,
+FAITID's ``com.ru``/``msk.ru``, ``eu.org``, ``pp.ua`` …). The ICANN section
+alone is not "what a registry sells": those registries submit their suffixes
+to the private section, next to GitHub's and Heroku's.
 
 Staleness, honestly. A suffix added upstream after the snapshot is unknown
 here, falls to the list's default rule ``*`` (the last label alone) and gets
@@ -62,6 +66,22 @@ SPECIAL_USE_DOMAINS = frozenset({
 })
 
 
+#: Private-section blocks whose suffixes are sold or given out to the public
+#: by a registry, keyed by the operator name in the block's header line
+#: (``// <operator> : <url>``) -- the list itself documents each one there.
+#: Matching by block rather than by suffix keeps every suffix the operator
+#: submitted (FAITID alone has dozens of ``.ru``/``.su`` names) and is checked
+#: against the snapshot by ``tests/test_public_suffix.py``.
+PUBLIC_REGISTRY_OPERATORS = frozenset({
+    "CentralNic",  # br.com, uk.com, us.com, gb.net, ... (https://teaminternet.com/)
+    "co.com Registry, LLC",  # co.com (https://registry.co.com)
+    "co.ca",  # co.ca (http://registry.co.ca/)
+    "FAITID",  # com.ru, msk.ru, spb.ru, ru.net, ... (https://faitid.org/)
+    "EU.org",  # eu.org and its country subzones (https://eu.org/)
+    "Service Online LLC",  # biz.ua, co.ua, pp.ua (http://drs.ua/)
+})
+
+
 @dataclass(frozen=True)
 class _Snapshot:
     version: str
@@ -70,10 +90,15 @@ class _Snapshot:
     wildcards: frozenset[str]
     #: ``www.ck`` for the rule ``!www.ck``.
     exceptions: frozenset[str]
-    #: The same three, from the ICANN section only.
-    icann_rules: frozenset[str] = frozenset()
-    icann_wildcards: frozenset[str] = frozenset()
-    icann_exceptions: frozenset[str] = frozenset()
+    #: The same three, from the ICANN section and the public registries'
+    #: private-section blocks (:data:`PUBLIC_REGISTRY_OPERATORS`).
+    registry_rules: frozenset[str] = frozenset()
+    registry_wildcards: frozenset[str] = frozenset()
+    registry_exceptions: frozenset[str] = frozenset()
+    #: Top-level labels the ICANN section names, as a rule or as ``*.tld``.
+    icann_tlds: frozenset[str] = frozenset()
+    #: Operator name -> the rules its private-section block holds.
+    private_operators: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def _ascii_label(label: str) -> str:
@@ -101,8 +126,12 @@ def _snapshot() -> _Snapshot:
     rules: set[str] = set()
     wildcards: set[str] = set()
     exceptions: set[str] = set()
-    icann: tuple[set[str], set[str], set[str]] = (set(), set(), set())
+    registry: tuple[set[str], set[str], set[str]] = (set(), set(), set())
+    icann_tlds: set[str] = set()
+    operators: dict[str, set[str]] = {}
     in_icann = False
+    operator = ""
+    previous_blank = True
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("// VERSION:") and not version:
@@ -111,8 +140,16 @@ def _snapshot() -> _Snapshot:
             in_icann = True
         elif "===END ICANN DOMAINS===" in line:
             in_icann = False
-        if not line or line.startswith("//"):
+        if not line:
+            previous_blank = True
             continue
+        if line.startswith("//"):
+            # A private-section block opens with "// <operator> : <url>".
+            if previous_blank and not in_icann and " : " in line:
+                operator = line[2:].split(" : ", 1)[0].strip()
+            previous_blank = False
+            continue
+        previous_blank = False
         # A rule ends at the first whitespace (the list's own format note).
         rule = line.split()[0].lower()
         index = 0
@@ -123,15 +160,23 @@ def _snapshot() -> _Snapshot:
         ascii_rule = ".".join(_ascii_label(label) for label in rule.split("."))
         (rules, wildcards, exceptions)[index].add(ascii_rule)
         if in_icann:
-            icann[index].add(ascii_rule)
+            registry[index].add(ascii_rule)
+            if index in (0, 1) and "." not in ascii_rule:
+                icann_tlds.add(ascii_rule)
+        else:
+            operators.setdefault(operator, set()).add(ascii_rule)
+            if operator in PUBLIC_REGISTRY_OPERATORS:
+                registry[index].add(ascii_rule)
     return _Snapshot(
         version,
         frozenset(rules),
         frozenset(wildcards),
         frozenset(exceptions),
-        frozenset(icann[0]),
-        frozenset(icann[1]),
-        frozenset(icann[2]),
+        frozenset(registry[0]),
+        frozenset(registry[1]),
+        frozenset(registry[2]),
+        frozenset(icann_tlds),
+        tuple(sorted((name, frozenset(owned)) for name, owned in operators.items())),
     )
 
 
@@ -158,7 +203,7 @@ def _labels(name: str) -> tuple[list[str], list[str]] | None:
     return labels, ascii_labels
 
 
-def _suffix_length(labels: list[str], *, icann_only: bool = False) -> int:
+def _suffix_length(labels: list[str], *, registries_only: bool = False) -> int:
     """How many trailing labels form the public suffix (the PSL algorithm).
 
     An exception rule beats every other match; otherwise the longest matching
@@ -167,8 +212,8 @@ def _suffix_length(labels: list[str], *, icann_only: bool = False) -> int:
     """
     snapshot = _snapshot()
     rules, wildcards, exceptions = (
-        (snapshot.icann_rules, snapshot.icann_wildcards, snapshot.icann_exceptions)
-        if icann_only
+        (snapshot.registry_rules, snapshot.registry_wildcards, snapshot.registry_exceptions)
+        if registries_only
         else (snapshot.rules, snapshot.wildcards, snapshot.exceptions)
     )
     count = len(labels)
@@ -183,11 +228,12 @@ def _suffix_length(labels: list[str], *, icann_only: bool = False) -> int:
     return 1
 
 
-def registrable_domain(name: str, *, icann_only: bool = False) -> str:
+def registrable_domain(name: str, *, registries_only: bool = False) -> str:
     """The registrable domain (eTLD+1) of ``name``, in the form it was given.
 
     ``www.bbc.co.uk`` → ``bbc.co.uk``; ``x.github.io`` → ``x.github.io``, or
-    ``github.io`` with ``icann_only``. Empty for a public suffix itself, an IP
+    ``github.io`` with ``registries_only`` (and ``gone.com.ru`` either way:
+    ``com.ru`` is a public registry's suffix). Empty for a public suffix itself, an IP
     literal, a wildcard, or anything else that is not a host name: none of
     those is a domain anybody holds.
     """
@@ -195,7 +241,7 @@ def registrable_domain(name: str, *, icann_only: bool = False) -> str:
     if parsed is None:
         return ""
     labels, ascii_labels = parsed
-    size = _suffix_length(ascii_labels, icann_only=icann_only)
+    size = _suffix_length(ascii_labels, registries_only=registries_only)
     if len(labels) <= size:
         return ""
     return ".".join(labels[-(size + 1) :])
@@ -205,13 +251,19 @@ def has_icann_tld(name: str) -> bool:
     """True when the last label of ``name`` is a TLD in the list's ICANN section.
 
     A proxy for "delegated in the root zone": ``corp``, ``lan`` and ``home``
-    are not on the list, and nothing under them can be bought.
+    are not on the list, and nothing under them can be bought. A TLD the list
+    names only through a wildcard (``*.ck``, ``*.jm``) counts as well.
     """
     parsed = _labels(name)
     if parsed is None:
         return False
     _, ascii_labels = parsed
-    return ascii_labels[-1] in _snapshot().icann_rules
+    return ascii_labels[-1] in _snapshot().icann_tlds
+
+
+def private_operators() -> dict[str, frozenset[str]]:
+    """Private-section operator name -> the rules its block holds (for tests and docs)."""
+    return dict(_snapshot().private_operators)
 
 
 def is_special_use(name: str) -> bool:
