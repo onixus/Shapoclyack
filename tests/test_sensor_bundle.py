@@ -1134,6 +1134,22 @@ def test_commit_with_nothing_pending_is_not_a_success(tmp_path, monkeypatch):
 # scripts/update-agent.sh: root restarts, the account installs
 # --------------------------------------------------------------------------
 
+# How every test here starts the script. Jenkins runs a step under nohup and in
+# the background, so pytest inherits SIGHUP and SIGINT as ignored, and bash
+# cannot trap a signal that was ignored when it started: the ^C and hangup tests
+# then wait out their timeouts. Reset the dispositions in a launcher, as
+# tests/test_disaster_recovery.py does, rather than in preexec_fn: pytest may
+# already have threads running.
+_UPDATE_SCRIPT = [
+    sys.executable,
+    "-c",
+    "import os, signal, sys; "
+    "[signal.signal(s, signal.SIG_DFL) "
+    "for s in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)]; "
+    "os.execvp('bash', ['bash', *sys.argv[1:]])",
+    str(REPO_ROOT / "scripts" / "update-agent.sh"),
+]
+
 _FAKE_RUNUSER = """#!/bin/sh
 # runuser -u USER -- CMD...: record who and what the command is attached to,
 # then run CMD as ourselves.
@@ -1243,7 +1259,7 @@ def _script_stand(tmp_path: Path, monkeypatch, mode: str, key: ec.EllipticCurveP
 
 def _run_script(env: dict, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), *args],
+        [*_UPDATE_SCRIPT, *args],
         env=env, capture_output=True, text=True, check=False, timeout=120,
     )
 
@@ -1304,7 +1320,7 @@ def test_update_script_reads_a_relative_bundle_dir_from_where_it_was_run(tmp_pat
     """The verifier runs from the install directory; the path was typed elsewhere."""
     install, bundle, _state, env = _script_stand(tmp_path, monkeypatch, "stable", signing_key)
     done = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", bundle.name],
+        [*_UPDATE_SCRIPT, "--bundle-dir", bundle.name],
         cwd=bundle.parent, env=env, capture_output=True, text=True, check=False, timeout=120,
     )
     assert done.returncode == 0, done.stdout + done.stderr
@@ -1409,7 +1425,7 @@ def test_update_script_detaches_the_sensors_code_from_roots_terminal(
     stdin.write_text("")
     with stdin.open() as source, (tmp_path / "out").open("w") as out, (tmp_path / "err").open("w") as err:
         done = subprocess.run(
-            ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", str(bundle)],
+            [*_UPDATE_SCRIPT, "--bundle-dir", str(bundle)],
             env=env, stdin=source, stdout=out, stderr=err, check=False, timeout=120,
         )
     assert done.returncode == 0, (tmp_path / "out").read_text() + (tmp_path / "err").read_text()
@@ -1567,7 +1583,7 @@ def _interrupt_script(env: dict, sig: int, ready, *args: str) -> tuple[int | Non
     process group once ``ready()`` -- ^C, a dropped SSH session, a kill -- and
     return its status (``None`` if it was still running 20 s later)."""
     proc = subprocess.Popen(
-        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), *args],
+        [*_UPDATE_SCRIPT, *args],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         start_new_session=True,
     )
@@ -1677,7 +1693,7 @@ def _verifier(install: Path, body: str) -> None:
 def _signal_twice(env: dict, sig: int, first, second, *args: str) -> tuple[int | None, str]:
     """``_interrupt_script`` with a second signal once ``second()`` holds."""
     proc = subprocess.Popen(
-        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), *args],
+        [*_UPDATE_SCRIPT, *args],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         start_new_session=True,
     )
@@ -1818,7 +1834,7 @@ def test_a_second_run_stops_while_the_first_is_in_its_health_check(tmp_path, sig
     with (tmp_path / "etc" / "agent.env").open("a") as handle:
         handle.write("OCTO_AGENT_AUTO_UPDATE=true\n")
     first = subprocess.Popen(
-        ["bash", str(REPO_ROOT / "scripts" / "update-agent.sh"), "--bundle-dir", str(bundle)],
+        [*_UPDATE_SCRIPT, "--bundle-dir", str(bundle)],
         env={**env, "HEALTH_SECONDS": "6"}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     deadline = time.monotonic() + 60
