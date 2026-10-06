@@ -48,10 +48,51 @@ All notable changes to Shapoclyack are documented in this file.
   `incap_ses` inside some other cookie's value no longer counts as Imperva on
   path (it used to take the −6). The *Технологии сайта* control tells open
   consoles from login pages in `why` and always counts and shows gateways.
-  `retro_match` aliases `f5:nginx_open_source` with the other nginx keys.
+  `retro_match` treats `f5:nginx_open_source` as the same distribution-packaged
+  nginx as `f5:nginx` and `nginx:nginx` (aliases, source package, banner name,
+  product table).
   See [docs/web-fingerprinting.md](docs/web-fingerprinting.md); fixtures are
   synthetic, not live captures.
-
+- **TLS posture judges the certificate, not only its dates.** New findings in
+  `tls_posture.json`: `weak_key` (RSA/DSA under 2048 bits or EC under 224,
+  medium; high under 1024) and `weak_signature` (leaf signed with MD2/MD4/MD5
+  or SHA-1, medium; not on a self-issued leaf, whose signature nobody
+  verifies) on the nmap path — whose `ssl-cert` key size and signature
+  algorithm were parsed and then dropped — and on the stdlib probe;
+  `cert_not_yet_valid` (medium) on every path; and on the probe
+  `cert_untrusted` (medium), when the presented chain does not verify to the
+  system trust store plus the new `tls_posture.ca_bundle`, and
+  `cert_chain_expired` (high), when the chain fails the time check on a CA
+  certificate and verifies without it — the chain is verified with the time
+  check first, as clients do, so a stale expired intermediate sent next to its
+  re-issued twin is not flagged. The trust check is about the chain only (names
+  stay `cert_name_mismatch`), and `tls_posture.chain_trust` decides where it
+  runs: `public_only` (default) on publicly routable addresses — the
+  scanner's `safe_http` rule, NAT64 included — unless `ca_bundle` is set, so an
+  intranet's own CA is not flagged on every endpoint; `always`; `off`. A leaf
+  verification calls self-signed is one certain `self_signed`, not
+  `self_signed` plus `cert_untrusted`; a chain that verifies silences the
+  heuristic. With no system trust anchors and no bundle, or an unreadable
+  bundle, the check records `not_performed` instead of flagging every
+  endpoint. `chain_trust`, `ca_bundle` and `probe_legacy_protocols` are
+  sensor-config settings; the platform's config overlay does not carry them.
+  The probe reads names and dates of the presented certificates with the
+  stdlib and key size and signature algorithm with `cryptography`, which the
+  scanner image now installs too (`requirements.txt`, same pin as the API
+  image; `requirements.lock` gains `cryptography`, `cffi` and `pycparser`);
+  where it is missing, those checks record `not_performed`. Each probe row
+  carries `checks.{protocols,chain_trust,cert_fields,cert_strength}`, and the
+  org-profile TLS control reads them: an endpoint with a check that did not
+  run or could not decide is left out of `coverage.checked` and named in
+  `why`. With part of the endpoints fully checked and no finding the control
+  stays `ok` but says so — `coverage.partial: true`, a `why` that starts with
+  "partial coverage (N of M)" (new optional `partial` field in the controls
+  API's `coverage`) — and the overall verdict reads `partial`; it is
+  `not_checked` only when no endpoint was fully checked. Checks switched off by configuration (`chain_trust`, and
+  `probe_legacy_protocols: false`, recorded as `not_evaluated` / `disabled`)
+  are not gaps. Pulse `tls[]` rows carry no key or signature fields, so that path
+  has no strength findings. See
+  [Pulse backend](docs/pulse-backend.md#what-the-probe-checks-and-what-it-can-establish).
 - **Client certificates for sensors and endpoint Agents
   ([#309](https://github.com/onixus/Shapoclyack/issues/309)).** With
   `OCTO_AGENT_MTLS_MODE=optional|required` (default `off`, unchanged
@@ -713,6 +754,86 @@ All notable changes to Shapoclyack are documented in this file.
   so 3.12-only syntax fails lint instead of only the 3.11 test leg.
   `tests/test_pr_gate.py` parses the workflow and compares triggers,
   permissions and commands whole.
+- **Subdomain takeover detection with a fingerprint catalogue.**
+  `domain_monitor`'s dangling-CNAME check now judges each in-scope name's CNAME
+  chain against `scanner/pipeline/takeover_fingerprints.json` — 58 services
+  (28 `vulnerable`, 16 `edge_case`, 14 `not_vulnerable`), each with its CNAME
+  targets, how an unclaimed resource shows (NXDOMAIN or the provider's page),
+  fingerprints, a note for every edge case, sources and the date they were
+  read; the file is validated before the first lookup. Findings in the
+  `dangling_cname` section are `subdomain_takeover` with `confidence:
+  confirmed` (NXDOMAIN of a claimable resource name on A and AAAA and on a
+  repeat query, no `asuid` record for App Service; or the provider's unclaimed
+  page) or `heuristic` (claimable service, no address) — high/medium for a
+  `vulnerable` service, medium/low for an `edge_case` one, whose note goes into
+  the detail; `dangling_cname_nxdomain` (high: the chain ends at a name whose
+  registrable domain -- under an ICANN-section suffix of the Public Suffix List
+  or a public registry's private-section one (`com.ru`, `org.ru`, `uk.com`,
+  `co.cz`, `eu.org`, `krakow.pl`, …; each PSL block attributed to its own
+  header),
+  and a delegated, non-special-use TLD -- does not exist on two asks); and
+  `dangling_cname` (low: a non-existent name at a hosting platform the
+  catalogue does not know). Every finding carries `severity`, `detail` and an
+  `evidence` block; what matched but is not a finding is listed under
+  `not_reported` with a reason, and names whose DNS answer was missing or
+  unusable (SERVFAIL, REFUSED, timeout, A and AAAA disagreeing) under
+  `dns_unanswered`; a candidate whose own answer or follow-up lookup
+  (registrable domain, `asuid`, repeat query) went unanswered is in
+  `candidates_unanswered`, and one the HTTP check could not decide in
+  `candidates_unconfirmed`. The DNS structure control stays rated, counts only
+  answered names in its coverage and names all three lists, with a count, ten
+  names and "+N more" — never "all passed" while one is non-empty.
+  The confirmation is one bounded GET per scheme to the org's own name, pinned
+  to the resolved address with `Host`/SNI set to it, no redirects, 64 KiB, a
+  hard deadline, no proxy, only to a public address and never to one the scan
+  scope denies (that refusal joins the run's denials artifact)
+  (`discovery.domain_monitor.takeover_http_confirm`, default on, with
+  `takeover_http_concurrency`/`_timeout_seconds`/`_max_targets`). The tenant
+  policy's `skip_service_probe` turns it off and `max_host_concurrency` caps
+  it. Old readers keep `fqdn`, `cname_target` and `matched_suffix`; a takeover's
+  `kind` is no longer `dangling_cname`, `domain_monitor_findings.txt` lines are
+  `<kind>:<confidence>:<fqdn>:<target>`, and a confirmed takeover of a
+  `vulnerable` service makes the "DNS structure" control `fail` instead of
+  `weak`. A resolver that answers NXDOMAIN for blocked names (RPZ) skews the
+  verdicts; `dns.resolvers` says so. Statuses adapted from can-i-take-over-xyz
+  (CC BY 4.0, attributed in `NOTICE`). See `docs/configuration.md` § Subdomain
+  takeover detection.
+- **Retro CVE matching names eighteen more products.** Sendmail, Dovecot,
+  Pure-FTPd, FileZilla Server, MySQL, MariaDB, MongoDB, Elasticsearch,
+  Memcached, CouchDB, Squid, HAProxy, Jetty, PHP, Unbound, PowerDNS
+  Authoritative and Recursor, and libssh join the 16, each under the strings
+  nmap and Pulse really emit (checked against `nmap-service-probes` and Pulse's
+  probe database), each key against NVD's CPE dictionary; Pulse's own names for
+  IIS and Dropbear, which the table did not know, too — but not Pulse's
+  "Redis", which is whatever answers INFO with `redis_version` first (Valkey
+  8.1.10 is "Redis 7.2.4" to it). A listener whose banner names a Redis fork
+  (`server_name:valkey`, `valkey_version`, `dragonfly_version`; KeyDB names
+  itself nowhere a prober keeps) is a
+  new `match_status`, `lookalike`, shown on the asset's Services section.
+  A MySQL version whose suffix carries a word MySQL's own builds never append
+  is `lookalike` too — TiDB `5.7.25-TiDB-v7.1.5`, Vitess `8.0.30-Vitess`,
+  OceanBase, MatrixOne, TDDL, and whatever engine is next. MySQL's own:
+  package revisions and Percona builds, and `log`, `debug`, `community`,
+  `commercial`, `enterprise`, `advanced`, `cll`, `lve`, `cluster`. Products whose
+  version string carries more than the version are cut to it by a per-product
+  shape — MySQL's `5.7.33-0ubuntu0.18.04.1`, MariaDB's `5.5.5-10.3.39`,
+  Sendmail's `8.15.2/8.15.2/Debian-8+deb9u1`, Jetty's `9.4.44.v20210927` — and
+  the cut-off revision still goes to the backport check. When the table knows
+  the product, a line's other CPEs are dropped with their versions (nmap's
+  Elasticsearch line names Lucene's first). Debian/Ubuntu source
+  packages named after the upstream series (`mysql-5.7`, `mariadb-10.5`,
+  `php8.1`) are derived from the listener's own version, and the unversioned
+  `mariadb` of Debian 12/13 and Ubuntu 24.04 is asked only in a release that
+  builds the listener's series from it. Elasticsearch, MongoDB, CouchDB, Jetty
+  and FileZilla Server are not treated as distribution builds. Deliberately not
+  matched, with the reason in
+  [docs/retro-cve-matching.md](docs/retro-cve-matching.md#products): Jenkins (NVD's
+  LTS and weekly ranges share a key), PostgreSQL (no prober reports a version),
+  Exchange (build ≠ CU), CUPS, Webmin, Erlang/OTP SSH and others. The worker's
+  marker now carries a digest of the matcher's tables (`…+rules:<digest>`), so
+  the upgrade re-matches every listener once by itself — expect a wave of
+  `retro_match` findings on the first tick (docs/operations.md).
+
 
 ### Changed
 
@@ -1125,6 +1246,61 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **The TLS probe tries TLS 1.0 and 1.1, as it said it did.** The stdlib
+  fallback of `tls_posture` (`scanner/pipeline/tls_probe.py`, the path the
+  default Pulse backend uses when Pulse has no TLS record) documented forced
+  min/max version attempts but made one handshake with Python's default
+  context — TLS 1.2 minimum, security level 2 — and judged only what it
+  negotiated. A server that also speaks TLS 1.3 was never caught accepting
+  1.0, and a server whose highest version is 1.0 or 1.1 failed that one
+  handshake and vanished from `tls_posture.json` altogether. The probe now
+  makes two more handshakes per endpoint pinned to TLS 1.0 and TLS 1.1
+  (`tls_posture.probe_legacy_protocols`, default `true`), its main handshake
+  reaches as low as the local OpenSSL can go (so a TLS 1.0-only server is
+  found with the legacy checks off too), and an endpoint that answered in TLS
+  is reported even when no handshake completed. Handshakes run over memory
+  BIOs, so the result is classified on what the server's records said: every
+  row records `accepted_protocols` and a per-version `checks.protocols`
+  status — `accepted`; `rejected` only on a `protocol_version` alert or a
+  ServerHello at another version; `inconclusive` for a `handshake_failure`
+  before any ServerHello, a reset, a timeout, a local abort, or a server that
+  asked for a client certificate (`client_cert_requested`); `not_performed`
+  when the local OpenSSL cannot offer the version (the ClientHello is built in
+  memory first); `not_testable` for SSLv2/SSLv3. Verified against Python `ssl`
+  servers on loopback in the test suite (OpenSSL 3.6 on macOS, 3.5 in the CI
+  `python:3.11/3.12-slim` images); `openssl s_server` checked by hand.
+- **Retro matching no longer matches nmap's Jenkins and CUPS CPEs.** The
+  product table never named either, but the CPE path took any key the dataset
+  knew: nmap's `cpe:/a:jenkins:jenkins:2.426.3` (a patched LTS) fell inside
+  CVE-2024-23897's weekly `< 2.442`, which NVD files under the same key as
+  the LTS range, and nmap's `cpe:/a:apple:cups:2.4` met NVD ranges in Apple's
+  own numbering (`< 499.4`), below which every Linux CUPS falls — a tracked
+  finding with a normal SLA, on any host, with any full NVD harvest. Listeners
+  carrying either CPE are now `unknown_product`.
+- **Retro matching took PHP's package revision for the web server's.** Pulse
+  keeps twelve HTTP header lines as the banner, and a hybrid run's merge
+  prefers it, so an Ubuntu Apache's banner carried `X-Powered-By:
+  PHP/7.4.3-4ubuntu2.19`, whose `4ubuntu2.19` was read as Apache's revision: a
+  patched `2.4.41-4ubuntu3.17` became `2.4.41-4ubuntu2.19`, below the focal
+  fix — a vendor-confirmed finding — and an unpatched nginx became `fixed`. A
+  revision is now read only from the version field, the CPE's version or the
+  product's own banner token; `X-Powered-By` lines count only for PHP.
+- **Retro matching read MariaDB 10+ as MariaDB 5.5.5.** nmap's MariaDB version
+  and CPE keep the `5.5.5-` compatibility prefix (`5.5.5-10.3.39`), and the CPE
+  path matched it whenever the dataset knew `mariadb:mariadb` — that is, with
+  any full NVD harvest: compared as written it put every MariaDB 10.x inside
+  every 5.5 range and outside its own series'. The prefix is now cut (see the
+  version shapes under *Added*).
+- **CI: the sensor-update signal tests ran into their limits in Jenkins, and the root guard test failed outright.** Eleven tests in `tests/test_sensor_bundle.py` failed on every Jenkins build since the signed-bundle work (#363): PID 1 in a `docker.inside` container is `cat`, which never reaps, so processes a test orphans stay zombies, and `scripts/update-agent.sh` waits for the sensor's process group to empty (`kill -0 -- -PGID`) — a zombie is still a member, so on CI it never emptied. On a host, systemd reaps them at once; the script is unchanged. The test stage now runs its container with `--init`. `test_root_will_not_run_the_update_over_a_tree_another_account_owns` asserted a non-root owner that a root run cannot have; run as root it now hands the tree to another account first, so the guard is still exercised.
+
+- **`test_window_decays_without_operator_intervention` no longer depends on how
+  fast bcrypt runs.** It used a real one-second limiter window, so the lockout
+  only formed if two logins fitted in that second; under coverage on the CI
+  container each took ~1.2 s and main #76 failed with `401 == 429`. The test
+  now holds `auth_audit._now` still and moves it across a 60-second window by
+  hand, and also checks the lock still holds one second before the edge. Test
+  only; the limiter is unchanged.
+
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
   which is not published; the Docker, Compose and Kubernetes snippets now run
@@ -1412,6 +1588,20 @@ All notable changes to Shapoclyack are documented in this file.
     of starting a second one beside it.
   - A failed `import agent.worker` check now prints the last lines of the
     traceback instead of discarding them.
+- **The dangling-CNAME check reported live resources.** Its dnsx lookup was
+  `-cname -resp`, which (measured on dnsx 1.2.3) returns the first hop of a
+  chain and never an address, so the "no A/AAAA" gate held for every name and
+  any CNAME into the 14 listed suffixes was a finding — a working GitHub Pages
+  site included. Five of those suffixes (CloudFront, Fastly, WP Engine,
+  Unbounce, Zendesk) belong to services that do not allow a takeover;
+  `s3-website` could never end a real name, so S3 website endpoints were never
+  matched; and matching was not label-bounded (`evilgithub.io` matched
+  `github.io`). The chain is now resolved with separate `-a` and `-aaaa` runs —
+  with several record types in one run dnsx reports the rcode of the last query
+  only, so `-cname` beside `-a` hid an NXDOMAIN and `-aaaa` beside `-a` invented
+  one for a name with an A record — and walked in resolution order from the
+  `all` records rather than taken in answer order; matching goes through the
+  takeover catalogue above.
 
 ### Documentation
 
