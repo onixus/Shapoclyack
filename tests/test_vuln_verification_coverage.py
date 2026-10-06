@@ -96,15 +96,32 @@ def _nuclei(monkeypatch, run_dir: Path, tmp_path: Path, *, binary: bool = True, 
     return nuclei_scan.run_nuclei_scan([f"{HOST}:443/tcp"], NucleiConfig(**config), run_dir)
 
 
-def _pulse(monkeypatch, run_dir: Path, *, cve: bool = True, ports: tuple[int, ...] = (443,)) -> None:
+#: What pulse 1.1.0 reports in ``meta`` (checked against the real binary).
+RULESET = "2026.07.29-h1"
+
+
+def _pulse(
+    monkeypatch,
+    run_dir: Path,
+    *,
+    cve: bool = True,
+    cve_online: bool = False,
+    ports: tuple[int, ...] = (443,),
+    ruleset: str | None = RULESET,
+) -> None:
     """Run the real Pulse stage over ``run_dir`` with the binary stubbed."""
-    payload = json.dumps({"open": [{"ip": HOST, "port": port, "service": "https"} for port in ports]})
+    document: dict = {"open": [{"ip": HOST, "port": port, "service": "https"} for port in ports]}
+    if ruleset:
+        document["meta"] = {"ruleset": ruleset, "scanner": "pulse", "schema": "pulse.scan.v2", "version": "1.1.0"}
+    payload = json.dumps(document)
     monkeypatch.setattr(
         pulse_probe, "run_command", lambda command, **_: subprocess.CompletedProcess(command, 0, payload, "")
     )
     monkeypatch.setattr(pulse_probe, "resolve_pulse_bin", lambda _: "pulse")
     monkeypatch.setattr(pulse_probe, "_pulse_available", lambda _: True)
-    pulse_probe.run_pulse_probe([f"{HOST}:{port}/tcp" for port in ports], output_dir=run_dir, cve=cve)
+    pulse_probe.run_pulse_probe(
+        [f"{HOST}:{port}/tcp" for port in ports], output_dir=run_dir, cve=cve, cve_online=cve_online
+    )
 
 
 def _nmap(run_dir: Path, *, scripts: str = "vulners,ssl-cert", port: int = 443, exit: str = "success") -> None:
@@ -293,6 +310,58 @@ def test_a_legacy_finding_needs_pulse_with_cve_matching(tmp_path, monkeypatch, c
     event = _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
     assert event["detail"]["gaps"][0]["legacy_rule"] is True
     assert vuln["detectors"] == []
+
+
+def test_a_cve_pulse_found_online_is_not_closed_by_offline_rules(tmp_path, monkeypatch):
+    """Pulse's offline rules never contained it; their silence is no answer."""
+    online = _row("pulse", "pulse:nvd")
+    settings, tenant_id = _seed(tmp_path, findings=[online])
+    vuln = _tracked(settings, tenant_id, [online])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, cve_online=False)
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "pulse_cve_online_off")
+
+
+def test_a_cve_pulse_found_online_closes_when_the_run_looked_online(tmp_path, monkeypatch):
+    online = _row("pulse", "pulse:nvd")
+    settings, tenant_id = _seed(tmp_path, findings=[online])
+    vuln = _tracked(settings, tenant_id, [online])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, cve_online=True)
+
+    assert _fold(settings, tenant_id).verification_passed == 1
+
+
+@pytest.mark.parametrize(
+    ("verify_ruleset", "reason"),
+    [("2026.07.29-h1", "pulse_ruleset_older"), (None, "pulse_ruleset_not_recorded")],
+)
+def test_a_verification_with_an_older_ruleset_proves_nothing(tmp_path, monkeypatch, verify_ruleset, reason):
+    """Found by a rule added in 2026.08.02; a sensor still on 2026.07.29 cannot
+    match it, so its silence closes nothing."""
+    newer = _row("pulse", "pulse:local", ruleset_version="2026.08.02-h0")
+    settings, tenant_id = _seed(tmp_path, findings=[newer])
+    vuln = _tracked(settings, tenant_id, [newer])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, ruleset=verify_ruleset)
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
+    assert vuln["detectors"][0]["ruleset"] == "2026.08.02-h0"
+
+
+def test_a_verification_with_the_same_or_newer_ruleset_closes(tmp_path, monkeypatch):
+    found = _row("pulse", "pulse:local", ruleset_version="2026.07.29-h1")
+    settings, tenant_id = _seed(tmp_path, findings=[found])
+    vuln = _tracked(settings, tenant_id, [found])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _pulse(monkeypatch, run_dir, ruleset="2026.07.29-h2")
+
+    assert _fold(settings, tenant_id).verification_passed == 1
 
 
 def test_a_port_that_did_not_answer_proves_nothing(tmp_path, monkeypatch):

@@ -184,10 +184,10 @@ def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
 
     The detectors of a dropped row are not dropped with it: the kept row
     lists them under ``also_detected_by`` (``source`` and ``script_id`` each,
-    only when there were any). One CVE seen by Pulse and by a nuclei template
-    is one finding, but the API has to know both looked -- a verification
-    re-scan is only allowed to close it once both have looked again
-    (docs/vulnerability-lifecycle.md).
+    and Pulse's ``ruleset_version``; only when there were any). One CVE seen
+    by Pulse and by a nuclei template is one finding, but the API has to know
+    both looked -- a verification re-scan is only allowed to close it once
+    both have looked again (docs/vulnerability-lifecycle.md).
     """
     kept: dict[tuple[str, str, str], dict] = {}
     out: list[dict] = []
@@ -200,7 +200,14 @@ def _dedupe_vulnerabilities(vulnerabilities: list[dict]) -> list[dict]:
             detector = {"source": item.get("source"), "script_id": item.get("script_id")}
             if detector != {"source": first.get("source"), "script_id": first.get("script_id")}:
                 others = first.setdefault("also_detected_by", [])
-                if detector not in others:
+                if not any(
+                    {"source": o.get("source"), "script_id": o.get("script_id")} == detector
+                    for o in others
+                ):
+                    # The CVE ruleset a Pulse match was made with travels too:
+                    # a verification has to re-check with one at least as new.
+                    if item.get("ruleset_version"):
+                        detector["ruleset_version"] = item["ruleset_version"]
                     others.append(detector)
             continue
         kept[key] = item

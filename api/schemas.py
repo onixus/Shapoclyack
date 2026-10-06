@@ -2308,6 +2308,9 @@ class VulnerabilityDetectorInfo(BaseModel):
     port: str | None = None
     last_run_id: str | None = None
     last_seen_at: str | None = None
+    # Pulse only: the offline CVE ruleset the match was made with. A
+    # verification has to match with one at least as new.
+    ruleset: str | None = None
 
 
 class VulnerabilityInfo(BaseModel):

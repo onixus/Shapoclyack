@@ -288,13 +288,10 @@ def _observed_detectors(
     there, because a verification has to re-check every one of them.
     """
     host = str(entry.get("host") or "").strip()[:255] or None
-    pairs = [(entry.get("source"), entry.get("script_id"))]
-    for other in entry.get("also_detected_by") or []:
-        if isinstance(other, dict):
-            pairs.append((other.get("source"), other.get("script_id")))
+    rows = [entry, *(other for other in entry.get("also_detected_by") or [] if isinstance(other, dict))]
     out: list[dict[str, Any]] = []
-    for source, script_id in pairs:
-        detector = _detector_of(source, script_id)
+    for row in rows:
+        detector = _detector_of(row.get("source"), row.get("script_id"))
         if detector is None:
             continue
         name, ref = detector
@@ -306,6 +303,11 @@ def _observed_detectors(
             "last_run_id": run_id,
             "last_seen_at": _iso(now),
         }
+        ruleset = str(row.get("ruleset_version") or "").strip()[:64]
+        if name == verification_coverage.PULSE and ruleset:
+            # The offline ruleset this match was made with: a verification
+            # matching with an older one has not re-checked it.
+            candidate["ruleset"] = ruleset
         if not any(_detector_key(candidate) == _detector_key(seen) for seen in out):
             out.append(candidate)
     return out

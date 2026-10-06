@@ -546,6 +546,27 @@ def test_raw_json_says_whether_cve_matching_was_asked_for(tmp_path, monkeypatch,
     assert raw["completion"]["hosts"]["10.0.0.1"] == {"ports": [22], "returncode": 0}
 
 
+def test_raw_json_records_the_offline_ruleset_pulse_matched_with(tmp_path, monkeypatch):
+    """``meta`` as pulse 1.1.0 prints it; a verification is held to it (#451)."""
+    with_meta = json.dumps(
+        {
+            "open": [{"ip": "10.0.0.1", "port": 22, "service": "ssh"}],
+            "meta": {"ruleset": "2026.07.29-h1", "scanner": "pulse", "schema": "pulse.scan.v2", "version": "1.1.0"},
+        }
+    )
+    _run_probe(tmp_path, monkeypatch, [with_meta])
+    raw = json.loads((tmp_path / "pulse" / "raw.json").read_text(encoding="utf-8"))
+    assert raw["adapter"]["ruleset"] == "2026.07.29-h1"
+    assert raw["adapter"]["pulse_version"] == "1.1.0"
+
+
+def test_ruleset_order_reads_dates_and_hotfixes_not_strings():
+    from scanner.pipeline.pulse_probe import ruleset_order
+
+    ordered = ["garbage", "2026.07.29-h1", "2026.07.29-h10", "2026.8.1-h0", "2026.10.01"]
+    assert sorted(reversed(ordered), key=ruleset_order) == ordered
+
+
 def test_os_degrade_sticks_for_later_chunks(tmp_path, monkeypatch):
     """Every later chunk would hit the same refusal; do not pay it per chunk."""
     calls, _ = _run_probe(

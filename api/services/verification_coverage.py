@@ -30,6 +30,9 @@ The evidence, per detector:
     ``pulse/raw.json`` with ``adapter.cve`` true (also since v2: a receipt
     alone proves the port was probed, not that its banner was matched against
     anything) and a success receipt (``completion``) for the host and port.
+    A CVE pulse found online (origin ``nvd``) needs ``adapter.cve_online`` as
+    well, and a CVE found with offline ruleset R needs the run's
+    ``adapter.ruleset`` to be R or newer.
 ``nmap-nse``
     An nmap XML that finished with ``exit="success"``, was run with the
     script named in ``--script`` (a category such as ``vuln`` does not count:
@@ -64,6 +67,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from api.services import runs as runs_service
 from scanner.pipeline import pulse_progress
+from scanner.pipeline.pulse_probe import ruleset_order
 
 LOG = logging.getLogger("shapoclyack.verification")
 
@@ -73,6 +77,10 @@ NMAP_NSE = "nmap-nse"
 #: The detectors this module can judge. Recorded detectors outside it are kept
 #: on the finding for the record and are never counted as covered.
 KNOWN_DETECTORS = (PULSE, NUCLEI, NMAP_NSE)
+#: The ``source`` pulse gives a CVE its online NVD lookup found (GenDec
+#: ``src/scanner/cve.rs``: ``local`` for its offline rules, ``nvd`` online),
+#: and so the ref of such a detector (``script_id`` ``pulse:nvd``).
+PULSE_ONLINE_ORIGIN = "nvd"
 
 
 def normalize_host(value: str | None) -> str:
@@ -209,7 +217,9 @@ class RunCoverage:
             return "endpoint_not_targeted"
         return None
 
-    def _pulse_gap(self, hosts: set[str], port: int | None) -> str | None:
+    def _pulse_gap(
+        self, ref: str, ruleset: str | None, hosts: set[str], port: int | None
+    ) -> str | None:
         document = self.pulse
         if document is None:
             return "pulse_not_run"
@@ -218,6 +228,20 @@ class RunCoverage:
             return "pulse_cve_matching_not_recorded"
         if adapter.get("cve") is not True:
             return "pulse_cve_matching_off"
+        if ref == PULSE_ONLINE_ORIGIN and adapter.get("cve_online") is not True:
+            # Found by an NVD keyword query, re-checked against the offline
+            # rules only: those never contained it, so their silence is no
+            # evidence. Online lookups are the sensor host's own setting
+            # (NVD key, outbound HTTPS), deliberately not something a job
+            # can turn on.
+            return "pulse_cve_online_off"
+        if ruleset:
+            current = adapter.get("ruleset")
+            if not current:
+                return "pulse_ruleset_not_recorded"
+            if ruleset_order(str(current)) < ruleset_order(ruleset):
+                # A rule added in the newer ruleset is the one that matched.
+                return "pulse_ruleset_older"
         receipts = {
             normalize_host(host): ports
             for host, ports in pulse_progress._successful_tcp_ports(document).items()  # noqa: SLF001
@@ -271,7 +295,7 @@ class RunCoverage:
             if detector == NUCLEI:
                 reason = self._nuclei_gap(ref, hosts, endpoint_port)
             elif detector == PULSE:
-                reason = self._pulse_gap(hosts, endpoint_port)
+                reason = self._pulse_gap(ref, entry.get("ruleset"), hosts, endpoint_port)
             elif detector == NMAP_NSE:
                 reason = self._nse_gap(ref, hosts, endpoint_port)
             else:

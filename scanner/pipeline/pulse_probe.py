@@ -68,6 +68,25 @@ from .service_schema import (
 from .utils import run_command, save_json, write_lines
 
 
+def ruleset_order(value: str | None) -> tuple:
+    """Sort key for pulse ruleset ids (``YYYY.MM.DD-hN``), oldest first.
+
+    The date, then the hotfix number, numerically; anything else sorts before
+    every dated ruleset, so an id this cannot read is never taken for a newer
+    one.
+    """
+    text = str(value or "").strip()
+    date_part, _, suffix = text.partition("-")
+    try:
+        date = tuple(int(piece) for piece in date_part.split("."))
+    except ValueError:
+        return (0, (), 0, text)
+    if len(date) != 3:
+        return (0, (), 0, text)
+    hotfix = int(suffix[1:]) if suffix[:1] == "h" and suffix[1:].isdigit() else 0
+    return (1, date, hotfix, text)
+
+
 def resolve_pulse_bin(configured: str = "") -> str:
     env = os.environ.get("OCTO_PULSE_BIN", "").strip()
     if env:
@@ -681,7 +700,14 @@ def run_pulse_probe(
         "stats": {},
         "chunks": [],
         "completion": completion_manifest({host: grouped[host] for host in done}),
-        "adapter": {"chunk_hosts": size, "cve": cve, "cve_online": cve_online, **diagnostics},
+        "adapter": {
+            "chunk_hosts": size,
+            "cve": cve,
+            "cve_online": cve_online,
+            "ruleset": None,
+            "pulse_version": None,
+            **diagnostics,
+        },
     }
 
     pulse_dir = output_dir / "pulse"
@@ -709,6 +735,12 @@ def run_pulse_probe(
     # of raw sockets; every later chunk then skips the doomed attempt.
     os_detect_effective = os_detect
     os_detect_degraded: str | None = None
+    # pulse's offline CVE ruleset (``meta.ruleset``, e.g. ``2026.07.29-h1``) and
+    # its own version, from every chunk that answered. Recorded because a
+    # verification run matching with an older ruleset than the one that found
+    # a CVE proves nothing about it (api/services/verification_coverage.py).
+    rulesets: set[str] = set()
+    pulse_versions: set[str] = set()
     consecutive_crashes = 0
     scan_mode = "syn" if syn else "connect"
 
@@ -848,6 +880,11 @@ def run_pulse_probe(
             on_unresolved(unresolved_hosts)
 
         if payload:
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            if meta.get("ruleset"):
+                rulesets.add(str(meta["ruleset"]))
+            if meta.get("version"):
+                pulse_versions.add(str(meta["version"]))
             services, os_recs, cves = parse_pulse_json(payload)
             all_services.extend(services)
             all_os.extend(os_recs)
@@ -923,6 +960,10 @@ def run_pulse_probe(
         # was matched against anything.
         "cve": cve,
         "cve_online": cve_online,
+        # The oldest ruleset any chunk matched with: one binary has one, and
+        # if two ever answered, the claim made for the run is the weaker one.
+        "ruleset": min(rulesets, key=ruleset_order) if rulesets else None,
+        "pulse_version": min(pulse_versions) if pulse_versions else None,
         "chunk_hosts": size,
         **diagnostics,
     }

@@ -2866,6 +2866,8 @@ export type VulnerabilityDetector = {
   port: string | null;
   last_run_id: string | null;
   last_seen_at: string | null;
+  /** Pulse only: the offline CVE ruleset the match was made with. */
+  ruleset?: string | null;
 };
 
 export type TrackedVulnerability = {
