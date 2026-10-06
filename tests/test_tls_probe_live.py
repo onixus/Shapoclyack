@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -195,6 +195,59 @@ def _peek_record(conn: socket.socket) -> bytes:
 
 
 @contextmanager
+def _listening(handle: Callable[[socket.socket], None]) -> Iterator[int]:
+    """Accept on 127.0.0.1 in a thread and hand each connection to ``handle``.
+
+    Yields the port. The thread is stopped and joined before the test returns
+    -- the suite fails a test whose threads outlive it, and closing a listener
+    does not wake a thread blocked in ``accept()`` on Linux -- so accept polls
+    a stop event, and a connection still open at teardown is shut down so a
+    handler blocked on it returns.
+    """
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.2)
+    stop = threading.Event()
+    lock = threading.Lock()
+    open_conns: set[socket.socket] = set()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            conn.settimeout(5)
+            with lock:
+                open_conns.add(conn)
+            try:
+                handle(conn)
+            except (OSError, ssl.SSLError, ValueError, IndexError):
+                pass  # pinned versions and failed verification hang up mid-handshake
+            finally:
+                with lock:
+                    open_conns.discard(conn)
+                conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield listener.getsockname()[1]
+    finally:
+        stop.set()
+        with lock:
+            for conn in open_conns:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # the client already closed it
+        thread.join(timeout=10)
+        listener.close()
+        assert not thread.is_alive(), "test server thread did not stop"
+
+
+@contextmanager
 def _tls_server(
     cert_path: Path,
     key_path: Path,
@@ -233,45 +286,23 @@ def _tls_server(
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cafile=str(client_ca))
 
-    listener = socket.create_server(("127.0.0.1", 0))
-    listener.settimeout(0.2)
-    stop = threading.Event()
     accepted = [0]
 
-    def serve() -> None:
-        while not stop.is_set():
-            try:
-                conn, _ = listener.accept()
-            except TimeoutError:
-                continue
-            except OSError:
+    def handle(conn: socket.socket) -> None:
+        accepted[0] += 1
+        if accept_limit is not None and accepted[0] > accept_limit:
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, (1).to_bytes(4, "little") + bytes(4))
+            return
+        if intolerant_above is not None:
+            record = _peek_record(conn)
+            if len(record) > 9 and _offered_max_version(record) > intolerant_above:
+                conn.sendall(_HANDSHAKE_FAILURE_ALERT)
                 return
-            accepted[0] += 1
-            conn.settimeout(5)
-            try:
-                if accept_limit is not None and accepted[0] > accept_limit:
-                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, (1).to_bytes(4, "little") + bytes(4))
-                    continue
-                if intolerant_above is not None:
-                    record = _peek_record(conn)
-                    if len(record) > 9 and _offered_max_version(record) > intolerant_above:
-                        conn.sendall(_HANDSHAKE_FAILURE_ALERT)
-                        continue
-                with ctx.wrap_socket(conn, server_side=True) as tls:
-                    tls.recv(1)
-            except (OSError, ssl.SSLError, ValueError, IndexError):
-                pass  # pinned versions and failed verification hang up mid-handshake
-            finally:
-                conn.close()
+        with ctx.wrap_socket(conn, server_side=True) as tls:
+            tls.recv(1)
 
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    try:
-        yield listener.getsockname()[1]
-    finally:
-        stop.set()
-        thread.join(timeout=2)
-        listener.close()
+    with _listening(handle) as port:
+        yield port
 
 
 def _client_handshake(
@@ -871,32 +902,11 @@ def test_intermediate_not_yet_valid_is_found(tmp_path: Path):
 def test_server_that_hangs_up_at_once_costs_no_timeout(tmp_path: Path):
     """A clean close before any TLS byte ends each handshake at once; it must
     not spin until the deadline."""
-    listener = socket.create_server(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
-    stop = threading.Event()
-
-    def hang_up() -> None:
-        listener.settimeout(0.2)
-        while not stop.is_set():
-            try:
-                conn, _ = listener.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            conn.close()
-
-    thread = threading.Thread(target=hang_up, daemon=True)
-    thread.start()
-    started = time.monotonic()
-    try:
+    with _listening(lambda conn: None) as port:  # _listening closes it at once
+        started = time.monotonic()
         rows = probe_tls_endpoints(
             [f"127.0.0.1:{port}/tcp"], tls_ports={port}, timeout_seconds=4.0, concurrency=1
         )
-    finally:
-        stop.set()
-        listener.close()
-        thread.join(timeout=2)
     assert rows == []
     assert time.monotonic() - started < 3.0
 
@@ -904,28 +914,15 @@ def test_server_that_hangs_up_at_once_costs_no_timeout(tmp_path: Path):
 def test_plain_tcp_listener_yields_no_row(tmp_path: Path):
     """Not TLS at all: no row, as before, no legacy findings invented -- and
     no pinned ClientHellos sent after the first answer showed it is not TLS."""
-    listener = socket.create_server(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
     connections = [0]
 
-    def answer() -> None:
-        for _ in range(4):
-            try:
-                conn, _ = listener.accept()
-            except OSError:
-                return
-            connections[0] += 1
-            with conn:
-                conn.sendall(b"HTTP/1.0 400 Bad Request\r\n\r\n")
+    def answer(conn: socket.socket) -> None:
+        connections[0] += 1
+        conn.sendall(b"HTTP/1.0 400 Bad Request\r\n\r\n")
 
-    thread = threading.Thread(target=answer, daemon=True)
-    thread.start()
-    try:
+    with _listening(answer) as port:
         rows = probe_tls_endpoints(
             [f"127.0.0.1:{port}/tcp"], tls_ports={port}, timeout_seconds=3.0, concurrency=1
         )
-    finally:
-        listener.close()
-        thread.join(timeout=2)
     assert rows == []
     assert connections[0] == 1
