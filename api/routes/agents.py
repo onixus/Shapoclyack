@@ -172,6 +172,7 @@ def register_agent(
             # stored", and a list — empty included — when it did, which
             # replaces it. See ``AgentRegisterRequest.capabilities``.
             capabilities=body.capabilities,
+            signed_updates=body.signed_updates,
             # Which of the two programs this is (#358). The service accepts a
             # scanner row being corrected to an endpoint one and refuses the
             # reverse, so a host recorded as an endpoint cannot register its
@@ -254,6 +255,7 @@ def heartbeat(
         detail=body.detail,
         metrics=body.metrics,
         capabilities=body.capabilities,
+        signed_updates=body.signed_updates,
     )
     if info is None:
         raise HTTPException(
@@ -289,6 +291,7 @@ def heartbeat(
             current_version=info.version,
             platform=body.platform,
             capabilities=info.capabilities,
+            package_kind=body.package_kind,
         )
         # ``None`` rather than ``{}`` when nothing is set: an empty object
         # would read to the agent as "reset every knob", and an installation

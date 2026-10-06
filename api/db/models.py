@@ -3096,11 +3096,10 @@ class IdempotencyRecord(Base):
 class EndpointAgentRelease(Base):
     """One build of the Lariska endpoint agent the platform can hand out (#358).
 
-    Identified by ``(version, platform)``, where platform is the target triple
-    the agent reports for itself (``x86_64-pc-windows-msvc``). Two builds of
-    one version for two platforms are two rows; a rebuilt binary for a version
-    that already exists replaces the row, because a version that means two
-    different binaries is a version that means nothing.
+    Identified by ``(version, platform, package_kind)``, where platform is the
+    target triple the agent reports (``x86_64-pc-windows-msvc``). Installer
+    variants have separate bytes and sequence floors. Rebuilding one variant
+    replaces that row only; it cannot overwrite another platform or format.
 
     **The bytes are in the row.** The alternative is a file on a volume, and
     the API already cannot run more than one replica because run artifacts sit
@@ -3115,6 +3114,7 @@ class EndpointAgentRelease(Base):
 
     version: Mapped[str] = mapped_column(primary_key=True)
     platform: Mapped[str] = mapped_column(primary_key=True)
+    package_kind: Mapped[str] = mapped_column(primary_key=True, default="binary")
     sha256: Mapped[str]
     size_bytes: Mapped[int]
     content: Mapped[bytes] = mapped_column(LargeBinary)

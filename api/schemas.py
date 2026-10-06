@@ -550,6 +550,8 @@ class AgentRegisterRequest(BaseModel):
     # would leave the API handing it policy-carrying jobs it scans at whatever
     # its local config says.
     capabilities: list[str] | None = None
+    # Lariska's deployed wire protocol uses this boolean rather than a list.
+    signed_updates: bool | None = None
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -570,6 +572,8 @@ class AgentHeartbeatRequest(BaseModel):
     #: Omitted keeps the stored list, a list replaces it — see
     #: ``AgentRegisterRequest.capabilities``.
     capabilities: list[str] | None = None
+    signed_updates: bool | None = None
+    package_kind: Literal["deb", "rpm", "msi", "pkg"] | None = None
 
 
 class AgentInfo(BaseModel):
@@ -3750,6 +3754,7 @@ class EndpointAgentReleaseInfo(BaseModel):
     version: str
     #: Target triple, e.g. ``x86_64-pc-windows-msvc``.
     platform: str
+    package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] = "binary"
     #: Computed by the API from the stored bytes, never accepted from the
     #: uploader: this is what an endpoint verifies a download against before
     #: executing it.

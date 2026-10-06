@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -498,7 +498,11 @@ async def upload_agent_release(
         # No tenant: the build is the installation's, whichever tenant the
         # console happened to be looking at when it was uploaded.
         tenant_id=None,
-        after={"sha256": row["sha256"], "size_bytes": row["size_bytes"]},
+        after={
+            "sha256": row["sha256"],
+            "size_bytes": row["size_bytes"],
+            "package_kind": row["package_kind"],
+        },
     )
     return EndpointAgentReleaseInfo(**row)
 
@@ -515,9 +519,17 @@ def delete_agent_release(
     ],
     __: StepUpDep,
     audit: AuditDep,
+    package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] | None = None,
 ) -> Response:
     """Remove one build — every tenant's, since there is only one (#510)."""
-    deleted = endpoint_agent_mgmt.delete_release(version=version, platform=platform)
+    try:
+        deleted = endpoint_agent_mgmt.delete_release(
+            version=version, platform=platform, package_kind=package_kind
+        )
+    except endpoint_agent_mgmt.ReleaseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     if deleted is not None:
         audit_service.record_standalone(
             audit,
@@ -527,7 +539,14 @@ def delete_agent_release(
             # The bytes are gone with the row; this is what is left of them.
             before={
                 key: deleted[key]
-                for key in ("version", "platform", "sha256", "size_bytes", "uploaded_by")
+                for key in (
+                    "version",
+                    "platform",
+                    "package_kind",
+                    "sha256",
+                    "size_bytes",
+                    "uploaded_by",
+                )
             },
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -539,6 +558,7 @@ def download_agent_release(
     platform: str,
     request: Request,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] | None = None,
 ) -> Response:
     """Hand the build to an agent that has been told to move to it.
 
@@ -551,7 +571,14 @@ def download_agent_release(
     if not hit and principal.agent_id:
         agent = agents_service.get_agent(principal.agent_id)
     agents_service.require_active_info(agent)
-    found = endpoint_agent_mgmt.get_release_bytes(version=version, platform=platform)
+    try:
+        found = endpoint_agent_mgmt.get_release_bytes(
+            version=version, platform=platform, package_kind=package_kind
+        )
+    except endpoint_agent_mgmt.ReleaseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown build")
     content, digest = found

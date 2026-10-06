@@ -78,10 +78,39 @@ provisioned in the endpoint's local configuration; endpoints verify the real
 signature and enforce their persistent sequence floor. Upload does not grant
 any key trust.
 
-New agents declare the `signed_updates` capability. The server blocks an unsigned
+Lariska declares `signed_updates: true` on registration and heartbeat. The server
+maps this boolean to its stored `signed_updates` capability; explicit `false`
+removes it, omission preserves it, and other declared capabilities are retained.
+Clients using `capabilities: ["signed_updates"]` remain supported. The server blocks an unsigned
 release for those agents and carries the exact envelope in `managed_update`.
 Old agents can continue using existing unsigned releases during fleet migration.
 Expired signed manifests are not offered to either client generation. Release
 writes keep the platform-admin permission and recent second-factor policy.
 
 Legacy agents without the `signed_updates` capability must never be offered a native package: their historical self-update code treats downloaded bytes as an executable. The server blocks a signed native release for these clients. Migrate the endpoint through a protected native installation, retain identity/spool, establish trust and seed rollback before enabling native managed updates. Legacy unsigned executable releases remain available to legacy clients during migration.
+
+## Installer variants (migration 0081)
+
+Signed releases are keyed by `(version, platform, package_kind)` so DEB and RPM
+packages for the same Linux target triple can coexist, each with its own bytes,
+signature and sequence floor. Unsigned executables use `package_kind: binary`.
+Promoting a version/platform to signed native releases retires its unsigned
+executable; unsigned replacement remains forbidden. Finish upgrading API replicas
+before uploading multiple formats under one version/platform.
+
+Heartbeat may report the locally configured `package_kind` (`deb`, `rpm`, `msi`,
+`pkg`). Existing Lariska clients omit it: Windows and macOS target triples imply
+MSI and PKG respectively; Linux uses the accepted inventory's active package
+database sources (`apt`/`dpkg` or `rpm`). `not_applicable` sources do not count.
+An absent inventory or both package databases cannot establish a Linux installer
+format: the server blocks the update until an unambiguous inventory arrives or
+the client explicitly reports its installer. It never selects an arbitrary row.
+
+Heartbeat download URLs include `?package_kind=...`; administrative deletion
+accepts the same qualifier. An unqualified download or deletion remains accepted
+for a single variant, but returns HTTP 409 when multiple variants exist. Release
+listing and audit details expose the installer kind.
+
+Migration 0081 preserves existing release bytes and derives native kinds from
+stored signed manifests. Downgrade refuses duplicate version/platform pairs
+before changing schema; remove the extra variants deliberately before rollback.

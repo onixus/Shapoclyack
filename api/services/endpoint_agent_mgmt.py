@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -292,6 +292,21 @@ def validate_signed_manifest(envelope, *, version, platform, digest, size_bytes)
     return copy.deepcopy(envelope)
 
 
+def _lock_release_identity(session, version, platform):
+    # Row locks cannot serialize the first uploads of two installer variants.
+    # Serialize the pair so a concurrent unsigned upload cannot bypass native
+    # promotion, and two writers cannot overwrite the release sequence floor.
+    if session.get_bind().dialect.name == "postgresql":
+        key = int.from_bytes(
+            hashlib.sha256(f"endpoint-release:{version}/{platform}".encode()).digest()[
+                :8
+            ],
+            "big",
+            signed=True,
+        )
+        session.execute(select(func.pg_advisory_xact_lock(key)))
+
+
 def store_release(
     *,
     version: str,
@@ -331,14 +346,40 @@ def store_release(
         digest=digest,
         size_bytes=len(content),
     )
+    package_kind = (
+        signed_manifest["manifest"]["package_kind"] if signed_manifest else "binary"
+    )
     app_settings = _require_settings()
     now = _now()
     with get_session(app_settings.postgres_url) as session:
-        row = session.get(models.EndpointAgentRelease, (version, platform))
+        _lock_release_identity(session, version, platform)
+        variants = session.scalars(
+            select(models.EndpointAgentRelease)
+            .where(
+                models.EndpointAgentRelease.version == version,
+                models.EndpointAgentRelease.platform == platform,
+            )
+            .with_for_update()
+        ).all()
+        if not signed_manifest and any(variant.signed_manifest for variant in variants):
+            raise ReleaseError(
+                "a signed release cannot be replaced with an unsigned release"
+            )
+        # Promotion to native updates retires the old unsigned executable.
+        # Other signed installer formats retain their own sequence and bytes.
+        if signed_manifest:
+            for variant in variants:
+                if variant.package_kind == "binary":
+                    session.delete(variant)
+        row = next(
+            (variant for variant in variants if variant.package_kind == package_kind),
+            None,
+        )
         if row is None:
             row = models.EndpointAgentRelease(
                 version=version,
                 platform=platform,
+                package_kind=package_kind,
                 sha256=digest,
                 size_bytes=len(content),
                 content=content,
@@ -400,7 +441,22 @@ def list_releases(*, show_uploader: bool = True) -> list[dict[str, Any]]:
     return infos
 
 
-def delete_release(*, version: str, platform: str) -> dict[str, Any] | None:
+def _release_variant(session, *, version, platform, package_kind=None):
+    query = select(models.EndpointAgentRelease).where(
+        models.EndpointAgentRelease.version == version,
+        models.EndpointAgentRelease.platform == platform,
+    )
+    if package_kind is not None:
+        query = query.where(models.EndpointAgentRelease.package_kind == package_kind)
+    rows = session.scalars(query.limit(2)).all()
+    if len(rows) > 1:
+        raise ReleaseError("multiple installer formats exist; specify package_kind")
+    return rows[0] if rows else None
+
+
+def delete_release(
+    *, version: str, platform: str, package_kind: str | None = None
+) -> dict[str, Any] | None:
     """Remove one build; what was removed, or ``None`` if nothing was stored.
 
     Returned rather than a bool because the row is gone afterwards and the
@@ -409,7 +465,10 @@ def delete_release(*, version: str, platform: str) -> dict[str, Any] | None:
     """
     app_settings = _require_settings()
     with get_session(app_settings.postgres_url) as session:
-        row = session.get(models.EndpointAgentRelease, (version, platform))
+        _lock_release_identity(session, version, platform)
+        row = _release_variant(
+            session, version=version, platform=platform, package_kind=package_kind
+        )
         if row is None:
             return None
         info = _release_info(row)
@@ -417,11 +476,15 @@ def delete_release(*, version: str, platform: str) -> dict[str, Any] | None:
         return info
 
 
-def get_release_bytes(*, version: str, platform: str) -> tuple[bytes, str] | None:
+def get_release_bytes(
+    *, version: str, platform: str, package_kind: str | None = None
+) -> tuple[bytes, str] | None:
     """The build's bytes and digest, or ``None`` if it is not stored."""
     app_settings = _require_settings()
     with get_session(app_settings.postgres_url) as session:
-        row = session.get(models.EndpointAgentRelease, (version, platform))
+        row = _release_variant(
+            session, version=version, platform=platform, package_kind=package_kind
+        )
         if row is None:
             return None
         return bytes(row.content), row.sha256
@@ -431,6 +494,7 @@ def _release_info(row: models.EndpointAgentRelease) -> dict[str, Any]:
     return {
         "version": row.version,
         "platform": row.platform,
+        "package_kind": row.package_kind,
         "sha256": row.sha256,
         "size_bytes": row.size_bytes,
         "signed_manifest": copy.deepcopy(row.signed_manifest),
@@ -440,6 +504,57 @@ def _release_info(row: models.EndpointAgentRelease) -> dict[str, Any]:
     }
 
 
+def _native_package_kind(session, *, tenant_id, agent_id, platform, reported_kind):
+    """Current Lariska omits its installer kind; infer only an unambiguous one.
+
+    Linux collectors select package databases, not merely installed commands.
+    A toolbox with both databases requires an explicit local installer report.
+    """
+    if "-windows-" in platform:
+        supported = {"msi"}
+    elif platform.endswith("-apple-darwin"):
+        supported = {"pkg"}
+    elif "-linux-" in platform:
+        supported = {"deb", "rpm"}
+    else:
+        supported = set()
+    if reported_kind is not None:
+        return reported_kind if reported_kind in supported else None
+    if len(supported) == 1:
+        return next(iter(supported))
+    if supported != {"deb", "rpm"}:
+        return None
+    device = session.scalar(
+        select(models.EndpointDevice).where(
+            models.EndpointDevice.tenant_id == tenant_id,
+            models.EndpointDevice.agent_id == agent_id,
+        )
+    )
+    if device is None:
+        return None
+    sources = {
+        state["source"]
+        for state in (device.source_states or [])
+        if state.get("status") != "not_applicable"
+    }
+    if not device.source_states and device.latest_snapshot_id:
+        sources = set(
+            session.scalars(
+                select(models.EndpointSoftwareItem.source).where(
+                    models.EndpointSoftwareItem.snapshot_id
+                    == device.latest_snapshot_id,
+                    models.EndpointSoftwareItem.tenant_id == tenant_id,
+                )
+            ).all()
+        )
+    kinds = set()
+    if sources & {"apt", "dpkg"}:
+        kinds.add("deb")
+    if "rpm" in sources:
+        kinds.add("rpm")
+    return next(iter(kinds)) if len(kinds) == 1 else None
+
+
 def plan_for_agent(
     *,
     tenant_id: str,
@@ -447,6 +562,7 @@ def plan_for_agent(
     current_version: str,
     platform: str | None,
     capabilities: list[str] | None = None,
+    package_kind: str | None = None,
 ) -> AgentPlan:
     """What this agent should be told now: merged settings, and an update or not.
 
@@ -500,7 +616,49 @@ def plan_for_agent(
                 ),
             )
 
-        release = session.get(models.EndpointAgentRelease, (desired, platform))
+        signed_updates = "signed_updates" in (capabilities or [])
+        variants = session.scalars(
+            select(models.EndpointAgentRelease).where(
+                models.EndpointAgentRelease.version == desired,
+                models.EndpointAgentRelease.platform == platform,
+            )
+        ).all()
+        if signed_updates and variants:
+            native_kind = _native_package_kind(
+                session,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                platform=platform,
+                reported_kind=package_kind,
+            )
+            if native_kind is None:
+                return AgentPlan(
+                    settings=merged,
+                    revision=revision,
+                    update=None,
+                    update_blocked="native installer format is unknown or ambiguous; report package_kind or submit package inventory",
+                )
+            release = next(
+                (row for row in variants if row.package_kind == native_kind), None
+            )
+            if release is None:
+                return AgentPlan(
+                    settings=merged,
+                    revision=revision,
+                    update=None,
+                    update_blocked=f"this agent requires a signed native package manifest for {native_kind}",
+                )
+        else:
+            release = next(
+                (row for row in variants if row.package_kind == "binary"), None
+            )
+            if release is None and variants:
+                return AgentPlan(
+                    settings=merged,
+                    revision=revision,
+                    update=None,
+                    update_blocked="this agent lacks signed native update support; migrate it to a native installation before requesting this release",
+                )
         if release is None:
             return AgentPlan(
                 settings=merged,
@@ -548,6 +706,6 @@ def plan_for_agent(
                 "sha256": release.sha256,
                 "size_bytes": release.size_bytes,
                 "signed_manifest": copy.deepcopy(release.signed_manifest),
-                "url": f"/api/endpoint/agent/releases/{release.version}/{release.platform}/download",
+                "url": f"/api/endpoint/agent/releases/{release.version}/{release.platform}/download?package_kind={release.package_kind}",
             },
         )
