@@ -280,7 +280,14 @@ pipeline {
                           "--network ${net} --network-alias nats",
                           "--jetstream --store_dir=/data --http_port=8222"
                         ) { nats ->
-                          docker.image(PYTHON_IMAGES[PY]).inside("-u 0:0 --network ${net} ${PIP_CACHE}") {
+                          // --init: docker.inside держит контейнер на `cat` как
+                          // PID 1, а cat не подбирает осиротевших детей. Тесты
+                          // update-agent.sh убивают группу верификатора, отцепленного
+                          // setsid'ом, и ждут, пока она исчезнет (`kill -0 -- -PGID`):
+                          // зомби на это отвечают «жив», и скрипт висел до таймаута
+                          // теста. На Fedor: без --init 4 failed за 85 с, с ним 4 passed
+                          // за 9.5 с. На хосте сенсора их подбирает systemd.
+                          docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE}") {
                             withEnv([
                               'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
                               'OCTO_NATS_URL=nats://nats:4222',
