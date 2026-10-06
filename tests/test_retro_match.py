@@ -9,6 +9,7 @@ good as its reading of those, and a synthetic ``1.2.3`` proves nothing about
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -594,6 +595,20 @@ def test_a_cpe_key_the_dataset_lacks_falls_back_to_the_product_table() -> None:
         dataset,
         lookup=lambda _d: None,
     )
+    assert [m.cve for m in outcome.matches] == ["CVE-2019-15846"]
+
+
+def test_an_unaliased_cpes_version_still_speaks_for_the_listener() -> None:
+    """The table knows the product, none of the line's CPEs is one of its keys
+    (a vendor nobody aliased yet), and the version is only in the CPE: it is
+    still the prober's statement about this listener."""
+    dataset = _one("a:exim:exim", CpeRange("CVE-2019-15846", end_excluding="4.92.2"))
+    outcome = rm.match(
+        rm.Fingerprint(product="Exim smtpd", cpe=("cpe:/a:someone:exim_server:4.92",)),
+        dataset,
+        lookup=lambda _d: None,
+    )
+    assert outcome.upstream_version == "4.92"
     assert [m.cve for m in outcome.matches] == ["CVE-2019-15846"]
 
 
@@ -1597,11 +1612,37 @@ def test_squid_on_a_known_ubuntu_host_asks_ubuntus_squid() -> None:
     assert only.evidence["advisory"]["advisory_id"] == "ADV-1"
 
 
-def test_the_rules_version_follows_the_tables(monkeypatch) -> None:
-    """Part of the worker's marker: a release that teaches the matcher a
-    product must re-ask about listeners already matched against an unchanged
+_FROB = "a:frob:frobnicator"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda mp: mp.setitem(rm.PRODUCT_TABLE, "frobnicator httpd", (_FROB,)),
+        lambda mp: mp.setitem(rm._PRODUCT_SERVICES, "frobnicator httpd", frozenset({"frob"})),
+        lambda mp: mp.setitem(rm.CPE_ALIASES, "a:frob:frob", (_FROB,)),
+        lambda mp: mp.setitem(rm.SOURCE_PACKAGES, _FROB, ("frobnicator",)),
+        lambda mp: mp.setitem(rm.SERIES_SOURCE_PACKAGES, _FROB, "frob-{major}.{minor}"),
+        lambda mp: mp.setitem(rm.SHARED_SOURCE_PACKAGES, _FROB, "frob"),
+        lambda mp: mp.setattr(rm, "DISTRO_PACKAGED", rm.DISTRO_PACKAGED | {_FROB}),
+        lambda mp: mp.setitem(rm._BANNER_NAMES, _FROB, ("frobnicator",)),
+        lambda mp: mp.setitem(rm._VERSION_SHAPES, _FROB, re.compile(r"(\d+\.\d+)")),
+        lambda mp: mp.setattr(rm, "_FIRST_NUMBER_VERSIONS", rm._FIRST_NUMBER_VERSIONS | {_FROB}),
+        lambda mp: mp.setattr(rm, "_NOT_MATCHED_CPE", rm._NOT_MATCHED_CPE | {_FROB}),
+        lambda mp: mp.setitem(rm._LOOKALIKES, _FROB, re.compile("frobfork")),
+        lambda mp: mp.setattr(rm, "MATCHER_REVISION", rm.MATCHER_REVISION + 1),
+    ],
+    ids=[
+        "products", "product_services", "aliases", "sources", "series_sources", "shared_sources",
+        "distro_packaged", "banner_names", "shapes", "first_number", "not_matched_cpe", "lookalikes",
+        "revision",
+    ],
+)
+def test_the_rules_version_follows_every_table(monkeypatch, change) -> None:
+    """Part of the worker's marker: a release that changes what decides a
+    verdict must re-ask about listeners already matched against an unchanged
     dataset — once, so the digest is stable while nothing changes."""
     first = rm.rules_version()
     assert first == rm.rules_version()
-    monkeypatch.setitem(rm.PRODUCT_TABLE, "frobnicator httpd", ("a:frob:frobnicator",))
+    change(monkeypatch)
     assert rm.rules_version() != first
