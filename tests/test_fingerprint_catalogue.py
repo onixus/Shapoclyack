@@ -525,10 +525,25 @@ def test_every_regex_in_the_file_is_linted_and_stressed():
         ("<!-- <title>no</title> --!><title>c</title>", "c"),
         ("<!-- <title>no</title> --><title>d</title>", "d"),
         ("<!-- <title>no</title>", ""),
+        # Two comments in a row: the cached closer must move past the first.
+        ("<!-- a --><!-- b --><title>x</title>", "x"),
+        ("<!-- a --!><!-- b --><title>y</title>", "y"),
+        ("<!-- a --><!-- b --!><title>z</title>", "z"),
     ],
 )
 def test_comment_forms_follow_the_html_spec(body, title):
-    assert page_title(body) == title
+    assert _capped(f"print(page_title({body!r}))") == title
+
+
+@pytest.mark.parametrize("unit", ["<!-- -->", "<!-- --!>", "<!-- a --!><!-- b -->"])
+def test_a_hostile_page_of_comments_classifies_in_bounded_time(unit):
+    """A comment closer cached past its use would loop on the next comment forever."""
+    took = _capped(
+        f"import time, httpx; body = ({unit!r} * {MIB // len(unit) + 1})[:{MIB}]; t = time.process_time(); "
+        "load_catalogue().classify(200, httpx.Headers(), body, 'http://192.0.2.10/'); "
+        "print(time.process_time() - t)"
+    )
+    assert float(took) < 1.0
 
 
 def test_markup_quoted_inside_a_script_is_not_the_page():
@@ -542,3 +557,28 @@ def test_markup_quoted_inside_a_script_is_not_the_page():
 def test_markup_after_a_long_script_is_still_read():
     body = "<script>var x = '" + "x" * (70 * 1024) + "';</script><title>after</title>"
     assert page_title(body) == "after"
+
+
+
+def _capped(code: str, seconds: float = 20.0) -> str:
+    """Run ``code`` in a child interpreter under a hard wall-clock cap; its stdout.
+
+    For checks whose failure mode is a loop that never advances: in-process a
+    hung parse holds the GIL and stalls the whole suite; a child is killed.
+    """
+    import subprocess
+    import sys
+
+    prelude = "from scanner.pipeline.fingerprint_catalogue import load_catalogue, page_title\n"
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", prelude + code],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=seconds,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"did not return within {seconds}s (a scan loop that never advances)")
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout.strip()
