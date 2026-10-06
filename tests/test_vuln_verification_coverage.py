@@ -834,13 +834,15 @@ def test_the_detector_records_where_it_was_seen_from(tmp_path):
     assert entry["vantages"] == ["group:internal"]
 
 
-def test_vantages_survive_the_detector_cap_and_unknown_gives_way_to_a_known_one():
-    """Whatever the merge drops, the known vantages it was seen from stay on
-    the row: the entry the cap evicts hands them to the newest one. ``unknown``
-    is "nobody recorded where", not another place — the host-less entry 0079
-    backfilled hands nothing on (one that did record a vantage hands it on),
-    and an observation from a run no job owns gives way to the first known
-    vantage of the same detector."""
+def test_vantages_survive_the_cap_and_only_the_backfill_s_unknown_gives_way():
+    """Whatever the merge drops, the vantages it was seen from stay on the
+    row: the entry the cap evicts hands them to the newest one. The host-less
+    entry 0079 backfilled hands no ``unknown`` on — it predates recording, so
+    "nobody recorded where" is all it says — while one that did record a
+    vantage hands that on. An observation by a run no job owns (an import, a
+    hand-placed run) is different: it did look, from somewhere nobody knows,
+    and that ``unknown`` stays beside any known vantage in either order, so
+    the detector never matches a single verifying vantage (round-4 review)."""
     backfilled = {"detector": "pulse", "ref": "local", "host": None, "port": "443"}
     located = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443", "vantage": "local"}
     assert vulns.merge_detectors([backfilled], [located])[0]["vantages"] == ["local"]
@@ -852,9 +854,12 @@ def test_vantages_survive_the_detector_cap_and_unknown_gives_way_to_a_known_one(
     ownerless = {"detector": "pulse", "ref": "local", "host": HOST, "port": "443"}
     first = vulns.merge_detectors([], [ownerless])
     assert first[0]["vantages"] == ["unknown"]
-    assert vulns.merge_detectors(first, [located])[0]["vantages"] == ["local"]
-    # And once known, a later ownerless observation does not bring it back.
-    assert vulns.merge_detectors(vulns.merge_detectors(first, [located]), [ownerless])[0]["vantages"] == ["local"]
+    then_local = vulns.merge_detectors(first, [located])
+    assert then_local[0]["vantages"] == ["local", "unknown"]
+    local_first = vulns.merge_detectors(vulns.merge_detectors([], [located]), [ownerless])
+    assert local_first[0]["vantages"] == ["unknown", "local"]
+    for detectors in (then_local, local_first):
+        assert vulns._same_vantage(models.Vulnerability(detectors=detectors), {"vantage": "local"}) is False
 
     old = {"detector": "nuclei", "ref": "t-old", "host": HOST, "port": "443", "vantages": ["group:internal"]}
     repeat = {**old, "host": "10.0.0.9", "vantages": ["group:dmz"]}
@@ -1639,20 +1644,25 @@ def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wi
     [
         ("3m", "refused"),  # a sensor restarting: two missed heartbeats
         ("59m", "refused"),
+        ("60m", "refused"),  # exactly the grace period: still inside it
+        ("61m", "rerouted"),  # just past it
         ("2h", "rerouted"),
     ],
 )
-def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, silent, outcome):
+def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, monkeypatch, silent, outcome):
     """The round-3 delta review's probe: the observing group's only sensor
     missed two heartbeats (a restart), and the verification went tenant-wide
     from another network path with an event saying the group was gone. Inside
     the grace period (OCTO_VERIFICATION_REGROUP_GRACE_SECONDS, 1 h) it is
     refused with "retry" instead; past it, rerouted, and the reason says for
-    how long the group has been silent."""
+    how long the group has been silent. The clock is held still so the
+    boundary points mean exactly what they say."""
     from datetime import timedelta
 
     from api.services import agent_groups
 
+    moment = vulns._now()
+    monkeypatch.setattr(vulns, "_now", lambda: moment)
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
     approve_scan_scope(settings)
     agent_groups.create_group(settings, tenant_id=tenant_id, name="internal")
@@ -1660,7 +1670,13 @@ def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, s
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
     _agent_mode(settings, tenant_id, group="internal")
     _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "x"), group="dmz")
-    age = {"3m": timedelta(minutes=3), "59m": timedelta(minutes=59), "2h": timedelta(hours=2, minutes=1)}[silent]
+    age = {
+        "3m": timedelta(minutes=3),
+        "59m": timedelta(minutes=59),
+        "60m": timedelta(minutes=60),
+        "61m": timedelta(minutes=61),
+        "2h": timedelta(hours=2, minutes=1),
+    }[silent]
     _age(settings, tenant_id, "internal", by=age)
     assert settings.verification_regroup_grace_seconds == 3600
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
@@ -1676,7 +1692,7 @@ def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, s
     with get_session(settings.postgres_url) as session:
         assert session.get(models.Job, result["verification_job_id"]).agent_group is None
     regrouped = _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["regrouped"]
-    assert regrouped["reason"] == "no_live_sensor_for_2h"
+    assert regrouped["reason"] == {"61m": "no_live_sensor_for_1h", "2h": "no_live_sensor_for_2h"}[silent]
 
 
 @pytest.mark.parametrize("aged", [False, True], ids=["new-group", "silent-2h"])
@@ -1784,3 +1800,12 @@ def test_the_regroup_grace_period_is_configurable(monkeypatch):
     monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "-5")
     with pytest.raises(ValueError, match="OCTO_VERIFICATION_REGROUP_GRACE_SECONDS"):
         load_settings()
+
+
+@pytest.mark.parametrize(
+    ("seconds", "spelled"),
+    [(0, "0s"), (42, "42s"), (59.9, "59s"), (60, "1m"), (3599, "59m"), (3600, "1h"), (86400 * 2, "2d")],
+)
+def test_a_silence_is_spelled_in_the_largest_whole_unit(seconds, spelled):
+    """Under a minute used to read "0m" — "silent for zero minutes"."""
+    assert vulns._duration(seconds) == spelled
