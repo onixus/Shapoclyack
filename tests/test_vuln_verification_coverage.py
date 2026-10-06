@@ -1774,6 +1774,13 @@ def test_the_regroup_grace_period_is_configurable(monkeypatch):
     assert load_settings().verification_regroup_grace_seconds == 3600
     monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "600")
     assert load_settings().verification_regroup_grace_seconds == 600
-    # Zero reroutes at once; a negative value is not a longer wait.
+    monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "0")
+    assert load_settings().verification_regroup_grace_seconds == 0  # reroute at once
+    # Empty is unset, not zero: a blank line in a values file must not turn
+    # the grace period off.
+    monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "")
+    assert load_settings().verification_regroup_grace_seconds == 3600
+    # A negative wait is a typo, refused at startup like any other garbage.
     monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "-5")
-    assert load_settings().verification_regroup_grace_seconds == 0
+    with pytest.raises(ValueError, match="OCTO_VERIFICATION_REGROUP_GRACE_SECONDS"):
+        load_settings()
