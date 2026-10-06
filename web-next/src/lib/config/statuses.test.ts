@@ -101,6 +101,7 @@ describe("status maps", () => {
       "version_range",
     ]);
     expect(Object.keys(ASSET_SERVICE_MATCH_STATUS).sort()).toEqual([
+      "lookalike",
       "matched",
       "no_dataset",
       "no_version",
