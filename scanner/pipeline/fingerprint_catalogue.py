@@ -71,6 +71,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from re import _constants as _sre_constants  # type: ignore[attr-defined]
+from re import _compiler as _sre_compiler  # type: ignore[attr-defined]
 from re import _parser as _sre_parser  # type: ignore[attr-defined]
 from typing import Any, Literal, get_args
 from urllib.parse import urljoin, urlsplit
@@ -201,12 +202,97 @@ def _strip_matrix(path: str) -> str:
     return _MATRIX_RE.sub("", path)
 
 
-def _bounded(pattern: str) -> None:
-    """Refuse a regex that can repeat without bound (``*``, ``+``, ``{n,}``)."""
+_REPEATS = (_sre_constants.MAX_REPEAT, _sre_constants.MIN_REPEAT, _sre_constants.POSSESSIVE_REPEAT)
+_SINGLE_CHAR_OPS = (
+    _sre_constants.LITERAL,
+    _sre_constants.NOT_LITERAL,
+    _sre_constants.ANY,
+    _sre_constants.IN,
+)
+#: The alphabet a character-class overlap is judged on: ASCII, Latin-1 and
+#: enough Cyrillic to cover the catalogue's own patterns.
+_LINT_ALPHABET = [chr(c) for c in range(256)] + [chr(c) for c in range(0x400, 0x460)] + ["·", "®"]
 
-    def walk(items: Any, outer: int) -> None:
-        for op, av in items:
-            if op in (_sre_constants.MAX_REPEAT, _sre_constants.MIN_REPEAT, _sre_constants.POSSESSIVE_REPEAT):
+
+def _char_matcher(item: Any) -> re.Pattern[str] | None:
+    """A one-character pattern equivalent to ``item``, or None when it is not one character."""
+    op, _ = item
+    if op not in _SINGLE_CHAR_OPS:
+        return None
+    sub = _sre_parser.SubPattern(_sre_parser.State(), [item])
+    try:
+        return _sre_compiler.compile(sub, re.IGNORECASE)
+    except Exception:  # noqa: BLE001 - a lint helper; an uncompilable fragment is judged overlapping
+        return None
+
+
+def _edge(items: list[Any], first: bool) -> Any | None:
+    """The first (or last) atom of a sequence, looking into groups."""
+    seq = [item for item in items if item[0] is not _sre_constants.AT]
+    if not seq:
+        return None
+    item = seq[0] if first else seq[-1]
+    if item[0] is _sre_constants.SUBPATTERN:
+        return _edge(list(item[1][3]), first)
+    return item
+
+
+def _variable_repeat(item: Any) -> Any | None:
+    if item is not None and item[0] in _REPEATS:
+        low, high, sub = item[1]
+        if low != high:
+            return item
+    return None
+
+
+def _overlap(left: Any, right: Any) -> bool:
+    """Can the end of one repeat and the start of the next match the same character?"""
+    left_atom = _edge(list(left[1][2]), first=False)
+    right_atom = _edge(list(right[1][2]), first=True)
+    if left_atom is None or right_atom is None:
+        return True
+    a, b = _char_matcher(left_atom), _char_matcher(right_atom)
+    if a is None or b is None:
+        return True
+    return any(a.fullmatch(ch) and b.fullmatch(ch) for ch in _LINT_ALPHABET)
+
+
+def _bounded(pattern: str) -> None:
+    r"""Refuse a regex whose backtracking is not obviously bounded.
+
+    * a repeat without a bound (``*``, ``+``, ``{n,}``) or above
+      ``MAX_REGEX_REPEAT``, or nested repeats whose product exceeds
+      ``MAX_REGEX_NESTED``;
+    * an alternation inside a repeat (``(?:a|ab){0,64}``): every iteration can
+      take either branch;
+    * two variable repeats in a row whose characters overlap
+      (``a{0,99}a{0,99}``, ``\s{0,8}[ \t]{0,8}``): the split between them is
+      tried every way. A lookaround between them is looked through.
+
+    These are shapes, not proofs; ``load_catalogue`` also runs every pattern
+    against a hostile corpus under a time budget (``_stress``).
+    """
+
+    def walk(items: Any, outer: int, in_repeat: bool) -> None:
+        seq = list(items)
+        previous = None
+        for item in seq:
+            op, av = item
+            if op is _sre_constants.BRANCH and in_repeat:
+                raise ValueError(f"regex {pattern!r} has an alternation inside a repeat")
+            if op in (_sre_constants.ASSERT, _sre_constants.ASSERT_NOT):
+                inner = _variable_repeat(_edge(list(av[1]), first=True))
+                if previous is not None and inner is not None and _overlap(previous, inner):
+                    raise ValueError(f"regex {pattern!r} has adjacent repeats over the same characters")
+                walk(av[1], outer, in_repeat)
+                continue
+            if op is _sre_constants.AT:
+                continue
+            current = _variable_repeat(_edge([item], first=True))
+            if previous is not None and current is not None and _overlap(previous, current):
+                raise ValueError(f"regex {pattern!r} has adjacent repeats over the same characters")
+            previous = _variable_repeat(_edge([item], first=False))
+            if op in _REPEATS:
                 low, high, sub = av
                 if high == _sre_constants.MAXREPEAT or high > MAX_REGEX_REPEAT:
                     raise ValueError(
@@ -214,17 +300,80 @@ def _bounded(pattern: str) -> None:
                     )
                 if outer * max(high, 1) > MAX_REGEX_NESTED:
                     raise ValueError(f"regex {pattern!r} nests repeats beyond {MAX_REGEX_NESTED}")
-                walk(sub, outer * max(high, 1))
+                walk(sub, outer * max(high, 1), True)
                 continue
             for part in av if isinstance(av, (list, tuple)) else (av,):
                 if isinstance(part, _sre_parser.SubPattern):
-                    walk(part, outer)
+                    walk(part, outer, in_repeat)
                 elif isinstance(part, list):
                     for sub in part:
                         if isinstance(sub, _sre_parser.SubPattern):
-                            walk(sub, outer)
+                            walk(sub, outer, in_repeat)
 
-    walk(_sre_parser.parse(pattern), 1)
+    walk(_sre_parser.parse(pattern), 1, False)
+
+
+#: Inputs every catalogue regex is timed against at load, built per pattern
+#: from its own literal characters and a few generic ones.
+STRESS_INPUT_LEN = 64 * 1024
+STRESS_BUDGET_SECONDS = 0.05
+_STRESS_GENERIC = " a1<>\"'/.-:{"
+
+
+def _literals(pattern: str) -> str:
+    found: list[str] = []
+
+    def walk(items: Any) -> None:
+        for op, av in items:
+            if op is _sre_constants.LITERAL:
+                found.append(chr(av))
+            for part in av if isinstance(av, (list, tuple)) else (av,):
+                if isinstance(part, _sre_parser.SubPattern):
+                    walk(part)
+                elif isinstance(part, list):
+                    for sub in part:
+                        if isinstance(sub, _sre_parser.SubPattern):
+                            walk(sub)
+
+    walk(_sre_parser.parse(pattern))
+    return "".join(found)
+
+
+def _stress_lengths() -> list[int]:
+    """1..64 one at a time, then doubling to ``STRESS_INPUT_LEN``.
+
+    Exponential backtracking roughly doubles per character, so growing one
+    character at a time over short inputs refuses such a pattern a step after
+    it crosses the budget instead of hanging on the first long input.
+    """
+    lengths = list(range(1, 65))
+    while lengths[-1] < STRESS_INPUT_LEN:
+        lengths.append(min(lengths[-1] * 2, STRESS_INPUT_LEN))
+    return lengths
+
+
+def stress(pattern: re.Pattern[str], budget: float = STRESS_BUDGET_SECONDS) -> None:
+    """Run ``pattern`` over growing hostile inputs; raise when a search exceeds ``budget``.
+
+    The shape lint cannot prove every pattern linear; this measures. A single
+    ``re.search`` holds the GIL and cannot be pre-empted by the stage's
+    deadline (checked between technologies), so a slow pattern has to be
+    refused before it ships, not timed out in a scan.
+    """
+    literal = _literals(pattern.pattern)
+    units = list(dict.fromkeys(literal[:16] + _STRESS_GENERIC))
+    if len(literal) > 1:
+        units.append(literal[:-1])
+    for unit in units:
+        for length in _stress_lengths():
+            text = (unit * (length // len(unit) + 1))[:length]
+            start = time.perf_counter()
+            pattern.search(text)
+            took = time.perf_counter() - start
+            if took > budget:
+                raise ValueError(
+                    f"regex {pattern.pattern!r} took {took:.3f}s on {length} hostile characters (budget {budget}s)"
+                )
 
 
 def _compile(pattern: str) -> re.Pattern[str]:
@@ -763,6 +912,22 @@ class Catalogue(BaseModel):
             seen.add(tech.id)
         return self
 
+    def patterns(self) -> list[re.Pattern[str]]:
+        """Every compiled regex in the catalogue, matchers and version rules."""
+        found: list[re.Pattern[str]] = []
+
+        def walk(matchers: list[Matcher]) -> None:
+            for matcher in matchers:
+                if matcher.all_of is not None:
+                    walk(matcher.all_of)
+                elif matcher._pattern is not None:
+                    found.append(matcher._pattern)
+
+        for tech in self.technologies:
+            walk(tech.match)
+            found.extend(rule._pattern for rule in tech.version)
+        return found
+
     def classify(
         self,
         status: int,
@@ -886,5 +1051,13 @@ def cpe_name(key: str, version: str | None) -> str:
 
 @functools.lru_cache(maxsize=1)
 def load_catalogue(path: Path = CATALOGUE_PATH) -> Catalogue:
-    """The validated catalogue. A broken file raises (``pydantic.ValidationError``)."""
-    return Catalogue.model_validate_json(path.read_text(encoding="utf-8"))
+    """The validated catalogue. A broken file raises (``pydantic.ValidationError``).
+
+    Every regex is also timed against a hostile corpus (``stress``); one over
+    budget refuses the whole catalogue, so a slow pattern fails the build's
+    tests rather than a scan.
+    """
+    catalogue = Catalogue.model_validate_json(path.read_text(encoding="utf-8"))
+    for pattern in catalogue.patterns():
+        stress(pattern)
+    return catalogue

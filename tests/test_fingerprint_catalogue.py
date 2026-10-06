@@ -25,11 +25,13 @@ from scanner.pipeline.fingerprint_catalogue import (
     Catalogue,
     ClassificationTimeout,
     Response,
+    _bounded,
     cpe_name,
     load_catalogue,
     meta_generators,
     page_title,
     parse_page,
+    stress,
 )
 
 FIXTURES = json.loads(
@@ -408,3 +410,36 @@ def test_markup_inside_a_comment_is_text():
     body = "<!-- <title>Login to Webmin</title> --><title>Acme</title><!-- <meta name=generator content='WordPress 6.4'> -->"
     assert page_title(body) == "Acme"
     assert load_catalogue().classify(200, httpx.Headers(), body) == []
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(?:a|a){0,1024}b",
+        r"(?:ab|a){0,64}c",
+        r"a{0,1000}a{0,1000}a{0,1000}c",
+        r"a{0,1000}(?=a{0,1000})a{0,10}c",
+        r"\s{0,8}[ \t]{0,8}x",
+    ],
+)
+def test_the_lint_refuses_backtracking_shapes(pattern):
+    """Patterns the delta review timed at seconds on a few dozen characters."""
+    with pytest.raises(ValueError, match="alternation inside a repeat|adjacent repeats"):
+        _bounded(pattern)
+
+
+@pytest.mark.parametrize("pattern", [r"\s{0,8}:\s{0,8}", r"x{0,9}y{0,9}", r"^big-ip®?\s{0,4}-"])
+def test_the_lint_lets_separated_or_disjoint_repeats_through(pattern):
+    _bounded(pattern)
+
+
+def test_the_load_time_stress_refuses_a_slow_pattern():
+    with pytest.raises(ValueError, match="hostile characters"):
+        stress(re.compile(r"(?:a|a){0,1024}b"), budget=0.05)
+
+
+def test_every_shipped_pattern_passes_the_stress_budget():
+    patterns = load_catalogue().patterns()
+    assert len(patterns) > 100
+    for pattern in patterns:
+        stress(pattern)
