@@ -31,7 +31,7 @@
 | Контроль | Источник данных | Состояние |
 | --- | --- | --- |
 | TLS сертификаты | `scanner/pipeline/tls_posture.py` (+ `cert_names.py`, `tls_probe.py`) | **есть**, нужен только маппинг в контроль |
-| Технологии сайта | `scanner/pipeline/fingerprint.py` (CDN/WAF/CMS) | **есть**, покрытие сигнатур сознательно неполное |
+| Технологии сайта | `scanner/pipeline/fingerprint.py` + каталог `fingerprint_catalogue.json` (~150 технологий, версии, CPE, `exposures`) | **есть**; каталог — по публичным маркерам, без живых снимков ([docs/web-fingerprinting.md](web-fingerprinting.md)) |
 | Открытые сервисы | `ports.py` → `pulse_probe.py` / `nse.py` → `nuclei_scan.py` | **есть** |
 | DNS структура | `resolve.py`, `hostnames.py`, `domain_monitor.py` (typosquat + dangling CNAME) | **частично** — нет гигиены зоны (NS/SOA/CAA/DNSSEC/AXFR/wildcard) |
 | Почтовая защита | только `alerts.py::check_dkim_record` — самопроверка отправителя, не аудит цели | **нет** |

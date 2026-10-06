@@ -465,6 +465,145 @@ def test_web_technologies_flags_version_banner(tmp_path: Path):
     assert web["findings_by_severity"]["low"] == 1  # bare "PHP"
 
 
+def _web_control(tmp_path: Path) -> dict:
+    return {c["control"]: c for c in evaluate_controls(tmp_path, ControlsConfig(enabled=True))["controls"]}[
+        "web_technologies"
+    ]
+
+
+def test_web_technologies_reads_the_exposures_the_fingerprint_stage_writes(tmp_path: Path, monkeypatch):
+    """Stage output in, control out: a console counts, a VPN portal is listed."""
+    import httpx
+
+    from scanner.pipeline.config_schema import FingerprintConfig
+    from scanner.pipeline.fingerprint import _Fetched, fingerprint_hosts_sync
+
+    responses = {
+        "http://198.51.100.7:8080/": (403, [("X-Jenkins", "2.414.3")], "<title>Sign in [Jenkins]</title>"),
+        "https://198.51.100.8:443/": (200, [], '<script>top.location="/remote/login";</script>'),
+    }
+
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
+        status, headers, body = responses[url]
+        return _Fetched(status, httpx.Headers(headers), body, url)
+
+    monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
+    fingerprint_hosts_sync(
+        ["198.51.100.7:8080/tcp", "198.51.100.8:443/tcp"],
+        FingerprintConfig(enabled=True, http_ports=[8080], https_ports=[443]),
+        tmp_path,
+    )
+
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 0, "low": 1}
+    assert web["top_findings"][0] == {
+        "id": "exposed_admin_interface",
+        "domain": "198.51.100.7:8080",
+        "severity": "low",
+        "detail": "Jenkins login page reachable (HTTP 403)",
+    }
+    listed = {(f["id"], f["domain"], f["severity"]) for f in web["top_findings"][1:]}
+    assert listed == {
+        ("exposed_remote_access_gateway", "198.51.100.8:443", "info"),
+        ("version_disclosure", "198.51.100.7:8080", "info"),
+    }
+    # A login page is not an open console, and the why must not read as one.
+    assert "1 admin login page(s) reachable" in web["why"]
+    assert "without" not in web["why"]
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
+
+
+def test_web_technologies_lists_a_remote_access_gateway_without_degrading_the_control(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "vpn.example.com", "port": 443, "server": "", "x_powered_by": ""}],
+            "exposures": [
+                {
+                    "kind": "exposed_remote_access_gateway",
+                    "severity": "info",
+                    "host": "vpn.example.com",
+                    "port": 443,
+                    "url": "https://vpn.example.com:443/dana-na/auth/url_default/welcome.cgi",
+                    "technology": "ivanti_connect_secure",
+                    "name": "Ivanti Connect Secure (Pulse Connect Secure)",
+                    "evidence": ['url "/dana-na/auth/url_default/welcome.cgi"'],
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["status"] == "ok"
+    assert sum(web["findings_by_severity"].values()) == 0
+    assert [(f["id"], f["severity"]) for f in web["top_findings"]] == [("exposed_remote_access_gateway", "info")]
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
+
+
+def test_web_technologies_keeps_an_exposed_console_in_the_top_ten(tmp_path: Path):
+    """Twelve bare banners must not push the one medium finding off the list."""
+    endpoints = [
+        {"host": f"h{i}.example.com", "port": 443, "server": "nginx", "x_powered_by": "Express"} for i in range(6)
+    ]
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 7,
+            "checked_count": 7,
+            "findings": endpoints,
+            "exposures": [
+                {
+                    "kind": "exposed_admin_interface",
+                    "severity": "medium",
+                    "host": "pma.example.com",
+                    "port": 443,
+                    "url": "https://pma.example.com:443/",
+                    "technology": "phpmyadmin",
+                    "name": "phpMyAdmin",
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["findings_by_severity"] == {"critical": 0, "high": 0, "medium": 1, "low": 12}
+    assert web["top_findings"][0]["id"] == "exposed_admin_interface"
+    assert len(web["top_findings"]) == 10
+
+
+def test_web_technologies_does_not_count_a_server_banner_twice(tmp_path: Path):
+    """The stage's version_disclosure for Server: is the banner rule's finding already."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "a.example.com", "port": 443, "server": "nginx/1.24.0", "x_powered_by": ""}],
+            "exposures": [
+                {
+                    "kind": "version_disclosure",
+                    "severity": "info",
+                    "host": "a.example.com",
+                    "port": 443,
+                    "technology": "nginx",
+                    "header": "server",
+                    "evidence": ["server: nginx/1.24.0"],
+                }
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+
+    web = _web_control(tmp_path)
+    assert web["findings_by_severity"]["medium"] == 1
+    assert [f["id"] for f in web["top_findings"]] == ["tech_version_disclosure"]
+
+
 def test_domain_monitor_findings_are_read_from_nested_sections(tmp_path: Path):
     """domain_monitor.json has no top-level ``findings``; typosquat and
     dangling-CNAME findings live under their own sections."""
@@ -620,3 +759,157 @@ def test_one_passing_control_among_unchecked_ones_is_not_ok(tmp_path):
     assert "ok" in statuses.values()
     assert "not_checked" in statuses.values()
     assert summary["overall_verdict"] == "partial"
+
+
+def _exposure(kind: str, severity: str, host: str, detail: str) -> dict:
+    return {"kind": kind, "severity": severity, "host": host, "port": 443, "url": f"https://{host}:443/", "detail": detail}
+
+
+def test_web_technologies_never_drops_a_gateway_behind_banners(tmp_path: Path):
+    """Ten bare banners plus a VPN portal: the portal stays in view and in the why."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 11,
+            "checked_count": 11,
+            "findings": [{"host": f"h{i}.example.com", "port": 443, "server": "nginx", "x_powered_by": ""} for i in range(10)],
+            "exposures": [
+                _exposure("exposed_remote_access_gateway", "info", "vpn.example.com", "Ivanti Connect Secure portal reachable")
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "exposed_remote_access_gateway" in [f["id"] for f in web["top_findings"]]
+    assert len(web["top_findings"]) == 10
+    assert "1 remote-access/webmail portal(s) inventoried" in web["why"]
+
+
+def test_web_technologies_tells_an_open_database_from_a_login_page(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 3,
+            "checked_count": 3,
+            "findings": [],
+            "exposures": [
+                _exposure("exposed_admin_interface", "high", "es.example.com", "Elasticsearch answers its API without authentication (HTTP 200)"),
+                _exposure("exposed_admin_interface", "medium", "prom.example.com", "Prometheus answers with no login page in front (HTTP 200)"),
+                _exposure("exposed_admin_interface", "low", "ci.example.com", "Jenkins login page reachable (HTTP 403)"),
+            ],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "fail"
+    assert web["findings_by_severity"] == {"critical": 0, "high": 1, "medium": 1, "low": 1}
+    assert [f["severity"] for f in web["top_findings"]] == ["high", "medium", "low"]
+    assert web["why"] == (
+        "1 database API(s) answer without authentication; "
+        "1 admin/management console(s) answer with no login page in front; "
+        "1 admin login page(s) reachable"
+    )
+
+
+def test_web_technologies_does_not_call_an_spa_landing_page_a_login_page(tmp_path: Path):
+    item = _exposure(
+        "exposed_admin_interface",
+        "low",
+        "argo.example.com",
+        "Argo CD reachable; authentication not determinable from the landing page (HTTP 200)",
+    )
+    item["auth_required"] = None
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [],
+            "exposures": [item],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["why"] == "1 admin console landing page(s) reachable, authentication not determinable"
+
+
+def _clean_fingerprint(catalogue: dict) -> dict:
+    return {
+        "targets_considered": 1,
+        "checked_count": 1,
+        "findings": [{"host": "a.example.com", "port": 443, "server": "", "x_powered_by": ""}],
+        "exposures": [],
+        "catalogue": catalogue,
+        "skipped_reason": None,
+    }
+
+
+def test_web_technologies_is_not_checked_when_the_catalogue_was_unusable(tmp_path: Path):
+    """Nothing could be identified: that is not a clean bill of health."""
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps(_clean_fingerprint({
+            "schema": 1,
+            "updated": "",
+            "technologies": 0,
+            "rejected": [{"id": "", "error": "catalogue unusable: Expecting value"}],
+        })),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "not_checked"
+    assert "catalogue" in web["why"] and "unusable" in web["why"]
+
+
+def test_web_technologies_is_not_ok_when_catalogue_entries_were_rejected(tmp_path: Path):
+    (tmp_path / "fingerprint.json").write_text(
+        json.dumps(_clean_fingerprint({
+            "schema": 1,
+            "updated": "2026-10-06",
+            "technologies": 145,
+            "rejected": [{"id": "jenkins", "error": "regex 'a.*b' repeats without a bound"}],
+        })),
+        encoding="utf-8",
+    )
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "jenkins" in web["why"]
+
+
+def test_web_technologies_keeps_banner_findings_when_the_catalogue_was_unusable(tmp_path: Path):
+    """The banner rule needs no catalogue: an empty one must not hide nginx/1.18.0."""
+    data = _clean_fingerprint({
+        "schema": 1,
+        "updated": "",
+        "technologies": 0,
+        "rejected": [{"id": "", "error": "catalogue unusable: Expecting value"}],
+    })
+    data["findings"] = [{"host": "a.example.com", "port": 443, "server": "nginx/1.18.0", "x_powered_by": "PHP/7.4.3"}]
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert web["findings_by_severity"]["medium"] == 2
+    assert "catalogue unusable" in web["why"]
+
+
+def test_web_technologies_names_rejected_ids_alongside_other_findings(tmp_path: Path):
+    data = _clean_fingerprint({
+        "schema": 1,
+        "updated": "2026-10-06",
+        "technologies": 145,
+        "rejected": [{"id": "jenkins", "error": "regex 'a.*b' repeats without a bound"}],
+    })
+    data["findings"] = [{"host": "a.example.com", "port": 443, "server": "nginx/1.18.0", "x_powered_by": ""}]
+    data["exposures"] = [
+        _exposure("exposed_admin_interface", "high", "es.example.com", "Elasticsearch answers its API without authentication (HTTP 200)")
+    ]
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "fail"
+    assert "jenkins" in web["why"]
+    data["exposures"] = []
+    (tmp_path / "fingerprint.json").write_text(json.dumps(data), encoding="utf-8")
+    web = _web_control(tmp_path)
+    assert web["status"] == "weak"
+    assert "jenkins" in web["why"]
