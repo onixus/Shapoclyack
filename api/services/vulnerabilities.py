@@ -193,6 +193,14 @@ CLOSURE_REASONS = (
 
 ENDPOINT_UNREACHABLE = "endpoint_unreachable"
 
+#: The shortest window, in days from an ``endpoint_unreachable`` closure,
+#: within which a finding seen again continues its old SLA clock. The window
+#: is the finding's own ``sla_days`` when longer. Never shorter than this:
+#: the most urgent findings have the shortest SLA (a 1-day FSTEC deadline),
+#: and a window that short let a REJECT rule and one quiet day erase an
+#: overdue deadline (#451 review, round 3).
+ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS = 30
+
 #: Derived SLA readings. ``none`` is a finding with no deadline at all, which
 #: happens only for a CLOSED row.
 SLA_STATES = ("on_track", "due_soon", "breached", "accepted", "none")
@@ -1501,9 +1509,9 @@ def register_findings_from_run(
                 # Restarting the clock there would let a verify/reopen cycle
                 # reset an overdue finding's deadline as often as anyone
                 # pressed Verify (#451), so it continues from where it was —
-                # within one SLA window of that closure. Seen again later than
-                # that, it is a new exposure (a redeploy months on), and its
-                # clock starts now like any other regression's.
+                # within max(sla_days, 30) days of that closure. Seen again
+                # later than that, it is a new exposure (a redeploy months
+                # on), and its clock starts now like any other regression's.
                 previous = row.state
                 days, source = _resolve_sla_days(
                     session,
@@ -1514,7 +1522,8 @@ def register_findings_from_run(
                 continue_clock = (
                     row.closure_reason == ENDPOINT_UNREACHABLE
                     and row.closed_at is not None
-                    and now - row.closed_at <= timedelta(days=row.sla_days or days)
+                    and now - row.closed_at
+                    <= timedelta(days=max(row.sla_days or days, ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS))
                 )
                 row.state = vuln_states.OPEN
                 row.state_changed_at = now

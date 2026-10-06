@@ -1133,8 +1133,8 @@ All notable changes to Shapoclyack are documented in this file.
   closure: an iptables/kube-proxy `REJECT`, a `tcp-reset` rule or a fail2ban
   ban in front of a listening port is refused the same way. Refused from
   another vantage, or a finding seen from more than one, is inconclusive
-  (`vantage_differs`). A reopen within one SLA window of such a closure
-  keeps the original SLA clock; later than that the clock starts on
+  (`vantage_differs`). A reopen within `max(sla_days, 30)` days of such a
+  closure keeps the original SLA clock; later than that the clock starts on
   reopen. Rows of `vulnerabilities.json` and detectors carry the
   `protocol` they were seen on. A failed or cancelled verification run now releases
   its finding as inconclusive instead of leaving it in `VERIFYING`; a job that

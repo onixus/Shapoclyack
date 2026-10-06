@@ -989,23 +989,50 @@ def test_a_reopen_after_an_unreachable_closure_keeps_the_sla_clock(tmp_path, mon
     assert reopened["detail"]["sla_continued"] is True
 
 
-@pytest.mark.parametrize(("later", "continued"), [("in_window", True), ("180_days", False)])
-def test_the_sla_clock_continues_only_within_one_window_of_the_closure(tmp_path, monkeypatch, later, continued):
-    """The round-2 delta review's probe: an exposure closed as unreachable,
-    and the port opened again 180 days later by a new deployment. That is a
-    new exposure, and it reopened already overdue on its first observation.
-    Within one SLA window of the closure it is the same one, and continues."""
+@pytest.mark.parametrize(
+    ("sla_days", "later", "continued"),
+    [
+        (None, "window-1d", True),
+        (None, "window+1d", False),
+        (None, "180d", False),  # the round-2 probe: a redeploy months on
+        (1, "25h", True),  # the round-3 probe: a 1-day deadline, a REJECT and a day
+        (1, "window-1d", True),
+        (1, "window+1d", False),
+    ],
+)
+def test_the_sla_clock_continues_only_within_one_window_of_the_closure(
+    tmp_path, monkeypatch, sla_days, later, continued
+):
+    """An exposure closed as unreachable and seen again. Within the window —
+    the finding's own SLA, and never less than 30 days — it is the same
+    finding, and its old deadline stands. Later it is a new exposure: one
+    reopened 180 days on was overdue on its first observation. A window of
+    the SLA alone was shortest for the most urgent: a finding 10 days past a
+    1-day deadline was wiped by a REJECT rule and the next day's scan."""
     from datetime import datetime, timedelta
 
     settings, tenant_id = _seed(tmp_path, findings=[EXPOSURE])
     vuln = _tracked_from(settings, tenant_id, EXPOSURE)
+    if sla_days is not None:
+        with get_session(settings.postgres_url) as session:
+            row = session.get(models.Vulnerability, vuln["vuln_id"])
+            row.sla_days = sla_days
+            row.sla_started_at = vulns._now() - timedelta(days=11)
+            row.due_at = row.sla_started_at + timedelta(days=sla_days)
+        vuln = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
     run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
     _port_stage(monkeypatch, run_dir)
     _reach(monkeypatch, run_dir, {HOST: REFUSED})
     _fold(settings, tenant_id)
     _closed_unreachable(settings, tenant_id, vuln["vuln_id"])
-    assert vuln["sla_days"] < 180
-    offset = timedelta(days=vuln["sla_days"] - 1) if later == "in_window" else timedelta(days=180)
+    window = max(vuln["sla_days"], vulns.ENDPOINT_UNREACHABLE_SLA_WINDOW_MIN_DAYS)
+    assert window == (30 if sla_days == 1 else vuln["sla_days"])
+    offset = {
+        "window-1d": timedelta(days=window - 1),
+        "window+1d": timedelta(days=window + 1),
+        "180d": timedelta(days=180),
+        "25h": timedelta(hours=25),
+    }[later]
     moment = vulns._now() + offset
     monkeypatch.setattr(vulns, "_now", lambda: moment)
 
