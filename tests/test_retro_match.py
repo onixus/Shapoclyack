@@ -1396,6 +1396,72 @@ def test_the_unversioned_source_of_another_series_is_not_asked() -> None:
     assert only.evidence["advisory"]["reason"] == "no_vendor_statement"
 
 
+#: Pulse keeps twelve header lines as an HTTP listener's banner, and a hybrid
+#: run's merge prefers that raw banner to nmap's extrainfo: the web server's
+#: banner carries PHP's package revision too.
+FOCAL_WEB = _Provider([
+    _advisory("CVE-2023-25690", release="focal", package="apache2", fixed="2.4.41-4ubuntu3.14"),
+    _advisory("CVE-2021-23017", release="focal", package="nginx", fixed="1.18.0-0ubuntu1.1"),
+    _advisory("CVE-2022-31625", release="focal", package="php7.4", fixed="7.4.3-4ubuntu2.12"),
+])
+FOCAL_WEB_RANGES = cpe_ranges.CpeRangeDataset(
+    marker="t",
+    index={
+        "a:apache:http_server": (CpeRange("CVE-2023-25690", start_including="2.4.0", end_excluding="2.4.56"),),
+        "a:f5:nginx": (CpeRange("CVE-2021-23017", start_including="0.6.18", end_excluding="1.20.1"),),
+        "a:php:php": (CpeRange("CVE-2022-31625", start_including="7.4.0", end_excluding="7.4.30"),),
+    },
+    cves={
+        "CVE-2023-25690": {"severity": "critical", "cvss": 9.8},
+        "CVE-2021-23017": {"severity": "high", "cvss": 7.7},
+        "CVE-2022-31625": {"severity": "critical", "cvss": 9.8},
+    },
+    present=True,
+)
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        rm.Fingerprint(
+            product="Apache httpd",
+            version="2.4.41",
+            cpe=("cpe:/a:apache:http_server:2.4.41",),
+            banner="HTTP/1.1 200 OK | Date: Mon, 06 Oct 2026 10:00:00 GMT | Server: Apache/2.4.41 (Ubuntu) | "
+            "X-Powered-By: PHP/7.4.3-4ubuntu2.19 | Content-Type: text/html; charset=UTF-8",
+        ),
+        rm.Fingerprint(
+            product="nginx",
+            version="1.18.0",
+            banner="HTTP/1.1 200 OK | Server: nginx/1.18.0 (Ubuntu) | Date: Mon, 06 Oct 2026 10:00:00 GMT | "
+            "X-Powered-By: PHP/7.4.3-4ubuntu2.19",
+        ),
+    ],
+)
+def test_phps_revision_is_not_the_web_servers(fingerprint) -> None:
+    """``4ubuntu2.19`` is php7.4's revision. Read as Apache's, a patched
+    ``2.4.41-4ubuntu3.17`` became ``2.4.41-4ubuntu2.19`` < the fix (a finding);
+    as nginx's, an unpatched one became newer than its fix (``fixed``). The
+    distribution is Ubuntu either way; the revision is not disclosed."""
+    (only,) = rm.match(fingerprint, FOCAL_WEB_RANGES, lookup=lambda _d: FOCAL_WEB).matches
+    assert (only.verdict, only.confidence) == ("possible", "backport_possible")
+    assert only.evidence["advisory"]["reason"] == "revision_not_disclosed"
+    assert "distro_revision" not in only.evidence
+
+
+def test_nmaps_php_cpe_carries_the_revision_to_the_backport_check() -> None:
+    """nmap's ``X-Powered-By: PHP/(\\d[\\w._-]+)`` softmatch writes the whole
+    string into the CPE: compared as written, 7.4.3-4ubuntu2.19 is not 7.4.3."""
+    fingerprint = rm.Fingerprint(
+        banner="PHP 7.4.3-4ubuntu2.19", cpe=("cpe:/a:php:php:7.4.3-4ubuntu2.19",), service="http"
+    )
+    outcome = rm.match(fingerprint, FOCAL_WEB_RANGES, lookup=lambda _d: FOCAL_WEB)
+    (only,) = outcome.matches
+    assert outcome.upstream_version == "7.4.3"
+    assert (only.verdict, only.confidence) == ("fixed", "vendor_advisory")
+    assert only.evidence["advisory"]["installed_version"] == "7.4.3-4ubuntu2.19"
+
+
 def test_php_with_ubuntus_revision_is_decided_by_the_release_that_ships_it() -> None:
     """``X-Powered-By: PHP/7.4.3-4ubuntu2.19``: focal's ``php7.4`` is the one
     release whose fixes are built on 7.4.3."""

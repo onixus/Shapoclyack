@@ -471,6 +471,8 @@ _BANNER_NAMES: dict[str, tuple[str, ...]] = {
     "a:libssh:libssh": ("libssh",),
     # The header, not the word: "couchdb" is in many a path and JSON body.
     "a:apache:couchdb": ("server: couchdb",),
+    # The header again: ``index.php/5.2/`` in a Location is not PHP 5.2.
+    "a:php:php": ("x-powered-by: php",),
 }
 
 #: MySQL's version string: the upstream version, then only what MySQL builds
@@ -515,6 +517,10 @@ _VERSION_SHAPES: dict[str, re.Pattern[str]] = {
     # The stats socket: "2.6.12-1+deb12u1" (Debian), "2.4.22-f8e3218" (the
     # release commit). "2.4-dev5" is not a release.
     "a:haproxy:haproxy": re.compile(r"(\d+\.\d+\.\d+)(?:-\S*)?"),
+    # nmap's ``X-Powered-By: PHP/(\d[\w._-]+)`` softmatch puts the whole
+    # string in the CPE: "7.4.3-4ubuntu2.19", "7.3.31-1~deb10u5". "8.3.0RC1"
+    # is a pre-release.
+    "a:php:php": re.compile(r"(\d+\.\d+\.\d+)(?:-\S*)?"),
 }
 
 #: Products one of whose probers reports "the first x.y.z in the reply": Pulse,
@@ -1174,6 +1180,39 @@ def host_hint(*, os_names: Iterable[str], banners: Iterable[str], cpes: Iterable
     return None
 
 
+#: A banner line about another product on the same listener: an Apache's or an
+#: nginx's banner keeps PHP's ``X-Powered-By`` header too.
+_FOREIGN_LINE = re.compile(r"^\s*x-powered-by\s*:", re.IGNORECASE)
+_BANNER_LINES = re.compile(r"\s+\|\s+|[\r\n]+")
+
+
+def own_hint(fingerprint: Fingerprint, keys: Iterable[str], cpe_version: str | None) -> DistroHint:
+    """The distribution, release and package revision of *this* product.
+
+    The distribution and its release may come from anything the scan kept
+    about the listener except a line about another product. The **revision**
+    only from the version field, the CPE's version, or the product's own token
+    in the banner (``OpenSSH_8.9p1 Ubuntu-3ubuntu0.6``, ``X-Powered-By:
+    PHP/7.4.3-4ubuntu2.19``): a revision belongs to the package that disclosed
+    it, the rule :func:`host_hint` applies between listeners. Read off the
+    whole banner, PHP's ``4ubuntu2.19`` became Apache's — a patched
+    ``2.4.41-4ubuntu3.17`` rebuilt as ``2.4.41-4ubuntu2.19``, below its fix.
+    """
+    keys = tuple(keys)
+    lines = [line for line in _BANNER_LINES.split(fingerprint.banner or "") if line]
+    php = "a:php:php" in keys
+    context = [line for line in lines if php or not _FOREIGN_LINE.match(line)]
+    hint = distro_hint(" ".join([fingerprint.version, *context]))
+    if not hint.visible:
+        return hint
+    names = [name for key in keys for name in _BANNER_NAMES.get(key, ())]
+    own_lines = [line for line in lines if any(_banner_version(line, name) for name in names)]
+    own = distro_hint(" ".join(part for part in (fingerprint.version, cpe_version or "", *own_lines) if part))
+    if own.distro == hint.distro and own.revision:
+        return DistroHint(own.distro, own.release or hint.release, own.revision)
+    return DistroHint(hint.distro, hint.release)
+
+
 def match(
     fingerprint: Fingerprint,
     dataset: CpeRangeDataset,
@@ -1199,7 +1238,7 @@ def match(
     upstream = upstream_version(fingerprint, keys, cpe_version)
     if not upstream:
         return MatchOutcome(reason=REASON_NO_VERSION, product_keys=keys)
-    own = distro_hint(fingerprint.text)
+    own = own_hint(fingerprint, keys, cpe_version)
 
     # One statement per CVE: the first product key that covers the version
     # wins, so nginx:nginx and f5:nginx naming the same CVE is one match.

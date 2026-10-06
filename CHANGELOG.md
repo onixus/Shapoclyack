@@ -1119,6 +1119,14 @@ All notable changes to Shapoclyack are documented in this file.
   own numbering (`< 499.4`), below which every Linux CUPS falls — a tracked
   finding with a normal SLA, on any host, with any full NVD harvest. Listeners
   carrying either CPE are now `unknown_product`.
+- **Retro matching took PHP's package revision for the web server's.** Pulse
+  keeps twelve HTTP header lines as the banner, and a hybrid run's merge
+  prefers it, so an Ubuntu Apache's banner carried `X-Powered-By:
+  PHP/7.4.3-4ubuntu2.19`, whose `4ubuntu2.19` was read as Apache's revision: a
+  patched `2.4.41-4ubuntu3.17` became `2.4.41-4ubuntu2.19`, below the focal
+  fix — a vendor-confirmed finding — and an unpatched nginx became `fixed`. A
+  revision is now read only from the version field, the CPE's version or the
+  product's own banner token; `X-Powered-By` lines count only for PHP.
 - **Retro matching read MariaDB 10+ as MariaDB 5.5.5.** nmap's MariaDB version
   and CPE keep the `5.5.5-` compatibility prefix (`5.5.5-10.3.39`), and the CPE
   path matched it whenever the dataset knew `mariadb:mariadb` — that is, with
