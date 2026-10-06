@@ -19,11 +19,13 @@ flowchart LR
     A["1. Discover<br/>authorized scan"] --> B["2. Track<br/>finding + owner + SLA"]
     B --> C["3. Remediate<br/>patch / config / exposure"]
     C --> D["4. Verify<br/>targeted re-scan"]
-    D -->|not observed| E["CLOSED<br/>machine_verified = true"]
+    D -->|not observed,<br/>every detector looked| E["CLOSED<br/>machine_verified = true"]
     D -->|observed again| F["FIXING<br/>keep working"]
+    D -->|not observed, but<br/>the run could not see it| G["FIXING<br/>verification inconclusive"]
+    D -->|host up,<br/>port closed| H["CLOSED<br/>endpoint_unreachable"]
 ```
 
-Shapoclyack does not treat a closed ticket as proof that a network finding is gone. The verification step re-tests the observation that created the finding. **[Run the end-to-end demo →](docs/demo-remediation-loop.md)**
+Shapoclyack does not treat a closed ticket as proof that a network finding is gone. The verification step re-tests the observation that created the finding — with the detectors that found it — and closes it as verified only when the run shows each of them looked again. A run that could not have seen it (nuclei missing, a template not loaded, an older Pulse ruleset) is **inconclusive**, not a fix. **[Run the end-to-end demo →](docs/demo-remediation-loop.md)**
 
 ## Why Shapoclyack
 
@@ -94,7 +96,7 @@ transcribed verbatim from **NIST SP 800-30 Rev. 1 Table I-2**:
 
 ### 3. Mechanical Re-Verification (No Rubber-Stamping)
 A vulnerability cannot be marked resolved on an operator's say-so or a closed task tracker ticket. 
-* **Network Findings**: Moving a finding from `FIXING` to `CLOSED` requires triggering a targeted re-scan (`POST /api/vulnerabilities/{id}/verify`). The engine dispatches a focused check against that exact host, port, and detection script. Only if the vulnerability is mechanically proven gone does it close with `machine_verified = true` (`closure_reason = verified_remediated`). If the flaw is re-observed, it bounces back to `FIXING` with an audit event.
+* **Network Findings**: Moving a finding from `FIXING` to `CLOSED` requires triggering a targeted re-scan (`POST /api/vulnerabilities/{id}/verify`). The engine re-scans the host and port the finding was observed on, with the detectors that found it — the nuclei templates pinned by id, Pulse with CVE matching. It closes with `machine_verified = true` (`closure_reason = verified_remediated`) only when the finding was not observed **and** the run shows every detector re-checked that endpoint. Re-observed, it bounces back to `FIXING`; not observed but not demonstrably looked for, it returns to `FIXING` as `verification_inconclusive`; a live host with the port provably closed closes it as `endpoint_unreachable` (machine-verified only for an exposure finding). A finding only an NSE script saw is not re-checked by name — the re-scan's NSE profile names categories — so it is bounced or inconclusive, never closed by silence.
 * **Endpoint Software Findings**: Closed only when the next accepted inventory snapshot from the Agent (Lariska, the in-guest endpoint inventory agent) confirms the vulnerable package has been upgraded to a non-vulnerable version.
 * **Audit Transparency**: Manual closures by administrators are explicitly marked with `machine_verified = false`, exposing unverified closures on adoption dashboards.  
 *See [Vulnerability Lifecycle & SLA](docs/vulnerability-lifecycle.md).*

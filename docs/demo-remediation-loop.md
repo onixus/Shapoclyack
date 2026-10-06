@@ -24,8 +24,10 @@ flowchart LR
     E --> F[Remediate the target]
     F --> G[POST /verify]
     G --> H{Targeted re-scan}
-    H -->|finding absent| I[CLOSED<br/>machine_verified = true]
+    H -->|finding absent,<br/>every detector looked| I[CLOSED<br/>machine_verified = true]
     H -->|finding observed again| J[FIXING<br/>verification_failed event]
+    H -->|absent, but the run<br/>could not have seen it| K[FIXING<br/>verification_inconclusive event]
+    H -->|host up, port closed| L[CLOSED<br/>endpoint_unreachable]
 ```
 
 The important distinction is the last step: a ticket or an operator can say that
@@ -172,12 +174,21 @@ curl -fsS "$API/api/vulnerabilities/$VULN_ID" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
-There are two meaningful outcomes:
+There are four outcomes:
 
-| Outcome | Meaning |
-|---|---|
-| `state = CLOSED`, `machine_verified = true`, `closure_reason = verified_remediated` | the targeted re-scan did not re-observe the finding |
-| `state = FIXING` | the finding was observed again and remediation is not yet proven |
+| Outcome | Event | Meaning |
+|---|---|---|
+| `state = CLOSED`, `machine_verified = true`, `closure_reason = verified_remediated` | `verification_passed` | the re-scan did not re-observe the finding, and its artifacts show every detector of the finding re-checked the endpoint |
+| `state = FIXING` | `verification_failed` | the finding was observed again and remediation is not yet proven |
+| `state = FIXING` | `verification_inconclusive` | not observed, but the run could not have seen it — `detail.gaps` says which detector, host and why (nuclei missing, the template not loaded, CVE matching off, an older Pulse ruleset, a port that did not answer on a host not shown alive). Fix that and verify again |
+| `state = CLOSED`, `closure_reason = endpoint_unreachable` | `verification_unreachable` | the host answered and the port was provably closed. `machine_verified = true` for an exposure finding (the port being reachable *was* the finding); `false` for a CVE — out of reach, not shown fixed |
+
+For the demo to end in `verified_remediated`, the lab target has to stay
+reachable on the finding's port after the fix — patch the service rather than
+stop it — and the sensor has to be one from this release (verification needs
+`config_overlay.v2`; with none live the `POST /verify` is `409`). A finding only
+an NSE script found will not reach `verified_remediated` by re-scan: the
+safe-mode NSE profile names categories, so pick a Pulse or nuclei finding.
 
 Inspect the immutable finding timeline as the evidence trail:
 
@@ -187,7 +198,10 @@ curl -fsS "$API/api/vulnerabilities/$VULN_ID/events?limit=100" \
 ```
 
 A successful verification records a `verification_passed` event. A failed
-re-check records `verification_failed` and returns the work to `FIXING`.
+re-check records `verification_failed` and returns the work to `FIXING`; a
+re-check that could not see the finding records `verification_inconclusive`
+and does the same; a closed port on a live host records
+`verification_unreachable`.
 
 ## UI version of the same demo
 

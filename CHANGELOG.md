@@ -1098,26 +1098,43 @@ All notable changes to Shapoclyack are documented in this file.
   address), the nuclei templates pinned by id whatever their severity
   (`nuclei.template_ids` → `nuclei -id`; the sensor's `exclude_tags` still
   apply; ids outside `[A-Za-z0-9_.-]` refused at dispatch and by the scanner),
-  `service_probe.backend: hybrid` for an NSE finding. The closure then needs
-  each detector's evidence in the run: nuclei's new `coverage` block in
-  `nuclei.json` (ran and exited 0, the URL, the template pinned and found),
-  Pulse's success receipt for the port with `adapter.cve` (new in
-  `pulse/raw.json`), an nmap XML that finished and ran the script by name. A
-  finding with no detector recorded is held to the old Pulse rule, now
-  checked. Otherwise the finding goes back to `FIXING` with a new
+  `service_probe.backend: hybrid` for an NSE finding; a detector that never
+  recorded its host puts every address of the asset in the scan. The closure
+  then needs each detector's evidence in the run: nuclei's new `coverage`
+  block in `nuclei.json` (ran and exited 0, the URL, the template pinned and
+  found, nuclei's own `Templates loaded for current scan` count, the endpoint
+  not among the targets it dropped as unresponsive — `-max-host-error` now
+  explicit, `-elog` kept); Pulse's success receipt for the port with
+  `adapter.cve`, plus `adapter.cve_online` for a CVE Pulse found online and an
+  offline ruleset (`adapter.ruleset`, new) at least as new as the one that
+  found it; an nmap XML that finished and ran the script by name — or, for an
+  NSE detector of a finding Pulse or nuclei also saw, that detector covered on
+  the same address (a finding only NSE saw is bounced or inconclusive: the
+  safe-mode profile names categories). A detector without a host, and the old
+  Pulse rule for a finding with none, must be covered on every IP of the asset.
+  Not observed and not covered → back to `FIXING` with a new
   `verification_inconclusive` event listing what was not covered
-  (`RegisterStats.verification_inconclusive`), never machine-verified; a
-  closed port counts as not covered. A failed or cancelled verification run
-  now does the same instead of leaving its finding in `VERIFYING`; a job that
+  (`RegisterStats.verification_inconclusive`), never machine-verified. Not
+  covered because the port is provably closed on a live host (discovery's
+  probes or another open port; the port in the port stage's explicit list, in
+  a batch that finished — new `ports/<tag>.scan.json`; seen open by nothing)
+  → `CLOSED` with `closure_reason = endpoint_unreachable` and a
+  `verification_unreachable` event: machine-verified for a Pulse exposure
+  finding, not for a CVE. A failed or cancelled verification run now releases
+  its finding as inconclusive instead of leaving it in `VERIFYING`; a job that
   ends without publishing a run still does. `nuclei.template_ids` is config
   overlay **v2**, asked for **per job**: a job records the lowest overlay
-  version that covers it (`scan_options.config_overlay_capability`), sensors
-  declare every version they apply (`config_overlay.v1`, `config_overlay.v2`),
-  so sensors not yet upgraded keep taking every job but verifications, which
-  wait (`sensor_unavailable`, `426` naming `config_overlay.v2`). The finding
-  page lists the detectors and labels audit-trail kinds in English and
-  Russian. docs/vulnerability-lifecycle.md has the rules and their limits;
-  docs/operations.md the upgrade notes.
+  version that covers it (`scan_options.config_overlay_capability`), and a
+  verification job (`scan_options.verification_of`) asks for v2 explicitly;
+  sensors declare every version they apply (`config_overlay.v1`,
+  `config_overlay.v2`), so sensors not yet upgraded keep taking every job but
+  verifications (`426` naming `config_overlay.v2` and why). With sensor
+  execution and no live v2 sensor of the tenant, `POST /verify` is `409`
+  instead of a job nothing claims. The finding page lists the detectors and
+  labels audit-trail kinds and the new closure reason in English and Russian.
+  docs/vulnerability-lifecycle.md has the rules and their limits;
+  docs/operations.md the upgrade notes; docs/demo-remediation-loop.md the
+  four outcomes.
 
 - **The console's sensor snippets run an image that exists, and can scan.**
   **Sensor Fleet → Deploy Sensor** handed out `ghcr.io/onixus/shapoclyack:latest`,
