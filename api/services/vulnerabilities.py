@@ -2187,29 +2187,63 @@ def _verification_sensors(settings: Settings, tenant_id: str, group: str | None)
     return agent_groups_service.live_sensors(settings, {tenant_id}).get(tenant_id, [])
 
 
-#: How a verification's event and refusal say why it left its observing group.
-_REGROUP_REASONS = {"deleted": "was deleted", "no_live_sensor": "has no live sensor"}
+GROUP_DELETED = "group_deleted"
+NO_LIVE_SENSOR_FOR = "no_live_sensor_for_"
 
 
-def _observing_group_gone(settings: Settings, tenant_id: str, group: str | None) -> str | None:
+def _duration(seconds: float) -> str:
+    """``45m``, ``3h``, ``2d``: rounded down, for a reason code and a note."""
+    seconds = max(0, int(seconds))
+    if seconds >= 86400:
+        return f"{seconds // 86400}d"
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 60}m"
+
+
+def _regroup_wording(reason: str) -> str:
+    """How a verification's event and refusal say why it left its group."""
+    if reason == GROUP_DELETED:
+        return "was deleted"
+    return f"has had no live sensor for {reason.removeprefix(NO_LIVE_SENSOR_FOR)}"
+
+
+def _observing_group_gone(
+    settings: Settings, tenant_id: str, group: str | None, *, now: datetime
+) -> str | None:
     """Why the finding's observing group cannot take its verification, or None.
 
-    ``deleted`` when the tenant no longer has the group, ``no_live_sensor``
-    when nothing in it could claim a job now (sensors moved out, stopped,
-    refused at claim). Either way pinning the job there would be refused or
-    sit queued forever, so the verification goes out tenant-wide instead —
-    and since that is another vantage, a refusal from it closes nothing
-    (``vantage_differs``); the coverage-based closure is unaffected.
+    ``group_deleted`` when the tenant no longer has the group;
+    ``no_live_sensor_for_<duration>`` when nothing in it could claim a job
+    for longer than ``verification_regroup_grace_seconds`` (sensors moved
+    out, decommissioned, refused at claim). Either way pinning the job there
+    would be refused or sit queued forever, so the verification goes out
+    tenant-wide instead — and since that is another vantage, a refusal from
+    it closes nothing (``vantage_differs``); coverage closes as before.
+
+    Inside the grace period the answer is a refusal, not a reroute: a sensor
+    that missed two heartbeats while restarting is not a group gone, and the
+    tenant-wide fallback looks from another network path (#451 review, round
+    3). Raises :class:`VerificationDispatchError` then.
     """
     from api.services import agent_groups as agent_groups_service
 
     if not group:
         return None
-    if group not in agent_groups_service.existing_names(settings, tenant_id):
-        return "deleted"
-    if not agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group)):
-        return "no_live_sensor"
-    return None
+    if agent_groups_service.live_groups(settings, {tenant_id}).get((tenant_id, group)):
+        return None
+    heard = agent_groups_service.last_heard_from(settings, tenant_id=tenant_id, name=group)
+    if heard is None:
+        return GROUP_DELETED
+    silent = (now - heard).total_seconds()
+    if silent > settings.verification_regroup_grace_seconds:
+        return f"{NO_LIVE_SENSOR_FOR}{_duration(silent)}"
+    raise VerificationDispatchError(
+        f"The observing sensor group '{group}' has no live sensor right now (none for "
+        f"{_duration(silent)}): retry once one reports in. After "
+        f"{_duration(settings.verification_regroup_grace_seconds)} without one the "
+        "verification goes to any sensor of the tenant instead."
+    )
 
 
 def _is_ip(value: str) -> bool:
@@ -2431,7 +2465,7 @@ def trigger_verification(
         from api.services import agent_groups as agent_groups_service
         from api.services import scan_scopes as scopes
 
-        gone = _observing_group_gone(settings, owning_tenant, plan.agent_group)
+        gone = _observing_group_gone(settings, owning_tenant, plan.agent_group, now=now)
         if gone:
             regrouped = {"from": plan.agent_group, "reason": gone}
             requested_group = None
@@ -2461,7 +2495,7 @@ def trigger_verification(
             # local-execution installation runs the scan itself.
             where = f"sensor group '{group}'" if group else "this tenant"
             if regrouped and not group:
-                where += f" (its observing group '{plan.agent_group}' {_REGROUP_REASONS[regrouped['reason']]})"
+                where += f" (its observing group '{plan.agent_group}' {_regroup_wording(regrouped['reason'])})"
             if live:
                 raise VerificationDispatchError(
                     f"No live sensor of {where} can run a verification re-scan: it needs "
@@ -2564,7 +2598,7 @@ def trigger_verification(
             note=f"Targeted verification scan dispatched (job {job.job_id})"
             + (
                 f"; observing sensor group '{regrouped['from']}' "
-                f"{_REGROUP_REASONS[regrouped['reason']]}, so it went to any sensor of the "
+                f"{_regroup_wording(regrouped['reason'])}, so it went to any sensor of the "
                 "tenant: a refused port cannot close it from there (vantage differs)"
                 if regrouped
                 else ""

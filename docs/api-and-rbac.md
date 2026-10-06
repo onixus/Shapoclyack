@@ -1608,9 +1608,11 @@ package, so a "machine verified" closure from one would be false. Those
 findings are verified by their device's next accepted inventory snapshot — see
 [software-cve-matching.md](software-cve-matching.md#lifecycle-tracked-findings).
 With sensor execution it also answers `409` when no live sensor that would be
-handed the re-scan declares `config_overlay.v2`; when the finding's observing
-sensor group was deleted or has no live sensor, the re-scan goes to any
-sensor of the tenant instead and `verification_started` carries
+handed the re-scan declares `config_overlay.v2`, and when the finding's
+observing sensor group has had no live sensor for less than
+`OCTO_VERIFICATION_REGROUP_GRACE_SECONDS` (retry). When that group was
+deleted, or has been without one for longer, the re-scan goes to any sensor
+of the tenant instead and `verification_started` carries
 `detail.regrouped`.
 **False positives.** `POST /api/vulnerabilities/{id}/false-positive` (admin)
 closes a finding as never having been real and suppresses its re-opening for

@@ -2566,8 +2566,10 @@ A verification job asks for `config_overlay.v2`: it may pin the nuclei
 templates that found the finding, and it is judged on coverage evidence only
 that build writes. While no live sensor of the group the job would go to
 (the observing group, held to the approved scope; any sensor of the tenant for
-an ungrouped one, or when the observing group was deleted or has no live
-sensor left — the `verification_started` event then says so) declares it,
+an ungrouped one, or when the observing group was deleted or has had no live
+sensor for longer than `OCTO_VERIFICATION_REGROUP_GRACE_SECONDS`, 1 h by
+default — the `verification_started` event then says so; inside that period
+**Verify** answers `409` "retry") declares it,
 **Verify** is refused (`409`, naming the group and the capability) rather than
 queuing a job nothing will run. "Live" is a scanner sensor reporting in, at or
 above `OCTO_AGENT_MIN_VERSION`: an endpoint agent put into a group does not

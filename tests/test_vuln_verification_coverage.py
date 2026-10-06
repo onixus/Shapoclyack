@@ -1583,13 +1583,31 @@ def test_a_scope_pinned_group_with_a_v2_sensor_gets_the_job(tmp_path):
     assert job.agent_group == "dmz"
 
 
-@pytest.mark.parametrize("regroup", ["deleted", "no_live_sensor"])
-def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wide(tmp_path, regroup):
+def _age(settings, tenant_id, group: str, *, by) -> None:
+    """Move the group's creation and its sensors' last heartbeat ``by`` back."""
+    with get_session(settings.postgres_url) as session:
+        for row in session.query(models.AgentGroup).filter(
+            models.AgentGroup.tenant_id == tenant_id, models.AgentGroup.name == group
+        ):
+            row.created_at = row.created_at - by
+        for agent in session.query(models.Agent).filter(
+            models.Agent.tenant_id == tenant_id, models.Agent.agent_group == group
+        ):
+            agent.last_seen_at = vulns._now() - by
+
+
+@pytest.mark.parametrize(
+    ("regroup", "reason"),
+    [("deleted", "group_deleted"), ("emptied_2h_ago", "no_live_sensor_for_2h")],
+)
+def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wide(tmp_path, regroup, reason):
     """The round-2 delta review's probes: the sensors of ``internal`` moved
-    to ``msk``, and ``internal`` deleted — or kept, empty. Pinning the job to
-    ``internal`` was a 409 forever (unknown group) or one telling the
-    operator to upgrade a sensor in a group that has none. It goes out to
-    any sensor of the tenant instead, and says so."""
+    to ``msk``, and ``internal`` deleted — or kept, empty for longer than the
+    grace period. Pinning the job to ``internal`` was a 409 forever (unknown
+    group) or one telling the operator to upgrade a sensor in a group that
+    has none. It goes out to any sensor of the tenant instead, and says so."""
+    from datetime import timedelta
+
     from api.services import agent_groups
 
     settings, tenant_id = _seed(tmp_path, findings=[PULSE])
@@ -1599,16 +1617,64 @@ def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wi
     vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
     if regroup == "deleted":
         agent_groups.delete_group(settings, tenant_id=tenant_id, name="internal")
+    else:
+        _age(settings, tenant_id, "internal", by=timedelta(hours=2, minutes=5))
 
     job = _dispatch(settings, tenant_id, vuln["vuln_id"], sensor_group="msk")
 
     assert job.agent_group is None
     started = _last_event(settings, tenant_id, vuln["vuln_id"])
-    assert started["detail"]["regrouped"] == {"from": "internal", "reason": regroup, "dispatched_group": None}
+    assert started["detail"]["regrouped"] == {"from": "internal", "reason": reason, "dispatched_group": None}
     assert "observing sensor group 'internal'" in started["note"]
     assert "vantage differs" in started["note"]
 
 
+@pytest.mark.parametrize(
+    ("silent", "outcome"),
+    [
+        ("3m", "refused"),  # a sensor restarting: two missed heartbeats
+        ("59m", "refused"),
+        ("2h", "rerouted"),
+    ],
+)
+def test_a_group_briefly_without_a_sensor_is_waited_for_not_rerouted(tmp_path, silent, outcome):
+    """The round-3 delta review's probe: the observing group's only sensor
+    missed two heartbeats (a restart), and the verification went tenant-wide
+    from another network path with an event saying the group was gone. Inside
+    the grace period (OCTO_VERIFICATION_REGROUP_GRACE_SECONDS, 1 h) it is
+    refused with "retry" instead; past it, rerouted, and the reason says for
+    how long the group has been silent."""
+    from datetime import timedelta
+
+    from api.services import agent_groups
+
+    settings, tenant_id = _seed(tmp_path, findings=[PULSE])
+    approve_scan_scope(settings)
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="internal")
+    agent_groups.create_group(settings, tenant_id=tenant_id, name="dmz")
+    vuln = _tracked_from(settings, tenant_id, PULSE, agent="sensor-int", group="internal")
+    _agent_mode(settings, tenant_id, group="internal")
+    _sensor(settings, tenant_id, capabilities=("scan_policy", "config_overlay.v1", "config_overlay.v2", "x"), group="dmz")
+    age = {"3m": timedelta(minutes=3), "59m": timedelta(minutes=59), "2h": timedelta(hours=2, minutes=1)}[silent]
+    _age(settings, tenant_id, "internal", by=age)
+    assert settings.verification_regroup_grace_seconds == 3600
+    _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
+
+    if outcome == "refused":
+        with pytest.raises(vulns.VerificationDispatchError, match="'internal' has no live sensor right now.*retry"):
+            vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+        assert vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])["state"] == (
+            vuln_states.FIXING
+        )
+        return
+    result = vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+    with get_session(settings.postgres_url) as session:
+        assert session.get(models.Job, result["verification_job_id"]).agent_group is None
+    regrouped = _last_event(settings, tenant_id, vuln["vuln_id"])["detail"]["regrouped"]
+    assert regrouped["reason"] == "no_live_sensor_for_2h"
+
+
+@pytest.mark.parametrize("aged", [False, True], ids=["new-group", "silent-2h"])
 @pytest.mark.parametrize(
     "member",
     [
@@ -1617,12 +1683,16 @@ def test_an_observing_group_that_cannot_take_it_sends_the_verification_tenant_wi
     ],
     ids=["endpoint-agent", "below-floor"],
 )
-def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp_path, member):
+def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp_path, member, aged):
     """The round-2 delta review's probes: the observing group's only member
     declares v2 but could never claim the job. The verification was queued
     there and the finding parked in VERIFYING. Now the group counts as having
-    no live sensor; with none elsewhere either, it is refused — and the
-    refusal does not tell anyone to upgrade a sensor that does not exist."""
+    no live sensor: refused with "retry" inside the grace period, and past
+    it, with no sensor elsewhere either, refused for that — never telling
+    anyone to upgrade a sensor that does not exist. Its fresh heartbeat does
+    not hold the group "just restarting" forever."""
+    from datetime import timedelta
+
     from api.services import agent_groups
     from api.services import agents as agents_service
 
@@ -1640,13 +1710,20 @@ def test_a_group_of_agents_the_claim_refuses_is_no_sensor_for_a_verification(tmp
         **{"version": "9.1", **member},
     )
     agent_groups.set_agent_group(settings, tenant_id=tenant_id, agent_id=agent.agent_id, name="dmz")
+    if aged:
+        with get_session(settings.postgres_url) as session:
+            for row in session.query(models.AgentGroup).filter(models.AgentGroup.name == "dmz"):
+                row.created_at = row.created_at - timedelta(hours=2, minutes=5)
     _advance_to_fixing(settings, tenant_id, vuln["vuln_id"])
 
     with pytest.raises(vulns.VerificationDispatchError) as refused:
         vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
 
     assert "Upgrade" not in str(refused.value)
-    assert "observing group 'dmz' has no live sensor" in str(refused.value)
+    if aged:
+        assert "observing group 'dmz' has had no live sensor for 2h" in str(refused.value)
+    else:
+        assert "'dmz' has no live sensor right now" in str(refused.value)
     after = vulns.get_vulnerability(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"])
     assert after["state"] == vuln_states.FIXING
     with get_session(settings.postgres_url) as session:
@@ -1683,3 +1760,15 @@ def test_a_template_id_a_sensor_would_refuse_is_refused_at_dispatch(tmp_path):
 
     with pytest.raises(vulns.VerificationDispatchError, match="bad,id"):
         vulns.trigger_verification(settings, tenant_id=tenant_id, vuln_id=vuln["vuln_id"], actor="alice")
+
+
+def test_the_regroup_grace_period_is_configurable(monkeypatch):
+    from api.settings import load_settings
+
+    monkeypatch.delenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", raising=False)
+    assert load_settings().verification_regroup_grace_seconds == 3600
+    monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "600")
+    assert load_settings().verification_regroup_grace_seconds == 600
+    # Zero reroutes at once; a negative value is not a longer wait.
+    monkeypatch.setenv("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "-5")
+    assert load_settings().verification_regroup_grace_seconds == 0

@@ -519,6 +519,37 @@ def live_groups(
     return out
 
 
+def last_heard_from(settings: Settings, *, tenant_id: str, name: str) -> datetime | None:
+    """When ``name`` last had a sensor that could take a job, or None.
+
+    The newest heartbeat of the group's sensors that a claim would not
+    refuse (scanner kind, active, not below the version floor — the agents
+    :func:`live_groups` counts); for a group none of whose current members
+    ever qualified, its creation, since that is how long it has gone without
+    one. None when the tenant has no such group. How long a group has been
+    silent is what tells a sensor restarting from a group nobody will come
+    back to (#451 review, round 3).
+    """
+    from api.services import agents as agents_service
+
+    with get_session(settings.postgres_url) as session:
+        group = _row_by_name(session, tenant_id=tenant_id, name=name)
+        if group is None:
+            return None
+        rows = session.execute(
+            select(models.Agent.last_seen_at, models.Agent.version).where(
+                models.Agent.tenant_id == tenant_id,
+                models.Agent.agent_group == name,
+                models.Agent.agent_kind == "scanner",
+                models.Agent.lifecycle_status == "active",
+                models.Agent.last_seen_at.is_not(None),
+            )
+        ).all()
+        created = group.created_at
+    seen = [last for last, version in rows if not agents_service.is_below_min_version(version or "")]
+    return max(seen) if seen else created
+
+
 def live_sensors(settings: Settings, tenant_ids: set[str]) -> dict[str, list[frozenset[str]]]:
     """Per tenant, the capabilities of each agent able to take a scan now.
 

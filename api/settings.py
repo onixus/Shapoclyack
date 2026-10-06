@@ -229,6 +229,12 @@ class Settings:
     # Shared bearer token for remote agents (OCTO_AGENT_TOKEN). Empty disables legacy agent auth.
     agent_token: str = ""
     agent_stale_seconds: int = 120
+    # How long a finding's observing sensor group may go without a live
+    # sensor before its verification is sent to any sensor of the tenant
+    # instead (OCTO_VERIFICATION_REGROUP_GRACE_SECONDS, #451). Inside it the
+    # verification is refused with "retry": a sensor restarting is not a
+    # group gone, and the fallback is another network path.
+    verification_regroup_grace_seconds: int = 3600
     # Lowest agent version allowed to claim jobs (OCTO_AGENT_MIN_VERSION).
     # Empty = no floor, which is the default: a gate that refuses work by
     # default would strand every fleet on the upgrade that introduced it.
@@ -2033,6 +2039,9 @@ def load_settings() -> Settings:
         job_execution_mode=mode,
         agent_token=os.environ.get("OCTO_AGENT_TOKEN", "").strip(),
         agent_stale_seconds=agent_stale_seconds,
+        verification_regroup_grace_seconds=max(
+            0, int(os.environ.get("OCTO_VERIFICATION_REGROUP_GRACE_SECONDS", "3600") or 0)
+        ),
         agent_min_version=os.environ.get("OCTO_AGENT_MIN_VERSION", "").strip(),
         agent_bundle_dir=os.environ.get("OCTO_AGENT_BUNDLE_DIR", "").strip(),
         agent_deploy_ssh_ports=os.environ.get("OCTO_AGENT_DEPLOY_SSH_PORTS", "22,2222").strip(),

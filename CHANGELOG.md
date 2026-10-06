@@ -1126,7 +1126,9 @@ All notable changes to Shapoclyack are documented in this file.
   vantage, the verifying one (detectors record `agent_id`/`agent_group`/
   `vantage` and keep every vantage they were seen from in `vantages`; the
   verification goes out from the observing group, or tenant-wide with a note
-  when that group was deleted or has no live sensor) → `CLOSED` with
+  when that group was deleted or has had no live sensor for longer than the
+  new `OCTO_VERIFICATION_REGROUP_GRACE_SECONDS`, 1 h by default — inside it
+  the verification is refused with "retry") → `CLOSED` with
   `closure_reason = endpoint_unreachable` and a `verification_unreachable`
   event saying the port is not reachable from that vantage. **Never
   machine-verified**, exposure or CVE, and not counted as a verified
