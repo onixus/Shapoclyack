@@ -152,7 +152,7 @@ def test_parse_cpe(name: str, expected) -> None:
         # nmap's pre-rename nginx vendor reaches both NVD keys.
         (
             rm.Fingerprint(product="nginx", version="1.18.0", cpe=("cpe:/a:igor_sysoev:nginx:1.18.0",)),
-            ("a:f5:nginx", "a:nginx:nginx"),
+            ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
             "cpe",
             "1.18.0",
         ),
@@ -174,7 +174,14 @@ def test_parse_cpe(name: str, expected) -> None:
         ),
         (rm.Fingerprint(product="", banner="220 (vsFTPd 3.0.3)"), ("a:vsftpd_project:vsftpd",), "banner", "3.0.3"),
         (rm.Fingerprint(product="", banner="220 ProFTPD 1.3.5 Server (Debian)"), ("a:proftpd:proftpd",), "banner", "1.3.5"),
-        (rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)"), ("a:f5:nginx", "a:nginx:nginx"), "banner", "1.18.0"),
+        (rm.Fingerprint(product="http", banner="HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)"), ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"), "banner", "1.18.0"),
+        # The fingerprint stage's CPE (f5:nginx_open_source) reaches the older keys as well.
+        (
+            rm.Fingerprint(product="", cpe=("cpe:2.3:a:f5:nginx_open_source:1.24.0:*:*:*:*:*:*:*",)),
+            ("a:f5:nginx_open_source", "a:f5:nginx", "a:nginx:nginx"),
+            "cpe",
+            "1.24.0",
+        ),
     ],
 )
 def test_product_and_version(fingerprint, keys, via, version) -> None:

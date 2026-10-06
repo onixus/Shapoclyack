@@ -237,9 +237,11 @@ PRODUCT_TABLE: dict[str, tuple[str, ...]] = {
 #: or vsftpd CPE from nmap matches nothing. Checked against NVD's CPE
 #: dictionary on 2026-09-23.
 CPE_ALIASES: dict[str, tuple[str, ...]] = {
-    "a:igor_sysoev:nginx": ("a:f5:nginx", "a:nginx:nginx"),
-    "a:nginx:nginx": ("a:nginx:nginx", "a:f5:nginx"),
-    "a:f5:nginx": ("a:f5:nginx", "a:nginx:nginx"),
+    "a:igor_sysoev:nginx": ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
+    "a:nginx:nginx": ("a:nginx:nginx", "a:f5:nginx", "a:f5:nginx_open_source"),
+    "a:f5:nginx": ("a:f5:nginx", "a:nginx:nginx", "a:f5:nginx_open_source"),
+    # Since 2024-08 NVD files nginx (old releases re-filed too) under f5:nginx_open_source.
+    "a:f5:nginx_open_source": ("a:f5:nginx_open_source", "a:f5:nginx", "a:nginx:nginx"),
     "a:beasts:vsftpd": ("a:vsftpd_project:vsftpd",),
     "a:vsftpd:vsftpd": ("a:vsftpd_project:vsftpd",),
     "a:matt_johnston:dropbear_ssh_server": (
