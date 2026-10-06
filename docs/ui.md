@@ -443,7 +443,9 @@ that column when the run comes back — closed and marked machine-verified if th
 finding was not observed *and* the run shows every detector of it looked again,
 back to `FIXING` if it was observed, and back to `FIXING` as **Verification
 inconclusive** if it was not observed but the run could not have seen it (or
-the run failed). See
+the run failed); to `CLOSED` as **Port closed on a live host**
+(`endpoint_unreachable`) when the host answered and the port was provably
+closed. See
 [vulnerability-lifecycle.md](vulnerability-lifecycle.md#verification-who-is-allowed-to-say-it-is-fixed).
 
 Evidence on the board is the last observing run. File attachments are out of
@@ -583,7 +585,9 @@ operator's next, different batch mints its own key.
   `exception_rejected`, `exception_expired`, `exception_cleared`, and the
   verification kinds). Event kinds are labelled in English and Russian; a
   `verification_inconclusive` row is marked amber and its note names each
-  detector, host and reason that was not covered.
+  detector, host and reason that was not covered; `verification_unreachable`
+  ("Host up, port closed") is grey, and its closure reason reads "Port closed
+  on a live host" — machine-verified only for a Pulse exposure finding.
 
 For an endpoint-software finding the **Verify** button is not shown at all: the
 API refuses the dispatch (`409`) because a re-scan does not observe an installed
