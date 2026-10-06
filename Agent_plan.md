@@ -3,13 +3,19 @@
 > Integration architecture, technical specifications, and delivery backlog for the Lariska endpoint inventory.
 > For operator documentation, see [docs/README.md](docs/README.md) and [docs/operations.md](docs/operations.md).
 
-**Current Status (2026-09-16):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
+**Current Status (checked against `main` on 2026-10-06):** the integration contract (**S1–S10**) is **completed and merged to `main`** — Schema v1, database models + migrations `0004_endpoint_inventory` / `0006_endpoint_fk_cascade`, ingestion API with idempotency and limits, asset reconciliation, software diff/events, read APIs, asset card Web UI, NATS stream events `ingest.endpoint_inventory.{tenant_id}`, retention sweeps, server-side staleness checks, Prometheus metrics, and an E2E lifecycle test suite.
 
 The inventory is no longer the end of the line. Three **ROADMAP Track E** milestones now consume it and are also merged:
 
 - **M1 — software→CVE matching.** Installed packages are matched against offline-first Debian and Ubuntu vendor advisories with purl/CPE identity and real dpkg/rpm EVR comparison, persisted to `software_cve_matches` (migration `0027_software_cve_matches`). `unknown` is a first-class result, never silently "clean". See [docs/software-cve-matching.md](docs/software-cve-matching.md).
 - **M2 — patch-gap analysis.** The matcher's `vulnerable` rows are regrouped, on read, by the package an operator actually upgrades, with the target version and the command that applies it. No table of its own — a gap cannot outlive the snapshot behind it.
 - **M3 — tracked software findings.** A `vulnerable` match with a published fix folds into `vulnerabilities` as `source = "endpoint_software"` (migration `0032_endpoint_software_findings`), so it carries SLA, owner, ticket and NIST risk and closes on the next inventory that shows the upgrade. Matching re-runs automatically after each accepted snapshot (`api/services/software_match_worker.py`, `OCTO_SOFTWARE_MATCH_INTERVAL_SECONDS`, marker column from migration `0033`).
+
+**Contract boundary.** The current server accepts inventory **schema v1**
+(`api/schemas.py`, `EndpointInventorySnapshotRequest`). Installation-aware schema v2
+and signed Lariska update manifests are pending work, not part of the current
+server contract. The signed native sensor bundle already on `main` updates the
+scanning node, not Lariska. See [documentation version scope](docs/README.md#version-scope).
 
 **Terminology.** In this record *Agent* means Lariska, the in-guest endpoint agent (`agent_kind = "endpoint"`). The remote node that claims scan jobs and runs the scanner (`agent/worker.py`, `agent_kind = "scanner"`) is a **sensor**; both are rows of the same `agents` table and share the `/api/agent/*` routes.
 

@@ -21,6 +21,9 @@ local development and builds an image.
 ## Prerequisites
 
 - Docker Engine (to build/load images), [kind](https://kind.sigs.k8s.io/), and `kubectl`;
+- OpenSSL for the development CA and server certificate;
+- a GitHub token with access to the Pulse release repository for local image builds
+  (`GITHUB_TOKEN`, or an authenticated `gh` CLI; see [Pulse backend](pulse-backend.md));
 - 4 GB free memory for evaluation, more when scanning large target sets;
 - explicit authorization for every target.
 
@@ -103,6 +106,9 @@ from these files — see step 4.
 
 ## 3. Validate scanner configuration
 
+Install the Python dependencies first using the
+[development environment](development.md#python-environment). Then run:
+
 ```bash
 python -m scanner.main --config scanner/config/default.yaml --validate-config
 ```
@@ -146,7 +152,7 @@ kubectl create secret generic scan-targets -n network-scan \
 ## 5. Verify health
 
 ```bash
-curl --fail http://127.0.0.1:8080/api/health
+curl --fail --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health
 ```
 
 Use `127.0.0.1` rather than `localhost` on the kind path: kind publishes the
@@ -157,7 +163,11 @@ The response reports API health and the configured state of NATS, ClickHouse,
 and ingest. A service shown as disabled is not an error when its `OCTO_NATS_URL`
 / `OCTO_CLICKHOUSE_URL` env var was left empty.
 
-Open <http://127.0.0.1:8080> and use the operator account for the first scan.
+The kind overlays serve HTTPS. The script creates `.dev-tls/ca.crt`; trust
+that development CA in the browser before opening <https://127.0.0.1:8080>.
+Use the operator account for the first scan. Keep `.dev-tls/` private and
+git-ignored. For certificate details, see
+[the kind TLS guide](configuration.md#the-kind-stand).
 
 ## 6. Approve a scanning scope
 
@@ -173,12 +183,12 @@ empty scope and the first job would be refused with `403`.
 Approve the addresses from step 2, as `admin`:
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:8080/api/auth/login \
+TOKEN=$(curl -fsS --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin-change-me"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 
-curl -s -X PUT http://127.0.0.1:8080/api/tenants/default/scan-scope \
+curl -fsS --cacert .dev-tls/ca.crt -X PUT https://127.0.0.1:8080/api/tenants/default/scan-scope \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"entries": [
@@ -207,10 +217,14 @@ From the UI:
 4. Submit the job.
 5. Follow the job to its run detail and reports.
 
-Scanner-only execution is also available:
+Scanner-only execution is also available. It reads the mounted input files
+and does not use API tenant scope approvals or job admission. Keep those files
+limited to the authorized targets. Pass the Pulse download token as a BuildKit
+secret when building:
 
 ```bash
-docker build -t shapoclyack-scanner .
+# Set GITHUB_TOKEN with access to the Pulse release repository first.
+docker build --secret id=github_token,env=GITHUB_TOKEN -t shapoclyack-scanner .
 
 docker run --rm \
   --cap-add NET_RAW \
@@ -229,7 +243,11 @@ Check:
 
 - the job reaches `succeeded`;
 - a run appears under **Runs**;
-- `scanner/output/runs/<run_id>/` contains `run_meta.json` and stage artifacts;
+- the run detail exposes `run_meta.json` and stage artifacts; on the API
+  local artifact backend they live at
+  `$OCTO_OUTPUT_DIR/runs/_tenants/<tenant>/<run_id>/`
+  (`OCTO_OUTPUT_DIR` defaults to `scanner/output`); standalone scanner runs
+  use `scanner/output/runs/<run_id>/`; see [Run directories](operations.md#run-directories);
 - summary counts are plausible for the authorized target set;
 - external tool errors are absent from the run log.
 

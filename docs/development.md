@@ -105,14 +105,26 @@ updating `INTEGRATION_SUITES` and the gate goes red naming exactly that.
 
 Without the flag nothing changes — skipping stays the right default on a
 laptop with no database, and so is the way to narrow a run:
-`OCTO_REQUIRE_INTEGRATION=0 scripts/ci-pytest.sh -k something` debugs one stage
+`OCTO_REQUIRE_INTEGRATION=0 COV_FAIL_UNDER=0 scripts/ci-pytest.sh -k something` debugs one stage
 without a gate it cannot satisfy.
 
 Run the API locally:
 
+Use a dedicated local PostgreSQL database and apply migrations before starting
+the API with the development accounts:
+
 ```bash
-python -m api
+# OCTO_POSTGRES_URL must point to your dedicated development database.
+: "${OCTO_POSTGRES_URL:?Set the development PostgreSQL URL first}"
+alembic -c api/db/alembic.ini upgrade head
+OCTO_ENV=dev python -m api
 ```
+
+This starts a plaintext API at `http://127.0.0.1:8080` when no TLS variables
+are set. The SQLite settings fallback does not validate PostgreSQL locking or
+tenant isolation. Without `OCTO_ENV=dev`, startup applies the production requirements
+for PostgreSQL, credentials, CORS and secure refresh cookies; see
+[Startup safety](configuration.md#startup-safety-octo_env).
 
 Host, port, database, broker, authentication, and feature settings are defined
 in `api/__main__.py` and `api/settings.py`. Prefer environment overrides over
@@ -127,7 +139,15 @@ API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev
 ```
 
 Open <http://localhost:3000/login>. The development server proxies `/api/*` to
-the configured API target. Production uses a static export served by FastAPI.
+the configured API target. The command above targets the plaintext laptop API.
+To use the HTTPS kind stand instead, trust its CA in the Node process:
+
+```bash
+NODE_EXTRA_CA_CERTS="$PWD/../.dev-tls/ca.crt" \
+  API_PROXY_TARGET=https://127.0.0.1:8080 npm run dev
+```
+
+Production uses a static export served by FastAPI.
 
 Before opening a pull request, run:
 
