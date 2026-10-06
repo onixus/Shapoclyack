@@ -87,6 +87,7 @@ def test_the_heartbeat_thread_survives_a_control_plane_blip(monkeypatch, tmp_pat
     next tick."""
     client = _FakeClient()
     failures = {"count": 0}
+    both_failed = threading.Event()
     real_heartbeat = client.heartbeat
 
     def _flaky(*args: Any, **kwargs: Any):
@@ -94,11 +95,20 @@ def test_the_heartbeat_thread_survives_a_control_plane_blip(monkeypatch, tmp_pat
         # claim time is the agent's own start-up check and is allowed to raise.
         if threading.current_thread() is not threading.main_thread() and failures["count"] < 2:
             failures["count"] += 1
+            if failures["count"] == 2:
+                both_failed.set()
             raise RuntimeError("API unreachable")
         return real_heartbeat(*args, **kwargs)
 
+    def _scan(**_kwargs: Any):
+        # The scan lasts until the renewal thread has failed twice, not a fixed
+        # 0.25 s: on a loaded CI node two 0.05 s ticks did not always fit into
+        # that, and the test failed on timing rather than on the behaviour.
+        both_failed.wait(timeout=30)
+        return 0, None, None
+
     client.heartbeat = _flaky  # type: ignore[method-assign]
-    monkeypatch.setattr(worker, "_run_scan", lambda **_kwargs: (time.sleep(0.25), 0, None)[1:] + (None,))
+    monkeypatch.setattr(worker, "_run_scan", _scan)
 
     worker._execute_job(  # noqa: SLF001
         client,
