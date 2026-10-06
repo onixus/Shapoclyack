@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { setTimeout as waitForTimerTurn } from "node:timers/promises";
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import { useAppearanceStore } from "@/lib/appearance";
@@ -28,7 +29,11 @@ if (elementPrototype) {
 
 // RTL's automatic cleanup relies on a global afterEach, which we don't expose
 // (vitest globals are off), so register it explicitly.
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // Radix FocusScope dispatches its unmount autofocus event in a zero-delay
+  // timer. Let that callback finish before Vitest replaces this file's jsdom
+  // globals; otherwise it creates an Event from another realm and throws.
+  await waitForTimerTurn(0);
   useAppearanceStore.setState({ theme: "dark", locale: "en", hydrated: false });
 });
