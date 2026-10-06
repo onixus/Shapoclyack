@@ -286,7 +286,7 @@ def test_web_technologies_reads_the_exposures_the_fingerprint_stage_writes(tmp_p
         "https://198.51.100.8:443/": (200, [], '<script>top.location="/remote/login";</script>'),
     }
 
-    async def fake_fetch(client, url, timeout, max_bytes):
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         status, headers, body = responses[url]
         return _Fetched(status, httpx.Headers(headers), body, url)
 

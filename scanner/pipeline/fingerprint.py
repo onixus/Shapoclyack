@@ -25,12 +25,13 @@ grammar and confidence levels: ``fingerprint_catalogue.py``):
     response header (``version_disclosure``, info).
 
 Requests. One GET to ``scheme://host:port/``. A redirect is followed -- at
-most ``MAX_REDIRECT_HOPS`` times -- only while it stays on the address the
-stage was given (any scheme or port of that address: it is the same in-scope
-host). A redirect anywhere else, a host name included, is recorded as
+most ``MAX_REDIRECT_HOPS`` times -- only to an ``(address, port)`` the port
+stage reported open in this run: the same address, and a port that was
+scanned (a tenant-excluded port, #362, never is). A redirect anywhere else --
+another port, another address, a host name -- is recorded as
 ``redirect_location`` with ``redirected_off_host`` and not fetched: the stage
-contacts nothing it was not given, and a name is the virtual-host case, which
-is a target of its own. The client ignores ``HTTP(S)_PROXY`` (``trust_env``
+contacts nothing the run did not already reach, and a name is the
+virtual-host case, which is a target of its own. The client ignores ``HTTP(S)_PROXY`` (``trust_env``
 off): scan traffic must not go through whatever proxy the sensor's
 environment names. NSE (``nse.py``) emits no structured HTTP data this could
 reuse, so this is the one HTTP client per endpoint; a ``/favicon.ico`` hash or
@@ -208,12 +209,26 @@ def _origin(url: str) -> tuple[str, str, int] | None:
     return parsed.scheme, (parsed.host or "").lower(), _effective_port(parsed)
 
 
-def _same_address(host: str, target: str) -> bool:
-    """The redirect stays on the address the stage was given (IPs compared as IPs)."""
+def _address_key(host: str) -> str:
+    """An address as one spelling: IPs canonical, names lower-cased (a trailing dot is another name)."""
     try:
-        return ipaddress.ip_address(host) == ipaddress.ip_address(target)
+        return str(ipaddress.ip_address(host))
     except ValueError:
-        return host.lower().rstrip(".") == target.lower().rstrip(".")
+        return host.lower()
+
+
+def _open_endpoints(open_ports: list[str]) -> frozenset[tuple[str, int]]:
+    """Every open TCP ``(address, port)`` the port stage reported -- the run's scope for a hop."""
+    found = set()
+    for entry in open_ports:
+        parsed = parse_endpoint(entry)
+        if parsed is None or parsed.protocol != "tcp":
+            continue
+        try:
+            found.add((_address_key(parsed.host), int(parsed.port)))
+        except ValueError:
+            continue
+    return frozenset(found)
 
 
 async def _read(resp: httpx.Response, max_bytes: int) -> str:
@@ -228,14 +243,21 @@ async def _read(resp: httpx.Response, max_bytes: int) -> str:
 
 
 async def _fetch(
-    client: httpx.AsyncClient, url: str, timeout: float, max_bytes: int
+    client: httpx.AsyncClient,
+    url: str,
+    timeout: float,
+    max_bytes: int,
+    allowed: frozenset[tuple[str, int]] = frozenset(),
 ) -> _Fetched | None:
-    """GET ``url``, following redirects only while they stay on its address.
+    """GET ``url``, following a redirect only to an open port the run already knows.
 
-    A hop that fails returns the redirect that led to it, so what the target
-    itself said is kept.
+    ``allowed`` is the port stage's ``(address, port)`` set: a hop must stay on
+    the endpoint's address *and* land on a port that scan reported. A port the
+    tenant excluded, or one nobody scanned, is never contacted from here. A hop
+    that fails returns the redirect that led to it, so what the target itself
+    said is kept.
     """
-    target = httpx.URL(url).host
+    target = _address_key(httpx.URL(url).host)
     current = url
     last: _Fetched | None = None
     for hop in range(MAX_REDIRECT_HOPS + 1):
@@ -253,7 +275,12 @@ async def _fetch(
             nxt = httpx.URL(current).join(location.strip())
         except (httpx.InvalidURL, TypeError, ValueError):
             return _Fetched(status, headers, body, current)
-        same = nxt.scheme in _DEFAULT_PORTS and bool(nxt.host) and _same_address(nxt.host, target)
+        same = (
+            nxt.scheme in _DEFAULT_PORTS
+            and bool(nxt.host)
+            and _address_key(nxt.host) == target
+            and (target, _effective_port(nxt)) in allowed
+        )
         last = _Fetched(status, headers, body, current, sanitize_url(str(nxt)) or None, not same)
         if not same:
             return last
@@ -353,6 +380,7 @@ async def _fingerprint_one(
     timeout: float,
     max_bytes: int,
     catalogue: Catalogue,
+    allowed: frozenset[tuple[str, int]] = frozenset(),
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     url = _build_url(host, port, scheme)
     outcome: dict[str, Any] = {
@@ -372,7 +400,7 @@ async def _fingerprint_one(
         "technologies": [],
         "error": None,
     }
-    fetched = await _fetch(client, url, timeout, max_bytes)
+    fetched = await _fetch(client, url, timeout, max_bytes, allowed=allowed)
     if fetched is None:
         outcome["error"] = "request_failed"
         return outcome, []
@@ -472,6 +500,7 @@ async def fingerprint_hosts(
     candidates = candidates[: config.max_targets]
 
     timeout = float(config.timeout_seconds)
+    allowed = _open_endpoints(open_ports)
     semaphore = asyncio.Semaphore(config.concurrency)
     headers = {"User-Agent": USER_AGENT}
 
@@ -482,7 +511,7 @@ async def fingerprint_hosts(
         async def _guarded(host: str, port: int, scheme: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             async with semaphore:
                 return await _fingerprint_one(
-                    client, host, port, scheme, timeout, config.body_max_bytes, catalogue
+                    client, host, port, scheme, timeout, config.body_max_bytes, catalogue, allowed
                 )
 
         outcomes = await asyncio.gather(

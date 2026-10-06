@@ -44,7 +44,7 @@ def test_candidate_endpoints_filters_and_dedupes():
 
 
 def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         headers = httpx.Headers(
             [
                 ("Server", "cloudflare"),
@@ -77,7 +77,7 @@ def test_fingerprint_detects_cloudflare_and_wordpress(tmp_path: Path, monkeypatc
 
 
 def test_fingerprint_no_signal_omitted_from_matches_file(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         return _Fetched(200, httpx.Headers([("Server", "nginx")]), "<html>hello</html>", url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)
@@ -95,7 +95,7 @@ def test_fingerprint_no_signal_omitted_from_matches_file(tmp_path: Path, monkeyp
 
 
 def test_fingerprint_fail_soft_on_request_error(tmp_path: Path, monkeypatch):
-    async def failing_fetch(client, url, timeout, max_bytes):
+    async def failing_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         return None
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", failing_fetch)
@@ -113,7 +113,7 @@ def test_fingerprint_fail_soft_on_request_error(tmp_path: Path, monkeypatch):
 
 
 def test_fingerprint_truncates_at_max_targets(tmp_path: Path, monkeypatch):
-    async def fake_fetch(client, url, timeout, max_bytes):
+    async def fake_fetch(client, url, timeout, max_bytes, allowed=frozenset()):
         return _Fetched(200, httpx.Headers([]), "<html></html>", url)
 
     monkeypatch.setattr("scanner.pipeline.fingerprint._fetch", fake_fetch)

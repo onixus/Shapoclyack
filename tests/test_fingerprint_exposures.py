@@ -35,6 +35,7 @@ Route = tuple[int, list[tuple[str, str]], str]
 class _Site(ThreadingHTTPServer):
     routes: dict[str, Route]
     requests: list[str]
+    seen_headers: list[dict[str, str]]
 
     @property
     def port(self) -> int:
@@ -48,6 +49,7 @@ def site():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - http.server hook
             self.server.requests.append(self.path)  # type: ignore[attr-defined]
+            self.server.seen_headers.append({k.lower(): v for k, v in self.headers.items()})  # type: ignore[attr-defined]
             route = self.server.routes.get(urlsplit(self.path).path)  # type: ignore[attr-defined]
             if route is None:
                 self.send_error(404)
@@ -69,6 +71,7 @@ def site():
     server = _Site(("127.0.0.1", 0), Handler)
     server.routes = {}
     server.requests = []
+    server.seen_headers = []
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
@@ -237,6 +240,8 @@ def test_credentials_and_path_parameters_never_reach_the_artifact(site, tmp_path
     result = _run(site, tmp_path)
     (endpoint,) = result["findings"]
     assert site.requests == ["/", "/login;jsessionid=ABC?t=1"]
+    # The Location's userinfo is not turned into credentials for the hop.
+    assert all("authorization" not in headers for headers in site.seen_headers)
     assert endpoint["final_url"] == f"http://127.0.0.1:{site.port}/login"
     assert all(e["url"] == f"http://127.0.0.1:{site.port}/login" for e in result["exposures"])
     saved = (tmp_path / "fingerprint.json").read_text(encoding="utf-8")
@@ -287,6 +292,8 @@ def test_a_redirect_to_another_port_of_the_address_is_one_finding_at_the_final_o
     result = fingerprint_hosts_sync(
         [f"127.0.0.1:{site.port}/tcp", f"127.0.0.1:{second_site.port}/tcp"], config, tmp_path
     )
+    # Both ports were in the port scan's results, so the hop is taken.
+    assert second_site.requests.count("/login") == 1
     admin = [e for e in result["exposures"] if e["kind"] == "exposed_admin_interface"]
     assert len(admin) == 1
     assert admin[0]["port"] == second_site.port
@@ -494,3 +501,24 @@ def test_a_redirect_elsewhere_raises_no_exposure_even_from_the_product_itself(si
     (endpoint,) = result["findings"]
     assert [t["id"] for t in endpoint["technologies"]] == ["jenkins"]
     assert result["exposures"] == []
+
+
+
+def test_a_redirect_to_a_port_the_scan_did_not_report_is_not_followed(site, second_site, tmp_path: Path):
+    """open_ports names one port; its root points at another (an excluded OT port, #362)."""
+    site.routes["/"] = (302, [("Location", f"//127.0.0.1:{second_site.port}/")], "")
+    result = _run(site, tmp_path)
+    assert second_site.requests == []
+    (endpoint,) = result["findings"]
+    assert endpoint["redirect_location"] == f"http://127.0.0.1:{second_site.port}/"
+    assert endpoint["redirected_off_host"] is True
+    assert endpoint["final_url"] == f"http://127.0.0.1:{site.port}/"
+    assert result["exposures"] == []
+
+
+def test_a_trailing_dot_is_another_name_not_the_address(site, tmp_path: Path):
+    site.routes["/"] = (302, [("Location", f"http://127.0.0.1.:{site.port}/login")], "")
+    site.routes["/login"] = (403, [("X-Jenkins", "2.414.3")], "")
+    (endpoint,) = _run(site, tmp_path)["findings"]
+    assert site.requests == ["/"]
+    assert endpoint["redirected_off_host"] is True
