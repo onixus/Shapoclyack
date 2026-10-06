@@ -485,3 +485,12 @@ def test_a_hostile_page_does_not_stall_the_stage(site, tmp_path: Path):
     result = fingerprint_hosts_sync([f"127.0.0.1:{site.port}/tcp"], config, tmp_path)
     assert time.perf_counter() - start < 3.0
     assert result["findings"][0]["error"] is None
+
+
+def test_a_redirect_elsewhere_raises_no_exposure_even_from_the_product_itself(site, tmp_path: Path):
+    """Jenkins redirecting to its configured name: inventory here, a finding on the name's own scan."""
+    site.routes["/"] = (302, [("Location", "https://ci.example.test/"), ("X-Jenkins", "2.414.3")], "")
+    result = _run(site, tmp_path)
+    (endpoint,) = result["findings"]
+    assert [t["id"] for t in endpoint["technologies"]] == ["jenkins"]
+    assert result["exposures"] == []

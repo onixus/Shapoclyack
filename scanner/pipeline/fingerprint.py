@@ -255,7 +255,7 @@ async def _fetch(
             return _Fetched(status, headers, body, current)
         same = nxt.scheme in _DEFAULT_PORTS and bool(nxt.host) and _same_address(nxt.host, target)
         last = _Fetched(status, headers, body, current, sanitize_url(str(nxt)) or None, not same)
-        if not same or hop == MAX_REDIRECT_HOPS:
+        if not same:
             return last
         # The hop itself carries no credentials, whatever the Location said.
         current = str(httpx.URL(scheme=nxt.scheme, host=nxt.host, port=nxt.port, raw_path=nxt.raw_path))
