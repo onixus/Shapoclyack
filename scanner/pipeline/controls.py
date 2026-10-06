@@ -267,6 +267,34 @@ def _extract_dns_structure_control(output_dir: Path) -> dict[str, Any]:
     }
 
 
+#: ``checks`` statuses of a TLS probe row that mean the check did not establish
+#: anything. ``not_evaluated`` (skipped by configuration: chain trust on an
+#: internal address or ``chain_trust: off``, legacy checks with
+#: ``probe_legacy_protocols: false``) and ``not_testable`` (SSLv2/SSLv3) are
+#: by design, not gaps.
+_TLS_CHECK_GAP_STATUSES = frozenset({"not_performed", "inconclusive"})
+
+
+def _tls_check_gaps(checks: Any) -> list[str]:
+    """Names of the checks of one probe row that did not establish a result."""
+    if not isinstance(checks, dict):
+        return []
+    gaps: list[str] = []
+    for name in ("cert_fields", "cert_strength", "chain_trust"):
+        entry = checks.get(name)
+        if isinstance(entry, dict) and entry.get("status") in _TLS_CHECK_GAP_STATUSES:
+            gaps.append(f"{name} {entry['status']}")
+    trust = checks.get("chain_trust")
+    if isinstance(trust, dict) and trust.get("status") == "trusted" and trust.get("validity_checked") is False:
+        gaps.append("chain_validity not_performed")
+    protocols = checks.get("protocols")
+    if isinstance(protocols, dict):
+        for version, entry in sorted(protocols.items()):
+            if isinstance(entry, dict) and entry.get("status") in _TLS_CHECK_GAP_STATUSES:
+                gaps.append(f"{version} {entry['status']}")
+    return gaps
+
+
 def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
     tls_file = output_dir / "tls_posture.json"
     tls_data = load_json(tls_file, fallback=None)
@@ -301,6 +329,11 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
 
     findings: list[dict[str, Any]] = []
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    # Probe rows say which of their checks actually ran (``checks``); an
+    # endpoint with a check that did not run, or could not decide, is not a
+    # checked endpoint. Rows without ``checks`` (nmap, Pulse) count as before.
+    gaps: dict[str, int] = {}
+    partly_checked = 0
 
     for f in findings_raw:
         if not isinstance(f, dict):
@@ -308,6 +341,11 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
         endpoint = f.get("host", "")
         if f.get("port"):
             endpoint = f"{endpoint}:{f['port']}"
+        endpoint_gaps = _tls_check_gaps(f.get("checks"))
+        if endpoint_gaps:
+            partly_checked += 1
+            for gap in endpoint_gaps:
+                gaps[gap] = gaps.get(gap, 0) + 1
         for issue in f.get("issues") or []:
             if not isinstance(issue, dict):
                 continue
@@ -321,22 +359,55 @@ def _extract_tls_certificates_control(output_dir: Path) -> dict[str, Any]:
                 "detail": issue.get("detail") or issue.get("kind", ""),
             })
 
+    inspected = checked_targets
+    checked_targets = max(0, inspected - partly_checked)
+    gap_note = ""
+    if gaps:
+        gap_note = (
+            f"; {partly_checked} of {inspected} endpoint(s) only partly checked ("
+            + ", ".join(f"{gap} x{count}" for gap, count in sorted(gaps.items()))
+            + ")"
+        )
+
     if sev_counts["critical"] > 0 or sev_counts["high"] > 0:
         status = "fail"
         why = f"{sev_counts['critical'] + sev_counts['high']} high/critical TLS posture findings (expired/weak/mismatch)"
+        why += gap_note
     elif sev_counts["medium"] > 0 or sev_counts["low"] > 0:
         status = "weak"
-        why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings"
+        why = f"{sev_counts['medium'] + sev_counts['low']} medium/low TLS posture findings" + gap_note
+    elif checked_targets > 0 and partly_checked:
+        # The credential_leaks pattern: the fully checked endpoints passed and
+        # the rest are named. One endpoint a middlebox resets must not take the
+        # control out of the risk matrix for the other 99 -- but the share is
+        # not hidden either: coverage says "partial", the why leads with it,
+        # and the overall verdict reads "partial", not "ok".
+        status = "ok"
+        why = (
+            f"partial coverage ({checked_targets} of {inspected} TLS endpoints fully checked): "
+            f"no findings{gap_note}"
+        )
     elif checked_targets > 0:
         status = "ok"
         why = f"All {checked_targets} inspected TLS endpoints passed validation"
+    elif partly_checked:
+        # "No finding" from checks that did not run anywhere is not a pass.
+        status = "not_checked"
+        why = f"No TLS posture findings, but no endpoint was fully checked{gap_note}"
     else:
         status = "not_checked"
         why = "No TLS endpoints inspected"
 
     return {
         "status": status,
-        "coverage": {"checked": checked_targets, "total": total_targets},
+        "coverage": {
+            "checked": checked_targets,
+            "total": total_targets,
+            # Some, not none, of the endpoints that answered in TLS: one that
+            # never did is not a TLS endpoint, and counting it would make every
+            # run "partial"; none at all is not_checked, not partial.
+            "partial": 0 < checked_targets < inspected,
+        },
         "findings_by_severity": sev_counts,
         "top_findings": findings[:10],
         "evidence": ["tls_posture.json"],
@@ -712,6 +783,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
     has_ok = False
     has_error = False
     has_not_checked = False
+    has_partial = False
 
     for defn in CONTROL_DEFINITIONS:
         cid = defn["id"]
@@ -733,6 +805,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
             has_weak = True
         elif status == "ok":
             has_ok = True
+            has_partial = has_partial or bool((result.get("coverage") or {}).get("partial"))
         elif status == "error":
             has_error = True
         else:
@@ -764,7 +837,7 @@ def evaluate_controls(output_dir: Path, config: ControlsConfig | None = None) ->
         overall_verdict = "weak"
     elif has_error:
         overall_verdict = "error"
-    elif has_ok and not has_not_checked:
+    elif has_ok and not has_not_checked and not has_partial:
         overall_verdict = "ok"
     elif has_ok:
         overall_verdict = "partial"

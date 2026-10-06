@@ -9,7 +9,7 @@ exists.
 
 from __future__ import annotations
 
-import time
+from datetime import timedelta
 from pathlib import Path
 
 from tests.conftest import (
@@ -88,19 +88,34 @@ def test_correct_password_is_refused_while_the_window_is_open(tmp_path, monkeypa
 def test_window_decays_without_operator_intervention(tmp_path, monkeypatch):
     """No unlock endpoint, no admin action — the counted failures simply age
     out. A lock an attacker could make permanent by failing on purpose would be
-    a denial of service against a known username."""
+    a denial of service against a known username.
+
+    The limiter's clock is held still and moved by hand. With a real one-second
+    window the lock only formed if two bcrypt logins fitted in that second,
+    which a loaded CI container under coverage does not promise (main #76:
+    ~1.2 s per login, the first failure aged out before the third attempt).
+    """
+    from api.services import auth_audit
+
+    clock = {"at": auth_audit._now()}  # noqa: SLF001
+    monkeypatch.setattr(auth_audit, "_now", lambda: clock["at"])
+    window = 60
     client = _client(
         tmp_path,
         monkeypatch,
         login_rate_limit_max_failures=2,
-        login_rate_limit_window_seconds=1,
+        login_rate_limit_window_seconds=window,
     )
 
     for _ in range(2):
         _fail(client)
     assert _fail(client).status_code == 429
 
-    time.sleep(1.2)
+    # Still inside the window: the lock holds for the right password too.
+    clock["at"] += timedelta(seconds=window - 1)
+    assert _fail(client, password=TEST_USERS["viewer"]).status_code == 429
+
+    clock["at"] += timedelta(seconds=2)
     ok = client.post(
         "/api/auth/login", json={"username": "viewer", "password": TEST_USERS["viewer"]}
     )

@@ -17,6 +17,7 @@ import { normalizeSeverity } from "@/lib/run-data";
 const REASON_KEY: Record<string, MsgKey> = {
   unknown_product: "services.reason.unknown_product",
   no_version: "services.reason.no_version",
+  lookalike: "services.reason.lookalike",
   too_old: "services.reason.too_old",
   no_dataset: "services.reason.no_dataset",
 };

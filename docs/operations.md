@@ -461,7 +461,11 @@ and not the next is not a ceiling:
   `per_host_rate` and every active secondary pool
   (`tls_posture.probe_concurrency`, `fingerprint.concurrency`,
   `screenshots.concurrency`, `discovery.domain_monitor.takeover_http_concurrency`)
-  is held to `max_host_concurrency`.
+  is held to `max_host_concurrency`. The ceiling counts endpoints in flight, not
+  connections: the TLS probe makes up to four handshakes per endpoint, one after
+  another in the same worker — two of them the TLS 1.0/1.1 checks, which
+  `tls_posture.probe_legacy_protocols: false` in the scanner config turns off
+  (the policy does not).
 * **`max_host_concurrency: 1`** is one *batch* at a time, not one host at a
   time, and the difference matters on a plant network. It lowers the discovery,
   port and NSE worker counts and pulse's `--host-parallel`; a worker takes a
@@ -4054,6 +4058,13 @@ in `GET /api/vulnerabilities?source=retro_match`. A matcher killed mid-wave
 (rolling update) loses no announcement: unannounced findings are published by
 the next tick, whichever replica leads it.
 
+**An upgrade can be a wave too.** The marker carries a digest of the matcher's
+own tables (`+rules:` in `dataset_version`), so the first tick after an upgrade
+that taught the matcher products — such as the one that added eighteen, MySQL,
+MariaDB, PHP, Sendmail, Squid and Elasticsearch among them — re-matches every
+listener once, with nothing to run by hand. Findings for the newly named products
+land as `retro_match`; the event budget starts afresh with the new marker.
+
 **Watching it.** `GET /api/retro-match/status`: `dataset_version` (which file
 is being matched), `services_pending` (should drain to 0 within a few ticks of a
 refresh), `last_stats.errors` (listeners held off after an exception — each is
@@ -4062,9 +4073,9 @@ answer). `nvd_cpe` on `GET /api/system` shows the file's age and whether it
 clears the floor.
 
 **Forcing a re-check** — after replacing the dataset by hand, or to re-derive
-verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset or
-advisory feed does this by itself; the button is for the cases the marker
-cannot see.
+verdicts: `POST /api/retro-match/refresh` (operator). A changed dataset,
+advisory feed or matcher table does this by itself; the button is for the cases
+the marker cannot see.
 
 **Rollback.** `0064` is expand-only. Rolling the image back leaves the tables
 unused and `retro_match` findings in the tracker as ordinary findings with an

@@ -15,18 +15,27 @@ Fallback paths (Phase 4): when nmap XML has no SSL scripts (Pulse backend,
    missing, open a direct handshake via ``tls_probe`` (``source: pulse-tls-probe``).
 
 Does not replace full nmap cipher grading; covers cert expiry, self-signed
-heuristic, and weak protocol acceptance / negotiated protocol.
+heuristic, key and signature strength, and weak protocol acceptance. The probe
+also judges chain trust (``cert_untrusted``, by ``chain_trust`` mode), the
+validity of the verified chain (``cert_chain_expired``) and tries TLS 1.0/1.1
+with dedicated handshakes -- see ``tls_probe.py`` for what each of its checks
+can and cannot establish.
 
 From ``ssl-cert`` output this module extracts certificate subject/issuer,
-SAN, signature algorithm, public key size, and validity window, then flags:
+SAN, signature algorithm, public key type and size, and validity window, then
+flags:
 
   * ``cert_expired`` (critical) / ``cert_expiring_soon`` (medium) -- based on
-    the certificate's "Not valid after" date vs. ``expiring_soon_days``.
+    the certificate's "Not valid after" date vs. ``expiring_soon_days``;
+    ``cert_not_yet_valid`` (medium) when "Not valid before" is in the future.
   * ``self_signed`` (medium) -- a heuristic: subject commonName equals issuer
     commonName (case-insensitive), or (fallback) the raw subject/issuer
     strings are verbatim equal. Always tagged with a ``heuristic`` field --
     this is a signal, not a certain determination (a CA could legitimately
     reuse a CN, and this does not verify the chain).
+  * ``weak_key`` (medium; high under 1024 bits) / ``weak_signature`` (medium)
+    -- RSA/DSA under 2048 bits or EC under 224; leaf signed with MD5/SHA-1.
+    Shared with the probe path through ``cert_strength.py``.
 
 From ``ssl-enum-ciphers`` output this module extracts each TLS/SSL protocol
 version's cipher list and nmap's own per-cipher/least-strength letter grade,
@@ -88,6 +97,7 @@ from typing import Any
 from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from .cert_names import dns_name_from, expected_names, hostname_mismatch
+from .cert_strength import cert_strength_issues
 from .config_schema import TlsPostureConfig
 from .pulse_probe import load_pulse_tls_artifact
 from .tls_probe import _parse_tls_endpoints, probe_tls_endpoints, write_tls_probe_json
@@ -108,6 +118,7 @@ _SUBJECT_RE = re.compile(r"^Subject:\s*(.+)$", re.MULTILINE)
 _ISSUER_RE = re.compile(r"^Issuer:\s*(.+)$", re.MULTILINE)
 _SAN_RE = re.compile(r"^Subject Alternative Name:\s*(.+)$", re.MULTILINE)
 _SIG_ALG_RE = re.compile(r"^Signature Algorithm:\s*(.+)$", re.MULTILINE)
+_PUBKEY_TYPE_RE = re.compile(r"^Public Key type:\s*(\S+)\s*$", re.MULTILINE)
 _PUBKEY_BITS_RE = re.compile(r"^Public Key bits:\s*(\d+)$", re.MULTILINE)
 _NOT_BEFORE_RE = re.compile(r"^Not valid before:\s*(.+?)\s*$", re.MULTILINE)
 _NOT_AFTER_RE = re.compile(r"^Not valid after:\s*(.+?)\s*$", re.MULTILINE)
@@ -157,6 +168,7 @@ def _parse_ssl_cert_output(output: str) -> dict[str, Any]:
     issuer_match = _ISSUER_RE.search(output)
     san_match = _SAN_RE.search(output)
     sig_alg_match = _SIG_ALG_RE.search(output)
+    pubkey_type_match = _PUBKEY_TYPE_RE.search(output)
     pubkey_bits_match = _PUBKEY_BITS_RE.search(output)
     not_before_match = _NOT_BEFORE_RE.search(output)
     not_after_match = _NOT_AFTER_RE.search(output)
@@ -181,6 +193,7 @@ def _parse_ssl_cert_output(output: str) -> dict[str, Any]:
         "issuer": issuer,
         "san": san_match.group(1).strip() if san_match else None,
         "signature_algorithm": sig_alg_match.group(1).strip() if sig_alg_match else None,
+        "public_key_type": pubkey_type_match.group(1).strip() if pubkey_type_match else None,
         "public_key_bits": public_key_bits,
         "not_before_raw": not_before_raw,
         "not_after_raw": not_after_raw,
@@ -269,6 +282,21 @@ def _classify_cert(cert: dict[str, Any], now: datetime, expiring_soon_days: int)
                 issues.append({"kind": "cert_expired", "severity": "critical", "days": days_left})
             elif days_left <= expiring_soon_days:
                 issues.append({"kind": "cert_expiring_soon", "severity": "medium", "days": days_left})
+
+    not_before_raw = cert.get("not_before")
+    if not_before_raw:
+        try:
+            parsed_not_before = datetime.fromisoformat(not_before_raw)
+        except ValueError:
+            parsed_not_before = None
+        if parsed_not_before is not None and parsed_not_before > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "detail": f"valid from {cert.get('not_before_raw') or not_before_raw}",
+                }
+            )
 
     subject = cert.get("subject")
     issuer = cert.get("issuer")
@@ -512,6 +540,14 @@ def findings_from_pulse_tls(
                         "detail": f"expires in {days_left}d ({not_after_raw})",
                     }
                 )
+        if not_before_dt is not None and not_before_dt > now:
+            issues.append(
+                {
+                    "kind": "cert_not_yet_valid",
+                    "severity": "medium",
+                    "detail": f"valid from {not_before_raw}",
+                }
+            )
 
         if row.get("self_signed"):
             issues.append(
@@ -765,6 +801,7 @@ def check_tls_posture(
             if cert_output is not None:
                 cert = _parse_ssl_cert_output(cert_output)
                 issues.extend(_classify_cert(cert, now, config.expiring_soon_days))
+                issues.extend(cert_strength_issues(cert))
 
             cipher_versions: list[dict[str, Any]] = []
             cipher_output = scripts_by_id.get(_SSL_ENUM_CIPHERS_SCRIPT_ID)
@@ -860,6 +897,9 @@ def check_tls_posture(
         expiring_soon_days=config.expiring_soon_days,
         tls_ports=set(config.probe_tls_ports),
         now=now,
+        probe_legacy_protocols=config.probe_legacy_protocols,
+        ca_bundle=config.ca_bundle,
+        chain_trust=config.chain_trust,
     )
     _apply_hostname_mismatch(probe_findings, hostnames, enabled=config.hostname_mismatch)
     write_tls_probe_json(output_dir, probe_findings)

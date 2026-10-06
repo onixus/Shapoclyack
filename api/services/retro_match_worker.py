@@ -10,11 +10,14 @@ months has to be asked about it. ``docs/retro-cve-matching.md`` is the design.
 ``asset_services.matched_dataset_version`` differs from :func:`current_marker`
 — a digest of what the NVD dataset *says* joined with digests of what the
 Debian and Ubuntu advisory datasets say, because a new vendor statement can
-turn a ``possible`` into a ``vulnerable`` as surely as a new range can. Content,
-not dates: a daily refresh that brought nothing new leaves the marker alone.
+turn a ``possible`` into a ``vulnerable`` as surely as a new range can, and with
+a digest of the matcher's own tables (``retro_match.rules_version``), because
+a release that teaches it a product changes neither dataset. Content, not
+dates: a daily refresh that brought nothing new leaves the marker alone.
 So:
 
 * a dataset whose content changed makes every listener due, once;
+* so does an upgrade whose matcher tables changed;
 * a new or changed fingerprint (``asset_services.record_run`` clears the
   column) makes that listener due;
 * nothing else does. An unchanged dataset and unchanged fingerprints leave the
@@ -54,7 +57,7 @@ from sqlalchemy import func, or_, select, update
 
 from api.db import models
 from api.db.engine import get_session
-from api.services import advisories, cpe_ranges, retro_findings
+from api.services import advisories, cpe_ranges, retro_findings, retro_match
 from api.services.cpe_ranges import CpeRangeDataset
 from api.services.leader_lock import RETRO_MATCH_LOCK_ID, LeaderLock
 from api.settings import Settings
@@ -83,7 +86,10 @@ def current_marker(dataset: CpeRangeDataset) -> str | None:
         for provider in advisories.providers().values()
     ]
     advisory = hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:8]
-    return f"{dataset.marker}+adv:{advisory}"
+    # And the matcher's own tables: a release that teaches it a product leaves
+    # both datasets alone, and without this the listeners it used to call
+    # unknown_product would never be asked again (retro_match.rules_version).
+    return f"{dataset.marker}+adv:{advisory}+rules:{retro_match.rules_version()}"
 
 
 def pending_service_ids(
