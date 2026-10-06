@@ -254,3 +254,21 @@ def test_pulse_source_gets_hostname_mismatch_from_the_dialled_host(tmp_path: Pat
     )
     assert issue["checked_names"] == ["shop.example.test"]
     assert issue["cert_names"] == ["other.example.net"]
+
+
+def test_findings_from_pulse_tls_flags_a_certificate_not_yet_valid():
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    artifact = {
+        "tls": [
+            {
+                "ip": "10.0.0.7",
+                "port": 443,
+                "subject_cn": "future.local",
+                "issuer_cn": "R3",
+                "not_before": "2026-08-10 0:00:00.0 +00:00:00",
+                "not_after": "2027-08-10 0:00:00.0 +00:00:00",
+            }
+        ]
+    }
+    rows = findings_from_pulse_tls(artifact, now=now, expiring_soon_days=30, max_targets=10)
+    assert [issue["kind"] for issue in rows[0]["issues"]] == ["cert_not_yet_valid"]

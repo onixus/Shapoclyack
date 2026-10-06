@@ -431,10 +431,17 @@ class DomainMonitorConfig(BaseModel):
       passive -- same risk class as ct.brute_force). A candidate that
       resolves is reported as a finding; it is never merged into scan scope.
     - dangling_cname_enabled: for the org's own in-scope FQDNs, resolve the
-      CNAME chain and flag targets matching a known vulnerable-service
-      suffix with no A/AAAA record of their own. This is a heuristic
-      pattern + non-resolution signal only -- it never confirms an actual
-      takeover is possible.
+      CNAME chain and judge it against the takeover catalogue
+      (``scanner/pipeline/takeover_fingerprints.json``): a confirmed
+      takeover, a heuristic one, or a CNAME into an unregistered domain.
+
+    takeover_http_confirm: confirm a candidate whose name resolves by one
+    bounded GET per scheme to that name, matched against the provider's
+    unclaimed-resource fingerprint. Off, such candidates are listed as
+    unconfirmed and not reported. The tenant scan policy's
+    ``skip_service_probe`` turns it off and ``max_host_concurrency`` caps
+    ``takeover_http_concurrency``; neither can turn it back on or raise it.
+    ``takeover_http_max_targets`` caps how many names one run probes.
 
     max_candidates caps typosquat candidates generated per seed domain
     (round-robin across generator classes, like cloud_discovery's
@@ -450,6 +457,10 @@ class DomainMonitorConfig(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=50)
     timeout_seconds: int = Field(default=15, ge=5, le=120)
     retries: int = Field(default=1, ge=0, le=5)
+    takeover_http_confirm: bool = True
+    takeover_http_concurrency: int = Field(default=5, ge=1, le=20)
+    takeover_http_timeout_seconds: int = Field(default=10, ge=2, le=60)
+    takeover_http_max_targets: int = Field(default=200, ge=1, le=2_000)
 
 
 class DeltaDiscoveryConfig(BaseModel):
@@ -980,6 +991,16 @@ class TlsPostureConfig(BaseModel):
     endpoint. It needs the forward names in ``hostnames.json`` -- with
     ``discovery.hostnames.forward`` off, or for an IP-only target, there is no
     expected name and the check stays silent (see ``cert_names.py``).
+
+    ``probe_legacy_protocols`` (DQ2) adds two handshakes per probed endpoint,
+    pinned to TLS 1.0 and TLS 1.1: a server that also speaks TLS 1.3 never
+    shows its legacy versions to a client offering everything. ``chain_trust``
+    says where ``cert_untrusted`` is judged: ``public_only`` (default) on
+    publicly routable addresses only, unless ``ca_bundle`` is set; ``always``;
+    or ``off``. ``ca_bundle`` is a PEM file of the organisation's own CAs,
+    trusted in addition to the system store. All three apply to the stdlib
+    probe only, and are scanner-config settings: the platform's config overlay
+    does not carry them.
     """
 
     enabled: bool = False
@@ -993,6 +1014,9 @@ class TlsPostureConfig(BaseModel):
     probe_tls_ports: list[int] = Field(
         default_factory=lambda: [443, 8443, 9443, 4443, 10443, 6443]
     )
+    probe_legacy_protocols: bool = True
+    chain_trust: Literal["public_only", "always", "off"] = "public_only"
+    ca_bundle: str | None = None
 
 
 class OwnershipConfig(BaseModel):

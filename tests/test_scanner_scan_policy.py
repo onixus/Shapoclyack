@@ -1118,6 +1118,40 @@ def test_l2_discovery_obeys_rate_and_service_probe_policy():
     assert tightened.discovery.l2.netbios is False
 
 
+def test_fragile_turns_the_takeover_http_confirmation_off():
+    """It is an HTTP GET to an in-scope name, like fingerprint's; the DNS half
+    of domain_monitor is not service probing and stays as configured."""
+    config = _config()
+    domain_monitor = config.discovery.domain_monitor.model_copy(
+        update={"enabled": True, "takeover_http_confirm": True, "takeover_http_concurrency": 5}
+    )
+    config = config.model_copy(
+        update={"discovery": config.discovery.model_copy(update={"domain_monitor": domain_monitor})}
+    )
+
+    tightened = apply_policy(config, _policy(skip_service_probe=True, max_host_concurrency=1))
+
+    assert tightened.discovery.domain_monitor.takeover_http_confirm is False
+    assert tightened.discovery.domain_monitor.takeover_http_concurrency == 1
+    assert tightened.discovery.domain_monitor.enabled is True
+    assert tightened.discovery.domain_monitor.dangling_cname_enabled is True
+
+
+def test_policy_cannot_turn_takeover_confirmation_back_on_or_widen_it():
+    config = _config()
+    domain_monitor = config.discovery.domain_monitor.model_copy(
+        update={"takeover_http_confirm": False, "takeover_http_concurrency": 3}
+    )
+    config = config.model_copy(
+        update={"discovery": config.discovery.model_copy(update={"domain_monitor": domain_monitor})}
+    )
+
+    tightened = apply_policy(config, _policy(skip_service_probe=False, max_host_concurrency=32))
+
+    assert tightened.discovery.domain_monitor.takeover_http_confirm is False
+    assert tightened.discovery.domain_monitor.takeover_http_concurrency == 3
+
+
 def test_policy_cannot_enable_l2_discovery():
     config = _config()
     assert apply_policy(config, _policy(max_discover_rate=100)).discovery.l2.enabled is False

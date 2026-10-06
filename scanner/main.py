@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from pathlib import Path
@@ -647,6 +648,27 @@ def _run_pipeline_body(
     else:
         dm_config = config.discovery.domain_monitor
         dm_domains = dm_config.domains or base_domains_from_fqdns(scope_fqdns)
+        # The takeover confirmation dials the address a candidate name resolved
+        # to; the same deny-only rule as the resolved targets above applies, and
+        # a refusal goes into the same denials artifact -- once: the resolve
+        # step may already have refused that address, and several names can
+        # point at one provider address.
+        dm_address_allowed: Callable[[str], bool] | None = None
+        if scope is not None:
+            dm_scope = scope
+
+            def _takeover_address_allowed(address: str) -> bool:
+                result = scan_scope.filter_resolved(dm_scope, [address])
+                fresh = [refusal for refusal in result.refused if refusal not in scope_refusals]
+                return bool(
+                    _keep_in_scope(
+                        scan_scope.FilterResult(kept=result.kept, refused=fresh),
+                        what="takeover-check addresses",
+                        refusals=scope_refusals,
+                    )
+                )
+
+            dm_address_allowed = _takeover_address_allowed
         _run_stage(
             "domain_monitor",
             lambda: monitor_domains(
@@ -655,6 +677,7 @@ def _run_pipeline_body(
                 dm_config,
                 paths.output_dir,
                 resolvers=config.dns.resolvers,
+                address_allowed=dm_address_allowed,
             ),
         )
         checkpoint.mark_done("domain_monitor")

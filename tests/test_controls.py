@@ -215,7 +215,204 @@ def test_tls_severity_read_from_nested_issues(tmp_path: Path):
     assert tls["status"] == "fail"
     assert tls["findings_by_severity"]["critical"] == 1
     assert tls["findings_by_severity"]["medium"] == 0
-    assert tls["coverage"] == {"checked": 2, "total": 2}
+    assert tls["coverage"] == {"checked": 2, "total": 2, "partial": False}
+
+
+def _tls_control(tmp_path: Path, issues: list[dict]) -> dict:
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "10.0.0.9", "port": "443", "issues": issues}],
+            "skipped_reason": None,
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    return {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+
+
+def test_tls_strength_and_trust_findings_grade_weak(tmp_path: Path):
+    """DQ2's certificate findings are medium: the control is WEAK, not OK."""
+    tls = _tls_control(
+        tmp_path,
+        [
+            {"kind": "weak_key", "severity": "medium", "key_type": "rsa", "bits": 1024},
+            {"kind": "weak_signature", "severity": "medium", "algorithm": "sha1WithRSAEncryption"},
+            {"kind": "cert_untrusted", "severity": "medium", "detail": "self-signed certificate"},
+        ],
+    )
+    assert tls["status"] == "weak"
+    assert tls["findings_by_severity"]["medium"] == 3
+    assert {f["id"] for f in tls["top_findings"]} == {"weak_key", "weak_signature", "cert_untrusted"}
+
+
+def test_tls_factorable_key_fails_the_control(tmp_path: Path):
+    tls = _tls_control(tmp_path, [{"kind": "weak_key", "severity": "high", "key_type": "rsa", "bits": 768}])
+    assert tls["status"] == "fail"
+
+
+def _probe_checks(**overrides: dict) -> dict:
+    """The ``checks`` of a TLS probe row where everything ran, with overrides."""
+    checks = {
+        "protocols": {
+            "SSLv2": {"status": "not_testable"},
+            "SSLv3": {"status": "not_testable"},
+            "TLSv1.0": {"status": "rejected"},
+            "TLSv1.1": {"status": "rejected"},
+        },
+        "chain_trust": {"status": "not_evaluated", "reason": "internal_address"},
+        "cert_fields": {"status": "performed"},
+        "cert_strength": {"status": "performed"},
+    }
+    checks.update(overrides)
+    return checks
+
+
+def _tls_control_for_checks(tmp_path: Path, checks: dict) -> dict:
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 1,
+            "checked_count": 1,
+            "findings": [{"host": "10.0.0.9", "port": "443", "issues": [], "checks": checks}],
+            "skipped_reason": None,
+            "source": "pulse-tls-probe",
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    return {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+
+
+def test_tls_probe_row_with_every_check_run_passes(tmp_path: Path):
+    """Chain trust skipped by policy (an internal address) and SSLv2/3 that no
+    modern OpenSSL can test are by design, not gaps."""
+    tls = _tls_control_for_checks(tmp_path, _probe_checks())
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 1, "total": 1, "partial": False}
+
+
+def test_tls_check_that_did_not_run_is_not_a_pass(tmp_path: Path):
+    """No finding from a key check that never ran (an image without
+    cryptography) used to read "All 1 inspected TLS endpoints passed"."""
+    tls = _tls_control_for_checks(
+        tmp_path,
+        _probe_checks(cert_strength={"status": "not_performed", "detail": "cryptography package not installed"}),
+    )
+    assert tls["status"] == "not_checked"
+    assert tls["coverage"] == {"checked": 0, "total": 1, "partial": False}
+    assert "cert_strength not_performed" in tls["why"]
+    assert "passed" not in tls["why"]
+
+
+def test_one_unresolvable_endpoint_does_not_unrate_the_tls_control(tmp_path: Path):
+    """99 clean endpoints and one that resets every pinned ClientHello (an
+    SChannel box): the control stays ok -- with coverage 99 of 100 and the gap
+    named -- and keeps a risk level, as credential_leaks does with partial
+    coverage. not_checked is for "nothing was checked"."""
+    rows = [
+        {"host": f"10.0.0.{i}", "port": "443", "issues": [], "checks": _probe_checks()} for i in range(1, 100)
+    ]
+    rows.append({
+        "host": "10.0.0.100",
+        "port": "443",
+        "issues": [],
+        "checks": _probe_checks(
+            protocols={"TLSv1.0": {"status": "inconclusive"}, "TLSv1.1": {"status": "inconclusive"}}
+        ),
+    })
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({
+            "targets_considered": 100,
+            "checked_count": 100,
+            "findings": rows,
+            "skipped_reason": None,
+            "source": "pulse-tls-probe",
+        }),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    tls = {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 99, "total": 100, "partial": True}
+    assert tls["why"].startswith("partial coverage (99 of 100")
+    assert "TLSv1.0 inconclusive" in tls["why"]
+    assert tls["risk_level"] != "unassessed"
+
+
+def test_partial_tls_coverage_makes_the_overall_verdict_partial(tmp_path: Path, monkeypatch):
+    """Every other control ok: one TLS control that passed over 1 of 51
+    endpoints must not read as a clean matrix."""
+    from scanner.pipeline import controls
+
+    clean = {
+        "status": "ok",
+        "coverage": {"checked": 1, "total": 1},
+        "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "top_findings": [],
+        "evidence": [],
+        "why": "ok",
+    }
+    for cid in list(controls._EXTRACTORS):  # noqa: SLF001
+        if cid != "tls_certificates":
+            monkeypatch.setitem(controls._EXTRACTORS, cid, lambda output_dir: dict(clean))  # noqa: SLF001
+    rows = [{"host": "10.0.0.1", "port": "443", "issues": [], "checks": _probe_checks()}]
+    rows += [
+        {
+            "host": f"10.0.1.{i}",
+            "port": "443",
+            "issues": [],
+            "checks": _probe_checks(protocols={"TLSv1.0": {"status": "inconclusive"}}),
+        }
+        for i in range(50)
+    ]
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({"targets_considered": 51, "checked_count": 51, "findings": rows, "skipped_reason": None}),
+        encoding="utf-8",
+    )
+    summary = evaluate_controls(tmp_path, ControlsConfig(enabled=True))
+    tls = {c["control"]: c for c in summary["controls"]}["tls_certificates"]
+    assert tls["status"] == "ok"
+    assert tls["coverage"]["partial"] is True
+    assert tls["why"].startswith("partial coverage (1 of 51")
+    assert summary["overall_verdict"] == "partial"
+
+    # The same matrix with the TLS control fully covered reads ok.
+    rows = rows[:1]
+    (tmp_path / "tls_posture.json").write_text(
+        json.dumps({"targets_considered": 1, "checked_count": 1, "findings": rows, "skipped_reason": None}),
+        encoding="utf-8",
+    )
+    assert evaluate_controls(tmp_path, ControlsConfig(enabled=True))["overall_verdict"] == "ok"
+
+
+def test_legacy_checks_switched_off_are_not_a_gap(tmp_path: Path):
+    """probe_legacy_protocols: false is a documented choice, like chain_trust:
+    off -- it must not keep the control from ever being ok."""
+    disabled = {"status": "not_evaluated", "reason": "disabled"}
+    tls = _tls_control_for_checks(
+        tmp_path, _probe_checks(protocols={"TLSv1.0": dict(disabled), "TLSv1.1": dict(disabled)})
+    )
+    assert tls["status"] == "ok"
+    assert tls["coverage"] == {"checked": 1, "total": 1, "partial": False}
+
+
+def test_tls_gaps_that_count(tmp_path: Path):
+    for checks, gap in (
+        (_probe_checks(cert_fields={"status": "not_performed"}), "cert_fields not_performed"),
+        (_probe_checks(chain_trust={"status": "inconclusive"}), "chain_trust inconclusive"),
+        (
+            _probe_checks(chain_trust={"status": "trusted", "validity_checked": False}),
+            "chain_validity not_performed",
+        ),
+        (
+            _probe_checks(protocols={"TLSv1.0": {"status": "inconclusive"}, "TLSv1.1": {"status": "rejected"}}),
+            "TLSv1.0 inconclusive",
+        ),
+    ):
+        tls = _tls_control_for_checks(tmp_path, checks)
+        assert tls["status"] == "not_checked", gap
+        assert gap in tls["why"]
 
 
 def test_web_technologies_clean_endpoints_are_ok(tmp_path: Path):

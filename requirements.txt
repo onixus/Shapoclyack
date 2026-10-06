@@ -5,3 +5,5 @@ geoip2==4.8.1
 nats-py==2.15.0
 httpx==0.28.1
 defusedxml==0.7.1
+# The TLS probe reads key size and signature algorithm from the leaf DER (tls_probe.py); same pin as requirements-api.txt.
+cryptography==50.0.0
