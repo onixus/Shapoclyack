@@ -358,10 +358,17 @@ class RunCoverage:
             return "template_not_pinned"
         # nuclei's own count, not the index's: a template the index found but
         # nuclei refused to parse is loaded by nobody.
+        if ref in set(coverage.get("template_ids_ambiguous") or []):
+            # Two files under one id: which of them matched before, and which
+            # loaded now, is not something the run can say.
+            return "nuclei_template_ambiguous"
         loaded = coverage.get("templates_loaded")
-        if not isinstance(loaded, int):
+        expected = coverage.get("templates_expected")
+        if not isinstance(loaded, int) or not isinstance(expected, int):
             return "nuclei_templates_loaded_not_recorded"
-        if loaded < len(requested - missing - excluded):
+        if loaded != expected:
+            # Exactly: a sum would let one template that failed to parse hide
+            # behind another that loaded twice.
             return "nuclei_templates_not_loaded"
         if port is None:
             return "no_port"

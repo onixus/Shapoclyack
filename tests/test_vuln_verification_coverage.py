@@ -375,6 +375,8 @@ def test_a_pinned_template_missing_on_the_sensor_does_not_close(tmp_path, monkey
         # it refused to parse, say).
         (lambda: _nuclei_stub(loaded=0), "nuclei_templates_not_loaded"),
         (lambda: _nuclei_stub(skipped=(f"{HOST}:443",)), "nuclei_target_skipped"),
+        # One more than expected is no better than one fewer.
+        (lambda: _nuclei_stub(loaded=2), "nuclei_templates_not_loaded"),
     ],
 )
 def test_nuclei_s_own_account_can_deny_coverage(tmp_path, monkeypatch, stub, reason):
@@ -386,6 +388,52 @@ def test_nuclei_s_own_account_can_deny_coverage(tmp_path, monkeypatch, stub, rea
     _fold(settings, tenant_id)
 
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
+
+
+def test_two_pinned_templates_need_both_loaded(tmp_path, monkeypatch):
+    """Two nuclei detectors, two pinned templates; nuclei reports one loaded
+    (the other did not parse): neither is shown to have been checked."""
+    second = "CVE-2024-0009"
+    both = _row(
+        "nuclei", f"nuclei:{TEMPLATE}", also_detected_by=[{"source": "nuclei", "script_id": f"nuclei:{second}"}]
+    )
+    settings, tenant_id = _seed(tmp_path, findings=[both])
+    vuln = _tracked(settings, tenant_id, [both])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    templates = _templates(tmp_path)
+    (templates / "http" / "cves" / f"{second}.yaml").write_text(
+        f"id: {second}\n\ninfo:\n  name: x\n  severity: medium\n  tags: cve\n", encoding="utf-8"
+    )
+    _nuclei(
+        monkeypatch,
+        run_dir,
+        tmp_path,
+        template_ids=[TEMPLATE, second],
+        templates_dir=str(templates),
+        stub=_nuclei_stub(loaded=1),
+    )
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(
+        settings, tenant_id, vuln["vuln_id"], "nuclei_templates_not_loaded", "nuclei_templates_not_loaded"
+    )
+
+
+def test_an_ambiguous_template_id_is_a_gap(tmp_path, monkeypatch):
+    settings, tenant_id = _seed(tmp_path, findings=[NUCLEI_MEDIUM])
+    vuln = _tracked(settings, tenant_id, [NUCLEI_MEDIUM])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    copy = tmp_path / "custom"
+    copy.mkdir()
+    (copy / f"{TEMPLATE}.yaml").write_text(
+        f"id: {TEMPLATE}\n\ninfo:\n  name: copy\n  severity: medium\n  tags: cve\n", encoding="utf-8"
+    )
+    _nuclei(monkeypatch, run_dir, tmp_path, template_ids=[TEMPLATE], custom_templates_dir=str(copy))
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "nuclei_template_ambiguous")
 
 
 def test_a_finding_seen_on_a_name_is_not_closed_by_a_run_against_the_address(

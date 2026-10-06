@@ -119,20 +119,23 @@ def _template_tags(path: Path) -> set[str]:
     return set()
 
 
-def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, set[str]]:
-    """``{template id: tags}`` for each of ``wanted`` found under ``dirs``.
+def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str, list[set[str]]]:
+    """``{template id: [tags of each file with that id]}`` for ``wanted`` under ``dirs``.
 
     A pinned run has to know which of its ids nuclei can load before it runs:
     nuclei filters the templates it loaded by ``-id`` and says nothing about an
     id that filtered nothing in, so a missing template would otherwise vanish
-    without a trace and the run would read as having checked it. Stops walking
-    as soon as every id is found; a missing one costs one pass over the heads.
+    without a trace and the run would read as having checked it.
+
+    Every file, not the first: the same id in two directories (a custom copy
+    beside the baked one) is two templates nuclei loads under one id, and its
+    "Templates loaded" count could then hide one that failed to parse behind
+    the other (#451 review). One full pass over the heads — 0.19 s over the
+    8936 baked templates, measured in the aio image.
     """
     remaining = set(wanted)
-    found: dict[str, set[str]] = {}
+    found: dict[str, list[set[str]]] = {}
     for root in dirs:
-        if not remaining:
-            break
         if not root.is_dir():
             continue
         for directory, _subdirs, files in os.walk(root):
@@ -148,11 +151,7 @@ def index_template_ids(wanted: Sequence[str], dirs: Sequence[Path]) -> dict[str,
                 match = _TEMPLATE_ID_LINE.search(head)
                 if match is None or match.group(1) not in remaining:
                     continue
-                template_id = match.group(1)
-                found[template_id] = _template_tags(path)
-                remaining.discard(template_id)
-                if not remaining:
-                    return found
+                found.setdefault(match.group(1), []).append(_template_tags(path))
     return found
 
 
@@ -252,6 +251,26 @@ def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+#: nuclei_errors.jsonl travels with the run (it is tarred and uploaded), and
+#: an unreachable target can fill it with one line per request; read in full
+#: for the skipped targets first, then kept to this many bytes.
+_ERRORS_LOG_MAX_BYTES = 1024 * 1024
+
+
+def _cap_errors_log(errors_file: Path) -> bool:
+    """Truncate ``errors_file`` to whole lines under the cap; True if it was."""
+    try:
+        if not errors_file.is_file() or errors_file.stat().st_size <= _ERRORS_LOG_MAX_BYTES:
+            return False
+        with errors_file.open("rb") as handle:
+            head = handle.read(_ERRORS_LOG_MAX_BYTES)
+        errors_file.write_bytes(head[: head.rfind(b"\n") + 1])
+    except OSError:
+        LOG.warning("could not cap %s", errors_file, exc_info=True)
+        return False
+    return True
+
+
 def _permanent_error_addresses(errors_file: Path) -> set[str]:
     """``host:port`` of each target nuclei's -elog says it gave up on."""
     out: set[str] = set()
@@ -342,8 +361,13 @@ def run_nuclei_scan(
             # run only; -silent hides the line on a sweep) and the targets it
             # dropped as unresponsive. A target it dropped was not checked.
             "templates_loaded": None,
+            "templates_expected": None,
+            # An id found in more than one file across the template dirs.
+            "template_ids_ambiguous": [],
             "skipped_targets": [],
-            "max_host_error": config.max_host_error,
+            # As nuclei applies it: it raises a value below -concurrency.
+            "max_host_error": max(config.max_host_error, config.concurrency),
+            "errors_log_truncated": False,
         },
     }
     coverage = result["coverage"]
@@ -372,13 +396,22 @@ def run_nuclei_scan(
         dirs = [templates_dir, *([custom_dir] if custom_dir and custom_dir.exists() else [])]
         index = index_template_ids(config.template_ids, dirs)
         excluded_tags = {tag.lower() for tag in config.exclude_tags}
+        expected = 0
         for template_id in config.template_ids:
-            if template_id not in index:
+            files = index.get(template_id, [])
+            loadable = [tags for tags in files if not tags & excluded_tags]
+            if not files:
                 coverage["template_ids_missing"].append(template_id)
-            elif index[template_id] & excluded_tags:
+            elif not loadable:
                 coverage["template_ids_excluded"].append(template_id)
             else:
                 pinned.append(template_id)
+                expected += len(loadable)
+            if len(files) > 1:
+                coverage["template_ids_ambiguous"].append(template_id)
+        # What nuclei has to report loading, exactly: one per loadable file
+        # of each pinned id.
+        coverage["templates_expected"] = expected
         if coverage["template_ids_missing"] or coverage["template_ids_excluded"]:
             LOG.warning(
                 "nuclei: of the %d pinned template(s), not on this host: %s; excluded by "
@@ -504,6 +537,7 @@ def run_nuclei_scan(
     coverage["skipped_targets"] = sorted(
         set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
     )
+    coverage["errors_log_truncated"] = _cap_errors_log(errors_file)
     if coverage["skipped_targets"]:
         LOG.warning(
             "nuclei dropped %d target(s) as unresponsive: %s",
