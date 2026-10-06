@@ -220,7 +220,7 @@ and what the repeat query said):
 |---|---|---|
 | `subdomain_takeover` / `confirmed` | high (`vulnerable`), medium (`edge_case`) | NXDOMAIN of a claimable resource name (Azure, Elastic Beanstalk, …) on both A and AAAA and again on a repeat query — for App Service, also no `asuid.<name>` TXT verification record — or the provider's unclaimed-resource page for the org's name |
 | `subdomain_takeover` / `heuristic` | medium (`vulnerable`), low (`edge_case`) | The chain points at a claimable service and the name has no address, so nothing could be checked |
-| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain does not exist either, asked twice. Only for a domain a registry sells: under a suffix from the ICANN section of the Public Suffix List or from a public registry's private-section block (`com.ru`, `msk.ru`, `uk.com`, `br.com`, `eu.org`, `pp.ua`, …), under a TLD on the list and not special-use (`.local`, `.internal`, `.test`, `home.arpa`, …). A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
+| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain does not exist either, asked twice. Only for a domain a registry sells: under a suffix from the ICANN section of the Public Suffix List or from a public registry's private-section block (`com.ru`, `org.ru`, `net.ru`, `uk.com`, `br.com`, `co.cz`, `eu.org`, `pp.ua`, `krakow.pl`, …; the list is `PUBLIC_REGISTRY_OPERATORS` in `scanner/pipeline/public_suffix.py`), under a TLD on the list and not special-use (`.local`, `.internal`, `.test`, `home.arpa`, …). A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
 | `dangling_cname` / `heuristic` | low | The chain ends at a non-existent name under a hosting platform's suffix (the list's private section, registries aside) that the catalogue does not know. Whether the platform lets a stranger re-create that name is unknown — check it |
 
 What matched but is not a finding is listed under `not_reported` with the
@@ -229,8 +229,9 @@ reason, so a reviewer can see what was looked at: `service_not_vulnerable`,
 `http_confirm_disabled`, `http_target_cap`, `sinkholed` (the address was
 0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is what a filtering resolver
 answers; the request is never sent), `private_address` (any other non-public
-answer -- an RPZ walled garden, a split-horizon view; the request would not
-reach the provider, so it is not sent either), `address_refused_by_scope`
+answer -- an RPZ walled garden, a fake-IP range, a split-horizon view, also
+the deprecated `fec0::/10` site-local space; the request would not reach the
+provider, so it is not sent either), `address_refused_by_scope`
 (also written, once, to the run's scope-denials artifact), `domain_verified`,
 `registrable_domain_exists`, `target_not_registrable`,
 `nxdomain_not_repeated`, `dns_inconclusive` and `dns_no_answer`.
@@ -238,19 +239,23 @@ reach the provider, so it is not sent either), `address_refused_by_scope`
 The DNS side is strict on purpose. A and AAAA are asked in separate dnsx runs:
 with both in one run dnsx 1.2.3 reports the rcode of the last query only, which
 turned a name with an A record into NXDOMAIN. AAAA is asked only for the names
-whose A answer carried no address -- an IPv4 address already settles the name.
-An address from either query means the name resolves; NXDOMAIN needs both.
-SERVFAIL, REFUSED, a timeout (dnsx then writes no row at all) or the two
-queries disagreeing decide nothing: the name is `dns_inconclusive` or
-`dns_no_answer` whatever service it points at, and it is listed under
-`dns_unanswered`. The same holds for the follow-up lookups -- the registrable
-domain, the `asuid` record, the repeat query: a candidate whose follow-up went
-unanswered is listed in `dns_unanswered` and `candidates_unanswered`, and an
-NXDOMAIN that arrives with an address counts as unanswered too. The DNS
-structure control stays rated by its findings, its coverage counts only the
-answered names, and its explanation names the unanswered ones and, explicitly,
-every takeover candidate left undecided; it is `not_checked` only when nothing
-was answered at all.
+whose A answer carried no usable address -- a public IPv4 address already
+settles the name, a fake-IP or walled-garden one does not. An address from
+either query means the name resolves; NXDOMAIN needs both. SERVFAIL, REFUSED,
+a timeout (dnsx then writes no row at all) or the two queries disagreeing
+decide nothing: the name is `dns_inconclusive` or `dns_no_answer` whatever
+service it points at, and it is listed under `dns_unanswered`; if its chain had
+already reached a claimable service, it is also an undecided takeover candidate
+(`candidates_unanswered`). The same holds for the follow-up lookups -- the
+registrable domain, the `asuid` record, the repeat query -- and an NXDOMAIN
+that arrives with an address counts as unanswered too. A resolving candidate
+the HTTP check could not decide (no answer, a sinkhole or private address, a
+scope refusal, the cap, the check switched off) is listed in
+`candidates_unconfirmed`. The DNS structure control stays rated by its
+findings; its coverage counts only the answered names, and its explanation
+gives each of the three lists with its count, the first ten names and
+"+N more" -- never "all passed" while any of them is non-empty. It is
+`not_checked` only when nothing was answered at all.
 
 | Key | Default | Meaning |
 |---|---|---|
