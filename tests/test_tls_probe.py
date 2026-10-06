@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import socket
 import ssl
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +19,7 @@ from scanner.pipeline.tls_probe import (
     ProbeContexts,
     _Attempt,
     _is_public_peer,
+    _handshake,
     _legacy_status,
     _ServerRecords,
     _trust_from_verify_error,
@@ -410,3 +413,36 @@ def test_md_family_and_oiw_sha1_signature_oids_are_named_for_the_strength_check(
         fields = _strength_fields(leaf)
         assert fields["signature_algorithm"] == expected
         assert weak_signature_issue(fields["signature_algorithm"]) is not None, expected
+
+
+class _AlwaysWantRead:
+    """A TLS object that keeps asking for data, EOF or not."""
+
+    def do_handshake(self) -> None:
+        raise ssl.SSLWantReadError("want read")
+
+    def version(self) -> None:
+        return None
+
+    def cipher(self) -> None:
+        return None
+
+
+class _WantReadContext:
+    verify_mode = ssl.CERT_NONE
+
+    def wrap_bio(self, incoming, outgoing, server_side=False, server_hostname=None):
+        return _AlwaysWantRead()
+
+
+def test_handshake_ends_at_eof_even_if_the_tls_stack_keeps_asking_for_data():
+    """OpenSSL 3.5/3.6 raise SSLEOFError once EOF is written to the BIO; a
+    stack that answered WANT_READ instead would make the loop read an empty
+    socket again and again until the deadline. The EOF check ends it at once."""
+    ours, peer = socket.socketpair()
+    peer.close()
+    started = time.monotonic()
+    with ours:
+        attempt = _handshake(ours, _WantReadContext(), "x.test", 3.0)
+    assert isinstance(attempt.error, ConnectionAbortedError)
+    assert time.monotonic() - started < 1.0
