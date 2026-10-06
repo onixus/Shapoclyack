@@ -574,7 +574,8 @@ def test_ruleset_ids_parse_strictly_and_normalise_the_harmless_differences():
     # Case, space and a missing hotfix do not make a dead end.
     assert parse_ruleset(" 2026.07.29-H0 ") == parse_ruleset("2026.07.29") == (2026, 7, 29, 0)
     assert parse_ruleset("2026.07.29-h9") < parse_ruleset("2026.07.29-h10")
-    for unreadable in ("2026-08-02", "v2026.07.29", "2026.07.29-rc1", "", None):
+    # A date that does not exist would sort newer than every real ruleset.
+    for unreadable in ("2026-08-02", "v2026.07.29", "2026.07.29-rc1", "2026.13.45", "2026.02.30", "", None):
         assert parse_ruleset(unreadable) is None
 
 

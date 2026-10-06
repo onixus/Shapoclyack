@@ -45,6 +45,7 @@ import shutil
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,12 @@ def parse_ruleset(value: str | None) -> tuple[int, int, int, int] | None:
     if match is None:
         return None
     year, month, day, hotfix = match.groups()
+    try:
+        # A date that does not exist (2026.13.45) is not a ruleset either:
+        # it would sort newer than every real one and "cover" them all.
+        date(int(year), int(month), int(day))
+    except ValueError:
+        return None
     return int(year), int(month), int(day), int(hotfix or 0)
 
 

@@ -258,13 +258,19 @@ _ERRORS_LOG_MAX_BYTES = 1024 * 1024
 
 
 def _cap_errors_log(errors_file: Path) -> bool:
-    """Truncate ``errors_file`` to whole lines under the cap; True if it was."""
+    """Truncate ``errors_file`` to whole lines under the cap; True if it was.
+
+    A first line longer than the cap is kept cut, not dropped: whole lines
+    alone would leave an empty file, and an operator reading it would see
+    no error where nuclei wrote one.
+    """
     try:
         if not errors_file.is_file() or errors_file.stat().st_size <= _ERRORS_LOG_MAX_BYTES:
             return False
         with errors_file.open("rb") as handle:
             head = handle.read(_ERRORS_LOG_MAX_BYTES)
-        errors_file.write_bytes(head[: head.rfind(b"\n") + 1])
+        whole = head[: head.rfind(b"\n") + 1]
+        errors_file.write_bytes(whole or head[: _ERRORS_LOG_MAX_BYTES - 1] + b"\n")
     except OSError:
         LOG.warning("could not cap %s", errors_file, exc_info=True)
         return False

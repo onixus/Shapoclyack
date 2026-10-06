@@ -729,3 +729,21 @@ def test_the_errors_log_is_capped_after_it_is_read(tmp_path: Path, monkeypatch):
     assert coverage["skipped_targets"] == ["10.0.0.9:443"]
     kept = (tmp_path / "nuclei_errors.jsonl").read_text(encoding="utf-8")
     assert len(kept.encode()) <= 1000 and kept.endswith("\n")
+
+
+def test_a_first_error_line_over_the_cap_is_kept_cut_not_dropped(tmp_path: Path, monkeypatch):
+    """Whole lines only, with the first one longer than the cap, left an
+    empty file: the operator saw no error where nuclei wrote one."""
+    from scanner.pipeline import nuclei_scan
+
+    monkeypatch.setattr(nuclei_scan, "_ERRORS_LOG_MAX_BYTES", 100)
+    errors = tmp_path / "nuclei_errors.jsonl"
+    long_line = json.dumps({"address": "10.0.0.9:443", "error": "x" * 300}) + "\n"
+    errors.write_text(long_line * 2, encoding="utf-8")
+
+    assert nuclei_scan._cap_errors_log(errors) is True
+
+    kept = errors.read_bytes()
+    assert 0 < len(kept) <= 100
+    assert kept.endswith(b"\n")
+    assert long_line.encode().startswith(kept[:-1])
