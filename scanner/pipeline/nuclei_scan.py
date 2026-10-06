@@ -86,6 +86,15 @@ _SEVERITY_CVSS_FLOOR = {
 #: header above it. Reading the head and not the file is what keeps the index
 #: cheap over a ~10k-file checkout.
 _TEMPLATE_HEAD_BYTES = 2048
+
+#: What nuclei v3.11.1 prints at INFO (stderr, hidden by -silent), checked
+#: live in the aio image: how many templates the run really loaded, and each
+#: target it gave up on ("... found unresponsive permanently: ..." for a
+#: refused port, "... found unresponsive N times" after -max-host-error).
+_TEMPLATES_LOADED = re.compile(r"Templates loaded for current scan: (\d+)")
+_TARGET_SKIPPED = re.compile(r"Skipped (\S+) from target list as found unresponsive")
+#: The -elog kind nuclei gives the errors it skips a target over.
+_PERMANENT_ERROR = "network-permanent-error"
 _TEMPLATE_ID_LINE = re.compile(r"^id:[ \t]*['\"]?([A-Za-z0-9_.-]+)", re.MULTILINE)
 
 
@@ -242,6 +251,18 @@ def _to_vulnerability_rows(finding: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _permanent_error_addresses(errors_file: Path) -> set[str]:
+    """``host:port`` of each target nuclei's -elog says it gave up on."""
+    out: set[str] = set()
+    if not errors_file.is_file():
+        return out
+    for line in errors_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        record = _parse_result_line(line)
+        if record and record.get("kind") == _PERMANENT_ERROR and record.get("address"):
+            out.add(str(record["address"]))
+    return out
+
+
 def _persist(output_dir: Path, result: dict[str, Any]) -> None:
     save_json(output_dir / "nuclei.json", result)
     lines = [f"{f['host']}:{f['port']}:{f['template_id']}:{f['severity']}" for f in result["findings"]]
@@ -316,6 +337,12 @@ def run_nuclei_scan(
             "template_ids_missing": [],
             "template_ids_excluded": [],
             "severities": None if config.template_ids else list(config.severities),
+            # nuclei's own account of the run: templates it loaded (a pinned
+            # run only; -silent hides the line on a sweep) and the targets it
+            # dropped as unresponsive. A target it dropped was not checked.
+            "templates_loaded": None,
+            "skipped_targets": [],
+            "max_host_error": config.max_host_error,
         },
     }
     coverage = result["coverage"]
@@ -418,15 +445,24 @@ def run_nuclei_scan(
             command.extend(["-tags", ",".join(config.tags)])
     if config.exclude_tags:
         command.extend(["-exclude-tags", ",".join(config.exclude_tags)])
+    errors_file = output_dir / "nuclei_errors.jsonl"
+    errors_file.unlink(missing_ok=True)
     command.extend([
         "-jsonl-export", str(jsonl_file),
         "-rate-limit", str(config.rate_limit),
         "-concurrency", str(config.concurrency),
         "-timeout", str(config.timeout_seconds),
         "-retries", str(config.retries),
+        "-max-host-error", str(config.max_host_error),
+        "-elog", str(errors_file),
         "-silent",
         "-no-color",
     ])  # fmt: skip
+    if pinned:
+        # A verification needs nuclei's "Templates loaded for current scan"
+        # line, which -silent hides; the run is a handful of requests, so the
+        # rest of the INFO output costs nothing.
+        command.remove("-silent")
     # interactsh ignores -resolvers above: its client resolves the server name
     # through nuclei's built-in public resolvers as well (dns_resolvers.py).
     interactsh_args, private_dir = _interactsh_args(config.interactsh_server)
@@ -436,7 +472,8 @@ def run_nuclei_scan(
         # A registration that fails prints nothing under -silent, or at any
         # level short of -v, which logs every request. The only signal is the
         # INFO line on success, and -silent hides that too.
-        command.remove("-silent")
+        if "-silent" in command:
+            command.remove("-silent")
     else:
         result["interactsh"] = "disabled"
 
@@ -459,6 +496,19 @@ def run_nuclei_scan(
     coverage["ran"] = coverage["returncode"] == 0
     if coverage["returncode"] not in (0, None):
         LOG.warning("nuclei exited %s; its run is not counted as coverage", returncode)
+    stderr_text = getattr(completed, "stderr", None)
+    stderr_text = stderr_text if isinstance(stderr_text, str) else ""
+    loaded = _TEMPLATES_LOADED.findall(stderr_text)
+    coverage["templates_loaded"] = int(loaded[-1]) if loaded else None
+    coverage["skipped_targets"] = sorted(
+        set(_TARGET_SKIPPED.findall(stderr_text)) | _permanent_error_addresses(errors_file)
+    )
+    if coverage["skipped_targets"]:
+        LOG.warning(
+            "nuclei dropped %d target(s) as unresponsive: %s",
+            len(coverage["skipped_targets"]),
+            ", ".join(coverage["skipped_targets"][:8]),
+        )
 
     if oast:
         stderr = getattr(completed, "stderr", None)

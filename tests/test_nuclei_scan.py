@@ -313,6 +313,8 @@ def test_run_nuclei_scan_argv_is_pinned_and_names_the_system_resolver(tmp_path: 
         "-concurrency", "10",
         "-timeout", "10",
         "-retries", "1",
+        "-max-host-error", "30",
+        "-elog", str(out / "nuclei_errors.jsonl"),
         "-silent",
         "-no-color",
         # No public interactsh servers (test_nuclei_oast.py).
@@ -383,14 +385,21 @@ def _template(directory: Path, template_id: str, *, severity: str = "medium", ta
     )
 
 
-def _clean_exit(seen: dict | None = None):
+#: nuclei v3.11.1's INFO lines, as printed in the aio image (checked live).
+LOADED = "[INF] Templates loaded for current scan: {n}\n[INF] Targets loaded for current scan: 1\n"
+
+
+def _clean_exit(seen: dict | None = None, stderr: str | None = None):
+    """nuclei stubbed: exits 0, reports loading every id it was given."""
     import subprocess
 
     def fake_run_command(command, **kwargs):
         if seen is not None:
             seen["argv"] = list(command)
         Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        ids = command[command.index("-id") + 1].split(",") if "-id" in command else []
+        text = stderr if stderr is not None else LOADED.format(n=len(ids))
+        return subprocess.CompletedProcess(command, 0, "", text)
 
     return fake_run_command
 
@@ -430,8 +439,13 @@ def test_pinned_templates_run_by_id_whatever_their_severity(tmp_path: Path, monk
         "template_ids_missing": [],
         "template_ids_excluded": [],
         "severities": None,
+        "templates_loaded": 1,
+        "skipped_targets": [],
+        "max_host_error": 30,
     }
     assert json.loads((out / "nuclei.json").read_text(encoding="utf-8"))["coverage"] == coverage
+    # The loaded-templates line is INFO, which -silent hides.
+    assert "-silent" not in argv
 
 
 def test_a_pinned_id_the_host_does_not_have_is_recorded_missing(tmp_path: Path, monkeypatch):
@@ -546,3 +560,56 @@ def test_the_template_index_reads_ids_not_file_names(tmp_path: Path):
     (tmp_path / "CVE-2024-0002.yaml").write_text("id: other-id\n", encoding="utf-8")
     found = index_template_ids(["CVE-2024-0001", "CVE-2024-0002"], [tmp_path])
     assert found == {"CVE-2024-0001": {"cve", "rce"}}
+
+
+def test_nuclei_s_own_account_of_the_run_is_recorded(tmp_path: Path, monkeypatch):
+    """What nuclei v3.11.1 printed and logged for a refused port, in the aio
+    image: the target is dropped, and the run says so."""
+    import subprocess
+
+    templates = tmp_path / "templates"
+    _template(templates, "CVE-2024-0001")
+
+    def nuclei(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        Path(command[command.index("-elog") + 1]).write_text(
+            json.dumps(
+                {
+                    "template": "/t/CVE-2024-0001.yaml",
+                    "type": "http",
+                    "input": "https://10.0.0.6:443/x",
+                    "address": "10.0.0.6:443",
+                    "error": "port closed or filtered",
+                    "kind": "network-permanent-error",
+                    "attrs": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stderr = LOADED.format(n=1) + (
+            '[INF] Skipped 10.0.0.5:443 from target list as found unresponsive permanently: Get '
+            '"https://10.0.0.5:443/x": cause="port closed or filtered" address=10.0.0.5:443\n'
+        )
+        return subprocess.CompletedProcess(command, 0, "", stderr)
+
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", nuclei)
+    config = NucleiConfig(templates_dir=str(templates), template_ids=["CVE-2024-0001"], max_host_error=5)
+
+    result = run_nuclei_scan(["10.0.0.5:443/tcp", "10.0.0.6:443/tcp"], config, tmp_path)
+
+    assert result["coverage"]["templates_loaded"] == 1
+    assert result["coverage"]["skipped_targets"] == ["10.0.0.5:443", "10.0.0.6:443"]
+    assert result["coverage"]["max_host_error"] == 5
+
+
+def test_a_sweep_keeps_quiet_and_does_not_claim_a_template_count(tmp_path: Path, monkeypatch):
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    seen: dict = {}
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.shutil.which", _fake_which_present)
+    monkeypatch.setattr("scanner.pipeline.nuclei_scan.run_command", _clean_exit(seen, stderr=""))
+    result = run_nuclei_scan(["10.0.0.5:443/tcp"], NucleiConfig(templates_dir=str(templates)), tmp_path)
+    assert "-silent" in seen["argv"]
+    assert result["coverage"]["templates_loaded"] is None

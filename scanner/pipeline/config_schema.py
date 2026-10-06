@@ -862,6 +862,11 @@ class NucleiConfig(BaseModel):
     rate_limit: int = Field(default=150, ge=1, le=10_000)
     timeout_seconds: int = Field(default=10, ge=1, le=60)
     retries: int = Field(default=1, ge=0, le=5)
+    # nuclei's -max-host-error, passed explicitly: after this many errors a
+    # target is dropped from the scan (nuclei raises it to -concurrency when
+    # lower). Its own default, 30, spelled out so a nuclei upgrade that
+    # changes it does not change which hosts a run quietly stops checking.
+    max_host_error: int = Field(default=30, ge=1, le=10_000)
     # Hard cap on the whole nuclei subprocess invocation, independent of
     # per-request timeout_seconds -- mirrors runtime.nse_timeout_seconds'
     # role of bounding one external-tool call regardless of target count.

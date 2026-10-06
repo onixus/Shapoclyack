@@ -79,7 +79,26 @@ def _templates(tmp_path: Path) -> Path:
     return templates
 
 
-def _nuclei(monkeypatch, run_dir: Path, tmp_path: Path, *, binary: bool = True, **config) -> dict:
+def _nuclei_stub(*, loaded: int | None = None, skipped: tuple[str, ...] = ()):
+    """nuclei exiting 0 with the INFO lines v3.11.1 prints (checked live):
+    templates loaded (default: every pinned id) and targets it dropped."""
+
+    def run(command, **kwargs):
+        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
+        ids = command[command.index("-id") + 1].split(",") if "-id" in command else []
+        count = len(ids) if loaded is None else loaded
+        stderr = f"[INF] Templates loaded for current scan: {count}\n" + "".join(
+            f"[INF] Skipped {target} from target list as found unresponsive permanently: x\n"
+            for target in skipped
+        )
+        return subprocess.CompletedProcess(command, 0, "", stderr)
+
+    return run
+
+
+def _nuclei(
+    monkeypatch, run_dir: Path, tmp_path: Path, *, binary: bool = True, stub=None, **config
+) -> dict:
     """Run the real nuclei stage over ``run_dir`` with the binary stubbed."""
     monkeypatch.setattr(
         nuclei_scan.shutil,
@@ -87,11 +106,9 @@ def _nuclei(monkeypatch, run_dir: Path, tmp_path: Path, *, binary: bool = True, 
         lambda name: "/usr/local/bin/nuclei" if binary and name == "nuclei" else None,
     )
 
-    def clean_exit(command, **kwargs):
-        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
+    clean_exit = _nuclei_stub()
 
-    monkeypatch.setattr(nuclei_scan, "run_command", clean_exit)
+    monkeypatch.setattr(nuclei_scan, "run_command", stub or clean_exit)
     config.setdefault("templates_dir", str(_templates(tmp_path)))
     return nuclei_scan.run_nuclei_scan([f"{HOST}:443/tcp"], NucleiConfig(**config), run_dir)
 
@@ -247,6 +264,26 @@ def test_a_pinned_template_missing_on_the_sensor_does_not_close(tmp_path, monkey
     _fold(settings, tenant_id)
 
     _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], "nuclei_skipped:template_ids_missing")
+
+
+@pytest.mark.parametrize(
+    ("stub", "reason"),
+    [
+        # The index found the template; nuclei loaded none of it (a template
+        # it refused to parse, say).
+        (lambda: _nuclei_stub(loaded=0), "nuclei_templates_not_loaded"),
+        (lambda: _nuclei_stub(skipped=(f"{HOST}:443",)), "nuclei_target_skipped"),
+    ],
+)
+def test_nuclei_s_own_account_can_deny_coverage(tmp_path, monkeypatch, stub, reason):
+    settings, tenant_id = _seed(tmp_path, findings=[NUCLEI_MEDIUM])
+    vuln = _tracked(settings, tenant_id, [NUCLEI_MEDIUM])
+    run_dir = _verification_run(settings, tenant_id, vuln["vuln_id"])
+    _nuclei(monkeypatch, run_dir, tmp_path, template_ids=[TEMPLATE], stub=stub())
+
+    _fold(settings, tenant_id)
+
+    _assert_inconclusive(settings, tenant_id, vuln["vuln_id"], reason)
 
 
 def test_a_finding_seen_on_a_name_is_not_closed_by_a_run_against_the_address(
@@ -655,9 +692,7 @@ def test_a_nuclei_template_on_another_port_is_not_this_endpoint(tmp_path, monkey
         nuclei_scan.shutil, "which", lambda name: "/usr/local/bin/nuclei" if name == "nuclei" else None
     )
 
-    def clean_exit(command, **kwargs):
-        Path(command[command.index("-jsonl-export") + 1]).write_text("", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
+    clean_exit = _nuclei_stub()
 
     monkeypatch.setattr(nuclei_scan, "run_command", clean_exit)
     nuclei_scan.run_nuclei_scan(

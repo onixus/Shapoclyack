@@ -19,7 +19,9 @@ The evidence, per detector:
 
 ``nuclei``
     ``nuclei.json`` with no ``skipped_reason`` and a ``coverage`` block (written
-    since overlay v2) saying nuclei ran and exited 0, the endpoint among the
+    since overlay v2) saying nuclei ran and exited 0, that nuclei itself
+    reported loading at least the pinned templates the sensor had, that it
+    did not drop the endpoint as unresponsive, the endpoint among the
     URLs it was given -- the host spelled as the detector saw it, IP for IP and
     name for name, because a template that matched a virtual host proves
     nothing against the bare address -- and the detector's template among the
@@ -98,6 +100,12 @@ def _is_ip(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _endpoint(value: Any) -> tuple[str, int | None]:
+    """``(host, port)`` from nuclei's ``host:port`` / ``[v6]:port`` spelling."""
+    host, _, port = str(value).strip().rpartition(":")
+    return normalize_host(host), _port(port)
 
 
 def _port(value: Any) -> int | None:
@@ -210,8 +218,16 @@ class RunCoverage:
             return "template_missing"
         if ref in excluded:
             return "template_excluded"
-        if not ref or ref not in set(coverage.get("template_ids_requested") or []):
+        requested = set(coverage.get("template_ids_requested") or [])
+        if not ref or ref not in requested:
             return "template_not_pinned"
+        # nuclei's own count, not the index's: a template the index found but
+        # nuclei refused to parse is loaded by nobody.
+        loaded = coverage.get("templates_loaded")
+        if not isinstance(loaded, int):
+            return "nuclei_templates_loaded_not_recorded"
+        if loaded < len(requested - missing - excluded):
+            return "nuclei_templates_not_loaded"
         if port is None:
             return "no_port"
         targets = set()
@@ -223,6 +239,11 @@ class RunCoverage:
                 continue
         if not any((host, port) in targets for host in hosts):
             return "endpoint_not_targeted"
+        skipped = {_endpoint(value) for value in coverage.get("skipped_targets") or []}
+        if all((host, port) in skipped for host in hosts if (host, port) in targets):
+            # Given to nuclei and dropped by it as unresponsive (a refused
+            # port, or -max-host-error reached): never checked.
+            return "nuclei_target_skipped"
         return None
 
     def _pulse_gap(
