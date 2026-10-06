@@ -29,7 +29,14 @@ API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev
 ```
 
 Open <http://localhost:3000/login>. In development, `/api/*` is proxied to
-`API_PROXY_TARGET`.
+`API_PROXY_TARGET`. The command above assumes a plaintext local API
+(see [local PostgreSQL and API setup](../docs/development.md#python-environment)). For the kind stand
+created by `scripts/dev-up.sh`, use HTTPS and trust its development CA:
+
+```bash
+NODE_EXTRA_CA_CERTS="$PWD/../.dev-tls/ca.crt" \
+  API_PROXY_TARGET=https://127.0.0.1:8080 npm run dev
+```
 
 Alternatively, point the browser client directly at an API that permits the
 origin:

@@ -50,7 +50,7 @@ A restore drill uses a second namespace, not the source lab:
 `scripts/restore-clickhouse.sh --namespace shapoclyack-restore --backup-url …`
 (see [docs/disaster-recovery.md](../docs/disaster-recovery.md)).
 The overlay is Postgres + API + ClickHouse, with no NATS, no backup CronJobs
-and no NodePort (so it does not steal `http://127.0.0.1:8080`).
+and no NodePort (so it does not take the kind stand's port `8080`).
 
 ### A note on NET_RAW/NET_ADMIN and `allowPrivilegeEscalation`
 
@@ -495,8 +495,16 @@ kubectl apply -k k8s/shapoclyack/overlays/local-scan
 
 ```bash
 kubectl -n network-scan port-forward svc/shapoclyack-api 8080:8080
-# http://localhost:8080  — demo users: viewer / operator / admin (*-change-me)
+# Plaintext overlays: http://127.0.0.1:8080
+# kind-dev / kind-enrichment: https://127.0.0.1:8080
+# Demo users exist only with OCTO_ENV=dev: viewer / operator / admin (*-change-me)
 ```
+
+For `kind-dev` and `kind-enrichment`, `scripts/dev-up.sh` creates the TLS
+Secret and `.dev-tls/ca.crt`. Trust that CA in the browser; CLI health checks use
+`curl --cacert .dev-tls/ca.crt https://127.0.0.1:8080/api/health`. The NodePort
+already exposes this port, so no port-forward is needed on that path. See
+[the kind TLS guide](../docs/configuration.md#the-kind-stand).
 
 Or apply [`examples/ingress.example.yaml`](shapoclyack/examples/ingress.example.yaml).
 

@@ -15,6 +15,9 @@
 
 def PIP_CACHE = '-v shapoclyack-pip-cache:/root/.cache/pip'
 
+// Откуда Linux-узел берёт исходники: SCM-путь джобы локальный, маковский.
+def GITHUB_REPO = 'https://github.com/onixus/Shapoclyack.git'
+
 // Уникально на джобу, а не только на номер билда. В multibranch у каждой
 // ветки своя нумерация с #1, поэтому общий тег означал бы, что параллельные
 // сборки разных веток перетирают друг другу образ, а Smoke/E2E/Trivy молча
@@ -35,6 +38,9 @@ def PYTHON_IMAGES = [
 ]
 def POSTGRES_IMAGE = 'postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 def NATS_IMAGE = 'nats:2.10.24-alpine@sha256:fd981e2ab99000964bd15286054e61fcc445732fd907db039f260fc0b824b314'
+// Статический kubectl для рендера оверлеев на Linux-узле (стадия Tests);
+// версия та же, что в образе контроллера (jenkins-local/Dockerfile).
+def KUBECTL_IMAGE = 'registry.k8s.io/kubectl:v1.31.4@sha256:a519329b1bf8f7889e4c902f7147e6933d6a6e1dde25e8171973642396e31f0d'
 def NODE_IMAGE = 'node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2'
 def TRIVY_IMAGE = 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969'
 def SYFT_IMAGE = 'anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02'
@@ -49,194 +55,363 @@ pipeline {
     timestamps()
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    timeout(time: 90, unit: 'MINUTES')
+    // 150, а не 90: стадии на gaming-amd64 (~67 минут, pytest на VM вдвое
+    // медленнее мака) идут до стадий образа на маке (~31 минута в main #75),
+    // и вместе с ожиданием executor'а мака 90 минут обрывали зелёную сборку.
+    timeout(time: 150, unit: 'MINUTES')
   }
 
   stages {
-    stage('APEX contract') {
-      agent { docker { image PYTHON_IMAGES['3.12']; reuseNode true } }
-      steps {
-        sh 'python apex-contract/validate.py'
-      }
-    }
+    // Всё до тестов и веб-гейта включительно идёт на Linux-узле gaming-amd64
+    // (VM Fedor), а не на маке. На маке две ячейки pytest по ~26 минут делили
+    // Docker-VM и VirtioFS со всеми остальными сборками контроллера: стадия
+    // Tests занимала ~54 минуты из 85 (main #75), а ветки часами стояли в
+    // очереди за executor'ами мака ещё до первой стадии.
+    //
+    // Исходники Fedor берёт с GitHub, а не со stash'а мака: stash требует
+    // executor мака, а очередь к ним и была проблемой. SCM-путь джобы —
+    // локальный /Users/onixus/Git/Shapoclyack, которого на Linux нет, поэтому
+    // implicit checkout здесь выключен, а ревизия та же самая: scm.extensions
+    // multibranch-джобы несут SpecificRevisionBuildChooser с хешем, который
+    // собирает Jenkins, и checkout с GitHub берёт ровно его. Значит, коммит
+    // должен быть запушен: ветка, которая есть только локально, на этом узле
+    // упадёт на checkout — громко, а не зелёным прогоном чужой ревизии.
+    //
+    // Стадии образа, E2E, Trivy, SBOM и нагрузки пока на маке (native arm64,
+    // daemon cache), со своим implicit checkout из локального репозитория.
 
-    stage('Lint (ruff)') {
-      agent { docker { image PYTHON_IMAGES['3.12']; args PIP_CACHE; reuseNode true } }
+    // Узел живёт, только пока включены винда и VM. Без этой стадии
+    // выключенная VM означала бы, что сборка молча висит в очереди до
+    // общего таймаута в 90 минут. Здесь на то, чтобы узел взял сборку, есть
+    // 10 минут, после чего она падает (FAILURE, не ABORTED) с сообщением,
+    // что искать. Таймаут и node — в script, а не через agent и options:
+    // post стадии с agent выполняется на её узле и без узла не печатает
+    // ничего (билд #3 этой ветки закончился голым ABORTED). Запасного пути на
+    // мак нет намеренно: сборка, которая без узла позеленела бы без тестов,
+    // хуже красной.
+    stage('Linux node') {
       steps {
-        // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
-        // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
-        // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
-        // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
-        sh 'scripts/ci-lint.sh --install'
-      }
-    }
-
-    // Quality gate. Стоит до тестов и сборки образа намеренно: находка
-    // уровня ERROR роняет билд за пару минут, а не после часа сборки.
-    // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
-    // эта стадия была единственной, которой в reference workflow не было.
-    // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
-    // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
-    // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
-    stage('SAST (semgrep)') {
-      agent any
-      steps {
-        sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
-      }
-      post {
-        always {
-          archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true
-        }
-      }
-    }
-
-    stage('Tests') {
-      // Матрица развёрнута в последовательный цикл намеренно. Параллельные
-      // ячейки получали каждая свой воркспейс и клонировали репозиторий
-      // одновременно, и этот клон перемежающимся образом падал с
-      // "inflate: data stream error" ещё на 154 объектах: git fsck исходного
-      // репозитория чист, мелкий клон не помог, а в изоляции (хост и контейнер,
-      // bind-mount и ФС контейнера, параллельно и по одному) 12 попыток прошли
-      // без единого сбоя. Один агент — один воркспейс — один чекаут, и целый
-      // класс гонок исчезает. Цена — около трёх минут: прогоны идут по очереди.
-      agent any
-      steps {
-        // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
-        // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
-        // python:slim нет kubectl — 79 из них годами тихо пропускались,
-        // и восемь мутаций манифестов прошли ревью #338. kubectl есть на
-        // самом узле (им пользуется стадия Kustomize): рендерим здесь и
-        // отдаём каталог в контейнер через OCTO_K8S_RENDER_DIR. Под
-        // OCTO_REQUIRE_INTEGRATION=1 без рендера эти тесты теперь падают.
-        sh 'rm -rf .k8s-render && OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh'
         script {
-          for (PY in ['3.11', '3.12']) {
-            try {
-              // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
-              // 127.0.0.1 из GitHub Actions тут не работает — у каждого
-              // контейнера свой netns, общего loopback с раннером нет.
-              def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
-              sh "docker network create ${net}"
-              try {
-                // Данные — в tmpfs, не в анонимном томе: withRun снимает
-                // контейнер без -v, и каждый прогон оставлял в Docker-VM том
-                // на ~1.5 ГБ; 33 таких тома и забили диск (DiskFull в
-                // билде feat/org-profile-promoted-scope #1, 2026-09-04). size=
-                // обязателен: без него tmpfs растёт до половины RAM VM и
-                // разросшаяся база уронит OOM-killer'ом что попало вместо
-                // внятной ошибки записи postgres.
-                docker.image(POSTGRES_IMAGE).withRun(
-                  "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
-                  "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
-                ) { pg ->
-                  // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
-                  // причина, по которой в GHA это был ручной docker run.
-                  docker.image(NATS_IMAGE).withRun(
-                    "--network ${net} --network-alias nats",
-                    "--jetstream --store_dir=/data --http_port=8222"
-                  ) { nats ->
-                    // --init: PID 1 in a docker.inside container is `cat`, which
-                    // never reaps, so every process orphaned by a test stays a
-                    // zombie. A zombie is still a member of its process group,
-                    // and update-agent.sh waits for the sensor's group to
-                    // empty (kill -0 -- -PGID) — on a host systemd reaps it at
-                    // once, here it never goes, and nine signal tests in
-                    // tests/test_sensor_bundle.py ran into their 20 s limit.
-                    docker.image(PYTHON_IMAGES[PY]).inside("--init --network ${net} ${PIP_CACHE}") {
-                      withEnv([
-                        'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
-                        'OCTO_NATS_URL=nats://nats:4222',
-                        // Стримы этого брокера живут минуты и на слое
-                        // контейнера, без тома. Продовые дефолты (10 ГБ для
-                        // INGEST, 1 ГБ для EVENTS) JetStream резервирует
-                        // заранее и отвечает 'insufficient storage resources
-                        // available', когда на хосте столько не осталось, —
-                        // отчего падал не тот тест, который что-то проверяет.
-                        'OCTO_NATS_INGEST_MAX_BYTES=268435456',
-                        'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
-                        // Отрендерено выше, до контейнера; путь — от корня
-                        // репозитория, который смонтирован тем же путём.
-                        'OCTO_K8S_RENDER_DIR=.k8s-render',
-                      ]) {
-                        sh '''
-                          set -eu
-                          # Без apt намеренно: psycopg[binary] везёт libpq в
-                          # колесе, компилятор не нужен, а ожидание сервисов
-                          # сделано на stdlib. Раньше тут стоял apt-get, и
-                          # матрица падала, когда deb.debian.org не ответил.
-                          pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
-
-                          python -m compileall scanner api tests agent
-
-                          echo "[ci] waiting for postgres and jetstream"
-                          for i in $(seq 1 60); do
-                            python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
-                            sleep 1
-                          done
-                          for i in $(seq 1 60); do
-                            python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
-                            sleep 1
-                          done
-
-                          alembic -c api/db/alembic.ini upgrade head
-
-                          # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
-                          # общем с ci.yml. Там же выставляется
-                          # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
-                          # отличает прогнанные Postgres-наборы от пропущенных
-                          # целиком, а это большая часть всех тестов.
-                          JUNIT_XML=junit-''' + PY + '''.xml \
-                          COVERAGE_XML=coverage-''' + PY + '''.xml \
-                            scripts/ci-pytest.sh
-                        '''
-                      }
-                    }
-                  }
-                }
-              } finally {
-                sh "docker network rm ${net} || true"
+          try {
+            timeout(time: 10, unit: 'MINUTES') {
+              node('gaming-amd64') {
+                sh 'echo "[ci] node: $(uname -srm), docker $(docker version --format {{.Server.Version}})"'
               }
-            } finally {
-              // В finally, а не после цикла: падение на 3.11 не должно съедать
-              // отчёт, который уже написан.
-              junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
-              archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
             }
+          } catch (err) {
+            // Ручной Abort сюда тоже попадает, но результат сборки от error
+            // не улучшится: ABORTED хуже FAILURE и остаётся.
+            error "gaming-amd64 did not take the build within 10 minutes (${err}): is VM Fedor running? " +
+              'See the gaming-amd64 section of the local-jenkins notes (VBoxManage list runningvms on win116).'
           }
         }
       }
     }
 
-    stage('Web dashboard') {
-      agent { docker { image NODE_IMAGE; args '-v shapoclyack-npm-cache:/root/.npm'; reuseNode true } }
-      steps {
-        // npm ci must not unpack node_modules into the workspace: on macOS that
-        // is a VirtioFS bind mount, which drops writes silently. Build #25 died
-        // in eslint on a 60 KB run of NUL bytes inside
-        // node_modules/language-subtag-registry/data/json/registry.json — the
-        // hole was page-aligned and the file kept its correct size, so npm saw
-        // nothing to report. #24 had passed on that same revision, which is how
-        // the same commit produced both a green and a red build.
-        //
-        // Building on the container's own filesystem avoids the mount entirely.
-        // A named volume over node_modules would too, but it has to be pinned to
-        // the workspace path, and parallel stages get their own (shapoclyack@2)
-        // — two concurrent builds would then share one node_modules.
-        //
-        // Nothing downstream consumes web-next/out from the workspace: both
-        // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
-        // web-build stage. This stage is a gate, not a producer.
-        sh '''
-          set -eu
-          BUILD_DIR=/tmp/web-next-build
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
-          cp -R web-next/. "$BUILD_DIR/"
-          rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
-          # Сами шаги (ci/lint/typecheck/test/build) — в scripts/ci-web.sh,
-          # общем с ci.yml; здесь остаётся только копия мимо VirtioFS.
-          scripts/ci-web.sh "$BUILD_DIR"
-        '''
+    stage('Checks on Linux') {
+      agent { label 'gaming-amd64' }
+      // timeout в options стадии действует до входа в agent, то есть и на
+      // ожидание узла: если хост упал между пробой выше и этой стадией,
+      // сборка не висит в очереди до общего таймаута. 85 минут — ~67 минут
+      // работы стадии плюс запас.
+      options {
+        skipDefaultCheckout()
+        timeout(time: 85, unit: 'MINUTES')
+      }
+      stages {
+        stage('Checkout from GitHub') {
+          steps {
+            script {
+              // Контейнеры на этом узле идут под root (-u 0:0), как и на маке,
+              // где root — сам контроллер: pip и npm пишут в системные каталоги
+              // образа и в кэши /root/.cache/pip, /root/.npm. На Linux-агенте
+              // docker.inside по умолчанию подставляет uid агента, и pip упал
+              // бы на правах. Цена — root-файлы в воркспейсе (__pycache__,
+              // отчёты), которые агент сам не удалит, поэтому воркспейс чистит
+              // тот же образ под root, а не deleteDir(). Чистый воркспейс
+              // обязателен: checkout не удаляет неотслеживаемое, и удалённый в
+              // ревизии тест иначе прогонялся бы из прошлого билда.
+              //
+              // У этого шага есть и вторая роль. На Fedor включён SELinux, и
+              // docker run -v без :z не читает домашний каталог агента
+              // (Permission denied). docker.inside монтирует воркспейс с ,z и
+              // перемечает его в container_file_t, а файлы, созданные потом
+              // checkout'ом, метку каталога наследуют. На этом держится
+              // scripts/ci-semgrep.sh, который монтирует воркспейс без :z.
+              docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
+                sh 'find . -mindepth 1 -delete'
+              }
+              // retry — на гонку с push'ем: post-commit хук запускает сборку
+              // сразу после локального коммита, а на GitHub он попадает
+              // секундами позже.
+              retry(3) {
+                try {
+                  checkout([
+                    $class: 'GitSCM',
+                    branches: scm.branches,
+                    extensions: scm.extensions,
+                    userRemoteConfigs: [[url: GITHUB_REPO]],
+                  ])
+                } catch (err) {
+                  echo "[ci] checkout from ${GITHUB_REPO} failed (is the commit pushed?): ${err}"
+                  sleep 30
+                  throw err
+                }
+              }
+              sh 'echo "[ci] revision $(git rev-parse HEAD)"'
+            }
+          }
+        }
+
+        stage('APEX contract') {
+          steps {
+            script {
+              docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
+                sh 'python apex-contract/validate.py'
+              }
+            }
+          }
+        }
+
+        stage('Lint (ruff)') {
+          steps {
+            // Команда, охват и пин — в scripts/ci-lint.sh, общем с ci.yml и обоими
+            // README. Раньше копий было три, и все разошлись: здесь ruff 0.15.22,
+            // в ci.yml — 0.15.20, в README — свой вызов ruff по всему дереву,
+            // и ни одна не проверяла agent/. Версия — из requirements-dev.txt.
+            script {
+              docker.image(PYTHON_IMAGES['3.12']).inside("-u 0:0 ${PIP_CACHE}") {
+                sh 'scripts/ci-lint.sh --install'
+              }
+            }
+          }
+        }
+
+        // Quality gate. Стоит до тестов и сборки образа намеренно: находка
+        // уровня ERROR роняет билд за пару минут, а не после часа сборки.
+        // Оба прохода — в scripts/ci-semgrep.sh, который теперь зовёт и ci.yml:
+        // эта стадия была единственной, которой в reference workflow не было.
+        // Корень монтирования передаём явно: -v резолвит демон хоста, поэтому при
+        // переносе стадии внутрь docker{} путь внутри контейнера смонтировал бы
+        // пустоту, а semgrep вернул бы зелёное на нуле файлов. Скрипт это проверяет.
+        stage('SAST (semgrep)') {
+          steps {
+            sh 'scripts/ci-semgrep.sh "$WORKSPACE"'
+          }
+          post {
+            always {
+              archiveArtifacts artifacts: 'semgrep.json', allowEmptyArchive: true
+            }
+          }
+        }
+
+        stage('Tests') {
+          // Матрица снова параллельная, но без второго клона. На маке
+          // параллельные ячейки получали каждая свой воркспейс и клонировали
+          // репозиторий одновременно, и этот клон перемежающимся образом падал
+          // с "inflate: data stream error" ещё на 154 объектах: git fsck
+          // исходного репозитория чист, мелкий клон не помог, а в изоляции
+          // (хост и контейнер, bind-mount и ФС контейнера, параллельно и по
+          // одному) 12 попыток прошли без единого сбоя. Поэтому матрица тогда
+          // стала циклом: один воркспейс — один чекаут. Здесь чекаут тоже один
+          // (стадия выше), а ячейки получают дерево через git archive.
+          steps {
+            // Контрактные тесты k8s (tests/test_k8s_pod_security.py,
+            // tests/test_k8s_topology.py) рендерят каждый оверлей, а в
+            // python:slim нет kubectl — 79 из них годами тихо пропускались,
+            // и восемь мутаций манифестов прошли ревью #338. На Fedor kubectl
+            // не установлен, а образ registry.k8s.io/kubectl — distroless, без
+            // bash для скрипта. Поэтому статический бинарь берётся из
+            // запиненного образа (та же версия, что в образе контроллера для
+            // стадии Kustomize), рендер идёт на самом узле, а каталог уходит
+            // в контейнер через OCTO_K8S_RENDER_DIR. Бинарь — в @tmp, не в
+            // воркспейсе: тесты обходят дерево репозитория. Под
+            // OCTO_REQUIRE_INTEGRATION=1 без рендера эти тесты падают.
+            sh """
+              set -eu
+              BIN="\$WORKSPACE@tmp/ci-bin"
+              rm -rf "\$BIN" .k8s-render
+              mkdir -p "\$BIN"
+              docker rm -f kubectl-${CI_SLUG} >/dev/null 2>&1 || true
+              docker create --name kubectl-${CI_SLUG} ${KUBECTL_IMAGE} >/dev/null
+              trap 'docker rm -f kubectl-${CI_SLUG} >/dev/null' EXIT
+              docker cp kubectl-${CI_SLUG}:/bin/kubectl "\$BIN/kubectl"
+              PATH="\$BIN:\$PATH" OCTO_K8S_RENDER_DIR=.k8s-render k8s/scripts/validate-kustomize.sh
+            """
+            script {
+              // Ячейки идут параллельно, каждая в своём каталоге на этом же
+              // executor'е. Одна ячейка — это один поток pytest (~1 vCPU) и
+              // ~0.6 ГБ с postgres и nats; на 6 vCPU / 15 ГБ Fedor две
+              // помещаются с запасом (замер: ~3.5 ГБ занято, 12 свободно). По
+              // очереди не уложиться: одна ячейка здесь идёт ~53 минуты, вдвое
+              // дольше, чем на маке, и две подряд пробили бы общий таймаут.
+              // Каталоги разные, потому что cwd у pytest общий с .coverage и
+              // .pytest_cache. Дерево — git archive уже сделанного checkout'а,
+              // а не второй клон: одновременные клоны и роняли параллельную
+              // матрицу на маке (см. комментарий стадии выше).
+              def src = env.WORKSPACE
+              def cell = { PY ->
+                ws("${src}@py${PY}") {
+                  docker.image(PYTHON_IMAGES['3.12']).inside('-u 0:0') {
+                    sh 'find . -mindepth 1 -delete'
+                  }
+                  sh "git -C '${src}' archive HEAD | tar -x && cp -R '${src}/.k8s-render' ."
+                  try {
+                    // Своя сеть на прогон: postgres и nats резолвятся по alias'ам.
+                    // 127.0.0.1 из GitHub Actions тут не работает — у каждого
+                    // контейнера свой netns, общего loopback с раннером нет.
+                    def net = "shapoclyack-ci-${CI_SLUG}-${PY}"
+                    sh "docker network create ${net}"
+                    try {
+                      // Данные — в tmpfs, не в анонимном томе: withRun снимает
+                      // контейнер без -v, и каждый прогон оставлял в Docker-VM том
+                      // на ~1.5 ГБ; 33 таких тома и забили диск (DiskFull в
+                      // билде feat/org-profile-promoted-scope #1, 2026-09-04). size=
+                      // обязателен: без него tmpfs растёт до половины RAM VM и
+                      // разросшаяся база уронит OOM-killer'ом что попало вместо
+                      // внятной ошибки записи postgres.
+                      docker.image(POSTGRES_IMAGE).withRun(
+                        "--network ${net} --network-alias pg --tmpfs /var/lib/postgresql/data:size=2g " +
+                        "-e POSTGRES_DB=shapoclyack -e POSTGRES_USER=octo -e POSTGRES_PASSWORD=octo-ci-secret"
+                      ) { pg ->
+                        // NATS требует CMD-аргументов (--jetstream и т.д.) — ровно та
+                        // причина, по которой в GHA это был ручной docker run.
+                        docker.image(NATS_IMAGE).withRun(
+                          "--network ${net} --network-alias nats",
+                          "--jetstream --store_dir=/data --http_port=8222"
+                        ) { nats ->
+                          // --init: docker.inside держит контейнер на `cat` как
+                          // PID 1, а cat не подбирает осиротевших детей. Тесты
+                          // update-agent.sh убивают группу верификатора, отцепленного
+                          // setsid'ом, и ждут, пока она исчезнет (`kill -0 -- -PGID`):
+                          // зомби на это отвечают «жив», и скрипт висел до таймаута
+                          // теста. На Fedor: без --init 4 failed за 85 с, с ним 4 passed
+                          // за 9.5 с. На хосте сенсора их подбирает systemd.
+                          docker.image(PYTHON_IMAGES[PY]).inside("--init -u 0:0 --network ${net} ${PIP_CACHE}") {
+                            withEnv([
+                              'OCTO_POSTGRES_URL=postgresql+psycopg://octo:octo-ci-secret@pg:5432/shapoclyack',
+                              'OCTO_NATS_URL=nats://nats:4222',
+                              // Стримы этого брокера живут минуты и на слое
+                              // контейнера, без тома. Продовые дефолты (10 ГБ для
+                              // INGEST, 1 ГБ для EVENTS) JetStream резервирует
+                              // заранее и отвечает 'insufficient storage resources
+                              // available', когда на хосте столько не осталось, —
+                              // отчего падал не тот тест, который что-то проверяет.
+                              'OCTO_NATS_INGEST_MAX_BYTES=268435456',
+                              'OCTO_NATS_EVENTS_MAX_BYTES=134217728',
+                              // Отрендерено выше, до контейнера; путь — от корня
+                              // репозитория, который смонтирован тем же путём.
+                              'OCTO_K8S_RENDER_DIR=.k8s-render',
+                            ]) {
+                              sh '''
+                                set -eu
+                                # Без apt намеренно: psycopg[binary] везёт libpq в
+                                # колесе, компилятор не нужен, а ожидание сервисов
+                                # сделано на stdlib. Раньше тут стоял apt-get, и
+                                # матрица падала, когда deb.debian.org не ответил.
+                                pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
+
+                                # Сам набор — не под root. pip ставит в системный site-packages
+                                # образа и поэтому идёт под root, а тесты — от владельца
+                                # воркспейса, то есть агента, как на раннере GitHub. Под root
+                                # test_sensor_bundle падал на собственной предпосылке (дерево
+                                # установки чужого аккаунта не создать) — и на маке тоже.
+                                CI_UID=$(stat -c %u .)
+                                CI_GID=$(stat -c %g .)
+                                if [ "$CI_UID" = 0 ]; then
+                                  echo "[ci] the workspace is owned by root; refusing to run the suite as root" >&2
+                                  exit 1
+                                fi
+                                mkdir -p /tmp/ci-home
+                                chown "$CI_UID:$CI_GID" /tmp/ci-home
+                                as_agent() {
+                                  HOME=/tmp/ci-home setpriv --reuid="$CI_UID" --regid="$CI_GID" --clear-groups "$@"
+                                }
+
+                                as_agent python -m compileall -q scanner api tests agent
+
+                                echo "[ci] waiting for postgres and jetstream"
+                                for i in $(seq 1 60); do
+                                  python -c "import socket;socket.create_connection(('pg',5432),1)" 2>/dev/null && break
+                                  sleep 1
+                                done
+                                for i in $(seq 1 60); do
+                                  python -c "import urllib.request;urllib.request.urlopen('http://nats:8222/healthz',timeout=1)" 2>/dev/null && break
+                                  sleep 1
+                                done
+
+                                alembic -c api/db/alembic.ini upgrade head
+
+                                # Прогон и гейт покрытия — в scripts/ci-pytest.sh,
+                                # общем с ci.yml. Там же выставляется
+                                # OCTO_REQUIRE_INTEGRATION=1: без него exit 0 не
+                                # отличает прогнанные Postgres-наборы от пропущенных
+                                # целиком, а это большая часть всех тестов.
+                                JUNIT_XML=junit-''' + PY + '''.xml \
+                                COVERAGE_XML=coverage-''' + PY + '''.xml \
+                                  as_agent scripts/ci-pytest.sh
+                              '''
+                            }
+                          }
+                        }
+                      }
+                    } finally {
+                      sh "docker network rm ${net} || true"
+                    }
+                  } finally {
+                    // В finally ячейки: её падение не должно съедать отчёт,
+                    // который уже написан.
+                    junit allowEmptyResults: true, testResults: "junit-${PY}.xml"
+                    archiveArtifacts artifacts: "coverage-${PY}.xml", allowEmptyArchive: true
+                  }
+                }
+              }
+              def cells = [:]
+              for (PY in ['3.11', '3.12']) {
+                def py = PY
+                cells["Python ${py}"] = { cell(py) }
+              }
+              parallel cells
+            }
+          }
+        }
+
+        stage('Web dashboard') {
+          steps {
+            // npm ci must not unpack node_modules into the workspace: on macOS that
+            // is a VirtioFS bind mount, which drops writes silently. Build #25 died
+            // in eslint on a 60 KB run of NUL bytes inside
+            // node_modules/language-subtag-registry/data/json/registry.json — the
+            // hole was page-aligned and the file kept its correct size, so npm saw
+            // nothing to report. #24 had passed on that same revision, which is how
+            // the same commit produced both a green and a red build.
+            //
+            // Building on the container's own filesystem avoids the mount entirely.
+            // On gaming-amd64 the workspace is a plain local filesystem and the copy
+            // is no longer strictly needed; it stays so the stage behaves the same
+            // on any node, and it keeps root-owned node_modules out of the
+            // workspace.
+            //
+            // Nothing downstream consumes web-next/out from the workspace: both
+            // Dockerfile.allinone and Dockerfile.api run their own npm ci in a
+            // web-build stage. This stage is a gate, not a producer.
+            script {
+              docker.image(NODE_IMAGE).inside('-u 0:0 -v shapoclyack-npm-cache:/root/.npm') {
+                sh '''
+                  set -eu
+                  BUILD_DIR=/tmp/web-next-build
+                  rm -rf "$BUILD_DIR"
+                  mkdir -p "$BUILD_DIR"
+                  cp -R web-next/. "$BUILD_DIR/"
+                  rm -rf "$BUILD_DIR/node_modules" "$BUILD_DIR/.next"
+                  # Сами шаги (ci/lint/typecheck/test/build) — в scripts/ci-web.sh,
+                  # общем с ci.yml; здесь остаётся только копия мимо VirtioFS.
+                  scripts/ci-web.sh "$BUILD_DIR"
+                '''
+              }
+            }
+          }
+        }
       }
     }
 

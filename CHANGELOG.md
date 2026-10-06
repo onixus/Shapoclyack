@@ -4,6 +4,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Documentation
+
+- Refresh the kind quick start and remediation demo for HTTPS and the generated
+  development CA; document the Node CA for the dev proxy, tenant-scoped run
+  paths, PostgreSQL setup and narrowed coverage runs. Align architecture and
+  network requirements with HTTPS result uploads and broker-independent job
+  claims, qualify asset identity correlation, and distinguish current `main`
+  from the published release and pending Lariska inventory/update work.
+
 ### Added
 
 - **Web fingerprinting from a catalogue: versions, CPE and exposed consoles
@@ -838,6 +847,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Jenkins runs everything up to the web gate on the Linux node
+  `gaming-amd64`.** Checkout, APEX contract, Ruff, Semgrep, the Python 3.11 and
+  3.12 test cells and the web dashboard gate now run on the Fedora VM instead
+  of the Mac controller, so a branch no longer waits for a Mac executor before
+  its first check. The node checks out the exact revision Jenkins builds from
+  GitHub — the multibranch job's own path exists only on the Mac — so a commit
+  has to be pushed before its build can pass. A 10-minute `Linux node` stage
+  fails the build when the VM is off rather than letting it sit in the queue;
+  there is no fallback that skips the tests. kubectl for the k8s render comes
+  from a pinned `registry.k8s.io/kubectl` image, and the two Python cells run
+  in parallel, each in its own directory filled from the one checkout. Image,
+  E2E, Trivy, SBOM and load stages stay on the Mac.
+
 - **`PUT /api/tenants/{id}/quota` requires both limits.** `max_assets` and
   `max_scans_per_month` defaulted to `null` — unlimited — when omitted, so a
   `PUT` naming one silently lifted the other, despite the schema saying the
@@ -1256,6 +1278,13 @@ All notable changes to Shapoclyack are documented in this file.
   deletion requests fail closed. Concurrent release writes preserve signed
   promotion and per-format sequence floors; downgrade refuses to discard builds.
 
+- **The Jenkins test suite runs as the workspace's owner, not root.** pytest now
+  runs under `setpriv` as on a GitHub runner, and the `update-agent.sh` tests
+  start the script through a launcher that resets SIGHUP/SIGINT/SIGQUIT/SIGTERM,
+  which a Jenkins step otherwise hands down already ignored.
+  `test_the_heartbeat_thread_survives_a_control_plane_blip` ends its fake scan
+  on the second heartbeat failure instead of after a fixed 0.25 s, which two
+  0.05 s ticks did not always fit into on a loaded node.
 - **A verification re-scan closes a finding only when it demonstrably looked
   ([#451](https://github.com/onixus/Shapoclyack/issues/451),
   [#450](https://github.com/onixus/Shapoclyack/issues/450)).**
