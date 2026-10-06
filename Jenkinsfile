@@ -227,7 +227,9 @@ pipeline {
               // Ячейки идут параллельно, каждая в своём каталоге на этом же
               // executor'е. Одна ячейка — это один поток pytest (~1 vCPU) и
               // ~0.6 ГБ с postgres и nats; на 6 vCPU / 15 ГБ Fedor две
-              // помещаются с запасом, а по очереди стадия шла почти час.
+              // помещаются с запасом (замер: ~3.5 ГБ занято, 12 свободно). По
+              // очереди не уложиться: одна ячейка здесь идёт ~53 минуты, вдвое
+              // дольше, чем на маке, и две подряд пробили бы общий таймаут.
               // Каталоги разные, потому что cwd у pytest общий с .coverage и
               // .pytest_cache. Дерево — git archive уже сделанного checkout'а,
               // а не второй клон: одновременные клоны и роняли параллельную
@@ -287,7 +289,24 @@ pipeline {
                                 # матрица падала, когда deb.debian.org не ответил.
                                 pip install --quiet --require-hashes --only-binary=:all: -r requirements-dev.lock
 
-                                python -m compileall scanner api tests agent
+                                # Сам набор — не под root. pip ставит в системный site-packages
+                                # образа и поэтому идёт под root, а тесты — от владельца
+                                # воркспейса, то есть агента, как на раннере GitHub. Под root
+                                # test_sensor_bundle падал на собственной предпосылке (дерево
+                                # установки чужого аккаунта не создать) — и на маке тоже.
+                                CI_UID=$(stat -c %u .)
+                                CI_GID=$(stat -c %g .)
+                                if [ "$CI_UID" = 0 ]; then
+                                  echo "[ci] the workspace is owned by root; refusing to run the suite as root" >&2
+                                  exit 1
+                                fi
+                                mkdir -p /tmp/ci-home
+                                chown "$CI_UID:$CI_GID" /tmp/ci-home
+                                as_agent() {
+                                  HOME=/tmp/ci-home setpriv --reuid="$CI_UID" --regid="$CI_GID" --clear-groups "$@"
+                                }
+
+                                as_agent python -m compileall -q scanner api tests agent
 
                                 echo "[ci] waiting for postgres and jetstream"
                                 for i in $(seq 1 60); do
@@ -308,7 +327,7 @@ pipeline {
                                 # целиком, а это большая часть всех тестов.
                                 JUNIT_XML=junit-''' + PY + '''.xml \
                                 COVERAGE_XML=coverage-''' + PY + '''.xml \
-                                  scripts/ci-pytest.sh
+                                  as_agent scripts/ci-pytest.sh
                               '''
                             }
                           }

@@ -670,6 +670,19 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Changed
 
+- **Jenkins runs everything up to the web gate on the Linux node
+  `gaming-amd64`.** Checkout, APEX contract, Ruff, Semgrep, the Python 3.11 and
+  3.12 test cells and the web dashboard gate now run on the Fedora VM instead
+  of the Mac controller, so a branch no longer waits for a Mac executor before
+  its first check. The node checks out the exact revision Jenkins builds from
+  GitHub — the multibranch job's own path exists only on the Mac — so a commit
+  has to be pushed before its build can pass. A 10-minute `Linux node` stage
+  fails the build when the VM is off rather than letting it sit in the queue;
+  there is no fallback that skips the tests. kubectl for the k8s render comes
+  from a pinned `registry.k8s.io/kubectl` image, and the two Python cells run
+  in parallel, each in its own directory filled from the one checkout. Image,
+  E2E, Trivy, SBOM and load stages stay on the Mac.
+
 - **`PUT /api/tenants/{id}/quota` requires both limits.** `max_assets` and
   `max_scans_per_month` defaulted to `null` — unlimited — when omitted, so a
   `PUT` naming one silently lifted the other, despite the schema saying the
@@ -1078,6 +1091,18 @@ All notable changes to Shapoclyack are documented in this file.
   dependency; refresh the snapshot with `scripts/fetch-public-suffix-list.sh`.
 
 ### Fixed
+
+- **The Jenkins test suite runs as the agent's account, not root, and the
+  update-agent.sh signal tests no longer inherit Jenkins' ignored signals.**
+  Eleven `tests/test_sensor_bundle.py` tests had failed on every Jenkins build
+  since the signed sensor bundle landed, on the Mac as well. One asserts that
+  root refuses a tree another account owns, which cannot be set up as root;
+  the rest send `^C` or a hangup to the script, and a Jenkins step runs under
+  `nohup` in the background, so SIGINT and SIGHUP reached bash already ignored
+  and could not be trapped. pytest now runs under `setpriv` as the workspace's
+  owner, as on a GitHub runner, and the tests start the script through a
+  launcher that resets those signals, as `tests/test_disaster_recovery.py`
+  already did.
 
 - **`test_window_decays_without_operator_intervention` no longer depends on how
   fast bcrypt runs.** It used a real one-second limiter window, so the lockout

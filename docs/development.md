@@ -298,11 +298,12 @@ What still differs, on purpose:
 
 | | Jenkins | `ci.yml` |
 |---|---|---|
-| Python matrix | sequential loop, one agent | parallel `strategy.matrix` |
+| Python matrix | parallel, one checkout on `gaming-amd64`, run as the agent's account | parallel `strategy.matrix` |
 | Image build | native `linux/arm64`, daemon cache | `docker/build-push-action`, `type=gha` cache |
 | Load test | `tests/load/run.sh` from the Jenkinsfile | `.github/actions/synthetic-load-test` |
 | `SSH deploy (live sshd)` | present | **absent** — no ported equivalent |
 | web-next build directory | copied off the VirtioFS workspace | built in place |
+| Where checks run | checkout to web gate on `gaming-amd64` (Fedora VM), image stages on the Mac | GitHub runners |
 
 So the stage lists are close but not identical: compare them before treating a
 run of one as a run of the other.
@@ -354,17 +355,47 @@ workspace, which is already per job. This is the same class as the shared image
 tag: one resource, many jobs. Before adding any named volume, ask what happens
 when two branches build at once.
 
-**The Python matrix runs sequentially, on one Jenkins agent** (a CI executor,
-not a Shapoclyack sensor or endpoint Agent). When the two cells ran in
-parallel they each took their own workspace and cloned the repository at the same
-time, and that clone failed intermittently with `inflate: data stream error`,
-taking the whole build down while the other cell passed. What it is *not*: the
-source repository (`git fsck` clean) and not pack size — it recurred at 154
-objects with `depth 1` in effect. Twelve controlled attempts across host and
-container, bind-mounted and container filesystem, parallel and serial, produced
-no failure at all, so **the cause is still unidentified**. One agent means one
-workspace and one checkout, which removes the concurrent clone instead of
-retrying around it; the cost is about three minutes.
+**Checkout, lint, SAST, tests and the web gate run on `gaming-amd64`**, the
+Fedora VM, not on the Mac controller, where two 26-minute pytest cells shared
+the Docker VM and VirtioFS with every other build and branches queued for an
+executor before their first stage. The job's SCM path is the Mac working copy,
+which does not exist on Linux, so those stages skip the implicit checkout and
+check out the same revision from GitHub (`scm.branches` and `scm.extensions`
+carry it): **a commit has to be pushed** before its build can get past
+`Checkout from GitHub`. The VM is up only while the Windows host is. The
+`Linux node` stage gives it 10 minutes and then fails the build; nothing falls
+back to the Mac, because a green build that skipped the tests is worse than a
+red one. kubectl is not installed there: the Tests stage copies it out of a
+pinned `registry.k8s.io/kubectl` image for the k8s render.
+
+**The Python matrix runs in parallel, from one checkout.** When the two cells
+ran in parallel on the Mac they each took their own workspace and cloned the
+repository at the same time, and that clone failed intermittently with
+`inflate: data stream error`, taking the whole build down while the other cell
+passed. What it is *not*: the source repository (`git fsck` clean) and not pack
+size — it recurred at 154 objects with `depth 1` in effect. Twelve controlled
+attempts across host and container, bind-mounted and container filesystem,
+parallel and serial, produced no failure at all, so **the cause is still
+unidentified**. The matrix became a sequential loop then. On `gaming-amd64`
+there is still one clone; each cell gets its own directory (`<workspace>@py3.x`)
+filled with `git archive` of it, because the cells share nothing else and
+`.coverage` lives in pytest's working directory.
+
+**The suite runs as the agent's account, not root.** pip installs into the
+image's system `site-packages` as root, then `setpriv` drops to the
+workspace's owner for `compileall` and `scripts/ci-pytest.sh`, which is what a
+GitHub runner does. Some tests set up trees another account owns and cannot
+run as root; the stage refuses to run when the workspace is owned by root.
+Root-owned leftovers (pip's, the `find` cleanup's) are removed by the same
+image as root at the start of the next build, not by `deleteDir()`.
+
+**A Jenkins step starts with SIGHUP and SIGINT ignored** (durable-task runs it
+under `nohup`, in the background), and processes inherit that. A shell cannot
+trap a signal that was ignored when it started, so a test that sends `^C` or a
+hangup to a script has to reset the disposition in a launcher first — see
+`_UPDATE_SCRIPT` in `tests/test_sensor_bundle.py` and the restore test in
+`tests/test_disaster_recovery.py`. Such a test passes on a terminal and fails
+only in Jenkins.
 
 Clones are also shallow (`depth 1`). That was tried as a fix for the above and
 did not work — it is kept only because it is faster. If a stage ever needs real
