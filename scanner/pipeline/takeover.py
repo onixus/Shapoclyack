@@ -29,10 +29,11 @@ suffix list:
    environment's proxy settings are ignored (a proxy would resolve the name
    again and the pin would mean nothing). TLS is not verified: an unclaimed
    resource is exactly the case where the provider has no certificate for the
-   name. ``safe_http`` is deliberately not used -- it refuses private
-   addresses, and an in-scope name on a split-horizon network legitimately
-   resolves to one. The address is one the run already resolved for a name in
-   the tenant's scope and port-scans anyway; ``domain_monitor`` additionally
+   name. ``safe_http``'s client is not used: it fetches by URL, and this
+   request needs an IP pinned under someone else's ``Host`` and SNI. Its
+   address rule is: ``domain_monitor`` hands this module only addresses
+   ``safe_http.is_public_address`` accepts -- a private or sinkhole answer
+   would never reach the provider, so probing it would prove nothing -- and
    drops any address the approved scope denies.
 """
 

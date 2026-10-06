@@ -680,17 +680,21 @@ All notable changes to Shapoclyack are documented in this file.
   page) or `heuristic` (claimable service, no address) — high/medium for a
   `vulnerable` service, medium/low for an `edge_case` one, whose note goes into
   the detail; `dangling_cname_nxdomain` (high: the chain ends at a name whose
-  registrable domain, from the ICANN section of the Public Suffix List under a
-  delegated, non-special-use TLD, does not exist on two asks); and
+  registrable domain -- under an ICANN-section suffix of the Public Suffix List
+  or a public registry's private-section one (`com.ru`, `uk.com`, `eu.org`, …),
+  and a delegated, non-special-use TLD -- does not exist on two asks); and
   `dangling_cname` (low: a non-existent name at a hosting platform the
   catalogue does not know). Every finding carries `severity`, `detail` and an
   `evidence` block; what matched but is not a finding is listed under
   `not_reported` with a reason, and names whose DNS answer was missing or
   unusable (SERVFAIL, REFUSED, timeout, A and AAAA disagreeing) under
-  `dns_unanswered` — the DNS structure control is then `not_checked`, not `ok`.
+  `dns_unanswered`, as are candidates whose follow-up lookup (registrable
+  domain, `asuid`, repeat query) went unanswered (`candidates_unanswered`); the
+  DNS structure control stays rated, counts only answered names in its
+  coverage and names the unanswered ones and every undecided candidate.
   The confirmation is one bounded GET per scheme to the org's own name, pinned
   to the resolved address with `Host`/SNI set to it, no redirects, 64 KiB, a
-  hard deadline, no proxy, never to a sinkhole answer or to an address the scan
+  hard deadline, no proxy, only to a public address and never to one the scan
   scope denies (that refusal joins the run's denials artifact)
   (`discovery.domain_monitor.takeover_http_confirm`, default on, with
   `takeover_http_concurrency`/`_timeout_seconds`/`_max_targets`). The tenant

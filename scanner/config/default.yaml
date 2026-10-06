@@ -268,10 +268,11 @@ discovery:
     # Subdomain takeover confirmation: for an in-scope name whose CNAME points
     # at a claimable service in scanner/pipeline/takeover_fingerprints.json and
     # which resolves, one GET per scheme (HTTPS, then HTTP) to that name, pinned
-    # to the address just resolved -- it lands on the provider, not on the org.
-    # A matched fingerprint is a confirmed finding (high, medium for an
-    # edge_case service); off, such names are listed as unconfirmed only.
-    # Sinkhole answers and scope-denied addresses are never sent the GET. The
+    # to the address just resolved -- it lands on the provider, not on the org:
+    # only a public address is contacted. A matched fingerprint is a confirmed
+    # finding (high, medium for an edge_case service); off, such names are
+    # listed as unconfirmed only. Sinkhole, private and scope-denied answers
+    # are never sent the GET. The
     # tenant scan policy's skip_service_probe (fragile profile) turns this
     # off; max_host_concurrency caps the pool.
     takeover_http_confirm: true

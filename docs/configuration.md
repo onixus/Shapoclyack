@@ -220,31 +220,41 @@ and what the repeat query said):
 |---|---|---|
 | `subdomain_takeover` / `confirmed` | high (`vulnerable`), medium (`edge_case`) | NXDOMAIN of a claimable resource name (Azure, Elastic Beanstalk, …) on both A and AAAA and again on a repeat query — for App Service, also no `asuid.<name>` TXT verification record — or the provider's unclaimed-resource page for the org's name |
 | `subdomain_takeover` / `heuristic` | medium (`vulnerable`), low (`edge_case`) | The chain points at a claimable service and the name has no address, so nothing could be checked |
-| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain does not exist either, asked twice. Only for a registrable domain from the ICANN section of the Public Suffix List, under a TLD on that list and not special-use (`.local`, `.internal`, `.test`, `home.arpa`, …). A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
-| `dangling_cname` / `heuristic` | low | The chain ends at a non-existent name under a hosting platform's suffix (the list's private section) that the catalogue does not know. Whether the platform lets a stranger re-create that name is unknown — check it |
+| `dangling_cname_nxdomain` / `confirmed` | high | The chain ends at an uncatalogued name that does not exist, and its registrable domain does not exist either, asked twice. Only for a domain a registry sells: under a suffix from the ICANN section of the Public Suffix List or from a public registry's private-section block (`com.ru`, `msk.ru`, `uk.com`, `br.com`, `eu.org`, `pp.ua`, …), under a TLD on the list and not special-use (`.local`, `.internal`, `.test`, `home.arpa`, …). A domain on registry hold also answers NXDOMAIN: check RDAP before acting |
+| `dangling_cname` / `heuristic` | low | The chain ends at a non-existent name under a hosting platform's suffix (the list's private section, registries aside) that the catalogue does not know. Whether the platform lets a stranger re-create that name is unknown — check it |
 
 What matched but is not a finding is listed under `not_reported` with the
 reason, so a reviewer can see what was looked at: `service_not_vulnerable`,
 `target_exists`, `fingerprint_not_matched`, `http_inconclusive`,
 `http_confirm_disabled`, `http_target_cap`, `sinkholed` (the address was
 0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is what a filtering resolver
-answers; the request is never sent), `address_refused_by_scope` (also written
-to the run's scope-denials artifact), `domain_verified`,
+answers; the request is never sent), `private_address` (any other non-public
+answer -- an RPZ walled garden, a split-horizon view; the request would not
+reach the provider, so it is not sent either), `address_refused_by_scope`
+(also written, once, to the run's scope-denials artifact), `domain_verified`,
 `registrable_domain_exists`, `target_not_registrable`,
 `nxdomain_not_repeated`, `dns_inconclusive` and `dns_no_answer`.
 
 The DNS side is strict on purpose. A and AAAA are asked in separate dnsx runs:
 with both in one run dnsx 1.2.3 reports the rcode of the last query only, which
-turned a name with an A record into NXDOMAIN. An address from either query means
-the name resolves; NXDOMAIN needs both. SERVFAIL, REFUSED, a timeout (dnsx then
-writes no row at all) or the two queries disagreeing decide nothing: the name
-is `dns_inconclusive` or `dns_no_answer` whatever service it points at, it is
-listed under `dns_unanswered`, and the DNS structure control reads
-`not_checked` instead of `ok` while any name went unanswered.
+turned a name with an A record into NXDOMAIN. AAAA is asked only for the names
+whose A answer carried no address -- an IPv4 address already settles the name.
+An address from either query means the name resolves; NXDOMAIN needs both.
+SERVFAIL, REFUSED, a timeout (dnsx then writes no row at all) or the two
+queries disagreeing decide nothing: the name is `dns_inconclusive` or
+`dns_no_answer` whatever service it points at, and it is listed under
+`dns_unanswered`. The same holds for the follow-up lookups -- the registrable
+domain, the `asuid` record, the repeat query: a candidate whose follow-up went
+unanswered is listed in `dns_unanswered` and `candidates_unanswered`, and an
+NXDOMAIN that arrives with an address counts as unanswered too. The DNS
+structure control stays rated by its findings, its coverage counts only the
+answered names, and its explanation names the unanswered ones and, explicitly,
+every takeover candidate left undecided; it is `not_checked` only when nothing
+was answered at all.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `takeover_http_confirm` | `true` | For a candidate that resolves: one GET per scheme (HTTPS, then HTTP) to the org's own name, pinned to the address just resolved, `Host` and TLS SNI set to that name. It lands on the provider's infrastructure, not the org's. No redirect is followed, at most 64 KiB is read, the proxy environment is ignored, TLS is not verified, and a sinkhole answer or an address the approved scan scope denies is never contacted. Off, such candidates are `not_reported` with `http_confirm_disabled` |
+| `takeover_http_confirm` | `true` | For a candidate that resolves: one GET per scheme (HTTPS, then HTTP) to the org's own name, pinned to the address just resolved, `Host` and TLS SNI set to that name. Only a public address is contacted, so the request lands on the provider's infrastructure, not the org's: a sinkhole or private answer is listed instead, and so is an address the approved scan scope denies. No redirect is followed, at most 64 KiB is read, the proxy environment is ignored, TLS is not verified. Off, such candidates are `not_reported` with `http_confirm_disabled` |
 | `takeover_http_concurrency` | `5` | Requests in flight. Held to the tenant policy's `max_host_concurrency` |
 | `takeover_http_timeout_seconds` | `10` | Hard deadline per attempt, whole exchange included |
 | `takeover_http_max_targets` | `200` | Names probed per run; the rest are `not_reported` with `http_target_cap` and the section says `truncated` |
