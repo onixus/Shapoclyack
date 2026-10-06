@@ -105,9 +105,10 @@ class MatchCandidate:
         member (``unknown_reason``), and a unique constraint over a nullable
         column does not constrain anything in Postgres.
         """
-        raw = "|".join(
-            [self.cve_id, self.source_package, self.unknown_reason or ""]
-        )
+        raw = "|".join([self.cve_id, self.source_package, self.unknown_reason or ""])
+        installation = self.evidence.get("installation_identity")
+        if installation:
+            raw += "|" + installation
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -320,9 +321,9 @@ def match_software(
             distro=ctx,
         )
         if not identity.matchable:
-            unassessed.setdefault(identity.reason or package_identity.REASON_UNKNOWN_DISTRO, []).append(
-                identity.name
-            )
+            unassessed.setdefault(
+                identity.reason or package_identity.REASON_UNKNOWN_DISTRO, []
+            ).append(identity.name)
             continue
         if missing_coverage is not None:
             unassessed.setdefault(missing_coverage, []).append(identity.name)
@@ -337,8 +338,20 @@ def match_software(
             candidates = evaluate_package(identity, provider)
         assessed += 1
         for candidate in candidates:
-            existing = by_cve.get(candidate.cve_id)
-            by_cve[candidate.cve_id] = (
+            installation = item.get("installation_identity")
+            if installation:
+                candidate.evidence = {
+                    **candidate.evidence,
+                    "installation_identity": installation,
+                    "install_instance_id": item.get("install_instance_id"),
+                    "scope": item.get("scope"),
+                    "package_id": item.get("package_id"),
+                }
+            candidate_key = candidate.cve_id + (
+                "|" + installation if installation else ""
+            )
+            existing = by_cve.get(candidate_key)
+            by_cve[candidate_key] = (
                 candidate if existing is None else _worse(existing, candidate)
             )
 
@@ -533,13 +546,16 @@ def _match_windows(
 # --------------------------------------------------------------------------
 
 
-def _load_device_software(session, device: models.EndpointDevice) -> list[dict[str, Any]]:
-    if not device.latest_snapshot_id:
+def _load_device_software(
+    session, device: models.EndpointDevice
+) -> list[dict[str, Any]]:
+    if not (device.software_snapshot_id or device.latest_snapshot_id):
         return []
     rows = (
         session.execute(
             select(models.EndpointSoftwareItem).where(
-                models.EndpointSoftwareItem.snapshot_id == device.latest_snapshot_id
+                models.EndpointSoftwareItem.snapshot_id
+                == (device.software_snapshot_id or device.latest_snapshot_id)
             )
         )
         .scalars()
@@ -551,6 +567,10 @@ def _load_device_software(session, device: models.EndpointDevice) -> list[dict[s
             "version": row.version,
             "architecture": row.architecture,
             "source": row.source,
+            "installation_identity": row.installation_identity,
+            "install_instance_id": row.install_instance_id,
+            "scope": row.scope,
+            "package_id": row.package_id,
         }
         for row in rows
     ]
@@ -647,7 +667,9 @@ def run_for_devices(
                     "os_family": device.os_family,
                     "os_name": device.os_name,
                     "os_version": device.os_version,
-                    "latest_snapshot_id": device.latest_snapshot_id,
+                    "latest_snapshot_id": (
+                        device.software_snapshot_id or device.latest_snapshot_id
+                    ),
                 },
                 software=software,
             )

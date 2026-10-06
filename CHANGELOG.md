@@ -1269,6 +1269,15 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Native Lariska updates honour the agent wire protocol and installer format.**
+  Registration and heartbeat accept `signed_updates: true`, while explicit
+  `false` removes support without erasing unrelated capabilities. Migration
+  0081 stores DEB/RPM variants independently for one version and target triple;
+  heartbeat selects the local installer from an explicit report or accepted
+  package inventory and qualifies downloads by format. Ambiguous download or
+  deletion requests fail closed. Concurrent release writes preserve signed
+  promotion and per-format sequence floors; downgrade refuses to discard builds.
+
 - **The Jenkins test suite runs as the workspace's owner, not root.** pytest now
   runs under `setpriv` as on a GitHub runner, and the `update-agent.sh` tests
   start the script through a launcher that resets SIGHUP/SIGINT/SIGQUIT/SIGTERM,

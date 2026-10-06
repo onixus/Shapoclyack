@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict, StrictInt
+from pydantic import BaseModel, Field, ConfigDict, StrictInt, model_validator
 
 # Single source of truth for the intent vocabulary: the resolver in
 # api.services.scan_intents owns which intents exist and what each one does.
@@ -550,6 +550,8 @@ class AgentRegisterRequest(BaseModel):
     # would leave the API handing it policy-carrying jobs it scans at whatever
     # its local config says.
     capabilities: list[str] | None = None
+    # Lariska's deployed wire protocol uses this boolean rather than a list.
+    signed_updates: bool | None = None
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -570,6 +572,8 @@ class AgentHeartbeatRequest(BaseModel):
     #: Omitted keeps the stored list, a list replaces it — see
     #: ``AgentRegisterRequest.capabilities``.
     capabilities: list[str] | None = None
+    signed_updates: bool | None = None
+    package_kind: Literal["deb", "rpm", "msi", "pkg"] | None = None
 
 
 class AgentInfo(BaseModel):
@@ -591,6 +595,7 @@ class AgentInfo(BaseModel):
     tenant_id: str = "default"
     metrics: dict[str, Any] = Field(default_factory=dict)
     capabilities: list[str] = Field(default_factory=list)
+    inventory_schema_version: int = 2
     is_outdated: bool = False
     latest_version: str = ""
     upgrade_requested: bool = False
@@ -2032,9 +2037,52 @@ class EndpointSoftwareItem(BaseModel):
     # plain text) and does not make them matchable: anything outside
     # ``_SOURCE_FLAVORS`` matches as ``non_distro_source``.
     source: Literal[
-        "apt", "dpkg", "rpm", "winreg", "msi", "brew", "pip", "npm", "java", "kb", "other"
+        "apt",
+        "dpkg",
+        "rpm",
+        "winreg",
+        "msi",
+        "brew",
+        "pip",
+        "npm",
+        "java",
+        "kb",
+        "other",
+        "pacman",
+        "mac_bundle",
     ] = "other"
     install_location: str | None = Field(default=None, max_length=1024)
+
+    product_identity: str | None = Field(default=None, max_length=1024)
+    installation_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    package_id: str | None = Field(default=None, max_length=1024)
+    scope: Literal["system", "user", "runtime", "container"] | None = None
+    install_instance_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class EndpointSourceState(BaseModel):
+    source: Literal[
+        "apt",
+        "dpkg",
+        "rpm",
+        "winreg",
+        "msi",
+        "brew",
+        "pip",
+        "npm",
+        "java",
+        "kb",
+        "other",
+        "pacman",
+        "mac_bundle",
+    ]
+    status: Literal["complete", "partial", "failed", "not_applicable"]
+    collected_at: str
+    last_complete_at: str | None = None
+    collector_version: str = Field(min_length=1, max_length=64)
+    diagnostic_code: str | None = Field(
+        default=None, max_length=128, pattern=r"^[a-z0-9_]+$"
+    )
 
 
 class EndpointIdentifierIn(BaseModel):
@@ -2046,9 +2094,9 @@ class EndpointIdentifierIn(BaseModel):
 
 
 class EndpointInventorySnapshotRequest(BaseModel):
-    """Body for ``POST /api/endpoint/inventory`` (schema v1)."""
+    """Body for ``POST /api/endpoint/inventory`` (mixed-fleet schemas v1/v2)."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     snapshot_id: str = Field(min_length=1, max_length=128)
     agent_id: str = Field(min_length=1, max_length=128)
     collected_at: str
@@ -2062,6 +2110,38 @@ class EndpointInventorySnapshotRequest(BaseModel):
     identifiers: list[EndpointIdentifierIn] = Field(default_factory=list)
     software: list[EndpointSoftwareItem] = Field(default_factory=list)
     collector_warnings: list[str] = Field(default_factory=list)
+    sources: list[EndpointSourceState] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_inventory_schema(self):
+        if self.schema_version == 1:
+            if self.sources or any(
+                item.installation_identity for item in self.software
+            ):
+                raise ValueError(
+                    "schema v1 must not carry v2 source or installation identities"
+                )
+            return self
+        sources = {state.source for state in self.sources}
+        if len(sources) != len(self.sources):
+            raise ValueError("duplicate source status")
+        for item in self.software:
+            if not all(
+                (
+                    item.product_identity,
+                    item.installation_identity,
+                    item.scope,
+                    item.install_instance_id,
+                )
+            ):
+                raise ValueError(
+                    "schema v2 requires product and installation identities, scope, and instance"
+                )
+            if item.source not in sources:
+                raise ValueError("schema v2 software source has no collection status")
+            if item.install_location is not None:
+                raise ValueError("schema v2 does not accept raw install locations")
+        return self
 
 
 class EndpointInventoryResponse(BaseModel):
@@ -2094,6 +2174,7 @@ class EndpointDeviceInfo(BaseModel):
     last_seen: str | None = None
     last_inventory_at: str | None = None
     latest_snapshot_id: str | None = None
+    sources: list[EndpointSourceState] = Field(default_factory=list)
 
 
 class EndpointSnapshotSummary(BaseModel):
@@ -2104,6 +2185,7 @@ class EndpointSnapshotSummary(BaseModel):
     received_at: str | None = None
     software_count: int
     collector_warnings: list[str] = Field(default_factory=list)
+    sources: list[EndpointSourceState] = Field(default_factory=list)
 
 
 class EndpointSoftwareChangeInfo(BaseModel):
@@ -2124,7 +2206,7 @@ class EndpointSoftwareChangeFeedItem(EndpointSoftwareChangeInfo):
     asset_id: str | None = None
 
 
-class EndpointSoftwareItemInfo(BaseModel):
+class EndpointSoftwareItemInfo(EndpointSoftwareItem):
     name: str
     version: str | None = None
     publisher: str | None = None
@@ -3672,11 +3754,13 @@ class EndpointAgentReleaseInfo(BaseModel):
     version: str
     #: Target triple, e.g. ``x86_64-pc-windows-msvc``.
     platform: str
+    package_kind: Literal["binary", "deb", "rpm", "msi", "pkg"] = "binary"
     #: Computed by the API from the stored bytes, never accepted from the
     #: uploader: this is what an endpoint verifies a download against before
     #: executing it.
     sha256: str
     size_bytes: int
+    signed_manifest: dict[str, Any] | None = None
     notes: str | None = None
     uploaded_at: str | None = None
     uploaded_by: str | None = None

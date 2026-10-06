@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTable } from "@/components/data-table";
+import { SourceCompleteness } from "@/components/endpoint/source-completeness";
 import { PatchGapPanel } from "@/components/endpoint/patch-gap-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { useEndpointDevices, useRecentSoftwareChanges } from "@/hooks/use-endpoint-inventory";
@@ -54,9 +55,7 @@ function RecentChangesFeed({ tenantId }: { tenantId: string }) {
             {(changesQuery.error as Error).message}
           </p>
         ) : changes.length === 0 ? (
-          <p className="px-4 py-4 text-xs text-muted-foreground">
-            {t("page.endpoints.noChanges")}
-          </p>
+          <p className="px-4 py-4 text-xs text-muted-foreground">{t("page.endpoints.noChanges")}</p>
         ) : (
           <ul className="divide-y divide-border">
             {changes.map((change, idx) => (
@@ -192,10 +191,15 @@ export default function EndpointsPage() {
         accessorKey: "last_inventory_at",
         header: t("col.lastInventory"),
         sortingFn: "datetime",
-        cell: ({ getValue }) => {
+        cell: ({ getValue, row }) => {
           const v = getValue();
           if (!v) return <span className="text-muted-foreground">{t("common.never")}</span>;
-          return <span className="text-xs text-foreground">{ago(String(v))}</span>;
+          return (
+            <div>
+              <span className="text-xs text-foreground">{ago(String(v))}</span>
+              <SourceCompleteness sources={row.original.sources} />
+            </div>
+          );
         },
       },
       {
@@ -206,12 +210,7 @@ export default function EndpointsPage() {
           const id = row.original.asset_id;
           if (!id) return null;
           return (
-            <Button
-              asChild
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-            >
+            <Button asChild variant="outline" size="sm" className="h-7 text-xs">
               <Link href={assetHref(id, tenantId)}>{t("common.openAsset")}</Link>
             </Button>
           );
@@ -233,16 +232,14 @@ export default function EndpointsPage() {
             <Laptop className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold tracking-tight text-foreground">{t("page.endpoints.title")}</h1>
-            <p className="text-xs text-muted-foreground">
-              {t("page.endpoints.lariskaHint")}
-            </p>
+            <h1 className="text-xl font-extrabold tracking-tight text-foreground">
+              {t("page.endpoints.title")}
+            </h1>
+            <p className="text-xs text-muted-foreground">{t("page.endpoints.lariskaHint")}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <span>
-            {t("common.devices", { count: raw.length })}
-          </span>
+          <span>{t("common.devices", { count: raw.length })}</span>
           <span className="font-semibold text-emerald-600 dark:text-emerald-400">
             {t("common.linked", { count: linked })}
           </span>
@@ -305,9 +302,7 @@ export default function EndpointsPage() {
             : "No Lariska endpoints yet. Install the endpoint agent with a tenant provisioning key."
         }
         searchPlaceholder={t("search.endpoints")}
-        meta={
-          devicesQuery.isFetching && !devicesQuery.isLoading ? "Refreshing…" : undefined
-        }
+        meta={devicesQuery.isFetching && !devicesQuery.isLoading ? "Refreshing…" : undefined}
       />
     </div>
   );

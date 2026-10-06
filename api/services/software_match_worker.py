@@ -60,7 +60,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.db import models
 from api.db.engine import get_session
@@ -90,22 +90,32 @@ def pending_device_ids(settings: Settings, *, tenant_id: str, limit: int) -> lis
     """
     now = _now().replace(tzinfo=None)
     with get_session(settings.postgres_url) as session:
-        rows = session.execute(
-            select(models.EndpointDevice.device_id)
-            .where(
-                models.EndpointDevice.tenant_id == tenant_id,
-                models.EndpointDevice.latest_snapshot_id.is_not(None),
-                (models.EndpointDevice.last_matched_snapshot_id.is_(None))
-                | (
-                    models.EndpointDevice.last_matched_snapshot_id
-                    != models.EndpointDevice.latest_snapshot_id
-                ),
-                (models.EndpointDevice.match_retry_after.is_(None))
-                | (models.EndpointDevice.match_retry_after <= now),
+        rows = (
+            session.execute(
+                select(models.EndpointDevice.device_id)
+                .where(
+                    models.EndpointDevice.tenant_id == tenant_id,
+                    func.coalesce(
+                        models.EndpointDevice.software_snapshot_id,
+                        models.EndpointDevice.latest_snapshot_id,
+                    ).is_not(None),
+                    (models.EndpointDevice.last_matched_snapshot_id.is_(None))
+                    | (
+                        models.EndpointDevice.last_matched_snapshot_id
+                        != func.coalesce(
+                            models.EndpointDevice.software_snapshot_id,
+                            models.EndpointDevice.latest_snapshot_id,
+                        )
+                    ),
+                    (models.EndpointDevice.match_retry_after.is_(None))
+                    | (models.EndpointDevice.match_retry_after <= now),
+                )
+                .order_by(models.EndpointDevice.last_inventory_at.asc())
+                .limit(limit)
             )
-            .order_by(models.EndpointDevice.last_inventory_at.asc())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return list(dict.fromkeys(rows))
 
 

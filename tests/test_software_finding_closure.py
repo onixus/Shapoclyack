@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import auth_headers, configured_client, make_settings, requires_postgres
+from tests.conftest import (
+    auth_headers,
+    configured_client,
+    make_settings,
+    requires_postgres,
+)
 from tests.test_software_findings import (
     ADVISORIES,
     SOFTWARE,
@@ -34,7 +39,9 @@ def settings(tmp_path: Path):
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch, settings) -> TestClient:
-    monkeypatch.setenv("OCTO_UBUNTU_ADVISORY_DATABASE", str(ADVISORIES / "ubuntu-lifecycle.json"))
+    monkeypatch.setenv(
+        "OCTO_UBUNTU_ADVISORY_DATABASE", str(ADVISORIES / "ubuntu-lifecycle.json")
+    )
     monkeypatch.setenv("OCTO_CVSS4_DATABASE", str(tmp_path / "no-cvss4.json"))
     from api.services import advisories, software_findings
 
@@ -47,7 +54,9 @@ def client(tmp_path: Path, monkeypatch, settings) -> TestClient:
 
 
 def _open_curl_finding(client: TestClient) -> dict:
-    return next(item for item in software_findings_of(client) if item["cve"] == "CVE-2023-38545")
+    return next(
+        item for item in software_findings_of(client) if item["cve"] == "CVE-2023-38545"
+    )
 
 
 def _seed_vulnerable(client: TestClient) -> tuple[str, dict]:
@@ -92,7 +101,8 @@ def test_an_upgrade_plus_a_fresh_snapshot_closes_the_finding_as_patched(
     assert closed["closed_at"]
 
     events = client.get(
-        f"/api/vulnerabilities/{finding['vuln_id']}/events", headers=auth_headers(client)
+        f"/api/vulnerabilities/{finding['vuln_id']}/events",
+        headers=auth_headers(client),
     ).json()["items"]
     passed = next(event for event in events if event["kind"] == "verification_passed")
     assert passed["actor"] == "system:inventory"
@@ -173,10 +183,15 @@ def test_a_distribution_that_stopped_resolving_does_not_close_anything(
     assert after["state"] == "OPEN"
 
 
-def test_a_closed_finding_reopens_when_the_package_comes_back(client: TestClient) -> None:
+def test_a_closed_finding_reopens_when_the_package_comes_back(
+    client: TestClient,
+) -> None:
     """A regression is the most important thing this model can report."""
     device_id, finding = _seed_vulnerable(client)
-    submit(client, snapshot_body(snapshot_id="snap_close_0004", software=_patched_software()))
+    submit(
+        client,
+        snapshot_body(snapshot_id="snap_close_0004", software=_patched_software()),
+    )
     refresh(client, device_id)
     assert (
         client.get(
@@ -199,7 +214,8 @@ def test_a_closed_finding_reopens_when_the_package_comes_back(client: TestClient
     kinds = [
         event["kind"]
         for event in client.get(
-            f"/api/vulnerabilities/{finding['vuln_id']}/events", headers=auth_headers(client)
+            f"/api/vulnerabilities/{finding['vuln_id']}/events",
+            headers=auth_headers(client),
         ).json()["items"]
     ]
     assert "reopened" in kinds
@@ -227,7 +243,9 @@ def test_a_feed_that_went_missing_does_not_close_the_estate(
     device_id, finding = _seed_vulnerable(client)
     submit(client, snapshot_body(snapshot_id="snap_close_0006"))
 
-    monkeypatch.setenv("OCTO_UBUNTU_ADVISORY_DATABASE", str(tmp_path / "feed-volume-gone.json"))
+    monkeypatch.setenv(
+        "OCTO_UBUNTU_ADVISORY_DATABASE", str(tmp_path / "feed-volume-gone.json")
+    )
     advisories.reload_providers()
 
     stats = software_findings.ingest_device(
@@ -255,7 +273,9 @@ def test_both_fold_paths_answer_the_gate_the_same_way(
 
     device_id, finding = _seed_vulnerable(client)
     submit(client, snapshot_body(snapshot_id="snap_close_0007"))
-    monkeypatch.setenv("OCTO_UBUNTU_ADVISORY_DATABASE", str(tmp_path / "feed-volume-gone.json"))
+    monkeypatch.setenv(
+        "OCTO_UBUNTU_ADVISORY_DATABASE", str(tmp_path / "feed-volume-gone.json")
+    )
     advisories.reload_providers()
 
     from_worker = software_findings.ingest_device(
@@ -286,7 +306,9 @@ def test_a_withdrawn_fix_is_not_a_patched_host(
 
     device_id, finding = _seed_vulnerable(client)
 
-    payload = _json.loads((ADVISORIES / "ubuntu-lifecycle.json").read_text(encoding="utf-8"))
+    payload = _json.loads(
+        (ADVISORIES / "ubuntu-lifecycle.json").read_text(encoding="utf-8")
+    )
     for entry in payload["entries"]:
         if entry["advisory_id"] == "USN-6408-1":
             entry["state"] = "open"
@@ -341,3 +363,100 @@ def test_raising_the_severity_floor_does_not_patch_anything(
     ).json()
     assert after["state"] == "OPEN"
     assert after["closure_reason"] is None
+
+
+def test_v2_failed_dpkg_cannot_prove_patch_when_python_changes(
+    client, monkeypatch, settings
+):
+    import hashlib
+    from api.services import software_cve_match as matcher
+
+    def installation(instance, source, name, version):
+        return dict(
+            name=name,
+            version=version,
+            publisher="Canonical",
+            architecture="amd64",
+            source=source,
+            install_location=None,
+            product_identity=f"{name}|canonical|amd64|{source}",
+            installation_identity=hashlib.sha256(instance.encode()).hexdigest(),
+            install_instance_id=hashlib.sha256(instance.encode()).hexdigest(),
+            scope="system",
+            package_id=name,
+        )
+
+    body = snapshot_body(snapshot_id="v2-source-close-1", software=[])
+    body["schema_version"] = 2
+    body["software"] = [
+        installation("curl", "dpkg", "curl", "7.68.0-1ubuntu2.1"),
+        installation("python", "pip", "requests", "2.0"),
+    ]
+    body["sources"] = [
+        dict(
+            source=source,
+            status="complete",
+            collected_at=body["collected_at"],
+            collector_version="0.5.0",
+        )
+        for source in ("dpkg", "pip")
+    ]
+    device_id = submit(client, body)
+    refresh(client, device_id)
+    assert _open_curl_finding(client)["state"] == "OPEN"
+
+    # New advisory data may change a verdict, but failed collection contributes
+    # no new evidence about what is actually installed on the host.
+    original = matcher.match_software
+
+    def changed_advisory(**kwargs):
+        result = original(**kwargs)
+        for candidate in result.candidates:
+            if candidate.cve_id == "CVE-2023-38545":
+                candidate.status = matcher.FIXED
+        return result
+
+    monkeypatch.setattr(matcher, "match_software", changed_advisory)
+    body["snapshot_id"] = "v2-source-close-2"
+    from datetime import UTC, datetime
+
+    body["collected_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    body["sources"] = [
+        dict(
+            source=source,
+            status=status,
+            collected_at=body["collected_at"],
+            collector_version="0.5.0",
+        )
+        for source, status in (("dpkg", "failed"), ("pip", "complete"))
+    ]
+    body["software"] = [installation("python", "pip", "requests", "2.1")]
+    submit(client, body)
+    refresh(client, device_id)
+    assert _open_curl_finding(client)["state"] == "OPEN"
+
+    # The collector recovers with the same carried-forward package inventory.
+    # This is fresh evidence, so the worker must reconsider the held closure.
+    from api.services import software_match_worker
+
+    body["snapshot_id"] = "v2-source-close-3"
+    body["collected_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    body["sources"] = [
+        dict(
+            source=source,
+            status="complete",
+            collected_at=body["collected_at"],
+            collector_version="0.5.0",
+        )
+        for source in ("dpkg", "pip")
+    ]
+    body["software"] = [
+        installation("curl", "dpkg", "curl", "7.68.0-1ubuntu2.1"),
+        installation("python", "pip", "requests", "2.1"),
+    ]
+    submit(client, body)
+    assert software_match_worker.pending_device_ids(
+        settings, tenant_id="default", limit=10
+    ) == [device_id]
+    software_match_worker.sweep_tenant(settings, "default")
+    assert _open_curl_finding(client)["state"] == "CLOSED"

@@ -375,6 +375,7 @@ def _to_info(row: models.Agent) -> AgentInfo:
         metrics=metrics,
         capabilities=capabilities,
         agent_kind=kind,  # type: ignore[arg-type]
+        inventory_schema_version=2,
         is_outdated=is_outdated,
         latest_version=LATEST_AGENT_VERSION if is_scanner else "",
         upgrade_requested=upgrade_requested,
@@ -745,6 +746,24 @@ def set_lifecycle_status(
     return info
 
 
+def _reported_capabilities(
+    capabilities: list[str] | None,
+    signed_updates: bool | None,
+    previous: list[str] | None = None,
+) -> list[str]:
+    """Merge the Lariska boolean without erasing unrelated capabilities.
+
+    Omission retains stored declarations; an explicit list replaces them.
+    The explicit boolean controls signed update support, including rollback.
+    """
+    values = list(capabilities if capabilities is not None else (previous or []))
+    if signed_updates is not None:
+        values = [value for value in values if value != "signed_updates"]
+        if signed_updates:
+            values.append("signed_updates")
+    return values
+
+
 def register_agent(
     *,
     agent_id: str | None = None,
@@ -754,6 +773,7 @@ def register_agent(
     tenant_id: str = "default",
     metrics: dict[str, Any] | None = None,
     capabilities: list[str] | None = None,
+    signed_updates: bool | None = None,
     provisioning_key_id: str | None = None,
     agent_kind: str = KIND_SCANNER,
     audit: "audit_service.AuditContext | None" = None,
@@ -798,11 +818,24 @@ def register_agent(
             # forever. A changed reported version is the only evidence the host
             # acted on it, so that is what clears it.
             _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
+            # Registration starts a new client session. Legacy Lariska builds
+            # declare neither capability field, including after a manual
+            # rollback with the same agent identity or version string. They
+            # must not inherit permission to execute native installer bytes.
+            # Heartbeat omission still preserves a session's declarations.
+            if (
+                row.agent_kind == KIND_ENDPOINT
+                and capabilities is None
+                and signed_updates is None
+            ):
+                prev_caps = [value for value in prev_caps if value != "signed_updates"]
             if prev_upgrade and row.version != previous_version:
                 prev_upgrade = False
             row.detail = _pack_detail(
                 metrics=metrics if metrics is not None else prev_metrics,
-                capabilities=capabilities if capabilities is not None else prev_caps,
+                capabilities=_reported_capabilities(
+                    capabilities, signed_updates, prev_caps
+                ),
                 upgrade_requested=prev_upgrade or None,
             )
             if row.status == "stale":
@@ -834,7 +867,10 @@ def register_agent(
             lifecycle_status=LIFECYCLE_ACTIVE,
             provisioning_key_id=provisioning_key_id,
             current_job_id=None,
-            detail=_pack_detail(metrics=metrics, capabilities=capabilities),
+            detail=_pack_detail(
+                metrics=metrics,
+                capabilities=_reported_capabilities(capabilities, signed_updates),
+            ),
             registered_at=now,
             last_seen_at=now,
             healthy_since=now,
@@ -875,6 +911,7 @@ def heartbeat(
     detail: str | None = None,
     metrics: dict[str, Any] | None = None,
     capabilities: list[str] | None = None,
+    signed_updates: bool | None = None,
 ) -> AgentInfo | None:
     settings = _require_settings()
     with get_session(settings.postgres_url) as session:
@@ -887,7 +924,7 @@ def heartbeat(
         # Preserve upgrade_requested if previously set
         _, prev_metrics, prev_caps, prev_upgrade = _extract_detail(row.detail)
         final_metrics = metrics if metrics is not None else prev_metrics
-        final_caps = capabilities if capabilities is not None else prev_caps
+        final_caps = _reported_capabilities(capabilities, signed_updates, prev_caps)
         row.detail = _pack_detail(
             detail=detail,
             metrics=final_metrics,
@@ -900,6 +937,7 @@ def heartbeat(
 
 AGENT_SORT_FIELDS = ("hostname", "agent_id", "status", "last_seen_at", "registered_at", "tenant_id")
 AGENT_QUERY_FIELDS = ("agent_id", "hostname", "version", "status", "tenant_id", "current_job_id")
+
 
 def _reported_status_expr() -> Any:
     """The status the API will actually return, as SQL.

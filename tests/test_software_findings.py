@@ -215,8 +215,10 @@ def test_fixed_and_unknown_matches_never_become_findings(client: TestClient) -> 
     assert None not in tracked and "" not in tracked
 
 
-def test_a_vulnerable_match_with_no_published_fix_is_not_tracked(client: TestClient) -> None:
-    """"Affected, no fix yet" is real risk with nothing to run.
+def test_a_vulnerable_match_with_no_published_fix_is_not_tracked(
+    client: TestClient,
+) -> None:
+    """ "Affected, no fix yet" is real risk with nothing to run.
 
     It is also the bulk of a full feed across an estate, and every one of those
     rows would arrive with a deadline nobody can meet. It stays a match, and
@@ -226,13 +228,16 @@ def test_a_vulnerable_match_with_no_published_fix_is_not_tracked(client: TestCli
     matches = {
         row["cve_id"]: row
         for row in client.get(
-            f"/api/endpoint/devices/{device_id}/cve-matches", headers=auth_headers(client)
+            f"/api/endpoint/devices/{device_id}/cve-matches",
+            headers=auth_headers(client),
         ).json()
     }
     assert matches["CVE-2026-11111"]["status"] == "vulnerable"
     assert matches["CVE-2026-11111"]["fixed_version"] is None
 
-    assert "CVE-2026-11111" not in {item["cve"] for item in software_findings_of(client)}
+    assert "CVE-2026-11111" not in {
+        item["cve"] for item in software_findings_of(client)
+    }
 
 
 def test_a_severity_floor_keeps_low_findings_out_of_the_sla_report(
@@ -452,3 +457,63 @@ def test_merging_an_asset_repoints_a_software_finding_with_its_own_key(
     curl = [item for item in software_findings_of(client) if item["cve"] == "CVE-2023-38545"]
     assert [item["vuln_id"] for item in curl] == [finding["vuln_id"]]
     assert curl[0]["state"] == "OPEN"
+
+
+def test_v2_multiple_vulnerable_installations_create_one_finding_and_fixed_copy_cannot_close_it(
+    client,
+):
+    """Per-install matching preserves evidence, device/CVE tracking stays unique."""
+    import hashlib
+
+    def installation(instance, version):
+        return dict(
+            name="curl",
+            version=version,
+            publisher="Canonical",
+            architecture="amd64",
+            source="dpkg",
+            install_location=None,
+            product_identity="curl|canonical|amd64|dpkg",
+            installation_identity=hashlib.sha256(instance.encode()).hexdigest(),
+            install_instance_id=hashlib.sha256(instance.encode()).hexdigest(),
+            scope="system",
+            package_id="curl",
+        )
+
+    body = snapshot_body(snapshot_id="v2-lifecycle-1", software=[])
+    body["schema_version"] = 2
+    body["software"] = [
+        installation("old", "7.68.0-1ubuntu2.1"),
+        installation("second-old", "7.68.0-1ubuntu2.2"),
+    ]
+    body["sources"] = [
+        dict(
+            source="dpkg",
+            status="complete",
+            collected_at=body["collected_at"],
+            collector_version="0.5.0",
+        )
+    ]
+    device_id = submit(client, body)
+    result = refresh(client, device_id)
+    assert result["lifecycle"]["errors"] == 0
+    findings = software_findings_of(client)
+    assert len(findings) == 1
+    assert findings[0]["state"] == "OPEN"
+
+    body["snapshot_id"] = "v2-lifecycle-2"
+    body["collected_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    body["sources"][0]["collected_at"] = body["collected_at"]
+    body["software"][1] = installation("second-old", "7.68.0-1ubuntu2.20")
+    submit(client, body)
+    result = refresh(client, device_id)
+    assert result["lifecycle"]["errors"] == 0
+    findings = software_findings_of(client)
+    assert len(findings) == 1 and findings[0]["state"] == "OPEN"
+    matches = client.get(
+        f"/api/endpoint/devices/{device_id}/cve-matches", headers=auth_headers(client)
+    ).json()
+    assert {row["status"] for row in matches if row["cve_id"] == "CVE-2023-38545"} == {
+        "vulnerable",
+        "fixed",
+    }

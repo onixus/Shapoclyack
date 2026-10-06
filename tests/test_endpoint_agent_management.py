@@ -522,6 +522,7 @@ def test_deleting_a_build_records_what_was_deleted(tmp_path: Path, monkeypatch) 
     assert event.before == {
         "version": "0.3.0",
         "platform": PLATFORM,
+        "package_kind": "binary",
         "sha256": hashlib.sha256(BUILD).hexdigest(),
         "size_bytes": len(BUILD),
         "uploaded_by": "admin",
