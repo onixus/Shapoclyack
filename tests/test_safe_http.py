@@ -8,6 +8,7 @@ import ipaddress
 import socket
 import ssl
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -303,14 +304,19 @@ def test_pinned_context_verifies_the_certificate():
 def test_redirect_chain_shares_one_deadline(monkeypatch):
     """One budget covers every hop -- a redirect does not buy a fresh timeout.
 
-    Each hop here burns more than half the budget, so a chain that reset the
-    deadline per hop would complete and this test would not.
+    Each hop advances a controlled clock by more than half the budget, so a
+    chain that resets the deadline per hop would complete. CPU contention
+    cannot exhaust the budget before the second hop is exercised.
     """
     _pin_resolution(
         monkeypatch,
         {"rdap.example.com": ["93.184.216.34"], "second.example.com": ["93.184.216.35"]},
     )
     hops: list[str] = []
+    clock = [0.0]
+    monkeypatch.setattr(
+        safe_http, "time", SimpleNamespace(perf_counter=lambda: clock[0])
+    )
 
     class _SlowConnection:
         def __init__(self, *, connect_host, server_hostname, port, timeout):
@@ -319,7 +325,7 @@ def test_redirect_chain_shares_one_deadline(monkeypatch):
 
         def request(self, method, target, headers=None):
             hops.append(self._hostname)
-            time.sleep(0.6)
+            clock[0] += 0.6
 
         def getresponse(self):
             if self._hostname == "rdap.example.com":
