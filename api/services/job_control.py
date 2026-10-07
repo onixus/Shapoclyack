@@ -21,6 +21,7 @@ from api.services import job_states
 from api.services import job_store
 from api.services import metrics as metrics_service
 from api.services import run_ids
+from api.services import queued_maintenance
 from api.services import scan_policy
 from api.services import scan_queue
 from api.services import tenants as tenants_service
@@ -242,20 +243,27 @@ def claim_job(
         # ``->>`` is NULL for an absent key and for a NULL document alike, and
         # neither predicate above can itself be NULL (``coalesce``, a literal
         # IN list), so "runnable" and "blocked" partition the queue.
-        row = (
-            session.execute(
-                eligible.where(*runnable).limit(1).with_for_update(skip_locked=True)
-            )
-            .scalars()
-            .first()
-        )
+        def next_admitted(query):
+            while True:
+                candidate = session.execute(
+                    query.limit(1).with_for_update(skip_locked=True)
+                ).scalars().first()
+                if candidate is None:
+                    return None
+                if queued_maintenance.admitted(settings, session, candidate):
+                    return candidate
+                # A group's blackout must not starve unrelated jobs behind it,
+                # regardless of priority. Named NATS claims use this same gate.
+                query = query.where(models.Job.job_id != candidate.job_id)
+
+        row = next_admitted(eligible.where(*runnable))
         if row is None:
             # Nothing this agent can run. If something it cannot run is
             # waiting, say so (426, below) instead of a quiet 204: that line in
             # the agent's journal is how its operator learns to upgrade.
             # Only jobs it cannot run: a runnable one seen here is one another
             # claim holds the lock on, and must not be handed out twice.
-            row = session.execute(eligible.where(or_(*blocked)).limit(1)).scalars().first()
+            row = next_admitted(eligible.where(or_(*blocked)))
             if row is None:
                 return None
 

@@ -63,6 +63,7 @@ from api.services import job_states
 from api.services import job_store
 from api.services import metrics as metrics_service
 from api.services import quotas
+from api.services import queued_maintenance
 from api.services import tenants as tenants_service
 from api.settings import Settings
 
@@ -391,7 +392,7 @@ def hold_slot(session, tenant_id: str, *, wait: bool = True) -> bool:
     return False
 
 
-def local_job_ahead(session, row: models.Job) -> bool:
+def local_job_ahead(session, row: models.Job, *, settings: Settings) -> bool:
     """Whether a better queued local job of the same tenant waits on this replica.
 
     A local scan held back by its tenant's ceiling waits in its own thread and
@@ -410,20 +411,21 @@ def local_job_ahead(session, row: models.Job) -> bool:
             models.Job.job_id < row.job_id,
         ),
     )
-    return (
-        session.execute(
-            select(models.Job.job_id)
-            .where(
-                models.Job.execution == "local",
-                models.Job.status == job_states.QUEUED,
-                models.Job.tenant_id == row.tenant_id,
-                models.Job.owner_id == row.owner_id,
-                models.Job.job_id != row.job_id,
-                better,
-            )
-            .limit(1)
-        ).first()
-        is not None
+    candidates = session.execute(
+        select(models.Job)
+        .where(
+            models.Job.execution == "local",
+            models.Job.status == job_states.QUEUED,
+            models.Job.tenant_id == row.tenant_id,
+            models.Job.owner_id == row.owner_id,
+            models.Job.job_id != row.job_id,
+            better,
+        )
+        .order_by(*claim_order())
+    ).scalars()
+    return any(
+        queued_maintenance.evaluate(settings, session, candidate).allowed
+        for candidate in candidates
     )
 
 

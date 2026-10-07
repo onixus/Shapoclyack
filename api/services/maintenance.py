@@ -860,6 +860,7 @@ def evaluate(
     ranges_text: str | None = None,
     domains_text: str | None = None,
     at: datetime | None = None,
+    session=None,
 ) -> Admission:
     """Whether a scan of these targets may start now, and if not, when it may.
 
@@ -871,7 +872,16 @@ def evaluate(
     wrote to stop something.
     """
     at = at or _now()
-    frozen = change_freeze(settings, tenant_id)
+    if session is None:
+        with get_session(settings.postgres_url) as current:
+            return evaluate(
+                settings, tenant_id=tenant_id, ranges_text=ranges_text,
+                domains_text=domains_text, at=at, session=current,
+            )
+    tenant = session.get(models.Tenant, tenant_id)
+    if tenant is None:
+        raise LookupError(f"tenant not found: {tenant_id}")
+    frozen = _freeze_dict(tenant)
     if frozen["change_freeze"]:
         note = frozen["change_freeze_note"]
         return Admission(
@@ -885,8 +895,7 @@ def evaluate(
             ),
         )
 
-    with get_session(settings.postgres_url) as session:
-        windows = [_to_dict(row) for row in _rows(session, tenant_id, enabled_only=True)]
+    windows = [_to_dict(row) for row in _rows(session, tenant_id, enabled_only=True)]
     if not windows:
         return Admission(allowed=True)
 

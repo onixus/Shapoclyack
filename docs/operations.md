@@ -651,18 +651,27 @@ there is no end to name. Every refusal is a `scan.maintenance_block` row in
 `audit_events` with the reason, the window and the retry time — that filter is
 the answer to "why did nothing run last night", days later.
 
-**The calendar is checked at admission, not at claim time.** In `agent`
-execution mode a job admitted at 21:50 stays queued until a sensor claims it,
-and `claim_job` does not consult the calendar — a sensor that was busy or
-offline can therefore pick up that job after the blackout has opened. The
-control is over what the platform *accepts*, not a kill switch over work
-already queued. If a window has to hold in the data plane as well, cancel the
-jobs (`POST /api/jobs/{id}/cancel` — since
-[#360](https://github.com/onixus/Shapoclyack/issues/360) this also stops a scan
-a sensor is already running, through `cancelling`) or stop the sensors for its
-duration.
-#352 was closed on 2026-09-21 without a claim-time gate, and none is filed:
-`claim_job` still does not read the calendar.
+**The calendar is checked again when queued work starts (#516).** HTTP polling,
+a claim naming a NATS-offered job, and the local executor all check the current
+calendar. A job admitted at 21:50 but still waiting when a blackout opens stays
+`queued`: no attempt or concurrency slot is spent. Polling can claim it after
+the blackout ends or an allowed window opens; lifting a freeze also releases it.
+The local waiter renews its waiting mark, so the lease reaper does not mistake
+calendar deferral for a lost executor.
+
+The job's `scan_options.maintenance_wait` contains the reason, window and retry
+time. A `scan.maintenance_block` audit event names the job when that reason
+changes; repeated polling does not duplicate it. A blocked high-priority job
+does not hold up scans of other asset groups. Promoted domains are included,
+and jobs using installation defaults are conservatively covered by every group
+window. Pre-upgrade queued jobs use their persisted target inputs.
+
+A scan already claimed or running is not interrupted when the calendar changes.
+Cancel it with `POST /api/jobs/{id}/cancel` if it must stop; sensors receive the
+stop through `cancelling`. During a rolling upgrade, replicas running the older
+code can still hand out queued jobs without this check: drain their claim traffic
+and local waiters before relying on the start-time gate. No schema migration is
+needed.
 
 A refused **schedule** is deferred rather than skipped: `next_run_at` moves to
 the end of the blackout (or the start of the next allowed window), so the

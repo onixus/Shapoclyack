@@ -1269,6 +1269,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **Maintenance windows at queued scan start (#516).** Sensor claims (HTTP and
+  named NATS offers) and local starts recheck the current calendar. Blocked jobs
+  remain queued with an auditable reason; they consume no attempt or slot and
+  resume when allowed. Unrelated targets can pass a blocked priority head, and
+  local waiters retain their reaper mark. Drain older replicas' claim traffic
+  and local waiters during a rolling upgrade before relying on this gate.
+
 - **Native Lariska updates honour the agent wire protocol and installer format.**
   Registration and heartbeat accept `signed_updates: true`, while explicit
   `false` removes support without erasing unrelated capabilities. Migration

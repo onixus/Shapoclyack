@@ -425,6 +425,15 @@ def start_scan(
         run_id=run_id,
         command=command,
         scan_options={
+            "maintenance_targets": {
+                "ranges": request.ranges,
+                # Installation defaults can reach unknown groups even when
+                # promoted domains accompany them. Keep that conservative gate.
+                "domains": (
+                    "\n".join([request.domains or "", *promoted_admitted])
+                    if request.ranges or request.domains else ""
+                ),
+            },
             "mode": resolved.mode,
             "intent": resolved.intent,
             "intent_summary": (
