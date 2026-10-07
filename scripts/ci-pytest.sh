@@ -30,7 +30,11 @@ COVERAGE_XML="${COVERAGE_XML:-coverage.xml}"
 COV_FAIL_UNDER="${COV_FAIL_UNDER:-85}"
 export OCTO_REQUIRE_INTEGRATION="${OCTO_REQUIRE_INTEGRATION:-1}"
 
-args=(-q)
+args=(
+  -q
+  -W error::pytest.PytestUnraisableExceptionWarning
+  -W error::pytest.PytestUnhandledThreadExceptionWarning
+)
 if [[ -n "${JUNIT_XML}" ]]; then
   args+=("--junitxml=${JUNIT_XML}")
 fi

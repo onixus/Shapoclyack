@@ -1269,6 +1269,12 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Fixed
 
+- **NATS agent shutdown and CI error reporting.** Unsubscribe pull inboxes
+  before draining, and finish cancellation of background tasks before closing
+  the session's event loop. Empty fetch status replies no longer leave a
+  drain coroutine or flusher behind. The shared pytest CI command fails on
+  unraisable and unhandled thread exceptions even when assertions pass.
+
 - **Maintenance windows at queued scan start (#516).** Sensor claims (HTTP and
   named NATS offers) and local starts recheck the current calendar. Blocked jobs
   remain queued with an auditable reason; they consume no attempt or slot and

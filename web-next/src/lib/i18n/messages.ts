@@ -1416,6 +1416,11 @@ export const en = {
   "jobs.agentGroupUnavailable": "no sensor online in this group",
   "jobs.agentGroupUnavailableHint":
     "Queued for sensor group {group}, which has no sensor online. It waits until one registers.",
+  "jobs.maintenanceFreeze": "Waiting for the change freeze to be lifted",
+  "jobs.maintenanceAllowed": "Waiting for an allowed scan window",
+  "jobs.maintenanceBlackout": "Waiting for the maintenance blackout to end",
+  "jobs.maintenanceRetry": "Next calendar opening: {time}",
+  "jobs.maintenanceRetryUnknown": "The queue will recheck the calendar before starting",
   "jobs.sensorUnavailable": "no sensor online for this tenant",
   "jobs.sensorUnavailableHint":
     "Queued for a sensor, and this tenant has none online: a sensor only takes its own tenant's jobs. It waits until one enrolls — check Sensor Fleet, whether the sensor's provisioning key has expired, and whether the sensor is too old for this job's settings.",
@@ -3277,6 +3282,11 @@ export const ru: Record<MsgKey, string> = {
   "jobs.agentGroupUnavailable": "в группе нет сенсоров онлайн",
   "jobs.agentGroupUnavailableHint":
     "Задание адресовано группе {group}, в которой нет сенсоров онлайн. Оно ждёт, пока один не зарегистрируется.",
+  "jobs.maintenanceFreeze": "Ожидание снятия заморозки изменений",
+  "jobs.maintenanceAllowed": "Ожидание разрешённого окна сканирования",
+  "jobs.maintenanceBlackout": "Ожидание окончания запрета на сканирование",
+  "jobs.maintenanceRetry": "Следующее открытие календаря: {time}",
+  "jobs.maintenanceRetryUnknown": "Очередь проверит календарь перед запуском",
   "jobs.sensorUnavailable": "у тенанта нет сенсоров онлайн",
   "jobs.sensorUnavailableHint":
     "Задание ждёт сенсора, а у этого тенанта нет ни одного онлайн: сенсор берёт задания только своего тенанта. Оно ждёт, пока сенсор не зарегистрируется — проверьте «Флот сенсоров», не истёк ли ключ регистрации сенсора и не слишком ли он стар для настроек этого задания.",
@@ -3978,4 +3988,3 @@ export const STATUS_RU: Record<string, string> = {
   "no dataset": "нет данных NVD",
   "not yet matched": "ещё не проверен",
 };
-

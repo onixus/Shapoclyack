@@ -8,6 +8,7 @@ the same targets to a second agent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import signal
 import threading
@@ -1465,6 +1466,80 @@ def _connected_session(
     session._subs = list(subs)  # noqa: SLF001
     session._started = True  # noqa: SLF001
     return session
+
+
+def test_nats_close_unsubscribes_pull_inboxes_before_draining():
+    """A queued status reply has no reader once the agent stops fetching."""
+    session = worker.AgentNatsSession("nats://unused:4222")
+    calls = []
+
+    class _Inbox:
+        async def unsubscribe(self):
+            calls.append("unsubscribe")
+
+    class _Connection:
+        is_closed = False
+
+        async def drain(self):
+            assert calls == ["unsubscribe"]
+            calls.append("drain")
+
+        async def close(self):
+            calls.append("close")
+            self.is_closed = True
+
+    session._nc = connection = _Connection()  # noqa: SLF001
+    session._subs = [_Inbox()]  # noqa: SLF001
+    session._thread.start()  # noqa: SLF001
+    session.close()
+
+    assert calls == ["unsubscribe", "drain", "close"]
+    assert connection.is_closed
+    assert session._loop.is_closed()  # noqa: SLF001
+    assert not session._thread.is_alive()  # noqa: SLF001
+    session.close()
+
+
+def test_nats_close_finishes_timed_out_drain_and_background_tasks(monkeypatch):
+    """A stalled broker must not leave coroutines on the loop being closed."""
+    session = worker.AgentNatsSession("nats://unused:4222")
+    monkeypatch.setattr(session, "_SHUTDOWN_TIMEOUT", 0.05)
+    flusher_stopped = threading.Event()
+    drain_cancelled = threading.Event()
+
+    class _Connection:
+        is_closed = False
+
+        async def drain(self):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                drain_cancelled.set()
+
+        async def close(self):
+            self.is_closed = True
+
+    async def _flusher():
+        try:
+            await asyncio.Queue().get()
+        finally:
+            # Cancellation cleanup can itself need more than one loop turn.
+            await asyncio.sleep(0)
+            flusher_stopped.set()
+
+    session._nc = connection = _Connection()  # noqa: SLF001
+    session._thread.start()  # noqa: SLF001
+    flusher = asyncio.run_coroutine_threadsafe(_flusher(), session._loop)  # noqa: SLF001
+    session.close()
+
+    assert connection.is_closed
+    assert drain_cancelled.is_set()
+    assert flusher_stopped.is_set()
+    assert flusher.done()
+    assert not asyncio.all_tasks(session._loop)  # noqa: SLF001
+    assert session._loop.is_closed()  # noqa: SLF001
+    assert not session._thread.is_alive()  # noqa: SLF001
+    session.close()
 
 
 def test_the_session_binds_only_its_own_tenants_subject():

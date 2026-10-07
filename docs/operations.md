@@ -660,7 +660,8 @@ The local waiter renews its waiting mark, so the lease reaper does not mistake
 calendar deferral for a lost executor.
 
 The job's `scan_options.maintenance_wait` contains the reason, window and retry
-time. A `scan.maintenance_block` audit event names the job when that reason
+time; the console shows the reason in the job table and its details drawer,
+including the next calendar opening when known. A `scan.maintenance_block` audit event names the job when that reason
 changes; repeated polling does not duplicate it. A blocked high-priority job
 does not hold up scans of other asset groups. Promoted domains are included,
 and jobs using installation defaults are conservatively covered by every group
