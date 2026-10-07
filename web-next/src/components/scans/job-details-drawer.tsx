@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sheet";
 import { StatusBadge } from "@/components/status-badge";
 import { JobPublications } from "@/components/scans/job-publications";
+import { JobMaintenanceWait } from "@/components/scans/job-maintenance-wait";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
 import { useJob } from "@/hooks/use-jobs";
 import { type JobInfo } from "@/lib/api";
@@ -139,6 +140,7 @@ export function JobDetailsDrawer({
           <SheetDescription>{t("jobs.detailsHint")}</SheetDescription>
         </SheetHeader>
 
+        <JobMaintenanceWait job={current} />
         {current.error ? (
           <div className="mt-4 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-800 dark:text-rose-200">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />

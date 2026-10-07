@@ -1486,6 +1486,8 @@ class AgentNatsSession:
     it already served, which is exactly what ``claim_job``'s SQL filter says.
     """
 
+    _SHUTDOWN_TIMEOUT = 5.0
+
     def __init__(
         self,
         nats_url: str,
@@ -1526,8 +1528,24 @@ class AgentNatsSession:
         return self._agent_group
 
     def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        loop = self._loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_forever()
+        finally:
+            # The loop belongs exclusively to this session. Even a timed-out
+            # drain must finish cancellation before closing it; otherwise the
+            # client flusher and shutdown coroutine are collected on a closed
+            # loop and raise unraisable exceptions.
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
 
     def start(self) -> None:
         with self._lock:
@@ -1580,20 +1598,23 @@ class AgentNatsSession:
         if connection is None:
             return
         try:
+            # Pull inboxes have no callback to consume queued status replies.
+            # Draining them waits on queue.join() until nats-py's drain timeout
+            # (longer than close() waits). Unsubscribe the inboxes first; this
+            # does not delete the durable consumer or acknowledge its offers.
+            for sub in self._subs:
+                await sub.unsubscribe()
             if not connection.is_closed:
                 await connection.drain()
         except Exception:  # noqa: BLE001
             LOG.debug("Failed to drain NATS agent connection", exc_info=True)
-        try:
-            if not connection.is_closed:
-                await connection.close()
-        except Exception:  # noqa: BLE001
-            LOG.debug("Failed to close NATS agent connection", exc_info=True)
-        # Give nats-py's completion callbacks one final event-loop turn. The old
-        # implementation cancelled every task in the loop, including the
-        # client's flusher, which produced GeneratorExit/Event-loop-closed
-        # warnings during Python 3.11 CI teardown.
-        await asyncio.sleep(0)
+        finally:
+            # Also close when cancellation interrupted the drain.
+            try:
+                if not connection.is_closed:
+                    await connection.close()
+            except Exception:  # noqa: BLE001
+                LOG.debug("Failed to close NATS agent connection", exc_info=True)
 
     def close(self) -> None:
         with self._lock:
@@ -1601,7 +1622,7 @@ class AgentNatsSession:
             if self._nc is not None and loop.is_running():
                 try:
                     fut = asyncio.run_coroutine_threadsafe(self._close_connection(), loop)
-                    fut.result(timeout=5)
+                    fut.result(timeout=self._SHUTDOWN_TIMEOUT)
                 except Exception:  # noqa: BLE001
                     LOG.debug("Failed to shut down NATS agent session cleanly", exc_info=True)
 

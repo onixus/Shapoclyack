@@ -6,6 +6,7 @@ Skipped unless ``OCTO_NATS_URL`` (or ``NATS_URL``) is set. CI sets this via a
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
@@ -126,11 +127,19 @@ def test_live_an_agent_never_sees_another_tenants_offer(bus):
             raise AssertionError(f"agent for tenant-b was offered {job_id}")
 
     session = AgentNatsSession(NATS_URL, tenant_id="tenant-b")
+    connection = None
     try:
         session.start()
+        connection = session._nc  # noqa: SLF001
         assert session.pull_and_claim(_RefusingClient(), "agent-b", timeout=2.0) is None
     finally:
         session.close()
+    # Empty fetches leave status responses in the pull inbox. Closing must
+    # finish both the drain and the client's flusher before destroying the loop.
+    assert connection is not None and connection.is_closed
+    assert session._loop.is_closed()  # noqa: SLF001
+    assert not asyncio.all_tasks(session._loop)  # noqa: SLF001
+    assert not session._thread.is_alive()  # noqa: SLF001
 
 
 def test_live_audit_events_land_on_their_own_tenant_subject(bus):

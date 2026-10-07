@@ -11,15 +11,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from api.services import audit as audit_service
+from api.db import models
+from api.db.engine import get_session
+from api.schemas import StartScanRequest
+from api.services import agents as agents_service
+from api.services import config_override
+from api.services import job_reaper
 from api.services import jobs as jobs_service
+from api.services import local_job_runner
+from api.services import local_scan_executor
 from api.services import maintenance
 from api.services import promoted_domains
 from api.services import scan_schedules
 from api.services import schedule_dispatcher
+from api.services import scan_queue
 from api.settings import Settings
 from tests.conftest import (
     approve_scan_scope,
@@ -27,6 +37,7 @@ from tests.conftest import (
     configured_client,
     make_settings,
     requires_postgres,
+    TEST_AGENT_TOKEN,
 )
 
 pytestmark = requires_postgres
@@ -71,6 +82,199 @@ def client(tmp_path, monkeypatch):
     test_client = configured_client(tmp_path, monkeypatch, settings=settings)
     test_client.settings = settings  # type: ignore[attr-defined]
     return test_client
+
+
+def _queued(client, *, ranges="10.0.0.0/24", domains=None, ports=None, priority=0, local=False):
+    job = jobs_service.start_scan(
+        client.settings, StartScanRequest(ranges=ranges, domains=domains, ports=ports, priority=priority),
+        username="operator",
+    )
+    if local:
+        with get_session(client.settings.postgres_url) as session:
+            row = session.get(models.Job, job.job_id)
+            row.execution = "local"
+            row.owner_id = client.settings.instance_id
+    return job.job_id
+
+
+def _sensor():
+    agents_service.register_agent(
+        agent_id="calendar-sensor", tenant_id=DEFAULT,
+        capabilities=[config_override.AGENT_CAPABILITY],
+    )
+
+
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("kind", ["blackout", "allowed", "freeze"])
+def test_queued_before_calendar_block_is_not_claimed_until_it_lifts(client, named, kind, monkeypatch):
+    job_id = _queued(client)
+    _sensor()
+    if kind == "freeze":
+        maintenance.set_change_freeze(client.settings, DEFAULT, frozen=True, actor="admin")
+    else:
+        maintenance.create_window(
+            client.settings, tenant_id=DEFAULT, created_by="admin",
+            fields=_window_fields(open_now=kind == "blackout", kind=kind),
+        )
+    params = {"agent_id": "calendar-sensor"}
+    if named:
+        # The NATS offer names a job, but its HTTP claim goes through this route.
+        params["job_id"] = job_id
+    for _ in range(2):
+        response = client.post(
+            "/api/agent/jobs/claim", params=params,
+            headers={"Authorization": f"Bearer {TEST_AGENT_TOKEN}"},
+        )
+        assert response.status_code == 204, response.text
+    queued = jobs_service.get_job(client.settings, job_id)
+    assert queued.status == "queued"
+    assert queued.attempts == 0
+    assert queued.assigned_agent_id is None
+    with get_session(client.settings.postgres_url) as session:
+        assert session.get(models.Job, job_id).claimed_until is None
+    assert queued.scan_options["maintenance_wait"]["allowed"] is False
+    events = audit_service.list_events(resource_type="job", resource_id=job_id)[0]
+    assert len([event for event in events if event["action"] == "scan.maintenance_block"]) == 1
+    assert job_reaper.reap_expired_leases(client.settings) == {"requeued": 0, "failed": 0}
+
+    if kind == "freeze":
+        maintenance.set_change_freeze(client.settings, DEFAULT, frozen=False, actor="admin")
+    else:
+        # Cross the boundary of the same persisted blackout/allowed window.
+        later = datetime.now(UTC) + timedelta(hours=2, minutes=30)
+        monkeypatch.setattr(maintenance, "_now", lambda: later)
+    claimed = client.post(
+        "/api/agent/jobs/claim", params=params,
+        headers={"Authorization": f"Bearer {TEST_AGENT_TOKEN}"},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["job_id"] == job_id
+    assert claimed.json()["attempt"] == 1
+    assert "maintenance_wait" not in jobs_service.get_job(client.settings, job_id).scan_options
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_a_blocked_priority_head_does_not_starve_other_targets(client, local):
+    high = _queued(client, priority=90, local=local)
+    low = _queued(client, ranges="10.1.0.0/24", priority=-10, local=local)
+    scan_queue.set_limits(client.settings, DEFAULT, max_concurrent_scans=1, max_queued_scans=None)
+    maintenance.create_window(
+        client.settings, tenant_id=DEFAULT, created_by="admin",
+        fields=_window_fields(
+            open_now=True, scope_kind="asset_group", asset_group="fragile",
+            scope_targets=["10.0.0.0/24"],
+        ),
+    )
+    if local:
+        assert local_job_runner._start(client.settings, high) is False
+        with get_session(client.settings.postgres_url) as session:
+            waiting = session.get(models.Job, high)
+            assert waiting.claimed_until is not None
+            assert waiting.attempts == 0
+        assert job_reaper.reap_expired_leases(client.settings) == {"requeued": 0, "failed": 0}
+        assert local_job_runner._start(client.settings, low) is True
+    else:
+        _sensor()
+        assert jobs_service.claim_job(client.settings, "calendar-sensor").job_id == low
+    assert jobs_service.get_job(client.settings, high).status == "queued"
+
+
+def test_local_waiter_starts_after_the_calendar_opens(client, monkeypatch):
+    job_id = _queued(client, local=True)
+    window = maintenance.create_window(
+        client.settings, tenant_id=DEFAULT, created_by="admin",
+        fields=_window_fields(open_now=True),
+    )
+    monkeypatch.setattr(maintenance, "_now", lambda: datetime.now(UTC))
+    assert local_job_runner._start(client.settings, job_id) is False
+    monkeypatch.setattr(maintenance, "_now", lambda: datetime.now(UTC) + timedelta(hours=2))
+    assert local_job_runner._start(client.settings, job_id) is True
+    running = jobs_service.get_job(client.settings, job_id)
+    assert running.status == "running"
+    assert running.attempts == 1
+    assert "maintenance_wait" not in running.scan_options
+    assert window["window_id"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_queued_job_checks_its_promoted_domains(client, legacy):
+    promoted_domains.promote(
+        client.settings, domain="related.example.com", tenant_id=DEFAULT,
+        source_run_id="run_1", promoted_by="admin",
+    )
+    job_id = _queued(client)
+    if legacy:
+        with get_session(client.settings.postgres_url) as session:
+            row = session.get(models.Job, job_id)
+            options = dict(row.scan_options)
+            options.pop("maintenance_targets")
+            row.scan_options = options
+    maintenance.create_window(
+        client.settings, tenant_id=DEFAULT, created_by="admin",
+        fields=_window_fields(
+            open_now=True, scope_kind="asset_group", asset_group="promoted",
+            scope_targets=["example.com"],
+        ),
+    )
+    _sensor()
+    assert jobs_service.claim_job(client.settings, "calendar-sensor", job_id=job_id) is None
+    assert jobs_service.get_job(client.settings, job_id).status == "queued"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("targets", [None, " \n", "# installation defaults\n", " , \n"])
+@pytest.mark.parametrize("ports", [None, "443"])
+def test_installation_defaults_cannot_evade_a_group_blackout_with_promoted_domains(client, legacy, targets, ports):
+    promoted_domains.promote(
+        client.settings, domain="related.example.com", tenant_id=DEFAULT,
+        source_run_id="run_1", promoted_by="admin",
+    )
+    job_id = _queued(client, ranges=targets, domains=targets, ports=ports)
+    if legacy:
+        with get_session(client.settings.postgres_url) as session:
+            row = session.get(models.Job, job_id)
+            options = dict(row.scan_options)
+            options.pop("maintenance_targets")
+            row.scan_options = options
+    maintenance.create_window(
+        client.settings, tenant_id=DEFAULT, created_by="admin",
+        fields=_window_fields(
+            open_now=True, scope_kind="asset_group", asset_group="defaults",
+            scope_targets=["10.99.0.0/24"],
+        ),
+    )
+    _sensor()
+    assert jobs_service.claim_job(client.settings, "calendar-sensor", job_id=job_id) is None
+
+
+def test_local_runner_does_not_launch_a_process_while_calendar_blocks(client, monkeypatch):
+    job_id = _queued(client, local=True)
+    maintenance.create_window(
+        client.settings, tenant_id=DEFAULT, created_by="admin",
+        fields=_window_fields(open_now=True),
+    )
+    launched = []
+
+    def wait(_seconds):
+        assert not launched
+        queued = jobs_service.get_job(client.settings, job_id)
+        assert queued.status == "queued"
+        assert queued.scan_options["maintenance_wait"]["reason"] == maintenance.REASON_BLACKOUT
+        later = datetime.now(UTC) + timedelta(hours=2)
+        monkeypatch.setattr(maintenance, "_now", lambda: later)
+        return False
+
+    def scanner(current_id, command):
+        assert current_id == job_id
+        assert jobs_service.get_job(client.settings, job_id).status == "running"
+        launched.append(current_id)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(local_scan_executor, "wait_unless_draining", wait)
+    monkeypatch.setattr(local_scan_executor, "run_scanner", scanner)
+    local_job_runner.run_job(client.settings, job_id, ["true"])
+    assert launched == [job_id]
+    assert jobs_service.get_job(client.settings, job_id).status == "succeeded"
 
 
 # --------------------------------------------------------------------------

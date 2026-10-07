@@ -39,6 +39,7 @@ import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { JobDetailsDrawer, jobDuration } from "@/components/scans/job-details-drawer";
 import { SurfaceBadge } from "@/components/scans/surface-badge";
+import { JobMaintenanceWait } from "@/components/scans/job-maintenance-wait";
 import { useCancelJob, useSetJobPriority } from "@/hooks/use-jobs";
 import { holdsPermission, useAuthStore } from "@/lib/auth-store";
 import type { PaginationState } from "@/hooks/use-pagination";
@@ -187,6 +188,7 @@ export function JobsTable({
                 row.original.status === "cancelling"
               }
             />
+            <JobMaintenanceWait job={row.original} compact />
             {row.original.asset_upsert_error ? (
               <span
                 role="img"

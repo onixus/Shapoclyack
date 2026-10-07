@@ -30,6 +30,7 @@ from api.services import run_completion
 from api.services import run_publisher
 from api.services import runs as runs_service
 from api.services import scan_queue
+from api.services import queued_maintenance
 from api.services import tenants as tenants_service
 from api.services.artifact_store import workspace as artifact_workspace
 from api.settings import Settings
@@ -170,9 +171,12 @@ def _start(settings: Settings, job_id: str) -> bool:
         if row is None:
             raise job_states.InvalidJobTransition(f"Job {job_id} no longer exists")
         job_states.check_transition(job_id, row.status, job_states.RUNNING)
+        if not queued_maintenance.admitted(settings, session, row):
+            job_leases.renew_waiting_mark(settings, row)
+            return False
         if not slot or (
             scan_queue.concurrency_limit(session, tenant_id) is not None
-            and scan_queue.local_job_ahead(session, row)
+            and scan_queue.local_job_ahead(session, row, settings=settings)
         ):
             job_leases.renew_waiting_mark(settings, row)
             return False
@@ -200,7 +204,7 @@ def _wait_for_slot(settings: Settings, job_id: str) -> bool:
                 return True
             if not waited:
                 _log.info(
-                    "Job %s waits for a slot: its tenant is at max_concurrent_scans",
+                    "Job %s waits for calendar admission or an available scan slot",
                     job_id,
                 )
                 waited = True

@@ -496,6 +496,43 @@ def test_the_pytest_script_declares_the_integration_infrastructure():
     assert "--cov-fail-under" in body
 
 
+@pytest.mark.parametrize("failure", ["unraisable", "thread"])
+def test_ci_fails_when_passing_assertions_hide_unhandled_errors(tmp_path, failure):
+    """Execute the shared script: checking its text would not prove the gate."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    script = scripts / "ci-pytest.sh"
+    script.write_text((SCRIPTS / script.name).read_text(encoding="utf-8"))
+    source = (
+        "def test_unraisable():\n"
+        "    class Broken:\n"
+        "        def __del__(self):\n"
+        "            raise RuntimeError('shutdown regression')\n"
+        "    obj = Broken()\n"
+        "    del obj\n"
+        "    assert True\n"
+        if failure == "unraisable" else
+        "import threading\n"
+        "def test_thread():\n"
+        "    def broken():\n"
+        "        raise RuntimeError('shutdown regression')\n"
+        "    thread = threading.Thread(target=broken)\n"
+        "    thread.start()\n"
+        "    thread.join()\n"
+        "    assert True\n"
+    )
+    (tmp_path / "test_failure.py").write_text(source, encoding="utf-8")
+    env = dict(os.environ, OCTO_REQUIRE_INTEGRATION="0")
+    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(script), "--no-cov", "test_failure.py"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "shutdown regression" in result.stdout + result.stderr
+    assert "1 passed" not in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # The Kubernetes contract has to run where CI says it ran (#338 review)
 # ---------------------------------------------------------------------------
