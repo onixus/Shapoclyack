@@ -4,6 +4,17 @@ All notable changes to Shapoclyack are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Complete caller-owned bulk idempotency (#517, migration `0082`): require
+  `actor`, remove the unowned fallback and legacy index/trigger, and preserve
+  existing owned reports and reservations. The migration deletes only expired
+  unowned records and refuses live ones; stop pre-`0055` writers and wait their
+  24-hour retry window before upgrading. Rolling deployment with `0.46-0922`
+  remains compatible; upgrade and rollback notes are in `docs/operations.md`.
+  A released reservation encountered after an INSERT conflict is reacquired
+  before execution, preserving exclusion between concurrent retries.
+
 ### Documentation
 
 - Refresh the kind quick start and remediation demo for HTTPS and the generated

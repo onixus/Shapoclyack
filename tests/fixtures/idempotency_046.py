@@ -106,8 +106,11 @@ _PURGE_INTERVAL_SECONDS = 300.0
 
 #: How many times :func:`reserve` will look again after losing its INSERT.
 #:
-#: Retry once if the winner releases its failed request between our INSERT
-#: and lookup. Execution must still acquire a reservation, never run in a gap.
+#: Two, and only because a rolling deploy has two generations of writer: a
+#: replica of the previous release can take a key between this one's look-ahead
+#: for a legacy row and its own INSERT, which the cross-generation trigger in
+#: ``0055_idempotency_actor`` turns into an ``IntegrityError``. The second pass
+#: reads that row and replays it. Goes away with the fallback below.
 _RESERVE_ATTEMPTS = 2
 
 #: Ceiling on the key a client may name. Same 200 characters the scan start
@@ -194,6 +197,20 @@ def reserve(
     stored: dict[str, Any] | None = None
     for _ in range(_RESERVE_ATTEMPTS):
         with get_session(settings.postgres_url) as session:
+            # Looked up *before* the INSERT, and only this one is: a row written
+            # before keys had owners (``actor IS NULL``) lives in a different
+            # index from the one below, so without this read a retry arriving
+            # after the deploy would quietly execute its batch a second time. It
+            # goes away with the last legacy row — see ``0055_idempotency_actor``.
+            legacy = _row_for(
+                session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=None
+            )
+            if legacy is not None:
+                stored = _answer_from_legacy(
+                    session, legacy, endpoint=endpoint, key=key, request_digest=request_digest
+                )
+            if stored is not None:
+                break
             try:
                 with session.begin_nested():
                     session.add(
@@ -210,15 +227,26 @@ def reserve(
                     session.flush()
                 return None
             except IntegrityError:
-                # Another request holds this caller's key. Read its answer
-                # after the savepoint rollback leaves the session usable.
+                # Lost the race on (tenant_id, endpoint, actor, key), or this
+                # caller used the key in an earlier request altogether, or the
+                # cross-generation trigger refused us because a replica of the
+                # previous release took the key between the read above and this
+                # INSERT. All three are answered from the row that won.
                 pass
             row = _row_for(
                 session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=actor
             )
             if row is None:
-                # Released between the failed INSERT and this read. Retry the
-                # INSERT so another contender cannot execute alongside us.
+                if _row_for(
+                    session, tenant_id=tenant_id, endpoint=endpoint, key=key, actor=None
+                ) is None:
+                    # The winner's row is gone — it was released as a failure
+                    # between our INSERT and this read. Nobody holds the key and
+                    # nobody has an answer, so this request executes.
+                    return None
+                # A pre-deploy replica took the key while we were reading. Its
+                # row is the answer, and the pass below reads it with the
+                # legacy semantics it was written under.
                 continue
             if row.response is None:
                 # Checked before the digest: an abandoned reservation holds a key
@@ -246,7 +274,9 @@ def reserve(
             stored = dict(row.response)
             break
     if stored is None:
-        # Repeated contention: no reservation acquired, so do not execute.
+        # Both passes lost the key to a writer of the other generation and
+        # neither left an answer behind. Honest, and retryable: somebody else
+        # is executing this key right now.
         raise IdempotencyInFlight(endpoint, key)
     metrics_service.IDEMPOTENT_REPLAYS_TOTAL.labels(endpoint=endpoint).inc()
     LOG.info("Idempotent replay on %s for key %r (tenant %s)", endpoint, key, tenant_id)
@@ -254,21 +284,74 @@ def reserve(
 
 
 def _row_for(
-    session: Any, *, tenant_id: str, endpoint: str, key: str, actor: str
+    session: Any, *, tenant_id: str, endpoint: str, key: str, actor: str | None
 ) -> models.IdempotencyRecord | None:
-    """This key's record for one owner."""
-    return (
+    """This key's record for one owner. ``actor=None`` asks for the legacy row."""
+    owner = (
+        models.IdempotencyRecord.actor.is_(None)
+        if actor is None
+        else models.IdempotencyRecord.actor == actor
+    )
+    return session.execute(
+        select(models.IdempotencyRecord).where(
+            models.IdempotencyRecord.tenant_id == tenant_id,
+            models.IdempotencyRecord.endpoint == endpoint,
+            models.IdempotencyRecord.key == key,
+            owner,
+        )
+    ).scalars().first()
+
+
+def _answer_from_legacy(
+    session: Any,
+    legacy: models.IdempotencyRecord,
+    *,
+    endpoint: str,
+    key: str,
+    request_digest: str,
+) -> dict[str, Any] | None:
+    """What a pre-``actor`` row says about this request, or ``None`` for "nothing".
+
+    Rows written before ``0055_idempotency_actor`` carry no owner, and there is
+    nothing to derive one from: the table never recorded who reserved a key. So
+    for the day they survive they keep the semantics they were written under —
+    tenant-wide — which is the only reading that does not lose a replay. The
+    alternative, ignoring them, would let a retry arriving a second after the
+    deploy apply its batch again, and that is the one outcome the key exists to
+    prevent.
+
+    TODO(contract step, #346): delete this function, the ``actor=None`` read in
+    :func:`reserve`, the ``uq_idempotency_legacy_tenant_endpoint_key`` index and
+    the ``idempotency_records_cross_generation`` trigger one release after
+    ``0055`` ships. No row without an actor can exist :data:`RETENTION_SECONDS`
+    after that deploy, and while these stay a legacy key is still read
+    tenant-wide — the namespace this change exists to close. Tracked in
+    ``ROADMAP.md`` (Track A) and ``docs/operations.md``.
+
+    A legacy reservation whose lease is up is deleted rather than taken over:
+    the caller is about to insert a row of its own, owned properly, and two
+    rows for one key would then be two answers to one question.
+    """
+    if legacy.response is None:
+        if (_now() - legacy.created_at).total_seconds() < RESERVATION_LEASE_SECONDS:
+            raise IdempotencyInFlight(endpoint, key)
         session.execute(
-            select(models.IdempotencyRecord).where(
-                models.IdempotencyRecord.tenant_id == tenant_id,
-                models.IdempotencyRecord.endpoint == endpoint,
-                models.IdempotencyRecord.key == key,
-                models.IdempotencyRecord.actor == actor,
+            delete(models.IdempotencyRecord).where(
+                models.IdempotencyRecord.id == legacy.id,
+                models.IdempotencyRecord.response.is_(None),
             )
         )
-        .scalars()
-        .first()
-    )
+        LOG.warning(
+            "Dropped an unowned idempotency reservation on %s for key %r that outlived "
+            "its %ds lease",
+            endpoint,
+            key,
+            RESERVATION_LEASE_SECONDS,
+        )
+        return None
+    if legacy.request_digest and legacy.request_digest != request_digest:
+        raise IdempotencyMismatch(endpoint, key)
+    return dict(legacy.response)
 
 
 def _claim_expired(

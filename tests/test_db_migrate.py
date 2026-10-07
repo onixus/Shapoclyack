@@ -199,8 +199,8 @@ def test_the_idempotency_actor_rollback_survives_two_owners_of_one_key() -> None
 
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM idempotency_records"))
-        # Back on the new schema, the guard that keeps a replica of the previous
-        # release from claiming a key this one already answered is back too.
+        # Back on the contract schema, an unowned insert is rejected by
+        # NOT NULL even after rolling back through the original expand step.
         conn.execute(
             text(
                 "INSERT INTO idempotency_records "
