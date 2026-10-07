@@ -1542,6 +1542,29 @@ def test_nats_close_finishes_timed_out_drain_and_background_tasks(monkeypatch):
     session.close()
 
 
+def test_nats_loop_cleanup_does_not_close_a_replacement_loop():
+    """A reconnect can replace the attribute after a slow close's join timeout."""
+    session = worker.AgentNatsSession("nats://unused:4222")
+    original = session._loop  # noqa: SLF001
+    replacement = asyncio.new_event_loop()
+
+    def _replace_then_stop():
+        session._loop = replacement  # noqa: SLF001
+        original.stop()
+
+    session._thread.start()  # noqa: SLF001
+    original.call_soon_threadsafe(_replace_then_stop)
+    session._thread.join(timeout=1)  # noqa: SLF001
+    try:
+        assert not session._thread.is_alive()  # noqa: SLF001
+        assert original.is_closed()
+        assert not replacement.is_closed()
+    finally:
+        if not original.is_closed():
+            original.close()
+        replacement.close()
+
+
 def test_the_session_binds_only_its_own_tenants_subject():
     """The durable is per tenant too: two tenants sharing one consumer is the
     same thing as sharing the subject, because a work-queue stream drops a

@@ -1528,23 +1528,24 @@ class AgentNatsSession:
         return self._agent_group
 
     def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
+        loop = self._loop
+        asyncio.set_event_loop(loop)
         try:
-            self._loop.run_forever()
+            loop.run_forever()
         finally:
             # The loop belongs exclusively to this session. Even a timed-out
             # drain must finish cancellation before closing it; otherwise the
             # client flusher and shutdown coroutine are collected on a closed
             # loop and raise unraisable exceptions.
-            pending = asyncio.all_tasks(self._loop)
+            pending = asyncio.all_tasks(loop)
             for task in pending:
                 task.cancel()
             if pending:
-                self._loop.run_until_complete(
+                loop.run_until_complete(
                     asyncio.gather(*pending, return_exceptions=True)
                 )
-            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
-            self._loop.close()
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
 
     def start(self) -> None:
         with self._lock:

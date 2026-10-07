@@ -84,9 +84,9 @@ def client(tmp_path, monkeypatch):
     return test_client
 
 
-def _queued(client, *, ranges="10.0.0.0/24", domains=None, priority=0, local=False):
+def _queued(client, *, ranges="10.0.0.0/24", domains=None, ports=None, priority=0, local=False):
     job = jobs_service.start_scan(
-        client.settings, StartScanRequest(ranges=ranges, domains=domains, priority=priority),
+        client.settings, StartScanRequest(ranges=ranges, domains=domains, ports=ports, priority=priority),
         username="operator",
     )
     if local:
@@ -222,12 +222,14 @@ def test_queued_job_checks_its_promoted_domains(client, legacy):
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_installation_defaults_cannot_evade_a_group_blackout_with_promoted_domains(client, legacy):
+@pytest.mark.parametrize("targets", [None, " \n", "# installation defaults\n", " , \n"])
+@pytest.mark.parametrize("ports", [None, "443"])
+def test_installation_defaults_cannot_evade_a_group_blackout_with_promoted_domains(client, legacy, targets, ports):
     promoted_domains.promote(
         client.settings, domain="related.example.com", tenant_id=DEFAULT,
         source_run_id="run_1", promoted_by="admin",
     )
-    job_id = _queued(client, ranges=None)
+    job_id = _queued(client, ranges=targets, domains=targets, ports=ports)
     if legacy:
         with get_session(client.settings.postgres_url) as session:
             row = session.get(models.Job, job_id)

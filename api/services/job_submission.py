@@ -311,6 +311,7 @@ def start_scan(
     promoted_refused = list(admission.promoted_refused)
     policy_snapshot = admission.policy_snapshot
     agent_group = admission.agent_group
+    parsed_targets = admission.parsed_targets
 
     resolved = scan_intents.resolve_scan_options(
         intent=request.intent,
@@ -426,12 +427,12 @@ def start_scan(
         command=command,
         scan_options={
             "maintenance_targets": {
-                "ranges": request.ranges,
+                "ranges": "\n".join(parsed_targets.ranges or []) if parsed_targets else "",
                 # Installation defaults can reach unknown groups even when
                 # promoted domains accompany them. Keep that conservative gate.
                 "domains": (
-                    "\n".join([request.domains or "", *promoted_admitted])
-                    if request.ranges or request.domains else ""
+                    "\n".join([*(parsed_targets.domains or []), *promoted_admitted])
+                    if parsed_targets and parsed_targets.ranges is not None else ""
                 ),
             },
             "mode": resolved.mode,
