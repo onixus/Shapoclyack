@@ -3051,10 +3051,7 @@ class IdempotencyRecord(Base):
     key: Mapped[str]
     # Who reserved the key: the principal string the audit trail uses, so an
     # integration is ``service-token:<name>`` and a person is their username.
-    # NULL means the row predates 0055_idempotency_actor and was reserved when
-    # a key was a tenant-wide namespace — see ``idempotency.reserve``, which
-    # still honours those rows until they age out.
-    actor: Mapped[str | None] = mapped_column(default=None)
+    actor: Mapped[str]
     request_digest: Mapped[str] = mapped_column(default="", server_default="")
     # NULL = still in flight. See the class docstring, and ``_JSON_DOC_NULLABLE``
     # for why this one column does not share ``_JSON_DOC``.
@@ -3072,21 +3069,6 @@ class IdempotencyRecord(Base):
             "actor",
             "key",
             unique=True,
-        ),
-        # The index this replaced, kept for the rows it still governs: a
-        # replica on the previous release writes no ``actor``, and for the
-        # length of a rolling deploy those rows need the uniqueness that
-        # decides which of two racing replicas holds the key. Empty of new
-        # rows the moment every replica is current, and gone for good once the
-        # last legacy row is swept.
-        Index(
-            "uq_idempotency_legacy_tenant_endpoint_key",
-            "tenant_id",
-            "endpoint",
-            "key",
-            unique=True,
-            postgresql_where=text("actor IS NULL"),
-            sqlite_where=text("actor IS NULL"),
         ),
         # The purge's only query.
         Index("ix_idempotency_created_at", "created_at"),

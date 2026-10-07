@@ -875,38 +875,49 @@ applying two hundred transitions twice. One row per key per endpoint per
 **caller** — the principal the audit trail records — holding the request digest
 and the report.
 
-**On upgrade to migration `0055`.** Expand only, and nothing is rewritten: the
-`actor` column arrives nullable with no default, so every row written before it
-is marked by construction as "reserved when a key was a tenant-wide namespace",
-and `reserve` still honours those rows for the 24 hours they survive. The
-tenant-wide unique index is not dropped but *narrowed* to exactly those rows
-(`WHERE actor IS NULL`), so a replica still running the previous release keeps
-the uniqueness that decides which of two racing replicas holds a key.
+**Upgrade to migration `0082` (#517).** This completes the expand step
+`0055`, shipped in `0.45-0916`: `actor` becomes NOT NULL, the legacy partial
+index and cross-generation trigger/function are dropped, and new code reads
+only the caller's own records. The caller-owned unique index stays in place.
 
-The two indexes cannot see each other, though — one covers rows with an owner
-and one covers rows without — so the rollout is also given a trigger,
-`idempotency_records_cross_generation`, which refuses an insert whose owner-ness
-disagrees with a row already holding the key and raises `unique_violation`, the
-error both releases already handle by reading the row that won. Without it the
-*reverse* direction of a rolling deploy is open: a batch answered by a new
-replica and retried against one the deploy has not reached yet would be applied
-a second time. It takes a transaction advisory lock on the key, so the cost is
-one lock per bulk request that carries one.
+Before applying the upgrade, replace every replica older than `0055` with
+`0.45-0916` or `0.46-0922` (including ad hoc writers), then allow 24 hours after
+the last unowned reservation. Those releases already write `actor`, so their
+bulk writes, completions, releases and replays remain compatible while new
+replicas roll out. A pre-`0055` replica is unsupported after this contract:
+its writes without `actor` are rejected. Do not restore one into the rollout.
 
-**The contract step is tracked** in [ROADMAP.md](../ROADMAP.md#track-a--what-is-actually-left)
-("Idempotency key `actor` — contract step") and in a `TODO` on
-`api/services/idempotency.py`, so it is scheduled rather than prose. One release
-later, once no row without an actor
-can exist (the bound is the 24h `RETENTION_SECONDS`), drop the narrowed index,
-the trigger and the fallback read in `idempotency.reserve`. While they are in
-place a legacy row is still read tenant-wide, which is the thing this change
-exists to end.
+Preflight as the migration owner, in explicit system scope (not the tenant
+API role, which cannot inspect all tenants):
 
-During the rolling deploy itself a key reserved by an old replica is still
-tenant-wide: a member of the same tenant who guesses it and sends a matching
-body is handed that report as a replay, with no audit row of their own. One
-deploy window plus the 24-hour life of the rows it wrote, not a standing
-property.
+```sql
+SELECT count(*) AS unowned, max(created_at) AS last_unowned_reservation
+FROM idempotency_records WHERE actor IS NULL;
+```
+
+TTL cleanup is opportunistic: an idle installation can still have unowned
+records months later. The migration locks the table, removes **only** unowned
+records older than 24 hours, and refuses to proceed if any unexpired record
+remains. It assigns no guessed owner and preserves all caller-owned records,
+including their stored reports and in-flight reservations. On refusal, stop
+the old writers and wait out the remaining retry window, then rerun
+`python -m api.db.migrate`. The failed PostgreSQL transaction leaves schema,
+records and Alembic revision unchanged. This also applies after restoring an
+older backup. Never truncate live records to force the migration through.
+
+The migration takes an exclusive table lock through commit; bulk requests
+using idempotency wait behind it. Duration depends on the accumulated unowned
+rows and the NOT NULL validation scan; large installations should schedule
+this schema step in their maintenance window. Scan-start and upload keys are
+stored elsewhere and unaffected.
+
+**Rollback.** `alembic -c api/db/alembic.ini downgrade
+0081_endpoint_release_variants` restores nullable `actor`, the partial index
+and the original cross-generation trigger. It preserves owned records and
+does not recreate expired unowned records. Code rollback to `0.46-0922` does
+not itself require undoing `0082`; that release already supplies `actor`.
+Rolling further back past `0055` is a separate downgrade with tenant-wide key
+deduplication, described by that migration; drain writes before attempting it.
 
 **Nothing operational to schedule.** Rows expire 24 hours after they are
 written (`RETENTION_SECONDS` in `api/services/idempotency.py`) and are deleted

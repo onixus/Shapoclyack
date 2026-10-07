@@ -48,6 +48,11 @@ def test_release_variant_upgrade_and_lossless_downgrade(monkeypatch):
             "SELECT version,package_kind,content FROM endpoint_agent_releases ORDER BY version,package_kind"
         )
         with database.begin() as connection:
+            # A refused downgrade must roll back the entire revision chain,
+            # including migrations added after the release-variant change.
+            head_before_downgrade = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
             rows = connection.execute(read).all()
             assert [
                 (version, kind, bytes(content)) for version, kind, content in rows
@@ -68,7 +73,7 @@ def test_release_variant_upgrade_and_lossless_downgrade(monkeypatch):
                 connection.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
-                == "0081_endpoint_release_variants"
+                == head_before_downgrade
             )
             assert len(connection.execute(read).all()) == 3
             connection.execute(
