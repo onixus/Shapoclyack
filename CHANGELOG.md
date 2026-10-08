@@ -26,6 +26,13 @@ All notable changes to Shapoclyack are documented in this file.
 
 ### Added
 
+- Optional TLS revocation for sensor/endpoint certificates (#515): issuer-scoped
+  signed CRLs, platform CLI publication to files or one Kubernetes Secret,
+  ingress refresh/RBAC examples and direct-listener verification. Migration
+  `0083` stores verified public leaves; legacy revocations require known PEMs.
+  Arbitrary tenant tombstones/unbound pins remain API-only until platform
+  approval. The runbook covers expiry, CA chains, TLS sessions and rollback.
+
 - **Web fingerprinting from a catalogue: versions, CPE and exposed consoles
   (DQ4).** The `fingerprint` stage's eleven hard-coded signatures are replaced
   by `scanner/pipeline/fingerprint_catalogue.json` — 146 technologies across

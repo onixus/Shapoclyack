@@ -364,6 +364,12 @@ _RAW_SOCKETS_WHY = (
 )
 
 EXCEPTIONS: tuple[Exception_, ...] = (
+    Exception_(
+        "CronJob", "agent-crl-publisher", None,
+        frozenset({"automountServiceAccountToken!=false"}),
+        "CRL publisher patches one named Secret through the Kubernetes API; its Role grants only patch (#515)",
+        targets=frozenset({"examples/agent-crl-publisher.example.yaml"}),
+    ),
     Exception_("StatefulSet", EXECUTOR, "executor", _RAW_SOCKETS, _RAW_SOCKETS_WHY),
     Exception_(
         "StatefulSet", EXECUTOR, None, frozenset({"hostNetwork=true"}),

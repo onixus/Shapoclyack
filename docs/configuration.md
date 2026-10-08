@@ -648,6 +648,7 @@ OCTO_AGENT_JWT_SECRET_PREVIOUS
 OCTO_AGENT_MIN_VERSION
 OCTO_AGENT_MTLS_CERT_DAYS
 OCTO_AGENT_MTLS_CLIENT_CA
+OCTO_AGENT_MTLS_CRL
 OCTO_AGENT_MTLS_EXPIRY_WARN_DAYS
 OCTO_AGENT_MTLS_ISSUER_CERT
 OCTO_AGENT_MTLS_ISSUER_KEY
@@ -1577,6 +1578,7 @@ switches.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `OCTO_AGENT_MTLS_CRL` | *(empty)* | Optional signed PEM CRL bundle for the API's own TLS listener. Requires a client CA; startup checks freshness/signatures and enables leaf CRL verification. Replace atomically and restart listeners on every update; ingress uses `ca.crl` in its auth Secret instead. See [TLS revocation](operations.md#tls-revocation-with-a-signed-crl-515) |
 | `OCTO_AGENT_MTLS_MODE` | `off` | `off` — the token alone, as before; no certificate is read. `optional` — a presented certificate must be the token's sensor's own (`403` otherwise), a request without one passes: the migration mode. `required` — every sensor and Agent request needs one. A misspelt value refuses to start, in every environment |
 | `OCTO_AGENT_MTLS_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs of the TLS-terminating ingress — the ingress-nginx controller and nothing else: its nodes' addresses if it runs on hostNetwork, or a pod range only it gets. **Never the cluster's pod CIDR**: any pod with a trusted address that can reach the API port can forward a "verified" certificate. The `ssl-client-verify` / `ssl-client-cert` / `ssl-client-subject-dn` headers are believed **only** from these peers; from anywhere else they are ignored, as if nothing was presented. Parsed once at start; an entry that is not an IP or CIDR (a host name) refuses to start. Requires `OCTO_AGENT_MTLS_CLIENT_CA`. Separate from `OCTO_TRUSTED_PROXIES`, which only decides whose `X-Forwarded-For` keys a rate-limit bucket. Matched against the socket's own peer address, never the one uvicorn takes from `X-Forwarded-For` for peers in its `FORWARDED_ALLOW_IPS` — that variable has no effect on this list |
 | `OCTO_AGENT_MTLS_CLIENT_CA` | *(empty; falls back to `OCTO_AGENT_MTLS_ISSUER_CERT`)* | PEM bundle of the CA(s) that issue sensor certificates. The API's own TLS listener asks clients for a certificate from it — in every `OCTO_AGENT_MTLS_MODE`, `off` included, since renewals present the current certificate — and a certificate an ingress forwards is checked against it again — so an `auth-tls-secret` pointed at the wrong CA does not widen who gets in. Every certificate in it is a trust anchor, an intermediate included. With an ingress (which forwards the leaf only), it must hold the **issuing** CA — or a root above `OCTO_AGENT_MTLS_ISSUER_CERT`, whose link the API supplies itself — and it is mandatory: without it a forwarded certificate is never believed, and `OCTO_AGENT_MTLS_TRUSTED_PROXIES` refuses to start |
