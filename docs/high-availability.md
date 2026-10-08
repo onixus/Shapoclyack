@@ -305,7 +305,7 @@ every caller of it — `jobs._publish_job_offer`, `results_ingest`,
 | --- | --- | --- |
 | Sign-in, RBAC, tenants, users, sessions | **Works** | Postgres only; the bus is not in the path |
 | Every read of assets, findings, runs, reports, schedules, policies | **Works** | Served from Postgres and the artifact store |
-| Starting a scan (`POST /api/scans`) | **Works** | The job row is committed first; the offer is published after it and is only a notification. A failed publish is logged and the job stays `queued` |
+| Starting a scan (`POST /api/jobs`) | **Works** | The job row is committed first; the offer is published after it and is only a notification. A failed publish is logged and the job stays `queued` |
 | A sensor picking up work | **Works, slower** | `POST /api/agent/jobs/claim` is HTTP and takes the job under a row lock; JetStream only tells a sensor to claim *sooner*. A sensor with `OCTO_NATS_URL` set falls back to that claim every `NATS_FALLBACK_CLAIM_SECONDS` (60s, `agent/worker.py`), so with the broker gone dispatch latency is bounded by one minute rather than by the poll interval |
 | Sensor registration, heartbeats, lease renewal, cancellation | **Works** | HTTP and Postgres throughout |
 | Uploading results (`POST /api/agent/jobs/{id}/results`) | **Works** | Archive is extracted, artifacts published, assets and findings updated, job finished — all without the broker |

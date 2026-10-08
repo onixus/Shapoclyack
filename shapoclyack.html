@@ -59,7 +59,8 @@
 
 <main class="max-w-6xl mx-auto px-4 pb-24">
 
-    <section class="mb-16">
+    <p class="text-center text-sm mb-4">Историческая концептуальная инфографика. Числа в графиках иллюстративные, не измерения продукта. Текущее состояние main (706ead80, 2026-10-08), реализованные фазы и ограничения: <a href="ROADMAP.md">ROADMAP</a> и <a href="docs/README.md">документация</a>. Последний опубликованный релиз: 0.46-0922. AI-демонстрация ниже требует внешнего Gemini API и не является функцией платформы.</p>
+<section class="mb-16">
         <div class="card-shadow">
             <h2 class="text-3xl font-bold mb-6 text-blue-900">Модульная разведка нового уровня</h2>
             <p class="text-lg text-slate-600 mb-8 leading-relaxed">
@@ -214,7 +215,7 @@
                 <h4 class="font-bold mt-2 mb-4">NATS JetStream &amp; API Gateway</h4>
                 <ul class="text-xs text-slate-500 space-y-2">
                     <li>● NATS StatefulSet в <code>k8s/shapoclyack/base/</code></li>
-                    <li>● Ingest gateway → topic <code>ingest.raw_results</code></li>
+                    <li>● Ingest gateway → topic <code>ingest.raw_results.{tenant}</code></li>
                     <li>● Agent: NATS pull consumer (jobs)</li>
                     <li>● Идемпотентность сообщений</li>
                 </ul>
